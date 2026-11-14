@@ -9248,12 +9248,21 @@ export function issueRoutes(
     let createdFromIssueId: string | undefined;
     if (rawCreatedFromIssueId !== undefined) {
       const trimmed = rawCreatedFromIssueId.trim();
-      const identifier = normalizeIssueReferenceIdentifier(trimmed);
-      if (identifier) {
-        const sourceIssue = await svc.getByIdentifier(identifier);
-        createdFromIssueId = sourceIssue ? sourceIssue.id : "00000000-0000-0000-0000-000000000000";
-      } else {
+      if (isUuidLike(trimmed)) {
         createdFromIssueId = trimmed;
+      } else {
+        const identifier = normalizeIssueReferenceIdentifier(trimmed);
+        if (identifier) {
+          const sourceIssue = await svc.getByIdentifier(identifier);
+          createdFromIssueId = sourceIssue ? sourceIssue.id : "00000000-0000-0000-0000-000000000000";
+        } else {
+          logger.warn(
+            { parameter: "createdFromIssueId", value: rawCreatedFromIssueId, companyId },
+            "invalid identifier query parameter format",
+          );
+          res.status(400).json({ error: "createdFromIssueId must be a UUID or issue identifier" });
+          return;
+        }
       }
     }
 

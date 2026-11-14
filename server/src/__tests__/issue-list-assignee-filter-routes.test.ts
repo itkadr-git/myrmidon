@@ -1058,8 +1058,57 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     const badCreatedFrom = await request(app)
       .get(`/api/companies/${companyId}/issues`)
       .query({ createdFromIssueId: "not-a-valid-identifier-or-uuid" });
-    expect(badCreatedFrom.status).toBe(422);
-    expect(badCreatedFrom.body.error).toContain("createdFromIssueId must be a UUID");
+    expect(badCreatedFrom.status).toBe(400);
+    expect(badCreatedFrom.body.error).toContain("createdFromIssueId must be a UUID or issue identifier");
+  });
+
+  it("resolves issue identifiers in parentId, descendantOf, and createdFromIssueId filters", async () => {
+    const companyId = randomUUID();
+    const prefix = uniqueIssuePrefix();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Identifier Filter Test",
+      issuePrefix: prefix,
+      defaultResponsibleUserId: "cloud-user-1",
+    });
+    await seedCloudTenantMember(companyId);
+    const parentId = randomUUID();
+    await db.insert(issues).values({
+      id: parentId,
+      companyId,
+      identifier: `${prefix}-1`,
+      title: "Parent Issue",
+      status: "todo",
+      priority: "medium",
+    });
+    const childId = randomUUID();
+    await db.insert(issues).values({
+      id: childId,
+      companyId,
+      identifier: `${prefix}-2`,
+      title: "Child Issue",
+      status: "todo",
+      priority: "medium",
+      parentId,
+    });
+    const app = createApp(companyId);
+
+    const byParent = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ parentId: `${prefix}-1` });
+    expect(byParent.status).toBe(200);
+    expect(byParent.body).toHaveLength(1);
+    expect(byParent.body[0].id).toBe(childId);
+
+    const byDescendant = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ descendantOf: `${prefix}-1` });
+    expect(byDescendant.status).toBe(200);
+
+    const byCreatedFrom = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ createdFromIssueId: `${prefix}-1` });
+    expect(byCreatedFrom.status).toBe(200);
   });
 
   it("returns 422 for non-existent referenced entities when creating an issue", async () => {
