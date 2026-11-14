@@ -122,6 +122,63 @@ export const compareRuns = (x: PullRequestCiJob, y: PullRequestCiJob): number =>
 export const latestOf = (list: readonly PullRequestCiJob[]): PullRequestCiJob | null =>
   list.reduce<PullRequestCiJob | null>((best, r) => (!best || compareRuns(r, best) > 0 ? r : best), null);
 
+export const workflowRunIdOf = (run: PullRequestCiJob): string | null =>
+  /\/actions\/runs\/(\d+)/.exec(run.url ?? "")?.[1] ?? null;
+
+// myrmidon(CI-SNAPSHOT-CANCELLED): per check name (trimmed, case-insensitive)
+// exactly one record represents the check on this head - the last COMPLETED
+// record that carries a verdict (success / failure / timed_out /
+// action_required ...). Earlier records of the same name (cancelled by a
+// replaced run, failed before a re-run) are superseded. Rules:
+//  - a later `skipped` / `neutral` never displaces an earlier verdict (a
+//    skipped gate job of a cancelled re-run must not hide a real failure);
+//  - a later `cancelled` never displaces an earlier verdict either: the
+//    failure of the last finished run stays visible;
+//  - a record still queued / in progress that is newer than the last verdict
+//    is the re-run in flight and represents the check (pending);
+//  - with no verdict at all, the newest of the `cancelled` / `skipped` /
+//    `neutral` records is taken; `skipped` replaces an older `cancelled` only
+//    when it belongs to another (known) workflow run, otherwise the cancel
+//    stays (a skipped gate of a cancelled run is not a replacement).
+// Order is one deterministic key: time (`startedAt`, else `completedAt`; a
+// record without time, e.g. queued, is the newest), then `id`.
+export const pickRepresentativeRun = (group: readonly PullRequestCiJob[]): PullRequestCiJob => {
+  const inflight = latestOf(group.filter((r) => r.status !== "completed"));
+  const completed = group.filter((r) => r.status === "completed");
+  const verdict = latestOf(
+    completed.filter((r) => r.conclusion !== "cancelled" && r.conclusion !== "skipped" && r.conclusion !== "neutral"),
+  );
+  if (inflight && (!verdict || compareRuns(inflight, verdict) > 0)) return inflight;
+  if (verdict) return verdict;
+  const cancelled = latestOf(completed.filter((r) => r.conclusion === "cancelled"));
+  const quiet = latestOf(completed.filter((r) => r.conclusion !== "cancelled"));
+  if (cancelled && quiet) {
+    const cancelledRun = workflowRunIdOf(cancelled);
+    const quietRun = workflowRunIdOf(quiet);
+    const quietIsReplacement =
+      cancelledRun !== null && quietRun !== null && cancelledRun !== quietRun && compareRuns(quiet, cancelled) > 0;
+    return quietIsReplacement ? quiet : cancelled;
+  }
+  return (cancelled ?? quiet ?? inflight) as PullRequestCiJob;
+};
+
+export const pickRepresentative = pickRepresentativeRun;
+
+export function selectRepresentativeRuns(
+  runs: readonly PullRequestCiJob[],
+): PullRequestCiJob[] {
+  const groupsByName = new Map<string, PullRequestCiJob[]>();
+  for (const run of runs) {
+    const key = run.name.trim().toLowerCase();
+    const group = groupsByName.get(key);
+    if (group) group.push(run);
+    else groupsByName.set(key, [run]);
+  }
+  const representatives = new Set<PullRequestCiJob>();
+  for (const group of groupsByName.values()) representatives.add(pickRepresentativeRun(group));
+  return runs.filter((r) => representatives.has(r));
+}
+
 export function summarizeCheckRuns(
   runs: readonly PullRequestCiJob[],
   options?: SummarizeCheckRunsOptions,
@@ -186,50 +243,8 @@ export function summarizeCheckRuns(
   // exactly one record represents the check on this head - the last COMPLETED
   // record that carries a verdict (success / failure / timed_out /
   // action_required ...). Earlier records of the same name (cancelled by a
-  // replaced run, failed before a re-run) are superseded. Rules:
-  //  - a later `skipped` / `neutral` never displaces an earlier verdict (a
-  //    skipped gate job of a cancelled re-run must not hide a real failure);
-  //  - a later `cancelled` never displaces an earlier verdict either: the
-  //    failure of the last finished run stays visible;
-  //  - a record still queued / in progress that is newer than the last verdict
-  //    is the re-run in flight and represents the check (pending);
-  //  - with no verdict at all, the newest of the `cancelled` / `skipped` /
-  //    `neutral` records is taken; `skipped` replaces an older `cancelled` only
-  //    when it belongs to another (known) workflow run, otherwise the cancel
-  //    stays (a skipped gate of a cancelled run is not a replacement).
-  // Order is one deterministic key: time (`startedAt`, else `completedAt`; a
-  // record without time, e.g. queued, is the newest), then `id`.
-  const workflowRunIdOf = (run: PullRequestCiJob): string | null =>
-    /\/actions\/runs\/(\d+)/.exec(run.url ?? "")?.[1] ?? null;
-  const pickRepresentative = (group: PullRequestCiJob[]): PullRequestCiJob => {
-    const inflight = latestOf(group.filter((r) => r.status !== "completed"));
-    const completed = group.filter((r) => r.status === "completed");
-    const verdict = latestOf(
-      completed.filter((r) => r.conclusion !== "cancelled" && r.conclusion !== "skipped" && r.conclusion !== "neutral"),
-    );
-    if (inflight && (!verdict || compareRuns(inflight, verdict) > 0)) return inflight;
-    if (verdict) return verdict;
-    const cancelled = latestOf(completed.filter((r) => r.conclusion === "cancelled"));
-    const quiet = latestOf(completed.filter((r) => r.conclusion !== "cancelled"));
-    if (cancelled && quiet) {
-      const cancelledRun = workflowRunIdOf(cancelled);
-      const quietRun = workflowRunIdOf(quiet);
-      const quietIsReplacement =
-        cancelledRun !== null && quietRun !== null && cancelledRun !== quietRun && compareRuns(quiet, cancelled) > 0;
-      return quietIsReplacement ? quiet : cancelled;
-    }
-    return (cancelled ?? quiet ?? inflight) as PullRequestCiJob;
-  };
-  const groupsByName = new Map<string, PullRequestCiJob[]>();
-  for (const run of runs) {
-    const key = run.name.trim().toLowerCase();
-    const group = groupsByName.get(key);
-    if (group) group.push(run);
-    else groupsByName.set(key, [run]);
-  }
-  const representatives = new Set<PullRequestCiJob>();
-  for (const group of groupsByName.values()) representatives.add(pickRepresentative(group));
-  const effectiveRuns = runs.filter((r) => representatives.has(r));
+  // replaced run, failed before a re-run) are superseded.
+  const effectiveRuns = selectRepresentativeRuns(runs);
   const totalRuns = effectiveRuns.length;
 
   const configuredRequired =
@@ -1269,8 +1284,11 @@ export function summarizeHeadLaneEvidence(
   options?: { headSha?: string | null },
 ): PullRequestHeadLaneEvidence[] {
   const headSha = options?.headSha ?? null;
-  const testRuns = runs.filter((r) => isTestCheckRun(r.name));
-  const lintRuns = runs.filter((r) => isLintCheckRun(r.name));
+  // myrmidon(LANE-EVIDENCE-CANCELLED-2, OPE-13089): apply the same representative check selection
+  // as summarizeCheckRuns so cancelled checks superseded by newer runs do not keep the lane red.
+  const effectiveRuns = selectRepresentativeRuns(runs);
+  const testRuns = effectiveRuns.filter((r) => isTestCheckRun(r.name));
+  const lintRuns = effectiveRuns.filter((r) => isLintCheckRun(r.name));
 
   const successfulCiResults = runs.filter(
     (r) => r.name.trim().toLowerCase() === "ci result" && r.conclusion === "success",
