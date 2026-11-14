@@ -1416,7 +1416,7 @@ export async function openLoadByAgent(db: Db, companyId: string): Promise<Map<st
  * fifteen minutes after the last activity observation; stale PRs count again.
  */
 async function ciWaitingPullRequestIssueIds(db: Db, companyId: string): Promise<Set<string>> {
-  const products = await db.select({ issueId: issueWorkProducts.issueId, issueStatus: issues.status, metadata: issueWorkProducts.metadata, externalId: issueWorkProducts.externalId })
+  const products = await db.select({ issueId: issueWorkProducts.issueId, issueStatus: issues.status, metadata: issueWorkProducts.metadata, externalId: issueWorkProducts.externalId, reviewState: issueWorkProducts.reviewState, updatedAt: issueWorkProducts.updatedAt })
     .from(issueWorkProducts)
     .innerJoin(issues, eq(issues.id, issueWorkProducts.issueId))
     .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.provider, "github")));
@@ -1426,10 +1426,9 @@ async function ciWaitingPullRequestIssueIds(db: Db, companyId: string): Promise<
     const repository = typeof metadata?.repository === "string" ? metadata.repository : typeof metadata?.repo === "string" ? metadata.repo : null;
     const number = typeof metadata?.number === "number" ? metadata.number : Number(product.externalId?.match(/#pull\/(\d+)$/)?.[1]);
     const ci = metadata?.activeCi && typeof metadata.activeCi === "object" ? metadata.activeCi as Record<string, unknown> : null;
-    const ciRepository = typeof ci?.repository === "string" ? ci.repository.toLowerCase() : null;
-    const ciNumber = Number(ci?.number);
-    const ciHead = typeof ci?.headSha === "string" ? ci.headSha.toLowerCase() : null;
-    if (product.issueStatus === "in_progress" && repository && Number.isSafeInteger(number) && number > 0 && ciRepository === repository.toLowerCase() && ciNumber === number && ciHead) current.set(`${repository.toLowerCase()}#${number}`, { head: ciHead, issueId: product.issueId });
+    if (product.issueStatus === "in_progress" && product.status === "open" && repository && Number.isSafeInteger(number) && number > 0) {
+      current.set(`${repository.toLowerCase()}#${number}`, { head: typeof ci?.headSha === "string" ? ci.headSha.toLowerCase() : "", issueId: product.issueId });
+    }
   }
   if (!current.size) return new Set();
   const now = Date.now();
@@ -1440,12 +1439,18 @@ async function ciWaitingPullRequestIssueIds(db: Db, companyId: string): Promise<
     const ci = meta?.activeCi && typeof meta.activeCi === "object" ? meta.activeCi as Record<string, unknown> : null;
     const repository = typeof meta?.repository === "string" ? meta.repository : typeof meta?.repo === "string" ? meta.repo : null;
     const number = typeof meta?.number === "number" ? meta.number : Number(product.externalId?.match(/#pull\/(\d+)$/)?.[1]);
-    if (!repository || !Number.isSafeInteger(number) || !ci || (ci.status !== "queued" && ci.status !== "in_progress")) continue;
-    const currentPr = current.get(`${repository.toLowerCase()}#${number}`);
-    if (!currentPr || currentPr.issueId !== product.issueId) continue;
-    const observed = typeof ci.observedAt === "string" ? Date.parse(ci.observedAt) : NaN;
-    const age = now - observed;
-    if (currentPr.head === String(ci.headSha).toLowerCase() && age >= 0 && age <= 15 * 60_000) waiting.add(product.issueId);
+    const currentPr = repository && Number.isSafeInteger(number)
+      ? current.get(`${repository.toLowerCase()}#${number}`)
+      : undefined;
+    const waitingForCi = ci && (ci.status === "queued" || ci.status === "in_progress");
+    const matchingCiHead = currentPr && ci && currentPr.head !== "" && currentPr.head === String(ci.headSha).toLowerCase();
+    const observedAt = typeof ci?.observedAt === "string" ? Date.parse(ci.observedAt) : NaN;
+    const lastActivityAt = Number.isFinite(observedAt) ? Math.max(observedAt, product.updatedAt.getTime()) : product.updatedAt.getTime();
+    const age = now - lastActivityAt;
+    const recentReview = product.reviewState === "ready_for_review" && age >= 0 && age <= 15 * 60_000;
+    if (currentPr?.issueId === product.issueId && ((waitingForCi && matchingCiHead) || recentReview)) {
+      waiting.add(product.issueId);
+    }
   }
   return waiting;
 }
