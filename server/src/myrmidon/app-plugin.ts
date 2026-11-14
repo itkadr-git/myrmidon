@@ -114,6 +114,7 @@ export { myrmidonKnowledgeRoutes, myrmidonKnowledgeMcpRoutes } from "./knowledge
 export { myrmidonKnowledgeSettingsRoutes } from "./knowledge/index.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-11): Settings → Knowledge
 export { sweepTelegramNotifyProactivity } from "./channel-connectors/bridge/notify-sweep.js";
 export { accessHubRoutes } from "./access-hub/routes.js"; // myrmidon(SEC1)
+export { externalConnectorsRoutes } from "./external-connectors/index.js"; // myrmidon(OPE-13026)
 export { ui2LanguageRoutes } from "./ui2-language/routes.js"; // myrmidon(UI2-I18N)
 export { localeUploadRoutes } from "./locale-upload/routes.js"; // myrmidon(1.7 LOCALE-UPLOAD, OPE-10187)
 export { localeModuleRoutes } from "../modules/locale/index.js"; // myrmidon(1.7 LOCALE-UPLOAD, OPE-12117): /api/locale upload+current

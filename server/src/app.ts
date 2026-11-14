@@ -212,6 +212,7 @@ import {
   myrmidonKnowledgeSettingsRoutes,
   sweepTelegramNotifyProactivity,
   accessHubRoutes,
+  externalConnectorsRoutes,
   ui2LanguageRoutes,
   myrmidonForagingRoutes,
   myrmidonForagingIdleGateRoutes,
@@ -1372,6 +1373,7 @@ export async function createApp(
   api.use(myrmidonKnowledgeSettingsRoutes(db)); // myrmidon(1.7 KNOWLEDGE-2.0 L-11): Settings → Knowledge limits/schedule/reviewers
   api.use(myrmidonKnowledgeMcpRoutes(db)); // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): company knowledge MCP endpoint (tools/list + tools/call)
   api.use(accessHubRoutes(db)); // myrmidon(SEC1): access-hub routes
+  api.use(externalConnectorsRoutes(db)); // myrmidon(OPE-13026): external connector policy + invocation audit
   api.use(myrmidonBrowserBridgeRoutes(db)); // myrmidon(EXTCASE-B): bridge panel (codes, devices, allowlist)
   api.use(myrmidonOcrRoutes(db)); // myrmidon(EXT-CASE-OCR): company OCR MCP endpoint (ocr.pdf)
   api.use(myrmidonCorpusMcpRoutes(db)); // myrmidon(1.6.6-CORPUS-D): company corpus MCP endpoint (corpus_search, corpus_get_document, corpus_list_datasets, corpus_list_documents)

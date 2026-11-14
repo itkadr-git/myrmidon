@@ -196,6 +196,12 @@ export {
   toolGatewayRateLimitCounters,
   toolAccessAuditEvents,
 } from "./tool_access.js";
+// myrmidon(OPE-13026): external MCP connector action policy & invocation audit (1.8 ENTERPRISE-CONNECTORS).
+export {
+  externalConnectorPolicyGrants,
+  externalConnectorInvocations,
+  externalConnectorPendingApprovals,
+} from "./external_connector_access.js";
 export {
   companySkills,
   companySkillVersions,

@@ -2788,6 +2788,13 @@
       "when": 1794289011782,
       "tag": "0482_tool_complaints",
       "breakpoints": true
+    },
+    {
+      "idx": 483,
+      "version": "7",
+      "when": 1794579652370,
+      "tag": "0483_brief_crystal",
+      "breakpoints": true
     }
   ]
 }
