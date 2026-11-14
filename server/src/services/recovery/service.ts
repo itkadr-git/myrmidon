@@ -4817,6 +4817,7 @@ export function recoveryService(
           : []),
         inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
         sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issue.id}`,
+        sql`${heartbeatRuns.contextSnapshot} ->> 'source' IS DISTINCT FROM ${STRANDED_AUTO_POLICY_RETRY_SOURCE}`,
       ))
       .limit(1);
     if (liveAssigneeWork.length > 0) return null;
