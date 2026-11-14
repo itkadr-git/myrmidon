@@ -26,6 +26,8 @@
 
 import { z } from "zod";
 import {
+  DEFAULT_CORPUS_CONTEXT_TOKEN_BUDGET,
+  MAX_CORPUS_CONTEXT_TOKEN_BUDGET,
   MAX_CORPUS_QUERY_CHARS,
   type CorpusChunkHit,
   type CorpusDatasetSummary,
@@ -102,6 +104,8 @@ export const corpusSearchInput = datasetFilter.extend({
   /** Floor for a hit's score. RAGFlow's spelling of the same field is `similarity_threshold`. */
   min_score: z.number().min(0).max(1).optional(),
   similarity_threshold: z.number().min(0).max(1).optional(),
+  /** Estimated-token ceiling for the returned `context`; the default fits a bot's turn. */
+  context_token_budget: z.number().int().positive().max(MAX_CORPUS_CONTEXT_TOKEN_BUDGET).optional(),
 });
 
 export const corpusGetDocumentInput = z.object({
@@ -127,11 +131,14 @@ export const corpusToolDefinitions = [
     name: CORPUS_TOOL_NAMES.search,
     description:
       "Search the company's knowledge corpus and return the most relevant chunks, each with its " +
-      "score and the document it came from. Restrict the search to one or more datasets with " +
-      "`dataset` or `dataset_ids`. Use it instead of the RAGFlow retrieval tool: same question, " +
+      "score and the document it came from, plus a ready-to-quote `context`: whole chunks packed " +
+      "best-score-first under a shared token budget (default " + DEFAULT_CORPUS_CONTEXT_TOKEN_BUDGET +
+      "; raise or lower it with `context_token_budget`), every fragment carrying a `[Source: …]` " +
+      "citation. Restrict the search to one or more datasets with `dataset` or `dataset_ids`. " +
+      "Use it instead of the RAGFlow retrieval tool: same question, " +
       "the answer is already what a shadow run compares.",
     inputSchema: z.toJSONSchema(corpusSearchInput),
-    outputSchema: { type: "object", properties: { query: { type: "string" }, datasets: { type: "array" }, topK: { type: "number" }, hits: { type: "array" } }, required: ["query", "datasets", "topK", "hits"] },
+    outputSchema: { type: "object", properties: { query: { type: "string" }, datasets: { type: "array" }, topK: { type: "number" }, hits: { type: "array" }, context: { type: "object" } }, required: ["query", "datasets", "topK", "hits"] },
   },
   {
     name: CORPUS_TOOL_NAMES.getDocument,
@@ -235,6 +242,7 @@ async function callSearch(args: unknown, deps: CorpusToolDeps): Promise<CorpusSe
     datasets,
     topK: resolveTopK(parsed.data.top_k, settings),
     minScore,
+    contextTokenBudget: parsed.data.context_token_budget ?? DEFAULT_CORPUS_CONTEXT_TOKEN_BUDGET,
   });
 }
 

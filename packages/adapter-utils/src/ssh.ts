@@ -496,6 +496,10 @@ function tarExcludeArgs(exclude: string[] | undefined): string[] {
   return combined.flatMap((entry) => ["--exclude", entry]);
 }
 
+// myrmidon(OPE-13041): how long the upload waits for the local tar to report
+// its exit after ssh already exited with code 0.
+const SSH_TAR_EXIT_GRACE_MS = 10_000;
+
 function tarSpawnEnv(): NodeJS.ProcessEnv {
   return {
     ...process.env,
@@ -1544,6 +1548,7 @@ export async function syncDirectoryToSsh(input: {
     let tarStoppedAfterSshExit = false;
     let tarExitCode: number | null = null;
     let sshExitCode: number | null = null;
+    let tarGraceTimer: NodeJS.Timeout | null = null;
     // myrmidon(OPE-12801): on cancellation both processes get TERM, then KILL;
     // the transfer settles only after both have exited. The remote `tar -xf -`
     // ends by itself when its input closes.
@@ -1554,6 +1559,7 @@ export async function syncDirectoryToSsh(input: {
         return;
       }
       settled = true;
+      if (tarGraceTimer) clearTimeout(tarGraceTimer);
       abortWatch.detach();
       if (abortWatch.aborted()) {
         reject(new SshOperationAbortedError("Workspace upload"));
@@ -1568,7 +1574,14 @@ export async function syncDirectoryToSsh(input: {
         return;
       }
       if (tarStoppedAfterSshExit) {
-        reject(new Error(sshStderrTail.text().trim() || `ssh exited before tar finished (code ${sshExitCode ?? -1})`));
+        // ssh was done but tar neither finished nor failed within the grace
+        // window (or ssh stdin broke): name both processes and their codes.
+        reject(
+          new Error(
+            sshStderrTail.text().trim() ||
+              `tar did not finish within ${SSH_TAR_EXIT_GRACE_MS} ms after ssh exited (ssh code ${sshExitCode ?? -1}, tar code ${tarExitCode ?? -1})`,
+          ),
+        );
         return;
       }
       resolve();
@@ -1585,6 +1598,7 @@ export async function syncDirectoryToSsh(input: {
         return;
       }
       settled = true;
+      if (tarGraceTimer) clearTimeout(tarGraceTimer);
       abortWatch.detach();
       stopChildren();
       reject(error);
@@ -1624,8 +1638,22 @@ export async function syncDirectoryToSsh(input: {
       sshExited = true;
       sshExitCode = code;
       if (!tarExited) {
-        tarStoppedAfterSshExit = true;
-        stopChildren();
+        if ((code ?? -1) === 0 && !abortWatch.aborted()) {
+          // myrmidon(OPE-13041): ssh closing with code 0 means the remote tar
+          // consumed the whole stream; local tar's own 'close' event can still
+          // be in flight. The two events are unordered, so wait for tar and
+          // judge by its exit code instead of failing the transfer.
+          tarGraceTimer = setTimeout(() => {
+            tarGraceTimer = null;
+            if (tarExited || settled) return;
+            tarStoppedAfterSshExit = true;
+            stopChildren();
+          }, SSH_TAR_EXIT_GRACE_MS);
+          tarGraceTimer.unref?.();
+        } else {
+          tarStoppedAfterSshExit = true;
+          stopChildren();
+        }
       }
       maybeFinish();
     });
@@ -1728,9 +1756,26 @@ export async function syncDirectoryFromSsh(input: {
           return;
         }
         // ssh answers our SIGTERM with exit code 255; that must not hide why tar failed.
-        if (!sshStoppedAfterTarFailure && (sshExitCode ?? 0) !== 0) {
-          reject(new Error(sshStderrTail.text().trim() || `ssh exited with code ${sshExitCode ?? -1}`));
-          return;
+        // However, if ssh failed with its own diagnostic (e.g. "Connection reset by peer")
+        // or tar failed only because the stream was cut (unexpected EOF), ssh is the root cause.
+        const sshStderr = sshStderrTail.text().trim();
+        const tarStderr = tarStderrTail.text().trim();
+        const isSshSigterm =
+          !sshStderr ||
+          sshStderr === "Killed by signal 15." ||
+          sshStderr.startsWith("Killed by signal");
+        const isTarEof =
+          tarStderr.toLowerCase().includes("unexpected eof") ||
+          tarStderr.toLowerCase().includes("unexpected end of archive") ||
+          tarStderr.includes("This does not look like a tar archive");
+        if (
+          (!sshStoppedAfterTarFailure || !isSshSigterm || isTarEof) &&
+          (sshExitCode ?? 0) !== 0
+        ) {
+          if (sshStderr || !sshStoppedAfterTarFailure) {
+            reject(new Error(sshStderr || `ssh exited with code ${sshExitCode ?? -1}`));
+            return;
+          }
         }
         // myrmidon(OPE-12788): code === null means tar was killed by a signal
         // (e.g. the OOM killer); its staging copy is incomplete, so it is a failure.

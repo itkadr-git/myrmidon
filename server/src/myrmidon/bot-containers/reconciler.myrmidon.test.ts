@@ -1017,6 +1017,46 @@ describe("reconcileBot", () => {
       });
     });
 
+    describe("unhealthy with a live run (OPE-13119)", () => {
+      const NOW = new Date("2026-11-14T06:00:00Z");
+      const unhealthy = () => {
+        const applied = profile({ maxConcurrentRuns: 3 });
+        return fakeDriver({ botKey: "agent-a", state: "unhealthy", ...hashesOf(applied), maxConcurrentRuns: 3 });
+      };
+      const pass = (driver: FakeDriver, lastEvent: Date | null, activity = fakeActivity()) =>
+        run(driver, fakeMaintenance([0]), {
+          activity,
+          busyPolicy: "defer",
+          now: () => NOW,
+          liveRunGraceSec: 120,
+          readLiveRunActivity: async () => lastEvent,
+          compile: async () => profile({ maxConcurrentRuns: 3 }),
+        });
+
+      it("run event 30 s ago: no restart, the deferral is journalled", async () => {
+        const driver = unhealthy();
+        const activity = fakeActivity();
+        const outcome = await pass(driver, new Date(NOW.getTime() - 30_000), activity);
+        expect(outcome.kind).toBe("deferred");
+        expect(driver.calls).not.toContain("restart");
+        expect(detailsOf(activity, "health recovery deferred: live run")).toMatchObject({ silentSec: 30, graceSec: 120 });
+      });
+
+      it("run silent for 10 min: the container is restarted", async () => {
+        const driver = unhealthy();
+        const outcome = await pass(driver, new Date(NOW.getTime() - 600_000));
+        expect(outcome).toEqual({ kind: "applied_restart" });
+        expect(driver.calls).toContain("restart");
+      });
+
+      it("no run: the container is restarted", async () => {
+        const driver = unhealthy();
+        const outcome = await pass(driver, null);
+        expect(outcome).toEqual({ kind: "applied_restart" });
+        expect(driver.calls).toContain("restart");
+      });
+    });
+
     it("template drift: the recreate marks running:drift:<class> and the template window reason", async () => {
       const applied = profile({ maxConcurrentRuns: 3 });
       const driver = fakeDriver(
@@ -1162,3 +1202,54 @@ describe("reconcileBot", () => {
 function hashesOf(applied: CompiledProfile): Pick<BotContainerStatus, "restartHash" | "filesHash"> {
   return { restartHash: applied.restartHash, filesHash: applied.filesHash };
 }
+
+describe("myrmidon(BOT-PROFILE-NO-RUN-INTERRUPT) a restart-class change never interrupts a running run", () => {
+  /** A maintenance fake whose live run count is scripted separately from the window view. */
+  function maintenanceWithActive(active: number[]): FakeMaintenance {
+    const base = fakeMaintenance([0]);
+    let index = 0;
+    return Object.assign(base, {
+      activeRuns: async () => active[Math.min(index++, active.length - 1)],
+    });
+  }
+  const restartDriver = () =>
+    fakeDriver({ botKey: "agent-a", state: "running", restartHash: "restart-old", filesHash: "files-1" });
+  const changed = () => profile({ restartHash: "restart-new" });
+
+  it("defers while a run is in flight: no window, nothing written, no restart", async () => {
+    const driver = restartDriver();
+    const maintenance = maintenanceWithActive([1]);
+    const outcome = await run(driver, maintenance, { compile: async () => changed(), busyPolicy: "defer" });
+    expect(outcome.kind).toBe("deferred");
+    expect(maintenance.enterCalls).toBe(0);
+    expect(driver.calls).toEqual(["status", "templateDrift"]);
+  });
+
+  it("applies on a later pass once the run ended", async () => {
+    const driver = restartDriver();
+    const maintenance = maintenanceWithActive([1, 0, 0]);
+    const first = await run(driver, maintenance, { compile: async () => changed(), busyPolicy: "defer" });
+    expect(first.kind).toBe("deferred");
+    const second = await run(driver, maintenance, { compile: async () => changed(), busyPolicy: "defer" });
+    expect(second).toEqual({ kind: "applied_restart" });
+    expect(driver.calls.slice(-2)).toEqual(["writeProfile", "restart"]);
+  });
+
+  it("a run admitted between the check and the window is deferred too, and the window is closed", async () => {
+    const driver = restartDriver();
+    const maintenance = maintenanceWithActive([0, 1]);
+    const outcome = await run(driver, maintenance, { compile: async () => changed(), busyPolicy: "defer" });
+    expect(outcome.kind).toBe("deferred");
+    expect(maintenance.enterCalls).toBe(1);
+    expect(maintenance.exitCalls).toHaveLength(1);
+    expect(driver.calls).toEqual(["status", "templateDrift"]);
+  });
+
+  it("the drain policy keeps the old behaviour (the watcher past its soft timeout)", async () => {
+    const driver = restartDriver();
+    const maintenance = maintenanceWithActive([1]);
+    const outcome = await run(driver, maintenance, { compile: async () => changed(), busyPolicy: "drain" });
+    expect(outcome).toEqual({ kind: "applied_restart" });
+    expect(maintenance.enterCalls).toBe(1);
+  });
+});

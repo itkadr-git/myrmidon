@@ -69,6 +69,7 @@
         "idleStopUnknown": "unknown",
         "idleStopLastStopped": "; last stopped {{at}}",
         "idleStopLastStarted": "; last started {{at}}",
+        "idleStopColdStart": "; cold start took {{duration}}",
         "concurrencyLimitSource": {
           "board": "the board limit",
           "gateway": "the gateway limit",

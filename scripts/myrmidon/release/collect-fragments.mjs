@@ -59,6 +59,11 @@
 // Fragments are always applied in file-name order (bytewise), so the result
 // does not depend on the order the file system lists them.
 //
+// `--merge-sections` (with --version): no fragments are read; only repeated
+// "## X.Y.Z" headings of both changelogs are merged into one section.
+// A fold into a version that already has a section appends the new entries at
+// the start of that section instead of opening a second heading.
+//
 // Exit code: 0 ok (or nothing to do), 1 errors, 2 usage. Node built-ins only.
 
 import fs from "node:fs";
@@ -338,25 +343,69 @@ export function listFragments(root) {
     .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
+/** Index of the next "## " heading after `from` (or the end of the file). */
+function nextH2(lines, from) {
+  for (let i = from + 1; i < lines.length; i += 1) {
+    if (/^## /.test(lines[i])) return i;
+  }
+  return lines.length;
+}
+
 /**
- * Replaces the `## <unreleasedHeading>` section with `## <version>` carrying
- * the fragment blocks, and leaves an empty `## <unreleasedHeading>` behind.
- * Blocks keep their own "###" titles; fragments are inserted in file-name
- * order.
+ * Merges every `## <version>` section of the document into the first one
+ * (CHANGELOG-FOLD-ONE-SECTION). Entries keep the order they have in the file
+ * (upper sections first) and their text; the later headings disappear. The
+ * rest of the document is returned byte for byte. A document with zero or one
+ * such section is returned unchanged.
+ */
+export function mergeVersionSections(docText, version) {
+  const lines = docText.split("\n");
+  const heading = `## ${version}`;
+  const regions = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lines[i].trim() === heading) {
+      const end = nextH2(lines, i);
+      regions.push([i, end]);
+      i = end - 1;
+    }
+  }
+  if (regions.length < 2) return docText;
+  const bodyOf = ([a, b]) =>
+    lines.slice(a + 1, b).join("\n").replace(/^\n+|\n+$/g, "");
+  const merged = regions.map(bodyOf).filter(Boolean).join("\n\n");
+  const [firstStart, firstEnd] = regions[0];
+  let trailing = 0;
+  while (trailing < firstEnd - firstStart - 1 && lines[firstEnd - 1 - trailing].trim() === "") trailing += 1;
+  const out = [...lines.slice(0, firstStart), lines[firstStart], ""];
+  if (merged) out.push(...merged.split("\n"));
+  out.push(...Array(Math.max(trailing, 1)).fill(""));
+  let cursor = firstEnd;
+  for (const [a, b] of regions.slice(1)) {
+    out.push(...lines.slice(cursor, a));
+    cursor = b;
+  }
+  out.push(...lines.slice(cursor));
+  return out.join("\n");
+}
+
+/**
+ * Moves the `## <unreleasedHeading>` entries and the fragment blocks into the
+ * `## <version>` section and leaves an empty `## <unreleasedHeading>` behind.
+ * When a `## <version>` section already exists (an earlier fold of the same
+ * release), the new entries are put at the START of it, right under its
+ * heading, and no second heading is created; several existing headings of the
+ * version are merged first. Without such a section it is created under the
+ * Unreleased heading. Blocks keep their own "###" titles; fragments are
+ * inserted in file-name order.
  */
 export function foldChangelog(docText, { version, unreleasedHeading, blocks }) {
+  if (version !== null) docText = mergeVersionSections(docText, version);
   const lines = docText.split("\n");
   const start = lines.findIndex((l) => l.trim() === `## ${unreleasedHeading}`);
   if (start === -1) {
     throw new Error(`changelog has no "## ${unreleasedHeading}" section`);
   }
-  let end = lines.length;
-  for (let i = start + 1; i < lines.length; i += 1) {
-    if (/^## /.test(lines[i])) {
-      end = i;
-      break;
-    }
-  }
+  const end = nextH2(lines, start);
   const body = lines
     .slice(start + 1, end)
     .join("\n")
@@ -372,6 +421,25 @@ export function foldChangelog(docText, { version, unreleasedHeading, blocks }) {
       ...lines.slice(end),
     ];
     return kept.join("\n").replace(/\n{3,}/g, "\n\n");
+  }
+  const existing = lines.findIndex((l) => l.trim() === `## ${version}`);
+  if (existing !== -1) {
+    // Append-to-existing: new entries first, the section's own entries after.
+    const next = [];
+    for (let i = 0; i < lines.length; i += 1) {
+      if (i === start) {
+        next.push(`## ${unreleasedHeading}`, "");
+        i = end - 1;
+      } else if (i === existing) {
+        next.push(lines[i], "");
+        if (merged) next.push(...merged.split("\n"), "");
+        // skip blank lines right under the heading
+        while (i + 1 < lines.length && lines[i + 1].trim() === "") i += 1;
+      } else {
+        next.push(lines[i]);
+      }
+    }
+    return next.join("\n").replace(/\n{3,}/g, "\n\n");
   }
   const next = [
     ...lines.slice(0, start),
@@ -619,11 +687,29 @@ export function foldNewSections(docText, items, { fileName = "<doc>" } = {}) {
 }
 
 /**
+ * `--merge-sections` mode: only joins repeated `## <version>` headings of both
+ * changelogs into one section; fragments are neither read nor deleted.
+ */
+function mergeChangelogSections(root, { version, dryRun, log }) {
+  const result = { changed: [], deleted: [], fragments: [] };
+  for (const rel of ["docs/myrmidon/CHANGELOG.md", "docs/myrmidon/CHANGELOG.ru.md"]) {
+    const before = fs.readFileSync(path.join(root, rel), "utf8");
+    const after = mergeVersionSections(before, version);
+    if (after === before) continue;
+    result.changed.push(rel);
+    log(`update ${rel}`);
+    if (!dryRun) fs.writeFileSync(path.join(root, rel), after);
+  }
+  return result;
+}
+
+/**
  * version === null is the preview mode used by tests and the converter: the
  * changelog blocks join the Unreleased section in place and the fragment
  * files are kept.
  */
-export function collect(root, { version, dryRun = false, log = () => {} } = {}) {
+export function collect(root, { version, dryRun = false, mergeSections = false, log = () => {} } = {}) {
+  if (mergeSections) return mergeChangelogSections(root, { version, dryRun, log });
   const names = listFragments(root);
   const fragments = names.map((name) => ({
     name,
@@ -747,7 +833,7 @@ export function collect(root, { version, dryRun = false, log = () => {} } = {}) 
 }
 
 function main(argv) {
-  const args = { root: process.cwd(), dryRun: false, check: false, version: null };
+  const args = { root: process.cwd(), dryRun: false, check: false, mergeSections: false, version: null };
   for (let i = 0; i < argv.length; i += 1) {
     switch (argv[i]) {
       case "--version":
@@ -762,13 +848,16 @@ function main(argv) {
       case "--check":
         args.check = true;
         break;
+      case "--merge-sections":
+        args.mergeSections = true;
+        break;
       default:
         console.error(`unknown argument: ${argv[i]}`);
         return 2;
     }
   }
   if (!args.version || !/^\d+\.\d+\.\d+$/.test(args.version)) {
-    console.error("usage: collect-fragments.mjs --version X.Y.Z [--root <dir>] [--dry-run|--check]");
+    console.error("usage: collect-fragments.mjs --version X.Y.Z [--root <dir>] [--dry-run|--check|--merge-sections]");
     return 2;
   }
   try {
@@ -794,8 +883,15 @@ function main(argv) {
     const result = collect(args.root, {
       version: args.version,
       dryRun: args.dryRun,
+      mergeSections: args.mergeSections,
       log: (line) => console.log(line),
     });
+    if (args.mergeSections) {
+      console.log(
+        `${args.dryRun ? "[dry-run] would merge" : "merged"} repeated "## ${args.version}" headings in ${result.changed.length} document(s)`,
+      );
+      return 0;
+    }
     if (result.fragments.length === 0) {
       console.log("no fragments in docs/myrmidon/changes/ — nothing to collect");
       return 0;

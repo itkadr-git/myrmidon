@@ -150,8 +150,21 @@ RUN pnpm --filter @myrmidon/plugin-sdk build
 # end of its stage. Empty for local `docker build`, which then writes no stamp.
 ARG PAPERCLIP_BUILD_COMMIT=""
 ENV NODE_OPTIONS=--max-old-space-size=4096
+# Build the full workspace dependency closure of the server first, so every
+# @myrmidon/* package has a dist for the prod-runtime substitution below
+# (same closure as server/package.json "build:prod-runtime" and the CI lane
+# "Prod-runtime exports and dist resolution audit", OPE-12187 Ч1 / OPE-12670).
+RUN pnpm --filter "@myrmidon/server^..." --filter "!@myrmidon/paperclip-runner" build
 RUN pnpm --filter @myrmidon/server build
+RUN pnpm --filter myrmidon build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
+RUN test -f cli/dist/index.js || (echo "ERROR: cli build output missing" && exit 1)
+# Point the workspace closure's package entry fields at the built dist output
+# (publishConfig substitution), then fail the build if the compiled server
+# tree still resolves any workspace import to a src/.ts target — without this
+# the production CMD (plain node, no tsx loader) cannot boot (Ч2 smoke test).
+RUN node scripts/myrmidon/prod-runtime-exports.mjs apply --entry @myrmidon/server
+RUN node scripts/myrmidon/check-prod-runtime-resolution.mjs --dist server/dist --skip-vendor-runner
 RUN rm -rf packages/paperclip-runner/runner/target
 
 FROM base AS production
@@ -198,6 +211,7 @@ RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
 # BUN_INSTALL=/usr/local makes Bun place its global bins (omp) directly into
 # /usr/local/bin for all image users instead of root's ~/.bun/bin.
 # release downloads retry: github.com answers 504 to anonymous downloads while GitHub throttles anonymous traffic.
+COPY scripts/myrmidon/patch-omp-cli.mjs /usr/local/share/myrmidon/patch-omp-cli.mjs
 ENV BUN_INSTALL=/usr/local
 RUN set -eu \
   && curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o /tmp/bun.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip" \
@@ -207,6 +221,12 @@ RUN set -eu \
   && install -m 0755 "/tmp/bun-extract/bun-linux-x64/bun" /usr/local/bin/bun \
   && rm -rf /tmp/bun.zip /tmp/bun-extract \
   && bun add --global "@oh-my-pi/pi-coding-agent@${OMP_VERSION}" \
+  && CLI_PATH="$(bun pm bin -g)/../@oh-my-pi/pi-coding-agent/dist/cli.js" \
+  && if [ ! -f "$CLI_PATH" ]; then CLI_PATH="$(find /usr/local -name cli.js -path "*/@oh-my-pi/pi-coding-agent/*" 2>/dev/null | head -1)"; fi \
+  && test -f "$CLI_PATH" \
+  && node /usr/local/share/myrmidon/patch-omp-cli.mjs "$CLI_PATH" \
+  && ! grep -q "RFC 2119 keywords:" "$CLI_PATH" \
+  && grep -q "Keywords MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL follow their usual meaning." "$CLI_PATH" \
   && test -x /usr/local/bin/omp \
   && test -x /usr/local/bin/fd \
   && echo "bun: $(bun --version)" \
@@ -268,7 +288,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
   CMD curl -fsS "http://127.0.0.1:${PORT}/api/liveness" || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--", "docker-entrypoint.sh"]
-CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+CMD ["node", "server/dist/index.js"]
 
 # Cloud image variant (build with `--target cloud`): the production image
 # plus built bundled sandbox-provider plugins. Managed instances receive a

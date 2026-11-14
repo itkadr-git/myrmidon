@@ -1,15 +1,8 @@
 import { and, count, desc, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
-  activityLog,
   agents,
   heartbeatRuns,
-  issues,
-  issueComments,
-  issueWorkProducts,
-  documentRevisions,
-  workspaceOperations,
-  agentWakeupRequests,
   heartbeatRunEvents,
 } from "@myrmidon/db";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
@@ -19,6 +12,12 @@ import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 export const DEVEFF_EVENT_NO_OP = "run.deveff.no_op";
 export const DEVEFF_EVENT_REPEATED_TOOL_ERROR = "run.deveff.repeated_tool_error";
 export const IDLE_REPICK_NO_PROGRESS_EVENT = "run.idle_repick.no_progress_threshold";
+/**
+ * myrmidon(1.8 AUTOPAUSE): run-log event for the configurable empty-run
+ * streak signal. Schema documented in doc/run-log-events.md. Signal only:
+ * the event never gates or blocks anything by itself.
+ */
+export const AUTOPAUSE_EMPTY_STREAK_EVENT = "run.autopause.empty_streak";
 
 /** Record the fifth no-result run for an agent/task pair in the rolling day. */
 export async function recordIdleRepickThresholdEvent(
@@ -225,16 +224,41 @@ export function evaluateCompletionGate(input: EmptyRunEvaluationInput): Completi
   };
 }
 
+export interface EmptyRunStreakSkipSignal {
+  /** Machine-readable reason carried in the skip receipt and the run log. */
+  reason: "empty_run_streak";
+  /** Consecutive empty runs at the moment of the signal (>= threshold). */
+  streak: number;
+  /** The configured threshold that tripped the signal. */
+  threshold: number;
+  /** Human-readable cause from the empty-run classification. */
+  description: string;
+  /** The run whose settlement completed the streak. */
+  lastRunId: string;
+}
+
 export interface EmptyRunEscalationResult {
   escalated: boolean;
   consecutiveEmptyRuns: number;
   shouldRewake: boolean;
   message?: string;
+  /**
+   * myrmidon(1.8 AUTOPAUSE): set when the configured streak threshold tripped.
+   * Informational only — callers must not block the issue or suppress rewakes.
+   */
+  skippedSignal?: EmptyRunStreakSkipSignal;
 }
 
 /**
- * 1.7 AGENT-RUNTIME: Лимит повторов и эскалация (OPE-10096, пункт 3).
- * После N (5) пустых прогонов по задаче — эскалация с причиной, а не новое пробуждение.
+ * 1.7 AGENT-RUNTIME: Лимит повторов и сигнал серии пустых прогонов
+ * (OPE-10096, пункт 3; myrmidon 1.8 AUTOPAUSE).
+ *
+ * После N пустых прогонов подряд (порог настраивается
+ * `emptyRunStreakThreshold`, по умолчанию 5) функция отдаёт SKIPPED-сигнал с
+ * причиной: `skippedSignal` в результате + run-log событие
+ * `run.autopause.empty_streak`. Сигнал информационный: задача НЕ блокируется,
+ * пробуждения НЕ подавляются — порог не является жёстким лимитом расходов.
+ * Сброс серии продуктивным прогоном сохранён.
  */
 export async function checkAndHandleEmptyRunEscalation(
   db: Db,
@@ -245,6 +269,13 @@ export async function checkAndHandleEmptyRunEscalation(
     runId: string;
     classification: EmptyRunClassification;
     gateResult: CompletionGateResult;
+    /**
+     * myrmidon(1.8 AUTOPAUSE): the configured consecutive-empty-run threshold.
+     * Absent means the historical default (5). Passed in by the caller from
+     * the cached instance settings — the decision function never reads
+     * settings itself.
+     */
+    threshold?: number;
   },
 ): Promise<EmptyRunEscalationResult> {
   // Если прогон продуктивный и прошёл гейт — сбрасываем серию пустых прогонов
@@ -255,6 +286,8 @@ export async function checkAndHandleEmptyRunEscalation(
       shouldRewake: true,
     };
   }
+
+  const threshold = Math.max(1, Math.floor(input.threshold ?? MAX_CONSECUTIVE_EMPTY_RUNS));
 
   // Получаем историю последних завершённых прогонов по этой задаче
   const recentRuns = await db
@@ -294,78 +327,37 @@ export async function checkAndHandleEmptyRunEscalation(
     }
   }
 
-  if (consecutiveEmptyRuns >= MAX_CONSECUTIVE_EMPTY_RUNS) {
-    const escalationReason =
-      `Лимит повторов (${MAX_CONSECUTIVE_EMPTY_RUNS} пустых прогонов подряд) исчерпан. ` +
-      `Причина: ${input.classification.description}. ` +
-      `Гейт завершения: ${input.gateResult.reason}.`;
+  if (consecutiveEmptyRuns >= threshold) {
+    const skippedSignal: EmptyRunStreakSkipSignal = {
+      reason: "empty_run_streak",
+      streak: consecutiveEmptyRuns,
+      threshold,
+      description: input.classification.description,
+      lastRunId: input.runId,
+    };
 
-    const commentBody = [
-      `[STOP CONDITION / IDLE_LOOP] Задача достигла лимита в ${MAX_CONSECUTIVE_EMPTY_RUNS} пустых прогонов подряд без прогресса.`,
-      "",
-      `**Причина:** ${input.classification.description}`,
-      `**Гейт завершения:** ${input.gateResult.reason}`,
-      `**Последний прогон:** \`${input.runId}\``,
-      `**Исполнитель:** \`${input.agentId}\``,
-      "",
-      "Задача переведена в статус `blocked`. Автоматические повторные пробуждения остановлены. Требуется вмешательство лида / владельца задачи.",
-    ].join("\n");
-
-    // 1. Оставляем комментарий с эскалацией
-    await db.insert(issueComments).values({
-      companyId: input.companyId,
-      issueId: input.issueId,
-      authorAgentId: input.agentId,
-      createdByRunId: input.runId,
-      body: commentBody,
-    });
-
-    const now = new Date();
-    // 2. Переводим задачу в blocked с метаданными блокера
-    await db
-      .update(issues)
-      .set({
-        status: "blocked",
-        blockerMetadata: {
-          blockReason: "recovery",
-          owner: { agentId: input.agentId },
-          externalRef: `empty_run_escalation:${input.runId}`,
-          nextCheckAt: new Date(now.getTime() + 60 * 60 * 1000).toISOString(),
-          timeoutAt: new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString(),
-          escalationPolicy: "notify_lead",
-        },
-        unblockDescriptor: {
-          owner: { agentId: input.agentId },
-          action: "resolve_empty_run_escalation",
-          reasonRef: { kind: "event", eventKey: `empty_run.escalation:${input.issueId}` },
-        },
-        updatedAt: now,
-      })
-      .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId)));
-
-    // 3. Записываем в журнал активности
-    await db.insert(activityLog).values({
-      companyId: input.companyId,
-      actorType: "agent",
-      actorId: input.agentId,
-      agentId: input.agentId,
-      runId: input.runId,
-      action: "issue.empty_run_escalated",
-      entityType: "issue",
-      entityId: input.issueId,
-      details: {
-        reason: "EXCESSIVE_EMPTY_RUNS",
-        consecutiveEmptyRuns,
-        lastRunId: input.runId,
-        cause: input.classification.description,
-      },
-    });
+    // myrmidon(1.8 AUTOPAUSE): signal only. No issue update, no block, no
+    // activity escalation, no rewake suppression — the caller decides what to
+    // do with the receipt; rewakes stay allowed.
+    try {
+      await appendHeartbeatRunEvent(db, {
+        companyId: input.companyId,
+        runId: input.runId,
+        agentId: input.agentId,
+        eventType: AUTOPAUSE_EMPTY_STREAK_EVENT,
+        level: "warn",
+        message: `Empty-run streak signal: ${consecutiveEmptyRuns} consecutive empty runs (threshold ${threshold})`,
+        payload: { ...skippedSignal },
+      });
+    } catch {
+      // Non-fatal: the run-log signal must not crash run settlement.
+    }
 
     return {
-      escalated: true,
+      escalated: false,
       consecutiveEmptyRuns,
-      shouldRewake: false,
-      message: escalationReason,
+      shouldRewake: true,
+      skippedSignal,
     };
   }
 

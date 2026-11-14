@@ -335,7 +335,8 @@ describe("myrmidon(1.6.2-BOT-DISK-C) git mirror and pnpm store settings", () => 
     expect(set).toEqual({ ...base, ...patch });
     expect(mergeBotDiskSettings(set, { enabled: false })).toEqual({ ...set, enabled: false });
     expect(mergeBotDiskSettings(set, { gitMirrorRepos: null, gitMirrorRefreshMs: null, pnpmStoreDir: null, pnpmImportMethod: null })).toEqual(base);
-    expect(mergeBotDiskSettings(set, { gitMirrorRepos: [] }).gitMirrorRepos).toBeUndefined();
+    // OPE-13110: an explicit [] is stored (mirror off); only null returns to the default.
+    expect(mergeBotDiskSettings(set, { gitMirrorRepos: [] }).gitMirrorRepos).toEqual([]);
   });
 
   it("validates a PATCH of the keys; the pnpm store is the shared mount or inside the bot's own tree", () => {

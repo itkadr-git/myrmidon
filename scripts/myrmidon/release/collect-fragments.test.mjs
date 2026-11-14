@@ -11,6 +11,7 @@ import {
   foldReplaceRows,
   foldTableRows,
   listFragments,
+  mergeVersionSections,
   parseFragment,
   resolveSectionHeading,
   sectionKey,
@@ -493,5 +494,76 @@ describe("collect", () => {
     });
     assert.equal(res.status, 1);
     assert.match(res.stderr, /"## 1\.7\.0" is empty/);
+  });
+});
+
+describe("foldChangelog: one section per version (CHANGELOG-FOLD-ONE-SECTION)", () => {
+  const entries = (text, version) => {
+    const lines = text.split("\n");
+    const start = lines.findIndex((l) => l.trim() === `## ${version}`);
+    let end = lines.length;
+    for (let i = start + 1; i < lines.length; i += 1) {
+      if (/^## /.test(lines[i])) {
+        end = i;
+        break;
+      }
+    }
+    return lines.slice(start + 1, end);
+  };
+  const count = (text, version) => text.split("\n").filter((l) => l.trim() === `## ${version}`).length;
+
+  it("a second fold of the same version prepends to the existing section", () => {
+    const doc = "# Log\n\n## Unreleased\n\n### Fresh (B)\n\n- b\n\n## 1.7.0\n\n### Old (A)\n\n- a\n\n## 1.6.2\n\n### Prev\n\n- p\n";
+    const out = foldChangelog(doc, { version: "1.7.0", unreleasedHeading: "Unreleased", blocks: ["### Block (C)\n\n- c"] });
+    assert.equal(count(out, "1.7.0"), 1);
+    const body = entries(out, "1.7.0").filter((l) => l.startsWith("###"));
+    assert.deepEqual(body, ["### Fresh (B)", "### Block (C)", "### Old (A)"]);
+    assert.ok(out.indexOf("## Unreleased") < out.indexOf("## 1.7.0"));
+    assert.equal(entries(out, "Unreleased").filter((l) => l.startsWith("###")).length, 0);
+    assert.ok(out.endsWith("### Prev\n\n- p\n"));
+  });
+
+  it("normalizes three headings of one version into one, keeping order and entries", () => {
+    const doc = "## Unreleased\n\n## 1.9.0\n\n### A\n\n- a\n\n## 1.9.0\n\n### B\n\n- b1\n- b2\n\n## 1.9.0\n\n### C\n\n- c\n\n## 1.8.0\n\n### Z\n\n- z\n";
+    const out = mergeVersionSections(doc, "1.9.0");
+    assert.equal(count(out, "1.9.0"), 1);
+    const strip = (t) => t.split("\n").filter((l) => l.trim() && !/^## /.test(l));
+    assert.deepEqual(strip(out), strip(doc));
+    assert.deepEqual(entries(out, "1.9.0").filter((l) => l.trim()), ["### A", "- a", "### B", "- b1", "- b2", "### C", "- c"]);
+    assert.ok(out.endsWith("## 1.8.0\n\n### Z\n\n- z\n"));
+    assert.equal(mergeVersionSections(out, "1.9.0"), out, "idempotent");
+  });
+
+  it("does not touch another version that has duplicate headings", () => {
+    const doc = "## Unreleased\n\n## 1.9.0\n\n### A\n\n- a\n\n## 1.9.0\n\n### B\n\n- b\n\n## 1.6.7\n\n### X\n\n- x\n\n## 1.6.7\n\n### Y\n\n- y\n";
+    const out = mergeVersionSections(doc, "1.9.0");
+    assert.equal(count(out, "1.6.7"), 2);
+    assert.equal(out.slice(out.indexOf("## 1.6.7")), doc.slice(doc.indexOf("## 1.6.7")));
+    const folded = foldChangelog(doc, { version: "1.9.0", unreleasedHeading: "Unreleased", blocks: ["### N\n\n- n"] });
+    assert.equal(count(folded, "1.6.7"), 2);
+    assert.equal(count(folded, "1.9.0"), 1);
+  });
+
+  it("a first fold of a new version still creates its heading", () => {
+    const out = foldChangelog("## Unreleased\n\n### U\n\n- u\n\n## 1.6.2\n\n### P\n\n- p\n", {
+      version: "1.7.0",
+      unreleasedHeading: "Unreleased",
+      blocks: ["### N\n\n- n"],
+    });
+    assert.equal(out, "## Unreleased\n\n## 1.7.0\n\n### U\n\n- u\n\n### N\n\n- n\n\n## 1.6.2\n\n### P\n\n- p\n");
+  });
+
+  it("--merge-sections normalizes both changelogs without fragments", () => {
+    const en = "## Unreleased\n\n## 1.9.0\n\n### A\n\n- a\n\n## 1.9.0\n\n### B\n\n- b\n";
+    const ru = "## Без выпуска\n\n## 1.9.0\n\n### А\n\n- а\n\n## 1.9.0\n\n### Б\n\n- б\n";
+    const dir = sandbox({ "docs/myrmidon/CHANGELOG.md": en, "docs/myrmidon/CHANGELOG.ru.md": ru });
+    const r = spawnSync(process.execPath, [SCRIPT, "--version", "1.9.0", "--root", dir, "--merge-sections"], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    for (const f of ["CHANGELOG.md", "CHANGELOG.ru.md"]) {
+      const t = fs.readFileSync(path.join(dir, "docs/myrmidon", f), "utf8");
+      assert.equal(count(t, "1.9.0"), 1);
+    }
+    const plain = spawnSync(process.execPath, [SCRIPT, "--version", "1.9.0", "--root", dir], { encoding: "utf8" });
+    assert.match(plain.stdout, /nothing to collect/);
   });
 });

@@ -430,6 +430,11 @@ export interface HermesProfileInput {
    * its own `disabledTools` list replaces both. Absent = no role defaults.
    */
   roleToolDiet?: HermesProfileRoleToolDiet;
+  /**
+   * myrmidon(DEV-NO-HINDSIGHT, OPE-13087-B): when false, omit `provider: "hindsight"` from config.yaml `memory:` block.
+   * Developers do not need past memory loaded. When true or undefined, the provider key is written as before.
+   */
+  hindsightMemory?: boolean;
   /** Becomes API_SERVER_KEY in .env — the token runs authenticate to this bot's gateway with. */
   apiServerKey: string;
   /** Becomes PAPERCLIP_API_URL in .env — the board's address reachable from inside the bot container. */
@@ -1172,9 +1177,14 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
     // mechanism and is NOT disabled by these flags. Off (the default), the block
     // is exactly the pre-feature one, byte for byte, so flipping the setting off
     // restores the previous restartHash.
-    memory: input.instanceDefaults.disableLocalMemory
-      ? { provider: "hindsight", memory_enabled: false, user_profile_enabled: false }
-      : { provider: "hindsight" },
+    // myrmidon(DEV-NO-HINDSIGHT, OPE-13087-B): when hindsightMemory is false,
+    // the provider key is omitted.
+    memory: {
+      ...(input.hindsightMemory === false ? {} : { provider: "hindsight" }),
+      ...(input.instanceDefaults.disableLocalMemory
+        ? { memory_enabled: false, user_profile_enabled: false }
+        : {}),
+    },
     model: {
       default: nonEmpty(adapterConfig.model),
       provider: nonEmpty(adapterConfig.provider),

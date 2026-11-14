@@ -1983,7 +1983,21 @@ export function dockerBotContainerDriver(
     const name = containerNameFor(botKey);
     const release = await startSemaphore.acquire();
     try {
-      await startByName(name); // 304 (already running) is not an error
+      // myrmidon(OPE-12960): a start whose persistent volume is gone answers as
+      // an explicit missing-volume error, not a bare daemon refusal: the wake
+      // path (idle-stop) and the reconciler log this verbatim, and "volume
+      // unavailable" is the one cause an operator can act on. Docker itself
+      // fails such a start with `no such file or directory` naming the bind
+      // source; anything else keeps the plain describeFailure wording.
+      await startByName(name).catch(async (err) => {
+        if (err instanceof Error && /no such file or directory/i.test(err.message)) {
+          const binds = (await inspectByName(name))?.HostConfig?.Binds?.join(", ") ?? "<volumeRoot>/<botKey>";
+          throw new Error(
+            `persistent volume for bot ${botKey} is unavailable (docker could not mount ${binds}); the container was not started`,
+          );
+        }
+        throw err;
+      }); // 304 (already running) is not an error
       await waitForHealthy(botKey);
       await writeIdleStopped(botKey, false);
     } finally {

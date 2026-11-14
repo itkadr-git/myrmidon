@@ -40,6 +40,8 @@ import {
 } from "../services/execution-workspaces.ts";
 import { issueService } from "../services/issues.ts";
 import {
+  ensureRuntimeServicesForRun,
+  resetRuntimeServicesForTests,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
@@ -265,6 +267,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       // cooldown is a separate knob, so disable it here too.
       workspaceReaperCooldownDays: 0,
       myrmidonWorkspaceMergedCooldownMs: 0,
+      sharedSweepPauseMs: 0,
     });
   }, 60_000);
 
@@ -560,6 +563,467 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
     expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0 });
     expect(workspace).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
+  }, 20_000);
+
+  it("archives a shared_workspace row of a closed issue without git checks or a block event", async () => {
+    // myrmidon(OPE-13106): the shared project directory is always dirty. The
+    // sweep must not inspect it, must not write a block event, and must not
+    // touch the directory.
+    const seeded = await seedAncestryTerminalWorkspace();
+    await db
+      .update(executionWorkspaces)
+      .set({ mode: "shared_workspace", strategyType: "project_primary", providerType: "local_fs" })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    await fs.writeFile(path.join(seeded.worktreePath, "dirty.txt"), "uncommitted\n");
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({
+        status: executionWorkspaces.status,
+        closedAt: executionWorkspaces.closedAt,
+        cleanupReason: executionWorkspaces.cleanupReason,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    const blockedEvents = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(eq(activityLog.action, "execution_workspace.issue_terminal_archive_blocked"));
+
+    expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0, skippedDirty: 0, skippedUnmerged: 0 });
+    expect(workspace).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
+    expect(workspace?.closedAt).toBeInstanceOf(Date);
+    expect(blockedEvents).toEqual([]);
+    await expect(fs.access(path.join(seeded.worktreePath, "dirty.txt"))).resolves.toBeUndefined();
+  }, 20_000);
+
+  async function seedSharedProjectWithOpenNeighbour(options: { neighbourLinkedToRowA?: boolean } = {}) {
+    // Task A is closed; task B of the same project is open. Both rows point at
+    // the project's shared directory (same cwd). B's issue is linked to B's own
+    // row, or (neighbourLinkedToRowA) to A's row.
+    const seeded = await seedAncestryTerminalWorkspace();
+    await db
+      .update(executionWorkspaces)
+      .set({ mode: "shared_workspace", strategyType: "project_primary", providerType: "local_fs" })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    const issuePrefix = `P${seeded.companyId.slice(0, 8).toUpperCase()}`;
+    const rowBId = randomUUID();
+    const issueBId = randomUUID();
+    await db.insert(executionWorkspaces).values({
+      id: rowBId,
+      companyId: seeded.companyId,
+      projectId: seeded.projectId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: `${issuePrefix}-2`,
+      status: "active",
+      cwd: seeded.worktreePath,
+      providerType: "local_fs",
+    });
+    await db.insert(issues).values({
+      id: issueBId,
+      companyId: seeded.companyId,
+      projectId: seeded.projectId,
+      identifier: `${issuePrefix}-2`,
+      title: "Open neighbour",
+      status: "in_progress",
+      priority: "medium",
+      executionWorkspaceId: options.neighbourLinkedToRowA ? seeded.executionWorkspaceId : rowBId,
+    });
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId: issueBId })
+      .where(eq(executionWorkspaces.id, rowBId));
+    return { ...seeded, rowBId, issueBId };
+  }
+
+  it("archiving a shared row never stops a live service of another row on the same cwd", async () => {
+    const seeded = await seedSharedProjectWithOpenNeighbour();
+    // A real service in the in-memory registry: bound to row B, running in the
+    // shared directory that row A also points at. A cwd match would stop it.
+    const serviceCommand =
+      "node -e \"const http=require('node:http'); http.createServer((q,r)=>r.end('ok')).listen(Number(process.env.PORT), '127.0.0.1')\"";
+    const isUp = async (port: number) =>
+      fetch(`http://127.0.0.1:${port}/`).then((res) => res.ok, () => false);
+    try {
+      const [service] = await ensureRuntimeServicesForRun({
+        runId: randomUUID(),
+        agent: { id: randomUUID(), name: "Coder", companyId: seeded.companyId },
+        issue: null,
+        workspace: {
+          baseCwd: seeded.worktreePath,
+          source: "project_primary",
+          projectId: seeded.projectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: "HEAD",
+          strategy: "project_primary",
+          cwd: seeded.worktreePath,
+          branchName: null,
+          worktreePath: null,
+          warnings: [],
+          created: false,
+        },
+        executionWorkspaceId: seeded.rowBId,
+        config: {
+          workspaceRuntime: {
+            services: [{
+              name: "web",
+              command: serviceCommand,
+              cwd: ".",
+              port: { type: "auto" },
+              readiness: { type: "http", urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 10, intervalMs: 100 },
+              lifecycle: "shared",
+              stopPolicy: { type: "manual" },
+            }],
+          },
+        },
+        adapterEnv: {},
+      });
+      expect(service?.port).toBeTruthy();
+      const port = service!.port!;
+      expect(service?.executionWorkspaceId).toBe(seeded.rowBId);
+      expect(await isUp(port)).toBe(true);
+
+      const sweep = await svc.sweepTerminalWorkspaces();
+
+      const [rowA] = await db
+        .select({ status: executionWorkspaces.status })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+      const [rowB] = await db
+        .select({ status: executionWorkspaces.status })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, seeded.rowBId));
+      const summaries = await db
+        .select({ details: activityLog.details })
+        .from(activityLog)
+        .where(eq(activityLog.action, "execution_workspace.issue_terminal_archived_shared"));
+
+      expect(sweep).toMatchObject({ archived: 1 });
+      expect(rowA?.status).toBe("archived");
+      expect(rowB?.status).toBe("active");
+      expect(await isUp(port)).toBe(true);
+      // One summary row per pass, not one row per archived shared row.
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0]?.details).toMatchObject({ archivedCount: 1 });
+
+      // Control: passing the shared cwd would have stopped the neighbour, so
+      // the assertion above is not vacuous.
+      await stopRuntimeServicesForExecutionWorkspace({
+        executionWorkspaceId: seeded.executionWorkspaceId,
+        workspaceCwd: seeded.worktreePath,
+      });
+      expect(await isUp(port)).toBe(false);
+    } finally {
+      await resetRuntimeServicesForTests({ terminateProcesses: true });
+    }
+  }, 40_000);
+
+  it("detaches only closed issues from an archived shared row", async () => {
+    const seeded = await seedSharedProjectWithOpenNeighbour();
+    const closedLinkedId = randomUUID();
+    await db.insert(issues).values({
+      id: closedLinkedId,
+      companyId: seeded.companyId,
+      projectId: seeded.projectId,
+      identifier: `P${seeded.companyId.slice(0, 8).toUpperCase()}-3`,
+      title: "Closed linked",
+      status: "cancelled",
+      priority: "medium",
+      executionWorkspaceId: seeded.executionWorkspaceId,
+    });
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+
+    const [issueA] = await db
+      .select({ executionWorkspaceId: issues.executionWorkspaceId })
+      .from(issues)
+      .where(eq(issues.id, seeded.sourceIssueId));
+    const [closedLinked] = await db
+      .select({ executionWorkspaceId: issues.executionWorkspaceId })
+      .from(issues)
+      .where(eq(issues.id, closedLinkedId));
+    const [issueB] = await db
+      .select({ executionWorkspaceId: issues.executionWorkspaceId })
+      .from(issues)
+      .where(eq(issues.id, seeded.issueBId));
+
+    expect(sweep).toMatchObject({ archived: 1 });
+    expect(issueA?.executionWorkspaceId).toBeNull();
+    expect(closedLinked?.executionWorkspaceId).toBeNull();
+    expect(issueB?.executionWorkspaceId).toBe(seeded.rowBId);
+  }, 20_000);
+
+  it("keeps a shared row while an open issue is still linked to it", async () => {
+    const seeded = await seedSharedProjectWithOpenNeighbour({ neighbourLinkedToRowA: true });
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+
+    const [rowA] = await db
+      .select({ status: executionWorkspaces.status, closedAt: executionWorkspaces.closedAt })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    const [issueB] = await db
+      .select({ executionWorkspaceId: issues.executionWorkspaceId })
+      .from(issues)
+      .where(eq(issues.id, seeded.issueBId));
+
+    expect(sweep).toMatchObject({ archived: 0, skippedOpenIssue: 1 });
+    expect(rowA).toMatchObject({ status: "active", closedAt: null });
+    expect(issueB?.executionWorkspaceId).toBe(seeded.executionWorkspaceId);
+
+    // Once the open issue closes, the next pass archives the row and detaches it.
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, seeded.issueBId));
+    const next = await svc.sweepTerminalWorkspaces();
+    const [after] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    // Row A and the neighbour's own row B (its source issue is now done too).
+    expect(next).toMatchObject({ archived: 2 });
+    expect(after?.status).toBe("archived");
+  }, 20_000);
+
+  it("never calls the GitHub client for shared rows, even with a merged-PR product", async () => {
+    const sharedSeed = await seedTerminalWorkspace({ mergedPr: true });
+    await db
+      .update(executionWorkspaces)
+      .set({ mode: "shared_workspace", strategyType: "project_primary", providerType: "local_fs" })
+      .where(eq(executionWorkspaces.id, sharedSeed.executionWorkspaceId));
+    const resolvePullRequestDetails = vi.fn(async () => ({
+      state: "unknown" as const,
+      headRef: null,
+      headSha: null,
+    }));
+    const sharedSvc = executionWorkspaceService(db, {
+      resolvePullRequestDetails,
+      workspaceReaperCooldownDays: 0,
+      myrmidonWorkspaceMergedCooldownMs: 0,
+    });
+
+    const sweep = await sharedSvc.sweepTerminalWorkspaces();
+
+    expect(sweep).toMatchObject({ checked: 1, archived: 1 });
+    expect(resolvePullRequestDetails).toHaveBeenCalledTimes(0);
+
+    // Control: an isolated row with the same PR product does reach the client.
+    await seedTerminalWorkspace({ mergedPr: true });
+    await sharedSvc.sweepTerminalWorkspaces();
+    expect(resolvePullRequestDetails.mock.calls.length).toBeGreaterThan(0);
+  }, 30_000);
+
+  it("works through shared rows in batches with a moving cursor, isolated rows as before", async () => {
+    const isolated = await seedTerminalWorkspace({ mergedPr: true });
+    const sharedIds: string[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const row = await seedTerminalWorkspace();
+      await db
+        .update(executionWorkspaces)
+        .set({
+          mode: "shared_workspace",
+          strategyType: "project_primary",
+          providerType: "local_fs",
+          updatedAt: new Date(Date.now() - 60_000 + i * 1000),
+        })
+        .where(eq(executionWorkspaces.id, row.executionWorkspaceId));
+      sharedIds.push(row.executionWorkspaceId);
+    }
+    // A fresh service owns its own cursor; the batch size is the test parameter.
+    const batchSvc = executionWorkspaceService(db, {
+      resolvePullRequestDetails: async (companyId, reference) =>
+        pullRequestDetailsByKey.get(`${companyId}:${reference.number}`)
+        ?? { state: "unknown", headRef: null, headSha: null },
+      workspaceReaperCooldownDays: 0,
+      myrmidonWorkspaceMergedCooldownMs: 0,
+      sharedSweepPauseMs: 0,
+    });
+    const statuses = async () => {
+      const rows = await db
+        .select({ id: executionWorkspaces.id, status: executionWorkspaces.status })
+        .from(executionWorkspaces)
+        .where(inArray(executionWorkspaces.id, [isolated.executionWorkspaceId, ...sharedIds]));
+      const byId = new Map(rows.map((row) => [row.id, row.status]));
+      return {
+        isolated: byId.get(isolated.executionWorkspaceId),
+        shared: sharedIds.map((id) => byId.get(id)),
+      };
+    };
+
+    const pass1 = await batchSvc.sweepTerminalWorkspaces(50, 2);
+    expect(pass1).toMatchObject({ checked: 3, archived: 3 });
+    expect(await statuses()).toEqual({
+      isolated: "archived",
+      shared: ["archived", "archived", "active", "active", "active"],
+    });
+
+    const pass2 = await batchSvc.sweepTerminalWorkspaces(50, 2);
+    expect(pass2).toMatchObject({ checked: 2, archived: 2 });
+    expect((await statuses()).shared).toEqual(["archived", "archived", "archived", "archived", "active"]);
+
+    const pass3 = await batchSvc.sweepTerminalWorkspaces(50, 2);
+    expect(pass3).toMatchObject({ checked: 1, archived: 1 });
+    expect((await statuses()).shared.every((status) => status === "archived")).toBe(true);
+  }, 60_000);
+
+  async function seedSharedBacklog(count: number) {
+    const ids: string[] = [];
+    for (let i = 0; i < count; i += 1) {
+      const row = await seedTerminalWorkspace();
+      await db
+        .update(executionWorkspaces)
+        .set({
+          mode: "shared_workspace",
+          strategyType: "project_primary",
+          providerType: "local_fs",
+          updatedAt: new Date(Date.now() - 120_000 + i * 1000),
+        })
+        .where(eq(executionWorkspaces.id, row.executionWorkspaceId));
+      ids.push(row.executionWorkspaceId);
+    }
+    return ids;
+  }
+
+  it("two concurrent sweepers archive each shared row exactly once (SKIP LOCKED batches)", async () => {
+    // myrmidon(OPE-13106): two services = two processes in split mode (each has
+    // its own in-process guard and cursor). 10 shared rows, batch of 5.
+    const sharedIds = await seedSharedBacklog(10);
+    const makeSweeper = () => executionWorkspaceService(db, {
+      workspaceReaperCooldownDays: 0,
+      myrmidonWorkspaceMergedCooldownMs: 0,
+      sharedSweepPauseMs: 0,
+    });
+    const sweeperA = makeSweeper();
+    const sweeperB = makeSweeper();
+
+    const results = [
+      ...(await Promise.all([sweeperA.sweepTerminalWorkspaces(50, 5), sweeperB.sweepTerminalWorkspaces(50, 5)])),
+      ...(await Promise.all([sweeperA.sweepTerminalWorkspaces(50, 5), sweeperB.sweepTerminalWorkspaces(50, 5)])),
+      // A row that both sweepers skipped (locked by each other at scan time) is
+      // picked up on a later rotation; these passes only mop up, they never
+      // double-count a row.
+      await sweeperA.sweepTerminalWorkspaces(50, 5),
+      await sweeperB.sweepTerminalWorkspaces(50, 5),
+    ];
+
+    // Each row archived exactly once: the sum over all passes is 10, no errors.
+    expect(results.reduce((sum, result) => sum + result.archived, 0)).toBe(10);
+    expect(results.every((result) => result.cleanupFailed === 0)).toBe(true);
+    const rows = await db
+      .select({ id: executionWorkspaces.id, status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, sharedIds));
+    expect(rows.map((row) => row.status)).toEqual(sharedIds.map(() => "archived"));
+    // One summary event per pass that archived something, never one per row, and
+    // the total of archived ids in the summaries equals the row count.
+    const summaries = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "execution_workspace.issue_terminal_archived_shared"));
+    const summed = summaries.reduce(
+      (sum, row) => sum + Number((row.details as { archivedCount?: number } | null)?.archivedCount ?? 0),
+      0,
+    );
+    expect(summed).toBe(10);
+    const blockedEvents = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(eq(activityLog.action, "execution_workspace.issue_terminal_archive_blocked"));
+    expect(blockedEvents).toEqual([]);
+  }, 90_000);
+
+  it("a row locked by another transaction is skipped by the shared scan, not waited for", async () => {
+    const [lockedId, freeId] = await seedSharedBacklog(2);
+    const sweeper = executionWorkspaceService(db, {
+      workspaceReaperCooldownDays: 0,
+      myrmidonWorkspaceMergedCooldownMs: 0,
+      sharedSweepPauseMs: 0,
+    });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let locked!: () => void;
+    const lockTaken = new Promise<void>((resolve) => { locked = resolve; });
+    const holder = db.transaction(async (tx) => {
+      await tx.execute(sql`select 1 from execution_workspaces where id = ${lockedId} for no key update`);
+      locked();
+      await released;
+    });
+    await lockTaken;
+    try {
+      const sweep = await sweeper.sweepTerminalWorkspaces(50, 10);
+      expect(sweep).toMatchObject({ checked: 1, archived: 1 });
+    } finally {
+      release();
+      await holder;
+    }
+    const statuses = await db
+      .select({ id: executionWorkspaces.id, status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, [lockedId, freeId]));
+    expect(new Map(statuses.map((row) => [row.id, row.status]))).toEqual(
+      new Map([[lockedId, "active"], [freeId, "archived"]]),
+    );
+  }, 60_000);
+
+  it("pauses the shared scan between passes; the isolated scan is not throttled", async () => {
+    const sharedIds = await seedSharedBacklog(4);
+    let clock = Date.now();
+    const sweeper = executionWorkspaceService(db, {
+      workspaceReaperCooldownDays: 0,
+      myrmidonWorkspaceMergedCooldownMs: 0,
+      sharedSweepPauseMs: 1000,
+      now: () => new Date(clock),
+    });
+
+    const first = await sweeper.sweepTerminalWorkspaces(50, 2);
+    expect(first).toMatchObject({ checked: 2, archived: 2 });
+
+    // Immediately after: the pause has not expired, no shared row is taken.
+    const second = await sweeper.sweepTerminalWorkspaces(50, 2);
+    expect(second).toMatchObject({ checked: 0, archived: 0 });
+
+    // An isolated row is still picked up inside the pause.
+    const isolated = await seedTerminalWorkspace({ mergedPr: true });
+    // The injected clock is frozen, so the rotation bound sits at its value: place
+    // the isolated row before it, otherwise the bound hides a just-seeded row.
+    await db
+      .update(executionWorkspaces)
+      .set({ updatedAt: new Date(clock - 5000) })
+      .where(eq(executionWorkspaces.id, isolated.executionWorkspaceId));
+    const third = await sweeper.sweepTerminalWorkspaces(50, 2);
+    expect(third.checked).toBe(1);
+
+    // Pause expired: the next batch of shared rows is taken.
+    clock += 1001;
+    const fourth = await sweeper.sweepTerminalWorkspaces(50, 2);
+    expect(fourth).toMatchObject({ archived: 2 });
+    const rows = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, sharedIds));
+    expect(rows.every((row) => row.status === "archived")).toBe(true);
+    expect(isolated.executionWorkspaceId).toBeTruthy();
+  }, 60_000);
+
+  it("leaves a shared_workspace row of an open issue untouched", async () => {
+    const seeded = await seedAncestryTerminalWorkspace();
+    await db
+      .update(executionWorkspaces)
+      .set({ mode: "shared_workspace", strategyType: "project_primary", providerType: "local_fs" })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    await db
+      .update(issues)
+      .set({ status: "in_progress" })
+      .where(eq(issues.id, seeded.sourceIssueId));
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status, closedAt: executionWorkspaces.closedAt })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    expect(sweep).toMatchObject({ archived: 0, skippedNonTerminalTree: 1 });
+    expect(workspace).toMatchObject({ status: "active", closedAt: null });
   }, 20_000);
 
   it("fails closed before archive when git status inspection is unavailable", async () => {

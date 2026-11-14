@@ -152,7 +152,7 @@ describe.skipIf(process.platform === "win32")("ssh stdin EPIPE and stderr tail (
     // without reading it. The promise must settle with the ssh failure and tar
     // must be stopped — a hang or an unhandled stdin error would fail the test.
     await expect(syncDirectoryToSsh({ spec, localDir: sourceDir, remoteDir: "/workspace" })).rejects.toThrow(
-      /ssh stdin|remote host closed connection|exited with code 255|exited before tar finished/,
+      /ssh stdin|remote host closed connection|exited with code 255|tar did not finish/,
     );
 
     // Managed rejection is not proof by itself: check the process table so a

@@ -394,6 +394,44 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — request injection hooks", ()
       fakeAgent.destroy();
     }
   });
+  // myrmidon(OPE-12901): fleetd recreate pulls the new image when the host
+  // does not have it yet; a pull does not fit the 60 s default, so the driver
+  // waits as long as a start (the rc.27 rollout timed six recreates out).
+  it("recreate waits as long as a start (START_TIMEOUT_MS)", async () => {
+    const { driver, calls } = driverWith([
+      { status: 200, body: Buffer.from("{}", "utf8") },
+      { status: 200, body: Buffer.from("{}", "utf8") },
+      { status: 200, body: Buffer.from("{}", "utf8") },
+    ]);
+    await driver.create({
+      botKey: "bot-a",
+      image: "example.com/bot@sha256:aa",
+      memoryMb: 1024,
+      cpus: 1,
+      pidsLimit: 256,
+      network: "net-a",
+    });
+    await driver.recreate({
+      botKey: "bot-a",
+      image: "example.com/bot@sha256:aa",
+      memoryMb: 1024,
+      cpus: 1,
+      pidsLimit: 256,
+      network: "net-a",
+    });
+    await driver.start("bot-a");
+    const createCall = calls[0] as { path: string; timeoutMs?: number };
+    const recreateCall = calls[1] as { path: string; timeoutMs?: number };
+    const startCall = calls[2] as { path: string; timeoutMs?: number };
+    expect(createCall.path).toBe("/bots");
+    expect(recreateCall.path).toBe("/bots/bot-a/recreate");
+    expect(startCall.path).toBe("/bots/bot-a/start");
+    // the same budget a start gets (180 s): recreating on a fleet host pulls
+    // the new image first, and a pull does not fit the 60 s default.
+    expect(recreateCall.timeoutMs).toBe(180_000);
+    expect(recreateCall.timeoutMs).toBe(startCall.timeoutMs);
+    expect(recreateCall.timeoutMs).not.toBe(createCall.timeoutMs);
+  });
 
   it("filters internal spec fields and maps extraMounts to mounts for fleetd wire spec", async () => {
     const { driver, calls } = driverWith([{ status: 200, body: Buffer.from("{}", "utf8") }]);

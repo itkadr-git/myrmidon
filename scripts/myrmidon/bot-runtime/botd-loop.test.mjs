@@ -41,7 +41,7 @@ function fakeBoard(script = []) {
   return { fetchImpl, calls };
 }
 
-function rig({ desired, plan, rules, inventory, executor, gatherParts, board = fakeBoard(), settings, hygiene, repack, pressurePass } = {}) {
+function rig({ desired, plan, rules, inventory, executor, gatherParts, board = fakeBoard(), settings, hygiene, repack, pressurePass, measureVolume } = {}) {
   const logs = [];
   const states = [];
   const executed = [];
@@ -75,6 +75,7 @@ function rig({ desired, plan, rules, inventory, executor, gatherParts, board = f
     },
     report: { build: buildReport, send: reporter.send },
     writeDiskState: async (s) => states.push(s),
+    ...(measureVolume ? { measureVolume } : {}),
     log: (l) => logs.push(l),
     now: () => NOW,
     botKey: "bot-001",
@@ -684,5 +685,71 @@ describe("botd loop: cache hygiene and pressure triggers (1.6.6 OPE-10039)", () 
     });
     await r.loop.runOnce();
     assert.equal(repackCalled, 1);
+  });
+});
+
+// myrmidon(OPE-13107): the board answers 0 / none when it has no partition measurement.
+// botd measures the bot data volume itself, or says so in disk-state.json.
+describe("botd loop: bot volume pressure", () => {
+  const unmeasured = () => desiredState({ pressure: { quotaPercent: null, partitionPercent: 0, level: "none", partitionMeasured: false } });
+  const GB = 1024 ** 3;
+
+  it("board has no measurement, statfs shows 86%: disk-state says soft and the rules plan under soft pressure", async () => {
+    const seen = [];
+    const r = rig({
+      desired: { ok: true, state: unmeasured() },
+      measureVolume: async () => ({ totalBytes: 100 * GB, usedBytes: 86 * GB }),
+      // the rules see the effective pressure: the rule engine itself is covered by botd-rules.test.mjs
+      rules: { plan: (inv, d) => (seen.push(d.pressure), { actions: [], held: [], pressure: d.pressure.level }) },
+    });
+    await r.loop.runOnce();
+    assert.equal(r.states.length, 1);
+    assert.ok(r.states[0].partitionPercent >= 85, `partitionPercent ${r.states[0].partitionPercent}`);
+    assert.notEqual(r.states[0].pressure, "none");
+    assert.equal(seen[0].level, "soft");
+    assert.match(r.states[0].warning, /no partition measurement/);
+  });
+
+  it("an older board without partitionMeasured: the 0 / none / null triple means no data, botd measures", async () => {
+    const r = rig({
+      desired: { ok: true, state: desiredState({ pressure: { quotaPercent: null, partitionPercent: 0, level: "none" } }) },
+      measureVolume: async () => ({ totalBytes: 100 * GB, usedBytes: 86 * GB }),
+    });
+    await r.loop.runOnce();
+    assert.ok(r.states[0].partitionPercent >= 85);
+    assert.equal(r.states[0].pressure, "soft");
+  });
+
+  it("a measured board answer is not overridden by the local volume", async () => {
+    const r = rig({
+      desired: { ok: true, state: desiredState({ pressure: { quotaPercent: null, partitionPercent: 55, level: "none", partitionMeasured: true } }) },
+      measureVolume: async () => ({ totalBytes: 100 * GB, usedBytes: 99 * GB }),
+    });
+    await r.loop.runOnce();
+    assert.equal(r.states[0].partitionPercent, 55);
+    assert.equal(r.states[0].pressure, "none");
+    assert.equal(r.states[0].warning, undefined);
+  });
+
+  it("no board measurement and a failing statfs: a warning, not a silent none", async () => {
+    const r = rig({
+      desired: { ok: true, state: unmeasured() },
+      measureVolume: async () => {
+        throw new Error("statfs unavailable");
+      },
+    });
+    await r.loop.runOnce();
+    assert.equal(r.states[0].pressure, "none");
+    assert.match(r.states[0].warning, /pressure unknown/);
+    assert.ok(r.logs.some((l) => /pressure unknown/.test(l)));
+  });
+
+  it("statfs says 0% with used bytes: a warning", async () => {
+    const r = rig({
+      desired: { ok: true, state: unmeasured() },
+      measureVolume: async () => ({ totalBytes: 1e12, usedBytes: 1000 }),
+    });
+    await r.loop.runOnce();
+    assert.match(r.states[0].warning, /0% with used bytes/);
   });
 });

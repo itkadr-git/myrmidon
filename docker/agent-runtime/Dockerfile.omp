@@ -9,10 +9,18 @@ ENV HOME=/home/paperclip \
     XDG_CACHE_HOME=/home/paperclip/.cache \
     OMP_SESSION_DIR=/home/paperclip/.local/share/omp/sessions
 
+COPY scripts/myrmidon/patch-omp-cli.mjs /usr/local/share/myrmidon/patch-omp-cli.mjs
+
 # oven/bun installs global bins into /usr/local/bin already; linking omp onto itself made a symlink loop (OPE-7762)
 RUN mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$OMP_SESSION_DIR" /workspace \
     && chown -R 1000:1000 /home/paperclip /workspace \
     && bun add --global "@oh-my-pi/pi-coding-agent@${OMP_VERSION}" \
+    && CLI_PATH="$(bun pm bin -g)/../@oh-my-pi/pi-coding-agent/dist/cli.js" \
+    && if [ ! -f "$CLI_PATH" ]; then CLI_PATH="$(find /usr/local -name cli.js -path "*/@oh-my-pi/pi-coding-agent/*" 2>/dev/null | head -1)"; fi \
+    && test -f "$CLI_PATH" \
+    && bun /usr/local/share/myrmidon/patch-omp-cli.mjs "$CLI_PATH" \
+    && ! grep -q "RFC 2119 keywords:" "$CLI_PATH" \
+    && grep -q "Keywords MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL follow their usual meaning." "$CLI_PATH" \
     && BUN_GLOBAL_BIN="$(bun pm bin -g)" \
     && if [ "$BUN_GLOBAL_BIN" != "/usr/local/bin" ]; then ln -sf "$BUN_GLOBAL_BIN/omp" /usr/local/bin/omp; fi \
     && test -x "$(readlink -f /usr/local/bin/omp)"

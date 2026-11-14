@@ -1,17 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createHmac } from "node:crypto";
 import {
-  admScopeHash,
   canonicalJson,
   createAdmAccessRequestSchema,
-  createAdmCapabilityToken,
   decideAdmAccessRequestSchema,
   executeAdmCapabilitySchema,
   isForbiddenScopePayload,
   redactedAdmRequestProjection,
   revokeAdmAccessRequestSchema,
-  verifyAdmCapabilityToken,
 } from "./adm-access-request.js";
+import { admScopeHash, createAdmCapabilityToken, verifyAdmCapabilityToken } from "../adm-access-request-server.js";
 
 const SOURCE = "11111111-1111-4111-8111-111111111111";
 const TARGET = "22222222-2222-4222-8222-222222222222";

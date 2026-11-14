@@ -236,6 +236,36 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     expect(thawedIssue?.blocker?.issueRewakeFreeze).toBeFalsy();
   });
 
+  // myrmidon(RESUME-AFTER-CANCEL): the resume of an operator's pause carries the
+  // user only as a marker for the settled-hold check; it is a system wake and
+  // does not thaw a rewake freeze.
+  it("does not thaw a frozen issue on the pause_resume wake of an operator", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+    for (let i = 0; i < 6; i += 1) {
+      await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 60 - i * 5 });
+    }
+    // The freeze is set the way the neighbouring tests set it: an assignment-source
+    // continuation poll after six no-progress runs.
+    const poll = () => heartbeat.wakeup(agentId, {
+      source: "assignment", triggerDetail: "system", reason: "issue_continuation_needed",
+      payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_continuation_needed" },
+      requestedByActorType: "system", requestedByActorId: "test",
+    });
+    // The wake under test is shaped as pause-drain.ts issues it.
+    const wake = (reason: string, extra: Record<string, unknown> = {}) => heartbeat.wakeup(agentId, {
+      source: "automation", triggerDetail: "system", reason,
+      payload: { issueId }, contextSnapshot: { issueId, taskKey: issueId, resumeIntent: true },
+      requestedByActorType: "system", requestedByActorId: "pause_resume", ...extra,
+    });
+    expect(await poll()).toBeNull();
+    const [frozen] = await db.select({ blocker: issues.blockerMetadata }).from(issues).where(eq(issues.id, issueId));
+    expect(frozen?.blocker?.issueRewakeFreeze).toMatchObject({ agentId, noProgressStreak: 6 });
+
+    expect(await wake("pause_resume", { resumedByUserId: "board-user" })).toBeNull();
+    const [stillFrozen] = await db.select({ blocker: issues.blockerMetadata }).from(issues).where(eq(issues.id, issueId));
+    expect(stillFrozen?.blocker?.issueRewakeFreeze).toBeTruthy();
+  });
+
   it("admits a PR sync event after a freeze", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
     for (let i = 0; i < 6; i += 1) {
@@ -582,6 +612,71 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
 
     const wake = await assignmentWake(agentId, issueId);
     expect(wake).not.toBeNull();
+  });
+
+  // myrmidon(EMPTY-RUNS-1): the 13.11 loop of the service bots. Each run took
+  // its own task, wrote "no new data, leaving it in todo" and PATCHed the task
+  // back to `todo`. The PATCH and the note were read as issue-visible progress,
+  // so the streak never started and the same task was picked up every sweep.
+  it("throttles re-wakes when the recent runs only handed the task back to the queue with a note", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+
+    for (const finishedSecondsAgo of [40, 10]) {
+      const runId = await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo });
+      const loggedAt = new Date(Date.now() - (finishedSecondsAgo + 1) * 1000);
+      await db.insert(activityLog).values({
+        companyId,
+        actorType: "agent",
+        actorId: agentId,
+        agentId,
+        runId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issueId,
+        details: {
+          source: "comment",
+          status: "todo",
+          changes: {
+            status: { from: "in_progress", to: "todo" },
+            statusVersion: { from: 1, to: 2 },
+            checkoutRunId: { from: runId, to: null },
+            executionRunId: { from: runId, to: null },
+            executionLockedAt: { from: loggedAt.toISOString(), to: null },
+            executionAgentNameKey: { from: "codexcoder", to: null },
+          },
+        },
+        createdAt: loggedAt,
+      });
+      await db.insert(activityLog).values({
+        companyId,
+        actorType: "agent",
+        actorId: agentId,
+        agentId,
+        runId,
+        action: "issue.comment_added",
+        entityType: "issue",
+        entityId: issueId,
+        details: { commentId: randomUUID(), updated: true },
+        createdAt: loggedAt,
+      });
+    }
+
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_continuation_needed" },
+      requestedByActorType: "system",
+      requestedByActorId: "test",
+    });
+    expect(wake).toBeNull();
+    const skipped = await latestWakeRequest(agentId);
+    expect(skipped?.reason).toBe("issue_rewake_throttled");
+    const heartbeatSkip = (skipped?.payload as Record<string, unknown> | null)?.heartbeatSkip as
+      | Record<string, unknown>
+      | undefined;
+    expect(heartbeatSkip?.noProgressStreak).toBe(2);
   });
 
   it("does not count progress on another issue toward the current issue", async () => {

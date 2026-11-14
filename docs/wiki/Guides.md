@@ -46,6 +46,8 @@ Deep-dive guides from [`docs/myrmidon/guides`](https://github.com/itkadr-git/myr
 
 - [The board chat planner: owner text to a proposed epic (CTO-CHAT B)](Cto-chat-planner)
 
+- [Verify execution stage (VERIFY-ON-PROD)](Verify-execution-stage)
+
 
 
 ### Telegram and channels
@@ -247,6 +249,8 @@ Deep-dive guides from [`docs/myrmidon/guides`](https://github.com/itkadr-git/myr
 - [The maintenance banner](Maintenance-banner)
 
 - [Workspace cleanup after merge](Workspace-cleanup)
+
+- [Workspace turn checkpoints](Workspace-turn-checkpoints)
 
 - [Database backup retention](Backup-retention)
 

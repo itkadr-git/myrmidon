@@ -18,7 +18,7 @@ import { readReviewRoutingSignals, replaceReviewRoutingSignals, resetReviewRouti
 import type { CreatePrRoutingTaskInput, InReviewIssueRow, PrCandidateRow, PrRoutingKind, ReviewRoutingStore, RoutingHistory } from "./store.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 import type { RoutingIssue } from "./policy.js";
-import { createReviewRoutingSweep, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_REARM_AFTER_MS, REVIEW_WAKE_RETRY_BACKOFF_MS } from "./sweep.js";
+import { createReviewRoutingSweep, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_REARM_AFTER_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS } from "./sweep.js";
 import type { PullRequestHeadResolver } from "./github.js";
 import type { BoardMergeClient } from "./github-board-merge.js";
 import type { BoardMergeFacts, PullRequestHeadState } from "./pr-policy.js";
@@ -39,6 +39,9 @@ function row(id: string, overrides: Partial<InReviewIssueRow> = {}): InReviewIss
     identifier: `T-${id}`,
     title: `Task ${id}`,
     status: "in_review",
+    // Keep the generic fixture outside both recovery age gates: assignment
+    // tests need the 15-minute review-path window, while liveness tests use
+    // explicit updatedAt overrides for their stale/fresh cases.
     createdAt: new Date(NOW.getTime() - 6 * 60 * 60_000),
     updatedAt: new Date(NOW.getTime() - 6 * 60 * 60_000),
     assigneeAgentId: ASSIGNEE,
@@ -222,12 +225,16 @@ describe("review wake liveness", () => {
   }
 
   it("wakes one stale pending review per reviewer when no run or wake exists", async () => {
+    // myrmidon(OPE-12886): the default fixture age is fresh (< stale window),
+    // so the stale-first rows carry an explicit old updatedAt — as on the
+    // board, where the assigned queue sits untouched for hours.
+    const stale = { updatedAt: new Date(NOW.getTime() - 10 * 60_000) };
     const t = setup({}, { wakeStates: new Map([
       ["1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 }],
       ["2", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 }],
     ]) });
-    t.fixture.rows.set("1", pending("1", REV_A));
-    t.fixture.rows.set("2", pending("2", REV_A));
+    t.fixture.rows.set("1", pending("1", REV_A, stale));
+    t.fixture.rows.set("2", pending("2", REV_A, stale));
     t.fixture.rows.set("3", pending("3", REV_B));
     t.fixture.wakeStates!.set("1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 });
     t.fixture.wakeStates!.set("2", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 });
@@ -238,6 +245,41 @@ describe("review wake liveness", () => {
     expect(t.wakes[0]).toMatchObject({ agentId: REV_A, issueId: "1", retryAttempt: 1 });
     expect(t.activities).toEqual([]);
     expect(t.fixture.history.get("1")).toBeUndefined();
+  });
+
+  it("wakes reviewer after completed run without verdict once stale threshold passes (OPE-13070)", async () => {
+    // 1. Reviewer woken by green CI (no REVIEW_ROUTING_WAKE_ACTION), run completed succeeded,
+    // review stage stays pending, updatedAt is the moment the run ended.
+    const runFinishedAt = NOW;
+    const t = setup({}, {
+      wakeStates: new Map([
+        ["1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 }],
+      ]),
+    });
+    t.fixture.rows.set("1", pending("1", REV_A, {
+      createdAt: new Date(runFinishedAt.getTime() - 60 * 60_000),
+      updatedAt: runFinishedAt,
+    }));
+
+    // 2. Pass earlier than REVIEW_WAKE_STALE_AFTER_MS after run ended: no wake.
+    const earlyPass = new Date(runFinishedAt.getTime() + REVIEW_WAKE_STALE_AFTER_MS - 60_000);
+    const earlyResult = await t.sweep.sweep(earlyPass, { force: true });
+    expect(earlyResult.woken).toBe(0);
+    expect(t.wakes).toHaveLength(0);
+
+    // 3. Pass after REVIEW_WAKE_STALE_AFTER_MS: exactly one wake for this reviewer/task.
+    const stalePass = new Date(runFinishedAt.getTime() + REVIEW_WAKE_STALE_AFTER_MS + 60_000);
+    const staleResult = await t.sweep.sweep(stalePass, { force: true });
+    expect(staleResult.woken).toBe(1);
+    expect(t.wakes).toHaveLength(1);
+    expect(t.wakes[0]).toMatchObject({ agentId: REV_A, issueId: "1", retryAttempt: 1 });
+
+    // 4. Second pass immediately after: no wake (REVIEW_WAKE_RETRY_BACKOFF_MS applies).
+    t.fixture.wakeStates!.set("1", { ...t.fixture.wakeStates!.get("1")!, pendingWake: false });
+    const immediatelyAfter = new Date(stalePass.getTime() + 60_000);
+    const secondResult = await t.sweep.sweep(immediatelyAfter, { force: true });
+    expect(secondResult.woken).toBe(0);
+    expect(t.wakes).toHaveLength(1);
   });
 
   it("records one wake activity event for a successful retry", async () => {
@@ -260,12 +302,24 @@ describe("review wake liveness", () => {
     expect(t.wakeReviewer).toHaveBeenCalledTimes(1);
   });
 
-  it("measures the 30-minute stale threshold from last update, not issue creation", async () => {
+  it("measures the stale threshold from last update, not issue creation (OPE-12886: woken within 5 minutes)", async () => {
     const t = setup({}, { wakeStates: new Map() });
-    t.fixture.rows.set("1", pending("1", REV_A, { updatedAt: new Date(NOW.getTime() - 10 * 60_000) }));
-    const result = await t.sweep.sweep(NOW, { force: true });
-    expect(result.woken).toBe(0);
+    // Created 20h ago but last updated 5 minutes ago: staleness counts from
+    // the last update, and the 4-minute window lands the wake inside the
+    // 5-minute acceptance bound (the sweep pass runs every 60 seconds).
+    t.fixture.rows.set("1", pending("1", REV_A, {
+      createdAt: new Date(NOW.getTime() - 20 * 60 * 60_000),
+      updatedAt: new Date(NOW.getTime() - 5 * 60_000),
+    }));
+    // Three minutes after the update: inside the window, while the creation
+    // age is already 20h — a wake here would mean staleness from creation.
+    const resultAtThree = await t.sweep.sweep(new Date(NOW.getTime() - 2 * 60_000), { force: true });
+    expect(resultAtThree.woken).toBe(0);
     expect(t.wakes).toHaveLength(0);
+    // Five minutes after the update: past the 4-minute window — woken in 5.
+    const resultAtFive = await t.sweep.sweep(NOW, { force: true });
+    expect(resultAtFive.woken).toBe(1);
+    expect(t.wakes).toHaveLength(1);
   });
 
   it("uses the persisted wake time instead of a later issue update", async () => {
@@ -283,8 +337,11 @@ describe("review wake liveness", () => {
 
   it("reserves the one-dispatch budget before an attempted wake, even when it rejects", async () => {
     const t = setup({}, { wakeStates: new Map() });
+    // Both stale rows belong to REV_A: the budget is one dispatch per reviewer
+    // per pass, so the rejected first attempt still reserves REV_A and the
+    // second row must not retry him within the same pass.
     t.fixture.rows.set("1", pending("1", REV_A));
-    t.fixture.rows.set("2", pending("2", REV_B));
+    t.fixture.rows.set("2", pending("2", REV_A));
     t.wakeReviewer.mockRejectedValueOnce(new Error("first dispatch failed"));
     const result = await t.sweep.sweep(NOW, { force: true });
     expect(result.failed).toBe(1);
@@ -302,19 +359,26 @@ describe("review wake liveness", () => {
   });
 
   it("recovers stale reviews regardless of assignment load, while respecting active runs and pending wakes", async () => {
+    // myrmidon(OPE-12886): assigned queue depth no longer blocks the
+    // liveness wake — an idle reviewer (0 active runs) behind ANY queue is
+    // woken on the oldest stale review. This replicates the incident:
+    // loads 1..queueThreshold previously skipped such reviewers
+    // entirely (all six were idle behind 4-7 assigned tasks).
     const t = setup({ maxLoadPerReviewer: 1 }, { wakeStates: new Map() });
-    t.fixture.load.set(REV_A, 12);
+    t.fixture.load.set(REV_A, 5); // idle behind 5 assigned in_review tasks (< queueThreshold 8)
     t.fixture.wakeStates!.set("1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 });
     t.fixture.wakeStates!.set("2", { activeRun: true, pendingWake: false, lastWakeAt: null, attempts: 0 });
     t.fixture.wakeStates!.set("3", { activeRun: false, pendingWake: true, lastWakeAt: null, attempts: 0 });
-    t.fixture.rows.set("1", pending("1", REV_A));
-    t.fixture.rows.set("2", pending("2", REV_A));
-    t.fixture.rows.set("3", pending("3", REV_A));
+    const stale = { updatedAt: new Date(NOW.getTime() - 10 * 60_000) };
+    t.fixture.rows.set("1", pending("1", REV_A, stale));
+    t.fixture.rows.set("2", pending("2", REV_A, stale));
+    t.fixture.rows.set("3", pending("3", REV_A, stale));
     const result = await t.sweep.sweep(NOW, { force: true });
     expect(result.woken).toBe(1);
-    // Liveness wakes REV_A for "1"; REV_A is then overloaded (12 > queueThreshold 8),
-    // so "1" is rebalanced to REV_B and the reassignment wakes REV_B too.
-    expect(t.wakes.map(({ agentId, issueId }) => `${agentId}:${issueId}`)).toEqual([`${REV_A}:1`, `${REV_B}:1`]);
+    // Liveness wakes REV_A for the oldest stale row. Load 5 (+1 live) stays
+    // below queueThreshold 8, so the rebalance lane does not move anything —
+    // the extra wakes would only fire above the threshold.
+    expect(t.wakes.map(({ agentId, issueId }) => `${agentId}:${issueId}`)).toEqual([`${REV_A}:1`]);
   });
 
   it("does not wake another issue while the reviewer has an active run elsewhere", async () => {
@@ -1273,7 +1337,9 @@ describe("review rebalancing", () => {
       currentParticipant: { type: "agent", agentId: REV_A },
       returnAssignee: { type: "agent", agentId: ASSIGNEE },
     };
-    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    // Fresh updatedAt keeps the liveness lane out of this rebalance test:
+    // the move lane keys off routing history, not row age.
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, updatedAt: new Date(NOW.getTime() - 60_000), executionPolicy: policy, executionState: state }));
     t.fixture.history.set("1", {
       lastAt: new Date(NOW.getTime() - 45 * 60 * 1000), // 45 min ago
       reviewerAgentIds: [REV_A],
@@ -1328,7 +1394,7 @@ describe("review rebalancing", () => {
       currentParticipant: { type: "agent", agentId: REV_A },
       returnAssignee: { type: "agent", agentId: ASSIGNEE },
     };
-    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state, updatedAt: NOW }));
     t.fixture.history.set("1", {
       lastAt: new Date(NOW.getTime() - 45 * 60 * 1000),
       reviewerAgentIds: [REV_A],
@@ -1362,7 +1428,7 @@ describe("review rebalancing", () => {
       currentParticipant: { type: "agent", agentId: REV_A },
       returnAssignee: { type: "agent", agentId: ASSIGNEE },
     };
-    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state, updatedAt: NOW }));
     t.fixture.history.set("1", {
       lastAt: new Date(NOW.getTime() - 15 * 60 * 1000), // only 15 min, threshold 30
       reviewerAgentIds: [REV_A],
@@ -1398,7 +1464,7 @@ describe("review rebalancing", () => {
       escalationToParticipant: { type: "agent", agentId: REV_A },
       escalationReason: "max_review_rounds_exceeded",
     };
-    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state, updatedAt: NOW }));
     t.fixture.history.set("1", {
       lastAt: new Date(NOW.getTime() - 60 * 60 * 1000),
       reviewerAgentIds: [REV_A],
@@ -1469,7 +1535,9 @@ describe("own-group review pools (OPE-12683)", () => {
       currentParticipant: { type: "agent", agentId: holderId },
       returnAssignee: { type: "agent", agentId: ASSIGNEE },
     };
-    return row("1", { assigneeAgentId: holderId, executionPolicy: policy, executionState: state });
+    // Branch liveness has no load gate (OPE-12886): a stale holder row would
+    // get a liveness wake alongside the rebalance lane. Keep the holder fresh.
+    return row("1", { assigneeAgentId: holderId, executionPolicy: policy, executionState: state, updatedAt: NOW });
   }
 
   function rebalanceSetup(reviewers: Fixture["reviewers"], loads: Array<[string, number]>, holderId = REV_A) {

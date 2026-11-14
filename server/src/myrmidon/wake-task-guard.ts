@@ -22,6 +22,10 @@ import {
   swarmCoolingPeriodMs,
   type SwarmSettings,
 } from "@myrmidon/shared";
+import {
+  ISSUE_PROGRESS_ACTIVITY_ACTIONS,
+  collectRunIdsWithIssueProgress,
+} from "../services/issue-rewake-throttle.js";
 
 export interface TasklessWakeContext {
   source: string | null | undefined;
@@ -225,12 +229,41 @@ export function isInfraRun(row: {
   return false;
 }
 
+/**
+ * A succeeded run the cooling takes for a healthy one: its liveness says it
+ * advanced the task, completed it or scheduled its own follow-up.
+ *
+ * myrmidon(EMPTY-RUNS-1): for a task that sits in `todo`, "advanced" alone is
+ * not proof. Run liveness counts every activity row attributed to the run, the
+ * board's own rows included (the checkout claim, the tool delivery, the echo of
+ * the final text), so a run that took the task, found nothing to do and handed
+ * it back is "advanced" exactly like a run that did the work. On 13.11 500 of
+ * 539 succeeded runs without a result carried that state, this cooling never
+ * started for them, and three service bots re-picked ten parked tasks 176
+ * times in eight hours. When the reader established that the run left no
+ * issue-visible progress (`madeIssueProgress === false`, see
+ * `isIssueCoolingDown`), such a run is not healthy. `undefined` — the reader
+ * did not look — keeps the liveness verdict, as before.
+ */
+function isHealthySucceededRun(
+  row: { status: string; livenessState: string | null; madeIssueProgress?: boolean },
+  issueStatus: string,
+): boolean {
+  if (row.status !== "succeeded") return false;
+  if (!HEALTHY_LIVENESS.has(row.livenessState ?? "")) return false;
+  if (issueStatus === "todo" && row.livenessState === "advanced" && row.madeIssueProgress === false) {
+    return false;
+  }
+  return true;
+}
+
 function runIsStale(
   row: {
     status: string;
     livenessState: string | null;
     errorCode?: string | null;
     cancellationCode?: string | null;
+    madeIssueProgress?: boolean;
   },
   issueStatus: string,
 ): boolean {
@@ -241,7 +274,7 @@ function runIsStale(
   return (
     row.status === "succeeded" &&
     issueStatus === "todo" &&
-    !HEALTHY_LIVENESS.has(row.livenessState ?? "")
+    !isHealthySucceededRun(row, issueStatus)
   );
 }
 
@@ -255,6 +288,13 @@ export interface CoolingRun {
   finishedAt: Date | null;
   startedAt: Date | null;
   createdAt: Date;
+  /**
+   * myrmidon(EMPTY-RUNS-1): did the run leave issue-visible progress behind
+   * (`collectRunIdsWithIssueProgress` of issue-rewake-throttle.ts)? `false`
+   * makes an "advanced" run of a `todo` task stale; `undefined` (not read)
+   * leaves the liveness verdict alone.
+   */
+  madeIssueProgress?: boolean;
 }
 
 /** One candidate task-movement record (comment or activity) with its actor. */
@@ -355,7 +395,7 @@ export function decideIssueCooling(input: {
   for (let i = 0; i < runs.length; i += 1) {
     const row = runs[i]!;
     if (row.status === "cancelled" || isInfraRun(row)) continue;
-    const healthy = row.status === "succeeded" && HEALTHY_LIVENESS.has(row.livenessState ?? "");
+    const healthy = isHealthySucceededRun(row, issueStatus);
     if (healthy) break;
     if (i > 0 && row.finishedAt) {
       const newer = runs[i - 1]!;
@@ -380,7 +420,9 @@ export function decideIssueCooling(input: {
         ? "blocked"
         : last.livenessState === "needs_followup"
           ? "needs_followup"
-          : last.status,
+          : last.status === "succeeded" && last.livenessState === "advanced"
+            ? "no_progress"
+            : last.status,
     nextWakeAt: new Date(deadline),
   };
 }
@@ -405,6 +447,7 @@ export async function isIssueCoolingDown(
 
     const rows = await db
       .select({
+        id: heartbeatRuns.id,
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
         errorCode: heartbeatRuns.errorCode,
@@ -446,10 +489,61 @@ export async function isIssueCoolingDown(
       finishedAt,
     );
     const moves = await taskMovements(db, companyId, issueId, oldestFinished);
-    return decideIssueCooling({ issueStatus: issueRow.status, runs: rows, moves, settings, now });
+    const runs = await withIssueProgress(db, companyId, issueId, issueRow.status, rows);
+    return decideIssueCooling({ issueStatus: issueRow.status, runs, moves, settings, now });
   } catch {
     return NOT_COOLING;
   }
+}
+
+/**
+ * myrmidon(EMPTY-RUNS-1): mark which "advanced" runs really left issue-visible
+ * progress on the task, with the rewake throttle's own read
+ * (`collectRunIdsWithIssueProgress`): the board's bookkeeping, the echo of the
+ * final text, a release and a hand-back to the queue with its parking note are
+ * not progress. The activity is read only where it can change the decision —
+ * the task is in `todo` and at least one succeeded run is "advanced"; every
+ * other run goes through unmarked.
+ */
+async function withIssueProgress<T extends CoolingRun & { id: string }>(
+  db: Db,
+  companyId: string,
+  issueId: string,
+  issueStatus: string,
+  rows: T[],
+): Promise<T[]> {
+  if (issueStatus !== "todo") return rows;
+  const advanced = rows.filter(
+    (row) => row.status === "succeeded" && row.livenessState === "advanced",
+  );
+  if (advanced.length === 0) return rows;
+  const agentIdByRunId = new Map<string, string | null>();
+  for (const row of advanced) agentIdByRunId.set(row.id, row.agentId);
+  const activity = await db
+    .select({
+      runId: activityLog.runId,
+      action: activityLog.action,
+      // Only the two JSON paths the progress read looks at, as the throttle does.
+      changes: sql<unknown>`${activityLog.details} -> 'changes'`,
+      source: sql<string | null>`${activityLog.details} ->> 'source'`,
+    })
+    .from(activityLog)
+    .where(
+      and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, issueId),
+        inArray(activityLog.runId, advanced.map((row) => row.id)),
+        inArray(activityLog.action, ISSUE_PROGRESS_ACTIVITY_ACTIONS),
+      ),
+    );
+  const withProgress = collectRunIdsWithIssueProgress(
+    activity,
+    (runId) => agentIdByRunId.get(runId) ?? null,
+  );
+  return rows.map((row) =>
+    agentIdByRunId.has(row.id) ? { ...row, madeIssueProgress: withProgress.has(row.id) } : row,
+  );
 }
 
 /** Movement candidates after `since` with their actors: comments and movement activity. */

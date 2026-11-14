@@ -1698,6 +1698,9 @@
     "save": "Save",
     "create": "Create",
     "remove": "Remove",
+    "confirm": "Confirm",
+    "cancel": "Cancel",
+    "confirmGrowth": "Limit increases by {{percent}}%: from {{previous}} to {{next}}",
     "inactive": "Switched off",
     "noLimit": "No limit",
     "overLimit": "Over the limit",
@@ -1961,6 +1964,25 @@
       "bannedWhy": "Account #{{n}} ({{label}}) token has expired or access was revoked. The account was taken out of rotation — relogin or replace credentials.",
       "exhaustedTitle": "Codex/ChatGPT account #{{n}} ({{label}}) quota exhausted",
       "exhaustedWhy": "Account #{{n}} ({{label}}) reached 100% quota and was removed from rotation until the window reset."
+    }
+  },
+  "castes": {
+    "modelEval": {
+      "sectionTitle": "Role benchmark model results",
+      "casteLabel": "Caste",
+      "loading": "Loading model benchmark results...",
+      "empty": "No model benchmark results for this caste yet.",
+      "columnModel": "Model",
+      "columnScore": "Score",
+      "columnCurrent": "Current",
+      "columnBest": "Best",
+      "freeBadge": "free",
+      "disabledBadge": "disabled",
+      "isCurrent": "Current",
+      "bestMark": "★ Best free",
+      "confirm": "Set {{model}} as default",
+      "confirming": "Updating default model...",
+      "decline": "Keep current model"
     }
   }
 }
