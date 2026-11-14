@@ -17,13 +17,13 @@ Host-side garbage collector for bot task clones and build caches on `vm-core` an
 
 | Item | TTL | Condition |
 |------|-----|-----------|
-| Task clone (done/cancelled) | > 24 h | `git status` clean **and** all commits pushed **and** no stash **and** no alternates |
-| Task clone (unsafe) | > 24 h | Archive to `.gc-archive/` first, then remove |
+| Task clone (done/cancelled) | > 3 h | `git status` clean **and** all commits pushed **and** no stash **and** no alternates |
+| Task clone (unsafe) | > 3 h | Archive to `.gc-archive/` first, then remove |
 | Active checkout/worktree | — | Never touched |
 | Bot data directory (`/srv/myrmidon-bots/<bot-uuid>`, OPE-12654) | > 24 h | No `myrmidon-bot-<key>` container of any state **and** the board lists no `hermes_gateway` card for the agent (moved away, terminated or deleted) **and** no heartbeat run of the agent is `running` **and** no git worktree under `workspace/` holds unpushed work (uncommitted edits, stash, an operation in progress, commits on no remote). The quota project entries (`/etc/projid`, `/etc/projects`) are cleared after the removal |
 | Build cache | > 72 h | LRU eviction by mtime |
 | SSH runner run copy (`<runner root>/<runner>/workspace/.paperclip-runtime/runs/<runId>`, OPE-12722) | > 4 h (`--run-copy-ttl`, at least 3) | Counted from the run directory's own mtime (set when the run starts). Runs **only when a runner root is configured** (`--runner-root` / `HOST_GC_RUNNER_ROOTS`); a path through a symlink is skipped |
-| SSH runner task folder (`<runner root>/<runner>/{workspace,home}/OPE-<n>[-wt]`, `wt-ope<n>`, OPE-12855) | > 24 h (clone TTL) | Issue `done`/`cancelled` on the board **and** every git repo inside is clean, pushed, stash-free and alternates-free → remove; dirty/unpushed or a git state that cannot be read (a worktree with a dead gitdir) → archive to `<runner root>/.gc-archive/` first, then remove; any other issue status or an unreachable board → keep. Runs **only when a runner root is configured** (`--runner-root` / `HOST_GC_RUNNER_ROOTS`), the same gate as the run-copy pass |
+| SSH runner task folder (`<runner root>/<runner>/{workspace,home}/OPE-<n>[-wt]`, `wt-ope<n>`, OPE-12855) | > 3 h (clone TTL) | Issue `done`/`cancelled` on the board **and** every git repo inside is clean, pushed, stash-free and alternates-free → remove; dirty/unpushed or a git state that cannot be read (a worktree with a dead gitdir) → archive to `<runner root>/.gc-archive/` first, then remove; any other issue status or an unreachable board → keep. Runs **only when a runner root is configured** (`--runner-root` / `HOST_GC_RUNNER_ROOTS`), the same gate as the run-copy pass |
 | `state.db`, `session`, `auth`, `credential`, `.git` | — | Never deleted |
 
 ## Atomic Guards
@@ -77,7 +77,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now myrmidon-host-gc.timer
 ```
 
-The timer runs every 2 hours. The service is `Type=oneshot` and exits after one pass.
+The timer runs every 30 minutes (`OnCalendar=*-*-* *:10/30:00`). The service is `Type=oneshot` and exits after one pass.
 
 ## Restore / Rollback
 
@@ -179,7 +179,7 @@ held 27 task folders, 14 of them for closed issues.
 The pass shares the gate of the run-copy pass above: it runs only when a runner root is
 configured (`--runner-root` / `HOST_GC_RUNNER_ROOTS`), per the same host matrix. What it does:
 
-- A folder is a candidate when it is older than the clone TTL (24 h, `--clone-ttl`, by the
+- A folder is a candidate when it is older than the clone TTL (3 h, `--clone-ttl`, by the
   folder's own mtime) and its name parses an issue identifier (`OPE-<n>`, `OPE-<n>-wt`,
   `wt-ope<n>`, case-insensitive). The board is asked for the issue status
   (`GET /api/issues/{identifier}`, the same board guard as the task clones). A folder of an
@@ -191,7 +191,7 @@ configured (`--runner-root` / `HOST_GC_RUNNER_ROOTS`), per the same host matrix.
   is removed outright (`no-git-repos`).
 - Unpushed work, or a git state that cannot be proven from the host (a worktree whose gitdir
   is gone fails every git command) → the folder is archived to `<runner root>/.gc-archive/`
-  first (zstd/tar.gz + verification) and removed only after the archive verifies — the archive
+  first (zstd/tar.gz + verification; `node_modules`, `.pnpm-store`, `.turbo`, `dist`, `.next` and `coverage` are excluded, `.git` and working files are kept; the 600 s limit failure is the pipeline runs under `timeout` (kill-after 10 s, so `tar`/`zstd` die with it) with `pipefail`; a timeout is journaled as `timed out after 600 s`) and removed only after the archive verifies — the archive
   is the safety net for work the host could not inspect.
 - Every removal is guarded against the runner root (`runner-task-folder-remove-failed` on a
   containment violation); a missing root is journaled as `runner-folder-root-missing`, an

@@ -13,13 +13,13 @@
 //                    disk, OPE-12966; only when a runner root is configured)
 //
 // Policy:
-//   - Task clones (done/cancelled >24h, clean+pushed): remove
-//   - Task clones (done/cancelled >24h, dirty/unpushed): archive first, then remove
+//   - Task clones (done/cancelled >3h, clean+pushed): remove
+//   - Task clones (done/cancelled >3h, dirty/unpushed): archive first, then remove
 //   - Active checkouts/worktrees: never touch
 //   - Build caches >72h: LRU eviction by mtime
 //   - SSH runner run copies >4h (by the run directory's mtime, set when the run starts): remove;
 //     runs only with --runner-root / HOST_GC_RUNNER_ROOTS
-//   - SSH runner task folders of done/cancelled issues >24h: clean+pushed remove; unsafe git
+//   - SSH runner task folders of done/cancelled issues >3h: clean+pushed remove; unsafe git
 //     state archive first, then remove; other statuses or an unreachable board stay; runs only
 //     with --runner-root / HOST_GC_RUNNER_ROOTS
 //   - SSH runner /tmp entries (top level of <runner>/tmp) whose newest mtime inside is >24h
@@ -34,7 +34,7 @@
 //   --root <path>         Override root directory (for testing)
 //   --journal <path>      Override journal path (for testing)
 //   --lock <path>         Override lockfile path (for testing)
-//   --clone-ttl <hours>   Override clone TTL (default 24)
+//   --clone-ttl <hours>   Override clone TTL (default 3)
 //   --cache-ttl <hours>   Override cache TTL (default 72)
 //   --runner-root <path>  SSH runner root to prune run copies under (repeatable; also
 //                         HOST_GC_RUNNER_ROOTS, colon-separated). No root, no pass.
@@ -48,8 +48,12 @@ import { spawnSync } from "node:child_process";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
-const CLONE_TTL_HOURS = 24;
+const CLONE_TTL_HOURS = 3;
 const CACHE_TTL_HOURS = 72;
+// Names of build and dependency dirs left out of safety-net archives (restored by an install or a
+// build, OPE-13104), but only where git confirms the path is ignored: see archiveExcludes().
+// A file git does not ignore (user or uncommitted work) is always archived, even inside `dist/`.
+const ARCHIVE_EXCLUDES = ["node_modules", ".pnpm-store", ".turbo", "dist", ".next", "coverage"];
 
 // myrmidon(1.6.8-BOT-CONTAINER-ORPHAN / OPE-12654): the data directory of a decommissioned
 // bot (the gate A22 removed its container, the board logs `bot_data_left_for_host_gc`) is
@@ -1152,6 +1156,52 @@ export function pruneRunnerTmp(items, journalPath) {
 
 // --- Archive ----------------------------------------------------------------
 
+// Git repos inside a clone: the clone itself and nested ones (`.git` dir or file) a few levels down.
+function archiveRepos(clonePath) {
+  const repos = [];
+  const visit = (dir, depth) => {
+    if (fs.existsSync(path.join(dir, ".git"))) repos.push(dir);
+    if (depth === 0) return;
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
+      if (entry.name === ".git" || ARCHIVE_EXCLUDES.includes(entry.name) || BOT_SCAN_SKIP_NAMES.has(entry.name)) continue;
+      visit(path.join(dir, entry.name), depth - 1);
+    }
+  };
+  visit(clonePath, 3);
+  return repos;
+}
+
+// tar `--exclude` arguments: exact member paths (`<clone name>/<path>`) that git reports as ignored
+// and whose last segment is in ARCHIVE_EXCLUDES. A git failure or a non-repo gives no excludes:
+// the archive is whole, the safe default.
+function archiveExcludes(clonePath) {
+  const name = path.basename(clonePath);
+  const out = new Set();
+  for (const repo of archiveRepos(clonePath)) {
+    let r;
+    try {
+      r = git(["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], repo);
+    } catch {
+      continue;
+    }
+    if (r.status !== 0 || typeof r.stdout !== "string") continue;
+    const repoRel = path.relative(clonePath, repo);
+    for (const entry of r.stdout.split("\0")) {
+      const rel = entry.replace(/\/+$/, "");
+      if (!rel || !ARCHIVE_EXCLUDES.includes(rel.split("/").pop())) continue;
+      out.add(`--exclude=${[name, repoRel, rel].filter(Boolean).join("/")}`);
+    }
+  }
+  return [...out];
+}
+
 function archiveClone(clonePath, archiveRoot) {
   if (!fs.existsSync(archiveRoot)) fs.mkdirSync(archiveRoot, { recursive: true });
   const name = path.basename(clonePath);
@@ -1159,19 +1209,46 @@ function archiveClone(clonePath, archiveRoot) {
   const hasZstd = spawnSync("zstd", ["--version"], { stdio: "ignore" }).status === 0;
   const extension = hasZstd ? "tar.zst" : "tar.gz";
   const archivePath = path.join(archiveRoot, `${name}-${ts}.${extension}`);
+  // What an install or a build recreates is not worth archiving: a 13 GB task folder (three
+  // repo copies with node_modules) never fit the timeout, an archive without it is ~0.5 GB.
+  // Only build and dependency dirs that git reports as ignored are left out, as exact paths
+  // (--anchored, --no-wildcards: a name with `*` or `[` matches literally, nowhere else).
+  // Unpushed commits (.git), working files and anything git does not ignore stay in.
+  const excludes = ["--no-wildcards", "--anchored", ...archiveExcludes(clonePath)];
+  // Per-archive limit, 10 min by default. The test hook is the env var (finite, > 0).
+  const envTimeoutS = Number(process.env.HOST_GC_ARCHIVE_TIMEOUT_SECONDS);
+  const timeoutS = Number.isFinite(envTimeoutS) && envTimeoutS > 0 ? envTimeoutS : 600;
+  // `timeout` kills the whole pipeline (tar and zstd included) when the time is up, so no orphan keeps
+  // writing into a file we delete; spawnSync's own limit is only a backstop for `timeout` itself.
+  const limit = ["--kill-after=10s", `${timeoutS}s`];
+  const spawnOpts = { timeout: (timeoutS + 30) * 1000 };
   let result;
   let verify;
   if (hasZstd) {
     // Prefer zstd, but do not make archival depend on an optional host binary.
-    result = spawnSync("bash", ["-c", `tar -cf - -C "${path.dirname(clonePath)}" "${name}" | zstd -q -o "${archivePath}"`], { timeout: 120000 });
+    // pipefail: a failing tar must not be masked by zstd's exit code. Paths go in as arguments, not into the script text.
+    result = spawnSync("timeout", [...limit, "bash", "-c", `set -o pipefail; tar -cf - "\${@:4}" -C "$1" "$2" | zstd -q -o "$3"`, "archive", path.dirname(clonePath), name, archivePath, ...excludes], spawnOpts);
     verify = ["bash", ["-c", `zstd -q -d -c "${archivePath}" | tar -tf - > /dev/null`]];
   } else {
-    result = spawnSync("tar", ["-czf", archivePath, "-C", path.dirname(clonePath), name], { timeout: 120000 });
+    result = spawnSync("timeout", [...limit, "tar", "-czf", archivePath, ...excludes, "-C", path.dirname(clonePath), name], spawnOpts);
     verify = ["tar", ["-tzf", archivePath]];
   }
-  if (result.status !== 0) throw new Error(`archive failed for ${clonePath}: ${result.stderr}`);
+  if (result.status !== 0) {
+    // A failed run leaves a partial archive of 1-2 GB behind on every pass; remove exactly this file.
+    fs.rmSync(archivePath, { force: true });
+    // stderr is often empty (a killed or timed-out child), so say why in words.
+    // 124 = `timeout` fired; 137 = it had to KILL the pipeline after --kill-after.
+    const timedOut = result.error?.code === "ETIMEDOUT" || result.status === 124 || result.status === 137;
+    const reason = timedOut
+      ? `timed out after ${timeoutS} s`
+      : `exit code ${result.status}, signal ${result.signal}${result.error ? `, error ${result.error.message}` : ""}`;
+    throw new Error(`archive failed for ${clonePath}: ${reason}: ${String(result.stderr ?? "").trim()}`);
+  }
   const verification = spawnSync(verify[0], verify[1], { timeout: 60000, stdio: "ignore" });
-  if (verification.status !== 0) throw new Error(`archive verification failed for ${archivePath}`);
+  if (verification.status !== 0) {
+    fs.rmSync(archivePath, { force: true });
+    throw new Error(`archive verification failed for ${archivePath}`);
+  }
   return archivePath;
 }
 
