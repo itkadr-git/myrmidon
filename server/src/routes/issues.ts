@@ -3820,6 +3820,7 @@ export function issueRoutes(
   db: Db,
   storage: StorageService,
   opts: {
+    issueService?: ReturnType<typeof issueService>;
     chatRunRetries?: Pick<
       ChatChannelService,
       "prepareFailedChatRunRetry" | "processFailedChatRunRetry"
@@ -3883,7 +3884,7 @@ export function issueRoutes(
   } = {},
 ) {
   const router = Router();
-  const svc = issueService(db);
+  const svc = opts.issueService ?? issueService(db);
   const runRedactions = createRunSecretRedactionRegistry(db);
   const access = accessService(db);
   const secretProposals = createSecretProposalsService(db);
@@ -8922,6 +8923,211 @@ export function issueRoutes(
       });
       return;
     }
+
+    const rawParticipantAgentId = req.query.participantAgentId as string | undefined;
+    let participantAgentId: string | undefined;
+    if (rawParticipantAgentId !== undefined) {
+      if (typeof rawParticipantAgentId !== "string") {
+        logger.warn(
+          { parameter: "participantAgentId", value: rawParticipantAgentId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "participantAgentId must be a UUID" });
+        return;
+      }
+      const trimmed = rawParticipantAgentId.trim();
+      if (!isUuidLike(trimmed)) {
+        logger.warn(
+          { parameter: "participantAgentId", value: rawParticipantAgentId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "participantAgentId must be a UUID" });
+        return;
+      }
+      participantAgentId = trimmed;
+    }
+
+    const rawProjectId = req.query.projectId as string | undefined;
+    let projectId: string | undefined;
+    if (rawProjectId !== undefined) {
+      if (typeof rawProjectId !== "string") {
+        logger.warn(
+          { parameter: "projectId", value: rawProjectId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "projectId must be a UUID" });
+        return;
+      }
+      const trimmed = rawProjectId.trim();
+      if (!isUuidLike(trimmed)) {
+        logger.warn(
+          { parameter: "projectId", value: rawProjectId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "projectId must be a UUID" });
+        return;
+      }
+      projectId = trimmed;
+    }
+
+    const rawWorkspaceId = req.query.workspaceId as string | undefined;
+    let workspaceId: string | undefined;
+    if (rawWorkspaceId !== undefined) {
+      if (typeof rawWorkspaceId !== "string") {
+        logger.warn(
+          { parameter: "workspaceId", value: rawWorkspaceId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "workspaceId must be a UUID" });
+        return;
+      }
+      const trimmed = rawWorkspaceId.trim();
+      if (!isUuidLike(trimmed)) {
+        logger.warn(
+          { parameter: "workspaceId", value: rawWorkspaceId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "workspaceId must be a UUID" });
+        return;
+      }
+      workspaceId = trimmed;
+    }
+
+    const rawExecutionWorkspaceId = req.query.executionWorkspaceId as string | undefined;
+    let executionWorkspaceId: string | undefined;
+    if (rawExecutionWorkspaceId !== undefined) {
+      if (typeof rawExecutionWorkspaceId !== "string") {
+        logger.warn(
+          { parameter: "executionWorkspaceId", value: rawExecutionWorkspaceId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "executionWorkspaceId must be a UUID" });
+        return;
+      }
+      const trimmed = rawExecutionWorkspaceId.trim();
+      if (!isUuidLike(trimmed)) {
+        logger.warn(
+          { parameter: "executionWorkspaceId", value: rawExecutionWorkspaceId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "executionWorkspaceId must be a UUID" });
+        return;
+      }
+      executionWorkspaceId = trimmed;
+    }
+
+    const rawLabelId = req.query.labelId as string | undefined;
+    let labelId: string | undefined;
+    if (rawLabelId !== undefined) {
+      if (typeof rawLabelId !== "string") {
+        logger.warn(
+          { parameter: "labelId", value: rawLabelId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "labelId must be a UUID" });
+        return;
+      }
+      const trimmed = rawLabelId.trim();
+      if (!isUuidLike(trimmed)) {
+        logger.warn(
+          { parameter: "labelId", value: rawLabelId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "labelId must be a UUID" });
+        return;
+      }
+      labelId = trimmed;
+    }
+
+    const rawParentId = (req.query.parentId ?? req.query.parentIssueId) as string | undefined;
+    let parentId: string | undefined;
+    if (rawParentId !== undefined) {
+      if (typeof rawParentId !== "string") {
+        logger.warn(
+          { parameter: "parentId", value: rawParentId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "parentId must be a UUID or issue identifier" });
+        return;
+      }
+      const trimmed = rawParentId.trim();
+      if (isUuidLike(trimmed)) {
+        parentId = trimmed;
+      } else {
+        const identifier = normalizeIssueReferenceIdentifier(trimmed);
+        const parentIssue = identifier ? await svc.getByIdentifier(identifier) : null;
+        if (parentIssue && parentIssue.companyId === companyId) {
+          parentId = parentIssue.id;
+        } else {
+          logger.warn(
+            { parameter: "parentId", value: rawParentId, companyId },
+            "invalid identifier query parameter format",
+          );
+          res.status(400).json({ error: "parentId must be a UUID or issue identifier" });
+          return;
+        }
+      }
+    }
+
+    const rawDescendantOf = req.query.descendantOf as string | undefined;
+    let descendantOf: string | undefined;
+    if (rawDescendantOf !== undefined) {
+      if (typeof rawDescendantOf !== "string") {
+        logger.warn(
+          { parameter: "descendantOf", value: rawDescendantOf, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "descendantOf must be a UUID or issue identifier" });
+        return;
+      }
+      const trimmed = rawDescendantOf.trim();
+      if (isUuidLike(trimmed)) {
+        descendantOf = trimmed;
+      } else {
+        const identifier = normalizeIssueReferenceIdentifier(trimmed);
+        const ancestorIssue = identifier ? await svc.getByIdentifier(identifier) : null;
+        if (ancestorIssue && ancestorIssue.companyId === companyId) {
+          descendantOf = ancestorIssue.id;
+        } else {
+          logger.warn(
+            { parameter: "descendantOf", value: rawDescendantOf, companyId },
+            "invalid identifier query parameter format",
+          );
+          res.status(400).json({ error: "descendantOf must be a UUID or issue identifier" });
+          return;
+        }
+      }
+    }
+
+    const rawCreatedFromIssueId = req.query.createdFromIssueId as string | undefined;
+    let createdFromIssueId: string | undefined;
+    if (rawCreatedFromIssueId !== undefined) {
+      if (typeof rawCreatedFromIssueId !== "string") {
+        logger.warn(
+          { parameter: "createdFromIssueId", value: rawCreatedFromIssueId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "createdFromIssueId must be a UUID or issue identifier" });
+        return;
+      }
+      const trimmed = rawCreatedFromIssueId.trim();
+      if (isUuidLike(trimmed)) {
+        createdFromIssueId = trimmed;
+      } else {
+        const identifier = normalizeIssueReferenceIdentifier(trimmed);
+        const sourceIssue = identifier ? await svc.getByIdentifier(identifier) : null;
+        if (sourceIssue && sourceIssue.companyId === companyId) {
+          createdFromIssueId = sourceIssue.id;
+        } else {
+          logger.warn(
+            { parameter: "createdFromIssueId", value: rawCreatedFromIssueId, companyId },
+            "invalid identifier query parameter format",
+          );
+          res.status(400).json({ error: "createdFromIssueId must be a UUID or issue identifier" });
+          return;
+        }
+      }
+    }
     const assigneeUserFilterRaw = req.query.assigneeUserId as
       string | undefined;
     const touchedByUserFilterRaw = req.query.touchedByUserId as
@@ -9147,26 +9353,25 @@ export function issueRoutes(
       });
       return;
     }
+
     const offset = parsedOffset ?? pageOffset ?? 0;
 
     const listFilters: IssueFilters = {
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId,
-      participantAgentId: req.query.participantAgentId as string | undefined,
+      participantAgentId,
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
       unreadForUserId,
-      projectId: req.query.projectId as string | undefined,
-      workspaceId: req.query.workspaceId as string | undefined,
-      executionWorkspaceId: req.query.executionWorkspaceId as
-        string | undefined,
-      parentId: (req.query.parentId ?? req.query.parentIssueId) as
-        string | undefined,
-      descendantOf: req.query.descendantOf as string | undefined,
-      createdFromIssueId: req.query.createdFromIssueId as string | undefined,
-      labelId: req.query.labelId as string | undefined,
+      projectId,
+      workspaceId,
+      executionWorkspaceId,
+      parentId,
+      descendantOf,
+      createdFromIssueId,
+      labelId,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
       originId: req.query.originId as string | undefined,
@@ -13336,7 +13541,7 @@ export function issueRoutes(
           createParent = await svc.getById(effectiveParentId);
         }
         if (!createParent || createParent.companyId !== companyId) {
-          res.status(404).json({ error: "Parent issue not found" });
+          res.status(422).json({ error: "parent issue not found" });
           return;
         }
         if (
@@ -13354,6 +13559,33 @@ export function issueRoutes(
         typeof rawCreateBody.projectId === "string" && rawCreateBody.projectId.length > 0
           ? rawCreateBody.projectId
           : (inheritedProjectId ?? null);
+      if (effectiveProjectId) {
+        const project = await projectsSvc.getById(effectiveProjectId);
+        if (!project || project.companyId !== companyId) {
+          res.status(422).json({ error: "project not found" });
+          return;
+        }
+      }
+      if (rawCreateBody.goalId) {
+        const goal = await goalsSvc.getById(rawCreateBody.goalId);
+        if (!goal || goal.companyId !== companyId) {
+          res.status(422).json({ error: "goal not found" });
+          return;
+        }
+      }
+      let createLabelNames: string[] = [];
+      if (Array.isArray(rawCreateBody.labelIds) && rawCreateBody.labelIds.length > 0) {
+        const uniqueLabelIds = [...new Set(rawCreateBody.labelIds as string[])];
+        const existingLabels = await db
+          .select({ id: labels.id, name: labels.name })
+          .from(labels)
+          .where(and(eq(labels.companyId, companyId), inArray(labels.id, uniqueLabelIds)));
+        if (existingLabels.length !== uniqueLabelIds.length) {
+          res.status(422).json({ error: "label not found" });
+          return;
+        }
+        createLabelNames = existingLabels.map((r) => r.name);
+      }
       if (
         !watchdogProductBugFollowUp &&
         !(await assertTaskWatchdogCreateIssueAllowed(
@@ -13364,12 +13596,21 @@ export function issueRoutes(
         ))
       )
         return;
-      const normalizedAssigneeAgentId =
-        await normalizeIssueAssigneeAgentReference(
-          companyId,
-          rawCreateBody.assigneeAgentId as string | null | undefined,
-          { actorType: req.actor.type },
-        );
+      let normalizedAssigneeAgentId: string | null | undefined;
+      try {
+        normalizedAssigneeAgentId =
+          await normalizeIssueAssigneeAgentReference(
+            companyId,
+            rawCreateBody.assigneeAgentId as string | null | undefined,
+            { actorType: req.actor.type },
+          );
+      } catch (err: any) {
+        if (err?.status === 404 && err?.message === "Agent not found") {
+          res.status(422).json({ error: "agent not found" });
+          return;
+        }
+        throw err;
+      }
       const initialStatus = typeof rawCreateBody.status === "string" ? rawCreateBody.status : "todo";
       await assertEngineerForCodeIssue({
         companyId,
@@ -13385,8 +13626,6 @@ export function issueRoutes(
             ? rawCreateBody.executionWorkspacePreference
             : null,
       });
-      // TASK-CARD-READINESS-3: when creating a task born in todo for an
-      // engineer, assert readiness at the route boundary before insertion.
       // Only explicit engineer signals on the create body itself gate the
       // create (casteKey: "engineer" pinned by the caller or a
       // needs-engineer label): the project default and the workspace
@@ -13396,14 +13635,6 @@ export function issueRoutes(
       // assertEngineerForCodeIssue and the swarm queue; this gate only needs
       // the card-completeness subset.
       if (initialStatus === "todo") {
-        let createLabelNames: string[] = [];
-        if (Array.isArray(rawCreateBody.labelIds) && rawCreateBody.labelIds.length > 0) {
-          createLabelNames = await db
-            .select({ name: labels.name })
-            .from(labels)
-            .where(and(eq(labels.companyId, companyId), inArray(labels.id, rawCreateBody.labelIds as string[])))
-            .then((rows) => rows.map((r) => r.name));
-        }
         const createCasteKey =
           typeof rawCreateBody.casteKey === "string" && rawCreateBody.casteKey.trim().length > 0
             ? rawCreateBody.casteKey
