@@ -483,7 +483,7 @@ function buildInput(
     configuredStrategy: normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy),
     developerOnlyTaskSession: ctx.config.developerOnlyTaskSession === true,
   });
-  // A developer run (effective strategy "run") never resumes: it gets the full
+  // A run with effective strategy "run" never resumes: it gets the full
   // task brief, whatever session id the board still has stored.
   const resumedSession =
     (sessionKeyStrategy === "issue" || sessionKeyStrategy === "agent") &&

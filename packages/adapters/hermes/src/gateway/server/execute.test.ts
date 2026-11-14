@@ -207,7 +207,7 @@ describe("parseSseFramesForTest", () => {
 });
 
 describe("execute", () => {
-  it("gives a developer a fresh session on every run while a non-developer keeps its configured session", async () => {
+  it("gives a developer an issue-scoped session while a non-developer keeps its configured session", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(
       String(input).endsWith("/v1/runs")
         ? { run_id: "run-hermes-1", status: "started" }
@@ -226,9 +226,9 @@ describe("execute", () => {
       ctx.context = { ...ctx.context, issueId };
       expect((await execute(ctx)).exitCode).toBe(0);
     };
-    // Developer cards on "issue" and "agent" (not yet switched to "run"): the
-    // board flag still gives every run its own session, across runs of one task
-    // and across tasks.
+    // Developer cards on "issue": same session key across runs of the same task.
+    // Developer cards on "agent": mapped to "issue".
+    // Developer cards on "run": stays on "run".
     await runWith({ sessionKeyStrategy: "issue", developerOnlyTaskSession: true }, "run-1", "task-A");
     await runWith({ sessionKeyStrategy: "issue", developerOnlyTaskSession: true }, "run-2", "task-A");
     await runWith({ sessionKeyStrategy: "agent", developerOnlyTaskSession: true }, "run-3", "task-B");
@@ -242,15 +242,15 @@ describe("execute", () => {
       .filter(([input]) => String(input).endsWith("/v1/runs"));
     const keys = runCalls.map(([, init]) => (init?.headers as Record<string, string>)["X-Hermes-Session-Key"]);
     expect(keys).toEqual([
-      "paperclip:run:run-1",
-      "paperclip:run:run-2",
-      "paperclip:run:run-3",
+      "paperclip:company:company-1:agent:agent-1:issue:task-A",
+      "paperclip:company:company-1:agent:agent-1:issue:task-A",
+      "paperclip:company:company-1:agent:agent-1:issue:task-B",
       "paperclip:run:run-4",
       "paperclip:company:company-1:agent:agent-1:issue:task-A",
       "paperclip:company:company-1:agent:agent-1",
     ]);
-    // No developer key is shared with another run.
-    expect(new Set(keys.slice(0, 4)).size).toBe(4);
+    // Developer runs of task-A share the session key.
+    expect(keys[0]).toBe(keys[1]);
     // Six full execute() calls in one test: the default 5 s is not enough.
   }, 30_000);
 
@@ -1008,7 +1008,7 @@ describe("execute", () => {
     expect(runBodies[1]!.input).not.toContain(description);
   });
 
-  it("sends a developer the full brief and no previous-run content even when the board still holds a stored session", async () => {
+  it("resumes a stored session for a developer on issue strategy and gives a fresh session on run strategy", async () => {
     const description = "Task B must not inherit Task A context.";
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
       String(input).endsWith("/v1/runs")
@@ -1030,12 +1030,12 @@ describe("execute", () => {
       return ctx;
     };
 
-    // Developer on a card that still says "issue": the stored session is not resumed.
+    // Developer on a card that says "issue": the stored task session is resumed and the compact brief is used.
     expect((await execute(buildCtx(
       { sessionKeyStrategy: "issue", developerOnlyTaskSession: true },
       "paperclip:company:company-1:agent:agent-1:issue:task-B",
     ))).exitCode).toBe(0);
-    // Developer on a card already switched to "run".
+    // Developer on a card switched to "run": fresh session and full brief.
     expect((await execute(buildCtx(
       { sessionKeyStrategy: "run", developerOnlyTaskSession: true },
       "paperclip:run:earlier-run",
@@ -1050,11 +1050,17 @@ describe("execute", () => {
       .filter(([url]) => String(url).endsWith("/v1/runs"))
       .map(([, init]) => JSON.parse(String(init?.body)) as { input: string; session_id: string });
     expect(bodies).toHaveLength(3);
-    for (const body of bodies.slice(0, 2)) {
-      expect(body.input).toContain(description);
-      expect(body.input).not.toContain("Task B (compact)");
-      expect(body.session_id).toBe("paperclip:run:pc-run-1");
-    }
+    // Developer on "issue": compact brief and issue session
+    expect(bodies[0]!.input).toContain("Task B (compact)");
+    expect(bodies[0]!.input).not.toContain(description);
+    expect(bodies[0]!.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:task-B");
+
+    // Developer on "run": full brief and fresh run session
+    expect(bodies[1]!.input).toContain(description);
+    expect(bodies[1]!.input).not.toContain("Task B (compact)");
+    expect(bodies[1]!.session_id).toBe("paperclip:run:pc-run-1");
+
+    // Non-developer on "issue": compact brief and issue session
     expect(bodies[2]!.input).toContain("Task B (compact)");
     expect(bodies[2]!.input).not.toContain(description);
     expect(bodies[2]!.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:task-B");
