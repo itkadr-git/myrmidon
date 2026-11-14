@@ -69,6 +69,7 @@ import { validate } from "../../middleware/validate.js";
 import { approverKindFromRequest } from "../approver-kind.js";
 import { assertRuleWriteGrade, builtinCasteSensitivity, type CasteSensitivityResolver } from "../rule-grade.js";
 import { resolveCasteSensitivity } from "../caste-sensitivity.js";
+import { createSemanticMirror, rebuildSemanticMirror } from "./semantic-mirror.js";
 import { KnowledgeDomainError } from "./domain.js";
 import type { KnowledgeItemStatus, KnowledgeKind } from "./domain.js";
 import {
@@ -323,13 +324,23 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
 
   // --------------------------------------------------------------- reads
 
+  router.post("/myrmidon/companies/:companyId/knowledge/search/rebuild", async (req: Request, res: Response) => {
+    const companyId = companyOf(req);
+    await assertKnowledgeToolAccess(req, "knowledge_publish");
+    if (!deps.db || !env.MYRMIDON_KNOWLEDGE_RAGFLOW_URL || !env.MYRMIDON_KNOWLEDGE_RAGFLOW_API_KEY) {
+      throw unprocessable("Semantic mirror is not configured.");
+    }
+    const mirror = createSemanticMirror(env.MYRMIDON_KNOWLEDGE_RAGFLOW_URL, env.MYRMIDON_KNOWLEDGE_RAGFLOW_API_KEY);
+    res.json(await rebuildSemanticMirror(deps.db, companyId, mirror));
+  });
+
   router.get("/myrmidon/companies/:companyId/knowledge/search", async (req: Request, res: Response) => {
     const companyId = companyOf(req);
     await assertKnowledgeToolAccess(req, "knowledge_search");
     const query = knowledgeSearchQuerySchema.parse(req.query);
     const mod = deps.moduleFor(companyId);
     try {
-      const items = await mod.search(query.q, query.limit ?? 20);
+      const items = await mod.search(query.q, query.limit ?? 20, query.lang as "ru" | "en" | undefined, query.mode ?? "fts");
       res.json({ query: query.q, items });
     } catch (err) {
       throw toHttpError(err);
@@ -864,8 +875,11 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
 // ---------------------------------------------------------------------------
 
 export function myrmidonKnowledgeRoutes(db: Db, env: NodeJS.ProcessEnv = process.env) {
+  const mirror = env.MYRMIDON_KNOWLEDGE_RAGFLOW_URL && env.MYRMIDON_KNOWLEDGE_RAGFLOW_API_KEY
+    ? createSemanticMirror(env.MYRMIDON_KNOWLEDGE_RAGFLOW_URL, env.MYRMIDON_KNOWLEDGE_RAGFLOW_API_KEY)
+    : undefined;
   return knowledgeRoutes({
-    moduleFor: (companyId) => createKnowledgeModule(db, companyId),
+    moduleFor: (companyId) => createKnowledgeModule(db, companyId, { semanticMirror: mirror }),
     db,
     casteSensitivity: (companyId) => resolveCasteSensitivity(db, companyId),
     roleForAgent: agentRoleFromDb(db),

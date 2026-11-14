@@ -1174,6 +1174,7 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) module hygiene", () => {
       "seed-data.ts",
       "seed-product.ts",
       "seed.ts",
+      "semantic-mirror.ts",
       "service.ts",
       "settings-routes.ts",
       "settings.ts",
