@@ -516,6 +516,19 @@ describe("runner /tmp (OPE-12966)", () => {
 });
 
 describe("stale OMP runner collection", () => {
+  function runGc(flags, extraEnv = {}) {
+    const botsRoot = path.join(tmpDir, "bots");
+    fs.mkdirSync(botsRoot, { recursive: true });
+    const journal = path.join(tmpDir, "gc.jsonl");
+    const env = { ...process.env, HOST_GC_RUNNER_ROOTS: "", PATH: process.env.PATH, PAPERCLIP_API_URL: "http://127.0.0.1:9", ...extraEnv };
+    const res = subprocess.spawnSync(process.execPath, [
+      path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs"), "--env", "/nonexistent", "--root", botsRoot,
+      "--journal", journal, "--lock", path.join(tmpDir, "gc.lock"), "--proc-dir", path.join(tmpDir, "proc"), ...flags,
+    ], { encoding: "utf8", env, timeout: 60_000 });
+    const events = fs.existsSync(journal) ? fs.readFileSync(journal, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
+    return { res, events };
+  }
+
   it("keeps eng10 on omp_local and marks switched or removed agents for cleanup", async () => {
     const root = path.join(tmpDir, "omp-runners");
     const plan = await planStaleOmpRunners(root, { docker: "docker-that-does-not-exist" });
@@ -610,7 +623,8 @@ describe("stale OMP runner collection", () => {
     const board = path.join(dir, "board");
     fs.writeFileSync(board, "#!/bin/sh\nprintf '{\\\"adapterType\\\":\\\"%s\\\"}\\n' \"$(case \"$2\" in */eng10) echo omp_local;; *) echo hermes_gateway;; esac)\"\n");
     fs.chmodSync(board, 0o755);
-    const { res, events } = runGc(["--apply", "--runner-root", root], { PATH: `${dir}:${process.env.PATH}`, MYRMIDON_HOST_GC_DOCKER: docker, BOARD_API_URL: "http://board" });
+    const envOverrides = { PATH: `${dir}:${process.env.PATH}`, MYRMIDON_HOST_GC_DOCKER: docker, BOARD_API_URL: "http://board", MYRMIDON_HOST_GC_DOCKER_BOT: docker };
+    const { res, events } = runGc(["--apply", "--runner-root", root], envOverrides);
     assert.equal(res.status, 0, res.stderr);
     assert.equal(fs.existsSync(path.join(root, "eng8", "home")), false);
     assert.equal(fs.existsSync(active), true);

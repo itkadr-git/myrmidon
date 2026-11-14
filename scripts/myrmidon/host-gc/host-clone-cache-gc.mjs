@@ -976,13 +976,13 @@ export async function planStaleOmpRunners(runnersRoot, {
     const adapter = await fetchAdapter(agentKey);
     if (!adapter.ok) plan.push({ name, agentKey, path: runnerPath, action: "keep", reason: adapter.reason });
     else if (adapter.adapterType === "omp_local") plan.push({ name, agentKey, path: runnerPath, action: "keep", reason: "omp-local" });
-    else plan.push({ name, agentKey, path: runnerPath, action: "stop-remove", reason: adapter.adapterType ? "adapter-changed" : "agent-deleted" });
+    else plan.push({ name, agentKey, path: runnerPath, runnersRoot, action: "stop-remove", reason: adapter.adapterType ? "adapter-changed" : "agent-deleted" });
   }
   try {
     for (const agentKey of fs.readdirSync(runnersRoot)) {
       if (activeKeys.has(agentKey) || !OMP_AGENT_KEY_PATTERN.test(agentKey)) continue;
       const adapter = await fetchAdapter(agentKey);
-      if (adapter.ok && adapter.adapterType !== "omp_local") plan.push({ name: `${namePrefix}${agentKey}`, agentKey, path: path.join(runnersRoot, agentKey), action: "remove-stale-home", reason: adapter.adapterType ? "adapter-changed" : "agent-deleted" });
+      if (adapter.ok && adapter.adapterType !== "omp_local") plan.push({ name: `${namePrefix}${agentKey}`, agentKey, path: path.join(runnersRoot, agentKey), runnersRoot, action: "remove-stale-home", reason: adapter.adapterType ? "adapter-changed" : "agent-deleted" });
       else plan.push({ agentKey, path: path.join(runnersRoot, agentKey), action: "keep", reason: adapter.ok ? "omp-local" : adapter.reason });
     }
   } catch (err) {
@@ -2004,6 +2004,7 @@ async function main() {
         }
       }
       staleOmpRunnersStopped = 0;
+      let staleOmpRunnerDataRemoved = 0;
       for (const runner of plan.staleOmpRunners) {
         if (runner.action === "stop-remove" && !stopOmpRunner(runner.name, { docker: args.docker })) {
           journalRecord(args.journal, { event: "stale-omp-runner-stop-failed", name: runner.name, reason: runner.reason });
@@ -2013,14 +2014,23 @@ async function main() {
           staleOmpRunnersStopped++;
           journalRecord(args.journal, { event: "stale-omp-runner-stopped", name: runner.name, reason: runner.reason });
         }
-        for (const child of ["workspace", "home", "tmp"]) {
+        for (const child of ["workspace", "home", "tmp", "scratch"]) {
           const target = path.join(runner.path, child);
           try {
             if (!fs.existsSync(target)) continue;
-            atomicDrop(target, runner.path);
+            atomicDrop(target, runner.runnersRoot);
+            staleOmpRunnerDataRemoved++;
             journalRecord(args.journal, { event: "stale-omp-runner-data-removed", name: runner.name, path: target });
           } catch (err) {
             journalRecord(args.journal, { event: "stale-omp-runner-data-remove-failed", name: runner.name, path: target, error: err.message });
+          }
+        }
+        if (runner.action === "stop-remove" && !["workspace", "home", "tmp", "scratch"].some((child) => fs.existsSync(path.join(runner.path, child)))) {
+          try {
+            atomicDrop(runner.path, runner.runnersRoot);
+            journalRecord(args.journal, { event: "stale-omp-runner-root-removed", name: runner.name, path: runner.path });
+          } catch (err) {
+            journalRecord(args.journal, { event: "stale-omp-runner-root-remove-failed", name: runner.name, path: runner.path, error: err.message });
           }
         }
       }
@@ -2062,6 +2072,7 @@ async function main() {
         scratchPruned: plan.scratch.length,
         botDataRemoved: plan.botData.length,
         staleOmpRunnersStopped,
+        staleOmpRunnerDataRemoved,
         runCopiesRemoved: runCopiesGone.length,
         runnerTaskFoldersRemoved,
         runnerNpmCachesRemoved: npmCachesGone.length,
@@ -2077,6 +2088,7 @@ async function main() {
         scratchPruned: plan.scratch.length,
         botDataRemoved: plan.botData.length,
         staleOmpRunnersStopped,
+        staleOmpRunnerDataRemoved,
         runCopiesRemoved: runCopiesGone.length,
         runnerTaskFoldersRemoved,
         runnerNpmCachesRemoved: npmCachesGone.length,
