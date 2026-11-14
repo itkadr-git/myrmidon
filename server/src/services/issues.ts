@@ -11949,11 +11949,11 @@ export function issueService(db: Db) {
             .select({ labelId: issueLabels.labelId })
             .from(issueLabels)
             .where(and(eq(issueLabels.companyId, existing.companyId), eq(issueLabels.issueId, updated.id)))
-            .then((rows) => rows.map((row) => row.labelId));
+            .then((rows: Array<{ labelId: string }>) => rows.map((row: { labelId: string }) => row.labelId));
           const nextSet = new Set(nextLabelIds);
           planGateLabelsChanged =
             previousLabelIds.length !== nextSet.size ||
-            previousLabelIds.some((labelId) => !nextSet.has(labelId));
+            previousLabelIds.some((labelId: string) => !nextSet.has(labelId));
         }
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(
@@ -11972,9 +11972,9 @@ export function issueService(db: Db) {
             .from(issueLabels)
             .innerJoin(labels, eq(labels.id, issueLabels.labelId))
             .where(and(eq(issueLabels.companyId, existing.companyId), eq(issueLabels.issueId, updated.id)))
-            .then((rows) => rows.map((row) => row.name));
+            .then((rows: Array<{ name: string }>) => rows.map((row: { name: string }) => row.name));
           const assigneeRole = updated.assigneeAgentId
-            ? await tx.select({ role: agents.role }).from(agents).where(and(eq(agents.id, updated.assigneeAgentId), eq(agents.companyId, existing.companyId))).then((rows) => rows[0]?.role ?? null)
+            ? await tx.select({ role: agents.role }).from(agents).where(and(eq(agents.id, updated.assigneeAgentId), eq(agents.companyId, existing.companyId))).then((rows: Array<{ role: string }>) => rows[0]?.role ?? null)
             : null;
           if (isLargeEngineeringTask({ labels: labelNames, assigneeAgentRole: assigneeRole, casteKey: updated.casteKey })) {
             const hasPlan = await tx
@@ -11982,7 +11982,7 @@ export function issueService(db: Db) {
               .from(issueDocuments)
               .where(and(eq(issueDocuments.companyId, existing.companyId), eq(issueDocuments.issueId, updated.id), eq(issueDocuments.key, "plan")))
               .limit(1)
-              .then((rows) => rows.length > 0);
+              .then((rows: Array<{ id: string }>) => rows.length > 0);
             if (!hasPlan) {
               await tx.update(issues).set({ workMode: "planning", updatedAt: new Date() }).where(eq(issues.id, updated.id));
               updated.workMode = "planning";

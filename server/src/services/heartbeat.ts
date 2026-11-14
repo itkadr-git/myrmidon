@@ -33500,6 +33500,7 @@ export function heartbeatService(
               conversationUserId: issues.conversationUserId,
               conversationState: issues.conversationState,
               status: issues.status,
+              workMode: issues.workMode,
               statusVersion: issues.statusVersion,
               executionState: issues.executionState,
               projectId: issues.projectId,
