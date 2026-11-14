@@ -25,6 +25,12 @@ export const companySecrets = pgTable(
     description: text("description"),
     lastResolvedAt: timestamp("last_resolved_at", { withTimezone: true }),
     lastRotatedAt: timestamp("last_rotated_at", { withTimezone: true }),
+    /**
+     * Board-side deadline for short-lived managed credentials (OPE-12930
+     * KEY-TTL): when set, `resolveSecretValue` refuses the secret past this
+     * instant. Null = no expiry.
+     */
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: text("created_by_user_id"),
