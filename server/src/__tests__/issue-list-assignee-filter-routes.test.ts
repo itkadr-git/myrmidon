@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issues, principalPermissionGrants } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -15,6 +15,7 @@ import {
   ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES,
   issueRoutes,
 } from "../routes/issues.js";
+import { issueService } from "../services/issues.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "../services/successful-run-handoff-state.js";
@@ -1009,57 +1010,37 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     });
   });
 
-  it("rejects non-UUID and non-identifier values for list filter parameters", async () => {
+  it("rejects non-UUID and non-identifier values for list filter parameters without calling svc.list", async () => {
     const companyId = randomUUID();
-    const app = createApp(companyId);
+    const svc = issueService(db);
+    const listSpy = vi.spyOn(svc, "list");
+    const app = createApp(companyId, { issueService: svc });
 
-    const badProject = await request(app)
-      .get(`/api/companies/${companyId}/issues`)
-      .query({ projectId: "PAP-123" });
-    expect(badProject.status).toBe(400);
-    expect(badProject.body.error).toContain("projectId must be a UUID");
+    const badFilters: Array<[string, Record<string, string>, string]> = [
+      ["projectId", { projectId: "PAP-123" }, "projectId must be a UUID"],
+      ["participantAgentId", { participantAgentId: "PAP-123" }, "participantAgentId must be a UUID"],
+      ["workspaceId", { workspaceId: "invalid" }, "workspaceId must be a UUID"],
+      ["executionWorkspaceId", { executionWorkspaceId: "invalid" }, "executionWorkspaceId must be a UUID"],
+      ["labelId", { labelId: "invalid" }, "labelId must be a UUID"],
+      ["parentId malformed", { parentId: "not-a-valid-identifier-or-uuid" }, "parentId must be a UUID or issue identifier"],
+      ["parentId non-existent key", { parentId: "PAP-999999" }, "parentId must be a UUID or issue identifier"],
+      ["parentIssueId malformed", { parentIssueId: "not-a-valid-identifier-or-uuid" }, "parentId must be a UUID or issue identifier"],
+      ["parentIssueId non-existent key", { parentIssueId: "PAP-999999" }, "parentId must be a UUID or issue identifier"],
+      ["descendantOf malformed", { descendantOf: "not-a-valid-identifier-or-uuid" }, "descendantOf must be a UUID or issue identifier"],
+      ["descendantOf non-existent key", { descendantOf: "PAP-999999" }, "descendantOf must be a UUID or issue identifier"],
+      ["createdFromIssueId malformed", { createdFromIssueId: "not-a-valid-identifier-or-uuid" }, "createdFromIssueId must be a UUID or issue identifier"],
+      ["createdFromIssueId non-existent key", { createdFromIssueId: "PAP-999999" }, "createdFromIssueId must be a UUID or issue identifier"],
+    ];
 
-    const badParticipant = await request(app)
-      .get(`/api/companies/${companyId}/issues`)
-      .query({ participantAgentId: "PAP-123" });
-    expect(badParticipant.status).toBe(400);
-    expect(badParticipant.body.error).toContain("participantAgentId must be a UUID");
-
-    const badWorkspace = await request(app)
-      .get(`/api/companies/${companyId}/issues`)
-      .query({ workspaceId: "invalid" });
-    expect(badWorkspace.status).toBe(400);
-    expect(badWorkspace.body.error).toContain("workspaceId must be a UUID");
-
-    const badExecutionWorkspace = await request(app)
-      .get(`/api/companies/${companyId}/issues`)
-      .query({ executionWorkspaceId: "invalid" });
-    expect(badExecutionWorkspace.status).toBe(400);
-    expect(badExecutionWorkspace.body.error).toContain("executionWorkspaceId must be a UUID");
-
-    const badLabel = await request(app)
-      .get(`/api/companies/${companyId}/issues`)
-      .query({ labelId: "invalid" });
-    expect(badLabel.status).toBe(400);
-    expect(badLabel.body.error).toContain("labelId must be a UUID");
-
-    const badParent = await request(app)
-      .get(`/api/companies/${companyId}/issues`)
-      .query({ parentId: "not-a-valid-identifier-or-uuid" });
-    expect(badParent.status).toBe(400);
-    expect(badParent.body.error).toContain("parentId must be a UUID or issue identifier");
-
-    const badDescendant = await request(app)
-      .get(`/api/companies/${companyId}/issues`)
-      .query({ descendantOf: "not-a-valid-identifier-or-uuid" });
-    expect(badDescendant.status).toBe(400);
-    expect(badDescendant.body.error).toContain("descendantOf must be a UUID or issue identifier");
-
-    const badCreatedFrom = await request(app)
-      .get(`/api/companies/${companyId}/issues`)
-      .query({ createdFromIssueId: "not-a-valid-identifier-or-uuid" });
-    expect(badCreatedFrom.status).toBe(400);
-    expect(badCreatedFrom.body.error).toContain("createdFromIssueId must be a UUID or issue identifier");
+    for (const [name, query, expectedError] of badFilters) {
+      listSpy.mockClear();
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/issues`)
+        .query(query);
+      expect(res.status, `status for ${name}`).toBe(400);
+      expect(res.body.error, `error for ${name}`).toContain(expectedError);
+      expect(listSpy, `svc.list must not be called for ${name}`).not.toHaveBeenCalled();
+    }
   });
 
   it("resolves issue identifiers in parentId, descendantOf, and createdFromIssueId filters", async () => {
@@ -1091,7 +1072,9 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       priority: "medium",
       parentId,
     });
-    const app = createApp(companyId);
+    const svc = issueService(db);
+    const listSpy = vi.spyOn(svc, "list");
+    const app = createApp(companyId, { issueService: svc });
 
     const byParent = await request(app)
       .get(`/api/companies/${companyId}/issues`)
@@ -1099,16 +1082,21 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     expect(byParent.status).toBe(200);
     expect(byParent.body).toHaveLength(1);
     expect(byParent.body[0].id).toBe(childId);
+    expect(listSpy).toHaveBeenCalledTimes(1);
 
+    listSpy.mockClear();
     const byDescendant = await request(app)
       .get(`/api/companies/${companyId}/issues`)
       .query({ descendantOf: `${prefix}-1` });
     expect(byDescendant.status).toBe(200);
+    expect(listSpy).toHaveBeenCalledTimes(1);
 
+    listSpy.mockClear();
     const byCreatedFrom = await request(app)
       .get(`/api/companies/${companyId}/issues`)
       .query({ createdFromIssueId: `${prefix}-1` });
     expect(byCreatedFrom.status).toBe(200);
+    expect(listSpy).toHaveBeenCalledTimes(1);
   });
 
   it("returns 422 for non-existent referenced entities when creating an issue", async () => {

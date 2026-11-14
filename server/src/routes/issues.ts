@@ -3807,6 +3807,7 @@ export function issueRoutes(
   db: Db,
   storage: StorageService,
   opts: {
+    issueService?: ReturnType<typeof issueService>;
     chatRunRetries?: Pick<
       ChatChannelService,
       "prepareFailedChatRunRetry" | "processFailedChatRunRetry"
@@ -3870,7 +3871,7 @@ export function issueRoutes(
   } = {},
 ) {
   const router = Router();
-  const svc = issueService(db);
+  const svc = opts.issueService ?? issueService(db);
   const runRedactions = createRunSecretRedactionRegistry(db);
   const access = accessService(db);
   const secretProposals = createSecretProposalsService(db);
@@ -9208,9 +9209,9 @@ export function issueRoutes(
         parentId = trimmed;
       } else {
         const identifier = normalizeIssueReferenceIdentifier(trimmed);
-        if (identifier) {
-          const parentIssue = await svc.getByIdentifier(identifier);
-          parentId = parentIssue ? parentIssue.id : "00000000-0000-0000-0000-000000000000";
+        const parentIssue = identifier ? await svc.getByIdentifier(identifier) : null;
+        if (parentIssue && parentIssue.companyId === companyId) {
+          parentId = parentIssue.id;
         } else {
           logger.warn(
             { parameter: "parentId", value: rawParentId, companyId },
@@ -9230,9 +9231,9 @@ export function issueRoutes(
         descendantOf = trimmed;
       } else {
         const identifier = normalizeIssueReferenceIdentifier(trimmed);
-        if (identifier) {
-          const ancestorIssue = await svc.getByIdentifier(identifier);
-          descendantOf = ancestorIssue ? ancestorIssue.id : "00000000-0000-0000-0000-000000000000";
+        const ancestorIssue = identifier ? await svc.getByIdentifier(identifier) : null;
+        if (ancestorIssue && ancestorIssue.companyId === companyId) {
+          descendantOf = ancestorIssue.id;
         } else {
           logger.warn(
             { parameter: "descendantOf", value: rawDescendantOf, companyId },
@@ -9252,9 +9253,9 @@ export function issueRoutes(
         createdFromIssueId = trimmed;
       } else {
         const identifier = normalizeIssueReferenceIdentifier(trimmed);
-        if (identifier) {
-          const sourceIssue = await svc.getByIdentifier(identifier);
-          createdFromIssueId = sourceIssue ? sourceIssue.id : "00000000-0000-0000-0000-000000000000";
+        const sourceIssue = identifier ? await svc.getByIdentifier(identifier) : null;
+        if (sourceIssue && sourceIssue.companyId === companyId) {
+          createdFromIssueId = sourceIssue.id;
         } else {
           logger.warn(
             { parameter: "createdFromIssueId", value: rawCreatedFromIssueId, companyId },
