@@ -47,6 +47,7 @@ export interface GuardReturnCandidate {
   executionWorkspacePreference?: string | null;
   executionState?: Record<string, unknown> | null;
   projectDefaultCasteKey?: string | null;
+  projectLeadAgentId?: string | null;
   prWorkProducts: PrWorkProductSummary[];
   comments: CommentSummary[];
   createdAt: Date;
@@ -58,6 +59,7 @@ export interface AgentSummary {
   name: string;
   role: string;
   status?: string;
+  pausedAt?: Date | null;
 }
 
 export interface GuardReturnDecision {
@@ -66,6 +68,7 @@ export interface GuardReturnDecision {
   targetAssigneeAgentId?: string;
   targetAssigneeName?: string;
   targetKind?: "pr_author" | "return_assignee" | "active_engineer";
+  replacementReason?: string;
   remarksText?: string | null;
   commentBody?: string;
 }
@@ -336,8 +339,22 @@ export function decideGuardReturn(
   }
 
   // Resolve target engineer to return to
-  // Priority 1: PR author / committer
-  let targetAssigneeAgentId: string | null = prAuthorId;
+  const isAvailableEngineer = (id: string | null | undefined): boolean => {
+    if (!id) return false;
+    const agent = agentMap.get(id) ?? activeEngineers?.find((entry) => entry.id === id);
+    return Boolean(agent && agent.role === "engineer" && agent.status !== "paused" && agent.status !== "terminated" && agent.status !== "pending_approval" && !agent.pausedAt);
+  };
+  const isAvailableLead = (id: string | null | undefined): boolean => {
+    if (!id) return false;
+    const agent = agentMap.get(id);
+    return Boolean(agent && agent.role === "lead" && agent.status !== "paused" && agent.status !== "terminated" && agent.status !== "pending_approval" && !agent.pausedAt);
+  };
+
+  // Prefer the original author only while they can accept a new run.
+  let targetAssigneeAgentId: string | null = isAvailableEngineer(prAuthorId) ? prAuthorId : null;
+  const replacementReason = prAuthorId && !targetAssigneeAgentId
+    ? `PR author is unavailable (${agentMap.get(prAuthorId)?.status ?? "unknown"})`
+    : undefined;
   let targetKind: "pr_author" | "return_assignee" | "active_engineer" = "pr_author";
 
   // Priority 2: returnAssignee from executionState
@@ -345,17 +362,25 @@ export function decideGuardReturn(
     const returnAssignee = candidate.executionState.returnAssignee as Record<string, unknown> | undefined;
     if (returnAssignee && returnAssignee.type === "agent" && typeof returnAssignee.agentId === "string") {
       const returnAgent = agentMap.get(returnAssignee.agentId);
-      if (returnAgent && returnAgent.role === "engineer") {
+      if (returnAgent && isAvailableEngineer(returnAgent.id)) {
         targetAssigneeAgentId = returnAgent.id;
         targetKind = "return_assignee";
       }
     }
   }
 
-  // Priority 3: any active engineer in the company
+  // Priority 3: an active engineer, then the project lead for planning tasks.
   if (!targetAssigneeAgentId && activeEngineers && activeEngineers.length > 0) {
-    targetAssigneeAgentId = activeEngineers[0].id;
-    targetKind = "active_engineer";
+    targetAssigneeAgentId = activeEngineers.find((agent) => isAvailableEngineer(agent.id))?.id ?? null;
+    if (targetAssigneeAgentId) targetKind = "active_engineer";
+  }
+
+  if (!targetAssigneeAgentId && candidate.projectId) {
+    const projectLead = candidate.projectLeadAgentId;
+    if (isAvailableLead(projectLead)) {
+      targetAssigneeAgentId = projectLead;
+      targetKind = "active_engineer";
+    }
   }
 
   if (!targetAssigneeAgentId) {
@@ -376,6 +401,7 @@ export function decideGuardReturn(
     targetAssigneeAgentId,
     targetAssigneeName: targetAgentName,
     targetKind,
+    replacementReason,
     remarksText,
     commentBody,
   };
