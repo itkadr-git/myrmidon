@@ -123,6 +123,25 @@ describe("extractReviewFeedback — safe 30-day extraction contract", () => {
   });
 
   describe("non-review comments rejection", () => {
+    it("excludes unapproved/private review-like bodies unless their source is an approved review record", () => {
+      const privateDraftBody = "REQUEST CHANGES: private draft includes restricted details";
+      const result = extractReviewFeedback(
+        [
+          validSource({
+            id: "draft-comment",
+            kind: "issue_comment",
+            body: privateDraftBody,
+          }),
+        ],
+        NOW,
+      );
+
+      // Review-looking prose is not evidence of approval; only the caller's
+      // authorized review source kind may cross into the digest input.
+      expect(result).toBe(false);
+      expect(JSON.stringify(result)).not.toContain(privateDraftBody);
+    });
+
     it("returns false if an ordinary issue_comment appears", () => {
       const result = extractReviewFeedback(
         [
