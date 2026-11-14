@@ -196,6 +196,26 @@ export const bridgeTextEn = {
   "bridge.thisAgent": "this agent",
   "bridge.refusalUnlinked":
     "This bot is available to workspace members only. Ask an administrator to link your Telegram account.",
+
+  // myrmidon(1.7-TG-LOCALE / OPE-12689): owner update-lifecycle notices
+  // (canary start, rollout success, auto-rollback start/finish, maintenance
+  // window). A notice has no addressee user, so the caller resolves the
+  // instance locale (env force → instance setting → en). The ru catalog
+  // mirrors these byte-for-byte with the pre-localization Russian literals;
+  // the clause keys keep the conditional wording ("for version …",
+  // "Reason: …") in the catalog instead of the code.
+  "update.canary_started": "🐤 Canary update starting: {version}{detail}",
+  "update.rollout_succeeded": "✅ Update rollout succeeded: {version}{commit}",
+  "update.rollback_started": "⚠️ Automatic rollback starting{version}{reason}",
+  "update.rollback_completed": "🚨 Automatic rollback completed{version}{reason}",
+  "update.waiting_window": "⏳ Waiting for the maintenance window for {version}{window}",
+  "update.defaultVersion": "a new version",
+  "update.defaultTarget": "an update",
+  "update.rollbackVersionClause": " for version {version}",
+  "update.rollbackTargetClause": " to version {version}",
+  "update.reasonLine": ": {reason}",
+  "update.reasonSentence": ". Reason: {reason}",
+  "update.windowSuffix": " (window: {window})",
 } as const;
 
 export type BridgeTextKey = keyof typeof bridgeTextEn;

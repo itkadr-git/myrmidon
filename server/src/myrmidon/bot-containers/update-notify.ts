@@ -6,6 +6,13 @@ import { readTelegramNotifySettingsDocument } from "../telegram-notify/settings-
 import { resolveTargetConversation } from "../telegram-notify/jobs.js";
 import { projectSafeChatPublication } from "../../services/chat-publication-projection.js";
 import { logger } from "../../middleware/logger.js";
+// myrmidon(1.7-TG-LOCALE / OPE-12689): the notice prose lives in the bridge
+// locale catalogs (update.* keys); the locale type comes with it.
+import { t, type BridgeLocale } from "../agent-chat-bridge/locales/index.js";
+// myrmidon(1.7-TG-LOCALE / OPE-12689): the instance locale is resolved through
+// the connector seam like the rest of the channel code (env force, then the
+// instance-wide setting, then English) — a notice has no addressee user.
+import { telegramDmMenuLocale } from "../channel-connectors/bridge/locales.js";
 
 export type UpdateEventType =
   | "canary_started"
@@ -27,50 +34,51 @@ export interface UpdateEventPayload {
   detail?: string | null;
 }
 
-export function formatUpdateEventMessage(event: UpdateEventPayload): string {
+export function formatUpdateEventMessage(event: UpdateEventPayload, locale: BridgeLocale): string {
   switch (event.eventType) {
     case "canary_started": {
-      const v =
+      const version =
         event.version ??
         event.targetVersion ??
         (event.digest ? event.digest.slice(0, 12) : null) ??
-        "новая версия";
+        t(locale, "update.defaultVersion");
       const detail = event.detail ? ` (${event.detail})` : "";
-      return `🐤 Начало канареечного обновления: ${v}${detail}`;
+      return t(locale, "update.canary_started", { version, detail });
     }
     case "rollout_succeeded": {
-      const v =
+      const version =
         event.version ??
         event.targetVersion ??
         (event.digest ? event.digest.slice(0, 12) : null) ??
-        "новая версия";
+        t(locale, "update.defaultVersion");
       const commit = event.commit ? ` [${event.commit.slice(0, 7)}]` : "";
-      return `✅ Успешный выкат обновления: ${v}${commit}`;
+      return t(locale, "update.rollout_succeeded", { version, commit });
     }
     case "rollback_started": {
-      const v = event.version ?? (event.digest ? event.digest.slice(0, 12) : null) ?? "";
-      const reason = event.reason ? `: ${event.reason}` : "";
-      return `⚠️ Начало автоматического отката${v ? ` версии ${v}` : ""}${reason}`;
+      const version = event.version ?? (event.digest ? event.digest.slice(0, 12) : null) ?? "";
+      return t(locale, "update.rollback_started", {
+        version: version ? t(locale, "update.rollbackVersionClause", { version }) : "",
+        reason: event.reason ? t(locale, "update.reasonLine", { reason: event.reason }) : "",
+      });
     }
     case "rollback_completed": {
-      const target = event.targetVersion ? ` на версию ${event.targetVersion}` : "";
-      const reason = event.reason ? `. Причина: ${event.reason}` : "";
-      return `🚨 Автооткат завершён${target}${reason}`;
+      return t(locale, "update.rollback_completed", {
+        version: event.targetVersion
+          ? t(locale, "update.rollbackTargetClause", { version: event.targetVersion })
+          : "",
+        reason: event.reason ? t(locale, "update.reasonSentence", { reason: event.reason }) : "",
+      });
     }
     case "waiting_window": {
-      const v = event.version ?? event.targetVersion ?? "обновления";
+      const version = event.version ?? event.targetVersion ?? t(locale, "update.defaultTarget");
       const window = event.windowStart
-        ? ` (окно: ${event.windowStart}${event.windowEnd ? ` – ${event.windowEnd}` : ""})`
+        ? t(locale, "update.windowSuffix", {
+            window: `${event.windowStart}${event.windowEnd ? ` – ${event.windowEnd}` : ""}`,
+          })
         : "";
-      return `⏳ Ожидание окна обслуживания для ${v}${window}`;
+      return t(locale, "update.waiting_window", { version, window });
     }
   }
-}
-
-export interface UpdateNotifyDeliveryRecipient {
-  conversationId: string;
-  endpointId: string;
-  issueId: string;
 }
 
 export interface UpdateNotifyPorts {
@@ -91,7 +99,17 @@ export interface UpdateNotifyPorts {
     idempotencyKey: string;
     text: string;
   }): Promise<{ inserted: boolean }>;
+  /** myrmidon(1.7-TG-LOCALE / OPE-12689): the notice language (no addressee
+   * user exists — the receiver is the owner dialog or a configured chat, so
+   * the locale is the instance-wide one, not a person's preference). */
+  resolveLocale(): Promise<BridgeLocale>;
   now(): Date;
+}
+
+export interface UpdateNotifyDeliveryRecipient {
+  conversationId: string;
+  endpointId: string;
+  issueId: string;
 }
 
 export async function notifyOwnerAboutUpdate(
@@ -107,7 +125,8 @@ export async function notifyOwnerAboutUpdate(
     return { sent: false, reason: "updates_disabled" };
   }
 
-  const messageText = formatUpdateEventMessage(event);
+  const locale = await ports.resolveLocale();
+  const messageText = formatUpdateEventMessage(event, locale);
   const idempotencyKey = `update-notify:${event.companyId}:${event.eventType}:${event.version ?? ""}:${event.commit ?? ""}:${event.reason ?? ""}:${event.windowStart ?? ""}:${ports
     .now()
     .toISOString()
@@ -183,6 +202,13 @@ export async function findActiveOwnerDeliveryConversation(
 
 export function createDbUpdateNotifyPorts(db: Db): UpdateNotifyPorts {
   return {
+    // myrmidon(1.7-TG-LOCALE / OPE-12689): the instance-wide locale (env
+    // force, then the instance setting, then English) — same resolution the
+    // Telegram command menu uses; read per notice, so a language change takes
+    // effect without a restart.
+    async resolveLocale() {
+      return telegramDmMenuLocale(db);
+    },
     async readSettings(companyId: string) {
       const doc = await readTelegramNotifySettingsDocument(db, companyId);
       return doc.settings;
