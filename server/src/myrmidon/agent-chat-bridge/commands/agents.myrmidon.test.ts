@@ -633,14 +633,14 @@ const support = await getEmbeddedPostgresTestSupport();
       text: "@life ping",
       endpointAgentId: groupedInfraId,
     });
-    expect(lifeMention?.agentId).toBe(groupedLifeId);
+    expect(lifeMention).toEqual({ kind: "resolved", addressee: { agentId: groupedLifeId, displayName: "life-bot" } });
     // A computed alias is mentionable as well …
     const hostMention = await resolveBridgeAddressee(db, {
       companyId: groupedCompanyId,
       text: "@host ping",
       endpointAgentId: groupedInfraId,
     });
-    expect(hostMention?.agentId).toBe(groupedBbqHostId);
+    expect(hostMention).toEqual({ kind: "resolved", addressee: { agentId: groupedBbqHostId, displayName: "bbq-host" } });
 
     // Computed on read only: the card keeps the data the board put there.
     const [card] = await db
