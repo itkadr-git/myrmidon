@@ -9248,12 +9248,21 @@ export function issueRoutes(
     let createdFromIssueId: string | undefined;
     if (rawCreatedFromIssueId !== undefined) {
       const trimmed = rawCreatedFromIssueId.trim();
-      const identifier = normalizeIssueReferenceIdentifier(trimmed);
-      if (identifier) {
-        const sourceIssue = await svc.getByIdentifier(identifier);
-        createdFromIssueId = sourceIssue ? sourceIssue.id : "00000000-0000-0000-0000-000000000000";
-      } else {
+      if (isUuidLike(trimmed)) {
         createdFromIssueId = trimmed;
+      } else {
+        const identifier = normalizeIssueReferenceIdentifier(trimmed);
+        if (identifier) {
+          const sourceIssue = await svc.getByIdentifier(identifier);
+          createdFromIssueId = sourceIssue ? sourceIssue.id : "00000000-0000-0000-0000-000000000000";
+        } else {
+          logger.warn(
+            { parameter: "createdFromIssueId", value: rawCreatedFromIssueId, companyId },
+            "invalid identifier query parameter format",
+          );
+          res.status(400).json({ error: "createdFromIssueId must be a UUID or issue identifier" });
+          return;
+        }
       }
     }
 
@@ -13289,7 +13298,7 @@ export function issueRoutes(
           createParent = await svc.getById(effectiveParentId);
         }
         if (!createParent || createParent.companyId !== companyId) {
-          res.status(404).json({ error: "Parent issue not found" });
+          res.status(422).json({ error: "parent issue not found" });
           return;
         }
         if (
@@ -13307,6 +13316,33 @@ export function issueRoutes(
         typeof rawCreateBody.projectId === "string" && rawCreateBody.projectId.length > 0
           ? rawCreateBody.projectId
           : (inheritedProjectId ?? null);
+      if (effectiveProjectId) {
+        const project = await projectsSvc.getById(effectiveProjectId);
+        if (!project || project.companyId !== companyId) {
+          res.status(422).json({ error: "project not found" });
+          return;
+        }
+      }
+      if (rawCreateBody.goalId) {
+        const goal = await goalsSvc.getById(rawCreateBody.goalId);
+        if (!goal || goal.companyId !== companyId) {
+          res.status(422).json({ error: "goal not found" });
+          return;
+        }
+      }
+      let createLabelNames: string[] = [];
+      if (Array.isArray(rawCreateBody.labelIds) && rawCreateBody.labelIds.length > 0) {
+        const uniqueLabelIds = [...new Set(rawCreateBody.labelIds as string[])];
+        const existingLabels = await db
+          .select({ id: labels.id, name: labels.name })
+          .from(labels)
+          .where(and(eq(labels.companyId, companyId), inArray(labels.id, uniqueLabelIds)));
+        if (existingLabels.length !== uniqueLabelIds.length) {
+          res.status(422).json({ error: "label not found" });
+          return;
+        }
+        createLabelNames = existingLabels.map((r) => r.name);
+      }
       if (
         !watchdogProductBugFollowUp &&
         !(await assertTaskWatchdogCreateIssueAllowed(
@@ -13317,12 +13353,21 @@ export function issueRoutes(
         ))
       )
         return;
-      const normalizedAssigneeAgentId =
-        await normalizeIssueAssigneeAgentReference(
-          companyId,
-          rawCreateBody.assigneeAgentId as string | null | undefined,
-          { actorType: req.actor.type },
-        );
+      let normalizedAssigneeAgentId: string | null | undefined;
+      try {
+        normalizedAssigneeAgentId =
+          await normalizeIssueAssigneeAgentReference(
+            companyId,
+            rawCreateBody.assigneeAgentId as string | null | undefined,
+            { actorType: req.actor.type },
+          );
+      } catch (err: any) {
+        if (err?.status === 404 && err?.message === "Agent not found") {
+          res.status(422).json({ error: "agent not found" });
+          return;
+        }
+        throw err;
+      }
       const initialStatus = typeof rawCreateBody.status === "string" ? rawCreateBody.status : "todo";
       await assertEngineerForCodeIssue({
         companyId,
@@ -13337,9 +13382,9 @@ export function issueRoutes(
           typeof rawCreateBody.executionWorkspacePreference === "string"
             ? rawCreateBody.executionWorkspacePreference
             : null,
+        executionWorkspaceSettings:
+          rawCreateBody.executionWorkspaceSettings ?? null,
       });
-      // TASK-CARD-READINESS-3: when creating a task born in todo for an
-      // engineer, assert readiness at the route boundary before insertion.
       // Only explicit engineer signals on the create body itself gate the
       // create (casteKey: "engineer" pinned by the caller or a
       // needs-engineer label): the project default and the workspace
@@ -13349,14 +13394,6 @@ export function issueRoutes(
       // assertEngineerForCodeIssue and the swarm queue; this gate only needs
       // the card-completeness subset.
       if (initialStatus === "todo") {
-        let createLabelNames: string[] = [];
-        if (Array.isArray(rawCreateBody.labelIds) && rawCreateBody.labelIds.length > 0) {
-          createLabelNames = await db
-            .select({ name: labels.name })
-            .from(labels)
-            .where(and(eq(labels.companyId, companyId), inArray(labels.id, rawCreateBody.labelIds as string[])))
-            .then((rows) => rows.map((r) => r.name));
-        }
         const createCasteKey =
           typeof rawCreateBody.casteKey === "string" && rawCreateBody.casteKey.trim().length > 0
             ? rawCreateBody.casteKey

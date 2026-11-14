@@ -1054,5 +1054,68 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       .query({ descendantOf: "not-a-valid-identifier-or-uuid" });
     expect(badDescendant.status).toBe(400);
     expect(badDescendant.body.error).toContain("descendantOf must be a UUID or issue identifier");
+
+    const badCreatedFrom = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ createdFromIssueId: "not-a-valid-identifier-or-uuid" });
+    expect(badCreatedFrom.status).toBe(400);
+    expect(badCreatedFrom.body.error).toContain("createdFromIssueId must be a UUID or issue identifier");
+  });
+
+  it("returns 422 for non-existent referenced entities when creating an issue", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Issue Creation Ref Test",
+      issuePrefix: uniqueIssuePrefix(),
+      defaultResponsibleUserId: "cloud-user-1",
+    });
+    await seedCloudTenantMember(companyId);
+    const app = createApp(companyId);
+
+    const badProject = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Test issue missing project",
+        projectId: randomUUID(),
+      });
+    expect(badProject.status).toBe(422);
+    expect(badProject.body.error).toContain("project not found");
+
+    const badParent = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Test issue missing parent",
+        parentId: randomUUID(),
+      });
+    expect(badParent.status).toBe(422);
+    expect(badParent.body.error).toContain("parent issue not found");
+
+    const badAgent = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Test issue missing agent",
+        assigneeAgentId: randomUUID(),
+      });
+    expect(badAgent.status).toBe(422);
+    expect(badAgent.body.error).toContain("agent not found");
+
+    const badGoal = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Test issue missing goal",
+        goalId: randomUUID(),
+      });
+    expect(badGoal.status).toBe(422);
+    expect(badGoal.body.error).toContain("goal not found");
+
+    const badLabels = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Test issue missing labels",
+        labelIds: [randomUUID()],
+      });
+    expect(badLabels.status).toBe(422);
+    expect(badLabels.body.error).toContain("label not found");
   });
 });
