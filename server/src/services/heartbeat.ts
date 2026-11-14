@@ -13450,6 +13450,10 @@ export function heartbeatService(
             ${issues.status} = 'in_review'
             and ${issues.executionState} ->> 'status' = 'pending'
             and ${issues.executionState} ->> 'currentStageType' = 'review'
+            and coalesce(${issues.executionPolicy} -> 'monitor' ->> 'serviceName', '') not in (
+              ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME},
+              ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+            )
           )`,
           or(
             isNull(issues.monitorWakeRequestedAt),
@@ -13483,6 +13487,10 @@ export function heartbeatService(
                 ${issues.status} = 'in_review'
                 and ${issues.executionState} ->> 'status' = 'pending'
                 and ${issues.executionState} ->> 'currentStageType' = 'review'
+                and coalesce(${issues.executionPolicy} -> 'monitor' ->> 'serviceName', '') not in (
+                  ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME},
+                  ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+                )
               )`,
               or(
                 isNull(issues.monitorWakeRequestedAt),
