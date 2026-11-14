@@ -9533,6 +9533,13 @@ export function buildPaperclipTaskMarkdown(input: {
       // Developer reviewer: the task text above plus the pull request reference
       // and the instruction to read the diff itself. The board attaches no diff.
       lines.push("", ...renderReviewerInputSection(input.reviewerInput));
+      if (input.taskPlan?.body.trim()) {
+        lines.push(
+          "",
+          "Plan invariants verification:",
+          "Verify that the implementation satisfies the invariants specified in the task plan document.",
+        );
+      }
     }
     const wakePayload = input.wakePayload;
     const prsCi = (
@@ -10762,6 +10769,38 @@ export function heartbeatService(
     return (
       readNonEmptyString(target.type) === "issue_document" &&
       readNonEmptyString(target.key) === "plan"
+    );
+  }
+
+  // True only when the wake carries a resolved (accepted/rejected) plan
+  // approval card of this issue: the one event allowed through the plan gate.
+  async function isPlanApprovalResolutionWake(
+    reader: Pick<typeof db, "select">,
+    companyId: string,
+    issueId: string,
+    interactionId: string | null,
+  ) {
+    if (!interactionId) return false;
+    const interaction = await reader
+      .select({
+        kind: issueThreadInteractions.kind,
+        status: issueThreadInteractions.status,
+        payload: issueThreadInteractions.payload,
+      })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.issueId, issueId),
+          eq(issueThreadInteractions.id, interactionId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    return Boolean(
+      interaction &&
+        interaction.kind === "request_confirmation" &&
+        (interaction.status === "accepted" || interaction.status === "rejected") &&
+        isPlanApprovalConfirmationPayload(interaction.payload),
     );
   }
 
@@ -20238,12 +20277,59 @@ export function heartbeatService(
     }
 
     const claimedAt = new Date();
+    const issueContext = issueId
+      ? await getIssueExecutionContext(run.companyId, issueId)
+      : null;
+    // Only the assignee's runs are gated; the plan approver (another agent)
+    // must be able to run in order to review and accept the plan card.
+    if (
+      issueId &&
+      issueContext?.workMode === "planning" &&
+      (!issueContext.assigneeAgentId || issueContext.assigneeAgentId === run.agentId)
+    ) {
+      // The gate covers every wake type. Only the plan-approval resolution
+      // itself (accepted/rejected plan card) may pass while a plan card is
+      // pending; a comment or any other interaction never admits implementation.
+      const wakeInteractionId = readNonEmptyString(context.interactionId);
+      const isPlanResolutionWake = await isPlanApprovalResolutionWake(
+        db,
+        run.companyId,
+        issueId,
+        wakeInteractionId,
+      );
+      if (!isPlanResolutionWake) {
+        const pendingConfirmations = await db
+          .select({ id: issueThreadInteractions.id, payload: issueThreadInteractions.payload })
+          .from(issueThreadInteractions)
+          .where(
+            and(
+              eq(issueThreadInteractions.companyId, run.companyId),
+              eq(issueThreadInteractions.issueId, issueId),
+              eq(issueThreadInteractions.kind, "request_confirmation"),
+              eq(issueThreadInteractions.status, "pending"),
+            ),
+          );
+        const pendingPlanConfirmation = pendingConfirmations.find((row) =>
+          isPlanApprovalConfirmationPayload(row.payload),
+        );
+        if (pendingPlanConfirmation) {
+          await cancelRunInternal(
+            run.id,
+            "Cancelled because plan approval is pending",
+            { errorCode: "plan_approval_pending" },
+          );
+          logger.info(
+            { runId: run.id, issueId },
+            "claimQueuedRun: cancelled queued run while plan approval is pending",
+          );
+          return null;
+        }
+      }
+    }
     const responsibleUserId = await resolveResponsibleUserIdForRun({
       run,
       contextSnapshot: context,
-      issueContext: issueId
-        ? await getIssueExecutionContext(run.companyId, issueId)
-        : null,
+      issueContext,
       routineEnvContext: {
         routineId: null,
         env: null,
@@ -33755,6 +33841,7 @@ export function heartbeatService(
               conversationUserId: issues.conversationUserId,
               conversationState: issues.conversationState,
               status: issues.status,
+              workMode: issues.workMode,
               statusVersion: issues.statusVersion,
               executionState: issues.executionState,
               projectId: issues.projectId,
@@ -34868,6 +34955,60 @@ export function heartbeatService(
                 finishedAt: new Date(),
               });
               return { kind: "skipped" as const };
+            }
+
+            const continuationInteractionId =
+              readNonEmptyString(enrichedContextSnapshot.interactionId) ??
+              readNonEmptyString(payload?.interactionId);
+            const isPlanResolutionContinuation = issue.workMode === "planning" &&
+              await isPlanApprovalResolutionWake(
+                tx,
+                issue.companyId,
+                issue.id,
+                continuationInteractionId,
+              );
+            if (issue.workMode === "planning" && !isPlanResolutionContinuation) {
+              const pendingConfirmations = await tx
+                .select({ id: issueThreadInteractions.id, payload: issueThreadInteractions.payload })
+                .from(issueThreadInteractions)
+                .where(
+                  and(
+                    eq(issueThreadInteractions.companyId, issue.companyId),
+                    eq(issueThreadInteractions.issueId, issue.id),
+                    eq(issueThreadInteractions.kind, "request_confirmation"),
+                    eq(issueThreadInteractions.status, "pending"),
+                  ),
+                );
+              const pendingPlanConfirmation = pendingConfirmations.find((row) =>
+                isPlanApprovalConfirmationPayload(row.payload),
+              );
+              if (pendingPlanConfirmation) {
+                await tx.insert(agentWakeupRequests).values({
+                  ...durableReceiptFields,
+                  companyId: agent.companyId,
+                  agentId,
+                  source,
+                  triggerDetail,
+                  reason: "plan_approval_pending",
+                  payload: {
+                    ...(payload ?? {}),
+                    issueId,
+                    continuationSkipped: "plan_approval_pending",
+                    heartbeatSkip: {
+                      reason:
+                        "Plan approval is pending before implementation continuation can be admitted.",
+                      issueId: issue.id,
+                      workMode: issue.workMode,
+                    },
+                  },
+                  status: "skipped",
+                  requestedByActorType: opts.requestedByActorType ?? null,
+                  requestedByActorId: opts.requestedByActorId ?? null,
+                  idempotencyKey: opts.idempotencyKey ?? null,
+                  finishedAt: new Date(),
+                });
+                return { kind: "skipped" as const };
+              }
             }
 
             // myrmidon(OPE-11948): the real attempt counter. Succeeded

@@ -1650,6 +1650,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "missing_issue_comment",
   "native_safe_replacement",
   "pause_resume",
+  "plan_approval_pending",
   "process_lost_retry",
   "project.token_quota_exceeded",
   "provider_quota_recovery",
