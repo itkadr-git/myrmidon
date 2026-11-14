@@ -212,8 +212,9 @@ export function normalizeAgentApiKeyScope(value: unknown): AgentApiKeyScope {
 }
 
 export const createAgentKeySchema = z.object({
-  name: z.string().min(1).default("default"),
+  name: z.string().trim().min(1).max(100).optional().default("default"),
   scope: agentApiKeyScopeSchema.optional().default({ kind: "standard" }),
+  expiresAt: z.coerce.date().nullable().optional(),
 });
 
 export type CreateAgentKey = z.infer<typeof createAgentKeySchema>;

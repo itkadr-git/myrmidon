@@ -37,7 +37,15 @@ function createSelectChain(rowsForTable: (table: unknown) => unknown[]) {
 
 function createDbState(input: {
   agent: { id: string; companyId: string; status?: string };
-  agentKey?: { id: string; agentId: string; companyId: string; keyHash: string; responsibleUserId?: string | null };
+  agentKey?: {
+    id: string;
+    agentId: string;
+    companyId: string;
+    keyHash: string;
+    responsibleUserId?: string | null;
+    expiresAt?: Date | null;
+    revokedAt?: Date | null;
+  };
   run?: { id: string; companyId: string; agentId: string; responsibleUserId?: string | null };
 }) {
   const activity: Array<Record<string, unknown>> = [];
@@ -53,7 +61,8 @@ function createDbState(input: {
         companyId: input.agentKey.companyId,
         keyHash: input.agentKey.keyHash,
         responsibleUserId: input.agentKey.responsibleUserId ?? null,
-        revokedAt: null,
+        revokedAt: input.agentKey.revokedAt ?? null,
+        expiresAt: input.agentKey.expiresAt ?? null,
         scopeConfig: null,
       }
     : null;
@@ -633,6 +642,87 @@ describe("agent auth middleware", () => {
       entityId: keyId,
       details: { method: "GET", url: `/companies/${companyId}/protected` },
     });
+  });
+
+  it("authenticates agent keys without expiresAt (legacy behavior)", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const token = "pcp_test_agent_key_no_expiry";
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      agentKey: {
+        id: randomUUID(),
+        agentId,
+        companyId,
+        keyHash: hashToken(token),
+        responsibleUserId: "user-key",
+        expiresAt: null,
+      },
+    });
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      type: "agent",
+      agentId,
+      companyId,
+    });
+  });
+
+  it("authenticates agent keys with future expiresAt", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const token = "pcp_test_agent_key_future_expiry";
+    const futureDate = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      agentKey: {
+        id: randomUUID(),
+        agentId,
+        companyId,
+        keyHash: hashToken(token),
+        responsibleUserId: "user-key",
+        expiresAt: futureDate,
+      },
+    });
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      type: "agent",
+      agentId,
+      companyId,
+    });
+  });
+
+  it("rejects expired agent keys with 401 when expiresAt is in the past", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const token = "pcp_test_agent_key_expired";
+    const pastDate = new Date(Date.now() - 60 * 1000);
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      agentKey: {
+        id: randomUUID(),
+        agentId,
+        companyId,
+        keyHash: hashToken(token),
+        responsibleUserId: "user-key",
+        expiresAt: pastDate,
+      },
+    });
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(401);
   });
 });
 

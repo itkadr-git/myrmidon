@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, gte, inArray, lt, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import { resolveStatusOnResume } from "../myrmidon/pause-drain.js";
 import { versionKeyEtag } from "../middleware/version-key-etag.js";
 import {
@@ -1654,7 +1654,7 @@ export function agentService(
       id: string,
       name: string,
       scope: AgentApiKeyScope = { kind: "standard" },
-      options?: { responsibleUserId?: string | null },
+      options?: { responsibleUserId?: string | null; expiresAt?: Date | null },
     ) => {
       const existing = await getById(id);
       if (!existing) throw notFound("Agent not found");
@@ -1676,6 +1676,7 @@ export function agentService(
           keyHash,
           responsibleUserId: options?.responsibleUserId?.trim() || null,
           scopeConfig: scope.kind === "standard" ? null : scope,
+          expiresAt: options?.expiresAt ?? null,
         })
         .returning()
         .then((rows) => rows[0]);
@@ -1686,6 +1687,7 @@ export function agentService(
         scope: normalizeAgentApiKeyScope(created.scopeConfig),
         responsibleUserId: created.responsibleUserId,
         token,
+        expiresAt: created.expiresAt ?? null,
         createdAt: created.createdAt,
       };
     },
@@ -1697,6 +1699,7 @@ export function agentService(
           name: agentApiKeys.name,
           responsibleUserId: agentApiKeys.responsibleUserId,
           scopeConfig: agentApiKeys.scopeConfig,
+          expiresAt: agentApiKeys.expiresAt,
           createdAt: agentApiKeys.createdAt,
           revokedAt: agentApiKeys.revokedAt,
         })
@@ -1707,6 +1710,30 @@ export function agentService(
           name: row.name,
           scope: normalizeAgentApiKeyScope(row.scopeConfig),
           responsibleUserId: row.responsibleUserId,
+          expiresAt: row.expiresAt ?? null,
+          createdAt: row.createdAt,
+          revokedAt: row.revokedAt,
+        }))),
+
+    listApiKeys: (id: string) =>
+      db
+        .select({
+          id: agentApiKeys.id,
+          name: agentApiKeys.name,
+          responsibleUserId: agentApiKeys.responsibleUserId,
+          scopeConfig: agentApiKeys.scopeConfig,
+          expiresAt: agentApiKeys.expiresAt,
+          createdAt: agentApiKeys.createdAt,
+          revokedAt: agentApiKeys.revokedAt,
+        })
+        .from(agentApiKeys)
+        .where(eq(agentApiKeys.agentId, id))
+        .then((rows) => rows.map((row) => ({
+          id: row.id,
+          name: row.name,
+          scope: normalizeAgentApiKeyScope(row.scopeConfig),
+          responsibleUserId: row.responsibleUserId,
+          expiresAt: row.expiresAt ?? null,
           createdAt: row.createdAt,
           revokedAt: row.revokedAt,
         }))),
@@ -1720,6 +1747,7 @@ export function agentService(
           name: agentApiKeys.name,
           responsibleUserId: agentApiKeys.responsibleUserId,
           scopeConfig: agentApiKeys.scopeConfig,
+          expiresAt: agentApiKeys.expiresAt,
           createdAt: agentApiKeys.createdAt,
           revokedAt: agentApiKeys.revokedAt,
         })
@@ -1730,6 +1758,7 @@ export function agentService(
           return row
             ? {
               ...row,
+              expiresAt: row.expiresAt ?? null,
               scope: normalizeAgentApiKeyScope(row.scopeConfig),
             }
             : null;
@@ -1742,6 +1771,20 @@ export function agentService(
         .where(and(eq(agentApiKeys.id, keyId), eq(agentApiKeys.agentId, agentId)))
         .returning();
       return rows[0] ?? null;
+    },
+
+    authenticateApiKey: async (token: string) => {
+      const tokenHash = hashToken(token);
+      const rows = await db
+        .select()
+        .from(agentApiKeys)
+        .where(and(eq(agentApiKeys.keyHash, tokenHash), isNull(agentApiKeys.revokedAt)));
+      const key = rows[0] ?? null;
+      if (!key) return null;
+      if (key.expiresAt && key.expiresAt.getTime() <= Date.now()) {
+        return null;
+      }
+      return key;
     },
 
     orgForCompany: async (companyId: string) => {
