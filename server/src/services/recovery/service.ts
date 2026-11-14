@@ -4804,6 +4804,23 @@ export function recoveryService(
     scheduledRetryReason?: string | null;
     hasPendingCi?: boolean;
   }) {
+    // Recovery must not take ownership away from a live assignee. The issue
+    // checkout lock can be transiently absent while checkout is being claimed;
+    // a queued/running wake is the authoritative signal to leave it untouched.
+    const liveAssigneeWork = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, input.issue.companyId),
+        ...(input.issue.assigneeAgentId
+          ? [eq(heartbeatRuns.agentId, input.issue.assigneeAgentId)]
+          : []),
+        inArray(heartbeatRuns.status, [...ACTIVE_RUN_STATUSES]),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issue.id}`,
+      ))
+      .limit(1);
+    if (liveAssigneeWork.length > 0) return null;
+
     // myrmidon(OPE-10045): a pending review stage whose reviewer run ended
     // without a decision first waits for CI on the PR head, then gets one more
     // explicit decision request. Only after that is it escalated, and the
