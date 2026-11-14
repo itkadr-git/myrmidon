@@ -1644,6 +1644,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "run_liveness_continuation",
   "run_stalled",
   "skill_test_run_created",
+  "starter_pack_scout",
   "swarm_claim_queue",
   "task_watchdog_stopped_subtree",
   "wake_skipped_pr_settle_pending",
