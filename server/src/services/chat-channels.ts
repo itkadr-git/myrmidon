@@ -190,11 +190,6 @@ import {
   telegramStopSubscriptionPlan,
   telegramStopSubscriptionConfirmed,
 } from "./chat-telegram-stop-subscription.js";
-import {
-  nativeFailedRunRetryStateIsSafe,
-  nativePreProviderRetryAfterCleanupStateIsSafe,
-  nativeProviderRecoveryEvidence,
-} from "./native-runtime/native-session-executor.js";
 import { parseChatWebhookPublicBaseUrl } from "../chat-webhook-public-url.js";
 import {
   parseGitHubReceiptIdentity,
@@ -12583,6 +12578,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           detail.checkpointExists !== true))
     )
       throw failedChatRetryDenied();
+    const { nativeProviderRecoveryEvidence } = await import("./native-runtime/native-session-executor.js");
     const evidence = await nativeProviderRecoveryEvidence({
       db: tx as Db,
       runId: run.id,
@@ -12638,6 +12634,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       .for("share", { noWait: true });
     if (!run) throw failedChatRetryDenied();
     if (run.runtimeMode !== "native") return;
+    const {
+      nativeFailedRunRetryStateIsSafe,
+      nativePreProviderRetryAfterCleanupStateIsSafe,
+    } = await import("./native-runtime/native-session-executor.js");
     const { coordinator, leases, retiredOwner } =
       await failedNativeRetryCoordinator(tx, run, source.issueId);
     if (retiredOwner) {
