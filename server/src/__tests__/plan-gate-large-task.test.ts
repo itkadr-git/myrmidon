@@ -12,6 +12,7 @@ import {
   documents,
   heartbeatRuns,
   issueDocuments,
+  issueThreadInteractions,
   issues,
   labels,
 } from "@myrmidon/db";
@@ -555,6 +556,177 @@ describeEmbeddedPostgres("plan-gate large task runtime behavior (issueService & 
 
       expect(checkedRun?.status).toBe("cancelled");
       expect(checkedRun?.errorCode).toBe("plan_approval_pending");
+    });
+  });
+
+  describe("plan gate cannot be bypassed by wake type", () => {
+    async function seedPlanningIssueWithPendingCard() {
+      const { companyId, engineerAgentId, labelM } = await seedFixture();
+      const issue = await issuesSvc.create(companyId, {
+        title: "Planning Bypass Task",
+        status: "todo",
+        assigneeAgentId: engineerAgentId,
+        labelIds: [labelM.id],
+      });
+      expect(issue.workMode).toBe("planning");
+
+      const revId = randomUUID();
+      const [doc] = await db
+        .insert(documents)
+        .values({
+          companyId,
+          title: "Plan for Task",
+          format: "markdown",
+          latestBody: "# Plan",
+          latestRevisionId: revId,
+        })
+        .returning();
+      await db.insert(issueDocuments).values({
+        companyId,
+        issueId: issue.id,
+        documentId: doc!.id,
+        key: "plan",
+      });
+      await db.insert(documentRevisions).values({
+        id: revId,
+        companyId,
+        documentId: doc!.id,
+        revisionNumber: 1,
+        title: "Plan for Task",
+        format: "markdown",
+        body: "# Plan",
+      });
+      const payload = {
+        version: 1 as const,
+        prompt: "Accept plan?",
+        target: {
+          type: "issue_document" as const,
+          issueId: issue.id,
+          documentId: doc!.id,
+          key: "plan",
+          revisionId: revId,
+          revisionNumber: 1,
+        },
+      };
+      const insertCard = async (status: "pending" | "rejected") => {
+        const [row] = await db
+          .insert(issueThreadInteractions)
+          .values({
+            companyId,
+            issueId: issue.id,
+            kind: "request_confirmation",
+            status,
+            continuationPolicy: "wake_assignee_on_accept",
+            createdByAgentId: engineerAgentId,
+            payload,
+            resolvedAt: status === "pending" ? null : new Date(),
+          })
+          .returning();
+        return row!;
+      };
+      return { companyId, engineerAgentId, issue, insertCard };
+    }
+
+    async function queueRun(input: {
+      companyId: string;
+      agentId: string;
+      issueId: string;
+      context: Record<string, unknown>;
+    }) {
+      const [run] = await db
+        .insert(heartbeatRuns)
+        .values({
+          companyId: input.companyId,
+          agentId: input.agentId,
+          status: "queued",
+          invocationSource: "automation",
+          triggerDetail: "system",
+          contextIssueId: input.issueId,
+          contextSnapshot: { issueId: input.issueId, ...input.context },
+        })
+        .returning();
+      await heartbeat.sweepQueuedRunsWithoutRunning();
+      const [checked] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
+      return checked!;
+    }
+
+    it("cancels a wake-comment run while plan approval is pending", async () => {
+      const { companyId, engineerAgentId, issue, insertCard } = await seedPlanningIssueWithPendingCard();
+      await insertCard("pending");
+
+      const checked = await queueRun({
+        companyId,
+        agentId: engineerAgentId,
+        issueId: issue.id,
+        context: { wakeCommentId: randomUUID(), wakeReason: "issue_commented" },
+      });
+
+      expect(checked.status).toBe("cancelled");
+      expect(checked.errorCode).toBe("plan_approval_pending");
+    });
+
+    it("cancels an interaction-context run that is not the plan approval resolution", async () => {
+      const { companyId, engineerAgentId, issue, insertCard } = await seedPlanningIssueWithPendingCard();
+      const pending = await insertCard("pending");
+
+      const checked = await queueRun({
+        companyId,
+        agentId: engineerAgentId,
+        issueId: issue.id,
+        context: {
+          interactionId: pending.id,
+          interactionKind: "request_confirmation",
+          interactionStatus: "pending",
+        },
+      });
+
+      expect(checked.status).toBe("cancelled");
+      expect(checked.errorCode).toBe("plan_approval_pending");
+    });
+
+    it("skips an interaction continuation wake while plan approval is pending", async () => {
+      const { engineerAgentId, issue, insertCard } = await seedPlanningIssueWithPendingCard();
+      const pending = await insertCard("pending");
+
+      const wake = await heartbeat.enqueueWakeup(engineerAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_continuation_needed",
+        payload: { issueId: issue.id, interactionId: pending.id },
+      });
+      expect(wake).toBeNull();
+
+      const receipts = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, engineerAgentId),
+            eq(agentWakeupRequests.reason, "plan_approval_pending"),
+          ),
+        );
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0]?.status).toBe("skipped");
+    });
+
+    it("lets the resolved plan approval card wake through the gate", async () => {
+      const { companyId, engineerAgentId, issue, insertCard } = await seedPlanningIssueWithPendingCard();
+      const resolved = await insertCard("rejected");
+      await insertCard("pending");
+
+      const checked = await queueRun({
+        companyId,
+        agentId: engineerAgentId,
+        issueId: issue.id,
+        context: {
+          interactionId: resolved.id,
+          interactionKind: "request_confirmation",
+          interactionStatus: "rejected",
+        },
+      });
+
+      expect(checked.errorCode).not.toBe("plan_approval_pending");
+      expect(checked.status).not.toBe("cancelled");
     });
   });
 });

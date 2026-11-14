@@ -10772,6 +10772,38 @@ export function heartbeatService(
     );
   }
 
+  // True only when the wake carries a resolved (accepted/rejected) plan
+  // approval card of this issue: the one event allowed through the plan gate.
+  async function isPlanApprovalResolutionWake(
+    reader: Pick<typeof db, "select">,
+    companyId: string,
+    issueId: string,
+    interactionId: string | null,
+  ) {
+    if (!interactionId) return false;
+    const interaction = await reader
+      .select({
+        kind: issueThreadInteractions.kind,
+        status: issueThreadInteractions.status,
+        payload: issueThreadInteractions.payload,
+      })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.issueId, issueId),
+          eq(issueThreadInteractions.id, interactionId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    return Boolean(
+      interaction &&
+        interaction.kind === "request_confirmation" &&
+        (interaction.status === "accepted" || interaction.status === "rejected") &&
+        isPlanApprovalConfirmationPayload(interaction.payload),
+    );
+  }
+
   async function getAcceptedPlanApprovalInteractionForRun(
     run: typeof heartbeatRuns.$inferSelect,
     issueId: string | null,
@@ -20248,13 +20280,24 @@ export function heartbeatService(
     const issueContext = issueId
       ? await getIssueExecutionContext(run.companyId, issueId)
       : null;
-    if (issueId && issueContext?.workMode === "planning") {
-      const hasInteraction = Boolean(
-        readNonEmptyString(context.interactionId) ||
-          readNonEmptyString(context.interactionKind),
+    // Only the assignee's runs are gated; the plan approver (another agent)
+    // must be able to run in order to review and accept the plan card.
+    if (
+      issueId &&
+      issueContext?.workMode === "planning" &&
+      (!issueContext.assigneeAgentId || issueContext.assigneeAgentId === run.agentId)
+    ) {
+      // The gate covers every wake type. Only the plan-approval resolution
+      // itself (accepted/rejected plan card) may pass while a plan card is
+      // pending; a comment or any other interaction never admits implementation.
+      const wakeInteractionId = readNonEmptyString(context.interactionId);
+      const isPlanResolutionWake = await isPlanApprovalResolutionWake(
+        db,
+        run.companyId,
+        issueId,
+        wakeInteractionId,
       );
-      const hasWakeComment = Boolean(readNonEmptyString(context.wakeCommentId));
-      if (!hasInteraction && !hasWakeComment) {
+      if (!isPlanResolutionWake) {
         const pendingConfirmations = await db
           .select({ id: issueThreadInteractions.id, payload: issueThreadInteractions.payload })
           .from(issueThreadInteractions)
@@ -34914,7 +34957,17 @@ export function heartbeatService(
               return { kind: "skipped" as const };
             }
 
-            if (issue.workMode === "planning" && !interactionContinuation) {
+            const continuationInteractionId =
+              readNonEmptyString(enrichedContextSnapshot.interactionId) ??
+              readNonEmptyString(payload?.interactionId);
+            const isPlanResolutionContinuation = issue.workMode === "planning" &&
+              await isPlanApprovalResolutionWake(
+                tx,
+                issue.companyId,
+                issue.id,
+                continuationInteractionId,
+              );
+            if (issue.workMode === "planning" && !isPlanResolutionContinuation) {
               const pendingConfirmations = await tx
                 .select({ id: issueThreadInteractions.id, payload: issueThreadInteractions.payload })
                 .from(issueThreadInteractions)
