@@ -4,7 +4,12 @@ import { issueWorkProducts, issues, issueComments } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { repositoryHasHostedCi, NO_HOSTED_CI_SUMMARY } from "./github-hosted-ci.js";
 import type { FetchLike } from "./github-external-object-provider.js";
-import { resetGitHubObjectCacheForTests, resolveGitHubRepositoryToken } from "./github-external-object-provider.js";
+import {
+  resetGitHubObjectCacheForTests,
+  resolveGitHubRepositoryToken,
+  JOB_LOG_APP_PERMISSIONS,
+} from "./github-external-object-provider.js";
+import { sanitizeSecrets } from "@myrmidon/shared";
 import type { GitHubPullRequestReference } from "./github-pull-request-merge.js";
 import {
   createPullRequestMergeDetailsResolver,
@@ -95,6 +100,13 @@ export interface PullRequestCiResult {
    */
   cancelledJobs?: PullRequestFailedJob[];
   runs: PullRequestCiJob[];
+  ciFailureTails?: Array<{
+    jobId: number;
+    jobName: string;
+    runId?: number | null;
+    logTail?: string | null;
+    unavailableReason?: string | null;
+  }>;
 }
 
 export const DEFAULT_REQUIRED_CHECKS: readonly string[] = ["CI result", "hot files review"];
@@ -410,6 +422,289 @@ function getResponseHeader(response: Response, name: string): string | null {
   return response.headers?.get(name) ?? null;
 }
 
+export function extractActionsRunId(url: string | null | undefined): number | null {
+  if (!url) return null;
+  const match = url.match(/\/actions\/runs\/(\d+)/);
+  if (!match?.[1]) return null;
+  const parsed = parseInt(match[1], 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+const GITHUB_USER_AGENT = "myrmidon-ci-resolver";
+
+export const MAX_CI_FAILURE_TAILS_JOBS = 3;
+export const MAX_CI_FAILURE_TAIL_LINES = 60;
+export const MAX_CI_FAILURE_TAILS_TOTAL_CHARS = 12000;
+
+interface CachedJobLog {
+  text?: string;
+  unavailableReason?: string;
+  expiresAt: number;
+}
+const jobLogCache = new Map<string, CachedJobLog>();
+const JOB_LOG_CACHE_MAX_ENTRIES = 200;
+const JOB_LOG_CACHE_SUCCESS_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const JOB_LOG_CACHE_FAILURE_TTL_MS = 60 * 1000; // 1 minute
+
+export function stripAnsiCodes(text: string): string {
+  return text
+    .replace(/\u001B\][^\u0007]*(?:\u0007|\u001B\\)/g, "")
+    .replace(/\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+}
+
+const MAX_JOB_LOG_SCAN_CHARS = 500_000;
+const JOB_LOG_LINES_AFTER_ERROR = 4;
+
+/**
+ * ANSI stripped, secrets masked (on the whole scanned text, before windowing, so
+ * multi-line secrets are not cut), then a window of at most `maxLines` lines ending
+ * shortly after the last `##[error]` line (skips trailing "Post job cleanup" noise).
+ * Without `##[error]` the window is the last `maxLines` lines.
+ */
+export function formatJobLogTail(rawLog: string, maxLines = MAX_CI_FAILURE_TAIL_LINES): string {
+  const scanned = rawLog.length > MAX_JOB_LOG_SCAN_CHARS ? rawLog.slice(-MAX_JOB_LOG_SCAN_CHARS) : rawLog;
+  const stripped = sanitizeSecrets(stripAnsiCodes(scanned));
+  const lines = stripped.split(/\r?\n/);
+  let end = lines.length;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i]!.includes("##[error]")) {
+      end = Math.min(lines.length, i + 1 + JOB_LOG_LINES_AFTER_ERROR);
+      break;
+    }
+  }
+  const start = Math.max(0, end - maxLines);
+  return lines.slice(start, end).join("\n").trim();
+}
+
+export function enforceTotalCharsCap(
+  tails: Array<{ logTail?: string | null }>,
+  maxChars: number = MAX_CI_FAILURE_TAILS_TOTAL_CHARS,
+): void {
+  const tailsWithText = tails.filter((t): t is typeof t & { logTail: string } => Boolean(t.logTail));
+  if (tailsWithText.length === 0) return;
+
+  const totalLength = tailsWithText.reduce((sum, t) => sum + t.logTail.length, 0);
+  if (totalLength <= maxChars) return;
+
+  const perTailBudget = Math.floor(maxChars / tailsWithText.length);
+  for (const item of tailsWithText) {
+    if (item.logTail.length > perTailBudget) {
+      const truncatedNotice = "...[truncated]...\n";
+      const keepLength = Math.max(0, perTailBudget - truncatedNotice.length);
+      item.logTail = truncatedNotice + item.logTail.slice(-keepLength);
+    }
+  }
+}
+
+export async function fetchJobLog(
+  owner: string,
+  repo: string,
+  jobId: number,
+  token: string | null,
+  fetchImpl: FetchLike = fetch,
+  options?: { timeoutMs?: number; signal?: AbortSignal },
+): Promise<{ ok: boolean; status: number; text?: string; unavailableReason?: string }> {
+  if (!token) {
+    return { ok: false, status: 401, unavailableReason: "no GitHub token available" };
+  }
+  const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/jobs/${jobId}/logs`;
+  const timeoutMs = options?.timeoutMs ?? GITHUB_REQUEST_TIMEOUT_MS;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new Error(`request timed out after ${timeoutMs}ms`));
+  }, timeoutMs);
+
+  let removeSignalListener: (() => void) | undefined;
+  if (options?.signal) {
+    if (options.signal.aborted) {
+      controller.abort(options.signal.reason);
+    } else {
+      const onAbort = () => {
+        controller.abort(options.signal!.reason);
+      };
+      options.signal.addEventListener("abort", onAbort, { once: true });
+      removeSignalListener = () => options.signal!.removeEventListener("abort", onAbort);
+    }
+  }
+
+  try {
+    const fetchPromise = fetchImpl(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": GITHUB_USER_AGENT,
+      },
+      redirect: "follow",
+      signal: controller.signal,
+    });
+
+    const abortPromise = new Promise<never>((_, reject) => {
+      if (controller.signal.aborted) {
+        reject(controller.signal.reason ?? new Error("aborted"));
+      } else {
+        controller.signal.addEventListener(
+          "abort",
+          () => reject(controller.signal.reason ?? new Error("aborted")),
+          { once: true },
+        );
+      }
+    });
+
+    const res = await Promise.race([fetchPromise, abortPromise]);
+    recordGitHubRequest("ci-resolver", res as Response);
+
+    if (res.status === 403 || res.status === 401) {
+      return { ok: false, status: res.status, unavailableReason: "token lacks actions:read permission or access denied (403)" };
+    }
+    if (res.status === 404) {
+      return { ok: false, status: 404, unavailableReason: "job log not found or expired (404)" };
+    }
+    if (res.status === 429) {
+      return { ok: false, status: 429, unavailableReason: "GitHub rate limit exceeded" };
+    }
+    if (!res.ok) {
+      return { ok: false, status: res.status, unavailableReason: `HTTP ${res.status}` };
+    }
+
+    const text = await res.text();
+    return { ok: true, status: res.status, text };
+  } catch (err) {
+    if (timedOut) {
+      return { ok: false, status: 0, unavailableReason: `request timed out after ${timeoutMs}ms` };
+    }
+    if (options?.signal?.aborted) {
+      const reason = options.signal.reason instanceof Error
+        ? options.signal.reason.message
+        : String(options.signal.reason ?? "request aborted");
+      return { ok: false, status: 0, unavailableReason: `request aborted: ${reason}` };
+    }
+    const reason = err instanceof Error ? err.message : String(err);
+    return { ok: false, status: 0, unavailableReason: `fetch failed: ${reason}` };
+  } finally {
+    clearTimeout(timer);
+    removeSignalListener?.();
+  }
+}
+
+export async function resolveCiFailureTails(
+  failedJobs: readonly PullRequestFailedJob[],
+  options: {
+    owner: string;
+    repo: string;
+    token: string | null;
+    fetchImpl: FetchLike;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  },
+): Promise<Array<{
+  jobId: number;
+  jobName: string;
+  runId?: number | null;
+  logTail?: string | null;
+  unavailableReason?: string | null;
+}>> {
+  const targetJobs = failedJobs.slice(0, MAX_CI_FAILURE_TAILS_JOBS);
+  const results: Array<{
+    jobId: number;
+    jobName: string;
+    runId?: number | null;
+    logTail?: string | null;
+    unavailableReason?: string | null;
+  }> = await Promise.all(
+    targetJobs.map(async (job) => {
+      const runId = extractActionsRunId(job.url);
+      const cacheKey = `${options.owner.toLowerCase()}/${options.repo.toLowerCase()}#${job.id}`;
+      const cached = jobLogCache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) {
+        return {
+          jobId: job.id,
+          jobName: job.name,
+          runId: runId ?? null,
+          logTail: cached.text ?? null,
+          unavailableReason: cached.unavailableReason ?? null,
+        };
+      }
+
+      if (isGitHubRateLimited()) {
+        return {
+          jobId: job.id,
+          jobName: job.name,
+          runId: runId ?? null,
+          logTail: null,
+          unavailableReason: `GitHub rate limit until ${getGitHubRateLimitResetTime() ?? "unknown"}`,
+        };
+      }
+
+      const res = await fetchJobLog(
+        options.owner,
+        options.repo,
+        job.id,
+        options.token,
+        options.fetchImpl,
+        {
+          signal: options.signal,
+          timeoutMs: options.timeoutMs ?? GITHUB_REQUEST_TIMEOUT_MS,
+        },
+      );
+
+      if (res.ok && res.text) {
+        const formatted = formatJobLogTail(res.text, MAX_CI_FAILURE_TAIL_LINES);
+        const sanitized = sanitizeSecrets(formatted);
+        if (!sanitized) {
+          return {
+            jobId: job.id,
+            jobName: job.name,
+            runId: runId ?? null,
+            logTail: null,
+            unavailableReason: "job log empty",
+          };
+        }
+
+        if (jobLogCache.size >= JOB_LOG_CACHE_MAX_ENTRIES) {
+          const oldestKey = jobLogCache.keys().next().value;
+          if (oldestKey !== undefined) jobLogCache.delete(oldestKey);
+        }
+        jobLogCache.set(cacheKey, {
+          text: sanitized,
+          expiresAt: Date.now() + JOB_LOG_CACHE_SUCCESS_TTL_MS,
+        });
+
+        return {
+          jobId: job.id,
+          jobName: job.name,
+          runId: runId ?? null,
+          logTail: sanitized,
+        };
+      } else {
+        const reason = res.unavailableReason ?? "job log unavailable";
+        if (jobLogCache.size >= JOB_LOG_CACHE_MAX_ENTRIES) {
+          const oldestKey = jobLogCache.keys().next().value;
+          if (oldestKey !== undefined) jobLogCache.delete(oldestKey);
+        }
+        jobLogCache.set(cacheKey, {
+          unavailableReason: reason,
+          expiresAt: Date.now() + JOB_LOG_CACHE_FAILURE_TTL_MS,
+        });
+
+        return {
+          jobId: job.id,
+          jobName: job.name,
+          runId: runId ?? null,
+          logTail: null,
+          unavailableReason: reason,
+        };
+      }
+    }),
+  );
+
+  enforceTotalCharsCap(results, MAX_CI_FAILURE_TAILS_TOTAL_CHARS);
+
+  return results;
+}
+
 export async function fetchCommitCheckRuns(
   owner: string,
   repo: string,
@@ -667,6 +962,7 @@ export function clearCiCacheForTests(): void {
   ciCache.clear();
   prHeadCache.clear();
   checkRunsCache.clear();
+  jobLogCache.clear();
   resetGitHubRateLimitForTests();
   resetGitHubObjectCacheForTests();
 }
