@@ -1,6 +1,10 @@
-# OPE-13077: maintenance-interrupt retry continuation — EN text, run times, branch and head SHA
+---
+settings-section: Track 3 — tool gateway and Hermes adapter
+---
 
-## EN
+## changelog-en
+
+### Maintenance-interrupt retry continuation — EN text, run times, branch and head SHA (OPE-13077)
 
 When the board interrupts a run for maintenance (rollout), the retry used to
 receive a short Russian-only instruction with no timestamps and no pointer to
@@ -26,7 +30,9 @@ block that hermes-gateway renders.
 Regular wakes (`issue_assigned`, `ci_completed`) do not receive the block:
 `livenessContinuation` is only populated when the retry context carries it.
 
-## RU
+## changelog-ru
+
+### Продолжение прогона после обрыва обслуживанием — EN-текст, времена, ветка и коммит (OPE-13077)
 
 Когда доска обрывает прогон для обслуживания (выкат), повтор раньше получал
 короткую инструкцию только на русском, без времён и без указания ветки задачи.

@@ -81,6 +81,8 @@ describe("maintenance interrupt retry claim", () => {
     const schedule = vi.fn().mockResolvedValue({ outcome: "scheduled" });
     const cancelRun = vi.fn().mockResolvedValue({
       status: "cancelled",
+      companyId: "company-1",
+      contextSnapshot: { issueId: "issue-1" },
       startedAt: new Date("2026-11-12T01:00:00.000Z"),
       finishedAt: new Date("2026-11-12T01:17:00.000Z"),
       lastUsefulActionAt: new Date("2026-11-12T01:50:00.000Z"),
