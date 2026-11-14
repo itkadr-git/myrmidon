@@ -21361,6 +21361,28 @@ export function issueRoutes(
       );
       if (!commentAccessDecision) return;
       if (!(await assertBoardCommentNotPaused(req, res, issue))) return;
+
+      if (
+        req.actor.type === "agent" &&
+        req.actor.agentId &&
+        issue.status === "in_review"
+      ) {
+        const executionState = parseIssueExecutionState(issue.executionState);
+        if (
+          executionState?.status === "pending" &&
+          executionState.currentParticipant?.type === "agent" &&
+          executionState.currentParticipant.agentId === req.actor.agentId
+        ) {
+          const firstLine = (req.body.body ?? "").split(/\r?\n/)[0] ?? "";
+          if (/^(APPROVE|REQUEST CHANGES)\b/.test(firstLine)) {
+            res.status(422).json({
+              error: "Verdict must be a status change",
+              hint: "PATCH /api/issues/<id> with status (APPROVE → done, REQUEST CHANGES → in_progress) and this text as comment in the same request",
+            });
+            return;
+          }
+        }
+      }
       const commentAuthorizationReason = issueWriteAuthorizationReason(
         req,
         commentAccessDecision,
