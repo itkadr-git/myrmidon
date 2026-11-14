@@ -13444,6 +13444,13 @@ export function heartbeatService(
           isNull(issues.assigneeUserId),
           sql`${issues.assigneeAgentId} is not null`,
           inArray(issues.status, ["in_progress", "in_review", "blocked"]),
+          // A review-stage monitor belongs to the active review participant;
+          // monitors on other statuses must not wake the returned assignee.
+          sql`not (
+            ${issues.status} = 'in_review'
+            and ${issues.executionState} ->> 'status' = 'pending'
+            and ${issues.executionState} ->> 'currentStageType' = 'review'
+          )`,
           or(
             isNull(issues.monitorWakeRequestedAt),
             lt(issues.monitorWakeRequestedAt, staleClaimThreshold),
@@ -13472,6 +13479,11 @@ export function heartbeatService(
               isNull(issues.assigneeUserId),
               sql`${issues.assigneeAgentId} is not null`,
               inArray(issues.status, ["in_progress", "in_review", "blocked"]),
+              sql`not (
+                ${issues.status} = 'in_review'
+                and ${issues.executionState} ->> 'status' = 'pending'
+                and ${issues.executionState} ->> 'currentStageType' = 'review'
+              )`,
               or(
                 isNull(issues.monitorWakeRequestedAt),
                 lt(issues.monitorWakeRequestedAt, staleClaimThreshold),
