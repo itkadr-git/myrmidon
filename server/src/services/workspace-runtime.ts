@@ -58,6 +58,7 @@ import {
   readLocalServiceProcessCwd,
   readLocalServiceProcessGroupId,
   readLocalServicePortOwner,
+  resetLsofAvailabilityForTests,
   removeLocalServiceRegistryRecord,
   terminateLocalService,
   touchLocalServiceRegistryRecord,
@@ -544,6 +545,7 @@ export async function resetRuntimeServicesForTests(
   exposurePortPairClaims.clear();
   workspaceRuntimeExposureDeps = defaultWorkspaceRuntimeExposureDeps();
   portAllocationAttemptsOverride = null;
+  resetLsofAvailabilityForTests();
 }
 
 function stableStringify(value: unknown): string {

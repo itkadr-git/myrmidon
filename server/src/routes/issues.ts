@@ -9,6 +9,7 @@ import {
   readStarterPackAgentId,
   wakeAssigneeAfterStarterPack,
 } from "../myrmidon/starter-pack.js";
+import { shouldCancelNotStartedHolderOnReassignment } from "../myrmidon/reassignment-queued-holder.js";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued-interaction-response.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
@@ -16181,6 +16182,42 @@ export function issueRoutes(
           // Nothing was live to stop; the transaction fence still re-checks
           // for runs that start between this point and the commit.
           handoffStopConfirmed = true;
+        }
+
+        // myrmidon(OPE-13097): a queued / scheduled_retry run of the previous
+        // assignee that has not started still owns the execution lock and would
+        // park the new assignee's wake in `deferred_issue_execution`. Release it
+        // here, before the new wake is queued. Review-stage participants are
+        // kept (OPE-10582); the cancel is a no-op if the run already started.
+        if (existing.executionRunId && existing.executionRunId !== interruptedRunId) {
+          const notStartedHolder = await heartbeat.getRun(existing.executionRunId);
+          if (shouldCancelNotStartedHolderOnReassignment(existing, notStartedHolder)) {
+            // Deferred wakes of the previous assignee go first, so the promotion
+            // inside cancelRun cannot re-take the lock for them.
+            if (svc.cancelDeferredExecutionsForAgentOnReassignment) {
+              await svc.cancelDeferredExecutionsForAgentOnReassignment(
+                existing.assigneeAgentId,
+                existing.id,
+                existing.companyId,
+                db
+              );
+            }
+            const released = await heartbeat.cancelRun(
+              notStartedHolder!.id,
+              "Execution lock released after issue reassigned to a different agent",
+              {
+                errorCode: "lock_released_on_reassignment",
+                eventMessage: "not-started run cancelled on issue reassignment",
+                eventPayload: { issueId: existing.id },
+              },
+            );
+            if (released && released.status !== "cancelled") {
+              logger.warn(
+                { issueId: existing.id, runId: released.id, status: released.status },
+                "reassignment could not release the previous assignee's not-started run",
+              );
+            }
+          }
         }
       }
 
