@@ -558,7 +558,11 @@ describe("agent issue mutation checkout ownership", () => {
     mockBudgetService.getInvocationBlock.mockReset();
     mockBudgetService.getInvocationBlock.mockResolvedValue(null);
     mockProjectService.getById.mockReset();
-    mockProjectService.getById.mockResolvedValue(null);
+    mockProjectService.getById.mockImplementation(async (id: string) => ({
+      id,
+      companyId,
+      name: "Test Project",
+    }));
     mockIssueService.addComment.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
     mockIssueService.create.mockReset();
