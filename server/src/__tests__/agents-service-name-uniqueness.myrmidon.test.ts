@@ -10,6 +10,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { agents, companies, createDb } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -120,5 +121,64 @@ describeEmbeddedPostgres("agent name uniqueness (case-insensitive, per company)"
     await svc.create(companyId, { ...baseAgent, name: "shared-name" });
     const other = await svc.create(otherCompanyId, { ...baseAgent, name: "SHARED-NAME" });
     expect(other?.name).toBe("SHARED-NAME");
+  });
+
+  it("concurrent create operations with conflicting case-insensitive names: only one succeeds", async () => {
+    const companyId = await seedCompany();
+    const svc = agentService(db);
+
+    const [firstResult, secondResult] = await Promise.allSettled([
+      svc.create(companyId, { ...baseAgent, name: "concurrent-agent" }),
+      svc.create(companyId, { ...baseAgent, name: "CONCURRENT-AGENT" }),
+    ]);
+
+    const results = [firstResult, secondResult];
+    const fulfilled = results.filter(
+      (r): r is PromiseFulfilledResult<NonNullable<Awaited<ReturnType<typeof svc.create>>>> =>
+        r.status === "fulfilled",
+    );
+    const rejected = results.filter(
+      (r): r is PromiseRejectedResult => r.status === "rejected",
+    );
+
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+
+    expect(rejected[0].reason).toMatchObject({
+      status: 409,
+      details: { code: "agent_name_conflict" },
+    });
+
+    const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.name.toLowerCase()).toBe("concurrent-agent");
+  });
+
+  it("concurrent rename operations with conflicting case-insensitive names: only one succeeds", async () => {
+    const companyId = await seedCompany();
+    const svc = agentService(db);
+    const first = await svc.create(companyId, { ...baseAgent, name: "agent-one" });
+    const second = await svc.create(companyId, { ...baseAgent, name: "agent-two" });
+
+    const [firstResult, secondResult] = await Promise.allSettled([
+      svc.update(first!.id, { name: "contested-name" }),
+      svc.update(second!.id, { name: "CONTESTED-NAME" }),
+    ]);
+
+    const results = [firstResult, secondResult];
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+
+    expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+      status: 409,
+      details: { code: "agent_name_conflict" },
+    });
+
+    const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    const names = rows.map((r) => r.name.toLowerCase());
+    expect(names.filter((n) => n === "contested-name")).toHaveLength(1);
   });
 });
