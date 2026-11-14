@@ -684,14 +684,18 @@ export function decideQueuedRunStaleness(
     // answer: the same false cancellation the ownership bypass (P2) already
     // prevents for a non-assignee addressee.
     //
-    // myrmidon(RUN-SETUP-STALE-TASK): an assignment wake carries the hand-off
-    // comment, which is not a question to the agent. When the task closed while
-    // that run waited for the agent's slot, the comment bypass let the run
-    // start and it then failed setup (`continuation_task_ownership_changed`,
-    // 17 failed runs in 7 days). The assignment wake is cancelled as terminal.
+    // myrmidon(RUN-SETUP-STALE-TASK / CLOSED-TASK-COMMENT-RUN): an assignment wake
+    // carries the hand-off comment, and an assignee comment wake on a closed task
+    // has no active execution continuation. When the task closed while that run
+    // waited for the agent's slot, the comment bypass let the run start and it
+    // then failed setup (`continuation_task_ownership_changed`, 17 failed runs in
+    // 7 days). For the assignee, a comment wake no longer bypasses terminal status;
+    // non-assignees still bypass.
     terminalBypass:
       facts.resumeIntent ||
-      (facts.wakeCommentIdPresent && facts.wakeReason !== "issue_assigned") ||
+      (facts.wakeCommentIdPresent &&
+        facts.wakeReason !== "issue_assigned" &&
+        facts.runAgentId !== facts.issueAssigneeAgentId) ||
       facts.isPendingInteractionAddresseeWake === true,
   });
   if (statusOutcome === "terminal") {
