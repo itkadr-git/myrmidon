@@ -9134,26 +9134,147 @@ export function issueRoutes(
       });
       return;
     }
+
+    const rawParticipantAgentId = req.query.participantAgentId as string | undefined;
+    if (rawParticipantAgentId !== undefined) {
+      const trimmed = rawParticipantAgentId.trim();
+      if (!isUuidLike(trimmed)) {
+        logger.warn(
+          { parameter: "participantAgentId", value: rawParticipantAgentId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "participantAgentId must be a UUID" });
+        return;
+      }
+    }
+
+    const rawProjectId = req.query.projectId as string | undefined;
+    if (rawProjectId !== undefined) {
+      const trimmed = rawProjectId.trim();
+      if (!isUuidLike(trimmed)) {
+        logger.warn(
+          { parameter: "projectId", value: rawProjectId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "projectId must be a UUID" });
+        return;
+      }
+    }
+
+    const rawWorkspaceId = req.query.workspaceId as string | undefined;
+    if (rawWorkspaceId !== undefined) {
+      const trimmed = rawWorkspaceId.trim();
+      if (!isUuidLike(trimmed)) {
+        logger.warn(
+          { parameter: "workspaceId", value: rawWorkspaceId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "workspaceId must be a UUID" });
+        return;
+      }
+    }
+
+    const rawExecutionWorkspaceId = req.query.executionWorkspaceId as string | undefined;
+    if (rawExecutionWorkspaceId !== undefined) {
+      const trimmed = rawExecutionWorkspaceId.trim();
+      if (!isUuidLike(trimmed)) {
+        logger.warn(
+          { parameter: "executionWorkspaceId", value: rawExecutionWorkspaceId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "executionWorkspaceId must be a UUID" });
+        return;
+      }
+    }
+
+    const rawLabelId = req.query.labelId as string | undefined;
+    if (rawLabelId !== undefined) {
+      const trimmed = rawLabelId.trim();
+      if (!isUuidLike(trimmed)) {
+        logger.warn(
+          { parameter: "labelId", value: rawLabelId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "labelId must be a UUID" });
+        return;
+      }
+    }
+
+    const rawParentId = (req.query.parentId ?? req.query.parentIssueId) as string | undefined;
+    let parentId: string | undefined;
+    if (rawParentId !== undefined) {
+      const trimmed = rawParentId.trim();
+      if (isUuidLike(trimmed)) {
+        parentId = trimmed;
+      } else {
+        const identifier = normalizeIssueReferenceIdentifier(trimmed);
+        if (identifier) {
+          const parentIssue = await svc.getByIdentifier(identifier);
+          parentId = parentIssue ? parentIssue.id : "00000000-0000-0000-0000-000000000000";
+        } else {
+          logger.warn(
+            { parameter: "parentId", value: rawParentId, companyId },
+            "invalid identifier query parameter format",
+          );
+          res.status(400).json({ error: "parentId must be a UUID or issue identifier" });
+          return;
+        }
+      }
+    }
+
+    const rawDescendantOf = req.query.descendantOf as string | undefined;
+    let descendantOf: string | undefined;
+    if (rawDescendantOf !== undefined) {
+      const trimmed = rawDescendantOf.trim();
+      if (isUuidLike(trimmed)) {
+        descendantOf = trimmed;
+      } else {
+        const identifier = normalizeIssueReferenceIdentifier(trimmed);
+        if (identifier) {
+          const ancestorIssue = await svc.getByIdentifier(identifier);
+          descendantOf = ancestorIssue ? ancestorIssue.id : "00000000-0000-0000-0000-000000000000";
+        } else {
+          logger.warn(
+            { parameter: "descendantOf", value: rawDescendantOf, companyId },
+            "invalid identifier query parameter format",
+          );
+          res.status(400).json({ error: "descendantOf must be a UUID or issue identifier" });
+          return;
+        }
+      }
+    }
+
+    const rawCreatedFromIssueId = req.query.createdFromIssueId as string | undefined;
+    let createdFromIssueId: string | undefined;
+    if (rawCreatedFromIssueId !== undefined) {
+      const trimmed = rawCreatedFromIssueId.trim();
+      const identifier = normalizeIssueReferenceIdentifier(trimmed);
+      if (identifier) {
+        const sourceIssue = await svc.getByIdentifier(identifier);
+        createdFromIssueId = sourceIssue ? sourceIssue.id : "00000000-0000-0000-0000-000000000000";
+      } else {
+        createdFromIssueId = trimmed;
+      }
+    }
+
     const offset = parsedOffset ?? pageOffset ?? 0;
 
     const listFilters: IssueFilters = {
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId,
-      participantAgentId: req.query.participantAgentId as string | undefined,
+      participantAgentId: rawParticipantAgentId?.trim(),
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
       unreadForUserId,
-      projectId: req.query.projectId as string | undefined,
-      workspaceId: req.query.workspaceId as string | undefined,
-      executionWorkspaceId: req.query.executionWorkspaceId as
-        string | undefined,
-      parentId: (req.query.parentId ?? req.query.parentIssueId) as
-        string | undefined,
-      descendantOf: req.query.descendantOf as string | undefined,
-      createdFromIssueId: req.query.createdFromIssueId as string | undefined,
-      labelId: req.query.labelId as string | undefined,
+      projectId: rawProjectId?.trim(),
+      workspaceId: rawWorkspaceId?.trim(),
+      executionWorkspaceId: rawExecutionWorkspaceId?.trim(),
+      parentId,
+      descendantOf,
+      createdFromIssueId,
+      labelId: rawLabelId?.trim(),
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
       originId: req.query.originId as string | undefined,

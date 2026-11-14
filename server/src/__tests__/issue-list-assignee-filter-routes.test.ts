@@ -1008,4 +1008,51 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       liveDescendantCount: 1,
     });
   });
+
+  it("rejects non-UUID and non-identifier values for list filter parameters", async () => {
+    const companyId = randomUUID();
+    const app = createApp(companyId);
+
+    const badProject = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ projectId: "PAP-123" });
+    expect(badProject.status).toBe(400);
+    expect(badProject.body.error).toContain("projectId must be a UUID");
+
+    const badParticipant = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ participantAgentId: "PAP-123" });
+    expect(badParticipant.status).toBe(400);
+    expect(badParticipant.body.error).toContain("participantAgentId must be a UUID");
+
+    const badWorkspace = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ workspaceId: "invalid" });
+    expect(badWorkspace.status).toBe(400);
+    expect(badWorkspace.body.error).toContain("workspaceId must be a UUID");
+
+    const badExecutionWorkspace = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ executionWorkspaceId: "invalid" });
+    expect(badExecutionWorkspace.status).toBe(400);
+    expect(badExecutionWorkspace.body.error).toContain("executionWorkspaceId must be a UUID");
+
+    const badLabel = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ labelId: "invalid" });
+    expect(badLabel.status).toBe(400);
+    expect(badLabel.body.error).toContain("labelId must be a UUID");
+
+    const badParent = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ parentId: "not-a-valid-identifier-or-uuid" });
+    expect(badParent.status).toBe(400);
+    expect(badParent.body.error).toContain("parentId must be a UUID or issue identifier");
+
+    const badDescendant = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ descendantOf: "not-a-valid-identifier-or-uuid" });
+    expect(badDescendant.status).toBe(400);
+    expect(badDescendant.body.error).toContain("descendantOf must be a UUID or issue identifier");
+  });
 });
