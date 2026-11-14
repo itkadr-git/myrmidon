@@ -260,6 +260,7 @@ import {
   buildTokensTraceRoutes,
   myrmidonOnboardRoutes,
   apiPathAliasMiddleware,
+  myrmidonReleaseFlakyWorkRoutes,
   configuredGitSkillRecord,
   skillGitRecordRoutes,
 } from "./myrmidon/app-plugin.js";
@@ -1279,6 +1280,7 @@ export async function createApp(
   api.use(auditRoutes(db)); // myrmidon(OPE-10215): user block audit query routes
 
   api.use(channelAllowlistRoutes(db, channelAllowlistService(db))); // myrmidon(CA-A): GET/POST/PATCH /api/myrmidon/channel-allowlist
+  api.use(myrmidonReleaseFlakyWorkRoutes(db)); // myrmidon(1.8 RELEASE-STAGE / OPE-13066): flaky CI retry, evidence waiver, resume gate
   api.use(myrmidonOwnerActiveChannelRoutes(db)); // myrmidon(1.7-ACTIVE-CHANNEL): owner active-channel status and threshold
   api.use(myrmidonParallelHelpersRoutes(db)); // myrmidon(PARALLEL-HELPERS)
   api.use(myrmidonTeamLivenessRoutes(db)); // myrmidon(TEAM-LIVENESS-SETTINGS)

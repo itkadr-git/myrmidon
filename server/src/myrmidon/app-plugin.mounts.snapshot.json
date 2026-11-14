@@ -82,6 +82,7 @@
   "api.use(usersRoutes(db))",
   "api.use(auditRoutes(db))",
   "api.use(channelAllowlistRoutes(db, channelAllowlistService(db)))",
+  "api.use(myrmidonReleaseFlakyWorkRoutes(db))",
   "api.use(myrmidonOwnerActiveChannelRoutes(db))",
   "api.use(myrmidonParallelHelpersRoutes(db))",
   "api.use(myrmidonTeamLivenessRoutes(db))",
