@@ -39,6 +39,9 @@ describe("shared export surface snapshot (OPE-9341)", () => {
     expect(shared.runOutcomeContractSchema).toBeDefined();
     expect(shared.runOutcomeValueSchema).toBeDefined();
     expect(shared.runStopKindSchema).toBeDefined();
+    expect(shared.requirementCardSchema).toBeDefined();
+    expect(typeof shared.evaluateRequirementCard).toBe("function");
+    expect(typeof shared.renderRequirementCardMarkdown).toBe("function");
   });
 
   it("exports key Myrmidon domain contracts through the myrmidon barrel", () => {
@@ -54,6 +57,9 @@ describe("shared export surface snapshot (OPE-9341)", () => {
     expect(myrmidon.runOutcomeContractSchema).toBeDefined();
     expect(myrmidon.runOutcomeValueSchema).toBeDefined();
     expect(myrmidon.runStopKindSchema).toBeDefined();
+    expect(myrmidon.requirementCardSchema).toBeDefined();
+    expect(typeof myrmidon.evaluateRequirementCard).toBe("function");
+    expect(typeof myrmidon.renderRequirementCardMarkdown).toBe("function");
   });
 
   it("functional execution of exported contracts works as expected", () => {
