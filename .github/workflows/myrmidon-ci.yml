@@ -6,7 +6,8 @@ name: Myrmidon CI
 #   fast - ordinary pull requests: typecheck (no Rust), build (no Rust release binary)
 #          and only the tests that the change touches directly;
 #   full - push to main, manual runs, merge queue (always full), PRs labelled
-#          `full-ci` (the label itself starts a full run). Since 30.10 the
+#          `full-ci` (the label itself starts a full run through
+#          myrmidon-ci-full-label.yml, which re-runs this workflow). Since 30.10 the
 #          `review-approved` label no longer forces the full tier on a PR: the
 #          full tier runs on main after the merge (owner decision, CI capacity),
 #          and PRs touching
@@ -21,9 +22,19 @@ name: Myrmidon CI
 
 on:
   pull_request:
-    # `labeled` makes the `full-ci` label start a run
-    # on the same head, which the plan then escalates to the full tier.
-    types: [opened, synchronize, reopened, labeled]
+    # No `labeled` here (CI-LABEL-NOOP-KEEPS-RESULT). A `labeled` event for any
+    # label (review-approved, review-in-progress, needs-rebase, ...) used to start
+    # a run of this workflow that became the NEWEST run on the PR head. GitHub reads
+    # a required check from the latest run of the workflow, so that skipped run
+    # (no `CI result` in it) turned the already green `CI result` of the real run
+    # into "expected" and blocked the merge (#3147, #3088, #3095). The OPE-12841
+    # protection (a noop run must never publish a passing `CI result` on a head
+    # without a green real run) now holds by construction: no noop run exists.
+    # The `full-ci` label is handled by myrmidon-ci-full-label.yml (a different
+    # workflow name, so it cannot supersede the runs of this one): it cancels the
+    # running run on the head and re-runs it; the `plan` step then reads the PR
+    # labels live because the payload of a re-run is the old one.
+    types: [opened, synchronize, reopened]
   merge_group:
     types: [checks_requested]
   push:
@@ -47,10 +58,10 @@ concurrency:
   # get an isolated concurrency group with `release-` prefix so ordinary PRs do not
   # block or cancel release testing.
   #
-  # `labeled` only matters for `full-ci`. A run started
-  # by any other label (review-in-progress, needs-rebase, ...) goes to its own
-  # group, so it cannot cancel the real run, and every job in it is skipped.
-  group: myrmidon-ci-${{ (contains(github.event.pull_request.title, 'rc.') || contains(github.event.pull_request.title, 'release') || contains(github.event.pull_request.labels.*.name, 'release') || startsWith(github.head_ref, 'rel/') || startsWith(github.base_ref, 'rel/')) && 'release-' || '' }}${{ github.event.pull_request.number || github.ref }}${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') && '' || '-label-noop' }}
+  # The `full-ci` label re-runs the current run (run_attempt > 1) after
+  # myrmidon-ci-full-label.yml cancelled the running one by hand, so the re-run
+  # itself never cancels anything.
+  group: myrmidon-ci-${{ (contains(github.event.pull_request.title, 'rc.') || contains(github.event.pull_request.title, 'release') || contains(github.event.pull_request.labels.*.name, 'release') || startsWith(github.head_ref, 'rel/') || startsWith(github.base_ref, 'rel/')) && 'release-' || '' }}${{ github.event.pull_request.number || github.ref }}
   # OPE-12103: PR runs cancel superseded runs.
   # Manual re-runs (run_attempt > 1) do not cancel the current head run.
   # Pushes to main do not cancel the running main run (10.11): with merges more
@@ -58,7 +69,7 @@ concurrency:
   # completed run for hours, so main-green-gate never turned green. Without the
   # cancel GitHub keeps the running main run and one pending run (a newer push
   # replaces the pending one), so a recent main commit always completes.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 && (github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
 
 env:
   NPM_CONFIG_AUDIT: "false"
@@ -68,7 +79,6 @@ env:
 jobs:
   plan:
     name: plan
-    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}
     timeout-minutes: 10
     outputs:
@@ -167,6 +177,21 @@ jobs:
               # Fail safe: without a comparable base the plan cannot pick a
               # tier, so run every lane.
               echo "::warning::base commit ${BASE:-} not found; forcing the full tier"
+            fi
+            # The payload of a re-run (the `full-ci` label re-runs the run, see
+            # myrmidon-ci-full-label.yml) is the old one and has no new label:
+            # read the PR labels live. API failure falls back to the payload.
+            if [ "$EVENT" = "pull_request" ] && [ -n "${PR_NUMBER:-}" ]; then
+              if live_labels="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels" --paginate --jq '.[].name' 2>/dev/null)"; then
+                if printf '%s\n' "$live_labels" | grep -qx 'full-ci'; then FULL_LABEL=true; else FULL_LABEL=false; fi
+              elif [ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ]; then
+                # A re-run has the OLD payload without the new label: falling back
+                # to it would silently run the fast tier instead of the full one.
+                echo "::error::re-run (attempt ${GITHUB_RUN_ATTEMPT}): could not read the PR labels live; refusing to use the stale event payload"
+                exit 1
+              else
+                echo "::warning::could not read PR labels; using the event payload"
+              fi
             fi
             if [ "${FULL_LABEL:-}" = "true" ]; then
               args+=(--force-full)
@@ -566,7 +591,6 @@ jobs:
     # gitleaks, the internal-address scan, dependency licenses and plugin
     # compatibility. Every step runs even if an earlier one failed.
     name: checks
-    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
     runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN) || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
@@ -802,7 +826,6 @@ jobs:
     name: go tools (dockergate + fleetd)
     # fleetd is folded in (one checkout, one runner): tools/fleetd, see
     # docs/myrmidon/fleetd-vmexec.md. Every step runs even if an earlier one failed.
-    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
     runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN_GO) || vars.CI_RUNNER_GO || '"ubuntu-latest"') }}
     timeout-minutes: 30
     env:
@@ -1007,18 +1030,14 @@ jobs:
           node --test scripts/myrmidon/ci/check-deployed-migrations.test.mjs
 
   ci-result:
-    # Single stable check name for the ruleset on real runs; a label-noop run
-    # (a `labeled` event with any label other than `full-ci`) must NOT create
-    # a check named `CI result` at all — GitHub rulesets read a `skipped`
-    # required check as satisfied, so a noop `skipped` run would wave the PR
-    # through auto-merge without any tests on the head (OPE-12841: PR #2965
-    # merged on a cancelled run's head). A dynamic `name:` publishes no
-    # `CI result` check on a noop run; the `!cancelled()` gate stays so a real
-    # run whose `plan` failed still fails the summary (re-gating on
+    # Single stable check name for the ruleset. There is no label-noop run any
+    # more (see `on.pull_request.types`), so every run of this workflow
+    # publishes `CI result` with its real verdict. The `!cancelled()` gate
+    # stays so a run whose `plan` failed still fails the summary (re-gating on
     # `needs.plan.result` would publish a satisfying `skipped` check on a red
-    # plan — the same defect class).
-    name: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') && 'CI result' || 'CI result (label noop)' }}
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
+    # plan: GitHub reads `skipped` as passed, OPE-12841, PR #2965).
+    name: CI result
+    if: ${{ !cancelled() }}
     needs: [plan, migration-guard, typecheck, tests-affected, tests, tests-other, checks, dockergate, plugin-readiness, deployed-migrations]
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}
     timeout-minutes: 5
