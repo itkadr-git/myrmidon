@@ -57,7 +57,15 @@ function makeSweep(opts: { maxBatchThatFits: number; totalRows: number }) {
       const empty = { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 };
       return {
         waitingForBackup: false,
-        perTable: { runs: empty, activity: empty, access: empty, litellmCostEvents: empty },
+        perTable: {
+          runs: empty,
+          activity: empty,
+          access: empty,
+          litellmCostEvents: empty,
+          documentRevisions: empty,
+          agentWakeupRequests: empty,
+          environmentLeases: empty,
+        },
         ...lastRun,
       } as never;
     },
