@@ -12,12 +12,16 @@
 //      the main head that is a verdict (not `skipped`) is `completed success`. If
 //      main is red, pending, running, or has no registered run, merge / auto-merge
 //      is held and backoff is applied;
-//   2. the newest verdict line about that PR is an approval (a later RETURN,
-//      DEFERRED, or an unclear line cancels it);
+//   2. the PR head is approved: check run `Board review` on the head of the PR is
+//      `success` (a `failure` is a return/refusal). If the `Board review` check run
+//      is absent on the head commit, the script falls back to the newest verdict
+//      line about that PR written by a reviewer agent (an approval line; a later
+//      RETURN, DEFERRED, or an unclear line cancels it);
 //   3. the PR is open and not a draft;
-//   4. the head did not move after the verdict: a verdict that names a head sha
-//      must match the current head; a verdict without one must be newer than the
-//      head commit;
+//   4. when falling back to verdict comments, the head did not move after the
+//      verdict: a verdict that names a head sha must match the current head; a
+//      verdict without one must be newer than the head commit. (For native `Board
+//      review` check runs, the check is attached to the head commit directly);
 //   5. the check run `CI result` of the head commit is `success`: the newest run
 //      that is a verdict; a `skipped` run (the label-event runs of the workflow
 //      skip `CI result`) is passed over and never hides an earlier result;
@@ -60,6 +64,7 @@ const execFileAsync = promisify(execFile);
 
 export const APPROVED_LABEL = "review-approved";
 export const CI_CHECK_NAME = "CI result";
+export const BOARD_REVIEW_CHECK_NAME = "Board review";
 /** Check runs are read in pages of 100; one head never has anywhere near this many `CI result` runs. */
 const CHECK_RUNS_MAX_PAGES = 10;
 /**
@@ -94,6 +99,16 @@ export function selectCiResultConclusion(checkRuns, name = CI_CHECK_NAME) {
     return conclusion;
   }
   return "pending";
+}
+
+/**
+ * Check run `Board review` conclusion selector.
+ * - "missing": no `Board review` check runs registered on the commit;
+ * - "success" / "failure" / other completed conclusion: the newest real verdict;
+ * - "pending" / "in_progress" / "queued": check run is running or only skipped runs exist.
+ */
+export function selectBoardReviewConclusion(checkRuns, name = BOARD_REVIEW_CHECK_NAME) {
+  return selectCiResultConclusion(checkRuns, name);
 }
 export const MIGRATION_SQL_RE = /^packages\/db\/src\/migrations\/(\d{4})_[^/]*\.sql$/;
 export const MIGRATION_SNAPSHOT_RE = /^packages\/db\/src\/migrations\/meta\/(\d{4})_snapshot\.json$/;
@@ -248,15 +263,36 @@ export function latestVerdicts(comments, { repo, reviewerPattern = DEFAULT_REVIE
   return newest;
 }
 
+/**
+ * Extracts PR numbers referenced in reviewer comments without invoking VERDICT_WORD,
+ * so native `Board review` check runs can be queried before any VERDICT text fallback.
+ */
+export function extractCommentPrNumbers(comments, { repo, reviewerPattern = DEFAULT_REVIEWER_PATTERN } = {}) {
+  const pattern = new RegExp(reviewerPattern);
+  const numbers = new Set();
+  for (const comment of comments ?? []) {
+    if (!comment || typeof comment !== "object") continue;
+    if (!pattern.test(String(comment.authorName ?? ""))) continue;
+    const body = String(comment.body ?? "");
+    for (const match of body.matchAll(PR_REFERENCE)) {
+      if (match[1] && repo && match[1].toLowerCase() !== repo.toLowerCase()) continue;
+      numbers.add(Number(match[2]));
+    }
+  }
+  return [...numbers];
+}
+
 function headMatches(pinned, actual) {
   const a = String(actual ?? "").toLowerCase();
   return a.length > 0 && (a.startsWith(pinned) || pinned.startsWith(a));
 }
 
 /**
- * The decision for one PR. `pr` is {state, draft, merged, headSha, labels, autoMerge, baseSha},
- * `headCommittedAt` a Date or null, `ci` is the conclusion of the `CI result`
- * check run of the head ("success", "failure", "in_progress", "missing", ...),
+ * Pure decision function for one PR.
+ * `boardReview` is the conclusion of the native `Board review` check run on the
+ * PR head (`"success"`, `"failure"`, `"pending"`/`"in_progress"`/`"queued"`, or
+ * `"missing"` when absent). When present, it is the primary authority and
+ * `verdict` text is ignored; `verdict` is consulted only when `boardReview === "missing"`.
  * `mainCi` is the resolved conclusion used for red-main backoff bookkeeping,
  * `mainGreen` is true only when the newest `CI result` run on main is completed
  * success right now (OPE-10520: merge only against a currently-green main),
@@ -266,6 +302,7 @@ function headMatches(pinned, actual) {
  */
 export function decideApproveLabel({
   verdict,
+  boardReview = "missing",
   pr,
   headCommittedAt,
   ci,
@@ -278,14 +315,23 @@ export function decideApproveLabel({
   migrationViolation = null,
   autoMerge = false,
 }) {
-  if (!verdict) return { action: "skip", reason: "no-verdict" };
-  if (verdict.outcome !== "approve") return { action: "skip", reason: `latest-verdict-${verdict.outcome}` };
-  if (pr.merged || pr.state !== "open") return { action: "skip", reason: "pr-not-open" };
-  if (pr.draft) return { action: "skip", reason: "pr-draft" };
-  if (verdict.head) {
-    if (!headMatches(verdict.head, pr.headSha)) return { action: "needs-rereview", reason: "head-moved-after-verdict" };
-  } else if (!headCommittedAt || headCommittedAt.getTime() > verdict.at.getTime()) {
-    return { action: "needs-rereview", reason: "head-newer-than-verdict" };
+  if (boardReview === "success") {
+    if (pr.merged || pr.state !== "open") return { action: "skip", reason: "pr-not-open" };
+    if (pr.draft) return { action: "skip", reason: "pr-draft" };
+  } else if (boardReview !== "missing") {
+    if (pr.merged || pr.state !== "open") return { action: "skip", reason: "pr-not-open" };
+    if (pr.draft) return { action: "skip", reason: "pr-draft" };
+    return { action: "skip", reason: `board-review-${boardReview}` };
+  } else {
+    if (!verdict) return { action: "skip", reason: "no-verdict" };
+    if (verdict.outcome !== "approve") return { action: "skip", reason: `latest-verdict-${verdict.outcome}` };
+    if (pr.merged || pr.state !== "open") return { action: "skip", reason: "pr-not-open" };
+    if (pr.draft) return { action: "skip", reason: "pr-draft" };
+    if (verdict.head) {
+      if (!headMatches(verdict.head, pr.headSha)) return { action: "needs-rereview", reason: "head-moved-after-verdict" };
+    } else if (!headCommittedAt || headCommittedAt.getTime() > verdict.at.getTime()) {
+      return { action: "needs-rereview", reason: "head-newer-than-verdict" };
+    }
   }
   if (ci !== "success") return { action: "skip", reason: `ci-${ci}` };
 
@@ -480,22 +526,31 @@ export function createGitHubPort(repo, options = {}) {
       const value = data.commit?.committer?.date ?? data.commit?.author?.date;
       return value ? new Date(value) : null;
     },
-    async ciConclusion(sha) {
-      // `filter=all`, as the board-side merge reader does: the default
-      // `filter=latest` keeps only the newest run of every check suite, so a
-      // rerun inside one suite would hide the attempt before it. The selection
-      // of the verdict among the runs is selectCiResultConclusion's.
+    async fetchCheckRuns(sha, checkName) {
       const runs = [];
       for (let page = 1; page <= CHECK_RUNS_MAX_PAGES; page += 1) {
         const data = await run([
-          `repos/${repo}/commits/${sha}/check-runs?check_name=${encodeURIComponent(CI_CHECK_NAME)}&filter=all&per_page=100&page=${page}`,
+          `repos/${repo}/commits/${sha}/check-runs?check_name=${encodeURIComponent(checkName)}&filter=all&per_page=100&page=${page}`,
         ]);
         const batch = data.check_runs ?? [];
         runs.push(...batch);
         const total = typeof data.total_count === "number" ? data.total_count : batch.length;
         if (batch.length === 0 || runs.length >= total) break;
       }
+      return runs;
+    },
+    async ciConclusion(sha) {
+      // `filter=all`, as the board-side merge reader does: the default
+      // `filter=latest` keeps only the newest run of every check suite, so a
+      // rerun inside one suite would hide the attempt before it. The selection
+      // of the verdict among the runs is selectCiResultConclusion's.
+      const runs = await this.fetchCheckRuns(sha, CI_CHECK_NAME);
       return selectCiResultConclusion(runs);
+    },
+    async boardReviewConclusion(sha) {
+      if (!sha) return "missing";
+      const runs = await this.fetchCheckRuns(sha, BOARD_REVIEW_CHECK_NAME);
+      return selectBoardReviewConclusion(runs);
     },
     async mainHeadSha(baseBranch = DEFAULT_BASE_BRANCH) {
       const data = await run([`repos/${repo}/commits/${baseBranch}`]);
@@ -564,12 +619,56 @@ export async function runOnce({
   now = new Date(),
   log = () => {},
 }) {
-  const verdicts = latestVerdicts(comments, { repo, reviewerPattern });
   const results = [];
   let failed = 0;
 
-  const candidatePrs = [...verdicts.entries()].sort((a, b) => a[0] - b[0]);
-  const hasApproveCandidate = candidatePrs.some(([, v]) => v.outcome === "approve");
+  // Step 1: Collect candidate PR numbers without invoking VERDICT_WORD yet, so
+  // PRs with a native `Board review` check run on head never touch VERDICT text.
+  const prNumbers = extractCommentPrNumbers(comments, { repo, reviewerPattern }).sort((a, b) => a - b);
+  const supportsBoardReviewCheck = typeof github.boardReviewConclusion === "function";
+
+  const preloaded = new Map();
+  let verdicts = null;
+  const getVerdicts = () => {
+    if (!verdicts) verdicts = latestVerdicts(comments, { repo, reviewerPattern });
+    return verdicts;
+  };
+
+  let hasApproveCandidate = false;
+  if (supportsBoardReviewCheck) {
+    for (const prNumber of prNumbers) {
+      try {
+        const pr = await github.pullRequest(prNumber);
+        let boardReview = "missing";
+        if (pr.state === "open" && pr.headSha) {
+          boardReview = await github.boardReviewConclusion(pr.headSha);
+        }
+        preloaded.set(prNumber, { pr, boardReview });
+        if (boardReview === "success") {
+          hasApproveCandidate = true;
+        } else if (boardReview === "missing") {
+          const v = getVerdicts().get(prNumber);
+          if (v && v.outcome === "approve") hasApproveCandidate = true;
+        }
+      } catch (err) {
+        failed += 1;
+        results.push({ prNumber, action: "error", reason: err instanceof Error ? err.message.split("\n")[0] : "error" });
+        preloaded.set(prNumber, { error: true });
+      }
+    }
+  } else {
+    const map = getVerdicts();
+    for (const [, v] of map.entries()) {
+      if (v.outcome === "approve") {
+        hasApproveCandidate = true;
+        break;
+      }
+    }
+  }
+
+  const candidateNumbers = supportsBoardReviewCheck
+    ? prNumbers
+    : [...getVerdicts().keys()].sort((a, b) => a - b);
 
   const state = (await stateStore?.load()) ?? {
     consecutiveFailures: 0,
@@ -705,17 +804,43 @@ export async function runOnce({
     mainMigrationListOk = true; // port does not support the listing: skip the guard
   }
 
-  for (const [prNumber, verdict] of candidatePrs) {
-    if (verdict.outcome !== "approve") {
-      results.push({ prNumber, action: "skip", reason: `latest-verdict-${verdict.outcome}` });
-      continue;
-    }
+  for (const prNumber of candidateNumbers) {
+    if (preloaded.get(prNumber)?.error) continue;
     try {
-      const pr = await github.pullRequest(prNumber);
+      const loaded = preloaded.get(prNumber);
+      const pr = loaded ? loaded.pr : await github.pullRequest(prNumber);
+      const boardReview = loaded
+        ? loaded.boardReview
+        : (supportsBoardReviewCheck && pr.state === "open" && pr.headSha
+            ? await github.boardReviewConclusion(pr.headSha)
+            : "missing");
+
+      let verdict = null;
+      if (boardReview === "missing") {
+        verdict = getVerdicts().get(prNumber) ?? null;
+        if (!verdict) {
+          results.push({ prNumber, action: "skip", reason: "no-verdict" });
+          continue;
+        }
+        if (verdict.outcome !== "approve") {
+          results.push({ prNumber, action: "skip", reason: `latest-verdict-${verdict.outcome}` });
+          continue;
+        }
+      } else if (boardReview !== "success") {
+        if (pr.merged || pr.state !== "open") {
+          results.push({ prNumber, action: "skip", reason: "pr-not-open" });
+        } else if (pr.draft) {
+          results.push({ prNumber, action: "skip", reason: "pr-draft" });
+        } else {
+          results.push({ prNumber, action: "skip", reason: `board-review-${boardReview}` });
+        }
+        continue;
+      }
+
       let headCommittedAt = null;
       let ci = "missing";
       if (pr.state === "open" && pr.headSha) {
-        headCommittedAt = verdict.head ? null : await github.headCommittedAt(pr.headSha);
+        headCommittedAt = (boardReview === "success" || verdict?.head) ? null : await github.headCommittedAt(pr.headSha);
         ci = await github.ciConclusion(pr.headSha);
       }
       // Stale base (OPE-10520): PR whose base.sha lags the main head never merges.
@@ -767,6 +892,7 @@ export async function runOnce({
 
       const decision = decideApproveLabel({
         verdict,
+        boardReview,
         pr,
         headCommittedAt,
         ci,

@@ -389,6 +389,10 @@ function fakeGitHub(prs, { mainCi = 'success', mainHeadSha = MAIN_HEAD, lastComp
       const matchKey = Object.keys(prs).find((k) => prs[k].pr.headSha === sha);
       return matchKey ? prs[matchKey].ci : "missing";
     },
+    async boardReviewConclusion(sha) {
+      const matchKey = Object.keys(prs).find((k) => prs[k].pr.headSha === sha);
+      return matchKey ? (prs[matchKey].boardReview ?? "missing") : "missing";
+    },
     async mainHeadSha() {
       return mainHeadSha;
     },
@@ -428,6 +432,7 @@ describe("runOnce with green main protection and auto-merge", () => {
     const github = fakeGitHub({
       1: { pr: open(HEAD), ci: "success" },
       2: { pr: open("a".repeat(40)), ci: "failure" },
+      3: { pr: open("c".repeat(40)) },
       4: { pr: open("b".repeat(40), [APPROVED_LABEL]), ci: "success" },
     }, { mainCi: "success" });
     const lines = [];
@@ -562,6 +567,7 @@ describe("runOnce with green main protection and auto-merge", () => {
     const github = fakeGitHub({
       1: { pr: open(HEAD), ci: "success" },
       2: { pr: open("a".repeat(40)), ci: "failure" },
+      3: { pr: open("c".repeat(40)) },
       4: { pr: open("b".repeat(40), [APPROVED_LABEL], true), ci: "success" },
     }, { mainCi: "success" });
 
@@ -595,6 +601,7 @@ describe("runOnce with green main protection and auto-merge", () => {
     const github = fakeGitHub({
       1: { pr: open(HEAD, [APPROVED_LABEL], true), ci: "success" },
       2: { pr: open("a".repeat(40), [], false), ci: "failure" },
+      3: { pr: open("c".repeat(40)) },
       4: { pr: open("b".repeat(40), [APPROVED_LABEL], true), ci: "success" },
     }, { mainCi: "success" });
 
@@ -684,7 +691,7 @@ describe("runOnce with green main protection and auto-merge", () => {
   });
 
   it("does not write in a dry run, and counts a failed GitHub call", async () => {
-    const github = fakeGitHub({ 1: { pr: open(HEAD), ci: "success" } }, { mainCi: "success" });
+    const github = fakeGitHub({ 1: { pr: open(HEAD), ci: "success" }, 3: { pr: open("c".repeat(40)) } }, { mainCi: "success" });
     const dry = await runOnce({ comments, repo: REPO, github, dryRun: true });
     assert.deepEqual(github.labeled, []);
     assert.equal(dry.results.find((r) => r.prNumber === 1).dryRun, true);
@@ -1202,5 +1209,92 @@ describe("main / sql", () => {
     });
     assert.equal(code, 0);
     assert.deepEqual(github.labeled, [1]);
+  });
+});
+
+describe("Board review check run fixtures (acceptance: native check run before VERDICT fallback)", () => {
+  const openPr = (headSha, labels = []) => ({ state: "open", draft: false, merged: false, headSha, baseSha: MAIN_HEAD, labels, autoMerge: false });
+
+  it("labels when check Board review=success on head, without reading VERDICT text", async () => {
+    // The only reviewer comment is a refusal. If the script still labels the PR,
+    // the decision came from the native check run, not from VERDICT text.
+    const comments = [
+      comment("Review discussion for PR #100. VERDICT #100: RETURN (changes requested)", "2026-11-10T10:00:00Z", "adm-dev-review"),
+    ];
+
+    const github = fakeGitHub({
+      100: { pr: openPr(HEAD), ci: "success", boardReview: "success" },
+    }, { mainCi: "success" });
+
+    const { results, failed } = await runOnce({ comments, repo: REPO, github });
+    assert.equal(failed, 0);
+    assert.deepEqual(github.labeled, [100]);
+    assert.equal(results[0].action, "label");
+    assert.equal(results[0].reason, "approved-head-green");
+  });
+
+  it("falls back to verdict text when Board review check run is missing on head", async () => {
+    const comments = [
+      comment(`VERDICT #101: APPROVE (head ${HEAD})`, "2026-11-10T10:00:00Z", "adm-dev-review"),
+    ];
+
+    const github = fakeGitHub({
+      101: { pr: openPr(HEAD), ci: "success", boardReview: "missing" },
+    }, { mainCi: "success" });
+
+    const { results, failed } = await runOnce({ comments, repo: REPO, github });
+    assert.equal(failed, 0);
+    assert.deepEqual(github.labeled, [101]);
+    assert.equal(results[0].action, "label");
+  });
+
+  it("skips and does not label when Board review check run is failure", async () => {
+    const comments = [
+      comment(`VERDICT #102: APPROVE (head ${HEAD})`, "2026-11-10T10:00:00Z", "adm-dev-review"),
+    ];
+
+    const github = fakeGitHub({
+      102: { pr: openPr(HEAD), ci: "success", boardReview: "failure" },
+    }, { mainCi: "success" });
+
+    const { results, failed } = await runOnce({ comments, repo: REPO, github });
+    assert.equal(failed, 0);
+    assert.deepEqual(github.labeled, []);
+    assert.equal(results[0].action, "skip");
+    assert.equal(results[0].reason, "board-review-failure");
+  });
+
+  it("falls back to text return/refuse when Board review check run is missing", async () => {
+    const comments = [
+      comment("VERDICT #103: RETURN", "2026-11-10T10:00:00Z", "adm-dev-review"),
+    ];
+
+    const github = fakeGitHub({
+      103: { pr: openPr(HEAD), ci: "success", boardReview: "missing" },
+    }, { mainCi: "success" });
+
+    const { results, failed } = await runOnce({ comments, repo: REPO, github });
+    assert.equal(failed, 0);
+    assert.deepEqual(github.labeled, []);
+    assert.equal(results[0].action, "skip");
+    assert.equal(results[0].reason, "latest-verdict-refuse");
+  });
+
+  it("skips when Board review check run is queued or in_progress", async () => {
+    for (const status of ["queued", "in_progress"]) {
+      const comments = [
+        comment(`VERDICT #104: APPROVE (head ${HEAD})`, "2026-11-10T10:00:00Z", "adm-dev-review"),
+      ];
+
+      const github = fakeGitHub({
+        104: { pr: openPr(HEAD), ci: "success", boardReview: status },
+      }, { mainCi: "success" });
+
+      const { results, failed } = await runOnce({ comments, repo: REPO, github });
+      assert.equal(failed, 0);
+      assert.deepEqual(github.labeled, []);
+      assert.equal(results[0].action, "skip");
+      assert.equal(results[0].reason, `board-review-${status}`);
+    }
   });
 });
