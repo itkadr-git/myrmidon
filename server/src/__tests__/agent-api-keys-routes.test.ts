@@ -32,10 +32,15 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
+const mockAccessService = vi.hoisted(() => ({
+  decide: vi.fn(async () => ({ allowed: true })),
+  canUser: vi.fn(async () => true),
+}));
+
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
   logActivity: mockLogActivity,
-  accessService: () => ({}),
+  accessService: () => mockAccessService,
   approvalService: () => ({}),
   builtInAgentService: () => ({ ensureCompanyDefaultAgentGrants: vi.fn() }),
   companySkillService: () => ({}),
@@ -81,6 +86,7 @@ describe("agent API keys", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAgentService.getById.mockResolvedValue(baseAgent);
+    mockAccessService.decide.mockResolvedValue({ allowed: true });
   });
 
   it("creates and lists agent API keys", async () => {
