@@ -128,6 +128,7 @@ describe("DeployJobsPanel", () => {
           job({ id: "job-deployed", status: "succeeded", active: false, abortable: false }),
           job({ id: "job-rolled-back", status: "auto_rolled_back", active: false, abortable: false }),
         ],
+        audit: [],
       },
     });
     const filter = panel!.querySelector<HTMLSelectElement>('select[aria-label="Update status"]')!;
