@@ -61,6 +61,7 @@ esac
   const env = {
     ...process.env,
     BASH_ENV: "",
+    GITHUB_RUN_ATTEMPT: "1", // the CI re-run of this very test must not leak its attempt
     SANDBOX: dir,
     PATH: `${bin}:${process.env.PATH}`,
     EVENT: "pull_request",
@@ -115,6 +116,29 @@ describe("hot-files-check", () => {
     assert.match(res.calls, /check-runs call/);
     assert.match(res.calls, /field: name=hot files review/);
     assert.match(res.calls, /field: status=completed/);
+  });
+
+  it("a re-run (attempt 2, stale synchronize payload) keeps review-approved and passes the hot files check", () => {
+    const res = runCheck(
+      { ACTION: "synchronize", GITHUB_RUN_ATTEMPT: "2" },
+      ["server/src/services/heartbeat.ts"],
+      ["review-approved"],
+    );
+    assert.equal(res.status, 0);
+    assert.doesNotMatch(res.calls, /-X DELETE/);
+    assert.doesNotMatch(res.stdout, /Новый push после ревью/);
+    assert.match(res.calls, /field: state=success/);
+    assert.match(res.calls, /field: description=review-approved/);
+  });
+
+  it("attempt 1 on synchronize still removes review-approved (a real push)", () => {
+    const res = runCheck(
+      { ACTION: "synchronize", GITHUB_RUN_ATTEMPT: "1" },
+      ["server/src/services/heartbeat.ts"],
+      ["review-approved"],
+    );
+    assert.match(res.calls, /gh api -X DELETE.*labels\/review-approved/);
+    assert.match(res.calls, /field: state=pending/);
   });
 
   it("removes review-approved on synchronize event and sets pending", () => {
