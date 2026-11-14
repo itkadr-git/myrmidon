@@ -12,6 +12,17 @@ import { agentDesiredSkillSelectionSchema } from "./adapter-skills.js";
 import { objectWithoutDefaults } from "./partial.js";
 import { MAX_BUDGET_LIMIT_CENTS } from "../myrmidon-budget-limits.js";
 
+export const bulkUpdateAgentsModelSchema = z.object({
+  agentIds: z.array(z.string().uuid()).min(1).max(500),
+  model: z.string().trim().min(1).optional(),
+  connectionId: z.string().uuid().optional(),
+}).refine((value) => value.model !== undefined || value.connectionId !== undefined, {
+  message: "At least one of model or connectionId must be provided",
+  path: ["model"],
+});
+
+export type BulkUpdateAgentsModel = z.infer<typeof bulkUpdateAgentsModelSchema>;
+
 export const agentPermissionsSchema = z.object({
   // No schema default: the server derives the default (enabled unless the
   // permissions record marks the agent low-trust) when the field is omitted.
