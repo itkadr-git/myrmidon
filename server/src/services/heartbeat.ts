@@ -191,7 +191,6 @@ import { tryClaimContinuationKey, releaseContinuationKey } from "./continuation-
 // automatic behaviours obey the settings page without a restart.
 import { myrmidonTeamLivenessReader } from "../myrmidon/team-liveness/index.js";
 import { resolveAgentTeamLiveness } from "@myrmidon/shared";
-import { resolveAgentLivenessSettings } from "../myrmidon/agent-liveness/settings.js"; // myrmidon(AGENT-LIVENESS-D1)
 import {
   classifyProviderGarbageOutcome,
   detectProviderGarbageGroups,
@@ -21218,7 +21217,6 @@ export function heartbeatService(
   // every pass, so a saved change takes effect without a restart.
   const teamLivenessRead = myrmidonTeamLivenessReader(db);
   // myrmidon(AGENT-LIVENESS-D1): the instance-thresholds getter.
-  const readAgentLivenessSettings = () => resolveAgentLivenessSettings(null);
   /** The agent row's card as a plain object; anything else reads as an empty card. */
   const readAgentCard = (raw: unknown): Record<string, unknown> =>
     raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};

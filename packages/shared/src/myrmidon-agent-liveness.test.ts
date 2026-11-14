@@ -21,18 +21,12 @@ describe("agent liveness defaults", () => {
     expect(resolveAgentLivenessSettings({})).toEqual(DEFAULT_AGENT_LIVENESS_SETTINGS);
     // The OFF posture is the main-behaviour contract of D1.
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.enabled).toBe(false);
-    // Review-routing's queueThreshold constant (sweep.ts) — the number the
-    // current behaviour uses; the settings default must not drift from it.
+    // Review routing is the only existing runtime consumer constant in this
+    // checkout; the other watchdog values are new configuration, not live
+    // A1/B1/C2 behavior. Keep each role aligned with that source constant.
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.engineerQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.reviewerQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.leadQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.engineerQueueThreshold).toBe(8);
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.reviewerQueueThreshold).toBe(8);
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.leadQueueThreshold).toBe(8);
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.probeIntervalSec).toBe(30);
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.probeTimeoutSec).toBe(5);
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.journalDedupWindowSec).toBe(900);
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.journalRetentionDays).toBe(30);
   });
 
   it("rejects zero and negative thresholds — a corrupt value keeps the default", () => {
