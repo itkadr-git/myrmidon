@@ -70,9 +70,17 @@ export function issueApprovalService(db: Db) {
       }));
     },
 
-    listIssuesForApproval: async (approvalId: string) => {
+    listIssuesForApproval: async (
+      approvalId: string,
+      options?: { excludePrivate?: boolean },
+    ) => {
       const approval = await getApproval(approvalId);
       if (!approval) throw notFound("Approval not found");
+
+      const conditions = [eq(issueApprovals.approvalId, approvalId)];
+      if (options?.excludePrivate) {
+        conditions.push(eq(issues.isPrivate, false));
+      }
 
       return db
         .select({
@@ -100,7 +108,7 @@ export function issueApprovalService(db: Db) {
         })
         .from(issueApprovals)
         .innerJoin(issues, eq(issueApprovals.issueId, issues.id))
-        .where(eq(issueApprovals.approvalId, approvalId))
+        .where(and(...conditions))
         .orderBy(desc(issueApprovals.createdAt));
     },
 
@@ -130,6 +138,27 @@ export function issueApprovalService(db: Db) {
       await db
         .delete(issueApprovals)
         .where(and(eq(issueApprovals.issueId, issueId), eq(issueApprovals.approvalId, approvalId)));
+    },
+
+    assertNoPrivateIssues: async (issueIds: string[]) => {
+      if (issueIds.length === 0) return;
+
+      const uniqueIssueIds = Array.from(new Set(issueIds));
+      const rows = await db
+        .select({ id: issues.id, isPrivate: issues.isPrivate })
+        .from(issues)
+        .where(inArray(issues.id, uniqueIssueIds));
+
+      // Mirror the hidden-path contract: a private issue is indistinguishable
+      // from a non-existent one for agents (404 "Issue not found").
+      if (rows.length !== uniqueIssueIds.length) {
+        throw notFound("Issue not found");
+      }
+      for (const row of rows) {
+        if (row.isPrivate) {
+          throw notFound("Issue not found");
+        }
+      }
     },
 
     linkManyForApproval: async (approvalId: string, issueIds: string[], actor?: LinkActor) => {
