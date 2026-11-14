@@ -243,6 +243,7 @@ describe("1.6.6 GUARD-RETURN: domain logic", () => {
     expect(decision.action).toBe("return");
     expect(decision.targetAssigneeAgentId).toBe(liveEngineer.id);
     expect(decision.targetKind).toBe("active_engineer");
+    expect(decision.replacementReason).toContain(`PR author is unavailable (${status})`);
     expect(decision.commentBody).toContain("Задача возвращена автору (@live)");
   });
 
@@ -259,6 +260,23 @@ describe("1.6.6 GUARD-RETURN: domain logic", () => {
     ]));
     expect(decision.targetAssigneeAgentId).toBe(engineerAgent.id);
     expect(decision.targetKind).toBe("pr_author");
+  });
+
+  it("uses an available project lead only after engineer candidates are exhausted", () => {
+    const projectLead: AgentSummary = { id: "project-lead", name: "project-lead", role: "lead", status: "idle" };
+    const candidate: GuardReturnCandidate = {
+      issueId: "issue-project-lead", identifier: "OPE-13140", title: "Return planning task", companyId: "comp-1",
+      status: "in_progress", assigneeAgentId: reviewerAgent.id, assigneeRole: reviewerAgent.role,
+      projectId: "proj-1", projectLeadAgentId: projectLead.id, casteKey: "engineer", labels: [],
+      executionState: { status: "changes_requested" }, prWorkProducts: [], comments: [],
+      createdAt: new Date(), updatedAt: new Date(),
+    };
+    const decision = decideGuardReturn(candidate, new Map([
+      [projectLead.id, projectLead], [reviewerAgent.id, reviewerAgent],
+    ]), undefined, []);
+    expect(decision.action).toBe("return");
+    expect(decision.targetAssigneeAgentId).toBe(projectLead.id);
+    expect(decision.targetKind).toBe("project_lead");
   });
 
   it("skips guard-return for a code task already in review", () => {

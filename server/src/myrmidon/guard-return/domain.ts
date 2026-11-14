@@ -67,7 +67,7 @@ export interface GuardReturnDecision {
   reason: string;
   targetAssigneeAgentId?: string;
   targetAssigneeName?: string;
-  targetKind?: "pr_author" | "return_assignee" | "active_engineer";
+  targetKind?: "pr_author" | "return_assignee" | "active_engineer" | "project_lead";
   replacementReason?: string;
   remarksText?: string | null;
   commentBody?: string;
@@ -379,7 +379,7 @@ export function decideGuardReturn(
     const projectLead = candidate.projectLeadAgentId;
     if (isAvailableLead(projectLead)) {
       targetAssigneeAgentId = projectLead ?? null;
-      targetKind = "active_engineer";
+      targetKind = "project_lead";
     }
   }
 
