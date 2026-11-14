@@ -166,7 +166,7 @@ export function announcementFeedService(options: AnnouncementFeedOptions) {
           const bytes = await readAnnouncementBytes(response, kind === "animation" ? ANNOUNCEMENT_ANIMATION_MAX_BYTES : ANNOUNCEMENT_IMAGE_MAX_BYTES);
           const hash = createHash("sha256").update(bytes).digest("hex");
           if (!path.startsWith(`assets/${hash}.`)) throw new Error("Announcement asset digest mismatch");
-          return { path, bytes: kind === "animation" ? Buffer.from(validateAnnouncementAnimation(bytes)) : bytes, contentType };
+          return { path, bytes: kind === "animation" ? Buffer.from(await validateAnnouncementAnimation(bytes)) : bytes, contentType };
         });
         slot.cache = result;
         slot.failure = null;

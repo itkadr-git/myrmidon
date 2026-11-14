@@ -129,6 +129,8 @@ import {
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
+  executionWorkspaceTurnRestoreSchema,
+  executionWorkspaceTurnDiffQuerySchema,
   // Environments
   createEnvironmentSchema,
   cancelEnvironmentCustomImageSetupSessionSchema,
@@ -4089,6 +4091,19 @@ registry.registerPath({
   tags: ["issues"],
   summary: "CI status on the exact head of the issue's pull request",
   request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/release-status",
+  tags: ["issues"],
+  summary:
+    "Release membership: whether each merged pull request of the issue is reachable from the release refs of the issue's release label",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({ refreshPullRequests: z.enum(["true"]).optional() }),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
@@ -8677,6 +8692,55 @@ registry.registerPath({
   summary: "List workspace operations",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+// OPE-12738 per-turn checkpoint introspection + restore.
+registry.registerPath({
+  method: "get",
+  path: "/api/execution-workspaces/{id}/turn-checkpoints",
+  tags: ["execution-workspaces"],
+  summary: "List per-turn checkpoint refs recorded on the workspace worktree for one run",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({ runId: z.string().uuid() }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/execution-workspaces/{id}/turn-checkpoints/diff",
+  tags: ["execution-workspaces"],
+  summary: "Diff two per-turn checkpoints of one run",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: executionWorkspaceTurnDiffQuerySchema,
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/execution-workspaces/{id}/turn-checkpoints/restore",
+  tags: ["execution-workspaces"],
+  summary: "Restore the working worktree to a previous turn's checkpoint",
+  description:
+    "Rewinds tracked working files and the index to the snapshot ref " +
+    "refs/myrmidon/turns/<runId>/<turnN> without moving the branch ref or " +
+    "touching untracked foreign edits. Refuses with 409 while the worktree is " +
+    "claimed by another active run.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(executionWorkspaceTurnRestoreSchema),
+  },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({

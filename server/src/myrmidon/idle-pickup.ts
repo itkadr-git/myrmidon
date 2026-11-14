@@ -2,6 +2,16 @@ import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import { blockerOpenSql } from "./blocker-resolved.js";
 import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issueExecutionDecisions, issues, issueWorkProducts, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
+import {
+  readReviewAdmissionDecision,
+  readReviewCommentWakeGateEnabled,
+} from "./review-stage-recovery/comment-wake-gate.js";
+import {
+  createReviewHeadFailedChecksResolver,
+  createReviewPullRequestCiResolver,
+  type ReviewHeadFailedChecksResolver,
+  type ReviewPullRequestCiResolver,
+} from "./review-stage-recovery/github-ci.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
 // switch) this pass obeys, so an operator can change the throttle and the wake
 // budget without restarting the server — a restart drops every run in flight.
@@ -254,6 +264,13 @@ export interface IdlePickupDailyCapBlock {
 
 export interface IdlePickupDeps {
   db: Db;
+  /**
+   * myrmidon(EMPTY-RUNS-2C): readers of the CI of the pull request head, for
+   * the admission check of a review participant. Absent means the board's own
+   * readers; a failed read never blocks a wake (the old behaviour stays).
+   */
+  resolveReviewPullRequestCi?: ReviewPullRequestCiResolver;
+  resolveReviewHeadFailedChecks?: ReviewHeadFailedChecksResolver;
   /** Existing wakeup admission path (heartbeat.ts); reuses every limit and gate. */
   enqueueWakeup: (
     agentId: string,
@@ -536,6 +553,50 @@ export function isReviewPendingWaitingForCi(params: {
   );
 }
 
+
+/**
+ * myrmidon(EMPTY-RUNS-2C): idle pickup of a review participant goes through the
+ * same admission rule as the hand-off to review and the executor's comment
+ * (`readReviewAdmissionDecision`, switch
+ * `MYRMIDON_REVIEW_COMMENT_WAKE_GATE_ENABLED`): while the CI of the current head
+ * is unfinished, unreadable or red the reviewer is not picked up. Nothing is
+ * lost: the sweep looks at the task again, and the CI result of the head wakes
+ * the stage anyway. The stored-state check above reads only what the webhook
+ * kept; this one asks for the head as it is now. A critical issue and a task
+ * without a pull request are admitted; a failed read admits (old behaviour).
+ */
+export async function reviewCiDefersIdlePickup(
+  deps: Pick<IdlePickupDeps, "db" | "env" | "resolveReviewPullRequestCi" | "resolveReviewHeadFailedChecks">,
+  agent: { id: string; companyId: string },
+  candidate: { id: string; priority: string | null; executionState: unknown },
+): Promise<boolean> {
+  if (!readReviewCommentWakeGateEnabled(deps.env ?? process.env)) return false;
+  const es =
+    candidate.executionState !== null && typeof candidate.executionState === "object"
+      ? (candidate.executionState as Record<string, unknown>)
+      : null;
+  if (!es || es.status !== "pending" || es.currentStageType !== "review") return false;
+  const participant =
+    es.currentParticipant !== null && typeof es.currentParticipant === "object"
+      ? (es.currentParticipant as Record<string, unknown>)
+      : null;
+  if (!participant || participant.type !== "agent" || participant.agentId !== agent.id) return false;
+  try {
+    const decision = await readReviewAdmissionDecision({
+      companyId: agent.companyId,
+      issueId: candidate.id,
+      critical: candidate.priority === "critical",
+      resolveCi: deps.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db: deps.db }),
+      resolveHeadFailedChecks:
+        deps.resolveReviewHeadFailedChecks ?? createReviewHeadFailedChecksResolver({ db: deps.db }),
+    });
+    return decision !== "admit";
+  } catch (err) {
+    logger.warn({ err, issueId: candidate.id }, "myrmidon.idle_pickup: the CI of the review head could not be read; waking as before");
+    return false;
+  }
+}
+
 /**
  * Wakes the agent's highest-priority ready issue when the agent has no live
  * run for it and no wake already in flight. One wake per pass: the next pass
@@ -768,6 +829,14 @@ async function idlePickupForAgentImpl(
           issueId: candidate.id,
         },
         "myrmidon.idle_pickup: skipped review participant wake while review stage is pending and waiting for CI",
+      );
+      continue;
+    }
+    if (await reviewCiDefersIdlePickup(deps, agent, candidate)) {
+      result.alreadyActive += 1;
+      logger.info(
+        { agentId: agent.id, companyId: agent.companyId, issueId: candidate.id },
+        "myrmidon.idle_pickup: skipped review participant wake while the head CI is unfinished or red (EMPTY-RUNS-2C)",
       );
       continue;
     }
@@ -1177,6 +1246,7 @@ export async function findTopReadyIssueForAgent(
     ) {
       continue;
     }
+    if (await reviewCiDefersIdlePickup({ db }, agent, candidate)) continue;
     return candidate;
   }
   return null;

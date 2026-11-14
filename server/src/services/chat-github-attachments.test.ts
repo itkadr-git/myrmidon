@@ -154,7 +154,7 @@ describe("GitHub exact-comment private image resolution", () => {
     async (_name, body_html) => {
       const canonical = canonicalComment({ body_html });
       expect(
-        resolveGitHubCommentAttachmentTarget(attachment(), canonical),
+        await resolveGitHubCommentAttachmentTarget(attachment(), canonical),
       ).toBeNull();
       request.mockResolvedValueOnce(new Response("private", { status: 404 }));
       await expect(
@@ -176,7 +176,7 @@ describe("GitHub exact-comment private image resolution", () => {
       body: raw.comment.body,
       body_html: `<a href="${signedImageUrl}"><img src="${signedImageUrl}"></a>`,
     });
-    expect(resolveGitHubCommentAttachmentTarget(image, canonical)).toBeNull();
+    expect(await resolveGitHubCommentAttachmentTarget(image, canonical)).toBeNull();
     request.mockResolvedValueOnce(new Response("private", { status: 404 }));
     await expect(
       prepareGitHubPublicAttachment(image, undefined, async () => canonical),
@@ -234,7 +234,7 @@ describe("GitHub exact-comment private image resolution", () => {
       );
       expect(request).toHaveBeenCalledTimes(1);
       expect(
-        resolveGitHubCommentAttachmentTarget(attachment(), value),
+        await resolveGitHubCommentAttachmentTarget(attachment(), value),
       ).toBeNull();
     },
   );
@@ -358,9 +358,9 @@ describe("GitHub exact-comment private image resolution", () => {
     {
       body_html: `<a href="${imageUrl}"><img src="${signedImageUrl}&amp;token=extra"></a>`,
     },
-  ])("denies mismatched or ambiguous canonical response %j", (override) => {
+  ])("denies mismatched or ambiguous canonical response %j", async (override) => {
     expect(
-      resolveGitHubCommentAttachmentTarget(
+      await resolveGitHubCommentAttachmentTarget(
         attachment(),
         canonicalComment(override),
       ),
@@ -377,7 +377,7 @@ describe("GitHub exact-comment private image resolution", () => {
     });
     expect(request).toHaveBeenCalledTimes(1);
   });
-  it("uses the documented review-comment media type and exact review-root binding", () => {
+  it("uses the documented review-comment media type and exact review-root binding", async () => {
     const value = message({
       threadId: "github:paperclipai/chat-e2e:42:rc:4000",
     });
@@ -396,11 +396,11 @@ describe("GitHub exact-comment private image resolution", () => {
         "https://api.github.com/repos/paperclipai/chat-e2e/pulls/42",
       in_reply_to_id: 4000,
     });
-    expect(resolveGitHubCommentAttachmentTarget(image, response)?.href).toBe(
+    expect((await resolveGitHubCommentAttachmentTarget(image, response))?.href).toBe(
       signedImageUrl,
     );
     expect(
-      resolveGitHubCommentAttachmentTarget(image, {
+      await resolveGitHubCommentAttachmentTarget(image, {
         ...response,
         in_reply_to_id: 3999,
       }),
@@ -535,7 +535,7 @@ describe("GitHub exact-comment private image resolution", () => {
         );
         expect(result).toEqual(canonical);
         expect(
-          resolveGitHubCommentAttachmentTarget(attachment(), result)?.href,
+          (await resolveGitHubCommentAttachmentTarget(attachment(), result))?.href,
         ).toBe(signedImageUrl);
         expect(providerFetch).toHaveBeenCalledTimes(1);
         expect(String(providerFetch.mock.calls[0]?.[0])).toBe(

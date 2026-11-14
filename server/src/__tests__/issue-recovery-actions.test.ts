@@ -1064,7 +1064,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       });
 
       expect(updated?.status).toBe("blocked");
-      expect(updated?.assigneeAgentId).toBe(coderId);
+      expect(updated?.assigneeAgentId).toBeNull();
       expect(updated?.blockerMetadata).toMatchObject({ owner: { agentId: managerId } });
       expect(enqueueWakeup).toHaveBeenCalledTimes(1);
       expect(enqueueWakeup).toHaveBeenCalledWith(managerId, expect.objectContaining({
@@ -1281,7 +1281,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       });
       const [persisted] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
       expect(persisted?.status).toBe("blocked");
-      expect(persisted?.assigneeAgentId).toBe(coderId);
+      expect(persisted?.assigneeAgentId).toBeNull();
       expect(persisted?.executionPolicy).toBeNull();
       expect(persisted?.blockerMetadata).toMatchObject({ owner: { agentId: admId } });
       expect(enqueueWakeup).toHaveBeenCalledTimes(1);
@@ -1303,7 +1303,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       });
       const [persisted] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
       expect(persisted?.status).toBe("blocked");
-      expect(persisted?.assigneeAgentId).toBe(coderId);
+      expect(persisted?.assigneeAgentId).toBeNull();
       expect(persisted?.blockerMetadata).toMatchObject({ owner: { agentId: managerId } });
       expect(enqueueWakeup).toHaveBeenCalledTimes(1);
       expect(enqueueWakeup.mock.calls[0]?.[0]).toBe(managerId);
@@ -1337,7 +1337,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
       const [persisted] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
       expect(persisted?.status).toBe("blocked");
-      expect(persisted?.assigneeAgentId).toBe(coderId);
+      expect(persisted?.assigneeAgentId).toBeNull();
       expect(persisted?.executionState).toEqual(monitorState);
       expect(persisted?.blockerMetadata).toMatchObject({
         blockReason: "recovery",
@@ -1795,7 +1795,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       expect(updated?.status).toBe("blocked");
       const [persisted] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
       expect(persisted?.status).toBe("blocked");
-      expect(persisted?.assigneeAgentId).toBe(coderId);
+      expect(persisted?.assigneeAgentId).toBeNull();
       expect(persisted?.executionPolicy).toEqual(ownerExecutionPolicy);
       expect(persisted?.executionState).toBeNull();
       // OPE-9072: blocked with an agent owner (the manager), one wake, no board card.
@@ -1859,7 +1859,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       expect(updated?.status).toBe("blocked");
       const [persisted] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
       expect(persisted?.status).toBe("blocked");
-      expect(persisted?.assigneeAgentId).toBe(coderId);
+      expect(persisted?.assigneeAgentId).toBeNull();
       expect(persisted?.executionPolicy).toEqual(trustPolicy);
       expect(persisted?.executionState).toBeNull();
       // OPE-9072: the workflow is untouched, the issue is blocked with an agent
@@ -1931,7 +1931,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       expect(updated?.status).toBe("blocked");
       const [persisted] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
       expect(persisted?.status).toBe("blocked");
-      expect(persisted?.assigneeAgentId).toBe(coderId);
+      expect(persisted?.assigneeAgentId).toBeNull();
       expect(persisted?.executionPolicy).toBeNull();
       expect(persisted?.executionState).toEqual(idleStateWithClearedMonitor);
       const persistedMonitor = (persisted?.executionState as { monitor?: { status?: string; clearReason?: string } } | null)?.monitor;
@@ -2016,7 +2016,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       expect(secondEnqueueWakeup.mock.calls[0]?.[0]).toBe(managerId);
       const [persisted] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
       expect(persisted?.status).toBe("blocked");
-      expect(persisted?.assigneeAgentId).toBe(coderId);
+      expect(persisted?.assigneeAgentId).toBeNull();
       expect((persisted?.executionState as { changesRequestedCount?: number } | null)?.changesRequestedCount).toBe(1);
       const activity = await db
         .select()

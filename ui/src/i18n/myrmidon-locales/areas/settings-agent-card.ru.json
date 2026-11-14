@@ -69,6 +69,7 @@
         "idleStopUnknown": "неизвестно",
         "idleStopLastStopped": "; последняя остановка {{at}}",
         "idleStopLastStarted": "; последний запуск {{at}}",
+        "idleStopColdStart": "; холодный запуск занял {{duration}}",
         "concurrencyLimitSource": {
           "board": "лимит карточки",
           "gateway": "лимит шлюза",

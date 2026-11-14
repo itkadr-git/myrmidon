@@ -313,13 +313,19 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     const reviewersWoken = new Set<string>();
     for (const { row, review } of orderedPending) {
       if (reviewersWoken.has(review.reviewerAgentId)) continue;
-      // A reviewer with a healthy queue (above idle, within queueThreshold) is
-      // owned by the queue-offload/rebalance lanes, which wake the *new*
-      // reviewer on a move; the liveness lane nudges stale reviews sitting
-      // idle with nothing behind them or stuck behind an overloaded queue.
-      const reviewerLoad = initialLoads.get(review.reviewerAgentId) ?? 0;
-      if (reviewerLoad > 0 && reviewerLoad <= settings.queueThreshold) continue;
+      // myrmidon(OPE-12886): liveness is about runs, not queue depth. On the
+      // incident of 13.11 every reviewer sat idle (0 runs) behind 4-7 assigned
+      // in_review tasks, so any load-derived skip here skipped ALL of them:
+      // `loadByAgent` counts pending in_review tasks plus active runs, hence a
+      // reviewer awaiting a review always has load >= 1 and a
+      // `load > 0 && load <= queueThreshold` gate skips every reviewer with a
+      // queue of 1..queueThreshold. The queue is owned by the
+      // offload/rebalance lanes (load > queueThreshold below); the liveness
+      // lane's contract is "idle reviewer gets woken on the oldest stale
+      // review", regardless of queue size.
       try {
+        const activeRunCount = await deps.store.countActiveRunsForAgent(companyId, review.reviewerAgentId);
+        if (activeRunCount > 0) continue;
         const wakeState = await deps.store.reviewWakeState({
           companyId,
           issueId: row.id,
@@ -362,8 +368,10 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           (row.executionState ?? {}) as Record<string, unknown>,
         );
         const currentStage = review.stageId;
-        const activeRunCount = await deps.store.countActiveRunsForAgent(companyId, review.reviewerAgentId);
-        if (activeRunCount > 0) continue;
+        // myrmidon(OPE-12886): the active-run check already ran at the top of
+        // this iteration (and would have skipped this reviewer); the budget
+        // cap stays the last gate so a burst of wakes can never exceed one
+        // dispatch per reviewer per pass and the company-wide ceiling.
         if (reviewersWoken.size >= REVIEW_ROUTING_MAX_WAKES_PER_PASS) break;
         // Persist the wake request before dispatch: a failure while enqueuing
         // still observes the cooldown on the next sweep rather than looping.

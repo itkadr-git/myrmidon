@@ -366,6 +366,8 @@ export function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings 
       // myrmidon(F16): the stored issue-list agent-defaults toggle survives
       // every general write (it is a rollback switch, not a settings page).
       ...(parsed.data.issuesListAgentDefaults ? { issuesListAgentDefaults: parsed.data.issuesListAgentDefaults } : {}),
+      // myrmidon(OPE-13095): the starter-pack scout agent id survives every general read and write.
+      ...(parsed.data.starterPackAgentId ? { starterPackAgentId: parsed.data.starterPackAgentId } : {}),
       // myrmidon(1.7-BUDGET-CONFIG-B): the stored budget enforcement mode
       // survives every general write (it is edited on its own settings page).
       ...(parsed.data.budgetEnforcement ? { budgetEnforcement: parsed.data.budgetEnforcement } : {}),
@@ -466,6 +468,11 @@ export function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings 
         : {}),
       ...(parsed.data.issueRewakeFreezeThreshold !== undefined
         ? { issueRewakeFreezeThreshold: parsed.data.issueRewakeFreezeThreshold }
+        : {}),
+      // myrmidon(1.8 AUTOPAUSE): the empty-run streak threshold survives every
+      // general write, like the other whitelist fields above.
+      ...(parsed.data.emptyRunStreakThreshold !== undefined
+        ? { emptyRunStreakThreshold: parsed.data.emptyRunStreakThreshold }
         : {}),
       // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the stored verification public key
       // survives every general write (edited on its own settings block).
@@ -858,6 +865,16 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             // cleared field), so a stored value does not outlive its reset.
             ...(patch.swarm !== undefined
               ? { swarm: mergeSwarmBlocks(storedGeneral.swarm, patch.swarm) }
+              : {}),
+            // myrmidon(OPE-13110): `general.botDisk` is one object edited key by
+            // key (the settings screen sends only the field it changed); a
+            // PATCH naming a few keys keeps the stored rest, as the
+            // bot-disk route's own merge does. null clears the whole block.
+            ...(patch.botDisk !== undefined
+              ? {
+                  botDisk:
+                    patch.botDisk === null ? null : { ...(storedGeneral.botDisk ?? {}), ...patch.botDisk },
+                }
               : {}),
           }),
           operatorDefaults,

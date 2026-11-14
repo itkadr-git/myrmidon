@@ -6227,7 +6227,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issueComments.issueId, issueId));
     expect(comments[0]?.body).toContain("automatic continuation attempt(s)");
     expect(comments[0]?.body).toContain(
-      "nearest lead or, when no lead exists, the board operator",
+      "escalated to the nearest lead (or, when no lead exists, the board operator)",
     );
     expect(comments[0]?.authorType).toBe("system");
     expect(comments[0]?.presentation).toMatchObject({
@@ -7515,7 +7515,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(next?.contextSnapshot?.wakeCommentIds).toEqual([pending!.id, go!.id]);
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, deferred!.id)))[0]).toMatchObject({ status: "coalesced", runId: next!.id });
-    await vi.waitFor(async () => expect((await heartbeat.getRun(next!.id))?.status).not.toBe("running"));
+    // Run completion after release is asynchronous; the default 1s window is too short on CI.
+    await vi.waitFor(async () => expect((await heartbeat.getRun(next!.id))?.status).not.toBe("running"), { timeout: 10_000, interval: 50 });
   });
 
   it.each(["dedicated deferred donor", "non-coalescing recipient", "persistent agent conversation"] as const)(
@@ -7652,11 +7653,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           .set({ status: "paused" })
           .where(eq(agents.id, agentId));
         release();
+        // Run completion after release is asynchronous; the default 1s window is too short on CI.
         if (next!)
-          await vi.waitFor(async () =>
-            expect((await heartbeat.getRun(next!.id))?.status).not.toBe(
-              "running",
-            ),
+          await vi.waitFor(
+            async () =>
+              expect((await heartbeat.getRun(next!.id))?.status).not.toBe(
+                "running",
+              ),
+            { timeout: 10_000, interval: 50 },
           );
       }
     },

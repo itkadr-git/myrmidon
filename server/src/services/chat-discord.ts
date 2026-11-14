@@ -1,4 +1,4 @@
-import { DiscordFormatConverter } from "@chat-adapter/discord";
+import type { DiscordFormatConverter } from "@chat-adapter/discord";
 import type {
   ChatProviderInventoryResult,
   ChatProviderResourceInventoryItem,
@@ -31,7 +31,14 @@ const REQUIRED_CHANNEL_PERMISSIONS =
 
 const MESSAGE_CONTENT_FLAGS = (1 << 18) | (1 << 19);
 const DISCORD_MAX_MESSAGE_UTF16_CODE_UNITS = 2_000;
-const discordFormatConverter = new DiscordFormatConverter();
+let cachedDiscordFormatConverter: DiscordFormatConverter | null = null;
+async function getDiscordFormatConverter(): Promise<DiscordFormatConverter> {
+  if (!cachedDiscordFormatConverter) {
+    const { DiscordFormatConverter } = await import("@chat-adapter/discord");
+    cachedDiscordFormatConverter = new DiscordFormatConverter();
+  }
+  return cachedDiscordFormatConverter;
+}
 
 /**
  * Discord applies its content limit after the chat adapter has normalized
@@ -39,9 +46,12 @@ const discordFormatConverter = new DiscordFormatConverter();
  * can move an oversized response to a lossless file before the adapter's
  * defensive truncation would discard its tail.
  */
-export function discordMarkdownRequiresAttachment(text: string): boolean {
+export async function discordMarkdownRequiresAttachment(
+  text: string,
+): Promise<boolean> {
+  const converter = await getDiscordFormatConverter();
   return (
-    discordFormatConverter.renderPostable({ markdown: text }).length >
+    converter.renderPostable({ markdown: text }).length >
     DISCORD_MAX_MESSAGE_UTF16_CODE_UNITS
   );
 }

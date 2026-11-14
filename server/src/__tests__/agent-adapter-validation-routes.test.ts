@@ -813,6 +813,111 @@ describe("agent routes adapter validation", () => {
     }
   });
 
+  it("rejects a PATCH with extraMounts source outside MYRMIDON_BOT_MOUNT_SOURCES without changing the card (OPE-13074)", async () => {
+    const { registerServerAdapter, unregisterServerAdapter, getServerAdapter } = await import("../adapters/index.js");
+    const previous = getServerAdapter("hermes_gateway");
+    unregisterServerAdapter("hermes_gateway");
+    registerServerAdapter({ ...externalAdapter, type: "hermes_gateway" });
+    const originalEnv = process.env.MYRMIDON_BOT_MOUNT_SOURCES;
+    process.env.MYRMIDON_BOT_MOUNT_SOURCES = "/srv/allowed/sources";
+    try {
+      const pinned = `example/hermes@sha256:${"b".repeat(64)}`;
+      const container = { enabled: true, image: pinned, memoryMb: 2048, cpus: 1, pidsLimit: 512 };
+      const existing = await mockAgentService.getById();
+      mockAgentService.getById.mockResolvedValue({
+        ...existing,
+        adapterType: "hermes_gateway",
+        adapterConfig: { container },
+      });
+      const app = await createApp();
+      const agentPath = "/api/agents/11111111-1111-4111-8111-111111111111";
+
+      // 1. PATCH with disallowed mount source -> 422, card untouched
+      const bad = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .patch(agentPath)
+          .send({
+            adapterConfig: {
+              container: {
+                ...container,
+                extraMounts: [{ source: "/srv/other/disallowed", path: "/srv/other/disallowed", readOnly: true }],
+              },
+            },
+            replaceAdapterConfig: true,
+          }),
+      );
+      expect(bad.status, JSON.stringify(bad.body)).toBe(422);
+      expect(String(bad.body.error ?? bad.body.message ?? "")).toContain("/srv/other/disallowed");
+      expect(String(bad.body.error ?? bad.body.message ?? "")).toContain("MYRMIDON_BOT_MOUNT_SOURCES");
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+
+      // 2. PATCH with allowed mount source -> 200, card saved and persisted value verified
+      mockAgentService.update.mockClear();
+      const good = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .patch(agentPath)
+          .send({
+            adapterConfig: {
+              container: {
+                ...container,
+                extraMounts: [{ source: "/srv/allowed/sources", path: "/srv/allowed/sources", readOnly: true }],
+              },
+            },
+            replaceAdapterConfig: true,
+          }),
+      );
+      expect(good.status, JSON.stringify(good.body)).toBe(200);
+      expect(mockAgentService.update).toHaveBeenCalled();
+      const saved = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+      expect(saved.adapterConfig).toMatchObject({
+        container: {
+          extraMounts: [{ source: "/srv/allowed/sources", path: "/srv/allowed/sources", readOnly: true }],
+        },
+      });
+      expect((good.body as Record<string, any>).adapterConfig.container.extraMounts).toEqual([
+        { source: "/srv/allowed/sources", path: "/srv/allowed/sources", readOnly: true },
+      ]);
+
+      // 3. Partial PATCH without extraMounts does not reject already-saved mount (OPE-13074)
+      mockAgentService.update.mockClear();
+      mockAgentService.getById.mockResolvedValue({
+        ...existing,
+        adapterType: "hermes_gateway",
+        adapterConfig: {
+          model: "gpt-4o-mini",
+          container: {
+            ...container,
+            extraMounts: [{ source: "/srv/legacy/disallowed", path: "/srv/legacy/disallowed", readOnly: true }],
+          },
+        },
+      });
+      const partialPatch = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .patch(agentPath)
+          .send({
+            adapterConfig: {
+              model: "gpt-4o",
+            },
+          }),
+      );
+      expect(partialPatch.status, JSON.stringify(partialPatch.body)).toBe(200);
+      expect(mockAgentService.update).toHaveBeenCalled();
+      const partialSaved = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+      expect((partialSaved.adapterConfig as Record<string, any>).model).toBe("gpt-4o");
+      expect((partialSaved.adapterConfig as Record<string, any>).container.extraMounts).toEqual([
+        { source: "/srv/legacy/disallowed", path: "/srv/legacy/disallowed", readOnly: true },
+      ]);
+    } finally {
+      if (originalEnv === undefined) {
+        delete process.env.MYRMIDON_BOT_MOUNT_SOURCES;
+      } else {
+        process.env.MYRMIDON_BOT_MOUNT_SOURCES = originalEnv;
+      }
+      unregisterServerAdapter("hermes_gateway");
+      if (previous) registerServerAdapter(previous);
+    }
+  });
+
   it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>

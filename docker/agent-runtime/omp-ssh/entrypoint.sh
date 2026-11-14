@@ -24,33 +24,50 @@ fi
 # The workspace and home volumes are created by docker as root on first use.
 chown 1000:1000 /workspace /home/paperclip
 
-# myrmidon(OPE-12722 OMP-RUNNER-SHARED-CACHE): pnpm env for the runner's SSH
-# sessions. sshd does not pass container environment variables to logins
-# (PermitUserEnvironment no), and the board spawns every command as a fresh SSH
-# session, so Dockerfile ENV never reaches them: the only channel is a profile
-# file. /etc/profile.d/*.sh is sourced by /etc/profile before the board's
-# `exec env KEY=VAL <cmd>` (packages/adapter-utils ssh.ts) and by the agent's
-# own shells. The pnpm file is unconditional (the cache file below is written
-# only when the compose file mounts a usable /cache/pnpm):
-# - npm_config_store_dir=/workspace/.paperclip-runtime/pnpm-store: the pnpm
-#   STORE lives in the workspace volume, one per runner — a store under /cache
-#   would make pnpm copy every package into every clone, because a
-#   reflink/hardlink cannot cross a filesystem boundary (BOT-DISK-D, bot-runtime
-#   image). It sits inside `.paperclip-runtime`, the one directory every board
-#   cleanup of the workspace spares (git clean -e, clearRemoteDirectory, the
-#   post-run cleanup) and the sync never copies; a store at /workspace/.pnpm-store
-#   would not have that protection (see compose.yml). pnpm creates the directory
-#   itself, as uid 1000 in the chowned /workspace;
-# - npm_config_package_import_method=clone-or-copy: a reflink where the
-#   filesystem has them (XFS with reflink=1), else a plain copy. pnpm 9 copies
-#   silently when a reflink or link is refused, whatever the method, so nothing
-#   here turns a missing reflink into an error: measure the disk (README), not
-#   the exit code.
-cat > /etc/profile.d/omp-runner-pnpm.sh <<'PROFILE'
-# Written by the omp-runner entrypoint (OPE-12722): the pnpm store lives in the
-# workspace volume (one per runner), inside .paperclip-runtime, which the board's
+# myrmidon(OPE-12722 OMP-RUNNER-SHARED-CACHE, OPE-13018 OMP-RUNNER-DISK):
+# pnpm env for the runner's SSH sessions. sshd does not pass container
+# environment variables to logins (PermitUserEnvironment no), and the board
+# spawns every command as a fresh SSH session, so Dockerfile ENV never reaches
+# them: the only channel is a profile file. /etc/profile.d/*.sh is sourced by
+# /etc/profile before the board's `exec env KEY=VAL <cmd>`
+# (packages/adapter-utils ssh.ts) and by the agent's own shells.
+#
+# The pnpm STORE: prefer the shared /cache/pnpm-store mount (OPE-13018, one
+# store for all runners on the host, a sibling of the pnpm-omp metadata
+# directory in the same cache root); fall back to the legacy per-runner store
+# at /workspace/.paperclip-runtime/pnpm-store when the mount is absent (a
+# runner whose compose predates OPE-13018). The shared store works because it
+# sits on the same XFS filesystem as the runner volumes, so pnpm reflinks
+# node_modules across the bind mounts without copying package bytes; a store
+# on another filesystem would make pnpm copy every package into every clone.
+# The store must be owned by uid 1000: the entrypoint fixes a root-owned one
+# (docker creates a missing bind source as root) and reports any other uid.
+#
+# The import method stays clone-or-copy: a reflink where the filesystem has
+# them (XFS with reflink=1), else a plain copy. pnpm copies silently when a
+# reflink or link is refused, whatever the method, so nothing here turns a
+# missing reflink into an error: measure the disk (README), not the exit code.
+rm -f /etc/profile.d/omp-runner-pnpm.sh
+store_dir=/workspace/.paperclip-runtime/pnpm-store
+if [ -d /cache/pnpm-store ]; then
+  store_uid=$(stat -c %u /cache/pnpm-store)
+  if [ "$store_uid" = 0 ]; then
+    chown 1000:1000 /cache/pnpm-store 2>/dev/null || true
+    store_uid=$(stat -c %u /cache/pnpm-store)
+  fi
+  if [ "$store_uid" = 1000 ]; then
+    store_dir=/cache/pnpm-store
+    echo "omp-runner: shared pnpm store at /cache/pnpm-store"
+  else
+    echo "omp-runner: WARNING /cache/pnpm-store is owned by uid $store_uid, not 1000; falling back to the per-runner store at /workspace/.paperclip-runtime/pnpm-store. Mount a directory of the runners' own (<cache>/pnpm-store-omp), not the bots' <cache>/pnpm-store" >&2
+  fi
+fi
+cat > /etc/profile.d/omp-runner-pnpm.sh <<PROFILE
+# Written by the omp-runner entrypoint (OPE-12722, OPE-13018): the pnpm store
+# is the shared /cache/pnpm-store when the compose file mounts it, else the
+# legacy per-runner store inside .paperclip-runtime, which the board's
 # cleanups spare; the import is a reflink where possible, else a copy.
-export npm_config_store_dir=/workspace/.paperclip-runtime/pnpm-store
+export npm_config_store_dir=$store_dir
 export npm_config_package_import_method=clone-or-copy
 PROFILE
 chmod 0644 /etc/profile.d/omp-runner-pnpm.sh

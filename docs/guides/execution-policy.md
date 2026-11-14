@@ -27,9 +27,16 @@ interface IssueExecutionPolicy {
 
 interface IssueExecutionStage {
   id: string;                                 // auto-generated UUID
-  type: "review" | "approval";                // stage kind
+  type: "review" | "approval" | "verify";     // stage kind
   approvalsNeeded: 1;                         // multi-approval is not supported yet
   participants: IssueExecutionStageParticipant[];
+  requirements?: IssueExecutionStageRequirements;
+}
+
+interface IssueExecutionStageRequirements {
+  deployVersion?: boolean;                    // requires deploy version evidence on approval
+  checkMethod?: boolean;                      // requires check method evidence on approval
+  skip?: boolean;                             // allows skipping verify for non-code tasks
 }
 
 interface IssueExecutionStageParticipant {
@@ -51,7 +58,7 @@ interface IssueExecutionState {
   status: "idle" | "pending" | "changes_requested" | "completed";
   currentStageId: string | null;
   currentStageIndex: number | null;
-  currentStageType: "review" | "approval" | null;
+  currentStageType: "review" | "approval" | "verify" | null;
   currentParticipant: IssueExecutionStagePrincipal | null;
   returnAssignee: IssueExecutionStagePrincipal | null;
   completedStageIds: string[];
@@ -70,7 +77,7 @@ interface IssueExecutionDecision {
   companyId: string;
   issueId: string;
   stageId: string;
-  stageType: "review" | "approval";
+  stageType: "review" | "approval" | "verify";
   actorAgentId: string | null;
   actorUserId: string | null;
   outcome: "approved" | "changes_requested";
@@ -146,7 +153,38 @@ Executor finishes → reviewer approves → done.
 ```
 Executor finishes → approver signs off → done.
 
-**Multiple reviewers/approvers:**
+**Review + Verify (Release Tasks / VERIFY-ON-PROD):**
+```json
+{
+  "stages": [
+    {
+      "type": "review",
+      "participants": [{ "type": "agent", "agentId": "reviewer-agent-id" }]
+    },
+    {
+      "type": "verify",
+      "participants": [{ "type": "agent", "agentId": "verifier-agent-id" }],
+      "requirements": {
+        "deployVersion": true,
+        "checkMethod": true,
+        "skip": false
+      }
+    }
+  ]
+}
+```
+Executor finishes → code reviewer approves → PR merges / release deploys → verifier validates on deployed version → done.
+
+### Verification Stage (VERIFY-ON-PROD)
+
+The `verify` stage validates deployed behavior before release tasks can close:
+1. **Verifier Independence**: The verifier must differ from the task executor (`assignee` or `returnAssignee`). Self-verification is blocked by runtime validation (`422 Unprocessable Entity`).
+2. **Required Evidence**: An approving verifier comment must provide the deployed version (`Deploy version: <version>`) and verification method (`Check method: <method>`). For release tasks, this evidence is mandatory by default.
+3. **Rejection & Return Path**: If verification fails, the verifier transitions the task to `in_progress` with an explanatory comment (`changes_requested`). The runtime returns the task to the original executor (`returnAssignee`). Upon resubmitting (`PATCH status: "in_review"`), the task returns directly to the active verify stage.
+4. **Skip Configuration**: For documentation, guides, or configuration changes where deploy verification is not needed, set `requirements: { "skip": true }`.
+5. **Done Gate**: Release tasks with code work products cannot be closed directly without an approved verify stage or explicit `skip: true`.
+
+**Multiple reviewers/approvers/verifiers:**
 Each stage supports multiple participants. The runtime selects one to act, excluding the original executor to prevent self-review.
 
 ## Comment Required Backstop

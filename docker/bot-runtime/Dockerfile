@@ -355,6 +355,10 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # a failed commit in the run idempotency store must not leave the connection inside its
 # transaction (every later run request answered 500 until the gateway restarted).
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_idempotency_txn_rollback.py /opt/hermes-src
+# myrmidon(CONTENT-FILTER-RETRY): behaviour regression for 36-content-filter-retry.patch:
+# an HTTP-200 content_filter refusal re-issues the same model call (twice at most) in the same
+# turn before it ends the run.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/content_filter_retry.py /opt/hermes-src
 # myrmidon(G1): names imported inside functions of the patched modules resolve too
 # (the import smoke above runs only top-level imports; a missing lazily imported name
 # broke every run of the 1.6.0 dev image while the build passed).
@@ -631,9 +635,13 @@ RUN set -eu; \
     ln -s /opt/paperclip/bin/git /usr/bin/git; \
     chmod 0755 /opt/paperclip/libexec/git; \
     chmod 0755 /opt/paperclip/myr-ws/myr-ws; \
+    chmod 0755 /opt/paperclip/myr-ws/myr-handoff; \
     ln -s /opt/paperclip/myr-ws/myr-ws /opt/paperclip/bin/myr-ws; \
     ln -s /opt/paperclip/myr-ws/myr-ws /usr/local/bin/myr-ws; \
+    ln -s /opt/paperclip/myr-ws/myr-handoff /opt/paperclip/bin/myr-handoff; \
+    ln -s /opt/paperclip/myr-ws/myr-handoff /usr/local/bin/myr-handoff; \
     [ -x /usr/local/bin/myr-ws ] && [ -x /opt/paperclip/bin/myr-ws ] || { echo "myr-ws is not executable" >&2; exit 1; }; \
+    [ -x /usr/local/bin/myr-handoff ] && [ -x /opt/paperclip/bin/myr-handoff ] || { echo "myr-handoff is not executable" >&2; exit 1; }; \
     if [ -f /opt/paperclip/botd/botd ]; then \
       chmod 0755 /opt/paperclip/botd/botd; \
       sed -i '1s|.*|#!/opt/node24/bin/node|' /opt/paperclip/botd/botd; \
