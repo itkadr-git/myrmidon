@@ -14,8 +14,7 @@
 --
 -- Kept (used by prod queries): secret_access_events_company_created_idx,
 -- secret_access_events_secret_created_idx.
--- Full classification of all 1208 indexes and the justification for every
--- remaining unused index: doc/myrmidon/UNUSED-INDEXES-AUDIT.md (OPE-13055).
+-- Classification of index categories and justified exceptions: doc/myrmidon/UNUSED-INDEXES-AUDIT.md (OPE-13055).
 -- Note: a fourth candidate, heartbeat_runs_company_ctx_taskkey_created_idx, was
 -- already dropped in 0477; heartbeat_runs_company_ctx_paperclip_issue_created_idx
 -- is documented as a justified exception (1.6.8 audit section 4, plans analysis
