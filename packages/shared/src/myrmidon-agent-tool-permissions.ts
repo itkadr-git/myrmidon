@@ -43,6 +43,47 @@ export const ALLOW_ALL_AGENT_TOOL_PERMISSIONS: AgentToolPermissions = {
   connections: [],
 };
 
+/**
+ * Default tool permissions for the built-in analyst role:
+ * allowed task, document, and interaction operations, but no code or execution tools.
+ */
+export const ANALYST_TOOL_PERMISSIONS: AgentToolPermissions = {
+  mode: "listed",
+  tools: [
+    "create_task",
+    "update_task",
+    "search_tasks",
+    "get_task_context",
+    "get_task_history",
+    "report_progress",
+    "request_review",
+    "request_human_input",
+    "set_dependencies",
+    "write_document",
+    "read_document",
+    "create_document",
+    "update_document",
+    "list_documents",
+    "list_document_revisions",
+    "create_comment",
+    "interaction",
+    "ask_user_questions",
+    "request_confirmation",
+    "suggest_tasks",
+    "paperclip-self:list_my_issues",
+    "paperclip-self:get_issue_context",
+    "paperclip-self:update_issue",
+    "paperclip-self:create_task",
+    "paperclip-self:update_document",
+    "paperclip-self:create_document",
+    "paperclip-self:read_document",
+    "paperclip-self:list_documents",
+    "paperclip-self:create_comment",
+    "paperclip-self:interaction",
+  ],
+  connections: [],
+};
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
