@@ -126,6 +126,15 @@ section (fail-closed). After a removal the pass clears the bot's XFS quota proje
 node --test scripts/myrmidon/host-gc/host-clone-cache-gc.test.mjs
 ```
 
+- A directory that passes the board lookup as `omp_local` is preserved. A running
+  `myrmidon-omp-runner-<agent>` whose board card is missing or uses another adapter is stopped.
+  After it stops, the pass removes that runner's `workspace/`, `home/`, `tmp/` and `scratch/` trees.
+  These trees include task clones, `wt/` and credentials. The pass then removes its empty runner
+  directory. The agent's `.local/` state is deliberately left intact. A failed board lookup
+  keeps the runner. A failed stop keeps all of its data. `staleOmpRunnersStopped` and
+  `staleOmpRunnerDataRemoved` count successful actions in the apply report; per-path outcomes
+  are journalled as `stale-omp-runner-*` events.
+
 ## SSH runner run copies (OPE-12722)
 
 An SSH runner (the container an `omp_local` agent runs in) keeps one copy of the workspace

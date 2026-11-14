@@ -76,6 +76,7 @@ const ARCHIVE_EXCLUDES = ["node_modules", ".pnpm-store", ".turbo", "dist", ".nex
 const BOT_DATA_TTL_HOURS = 24;
 const BOT_KEY_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const DOCKER_TIMEOUT_MS = 30_000;
+const OMP_AGENT_KEY_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const GIT_TIMEOUT_MS = 30_000;
 const HERMES_GATEWAY_ADAPTER_TYPE = "hermes_gateway";
 
@@ -152,6 +153,8 @@ export function parseArgs(argv) {
     cloneTtlHours: CLONE_TTL_HOURS,
     cacheTtlHours: CACHE_TTL_HOURS,
     runnerRoots: (process.env.HOST_GC_RUNNER_ROOTS || "").split(":").map((r) => r.trim()).filter(Boolean),
+    runnerContainerPrefix: process.env.MYRMIDON_HOST_GC_OMP_RUNNER_CONTAINER_PREFIX || "myrmidon-omp-runner-",
+    docker: process.env.MYRMIDON_HOST_GC_DOCKER || "docker",
     runCopyTtlHours: RUN_COPY_TTL_HOURS,
     runnerTmpTtlHours: RUNNER_TMP_TTL_HOURS,
   };
@@ -352,6 +355,77 @@ export function listBotContainers({ docker = "docker", timeoutMs = DOCKER_TIMEOU
   return { ok: true, keys };
 }
 
+export function listOmpRunnerContainers({ docker = "docker", timeoutMs = DOCKER_TIMEOUT_MS, namePrefix = "myrmidon-omp-runner-" } = {}) {
+  const res = spawnSync(docker, ["ps", "-a", "--format", "{{.Names}}"], { encoding: "utf8", timeout: timeoutMs });
+  if (res.error || res.status !== 0) return { ok: false, reason: res.error?.code === "ENOENT" ? "docker-unavailable" : "docker-failed" };
+  const names = [];
+  for (const line of (res.stdout || "").split("\n")) {
+    const name = line.trim();
+    if (name.startsWith(namePrefix) && OMP_AGENT_KEY_PATTERN.test(name.slice(namePrefix.length))) names.push(name);
+  }
+  return { ok: true, names };
+}
+
+export async function fetchAgentAdapter(agentId, {
+  baseUrl = process.env.BOARD_API_URL || process.env.PAPERCLIP_API_URL || process.env.MYRMIDON_API_URL || "http://127.0.0.1:3100",
+  apiKey = process.env.PAPERCLIP_API_KEY,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  if (!OMP_AGENT_KEY_PATTERN.test(agentId)) return { ok: false, reason: "bad-agent-id" };
+  let base = (baseUrl || "").replace(/\/$/, "");
+  if (!base) base = "http://127.0.0.1:3100";
+  if (!base.endsWith("/api")) base += "/api";
+  if (typeof fetchImpl !== "function") return { ok: false, reason: "board-unavailable" };
+  const headers = { Accept: "application/json" };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  try {
+    const response = await fetchImpl(`${base}/agents/${encodeURIComponent(agentId)}`, { headers });
+    if (response.status === 404) return { ok: true, adapterType: null };
+    if (!response.ok) return { ok: false, reason: "board-unavailable", statusCode: response.status };
+    const body = await response.json();
+    if (!body || typeof body !== "object" || typeof body.adapterType !== "string") return { ok: false, reason: "board-unavailable" };
+    return { ok: true, adapterType: body.adapterType };
+  } catch {
+    return { ok: false, reason: "board-unavailable" };
+  }
+}
+
+export async function planStaleOmpRunners(runnersRoot, {
+  docker = "docker",
+  namePrefix = "myrmidon-omp-runner-",
+  fetchAdapter = fetchAgentAdapter,
+} = {}) {
+  const containers = listOmpRunnerContainers({ docker, namePrefix });
+  if (!containers.ok) return { ok: false, reason: containers.reason, plan: [] };
+  const plan = [];
+  const activeKeys = new Set();
+  for (const name of containers.names) {
+    const agentKey = name.slice(namePrefix.length);
+    activeKeys.add(agentKey);
+    const runnerPath = path.join(runnersRoot, agentKey);
+    const adapter = await fetchAdapter(agentKey);
+    if (!adapter.ok) plan.push({ name, agentKey, path: runnerPath, action: "keep", reason: adapter.reason });
+    else if (adapter.adapterType === "omp_local") plan.push({ name, agentKey, path: runnerPath, action: "keep", reason: "omp-local" });
+    else plan.push({ name, agentKey, path: runnerPath, runnersRoot, action: "stop-remove", reason: adapter.adapterType ? "adapter-changed" : "agent-deleted" });
+  }
+  try {
+    for (const agentKey of fs.readdirSync(runnersRoot)) {
+      if (activeKeys.has(agentKey) || !OMP_AGENT_KEY_PATTERN.test(agentKey)) continue;
+      const adapter = await fetchAdapter(agentKey);
+      if (adapter.ok && adapter.adapterType !== "omp_local") plan.push({ name: `${namePrefix}${agentKey}`, agentKey, path: path.join(runnersRoot, agentKey), runnersRoot, action: "remove-stale-home", reason: adapter.adapterType ? "adapter-changed" : "agent-deleted" });
+      else plan.push({ agentKey, path: path.join(runnersRoot, agentKey), action: "keep", reason: adapter.ok ? "omp-local" : adapter.reason });
+    }
+  } catch (err) {
+    return { ok: false, reason: err.code === "ENOENT" ? "runner-root-missing" : "runner-root-unreadable", plan };
+  }
+  return { ok: true, plan };
+}
+
+export function stopOmpRunner(name, { docker = "docker", timeoutMs = DOCKER_TIMEOUT_MS } = {}) {
+  const res = spawnSync(docker, ["rm", "-f", name], { encoding: "utf8", timeout: timeoutMs });
+  return !res.error && res.status === 0;
+}
+
 // One `GET /api/agents/{id}` against the board (real route, server/src/routes/agents.ts).
 // The lookup happens per candidate directory, only after the container and retention
 // guards passed, so a pass makes a handful of calls at most. The verdict decides the
@@ -371,7 +445,7 @@ export async function fetchAgentDecommissionState(agentId, {
   apiKey = process.env.PAPERCLIP_API_KEY,
   fetchImpl = globalThis.fetch,
 } = {}) {
-  if (!BOT_KEY_PATTERN.test(agentId)) return { ok: false, reason: "bad-agent-id" };
+  if (!OMP_AGENT_KEY_PATTERN.test(agentId)) return { ok: false, reason: "bad-agent-id" };
   let base = (baseUrl || "").replace(/\/$/, "");
   if (!base) base = "http://127.0.0.1:3100";
   if (!base.endsWith("/api")) base += "/api";
@@ -1269,7 +1343,7 @@ async function main() {
     const cloneTtlMs = args.cloneTtlHours * HOUR_MS;
     const cacheTtlMs = args.cacheTtlHours * HOUR_MS;
 
-    const plan = { clones: [], caches: [], runCopies: [], runnerTaskFolders: [], runnerTmp: [], botData: [], kept: [], removed: [], archived: [] };
+    const plan = { clones: [], caches: [], runCopies: [], staleOmpRunners: [], runnerTaskFolders: [], runnerTmp: [], botData: [], kept: [], removed: [], archived: [] };
 
     // 1. Scan task clones
     const clones = scanTaskClones(root, now, args.cloneTtlHours);
@@ -1304,6 +1378,28 @@ async function main() {
           plan.caches.push({ ...c, action: "remove" });
         } else {
           plan.kept.push({ ...c, action: "keep", reason: "fresh" });
+        }
+      }
+    }
+
+    if (args.runnerRoots.length > 0) {
+      for (const runnersRoot of args.runnerRoots) {
+        const stale = await planStaleOmpRunners(runnersRoot, {
+          docker: args.docker,
+          namePrefix: args.runnerContainerPrefix,
+          fetchAdapter: (agentId) => fetchAgentAdapter(agentId),
+        });
+        if (!stale.ok) {
+          journalRecord(args.journal, { event: "stale-omp-runner-scan-unavailable", reason: stale.reason, root: runnersRoot });
+          continue;
+        }
+        for (const item of stale.plan) {
+          if (item.action === "keep") {
+            plan.kept.push(item);
+            journalRecord(args.journal, { event: "stale-omp-runner-kept", name: item.name, reason: item.reason });
+          } else {
+            plan.staleOmpRunners.push(item);
+          }
         }
       }
     }
@@ -1392,7 +1488,7 @@ async function main() {
 
     // 3. Execute or report
     if (args.dryRun) {
-      journalRecord(args.journal, { event: "dry-run", clones: plan.clones.length, caches: plan.caches.length, runCopies: plan.runCopies.length, runnerTaskFolders: plan.runnerTaskFolders.length, runnerTmp: plan.runnerTmp.length, botDataRemoved: plan.botData.length, kept: plan.kept.length });
+      journalRecord(args.journal, { event: "dry-run", clones: plan.clones.length, caches: plan.caches.length, staleOmpRunners: plan.staleOmpRunners.length, runCopies: plan.runCopies.length, runnerTaskFolders: plan.runnerTaskFolders.length, runnerTmp: plan.runnerTmp.length, botDataRemoved: plan.botData.length, kept: plan.kept.length });
       console.log(JSON.stringify({ ok: true, dryRun: true, plan }, null, 2));
     } else {
       // Apply: process archives first, then removals
@@ -1424,6 +1520,37 @@ async function main() {
           journalRecord(args.journal, { event: "cache-removed", path: c.path, reason: c.reason, sizeBytes: c.sizeBytes });
         } catch (err) {
           journalRecord(args.journal, { event: "cache-remove-failed", path: c.path, error: err.message });
+        }
+      }
+      let staleOmpRunnersStopped = 0;
+      let staleOmpRunnerDataRemoved = 0;
+      for (const runner of plan.staleOmpRunners) {
+        if (runner.action === "stop-remove") {
+          if (!stopOmpRunner(runner.name, { docker: args.docker })) {
+            journalRecord(args.journal, { event: "stale-omp-runner-stop-failed", name: runner.name, reason: runner.reason });
+            continue;
+          }
+          staleOmpRunnersStopped++;
+          journalRecord(args.journal, { event: "stale-omp-runner-stopped", name: runner.name, reason: runner.reason });
+        }
+        for (const child of ["workspace", "home", "tmp", "scratch"]) {
+          const target = path.join(runner.path, child);
+          try {
+            if (!fs.existsSync(target)) continue;
+            atomicDrop(target, runner.runnersRoot);
+            staleOmpRunnerDataRemoved++;
+            journalRecord(args.journal, { event: "stale-omp-runner-data-removed", name: runner.name, path: target });
+          } catch (err) {
+            journalRecord(args.journal, { event: "stale-omp-runner-data-remove-failed", name: runner.name, path: target, error: err.message });
+          }
+        }
+        if (!["workspace", "home", "tmp", "scratch"].some((child) => fs.existsSync(path.join(runner.path, child)))) {
+          try {
+            atomicDrop(runner.path, runner.runnersRoot);
+            journalRecord(args.journal, { event: "stale-omp-runner-root-removed", name: runner.name, path: runner.path });
+          } catch (err) {
+            journalRecord(args.journal, { event: "stale-omp-runner-root-remove-failed", name: runner.name, path: runner.path, error: err.message });
+          }
         }
       }
       const runCopiesGone = pruneSshRunCopies(plan.runCopies.filter((x) => x.action === "remove"), args.journal);
@@ -1478,8 +1605,8 @@ async function main() {
         }
       }
         botDataRemoved: plan.botData.length,
-      journalRecord(args.journal, { event: "apply-complete", runCopiesRemoved: runCopiesGone.length, runnerTaskFoldersRemoved, runnerTmpRemoved: runnerTmpGone.length, botDataRemoved: plan.botData.length, removed: plan.removed.length, archived: plan.archived.length, kept: plan.kept.length });
-      console.log(JSON.stringify({ ok: true, dryRun: false, removed: plan.removed.length, archived: plan.archived.length, runCopiesRemoved: runCopiesGone.length, runnerTaskFoldersRemoved, runnerTmpRemoved: runnerTmpGone.length, botDataRemoved: plan.botData.length, kept: plan.kept.length }, null, 2));
+      journalRecord(args.journal, { event: "apply-complete", staleOmpRunnersStopped, staleOmpRunnerDataRemoved, runCopiesRemoved: runCopiesGone.length, runnerTaskFoldersRemoved, runnerTmpRemoved: runnerTmpGone.length, botDataRemoved: plan.botData.length, removed: plan.removed.length, archived: plan.archived.length, kept: plan.kept.length });
+      console.log(JSON.stringify({ ok: true, dryRun: false, removed: plan.removed.length, archived: plan.archived.length, staleOmpRunnersStopped, staleOmpRunnerDataRemoved, runCopiesRemoved: runCopiesGone.length, runnerTaskFoldersRemoved, runnerTmpRemoved: runnerTmpGone.length, botDataRemoved: plan.botData.length, kept: plan.kept.length }, null, 2));
     }
   } finally {
     lock.release();
