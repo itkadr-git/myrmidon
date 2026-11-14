@@ -260,6 +260,42 @@ describe("botContainerCardSaveProblem image (1.6.6 OPE-8916)", () => {
   });
 });
 
+describe("botContainerCardSaveProblem extraMounts (1.6.9 OPE-13074)", () => {
+  const card = (extraMounts: unknown) => ({ container: { ...VALID_CONTAINER_CONFIG, image: PINNED_IMAGE, extraMounts } });
+
+  it("refuses an extra mount whose source is not in MYRMIDON_BOT_MOUNT_SOURCES", () => {
+    const env = { MYRMIDON_BOT_MOUNT_SOURCES: "/srv/shared/sources" };
+    const problem = botContainerCardSaveProblem(
+      "hermes_gateway",
+      card([{ source: "/srv/other/secret", containerPath: "/srv/other/secret", readOnly: true }]),
+      env,
+    );
+    expect(problem).toContain('extra mount #1 source "/srv/other/secret" is not listed in MYRMIDON_BOT_MOUNT_SOURCES');
+  });
+
+  it("accepts an extra mount whose source is listed in MYRMIDON_BOT_MOUNT_SOURCES", () => {
+    const env = { MYRMIDON_BOT_MOUNT_SOURCES: "/srv/shared/sources, /srv/shared/tools" };
+    expect(
+      botContainerCardSaveProblem(
+        "hermes_gateway",
+        card([{ source: "/srv/shared/sources", containerPath: "/srv/shared/sources", readOnly: true }]),
+        env,
+      ),
+    ).toBeNull();
+  });
+
+  it("refuses an invalid extra mount structure or writable mount", () => {
+    const env = { MYRMIDON_BOT_MOUNT_SOURCES: "/srv/shared/sources" };
+    expect(
+      botContainerCardSaveProblem(
+        "hermes_gateway",
+        card([{ source: "/srv/shared/sources", containerPath: "/srv/shared/sources", readOnly: false }]),
+        env,
+      ),
+    ).toContain("readOnly=false is not supported");
+  });
+});
+
 describe("botContainerCardSaveProblem (1.6.4-BOT-CONTAINER-CARD)", () => {
   it("has the defaults the form and the migration use", () => {
     expect(BOT_CONTAINER_DEFAULTS).toEqual({ memoryMb: 1024, cpus: 1, pidsLimit: 512 });
