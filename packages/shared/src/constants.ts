@@ -59,6 +59,7 @@ export const AGENT_ROLES = [
   "researcher",
   "general",
   "architect",
+  "analyst",
 ] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
 
@@ -76,6 +77,7 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   researcher: "Researcher",
   general: "General",
   architect: "Architect",
+  analyst: "Analyst",
 };
 
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;

@@ -103,16 +103,16 @@ describeEmbeddedPostgres("myrmidon(1.6.1 CUSTOM-CASTES) service over the databas
     return row.id;
   }
 
-  it("seeds exactly 13 built-in castes on the first read and repeats identically", async () => {
+  it("seeds exactly 14 built-in castes on the first read and repeats identically", async () => {
     companyId = await makeCompany();
     const { service } = makeService();
     const first = await service.listCastes(companyId);
-    expect(first).toHaveLength(13);
+    expect(first).toHaveLength(14);
     expect(first.every((c) => c.builtIn)).toBe(true);
     expect(first.map((c) => c.key).sort()).toEqual(
       [
         "ceo", "cto", "cmo", "cfo", "security", "engineer",
-        "designer", "pm", "qa", "devops", "researcher", "general", "architect",
+        "designer", "pm", "qa", "devops", "researcher", "general", "architect", "analyst",
       ].sort(),
     );
     const engineer = first.find((c) => c.key === "engineer")!;
@@ -120,9 +120,14 @@ describeEmbeddedPostgres("myrmidon(1.6.1 CUSTOM-CASTES) service over the databas
     expect(engineer.swarmEligible).toBe(true);
     expect(engineer.maxActiveTasks).toBeNull();
 
+    const analyst = first.find((c) => c.key === "analyst")!;
+    expect(analyst.nameEn).toBe("Analyst");
+    expect(analyst.swarmEligible).toBe(false);
+    expect(analyst.description).toBeTruthy();
+
     const second = await service.listCastes(companyId);
     expect(second.map((c) => c.key).sort()).toEqual(first.map((c) => c.key).sort());
-    expect(second).toHaveLength(13);
+    expect(second).toHaveLength(14);
   });
 
   it("creates a caste; a duplicate key is a 409; PATCH mutates the mutable fields; PATCH key is a 400", async () => {
@@ -229,7 +234,7 @@ describeEmbeddedPostgres("myrmidon(1.6.1 CUSTOM-CASTES) service over the databas
 
     const listB = await service.listCastes(companyB);
     expect(listB.find((c) => c.key === "ops")).toBeUndefined();
-    expect(listB).toHaveLength(13);
+    expect(listB).toHaveLength(14);
 
     await expect(
       service.updateCaste({ companyId: companyB, key: "ops", body: { nameEn: "Hijack" } }),

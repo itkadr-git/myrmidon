@@ -7504,7 +7504,12 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     });
     const otherCompanyFixture = await createRuntimeFixture();
     const cleanupRuntimeHome = await createRuntimeHome();
-    const reservation = await reserveContiguousPorts(WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS);
+    // Each occupied candidate otherwise incurs a child spawn, readiness probe, and
+    // stability window. Three attempts preserve exhaustion and privacy assertions
+    // without repeating the same expensive path 32 times for each company.
+    const boundedAttempts = 3;
+    setWorkspaceRuntimePortAllocationAttemptsForTests(boundedAttempts);
+    const reservation = await reserveContiguousPorts(boundedAttempts);
     const [baseReservation, ...otherReservations] = reservation.servers;
     await closeNetServer(baseReservation!);
     const firstWorkspace = fixture.workspaces[0]!;
@@ -7543,7 +7548,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         details: {
           code: "workspace_runtime_port_allocation_exhausted",
           port: reservation.basePort,
-          attemptedPortCount: WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS,
+          attemptedPortCount: boundedAttempts,
           conflictingExecutionWorkspaceId: firstWorkspace.id,
           remediation: expect.any(String),
         },
@@ -7569,7 +7574,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         details: {
           code: "workspace_runtime_port_allocation_exhausted",
           port: reservation.basePort,
-          attemptedPortCount: WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS,
+          attemptedPortCount: boundedAttempts,
         },
       });
       expect(otherCompanyError).not.toMatchObject({
@@ -7579,6 +7584,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       });
       expect(JSON.stringify(otherCompanyError)).not.toContain(firstWorkspace.id);
     } finally {
+      setWorkspaceRuntimePortAllocationAttemptsForTests(null);
       await stopRuntimeServicesForExecutionWorkspace({
         db,
         executionWorkspaceId: firstWorkspace.id,
