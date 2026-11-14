@@ -294,6 +294,48 @@ wait_for ".github/workflows/myrmidon-dockergate.yml" soft "Myrmidon dockergate i
 log "gate: Myrmidon fleetd image on $sha"
 wait_for ".github/workflows/myrmidon-fleetd.yml" soft "Myrmidon fleetd image"
 
+# --------------------------------------------- 2b. queue priority gate --------
+# OPE-13002: the release build must hold priority in the CI queue. The
+# enforcement mechanism is the priority runner pool (myrmidon-ci.yml
+# is_release -> vars.CI_RUNNER_PRIORITY). This gate makes priority a RELEASE
+# criterion, not just a CI-side monitor: before anything is published it
+# checks the FACTUAL dispatch order of the pending runs of the two release
+# CI workflows. A proven inversion — an ordinary run that queued AFTER this
+# tag's CI run has already started (started_at recorded by the dispatcher)
+# while the tag's run has not — refuses the publish. Fail-closed: an
+# unreadable runs API answer refuses the publish (a retryable answer, never
+# a silent pass).
+queue_priority_ok() {
+  local runs_json
+  runs_json="$(for ((attempt = 1; attempt <= GH_API_RETRIES; attempt++)); do
+    out="$(gh api "repos/$repo/actions/runs?per_page=100" 2>/dev/null)" && rc=0 || rc=$?
+    if ((rc == 0)) && [[ -n "$out" ]]; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+    log "gate: queue priority runs read failed (attempt $attempt/$GH_API_RETRIES) - retrying in ${GH_API_RETRY_SLEEP}s"
+    sleep "$GH_API_RETRY_SLEEP"
+  done; return 1)"
+  [[ -n "$runs_json" ]] || return 1
+  QUEUE_RUNS_JSON="$runs_json" QUEUE_TAG="$tag" QUEUE_HELPERS="$here/release-jobs.mjs" node --input-type=module -e '
+    const { observedPriorityViolations } = await import(process.env.QUEUE_HELPERS);
+    const all = JSON.parse(process.env.QUEUE_RUNS_JSON).workflow_runs || [];
+    const pending = all.filter((r) =>
+      (r.status === "queued" || r.status === "in_progress") &&
+      (r.name === "Myrmidon CI (tag)" || r.name === "Myrmidon CI")
+    );
+    const violations = observedPriorityViolations(pending)
+      .filter((v) => v.release === process.env.QUEUE_TAG);
+    for (const v of violations) {
+      console.error(`[myrmidon-release-publish] ERROR: queue priority inversion: release run ${v.release} (queued ${v.releaseQueuedAt}, not started) is behind ordinary run ${v.blockedBy} (queued ${v.blockedByQueuedAt}, started ${v.blockedByStartedAt})`);
+    }
+    if (violations.length > 0) process.exit(1);
+  '
+}
+log "gate: release build queue priority on $tag"
+queue_priority_ok || die "queue priority could not be verified for $tag (or a proven inversion exists) — NOT publishing. Release builds must hold priority in the CI queue."
+log "gate: queue priority holds for $tag"
+
 # ------------------------------------------------------ 3. the release body --
 # release-body.mjs exits 1 when the CHANGELOG section or any component
 # digest is missing — the script then dies before publishing anything.

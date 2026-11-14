@@ -79,7 +79,14 @@ env:
 jobs:
   plan:
     name: plan
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
+    # OPE-13002: release runs (main pushes and release PRs — anything the plan
+    # step classifies is_release=true) start on the priority runner pool
+    # (vars.CI_RUNNER_PRIORITY) ahead of queued ordinary runs; ordinary runs
+    # never receive this label and stay on the shared pool. The tag-CI
+    # fail-closed monitor (myrmidon-ci-tag.yml) verifies the invariant.
+    needs: []
+    runs-on: ${{ fromJSON((vars.CI_RUNNER_PRIORITY && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') || contains(github.event.pull_request.title, 'rc.') || contains(github.event.pull_request.title, 'release') || contains(github.event.pull_request.labels.*.name, 'release') || startsWith(github.head_ref, 'rel/') || startsWith(github.base_ref, 'rel/')) && vars.CI_RUNNER_PRIORITY) || vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}
     timeout-minutes: 10
     outputs:
       tier: ${{ steps.plan.outputs.tier }}

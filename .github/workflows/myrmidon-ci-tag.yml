@@ -29,9 +29,13 @@ on:
       - "myr-v*.*.*"
   workflow_dispatch:
     # Manual fallback path (the 1.6.4 recovery): re-run the tag CI by hand.
+    # OPE-13002 verification path: the input also accepts a commit SHA — a
+    # dispatch then runs this full tag CI on that exact head (every lane,
+    # including the matrix/other/runner test tiers the PR workflow skips).
+    # Such a run is not a release: the release changelog gate skips it.
     inputs:
       tag:
-        description: Release tag to run CI for, e.g. myr-v1.6.4
+        description: Release tag to run CI for (e.g. myr-v1.6.4), or a commit SHA to verify this tag CI on an exact head
         required: true
         type: string
 
@@ -409,6 +413,22 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
+          # RELEASE-CUT-CHANGELOG enforces only for a REAL release-tag ref
+          # (a myr-v*.*.* tag push, or the 1.6.4 recovery dispatch re-running
+          # one): a release tag must carry its folded "## X.Y.Z" section so
+          # the release publish never meets a body it cannot build. A
+          # workflow_dispatch pointed at a commit SHA (the OPE-13002
+          # verification path: run this full tag CI on the exact head of a
+          # PR) is not a release and has no version section, so the gate
+          # must not judge it. The publish gate itself still refuses any
+          # myr-v tag without its section, so no red tag can ship.
+          case "$TAG" in
+            myr-v*.*.*) ;;
+            *)
+              echo "Not a release-tag ref ($TAG); skipping the release changelog gate (verification dispatch on a commit)."
+              exit 0
+              ;;
+          esac
           version="${TAG#myr-v}"
           version="${version%%-rc.*}"
           node scripts/myrmidon/release/collect-fragments.mjs --version "$version" --check
@@ -615,6 +635,15 @@ jobs:
           fi
           echo "$bin" >> "$GITHUB_PATH"
 
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          # workflow_dispatch from a branch checks out the typed tag. The
+          # latency and queue-priority gates below read THIS build's own
+          # workflow file from the checkout — never the default branch.
+          ref: ${{ inputs.tag || '' }}
+
       - name: Verify queue latency
         shell: bash
         env:
@@ -643,26 +672,63 @@ jobs:
             exit 1
           fi
 
-          res="$(echo "$jobs_data" | jq -r '
-            .jobs as $all |
-            ([$all[] | select(.name == "CI result" and .started_at != null) | .started_at] | last) as $ci_start |
-            ([$all[] | select(
-              (.name == "typecheck" or
-               .name == "build" or
-               (.name | startswith("tests (")) or
-               .name == "tests (other packages)" or
-               .name == "tests (runner)" or
-               .name == "checks" or
-               .name == "fleetd" or
-               .name == "dockergate") and
-              .completed_at != null
-            ) | .completed_at] | sort | last) as $last_pred_end |
-            if ($ci_start and $last_pred_end) then
-              (($ci_start | fromdateiso8601) - ($last_pred_end | fromdateiso8601))
-            else
-              empty
-            end
-          ')"
+          # OPE-13002: derive the predecessor set from THIS build's own
+          # workflow file (checked out at the release tag — never from the
+          # default branch, which may have drifted since the tag was cut)
+          # via release-jobs.mjs instead of hardcoding job names. The set is
+          # the CI result gate job's transitive `needs:` closure — exactly
+          # the jobs the gate waits for. A workflow job that is NOT in that
+          # dependency graph (an extra lane or side job) is never mandatory
+          # for the gate; foreign job names are ignored. Matrix lanes (e.g.
+          # `tests (${{ matrix.label }})`) are matched by template. An empty
+          # or incomplete job set fails closed: if a lane the gate declares
+          # is absent from this run, the workflow file is not the one this
+          # build started from.
+          workflow_yaml="$(cat .github/workflows/myrmidon-ci-tag.yml 2>/dev/null || true)"
+          if [ -z "$workflow_yaml" ]; then
+            echo "ERROR: could not read .github/workflows/myrmidon-ci-tag.yml from the tag checkout to derive the build job set" >&2
+            exit 1
+          fi
+
+          res="$(JOBS_JSON="$jobs_data" BUILD_JOBS_WORKFLOW_YAML="$workflow_yaml" node --input-type=module -e '
+            const { gateDependencyJobs, matchesJob, gateState } = await import("./scripts/myrmidon/release/release-jobs.mjs");
+            const yaml = process.env.BUILD_JOBS_WORKFLOW_YAML;
+            const build = gateDependencyJobs(yaml, "ci-result");
+            if (build.length === 0) {
+              console.error("ERROR: the CI result gate has no dependency jobs (empty job set)");
+              process.exit(1);
+            }
+            const jobs = JSON.parse(process.env.JOBS_JSON).jobs;
+            const observed = jobs
+              .filter((j) => j.name !== "CI result")
+              .map((j) => ({ name: j.name, conclusion: j.conclusion }));
+            const state = gateState(build, observed);
+            if (state.missing.length > 0) {
+              console.error(`ERROR: build jobs missing from this run: ${state.missing.join(", ")}`);
+              process.exit(1);
+            }
+            if (state.failed.length > 0) {
+              console.error(`ERROR: build jobs not successful in this run: ${state.failed.join(", ")}`);
+              process.exit(1);
+            }
+            if (state.foreign.length > 0) {
+              console.log(`NOTE: foreign jobs observed and ignored: ${state.foreign.join(", ")}`);
+            }
+            const ciStarts = jobs.filter((j) => j.name === "CI result" && j.started_at).map((j) => new Date(j.started_at).getTime());
+            const predEnds = jobs
+              .filter((j) => j.name !== "CI result" && j.completed_at && build.some((b) => matchesJob(j.name, b)))
+              .map((j) => new Date(j.completed_at).getTime());
+            if (ciStarts.length === 0 || predEnds.length === 0) {
+              console.error("ERROR: Could not compute start latency: missing start/completion timestamps");
+              process.exit(1);
+            }
+            const ciStart = Math.max(...ciStarts);
+            const lastPredEnd = Math.max(...predEnds);
+            console.log(Math.round((ciStart - lastPredEnd) / 1000));
+          ')" || {
+            echo "ERROR: failed to derive the build job set or latency from the workflow" >&2
+            exit 1
+          }
 
           if [ -z "$res" ]; then
             echo "ERROR: Could not compute start latency: missing start/completion timestamps" >&2
@@ -675,6 +741,73 @@ jobs:
             exit 1
           fi
           echo "PASS: CI result started within 2 minutes (${res}s <= 120s)."
+
+      - name: Verify release build queue priority
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          WORKFLOW: "Myrmidon CI (tag)"
+        run: |
+          set -euo pipefail
+          # OPE-13002: release builds of the release-tag CI get priority in the
+          # CI queue. The ENFORCEMENT mechanism is the priority runner pool:
+          # myrmidon-ci.yml sends every release run (plan.outputs.is_release,
+          # true for main pushes AND release PRs) to vars.CI_RUNNER_PRIORITY,
+          # a dedicated runner label ordinary runs never receive. A free
+          # priority runner always starts the OLDEST queued release run
+          # before any ordinary run; ordinary runs only ever hold the shared
+          # pool. This step is the fail-closed OBSERVED-ORDER monitor of that
+          # invariant: it fails the release build when the FACTUAL dispatch
+          # order (started_at recorded by the dispatcher) proves a release
+          # run is waiting behind an ordinary run that queued LATER. No
+          # assumed queue positions are used — only recorded start facts.
+          echo "Checking release build queue priority (observed dispatch order, fail-closed)..."
+          if ! command -v gh >/dev/null || ! command -v jq >/dev/null; then
+            echo "ERROR: gh or jq not available for queue priority check" >&2
+            exit 1
+          fi
+
+          runs_json="$(gh api "repos/$REPO/actions/runs?per_page=100" 2>/dev/null || true)"
+          if [ -z "$runs_json" ]; then
+            echo "ERROR: Unable to fetch workflow runs from GitHub API" >&2
+            exit 1
+          fi
+
+          RUNS_JSON="$runs_json" WORKFLOW_NAME="$WORKFLOW" node --input-type=module -e '
+            const { observedPriorityViolations } = await import("./scripts/myrmidon/release/release-jobs.mjs");
+            // The release build competes in the SAME priority runner pool as
+            // every other release run (main pushes and release PRs from
+            // myrmidon-ci.yml, plus the tag workflow itself). Ordinary runs
+            // of the shared CI workflow never receive the priority label.
+            // The comparison set is every queued or in-progress run of the
+            // two release CI workflows — a run of an unrelated workflow
+            // (image, publish, pages) never occupies the pool and is dropped.
+            const all = JSON.parse(process.env.RUNS_JSON).workflow_runs;
+            const pending = all.filter((r) =>
+              (r.status === "queued" || r.status === "in_progress") &&
+              (r.name === process.env.WORKFLOW_NAME || r.name === "Myrmidon CI")
+            );
+            if (pending.length === 0) {
+              console.log("PASS: no pending runs competing for the priority pool; queue priority trivially holds.");
+              return;
+            }
+            const violations = observedPriorityViolations(pending);
+            for (const v of violations) {
+              console.error(`ERROR: release run ${v.release} (queued ${v.releaseQueuedAt}, not yet started) is behind ordinary run ${v.blockedBy} (queued ${v.blockedByQueuedAt}, started ${v.blockedByStartedAt})`);
+            }
+            if (violations.length > 0) {
+              console.error(`ERROR: ${violations.length} proven queue priority inversion(s); release builds must be dispatched before later-queued ordinary builds`);
+              process.exit(1);
+            }
+            const rel = pending.filter((r) => /^myr-v\d+\.\d+\.\d+(-rc\.\d+)?$/.test(r.head_branch || "")).length;
+            const ord = pending.length - rel;
+            console.log(`PASS: ${rel} release run(s) and ${ord} ordinary run(s) pending in the priority pool; no factual dispatch inversion observed.`);
+            console.log("PASS: release builds hold queue priority (priority runner pool; observed dispatch order).");
+          ' || {
+            echo "ERROR: failed to verify release build queue priority" >&2
+            exit 1
+          }
 
       - name: Check lane results
         env:
