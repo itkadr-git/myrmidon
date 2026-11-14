@@ -15304,6 +15304,7 @@ export function heartbeatService(
     const evidenceCounts = evidence.evidence;
 
     const hasProgressEvidence =
+      Boolean(detectedProgressSummary) ||
       run.livenessState === "progress" ||
       run.livenessState === "completed" ||
       run.livenessState === "advanced";
