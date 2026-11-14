@@ -1918,6 +1918,26 @@ type IssueUserContextInput = {
 type ProjectGoalReader = Pick<Db, "select">;
 type DbReader = Pick<Db, "select">;
 /** Conversation containers cannot acquire new child edges, even with the experiment disabled. */
+async function assertIssueParentDoesNotCreateCycle(db: Db, companyId: string, issueId: string, parentId: string | null | undefined) {
+  if (!parentId) return;
+  if (parentId === issueId) throw unprocessable("Issue parent cannot be itself");
+  const [cycle] = await db.select({ id: issues.id }).from(issues).where(and(
+    eq(issues.companyId, companyId),
+    sql<boolean>`exists (
+      with recursive descendants(id, path, depth) as (
+        select ${issues.id}::text, array[${issues.id}::text], 0
+        from ${issues} where ${issues.companyId} = ${companyId} and ${issues.id} = ${issueId}
+        union all
+        select child.id::text, descendants.path || child.id::text, descendants.depth + 1
+        from ${issues} child join descendants on child.parent_id::text = descendants.id
+        where child.company_id = ${companyId} and descendants.depth < 1000
+          and not child.id::text = any(descendants.path)
+      ) select 1 from descendants where id = ${parentId}
+    )`,
+  ));
+  if (cycle) throw unprocessable("An issue cannot be parented to one of its descendants");
+}
+/** Conversation containers cannot acquire new child edges, even with the experiment disabled. */
 async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: string | null) {
   if (!parentId) return;
   const [parent] = await db.select({ conversationAgentId: issues.conversationAgentId })
@@ -11320,6 +11340,7 @@ export function issueService(db: Db) {
         : null;
       if (data.parentId !== undefined && data.parentId !== existing.parentId) {
         await assertExecutionTaskParent(dbOrTx, existing.companyId, data.parentId);
+        await assertIssueParentDoesNotCreateCycle(dbOrTx, existing.companyId, id, data.parentId);
       }
       // 1.6.5 (F-27 rework 09.10): validate a changed caste against the
       // company's directory (design §2.1); null clears to the defaults.
