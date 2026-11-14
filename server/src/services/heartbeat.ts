@@ -26708,8 +26708,17 @@ export function heartbeatService(
         });
       const configuredModel =
         readConfiguredModelFromAdapterConfig(runtimeConfig);
-      const resolvedStepModel = readNonEmptyString(run.stepModel);
-      const resolvedStepModelGroup = readNonEmptyString(run.stepModelGroup);
+      // `run` is the pre-claim row loaded by the dispatcher and therefore does
+      // not include the snapshot written at the claim boundary. Use the local
+      // resolution result so the adapter receives the same model that was
+      // persisted for this run; the row value remains a compatibility fallback
+      // for historical/reconciled paths that did not resolve a new snapshot.
+      const resolvedStepModel =
+        readNonEmptyString(stepModelResolution.stepModel) ??
+        readNonEmptyString(run.stepModel);
+      const resolvedStepModelGroup =
+        readNonEmptyString(stepModelResolution.stepModelGroup) ??
+        readNonEmptyString(run.stepModelGroup);
       if (resolvedStepModel) {
         // The run-start snapshot is authoritative for the entire execution.
         // Do not let mutable adapter/session configuration select a different
