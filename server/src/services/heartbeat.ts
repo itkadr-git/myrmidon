@@ -21120,7 +21120,7 @@ export function heartbeatService(
             and(
               eq(issueWorkProducts.companyId, run.companyId),
               eq(issueWorkProducts.issueId, contextIssueId),
-              eq(issueWorkProducts.kind, "pull_request"),
+              eq(issueWorkProducts.type, "pull_request"),
             ),
           )
           .orderBy(desc(issueWorkProducts.createdAt))
@@ -34665,7 +34665,7 @@ export function heartbeatService(
             // and wake the lead/manager.
             const runDispatchSettings = await loadRunDispatchSettings(tx as unknown as Db);
             const noCommitLimit = runDispatchSettings.taskRunsWithoutCommitLimit;
-            if (noCommitLimit > 0 && !interactionContinuation && !manualUserWake) {
+            if (noCommitLimit > 0 && !interactionContinuation && !opts.manualUserWake) {
               const currentHeadSha = await readTaskCurrentHeadSha(tx as unknown as Db, agent.companyId, issue.id);
               if (currentHeadSha) {
                 const latestManualUnblockAt = await readLatestManualUnblockAt(tx as unknown as Db, agent.companyId, issue.id);

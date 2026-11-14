@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclip-ai/db";
+import type { Db } from "@myrmidon/db";
 import {
   activityLog,
   agents,
@@ -7,7 +7,7 @@ import {
   issueWorkProducts,
   projects,
   type HeartbeatRun,
-} from "@paperclip-ai/db";
+} from "@myrmidon/db";
 import {
   DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT,
   loadRunDispatchSettings,
@@ -173,7 +173,7 @@ export async function readTaskCurrentHeadSha(
       and(
         eq(issueWorkProducts.companyId, companyId),
         eq(issueWorkProducts.issueId, issueId),
-        eq(issueWorkProducts.kind, "pull_request"),
+        eq(issueWorkProducts.type, "pull_request"),
       ),
     )
     .orderBy(desc(issueWorkProducts.createdAt))
@@ -235,7 +235,7 @@ export async function readRunCapNoCommitHistory(
     .limit(limit);
 
   // Filter out maintenance runs
-  const filtered = rows.filter((r) => {
+  const filtered = rows.filter((r: typeof heartbeatRuns.$inferSelect) => {
     const wake = (r.contextSnapshot as Record<string, any> | null)?.paperclipWake;
     const reason = wake?.reason || (r.contextSnapshot as Record<string, any> | null)?.triggerReason;
     if (typeof reason === "string" && reason.startsWith("myrmidon_maintenance_")) {
@@ -244,7 +244,7 @@ export async function readRunCapNoCommitHistory(
     return true;
   });
 
-  return filtered.map((r) => ({
+  return filtered.map((r: typeof heartbeatRuns.$inferSelect) => ({
     runId: r.id,
     status: r.status,
     headSha: extractRunHeadSha(r),
