@@ -17,6 +17,7 @@ import * as path from "node:path";
 import { agents, type Db } from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 import {
+  BOT_DISK_DEFAULT_GIT_MIRROR_REPOS,
   BOT_DISK_LAYOUT_KEYS,
   botRoleGetsSharedCache,
   BOT_DISK_SETTING_KEYS,
@@ -48,7 +49,34 @@ import { botKeyForAgent, readBotContainerAgentConfig } from "./agent-config.js";
 import { botKeyLock, type BotKeyLock } from "./bot-key-lock.js"; // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM)
 import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
-export type BotDiskView = ResolvedBotDiskSettings;
+export interface BotDiskEffectiveSettings {
+  gitMirrorEnabled: boolean;
+  gitMirrorRepos: string[];
+  gitMirrorReposIsDefault: boolean;
+  sharedCacheRoles: string[];
+}
+
+export interface BotDiskView extends ResolvedBotDiskSettings {
+  effective: BotDiskEffectiveSettings;
+}
+
+export function resolveBotDiskEffective(stored: unknown): BotDiskEffectiveSettings {
+  const isObject = typeof stored === "object" && stored !== null && !Array.isArray(stored);
+  const rawObj = isObject ? (stored as Record<string, unknown>) : {};
+  const isDefault = !("gitMirrorRepos" in rawObj) || rawObj.gitMirrorRepos === undefined;
+  const layout = resolveBotDiskLayout(stored);
+  const repos = !isDefault
+    ? (Array.isArray(rawObj.gitMirrorRepos)
+        ? [...new Set(rawObj.gitMirrorRepos.filter((r): r is string => typeof r === "string").map((r) => r.toLowerCase()))]
+        : [])
+    : [...BOT_DISK_DEFAULT_GIT_MIRROR_REPOS];
+  return {
+    gitMirrorEnabled: repos.length > 0,
+    gitMirrorRepos: repos,
+    gitMirrorReposIsDefault: isDefault,
+    sharedCacheRoles: layout.sharedCacheRoles,
+  };
+}
 
 /** Who changed the settings, for the activity log. */
 export interface BotDiskActor {
@@ -113,7 +141,10 @@ export function botDiskService(
   return {
     read: async (): Promise<BotDiskView> => {
       const general = await deps.settings.getGeneral();
-      return resolveBotDiskSettings({ stored: general.botDisk, env });
+      return {
+        ...resolveBotDiskSettings({ stored: general.botDisk, env }),
+        effective: resolveBotDiskEffective(general.botDisk),
+      };
     },
 
     update: async (patch, actor) =>
@@ -157,7 +188,10 @@ export function botDiskService(
           { settings: next, changedKeys, actorType: actor.actorType },
           "bot disk settings updated without a restart",
         );
-        return resolveBotDiskSettings({ stored: next, env });
+        return {
+          ...resolveBotDiskSettings({ stored: next, env }),
+          effective: resolveBotDiskEffective(next),
+        };
       }),
   };
 }

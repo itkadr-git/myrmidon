@@ -159,4 +159,21 @@ describe("instanceSettingsService operator setting defaults", () => {
     const persistedGeneral = persistedSets[0]!.general as Record<string, unknown>;
     expect(persistedGeneral.feedbackDataSharingPreference).toBe("not_allowed");
   });
+
+  it("PATCH general preserves stored botDisk keys when updating another botDisk key", async () => {
+    const initialBotDisk = {
+      gitMirrorRepos: ["itkadr-git/myrmidon", "itkadr-git/myrmidon-deploy"],
+      scratchTtlHours: 24,
+    };
+    const { db, persistedSets } = stubDb(settingsRow({ botDisk: initialBotDisk }));
+    const svc = instanceSettingsService(db, { runtimeEnv: {} });
+
+    await svc.updateGeneral({ botDisk: { scratchTtlHours: 12 } as never });
+    expect(persistedSets).toHaveLength(1);
+    const persistedGeneral = persistedSets[0]!.general as Record<string, unknown>;
+    expect(persistedGeneral.botDisk).toMatchObject({
+      gitMirrorRepos: ["itkadr-git/myrmidon", "itkadr-git/myrmidon-deploy"],
+      scratchTtlHours: 12,
+    });
+  });
 });

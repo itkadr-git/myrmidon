@@ -864,6 +864,9 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...(patch.swarm !== undefined
               ? { swarm: mergeSwarmBlocks(storedGeneral.swarm, patch.swarm) }
               : {}),
+            ...(patch.botDisk !== undefined
+              ? { botDisk: patch.botDisk === null ? null : { ...(storedGeneral.botDisk ?? {}), ...patch.botDisk } }
+              : {}),
           }),
           operatorDefaults,
         );

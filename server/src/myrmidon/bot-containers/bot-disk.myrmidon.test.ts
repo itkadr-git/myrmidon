@@ -11,7 +11,9 @@ import request from "supertest";
 import { describe, expect, it } from "vitest";
 import type { Db } from "@myrmidon/db";
 import {
+  BOT_DISK_DEFAULT_GIT_MIRROR_REPOS,
   BOT_DISK_DEFAULT_IDLE_TTL_MS,
+  BOT_DISK_DEFAULT_SHARED_CACHE_ROLES,
   BOT_DISK_UPDATED_ACTION,
   instanceGeneralSettingsSchema,
 } from "@myrmidon/shared";
@@ -101,7 +103,7 @@ describe("myrmidon(BOT-DISK-A) bot disk settings: permissions", () => {
   it("lets a board member read", async () => {
     const h = harness();
     const res = await request(h.withActor(member)).get(URL).expect(200);
-    expect(res.body).toEqual({
+    expect(res.body).toMatchObject({
       settings: { enabled: true, idleTtlMs: BOT_DISK_DEFAULT_IDLE_TTL_MS },
       sources: { enabled: "default", idleTtlMs: "default" },
     });
@@ -145,6 +147,12 @@ describe("myrmidon(BOT-DISK-A) bot disk settings: persistence", () => {
     expect(res.body).toEqual({
       settings: { enabled: true, idleTtlMs: 2 * HOUR },
       sources: { enabled: "settings", idleTtlMs: "settings" },
+      effective: {
+        gitMirrorEnabled: true,
+        gitMirrorRepos: [...BOT_DISK_DEFAULT_GIT_MIRROR_REPOS],
+        gitMirrorReposIsDefault: true,
+        sharedCacheRoles: [...BOT_DISK_DEFAULT_SHARED_CACHE_ROLES],
+      },
     });
     expect(h.store.row.general.botDisk).toEqual({ enabled: true, idleTtlMs: 2 * HOUR });
 
@@ -190,6 +198,12 @@ describe("myrmidon(BOT-DISK-A) bot disk settings: persistence", () => {
     expect(res.body).toEqual({
       settings: { enabled: true, idleTtlMs: 4 * HOUR },
       sources: { enabled: "default", idleTtlMs: "env" },
+      effective: {
+        gitMirrorEnabled: true,
+        gitMirrorRepos: [...BOT_DISK_DEFAULT_GIT_MIRROR_REPOS],
+        gitMirrorReposIsDefault: true,
+        sharedCacheRoles: [...BOT_DISK_DEFAULT_SHARED_CACHE_ROLES],
+      },
     });
 
     await request(h.withActor(admin)).patch(URL).send({ enabled: false }).expect(200);
@@ -216,6 +230,12 @@ describe("myrmidon(BOT-DISK-A) bot disk settings: persistence", () => {
     expect(res.body).toEqual({
       settings: { enabled: false, idleTtlMs: BOT_DISK_DEFAULT_IDLE_TTL_MS },
       sources: { enabled: "settings", idleTtlMs: "default" },
+      effective: {
+        gitMirrorEnabled: true,
+        gitMirrorRepos: [...BOT_DISK_DEFAULT_GIT_MIRROR_REPOS],
+        gitMirrorReposIsDefault: true,
+        sharedCacheRoles: [...BOT_DISK_DEFAULT_SHARED_CACHE_ROLES],
+      },
     });
 
     const notAnObject = harness({ initial: { keyboardShortcuts: true, botDisk: "on" } });
@@ -308,5 +328,29 @@ describe("myrmidon(1.6.7-SETTINGS-BOTDISK-MERGE) a Save keeps the stored keys th
     const stored = h.store.row.general.botDisk as Record<string, unknown>;
     expect("gitMigrationEnabled" in stored).toBe(false);
     expect(stored.hermesPruneEnabled).toBe(true);
+  });
+
+  it("effective gitMirrorRepos: defaults to two repos when missing, honors [] to disable", async () => {
+    const hMissing = harness();
+    const resMissing = await request(hMissing.withActor(member)).get(URL).expect(200);
+    expect(resMissing.body.effective).toEqual({
+      gitMirrorEnabled: true,
+      gitMirrorRepos: [...BOT_DISK_DEFAULT_GIT_MIRROR_REPOS],
+      gitMirrorReposIsDefault: true,
+      sharedCacheRoles: [...BOT_DISK_DEFAULT_SHARED_CACHE_ROLES],
+    });
+
+    const hEmpty = harness({
+      initial: {
+        botDisk: { gitMirrorRepos: [] },
+      },
+    });
+    const resEmpty = await request(hEmpty.withActor(member)).get(URL).expect(200);
+    expect(resEmpty.body.effective).toEqual({
+      gitMirrorEnabled: false,
+      gitMirrorRepos: [],
+      gitMirrorReposIsDefault: false,
+      sharedCacheRoles: [...BOT_DISK_DEFAULT_SHARED_CACHE_ROLES],
+    });
   });
 });
