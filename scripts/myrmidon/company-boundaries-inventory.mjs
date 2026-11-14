@@ -57,11 +57,17 @@ function missingAttribution(attribution, rows) {
 
 /**
  * Run the read-only inventory probe against an injected transport.
+ * Sections whose registry contract names a `dependency` attribution also feed
+ * the allowlisted cross-company dependency view: every listed object keeps a
+ * visible row (`report.dependencies`), failed sections contribute none, and a
+ * report with no collected objects carries no `dependencies` key at all.
  * @param {{request: (opts: {method: string, path: string}) => Promise<{status:number, ok:boolean, json?:() => Promise<unknown>}>}} transport
- * @returns {Promise<{sections: Array<object>, summary: object}>}
+ * @param {{currentCompanyId?: string | null}} [options]
+ * @returns {Promise<{sections: Array<object>, summary: object, dependencies?: Array<object>}>}
  */
-export async function collectInventory(transport) {
+export async function collectInventory(transport, { currentCompanyId = null } = {}) {
   const sections = [];
+  const dependencies = [];
   for (const definition of INVENTORY_SECTIONS) {
     let response;
     let payload = null;
@@ -72,22 +78,33 @@ export async function collectInventory(transport) {
       response = null;
     }
     const state = stateFor(response, payload);
-    sections.push({
+    const covered = state === "data" || state === "empty";
+    const section = {
       key: definition.key,
       path: definition.path,
       state,
-      covered: state === "data" || state === "empty",
+      covered,
       count: state === "data" ? payload.length : 0,
       missingAttribution: state === "data" || state === "empty" ? missingAttribution(definition.attribution, payload) : [],
-    });
+    };
+    sections.push(section);
+    if (covered && definition.attribution.includes("dependency")) {
+      for (const row of formatInventoryDependencies(payload, { currentCompanyId })) {
+        dependencies.push({ section: section.key, ...row });
+      }
+    }
   }
   const counts = Object.fromEntries(
     ["data", "empty", "denied", "not-found", "error"].map((state) => [state, sections.filter((s) => s.state === state).length]),
   );
-  return {
+  const report = {
     sections,
     summary: { total: sections.length, covered: sections.filter((s) => s.covered).length, counts },
   };
+  if (dependencies.length > 0) {
+    report.dependencies = dependencies;
+  }
+  return report;
 }
 
 function canonicalize(value) {
@@ -102,9 +119,85 @@ function canonicalize(value) {
   return value;
 }
 
+const DEPENDENCY_UNRESOLVED_STATUSES = new Set(["unknown", "unresolved"]);
+
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+/**
+ * Pure formatter for a single supported inventory object's cross-company dependency.
+ * Strictly allowlists safe metadata (objectId, ownerCompanyId, status, dependency.{type,id,companyId})
+ * so payload secrets/tokens/credentials are never copied into the report.
+ */
+export function formatCrossCompanyDependency(item, { currentCompanyId = null } = {}) {
+  const objectId = item && typeof item === "object" ? nonEmptyString(item.id) : null;
+  const ownerCompanyId = item && typeof item === "object" ? nonEmptyString(item.ownerCompanyId) : null;
+  const baseCompanyId = nonEmptyString(currentCompanyId) ?? ownerCompanyId;
+
+  if (!item || typeof item !== "object" || item.dependency === undefined) {
+    return canonicalize({
+      objectId,
+      ownerCompanyId,
+      status: "unknown",
+      dependency: null,
+    });
+  }
+
+  const rawDep = item.dependency;
+  if (!rawDep || typeof rawDep !== "object" || Array.isArray(rawDep) || rawDep.unresolved === true) {
+    return canonicalize({
+      objectId,
+      ownerCompanyId,
+      status: "unresolved",
+      dependency: null,
+    });
+  }
+
+  const type = nonEmptyString(rawDep.type);
+  const id = nonEmptyString(rawDep.id);
+  const companyId = nonEmptyString(rawDep.companyId ?? rawDep.targetCompanyId);
+
+  if (!type || !id || !companyId || !baseCompanyId) {
+    return canonicalize({
+      objectId,
+      ownerCompanyId,
+      status: "unresolved",
+      dependency: { type, id, companyId },
+    });
+  }
+
+  const status = companyId !== baseCompanyId ? "cross-company" : "same-company";
+  return canonicalize({
+    objectId,
+    ownerCompanyId,
+    status,
+    dependency: { type, id, companyId },
+  });
+}
+
+export function formatInventoryDependencies(items, options = {}) {
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((item) => formatCrossCompanyDependency(item, options))
+    .sort((a, b) => {
+      const ka = `${a.objectId ?? ""}\0${a.status}\0${a.dependency?.type ?? ""}\0${a.dependency?.id ?? ""}\0${a.dependency?.companyId ?? ""}`;
+      const kb = `${b.objectId ?? ""}\0${b.status}\0${b.dependency?.type ?? ""}\0${b.dependency?.id ?? ""}\0${b.dependency?.companyId ?? ""}`;
+      return ka < kb ? -1 : ka > kb ? 1 : 0;
+    });
+}
+
+export function isUnresolvedDependencyStatus(status) {
+  return DEPENDENCY_UNRESOLVED_STATUSES.has(status);
+}
+
 /** Deterministic normalized form of a probe report (sorted object keys, section order preserved). */
 export function normalizeInventoryReport(report) {
-  return canonicalize({ sections: report.sections, summary: report.summary });
+  const base = { sections: report.sections, summary: report.summary };
+  if (report.dependencies !== undefined) {
+    base.dependencies = report.dependencies;
+  }
+  return canonicalize(base);
 }
 
 /** Stable sha256 over the normalized report; equal runs on the same fixture produce equal hashes. */

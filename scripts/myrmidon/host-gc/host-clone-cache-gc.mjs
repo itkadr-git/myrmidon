@@ -667,6 +667,93 @@ export async function scanRunnerTaskFolders(runnersRoot, now, ttlHours, { onEven
   return results;
 }
 
+// --- Runner unrecognized workspace folders (OPE-13018) --------------------------
+
+// Names the runner workspace legitimately holds besides the task folders: the
+// runtime state directory the board spares from every cleanup. Everything else
+// the OMP agent created with a name that is not a task-folder pattern is
+// "unrecognized": the GC reports it, never removes it.
+const RUNNER_WORKSPACE_KNOWN_NAMES = new Set([".paperclip-runtime"]);
+
+/**
+ * Directories in `<runnersRoot>/<runner>/workspace` whose names do not match
+ * `RUNNER_TASK_FOLDER_NAME` and are not known runtime directories. A folder
+ * younger than `ttlHours` (by its own mtime) is fresh — the agent may still be
+ * working in it; an older one is reported so a typo'd task folder (e.g.
+ * `OPR-12962` for `OPE-12962`, myrmidon OPE-13018) does not sit on the disk
+ * forever without a trace. Report-only: nothing here is ever deleted, the
+ * entry is journaled as `runner-unrecognized-workspace-folder` and returned
+ * with `action: "report"`. Every path component must be a real directory; a
+ * symlink anywhere skips the entry. Failures go to `onEvent`
+ * (`runner-unrecognized-scan-failed`) and the scan continues.
+ */
+export function scanRunnerUnrecognizedWorkspaceFolders(runnersRoot, now, ttlHours, { onEvent = () => {} } = {}) {
+  const results = [];
+  const ttlMs = ttlHours * HOUR_MS;
+  const fail = (extra, err) => {
+    onEvent({ event: "runner-unrecognized-scan-failed", root: runnersRoot, ...extra, error: err?.message || String(err) });
+  };
+  const rootStat = lstatSafe(runnersRoot);
+  if (rootStat.err) {
+    if (isAbsent(rootStat.err)) onEvent({ event: "runner-folder-root-missing", root: runnersRoot });
+    else fail({}, rootStat.err);
+    return results;
+  }
+  if (!rootStat.st.isDirectory()) {
+    fail({}, new Error("runner root is not a directory (a symlink is not followed)"));
+    return results;
+  }
+  let runners;
+  try {
+    runners = fs.readdirSync(runnersRoot, { withFileTypes: true });
+  } catch (err) {
+    fail({}, err);
+    return results;
+  }
+  for (const runner of runners) {
+    if (!runner.isDirectory()) continue;
+    const workspaceDir = path.join(runnersRoot, runner.name, "workspace");
+    const { st: baseSt, err: baseErr } = lstatSafe(workspaceDir);
+    if (baseErr && !isAbsent(baseErr)) {
+      fail({ runner: runner.name }, baseErr);
+      continue;
+    }
+    if (!baseSt || !baseSt.isDirectory()) continue;
+    let entries;
+    try {
+      entries = fs.readdirSync(workspaceDir, { withFileTypes: true });
+    } catch (err) {
+      fail({ runner: runner.name }, err);
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (RUNNER_TASK_FOLDER_NAME.test(entry.name)) continue;
+      if (entry.name.startsWith(".")) continue;
+      if (RUNNER_WORKSPACE_KNOWN_NAMES.has(entry.name)) continue;
+      const folder = path.join(workspaceDir, entry.name);
+      const { st, err } = lstatSafe(folder);
+      if (err && !isAbsent(err)) {
+        fail({ runner: runner.name, path: folder }, err);
+        continue;
+      }
+      if (!st || !st.isDirectory()) continue;
+      const ageMs = now - st.mtimeMs;
+      results.push({
+        runner: runner.name,
+        name: entry.name,
+        path: folder,
+        runnersRoot,
+        ageMs,
+        mtimeMs: st.mtimeMs,
+        action: "report",
+        reason: ageMs >= ttlMs ? "unrecognized-ttl" : "unrecognized-fresh",
+      });
+    }
+  }
+  return results;
+}
+
 export function collectOpenProcInfo(procDir = "/proc") {
   const openPaths = new Set();
   const openInodes = new Set();
@@ -1488,7 +1575,7 @@ async function main() {
     const cloneTtlMs = args.cloneTtlHours * HOUR_MS;
     const cacheTtlMs = args.cacheTtlHours * HOUR_MS;
 
-    const plan = { clones: [], caches: [], scratch: [], botData: [], runCopies: [], runnerTaskFolders: [], runnerNpmCaches: [], runnerTmp: [], kept: [], removed: [], archived: [] };
+    const plan = { clones: [], caches: [], scratch: [], botData: [], runCopies: [], runnerTaskFolders: [], runnerNpmCaches: [], runnerTmp: [], runnerUnrecognized: [], kept: [], removed: [], archived: [] };
 
     // 1. Scan task clones
     const clones = scanTaskClones(root, now, args.cloneTtlHours);
@@ -1640,6 +1727,29 @@ async function main() {
       }
     }
 
+    // 3g. Unrecognized workspace folders of runner agents (OPE-13018): the same
+    // gate as 3c. A task folder the agent named with a typo (OPR-12962 for
+    // OPE-12962) never matches RUNNER_TASK_FOLDER_NAME, so 3d never sees it and
+    // it would sit on the disk forever. Report-only: the entry is journaled, the
+    // folder is never removed here.
+    for (const runnersRoot of args.runnerRoots) {
+      const items = scanRunnerUnrecognizedWorkspaceFolders(runnersRoot, now, args.cloneTtlHours, {
+        onEvent: (event) => journalRecord(args.journal, event),
+      });
+      for (const item of items) {
+        plan.runnerUnrecognized.push(item);
+        if (item.reason === "unrecognized-ttl") {
+          journalRecord(args.journal, {
+            event: "runner-unrecognized-workspace-folder",
+            path: item.path,
+            runner: item.runner,
+            name: item.name,
+            ageHours: Math.round(item.ageMs / HOUR_MS),
+          });
+        }
+      }
+    }
+
     // 4. Execute or report
     if (args.dryRun) {
       journalRecord(args.journal, {
@@ -1651,6 +1761,7 @@ async function main() {
         runnerTaskFolders: plan.runnerTaskFolders.length,
         runnerNpmCaches: plan.runnerNpmCaches.length,
         runnerTmp: plan.runnerTmp.length,
+        runnerUnrecognized: plan.runnerUnrecognized.length,
         kept: plan.kept.length,
       });
       console.log(JSON.stringify({ ok: true, dryRun: true, plan }, null, 2));
@@ -1758,6 +1869,7 @@ async function main() {
         runnerTaskFoldersRemoved,
         runnerNpmCachesRemoved: npmCachesGone.length,
         runnerTmpRemoved: runnerTmpGone.length,
+        runnerUnrecognized: plan.runnerUnrecognized.length,
         kept: plan.kept.length,
       });
       console.log(JSON.stringify({
@@ -1771,6 +1883,7 @@ async function main() {
         runnerTaskFoldersRemoved,
         runnerNpmCachesRemoved: npmCachesGone.length,
         runnerTmpRemoved: runnerTmpGone.length,
+        runnerUnrecognized: plan.runnerUnrecognized.length,
         kept: plan.kept.length,
       }, null, 2));
     }

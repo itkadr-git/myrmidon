@@ -1,6 +1,6 @@
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
-import { and, asc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, gte, inArray, isNotNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   agentWakeupRequests,
@@ -126,6 +126,19 @@ type CancelSuppressedRetryResult = { applied: true; run: HeartbeatRun } | { appl
  * `startNextQueuedRunForAgent`). Keep the two literals equal.
  */
 const QUEUED_RUN_OWN_SLOT_WAIT_REASON = "agent_concurrency";
+
+/**
+ * myrmidon(EMPTY-RUNS-6C): the wait reasons that mean "standing in the queue of
+ * the agent's own slots". Besides the ceiling itself this is `priority`: in the
+ * pass that frees the slot the start sweep takes the heaviest run and renames
+ * the wait of every other ready run of the agent from `agent_concurrency` to
+ * `priority` (`passedOver` in `startNextQueuedRunForAgent`). Both name the same
+ * wait; the second is only a later label of it.
+ */
+const QUEUED_RUN_OWN_SLOT_WAIT_REASONS: ReadonlySet<string> = new Set([
+  QUEUED_RUN_OWN_SLOT_WAIT_REASON,
+  "priority",
+]);
 
 const NO_REVIEW_PARTICIPANT: ReviewParticipantFacts = {
   isInReview: false,
@@ -1177,9 +1190,30 @@ export function createPostgresRunDispatchAdapter(
   // two slots; 46 of 50 expiries in 72 h carried this wait reason). A named
   // ceiling without a running run behind it is a lost start, not a queue, and
   // expires as before.
-  async function queuedRunWaitsForOwnAgentSlot(tx: Db, run: HeartbeatRun): Promise<boolean> {
+  //
+  // myrmidon(EMPTY-RUNS-6B): the same holds for the moment the slot frees. The
+  // sweep that expires by age runs before the start sweep, so a run that waited
+  // behind a run that has just finished was cancelled in the second the slot
+  // opened (no run running any more) and a replacement with another wake reason
+  // started instead. A wait for the agent's own slot is therefore counted from
+  // the end of the agent's last started run when that is later than the start of
+  // the wait: a slot freed just now leaves the age near zero, a slot free for the
+  // whole threshold without the run starting is a lost start and expires.
+  //
+  // myrmidon(EMPTY-RUNS-6C): the reason is not only `agent_concurrency`. When the
+  // slot freed, the start pass took the heaviest waiting run and wrote
+  // `priority` over the wait of the others; the age sweep that follows in the
+  // same second saw a reason outside the set, and cancelled them with a
+  // replacement wake that lost the original wake reason (14.11, adm-dev-eng-24:
+  // two runs cancelled at 00:54:26 with `waitReason = priority`).
+  async function queuedRunWaitsForOwnAgentSlot(
+    tx: Db,
+    run: HeartbeatRun,
+    now: Date,
+    staleAfterMs: number,
+  ): Promise<boolean> {
     const waitReason = readNonEmptyString(parseObject(run.contextSnapshot).waitReason);
-    if (waitReason !== QUEUED_RUN_OWN_SLOT_WAIT_REASON) return false;
+    if (waitReason === null || !QUEUED_RUN_OWN_SLOT_WAIT_REASONS.has(waitReason)) return false;
     const running = await tx
       .select({ id: heartbeatRuns.id })
       .from(heartbeatRuns)
@@ -1191,7 +1225,47 @@ export function createPostgresRunDispatchAdapter(
         ),
       )
       .limit(1);
-    return running.length > 0;
+    if (running.length > 0) return true;
+    // Only a run that really held a slot counts (`started_at is not null`): a run
+    // cancelled in the queue gets `finished_at = now` too and must not refresh
+    // the protection. The `started_at` lower bound lets the index
+    // (company_id, agent_id, started_at) serve the lookup; a run does not last
+    // longer than a day, so a run that ended inside the window started within
+    // a day before the window began. One row, no aggregate over the history.
+    const waitingSince = queuedRunWaitingSince(run, now);
+    const freedAfter = new Date(Math.max(waitingSince.getTime(), now.getTime() - staleAfterMs));
+    const startedAfter = new Date(freedAfter.getTime() - 24 * 60 * 60 * 1000);
+    const freed = await tx
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.agentId, run.agentId),
+          ne(heartbeatRuns.id, run.id),
+          isNotNull(heartbeatRuns.startedAt),
+          gte(heartbeatRuns.startedAt, startedAfter),
+          gt(heartbeatRuns.finishedAt, freedAfter),
+        ),
+      )
+      .limit(1);
+    return freed.length > 0;
+  }
+
+  // myrmidon(RESUME-AFTER-CANCEL): a queued run of an agent the operator has
+  // paused waits for the resume, not for a slot. The age sweep cancelled it and
+  // the replacement wake then failed with 409 "Agent is not invokable" (logged
+  // at error level; 13.11 23:35, three runs), so nothing was left to continue
+  // the task after the pause was lifted. Resuming the agent promotes its queued
+  // runs (myrmidon/pause-drain.ts), which start with their own wake reason. The
+  // task-state checks of the staleness decision still apply to such a run.
+  async function queuedRunWaitsForAgentResume(tx: Db, run: HeartbeatRun): Promise<boolean> {
+    const [agent] = await tx
+      .select({ status: agents.status })
+      .from(agents)
+      .where(and(eq(agents.companyId, run.companyId), eq(agents.id, run.agentId)))
+      .limit(1);
+    return agent?.status === "paused";
   }
 
   async function cancelStaleQueuedRun(
@@ -1209,7 +1283,8 @@ export function createPostgresRunDispatchAdapter(
         staleAgeMs >= input.staleAfterMs &&
         // myrmidon(EMPTY-RUNS-6): a run that stands in its own agent's queue is
         // not expired by age; the task-state checks below still apply to it.
-        !(await queuedRunWaitsForOwnAgentSlot(tx, run))
+        !(await queuedRunWaitsForOwnAgentSlot(tx, run, input.now, input.staleAfterMs)) &&
+        !(await queuedRunWaitsForAgentResume(tx, run))
       ) {
         return cancelStaleRunInTx(
           tx,

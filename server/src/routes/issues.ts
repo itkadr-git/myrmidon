@@ -662,7 +662,7 @@ type ActivityExecutionParticipant = Pick<
   "type" | "agentId" | "userId"
 >;
 type ExecutionStageWakeContext = {
-  wakeRole: "reviewer" | "approver" | "executor";
+  wakeRole: "reviewer" | "approver" | "executor" | "observer";
   stageId: string | null;
   stageType: ParsedExecutionState["currentStageType"];
   currentParticipant: ParsedExecutionState["currentParticipant"];
@@ -2328,6 +2328,70 @@ function buildExecutionStageWakeContext(input: {
     reviewRequest: input.state.reviewRequest ?? null,
     lastDecisionOutcome: input.state.lastDecisionOutcome,
     allowedActions: input.allowedActions,
+  };
+}
+
+/**
+ * myrmidon(REVIEW-STAGE-IN-CONTEXT): the execution stage as the caller of
+ * `GET /issues/:id/heartbeat-context` must see it, whatever woke the run.
+ * `executionStage` used to exist only in the context of stage wakes
+ * (`execution_review_requested`, ...), so a reviewer woken by CI, an idle
+ * pickup or an operator saw no stage and refused to record the decision.
+ * Same shape as the wake context (`buildExecutionStageWakeContext`) plus
+ * `isCurrentParticipant` and a one-line `youAre`. A caller that is not the
+ * stage participant gets `wakeRole: "observer"` and an explicit statement.
+ */
+function buildHeartbeatContextExecutionStage(input: {
+  executionState: unknown;
+  viewerAgentId: string | null;
+}) {
+  const state = parseIssueExecutionState(input.executionState);
+  if (!state || !state.currentStageType || (state.status !== "pending" && state.status !== "changes_requested")) {
+    return null;
+  }
+  const viewer = input.viewerAgentId;
+  const isCurrentParticipant =
+    state.status === "pending" &&
+    viewer !== null &&
+    state.currentParticipant?.type === "agent" &&
+    state.currentParticipant.agentId === viewer;
+  const isReturnAssignee =
+    state.status === "changes_requested" &&
+    viewer !== null &&
+    state.returnAssignee?.type === "agent" &&
+    state.returnAssignee.agentId === viewer;
+  const stageNoun = state.currentStageType === "approval" ? "approval" : "review";
+  const base = {
+    stageType: state.currentStageType,
+    stageStatus: state.status,
+    isCurrentParticipant,
+  };
+  if (isCurrentParticipant) {
+    return {
+      ...buildExecutionStageWakeContext({
+        state,
+        wakeRole: state.currentStageType === "approval" ? "approver" : "reviewer",
+        allowedActions: ["approve", "request_changes"],
+      }),
+      ...base,
+      youAre: `You are the current participant of the pending ${stageNoun} stage of this task. Record the decision with one PATCH /api/issues/{id} (status and comment); a verdict written only as a comment is not a decision.`,
+    };
+  }
+  if (isReturnAssignee) {
+    return {
+      ...buildExecutionStageWakeContext({
+        state,
+        wakeRole: "executor",
+        allowedActions: ["address_changes", "resubmit"],
+      }),
+      ...base,
+      youAre: `The ${stageNoun} stage returned this task to you for changes.`,
+    };
+  }
+  return {
+    ...buildExecutionStageWakeContext({ state, wakeRole: "observer", allowedActions: [] }),
+    ...base,
+    youAre: `You are not a participant of the ${stageNoun} stage of this task; do not record a stage decision.`,
   };
 }
 
@@ -9805,6 +9869,10 @@ export function issueRoutes(
         : null,
       planReviewContext,
       documentReviewContext,
+      executionStage: buildHeartbeatContextExecutionStage({
+        executionState: issue.executionState,
+        viewerAgentId: req.actor.type === "agent" ? (req.actor.agentId ?? null) : null,
+      }),
       currentExecutionWorkspace: compactIssueExecutionWorkspace(
         currentExecutionWorkspace,
       ),
@@ -16622,8 +16690,12 @@ export function issueRoutes(
                         });
                       }
                     }
+                    // myrmidon(REVIEW-APPROVAL-RECORDED): the base of the monitor policy is
+                    // the policy as persisted AFTER the update and the immediate review
+                    // routing (`updated`); `existing` predates the stage the routing just
+                    // wrote, and building the monitor on it erased `stages`.
                     const previousPolicy = normalizeIssueExecutionPolicy(
-                      (updateFields.executionPolicy ?? existing.executionPolicy) as any,
+                      (updateFields.executionPolicy ?? updated.executionPolicy ?? existing.executionPolicy) as any,
                     );
                     const monitor = {
                       nextCheckAt: new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS).toISOString(),
@@ -16714,7 +16786,7 @@ export function issueRoutes(
                   admitReviewer = false;
                   reviewerAdmissionDeferred = true;
                   const previousPolicy = normalizeIssueExecutionPolicy(
-                    (updateFields.executionPolicy ?? existing.executionPolicy) as any,
+                    (updateFields.executionPolicy ?? updated.executionPolicy ?? existing.executionPolicy) as any,
                   );
                   const monitor = {
                     nextCheckAt: new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS).toISOString(),
@@ -17845,6 +17917,54 @@ export function issueRoutes(
           ) === "quota_reached"
         ) {
           deferExecutionReviewWakeForCi = true;
+          // myrmidon(OPE-12886): re-arm the monitor as scheduled with a
+          // bounded next check (mirroring the transactional site above) so a
+          // deferred review wake never remains stuck with status="triggered"
+          // and no nextCheckAt.
+          const previousPolicy = normalizeIssueExecutionPolicy(
+            (issue.executionPolicy ?? existing.executionPolicy) as any,
+          );
+          const nextCheckAt = new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS);
+          const monitor = {
+            nextCheckAt: nextCheckAt.toISOString(),
+            notes: `Review admission waits for the next tick's reviewer-wake quota (${REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK} per tick); the reviewer is woken without loss once a slot frees.`,
+            scheduledBy: "assignee" as const,
+            kind: "external_service" as const,
+            serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+            externalRef: issue.id,
+            timeoutAt: null,
+            maxAttempts: null,
+            recoveryPolicy: "wake_owner" as const,
+          };
+          const nextPolicy = {
+            ...(previousPolicy ?? { mode: "normal", commentRequired: true, stages: [] }),
+            monitor,
+          } as any;
+          const quotaMonitorPatch = applyIssueMonitorPolicyTransition({
+            issue,
+            policy: nextPolicy,
+            previousPolicy,
+            requestedStatus: issue.status,
+            requestedAssigneePatch: {},
+            actor: {
+              agentId: actor.agentId ?? null,
+              userId: actor.actorType === "user" ? actor.actorId : null,
+            },
+            monitorExplicitlyUpdated: true,
+          });
+          const persistedQuotaMonitor = await svc.update(id, {
+            executionPolicy: nextPolicy,
+            monitorNextCheckAt: nextCheckAt,
+            monitorScheduledBy: monitor.scheduledBy,
+            monitorAttemptCount: 0,
+            monitorWakeRequestedAt: null,
+            monitorLastTriggeredAt: null,
+            ...quotaMonitorPatch.patch,
+          });
+          if (persistedQuotaMonitor) {
+            Object.assign(issue, persistedQuotaMonitor);
+            Object.assign(issueResponse, persistedQuotaMonitor);
+          }
           await logActivity(db, {
             companyId: issue.companyId,
             actorType: "system",
@@ -17858,6 +17978,7 @@ export function issueRoutes(
               idempotencyKey: `review-admission-quota-deferred:${issue.id}:${(reviewWakesQuotaTickStarted() ?? new Date(0)).toISOString()}`,
               quota: REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK,
               reviewerAgentId: executionStageWakeup?.agentId ?? null,
+              nextCheckAt: nextCheckAt.toISOString(),
             },
           });
         }

@@ -62,13 +62,16 @@ export function buildStaleBlockComment(input: {
   at: Date;
   targetStatus?: "in_progress" | "todo";
 }): string {
-  if (input.targetStatus === "todo" || input.reasons.length === 0) {
+  if (input.reasons.length === 0) {
     return `Blocked status without reason removed; task returned to todo without assignee by the periodic stale-block sweep at ${input.at.toISOString()}.`;
   }
   const described = input.reasons
     .map((reason) => `${reason.label ?? "the reason"}: ${describeStaleBlockReason(reason.why)}`)
     .join("; ");
-  return `Stale block removed (${described}); task returned to ${input.targetStatus ?? "in_progress"} by the periodic stale-block sweep at ${input.at.toISOString()}.`;
+  // myrmidon(STALE-BLOCK-UNASSIGNED): a task with a dead cited reason but no
+  // assignee goes to todo (the issue service refuses in_progress without one).
+  const withoutAssignee = input.targetStatus === "todo" ? " without assignee" : "";
+  return `Stale block removed (${described}); task returned to ${input.targetStatus ?? "in_progress"}${withoutAssignee} by the periodic stale-block sweep at ${input.at.toISOString()}.`;
 }
 
 /**
@@ -423,11 +426,27 @@ async function judgeReasons(input: {
  * and nothing else, and the cause of a failure repeated on every tick could
  * only be found by reading the code against the data.
  */
+/**
+ * myrmidon(STALE-BLOCK-UNASSIGNED): the text of a refusal by the issue service
+ * (an HttpError with a 4xx status) is a fixed sentence written by the service
+ * ("in_progress issues require an assignee"), not task data, so it is logged to
+ * make the cause of a repeated 422 readable. Any other error keeps its text out
+ * of the log, and a message that is long or carries more than plain words is
+ * dropped.
+ */
+function describeRefusalMessage(err: object, status: unknown): string | null {
+  if (typeof status !== "number" || status < 400 || status > 499) return null;
+  if ((err as { constructor?: { name?: unknown } }).constructor?.name !== "HttpError") return null;
+  const message = (err as { message?: unknown }).message;
+  return typeof message === "string" && /^[A-Za-z0-9_ ,.:;'"()\-]{1,120}$/.test(message) ? message : null;
+}
+
 export function describeStaleBlockSweepFailure(err: unknown): {
   errorName: string | null;
   errorStatus: number | null;
+  errorMessage: string | null;
 } {
-  if (err === null || typeof err !== "object") return { errorName: null, errorStatus: null };
+  if (err === null || typeof err !== "object") return { errorName: null, errorStatus: null, errorMessage: null };
   const name = (err as { constructor?: { name?: unknown } }).constructor?.name;
   const status = (err as { status?: unknown }).status;
   return {
@@ -436,6 +455,7 @@ export function describeStaleBlockSweepFailure(err: unknown): {
       typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599
         ? status
         : null,
+    errorMessage: describeRefusalMessage(err, status),
   };
 }
 
@@ -458,6 +478,7 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
     const actions: IssuePostCommitAction[] = [];
     const svc = services.issueService(deps.db);
     let effectiveTargetStatus: "in_progress" | "todo" = isBareBlock ? "todo" : "in_progress";
+    let liftedBare = isBareBlock;
 
     const txStartedAtMs = Date.now();
     const done = await deps.db.transaction(async (tx) => {
@@ -475,6 +496,8 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
           status: issues.status,
           unblockDescriptor: issues.unblockDescriptor,
           updatedAt: issues.updatedAt,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
         })
         .from(issues)
         .where(and(eq(issues.id, row.id), eq(issues.companyId, row.companyId)))
@@ -491,7 +514,13 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
       const lockedIsBareBlock = rejudged.reasons.length === 0;
       if (!lockedIsBareBlock && rejudged.dead.length === 0) return false;
 
-      effectiveTargetStatus = lockedIsBareBlock ? "todo" : "in_progress";
+      // myrmidon(STALE-BLOCK-UNASSIGNED): the issue service refuses
+      // in_progress for a task with neither an agent nor a user assignee
+      // (422 "in_progress issues require an assignee"), so such a task goes
+      // to todo, like a bare block does.
+      const hasAssignee = Boolean(locked.assigneeAgentId || locked.assigneeUserId);
+      effectiveTargetStatus = lockedIsBareBlock || !hasAssignee ? "todo" : "in_progress";
+      liftedBare = lockedIsBareBlock;
 
       const txSvc = services.issueService(tx as unknown as Db);
       const remaining = await blockedByEdgesFor(tx as unknown as Db, locked.companyId, locked.id);
@@ -592,7 +621,7 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
       companyId: row.companyId,
       identifier: row.identifier,
       title: row.title,
-      reasonTexts: effectiveTargetStatus === "todo"
+      reasonTexts: liftedBare
         ? ["blocked without a reason"]
         : dead.map((reason) => describeStaleBlockReason(reason.why)),
       liftedAt: at.toISOString(),

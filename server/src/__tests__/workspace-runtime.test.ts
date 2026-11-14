@@ -45,6 +45,7 @@ import {
   resolveShell,
   sanitizeRuntimeServiceBaseEnv,
   setWorkspaceRuntimeExposureDepsForTests,
+  setWorkspaceRuntimePortAllocationAttemptsForTests,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
   stopRuntimeServicesForProjectWorkspace,
@@ -7346,6 +7347,14 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       throw new Error("Failed to determine the occupied allocated port");
     }
 
+    // With listener ownership unverifiable every candidate port is rejected after a real child
+    // spawn, a readiness probe and a 250 ms stability delay (~0.6 s each, several seconds on a
+    // loaded runner). Running the full production bound of 32 attempts therefore sits at the
+    // test timeout. A small bound exercises the same exhaustion path (the 409 conflict carries
+    // the attempted count) in a couple of seconds.
+    const boundedAttempts = 3;
+    setWorkspaceRuntimePortAllocationAttemptsForTests(boundedAttempts);
+
     const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-no-lsof-"));
     const fakeLsof = path.join(fakeBin, "lsof");
     const previousPath = process.env.PATH;
@@ -7365,7 +7374,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         details: {
           code: "workspace_runtime_port_allocation_exhausted",
           port: basePort,
-          attemptedPortCount: WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS,
+          attemptedPortCount: boundedAttempts,
         },
       });
       expect(portBlocker.listening).toBe(true);

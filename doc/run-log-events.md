@@ -81,6 +81,28 @@ The record documents why the old execution can be retired. It does not make the
 old session resumable, rewrite provider files, or authorize replay on its own.
 It remains in the local run log and adds no Telemetry or OpenTelemetry export.
 
+## AUTOPAUSE Empty-Run Streak Signal
+
+When an issue reaches its configured consecutive-empty-run threshold, the
+server writes one `run.autopause.empty_streak` event to the local run log. It
+records a signal, not a spend limit: the event does not block the issue or
+suppress future rewakes. The heartbeat may also persist a `skipped` wakeup
+receipt with reason `empty_run_streak` so operators can inspect the reason at
+the wakeup boundary.
+
+The event payload carries:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `reason` | string | The fixed machine-readable reason, `empty_run_streak`. |
+| `streak` | number | Consecutive empty runs observed at the threshold. |
+| `threshold` | number | The configured threshold that was reached. |
+| `description` | string | The empty-run classification description. |
+| `lastRunId` | string | The run that completed the streak. |
+
+The event stays in the instance database. It is neither Paperclip Telemetry nor
+OpenTelemetry and needs no external endpoint.
+
 ## Sandbox Startup Run-Log Event
 
 Paperclip writes one `run.startup.step` event to the run log for each bring-up
