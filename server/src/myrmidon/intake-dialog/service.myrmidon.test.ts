@@ -1,7 +1,17 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { beforeAll, afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { createDatabaseForTest } from "../../__tests__/helpers/database.js";
-import { issueThreadInteractions, issues } from "../../schema.js";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "../../__tests__/helpers/embedded-postgres.js";
+import {
+  createDb,
+  companies,
+  issueThreadInteractions,
+  issues,
+  type Db,
+} from "@myrmidon/db";
 import { issueThreadInteractionService } from "../../services/issue-thread-interactions.js";
 import {
   processIntakeCard,
@@ -10,30 +20,35 @@ import {
 } from "./service.js";
 import type { RequirementCard } from "@myrmidon/shared";
 
-describe("myrmidon(1.8 INTAKE-DIALOG / OPE-13010): intake dialog clarification and customer confirmation", () => {
-  let db: any;
-  let teardown: () => Promise<void>;
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+describeEmbeddedPostgres("myrmidon(1.8 INTAKE-DIALOG / OPE-13010): intake dialog clarification and customer confirmation", () => {
+  let db!: Db;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let companyId: string;
   let issueId: string;
 
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-intake-dialog-");
+    db = createDb(tempDb.connectionString);
+  }, 60_000);
+
   beforeEach(async () => {
-    const helper = await createDatabaseForTest();
-    db = helper.db;
-    teardown = helper.teardown;
-
-    const company = await helper.createCompany({ name: "Intake Dialog Test Co" });
+    const [company] = await db.insert(companies).values({ name: `Intake Dialog Test Co ${randomUUID()}` }).returning();
     companyId = company.id;
-
-    const issue = await helper.createIssue({
-      companyId,
-      title: "Seed Intake Task",
-      status: "in_progress",
-    });
+    const [issue] = await db.insert(issues).values({ companyId, title: "Seed Intake Task", status: "in_progress" }).returning();
     issueId = issue.id;
   });
 
   afterEach(async () => {
-    await teardown();
+    await db.delete(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issueId));
+    await db.delete(issues).where(eq(issues.id, issueId));
+    await db.delete(companies).where(eq(companies.id, companyId));
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
   });
 
   it("case 1: incomplete card (две фразы) → needs_clarification, neither interaction nor subtasks created", async () => {
@@ -197,7 +212,7 @@ describe("myrmidon(1.8 INTAKE-DIALOG / OPE-13010): intake dialog clarification a
       },
     );
     expect(resultV1.status).toBe("confirmation_requested");
-    const v1InteractionId = (resultV1 as any).interactionId;
+    const v1InteractionId = resultV1.status === "confirmation_requested" ? resultV1.interactionId : "";
 
     const cardV2: RequirementCard = {
       title: "Версия 2 постановки (изменённая)",
@@ -215,7 +230,7 @@ describe("myrmidon(1.8 INTAKE-DIALOG / OPE-13010): intake dialog clarification a
       },
     );
     expect(resultV2.status).toBe("confirmation_requested");
-    const v2InteractionId = (resultV2 as any).interactionId;
+    const v2InteractionId = resultV2.status === "confirmation_requested" ? resultV2.interactionId : "";
 
     expect(v2InteractionId).not.toBe(v1InteractionId);
 
@@ -235,11 +250,12 @@ describe("myrmidon(1.8 INTAKE-DIALOG / OPE-13010): intake dialog clarification a
 
     const interactionService = issueThreadInteractionService(db);
     await expect(
-      interactionService.resolve({
-        companyId,
-        interactionId: v1InteractionId,
-        status: "approved",
-      }),
-    ).rejects.toThrow();
+      interactionService.acceptInteraction(
+        { id: issueId, companyId, projectId: null, goalId: null },
+        v1InteractionId,
+        {},
+        { userId: `user-${randomUUID()}` },
+      ),
+    ).rejects.toMatchObject({ code: "interaction_stale_target" });
   });
 });

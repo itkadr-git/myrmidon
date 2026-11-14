@@ -9,7 +9,7 @@
 // - Complete card: save requirement-card document and create request_confirmation
 //   tied to that specific document revision.
 
-import type { DbClient } from "../../db/index.js";
+import type { Db } from "@myrmidon/db";
 import { documentService } from "../../services/documents.js";
 import { issueThreadInteractionService } from "../../services/issue-thread-interactions.js";
 import {
@@ -58,7 +58,7 @@ export interface ProcessIntakeCardInput {
 }
 
 export interface IntakeDialogDeps {
-  db: DbClient;
+  db: Db;
 }
 
 const SECTION_QUESTIONS: Record<string, string> = {
@@ -133,24 +133,24 @@ export async function processIntakeCard(
   const interactionService = issueThreadInteractionService(deps.db);
   const idempotencyKey = intakeCardApprovalIdempotencyKey(input.issueId, revisionId);
 
-  const interaction = await interactionService.create({
-    companyId: input.companyId,
-    issueId: input.issueId,
-    agentId: input.authorAgentId ?? null,
-    userId: input.authorUserId ?? null,
-    kind: "request_confirmation",
-    idempotencyKey,
-    target: {
-      type: "issue_document",
-      key: INTAKE_CARD_DOCUMENT_KEY,
-      revisionId,
-      revisionNumber,
+  const interaction = await interactionService.create(
+    { id: input.issueId, companyId: input.companyId },
+    {
+      kind: "request_confirmation",
+      idempotencyKey,
+      target: {
+        type: "issue_document",
+        key: INTAKE_CARD_DOCUMENT_KEY,
+        revisionId,
+        revisionNumber,
+      },
+      payload: {
+        prompt: `Подтвердите постановку задачи: ${fullCard.title.trim()}`,
+        actionLabel: "Утвердить",
+      },
     },
-    payload: {
-      prompt: `Подтвердите постановку задачи: ${fullCard.title.trim()}`,
-      actionLabel: "Утвердить",
-    },
-  });
+    { agentId: input.authorAgentId ?? null, userId: input.authorUserId ?? null },
+  );
 
   return {
     status: "confirmation_requested",
