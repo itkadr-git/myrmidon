@@ -13,22 +13,22 @@ describe("plan-gate large task detection and directives", () => {
   it("identifies large engineering task for engineering agents", () => {
     expect(
       isLargeEngineeringTask({
-        agentName: "adm-dev-eng-1",
-        labelNames: ["size:M"],
+        labels: ["size:M"],
+        assigneeAgentRole: "engineer",
       }),
     ).toBe(true);
 
     expect(
       isLargeEngineeringTask({
-        agentName: "adm-dev-eng-1",
-        labelNames: ["size:S"],
+        labels: ["size:S"],
+        assigneeAgentRole: "engineer",
       }),
     ).toBe(false);
 
     expect(
       isLargeEngineeringTask({
-        agentName: "adm-pm-1",
-        labelNames: ["size:L"],
+        labels: ["size:L"],
+        assigneeAgentRole: "pm",
       }),
     ).toBe(false);
   });

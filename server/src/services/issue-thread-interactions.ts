@@ -3624,17 +3624,24 @@ export function issueThreadInteractionService(
       const isPlanApproval = normalizedData.kind === "request_confirmation" &&
         normalizedData.payload.target?.type === "issue_document" &&
         normalizedData.payload.target.key === "plan";
-      if (isPlanApproval && actor.agentId && !normalizedData.addresseeAgentId && !normalizedData.addresseeUserId) {
+      if (isPlanApproval && actor.agentId) {
+        // The plan approver is always computed by the board, never taken from the
+        // requesting agent, and can never be the creator (no self-approval).
         const targetAgentId = await resolvePlanApprovalRecipient(
           db,
           issue.companyId,
           issueContextRow?.projectId,
-          actor.agentId,
+          actor.agentId ?? null,
         );
-        if (targetAgentId) {
-          normalizedData.addresseeAgentId = targetAgentId;
-          recipientCandidate = { agentId: targetAgentId };
+        if (!targetAgentId) {
+          throw unprocessable("No eligible lead or architect found to approve the plan");
         }
+        if (actor.agentId && targetAgentId === actor.agentId) {
+          throw unprocessable("A plan cannot be approved by its own author");
+        }
+        normalizedData.addresseeAgentId = targetAgentId;
+        normalizedData.addresseeUserId = null;
+        recipientCandidate = { agentId: targetAgentId };
       }
       if (recipientCandidate) {
         // already resolved (e.g. plan approval routing)

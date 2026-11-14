@@ -20141,8 +20141,8 @@ export function heartbeatService(
       );
       const hasWakeComment = Boolean(readNonEmptyString(context.wakeCommentId));
       if (!hasInteraction && !hasWakeComment) {
-        const [pendingPlanConfirmation] = await db
-          .select({ id: issueThreadInteractions.id })
+        const pendingConfirmations = await db
+          .select({ id: issueThreadInteractions.id, payload: issueThreadInteractions.payload })
           .from(issueThreadInteractions)
           .where(
             and(
@@ -20151,8 +20151,10 @@ export function heartbeatService(
               eq(issueThreadInteractions.kind, "request_confirmation"),
               eq(issueThreadInteractions.status, "pending"),
             ),
-          )
-          .limit(1);
+          );
+        const pendingPlanConfirmation = pendingConfirmations.find((row) =>
+          isPlanApprovalConfirmationPayload(row.payload),
+        );
         if (pendingPlanConfirmation) {
           await cancelRunInternal(
             run.id,
@@ -34607,8 +34609,8 @@ export function heartbeatService(
             }
 
             if (issue.workMode === "planning" && !interactionContinuation) {
-              const [pendingPlanConfirmation] = await tx
-                .select({ id: issueThreadInteractions.id })
+              const pendingConfirmations = await tx
+                .select({ id: issueThreadInteractions.id, payload: issueThreadInteractions.payload })
                 .from(issueThreadInteractions)
                 .where(
                   and(
@@ -34617,8 +34619,10 @@ export function heartbeatService(
                     eq(issueThreadInteractions.kind, "request_confirmation"),
                     eq(issueThreadInteractions.status, "pending"),
                   ),
-                )
-                .limit(1);
+                );
+              const pendingPlanConfirmation = pendingConfirmations.find((row) =>
+                isPlanApprovalConfirmationPayload(row.payload),
+              );
               if (pendingPlanConfirmation) {
                 await tx.insert(agentWakeupRequests).values({
                   ...durableReceiptFields,
