@@ -565,12 +565,31 @@ describe("stale OMP runner collection", () => {
       fetchAdapter: async () => ({ ok: true, adapterType: "hermes_gateway" }),
     });
     assert.deepEqual(plan.plan.map((item) => [item.agentKey, item.action]), [["eng8", "remove-stale-home"]]);
-    const result = runGc(["--apply", "--runner-root", root], {
-      PATH: `${dir}:${process.env.PATH}`,
-      MYRMIDON_HOST_GC_DOCKER: docker,
-      MYRMIDON_HOST_GC_DOCKER_BOT: docker,
-      BOARD_API_URL: "http://board",
+    const boardScript = [
+      "const http = require('node:http');",
+      "const server = http.createServer((_req, res) => {",
+      "  res.writeHead(200, { 'Content-Type': 'application/json' });",
+      "  res.end(JSON.stringify({ adapterType: 'hermes_gateway' }));",
+      "});",
+      "server.listen(0, '127.0.0.1', () => console.log(server.address().port));",
+    ].join("\n");
+    const board = subprocess.spawn(process.execPath, ["-e", boardScript], { stdio: ["ignore", "pipe", "inherit"] });
+    const port = await new Promise((resolve, reject) => {
+      board.stdout.once("data", (chunk) => resolve(chunk.toString().trim()));
+      board.once("error", reject);
+      board.once("exit", (code) => reject(new Error(`board fixture exited: ${code}`)));
     });
+    let result;
+    try {
+      result = runGc(["--apply", "--runner-root", root], {
+        PATH: `${dir}:${process.env.PATH}`,
+        MYRMIDON_HOST_GC_DOCKER: docker,
+        MYRMIDON_HOST_GC_DOCKER_BOT: docker,
+        BOARD_API_URL: `http://127.0.0.1:${port}`,
+      });
+    } finally {
+      board.kill();
+    }
     assert.equal(result.res.status, 0, result.res.stderr);
     assert.equal(fs.existsSync(path.join(root, "eng8")), false);
     assert.ok(result.events.some((event) => event.event === "stale-omp-runner-root-removed" && event.name === "myrmidon-omp-runner-eng8"));
