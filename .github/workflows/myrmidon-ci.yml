@@ -1101,6 +1101,134 @@ jobs:
             all(to_entries[]; .value.result == "success" or .value.result == "skipped")
           ' > /dev/null
 
+  ci-result-label-mirror:
+    # OPE-13136. A label-noop run (a `labeled` event with any label other than
+    # `full-ci`, e.g. the board's `review-approved`) skips every lane and the
+    # `ci-result` job above is renamed, so it publishes no `CI result`. GitHub
+    # then reads the required `CI result` as "expected" for the head even when
+    # the real run on the same head is green, and the board's merge is refused.
+    # This job publishes `CI result` on the noop run by MIRRORING the real run
+    # on the same head: success only when the latest real run of this workflow
+    # on the head finished and its own `CI result` is `success`. A missing,
+    # cancelled, failed or skipped real result fails it, so a pass is never
+    # published without a green real run (the OPE-12841 guarantee). On every
+    # other run it is skipped under a different name, so no skipped `CI result`
+    # check (which a ruleset reads as satisfied) is ever created.
+    name: ${{ (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'full-ci') && 'CI result' || 'CI result (label mirror skipped)' }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'full-ci' }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}
+    timeout-minutes: 130
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Mirror the real CI result on this head
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          WORKFLOW_PATH: .github/workflows/myrmidon-ci.yml
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/tools-bin"; mkdir -p "$bin"
+          if ! command -v jq >/dev/null; then
+            curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$bin/jq" https://api.github.com/repos/jqlang/jq/releases/assets/140520984
+            chmod +x "$bin/jq"
+          fi
+          if ! command -v gh >/dev/null; then
+            curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/gh.tar.gz" https://api.github.com/repos/cli/cli/releases/assets/206502108
+            tar -xzf "$RUNNER_TEMP/gh.tar.gz" -C "$RUNNER_TEMP"
+            cp "$RUNNER_TEMP/gh_2.62.0_linux_amd64/bin/gh" "$bin/gh"
+          fi
+          export PATH="$bin:$PATH"
+
+          deadline=$(( $(date +%s) + 120 * 60 ))
+          missing=0
+          while true; do
+            # A newer push moved the head: this run's verdict is for a dead head.
+            cur_head="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')"
+            if [ "$cur_head" != "$HEAD_SHA" ]; then
+              echo "ERROR: PR head moved to $cur_head; $HEAD_SHA is superseded, not mirroring." >&2
+              exit 1
+            fi
+
+            # Real runs of this workflow on the head: other than this run, started
+            # before it (run_number), and not themselves label-noop runs (their
+            # `plan` job is skipped). A run with no jobs yet is a real run that
+            # is just starting.
+            runs="$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&event=pull_request&per_page=100" 2>/dev/null \
+              | jq -c --arg me "$RUN_ID" --argjson num "$RUN_NUMBER" --arg path "$WORKFLOW_PATH" \
+              '[.workflow_runs[] | select(.path == $path and (.id | tostring) != $me and .run_number < $num)] | sort_by(.run_number)' 2>/dev/null \
+              || true)"
+            if [ -z "$runs" ]; then
+              echo "WARN: could not list workflow runs; retrying" >&2
+              sleep 30
+              [ "$(date +%s)" -lt "$deadline" ] || { echo "ERROR: timed out listing runs" >&2; exit 1; }
+              continue
+            fi
+
+            real_id=""; real_status=""; real_conclusion=""; real_suite=""
+            while read -r rid; do
+              [ -n "$rid" ] || continue
+              info="$(gh api "repos/$REPO/actions/runs/$rid")"
+              plan_concl="$(gh api "repos/$REPO/actions/runs/$rid/jobs?per_page=100" \
+                --jq '[.jobs[] | select(.name == "plan")] | if length == 0 then "none" else (.[0].conclusion // "pending") end')"
+              st="$(echo "$info" | jq -r .status)"
+              if [ "$plan_concl" = "skipped" ]; then continue; fi          # label-noop run
+              if [ "$plan_concl" = "none" ] && [ "$st" = "completed" ]; then continue; fi  # ended before any job (e.g. a superseded pending noop run)
+              real_id="$rid"; real_status="$st"
+              real_conclusion="$(echo "$info" | jq -r '.conclusion // ""')"
+              real_suite="$(echo "$info" | jq -r .check_suite_id)"
+            done < <(echo "$runs" | jq -r '.[].id')
+
+            if [ -z "$real_id" ]; then
+              echo "ERROR: no real Myrmidon CI run found on $HEAD_SHA; refusing to publish CI result without a real green run." >&2
+              exit 1
+            fi
+
+            if [ "$real_status" != "completed" ]; then
+              echo "Real run $real_id on $HEAD_SHA is $real_status; waiting 30s..."
+              [ "$(date +%s)" -lt "$deadline" ] || { echo "ERROR: real run $real_id still $real_status after 120 min." >&2; exit 1; }
+              sleep 30
+              continue
+            fi
+
+            if [ "$real_conclusion" != "success" ]; then
+              echo "ERROR: real run $real_id on $HEAD_SHA concluded '$real_conclusion', not success." >&2
+              exit 1
+            fi
+
+            # Run is green; confirm its own `CI result` check run (same check suite).
+            concl="$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs?check_name=CI%20result&filter=all&per_page=100" \
+              | jq -r --argjson suite "$real_suite" \
+              '[.check_runs[] | select(.check_suite.id == $suite)] | sort_by(.id) | last | if . == null then "absent" elif .status != "completed" then "in_progress" else .conclusion end')"
+            case "$concl" in
+              success)
+                echo "PASS: real run $real_id on $HEAD_SHA has CI result = success."
+                exit 0
+                ;;
+              in_progress|absent)
+                missing=$((missing + 1))
+                if [ "$missing" -gt 6 ]; then
+                  echo "ERROR: real run $real_id completed but its CI result is '$concl'." >&2
+                  exit 1
+                fi
+                echo "Real run $real_id completed, CI result '$concl'; rechecking in 30s ($missing/6)..."
+                sleep 30
+                ;;
+              *)
+                echo "ERROR: real run $real_id on $HEAD_SHA has CI result = $concl." >&2
+                exit 1
+                ;;
+            esac
+          done
+
   report-main:
     # Keeps an issue labelled `main-red` open while main is red: one issue,
     # a comment per red run, closed by the next green run.
