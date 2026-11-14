@@ -26,6 +26,8 @@ export const RUN_START_DISPATCH_KEY = "runStartDispatch";
 export const QUEUED_RESWEEP_SEC_KEY = "queuedResweepSec";
 /** `general.processes.queuedRunStaleAfterSec` — max queued age before expiry. */
 export const QUEUED_RUN_STALE_AFTER_SEC_KEY = "queuedRunStaleAfterSec";
+/** `general.processes.taskRunsWithoutCommitLimit` — max consecutive runs without new commit. */
+export const TASK_RUNS_WITHOUT_COMMIT_LIMIT_KEY = "taskRunsWithoutCommitLimit";
 
 export const RUN_START_DISPATCH_MODES = ["inline", "notify"] as const;
 /**
@@ -38,6 +40,7 @@ export type RunStartDispatchMode = (typeof RUN_START_DISPATCH_MODES)[number];
 export const DEFAULT_RUN_START_DISPATCH: RunStartDispatchMode = "inline";
 export const DEFAULT_QUEUED_RESWEEP_SEC = 30;
 export const DEFAULT_QUEUED_RUN_STALE_AFTER_SEC = 1800;
+export const DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT = 4;
 /** Floor of `queuedResweepSec`: below this the pass is a busy loop, not a fallback. */
 export const MIN_QUEUED_RESWEEP_SEC = 5;
 /** Ceiling of `queuedResweepSec`: above this the NOTIFY fallback is slower than the 5 min tick. */
@@ -59,12 +62,14 @@ export interface RunDispatchSettings {
   runStartDispatch: RunStartDispatchMode;
   queuedResweepSec: number;
   queuedRunStaleAfterSec: number;
+  taskRunsWithoutCommitLimit: number;
 }
 
 export const DEFAULT_RUN_DISPATCH_SETTINGS: RunDispatchSettings = {
   runStartDispatch: DEFAULT_RUN_START_DISPATCH,
   queuedResweepSec: DEFAULT_QUEUED_RESWEEP_SEC,
   queuedRunStaleAfterSec: DEFAULT_QUEUED_RUN_STALE_AFTER_SEC,
+  taskRunsWithoutCommitLimit: DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT,
 };
 
 function readProcessesRecord(general: unknown): Record<string, unknown> | null {
@@ -104,6 +109,19 @@ function resolveStaleAfterSec(raw: unknown): number {
   return Math.max(MIN_QUEUED_RUN_STALE_AFTER_SEC, Math.min(604800, Math.round(numeric)));
 }
 
+function resolveTaskRunsWithoutCommitLimit(raw: unknown): number {
+  const numeric =
+    typeof raw === "number"
+      ? raw
+      : typeof raw === "string" && raw.trim() !== ""
+        ? Number(raw)
+        : Number.NaN;
+  if (!Number.isFinite(numeric)) return DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT;
+  const rounded = Math.round(numeric);
+  if (rounded <= 0) return 0;
+  return Math.min(100, rounded);
+}
+
 /**
  * Resolve the dispatcher settings out of a raw `instance_settings.general` value.
  * Pure, so the tests can drive every malformed shape without a database.
@@ -115,6 +133,7 @@ export function resolveRunDispatchSettings(general: unknown): RunDispatchSetting
     runStartDispatch: resolveMode(processes[RUN_START_DISPATCH_KEY]),
     queuedResweepSec: resolveIntervalSec(processes[QUEUED_RESWEEP_SEC_KEY]),
     queuedRunStaleAfterSec: resolveStaleAfterSec(processes[QUEUED_RUN_STALE_AFTER_SEC_KEY]),
+    taskRunsWithoutCommitLimit: resolveTaskRunsWithoutCommitLimit(processes[TASK_RUNS_WITHOUT_COMMIT_LIMIT_KEY]),
   };
 }
 

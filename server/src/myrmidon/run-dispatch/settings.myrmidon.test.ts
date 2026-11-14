@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_QUEUED_RUN_STALE_AFTER_SEC,
+  DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT,
   MIN_QUEUED_RUN_STALE_AFTER_SEC,
   resolveRunDispatchSettings,
 } from "./settings.js";
@@ -11,6 +12,7 @@ describe("resolveRunDispatchSettings (OPE-12291 queue-stale floor)", () => {
       runStartDispatch: "inline",
       queuedResweepSec: 30,
       queuedRunStaleAfterSec: DEFAULT_QUEUED_RUN_STALE_AFTER_SEC,
+      taskRunsWithoutCommitLimit: DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT,
     });
   });
 
@@ -46,5 +48,29 @@ describe("resolveRunDispatchSettings (OPE-12291 queue-stale floor)", () => {
     expect(
       resolveRunDispatchSettings({ processes: { queuedRunStaleAfterSec: "abc" } }).queuedRunStaleAfterSec,
     ).toBe(DEFAULT_QUEUED_RUN_STALE_AFTER_SEC);
+  });
+
+  it("handles taskRunsWithoutCommitLimit correctly (0 allows disabling, clamps >100, default 4)", () => {
+    expect(
+      resolveRunDispatchSettings({ processes: { taskRunsWithoutCommitLimit: 0 } }).taskRunsWithoutCommitLimit,
+    ).toBe(0);
+    expect(
+      resolveRunDispatchSettings({ processes: { taskRunsWithoutCommitLimit: "0" } }).taskRunsWithoutCommitLimit,
+    ).toBe(0);
+    expect(
+      resolveRunDispatchSettings({ processes: { taskRunsWithoutCommitLimit: -5 } }).taskRunsWithoutCommitLimit,
+    ).toBe(0);
+    expect(
+      resolveRunDispatchSettings({ processes: { taskRunsWithoutCommitLimit: 10 } }).taskRunsWithoutCommitLimit,
+    ).toBe(10);
+    expect(
+      resolveRunDispatchSettings({ processes: { taskRunsWithoutCommitLimit: "15" } }).taskRunsWithoutCommitLimit,
+    ).toBe(15);
+    expect(
+      resolveRunDispatchSettings({ processes: { taskRunsWithoutCommitLimit: 500 } }).taskRunsWithoutCommitLimit,
+    ).toBe(100);
+    expect(
+      resolveRunDispatchSettings({ processes: { taskRunsWithoutCommitLimit: "invalid" } }).taskRunsWithoutCommitLimit,
+    ).toBe(DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT);
   });
 });

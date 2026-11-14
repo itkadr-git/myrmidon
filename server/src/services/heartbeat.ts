@@ -146,6 +146,17 @@ import {
   readContinuationCap,
   type ContinuationCapStop,
 } from "../myrmidon/continuation-cap.js"; // myrmidon(OPE-11948)
+import {
+  readRunCapNoCommitHistory,
+  readTaskCurrentHeadSha,
+  readLatestManualUnblockAt,
+  countRunsWithoutCommit,
+  buildRunCapNoCommitBlockedPatch,
+  buildRunCapNoCommitComment,
+  resolveRunCapNoCommitWakeTargetId,
+  RUN_CAP_NO_COMMIT_REASON,
+  type RunCapNoCommitStop,
+} from "../myrmidon/run-cap-no-commit.js"; // myrmidon(OPE-13080)
 import { WakeStormGuard, wakeStormSourceKey } from "../myrmidon/wake-storm-guard.js";
 // myrmidon(OPE-11718): a run refused by the daily run limit waits for the reset.
 import {
@@ -21099,6 +21110,24 @@ export function heartbeatService(
           )
       : [{ count: 0, latestAt: null }];
 
+    const [latestPrWorkProduct] = contextIssueId
+      ? await db
+          .select({
+            metadata: issueWorkProducts.metadata,
+          })
+          .from(issueWorkProducts)
+          .where(
+            and(
+              eq(issueWorkProducts.companyId, run.companyId),
+              eq(issueWorkProducts.issueId, contextIssueId),
+              eq(issueWorkProducts.kind, "pull_request"),
+            ),
+          )
+          .orderBy(desc(issueWorkProducts.createdAt))
+          .limit(1)
+      : [];
+    const currentPrHeadSha = (latestPrWorkProduct?.metadata as Record<string, any> | null)?.headSha ?? null;
+
     const [workspaceOperationStats] = await db
       .select({
         count: sql<number>`count(*)::int`,
@@ -21142,7 +21171,9 @@ export function heartbeatService(
     return {
       runStatus: run.status,
       issue,
-      resultJson: resultJson ?? run.resultJson ?? null,
+      resultJson: resultJson
+        ? { ...resultJson, ...(currentPrHeadSha ? { prHeadSha: currentPrHeadSha } : {}) }
+        : run.resultJson ?? null,
       issueCommentBodies,
       continuationSummaryBody: continuationSummary?.body ?? null,
       stdoutExcerpt: run.stdoutExcerpt ?? null,
@@ -32275,6 +32306,98 @@ export function heartbeatService(
     }
   }
 
+  // myrmidon(OPE-13080): parks an issue whose run cap without commit was reached.
+  async function applyRunCapNoCommitStop(stop: RunCapNoCommitStop) {
+    try {
+      await db.transaction(async (tx) => {
+        const [current] = await tx
+          .select()
+          .from(issues)
+          .where(and(eq(issues.id, stop.issueId), eq(issues.companyId, stop.companyId)))
+          .for("update")
+          .limit(1);
+        if (!current || !isContinuationActionable(current, stop.agentId)) return;
+        const patch = buildRunCapNoCommitBlockedPatch({
+          agentId: stop.agentId,
+          count: stop.count,
+          limit: stop.limit,
+          headSha: stop.headSha,
+        });
+        await issuesSvc.update(
+          current.id,
+          patch as Partial<typeof issues.$inferInsert>,
+          tx,
+        );
+        const comment = buildRunCapNoCommitComment({
+          count: stop.count,
+          limit: stop.limit,
+          headSha: stop.headSha,
+          lastSummaries: stop.lastSummaries,
+        });
+        await issuesSvc.addComment(current.id, comment, {}, { authorType: "system" }, tx);
+        await logActivity(tx as unknown as Db, {
+          companyId: current.companyId,
+          actorType: "system",
+          actorId: "heartbeat",
+          agentId: stop.agentId,
+          runId: null,
+          action: "issue.runs_without_commit_limit_reached",
+          entityType: "issue",
+          entityId: current.id,
+          details: {
+            identifier: current.identifier,
+            previousStatus: current.status,
+            count: stop.count,
+            limit: stop.limit,
+            headSha: stop.headSha,
+          },
+        });
+
+        // Wake manager or project lead
+        const wakeTargetId = await resolveRunCapNoCommitWakeTargetId(tx as unknown as Db, {
+          companyId: stop.companyId,
+          projectId: stop.projectId,
+          assigneeAgentId: stop.agentId,
+        });
+        if (wakeTargetId) {
+          await enqueueWakeup(wakeTargetId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: RUN_CAP_NO_COMMIT_REASON,
+            payload: {
+              issueId: stop.issueId,
+              assigneeAgentId: stop.agentId,
+              runCapNoCommit: {
+                count: stop.count,
+                limit: stop.limit,
+                headSha: stop.headSha,
+                summary: comment,
+              },
+            },
+            requestedByActorType: "system",
+            requestedByActorId: null,
+            contextSnapshot: {
+              issueId: stop.issueId,
+              taskId: stop.issueId,
+              wakeReason: RUN_CAP_NO_COMMIT_REASON,
+              source: "automation",
+              runCapNoCommit: {
+                count: stop.count,
+                limit: stop.limit,
+                headSha: stop.headSha,
+              },
+            },
+          });
+        }
+      });
+    } catch (err) {
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err), issueId: stop.issueId, agentId: stop.agentId },
+        "run cap no commit: could not park the issue as blocked",
+      );
+    }
+  }
+
   const wakeStormGuard = new WakeStormGuard();
 
   async function enqueueWakeupInner(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
@@ -33157,6 +33280,7 @@ export function heartbeatService(
       // myrmidon(OPE-11948): issues whose continuation cap was reached inside
       // this admission. Parked as blocked only after the transaction committed.
       const continuationCapStops: ContinuationCapStop[] = [];
+      const runCapNoCommitStops: RunCapNoCommitStop[] = [];
 
       const outcome = await db
         .transaction(async (tx) => {
@@ -34535,6 +34659,60 @@ export function heartbeatService(
               return { kind: "skipped" as const };
             }
 
+            // myrmidon(OPE-13080): consecutive runs without commit cap.
+            // If the task has a PR and consecutive runs of (agent, issue) finished
+            // without advancing headSha up to taskRunsWithoutCommitLimit, block the task
+            // and wake the lead/manager.
+            const runDispatchSettings = await loadRunDispatchSettings(tx as unknown as Db);
+            const noCommitLimit = runDispatchSettings.taskRunsWithoutCommitLimit;
+            if (noCommitLimit > 0 && !interactionContinuation && !manualUserWake) {
+              const currentHeadSha = await readTaskCurrentHeadSha(tx as unknown as Db, agent.companyId, issue.id);
+              if (currentHeadSha) {
+                const latestManualUnblockAt = await readLatestManualUnblockAt(tx as unknown as Db, agent.companyId, issue.id);
+                const history = await readRunCapNoCommitHistory(tx as unknown as Db, agent.companyId, issue.id, agentId, 20);
+                const check = countRunsWithoutCommit(history, currentHeadSha, { resetAfter: latestManualUnblockAt });
+                if (check.count >= noCommitLimit) {
+                  await tx.insert(agentWakeupRequests).values({
+                    ...durableReceiptFields,
+                    companyId: agent.companyId,
+                    agentId,
+                    source,
+                    triggerDetail,
+                    reason: "issue_rewake_throttled",
+                    payload: {
+                      ...(payload ?? {}),
+                      issueId,
+                      continuationSkipped: RUN_CAP_NO_COMMIT_REASON,
+                      heartbeatSkip: {
+                        reason: RUN_CAP_NO_COMMIT_REASON,
+                        requestedReason: reason,
+                        consecutiveRunsWithoutCommit: check.count,
+                        limit: noCommitLimit,
+                        headSha: currentHeadSha,
+                        issueId: issue.id,
+                      },
+                    },
+                    status: "skipped",
+                    requestedByActorType: opts.requestedByActorType ?? null,
+                    requestedByActorId: opts.requestedByActorId ?? null,
+                    idempotencyKey: opts.idempotencyKey ?? null,
+                    finishedAt: new Date(),
+                  });
+                  runCapNoCommitStops.push({
+                    companyId: issue.companyId,
+                    issueId: issue.id,
+                    projectId: issue.projectId,
+                    agentId,
+                    count: check.count,
+                    limit: noCommitLimit,
+                    headSha: currentHeadSha,
+                    lastSummaries: check.lastSummaries,
+                  });
+                  return { kind: "skipped" as const };
+                }
+              }
+            }
+
             const recoveryParentRunId =
               readNonEmptyString(enrichedContextSnapshot.retryOfRunId) ??
               readNonEmptyString(payload?.retryOfRunId) ??
@@ -35487,6 +35665,10 @@ export function heartbeatService(
 
       for (const stop of continuationCapStops) {
         await applyContinuationCapStop(stop);
+      }
+
+      for (const stop of runCapNoCommitStops) {
+        await applyRunCapNoCommitStop(stop);
       }
 
       // Telemetry for the cancelled runs is best-effort background work.
