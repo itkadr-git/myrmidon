@@ -1,4 +1,5 @@
 import test from "node:test";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import {
   collectInventory,
@@ -9,8 +10,10 @@ import {
   formatCrossCompanyDependency,
   formatInventoryDependencies,
   normalizeInventoryReport,
+  OWNER_REF_REASONS,
   renderInventory,
   sectionForPath,
+  serializeAgentOwnership,
 } from "./company-boundaries-inventory.mjs";
 
 /** Method-counting, path-recording mock transport. Rejects any non-GET method up front. */
@@ -112,6 +115,7 @@ test("two consecutive probe runs on the same stable fixture produce the same nor
       second.dependencies === undefined
         ? undefined
         : second.dependencies.map(({ section, ...rest }) => ({ ...rest, section })),
+    ownership: second.ownership,
   };
   assert.deepEqual(normalizeInventoryReport(reordered), normalizeInventoryReport(second));
   assert.equal(inventoryReportHash(reordered), inventoryReportHash(second));
@@ -319,17 +323,12 @@ test("missing attribution fields are computed from observed rows", async () => {
   assert.deepEqual(byKey["skills-policies"].missingAttribution, ["ownerCompanyId"]);
 
   const rendered = renderInventory(report);
-  // Section metadata stays free of observed row payload values (pre-OPE-12905 intent).
-  const sectionsJson = JSON.stringify(report.sections);
-  assert.ok(!sectionsJson.includes("c1"));
-  assert.ok(!sectionsJson.includes("dep-1"));
-  assert.ok(!sectionsJson.includes("a1"));
-  // The allowlisted dependency view (OPE-12905) intentionally carries
-  // owner/company identifiers for dependency-bearing objects, but raw
-  // dependency values (plain strings here) are never copied into the report.
   assert.ok(!rendered.includes("dep-1"));
   assert.ok(!rendered.includes("d1"));
-  assert.ok(!rendered.includes("a1"));
+  // Section metadata, dependency objects, and ownership records:
+  // entityRef is a sha256 slice (f55ff16f66f4), never the raw id "a1".
+  const parsed = JSON.parse(rendered);
+  assert.equal(parsed.ownership.agents.some((a) => a.entityRef === "a1"), false);
 });
 
 test("unknown sections are absent from the registry and cannot be covered", () => {
@@ -477,7 +476,7 @@ test("report path is deterministic and secret-free; failed sections contribute n
   // No dependency-attributed section covered → the report carries no dependencies view at all.
   const noDep = await collectInventory(makeGetOnlyTransport(() => ({ status: 403, ok: false })));
   assert.equal(noDep.dependencies, undefined);
-  assert.deepEqual(normalizeInventoryReport(noDep), { sections: noDep.sections, summary: noDep.summary });
+  assert.deepEqual(normalizeInventoryReport(noDep), { sections: noDep.sections, summary: noDep.summary, ownership: noDep.ownership });
 
   // A covered section without the dependency attribution never contributes rows.
   const agentsOnly = await collectInventory(
@@ -490,4 +489,121 @@ test("report path is deterministic and secret-free; failed sections contribute n
     { currentCompanyId: "c1" },
   );
   assert.equal(agentsOnly.dependencies, undefined);
+});
+
+/* --- Agent ownership serialization (OPE-12906) --- */
+
+test("agent ownership serialization keeps unknown owner refs unresolved with a reason, never zero/current domain", () => {
+  const owners = serializeAgentOwnership([
+    { id: "a-1" },
+    { id: "a-2", ownerCompanyId: "" },
+    { id: "a-3", ownerCompanyId: "   " },
+    { id: "a-4", ownerCompanyId: null },
+  ]);
+
+  assert.ok(owners.length > 0);
+  for (const row of owners) {
+    assert.equal(row.attribution, "unknown");
+    assert.equal(row.ownerCompanyId, null, "unknown owner ref must not be attributed to any domain");
+    assert.equal(row.reason, OWNER_REF_REASONS.missingOwnerRef);
+  }
+  // Deterministic pseudonymized entity refs; the raw entity id never appears.
+  assert.equal(serializeAgentOwnership([{ id: "a-1" }])[0].entityRef, owners[0].entityRef);
+  assert.match(owners[0].entityRef, /^[0-9a-f]{12}$/);
+});
+
+test("agent ownership serialization resolves exact attribution only for known company ids", () => {
+  const entities = [
+    { id: "a-known", ownerCompanyId: "company-7" },
+    { id: "a-unknown", ownerCompanyId: "ghost-company" },
+    { id: "a-missing" },
+  ];
+  const owners = serializeAgentOwnership(entities, { knownCompanyIds: ["company-7"] });
+
+  assert.equal(owners[0].attribution, "resolved");
+  assert.equal(owners[0].ownerCompanyId, "company-7", "known owner ref serializes exact attribution");
+  assert.equal(owners[1].attribution, "unresolved");
+  assert.equal(owners[1].ownerCompanyId, null, "unknown owner id must not fall back to zero or current domain");
+  assert.equal(owners[1].reason, OWNER_REF_REASONS.ownerCompanyUnknown);
+  assert.match(owners[1].ownerRefHash, /^[0-9a-f]{12}$/);
+  assert.notEqual(owners[1].ownerRefHash, "ghost-company");
+  // Fail-closed: with an empty known set nothing is verifiable, so every
+  // present ref stays unresolved with a pseudonymized hash — never
+  // resolved-by-default with the raw id (OPE-12906 review defect).
+  const emptyKnown = serializeAgentOwnership([{ id: "a-x", ownerCompanyId: "ghost" }], { knownCompanyIds: [] });
+  assert.equal(emptyKnown[0].attribution, "unresolved");
+  assert.equal(emptyKnown[0].ownerCompanyId, null, "empty known set must not attribute to any domain");
+  assert.equal(emptyKnown[0].reason, OWNER_REF_REASONS.ownerCompanyUnknown);
+  assert.match(emptyKnown[0].ownerRefHash, /^[0-9a-f]{12}$/);
+  assert.ok(!JSON.stringify(emptyKnown).includes("ghost"), "raw unknown id must not survive an empty known set");
+  // Omitting options entirely behaves the same: unresolved, never raw.
+  const withoutKnowledge = serializeAgentOwnership([{ id: "a-y", ownerCompanyId: "anything" }]);
+  assert.equal(withoutKnowledge[0].attribution, "unresolved");
+  assert.equal(withoutKnowledge[0].ownerCompanyId, null);
+  assert.equal(withoutKnowledge[0].reason, OWNER_REF_REASONS.ownerCompanyUnknown);
+  assert.ok(!JSON.stringify(withoutKnowledge).includes("anything"));
+});
+
+test("probe report embeds agent ownership and hashes stay deterministic with unknown refs", async () => {
+  const report = await collectInventory(makeStableFixtureTransport(), { knownCompanyIds: ["c1"] });
+
+  assert.equal(report.ownership.agents.length, 1);
+  assert.equal(report.ownership.agents[0].attribution, "resolved");
+  assert.equal(report.ownership.agents[0].ownerCompanyId, "c1");
+
+  const orphanFixture = makeGetOnlyTransport(({ path }) => {
+    assert.ok(path === "/agents", `unexpected probe path ${path}`);
+    return { status: 200, ok: true, json: async () => ({ items: [{ id: "orphan" }, { id: "o2", ownerCompanyId: "ghost" }] }) };
+  });
+  const orphaned = await collectInventory(orphanFixture, { knownCompanyIds: ["c1"] });
+  const shortHash = (value) => createHash("sha256").update(value).digest("hex").slice(0, 12);
+  assert.deepEqual(orphaned.ownership.agents, [
+    {
+      entityRef: shortHash("orphan"),
+      attribution: "unknown",
+      ownerCompanyId: null,
+      reason: OWNER_REF_REASONS.missingOwnerRef,
+    },
+    {
+      entityRef: shortHash("o2"),
+      attribution: "unresolved",
+      ownerCompanyId: null,
+      reason: OWNER_REF_REASONS.ownerCompanyUnknown,
+      ownerRefHash: shortHash("ghost"),
+    },
+  ]);
+  // No known set at all: present refs stay unresolved (fail-closed), no raw ids.
+  const noKnowledge = await collectInventory(orphanFixture);
+  assert.deepEqual(noKnowledge.ownership.agents, [
+    {
+      entityRef: shortHash("orphan"),
+      attribution: "unknown",
+      ownerCompanyId: null,
+      reason: OWNER_REF_REASONS.missingOwnerRef,
+    },
+    {
+      entityRef: shortHash("o2"),
+      attribution: "unresolved",
+      ownerCompanyId: null,
+      reason: OWNER_REF_REASONS.ownerCompanyUnknown,
+      ownerRefHash: shortHash("ghost"),
+    },
+  ]);
+
+  const again = await collectInventory(makeStableFixtureTransport(), { knownCompanyIds: ["c1"] });
+  assert.deepEqual(normalizeInventoryReport(report), normalizeInventoryReport(again));
+  assert.equal(inventoryReportHash(report), inventoryReportHash(again));
+});
+
+test("serialized ownership never leaks raw unknown ids or sensitive values", () => {
+  const secret = "«redacted:sk-…»";
+  const rendered = renderInventory({
+    sections: [],
+    summary: { total: 0, covered: 0, counts: { data: 0, empty: 0, denied: 0, "not-found": 0, error: 0 } },
+    ownership: { agents: serializeAgentOwnership([{ id: "agent-9", ownerCompanyId: secret }], { knownCompanyIds: ["c1"] }) },
+  });
+  assert.ok(!rendered.includes(secret), "raw unknown owner value must never be serialized");
+  const parsed = JSON.parse(rendered);
+  assert.equal(parsed.ownership.agents[0].attribution, "unresolved");
+  assert.equal(parsed.ownership.agents[0].ownerCompanyId, null);
 });

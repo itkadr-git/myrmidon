@@ -263,6 +263,7 @@
         "sections": {
           "relationships": "Связи",
           "execution": "Исполнение",
+          "releaseComposition": "Состав выпуска",
           "workspace": "Рабочая область",
           "work": "Работа",
           "triage": "Разбор",

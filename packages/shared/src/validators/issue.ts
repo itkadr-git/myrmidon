@@ -397,11 +397,18 @@ export const issueExecutionStageParticipantSchema =
       }
     });
 
+export const issueExecutionStageRequirementsSchema = z.object({
+  deployVersion: z.boolean().default(false),
+  checkMethod: z.boolean().default(false),
+  skip: z.boolean().optional(),
+}).strict();
+
 export const issueExecutionStageSchema = z.object({
   id: z.string().guid().optional(),
   type: z.enum(ISSUE_EXECUTION_STAGE_TYPES),
   approvalsNeeded: z.literal(1).optional().default(1),
   participants: z.array(issueExecutionStageParticipantSchema).default([]),
+  requirements: issueExecutionStageRequirementsSchema.nullish(),
 });
 
 export const issueExecutionMonitorPolicySchema = z.object({
