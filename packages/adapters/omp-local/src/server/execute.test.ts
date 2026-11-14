@@ -1401,6 +1401,37 @@ describe("omp local execution", () => {
       expect(result.exitCode).toBe(0);
       expect(run.restoreWorkspace).toHaveBeenCalledTimes(1);
       expect(run.events).toEqual([]);
+
+      const reapCall = runAdapterExecutionTargetShellCommand.mock.calls.find(
+        (call) => typeof call[2] === "string" && call[2].startsWith("run-reap "),
+      );
+      expect(reapCall).toBeDefined();
+      expect(reapCall?.[2]).toBe("run-reap '/remote/workspace'");
+    });
+
+    it("runs run-reap on the runner when the SSH run is cancelled", async () => {
+      const run = await makeSshRun("run-ssh-cancelled-reap");
+      prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => run.preparedRuntime);
+      runAdapterExecutionTargetProcess.mockImplementationOnce(async () => {
+        run.controller.abort(new Error("Cancelled"));
+        return {
+          exitCode: null,
+          signal: "SIGTERM",
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          pid: 123,
+          startedAt: new Date().toISOString(),
+        };
+      });
+
+      await execute(run.input);
+
+      const reapCall = runAdapterExecutionTargetShellCommand.mock.calls.find(
+        (call) => call[0] === "run-ssh-cancelled-reap" && typeof call[2] === "string" && call[2].startsWith("run-reap "),
+      );
+      expect(reapCall).toBeDefined();
+      expect(reapCall?.[2]).toBe("run-reap '/remote/workspace'");
     });
 
     it("does not opt a sandbox run into signal-based cancellation", async () => {
