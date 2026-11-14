@@ -224,6 +224,107 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     expect(stages.map((stage) => stage.id)).toContain(state?.currentStageId);
   });
 
+  // myrmidon(REVIEW-CHANGES-LOST-STAGE): when the review stage is missing from
+  // the execution policy, a changes_requested decision from the assigned reviewer
+  // must return 2xx and persist the issue back to the author with status in_progress
+  // and executionState.status = "changes_requested".
+  it.each([
+    { name: "empty stages policy", policy: { mode: "normal", stages: [] } },
+    { name: "null policy", policy: null },
+  ])("records changes_requested and returns task to author when stage missing from policy ($name)", async ({ policy }) => {
+    const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Review changes requested lost stage");
+    const authorAgentId = randomUUID();
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: authorAgentId,
+      companyId,
+      name: "adm-dev-eng-1",
+      metadata: { telegramGroup: "adm" },
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "adm-dev-review-1",
+      metadata: { telegramGroup: "adm" },
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const issueId = randomUUID();
+    const stageId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Review changes requested when stage is missing from policy",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: reviewerAgentId,
+      createdByAgentId: authorAgentId,
+      executionPolicy: policy as any,
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: authorAgentId },
+        completedStageIds: [],
+        changesRequestedCount: 0,
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+
+    const reviewerActor = {
+      type: "agent" as const,
+      source: "agent_jwt" as const,
+      agentId: reviewerAgentId,
+      companyId,
+      runId: randomUUID(),
+      isInstanceAdmin: false,
+    };
+
+    const routes = (db: any, storage: any) =>
+      issueRoutes(db, storage, {
+        resolveReviewPullRequestCi: async () => ({
+          state: "ok",
+          pullRequestUrl: "https://github.com/acme/app/pull/7",
+          headSha: "head-abc",
+        }),
+      });
+
+    const response = await request(routeApp(ctx.db, reviewerActor as any, routes as any))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "in_progress",
+        comment: "Please revise implementation in server/src/file.ts:42",
+      });
+
+    expect(response.status).toBe(200);
+
+    const [updated] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
+    expect(updated?.status).toBe("in_progress");
+    expect(updated?.assigneeAgentId).toBe(authorAgentId);
+    const updatedState = updated?.executionState as Record<string, unknown> | null;
+    expect(updatedState).toMatchObject({
+      status: "changes_requested",
+      currentStageId: stageId,
+      currentStageType: "review",
+      changesRequestedCount: 1,
+      lastDecisionOutcome: "changes_requested",
+      returnAssignee: { type: "agent", agentId: authorAgentId },
+    });
+  });
+
   it("defers reviewer admission while exact PR-head CI is pending", async () => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission waits for exact-head CI");
     const reviewerAgentId = randomUUID();
