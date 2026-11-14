@@ -19,14 +19,15 @@ export async function reconcileIssueParentCyclesOnStartup(db: Db) {
       JOIN issues parent ON parent.id::text = walk.parent_id
       WHERE NOT walk.cycle AND cardinality(walk.path) <= 1000
     ), cycle_edges AS (
-      SELECT DISTINCT id
-      FROM walk WHERE cycle
-    )
-    UPDATE issues AS issue SET parent_id = NULL
-    FROM cycle_edges AS cycle
-    WHERE issue.id::text = cycle.id
-    RETURNING issue.id::text AS id, issue.company_id::text AS company_id,
-      NULL::text AS parent_id
+   SELECT DISTINCT ON (id) id, parent_id
+   FROM walk WHERE cycle
+   ORDER BY id, start_id
+ )
+ UPDATE issues AS issue SET parent_id = NULL
+ FROM cycle_edges AS cycle
+ WHERE issue.id::text = cycle.id
+ RETURNING issue.id::text AS id, issue.company_id::text AS company_id,
+   cycle.parent_id::text AS parent_id
   `);
   for (const row of repaired) {
     await logActivity(db, {
