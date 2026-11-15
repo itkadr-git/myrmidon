@@ -26,6 +26,7 @@ import {
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
   collectRunIdsWithIssueProgress,
 } from "../services/issue-rewake-throttle.js";
+import { readRunIdsWithPrHeadChange } from "../services/pr-head-change-progress.js";
 
 export interface TasklessWakeContext {
   source: string | null | undefined;
@@ -503,7 +504,8 @@ export async function isIssueCoolingDown(
  * final text, a release and a hand-back to the queue with its parking note are
  * not progress. The activity is read only where it can change the decision —
  * the task is in `todo` and at least one succeeded run is "advanced"; every
- * other run goes through unmarked.
+ * other run goes through unmarked. A run that moved the head of the task's PR
+ * (a head-change row inside its window, any actor) made progress too.
  */
 async function withIssueProgress<T extends CoolingRun & { id: string }>(
   db: Db,
@@ -541,6 +543,11 @@ async function withIssueProgress<T extends CoolingRun & { id: string }>(
     activity,
     (runId) => agentIdByRunId.get(runId) ?? null,
   );
+  // A hand-back leaves no row about the code the run pushed to the task's PR; the board records the move of the
+  // PR head (any actor, up to PR_HEAD_CHANGE_LATE_WINDOW_MS after the run) and that is the run's progress.
+  for (const runId of await readRunIdsWithPrHeadChange(db, companyId, issueId, advanced)) {
+    withProgress.add(runId);
+  }
   return rows.map((row) =>
     agentIdByRunId.has(row.id) ? { ...row, madeIssueProgress: withProgress.has(row.id) } : row,
   );

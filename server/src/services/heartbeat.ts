@@ -649,6 +649,7 @@ import {
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
+import { readRunIdsWithPrHeadChange } from "./pr-head-change-progress.js";
 
 let cachedFreezeThreshold: { value: number; expiresAt: number } | null = null;
 async function getCachedFreezeThreshold(settings: { getGeneral: () => Promise<{ issueRewakeFreezeThreshold?: number | null }> }): Promise<number> {
@@ -36447,6 +36448,8 @@ export function heartbeatService(
                 status: heartbeatRuns.status,
                 errorCode: heartbeatRuns.errorCode,
                 finishedAt: heartbeatRuns.finishedAt,
+                startedAt: heartbeatRuns.startedAt,
+                createdAt: heartbeatRuns.createdAt,
                 contextSnapshot: heartbeatRuns.contextSnapshot,
                 stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
                 stderrExcerpt: heartbeatRuns.stderrExcerpt,
@@ -36504,6 +36507,16 @@ export function heartbeatService(
                 progressActivityRows,
                 () => agentId,
               );
+              // myrmidon(EMPTY-RUNS-1): a run that moved the head of the
+              // task's PR made progress, though the push leaves no row under it.
+              for (const runId of await readRunIdsWithPrHeadChange(
+                tx,
+                agent.companyId,
+                issue.id,
+                recentTerminalRuns,
+              )) {
+                runIdsWithIssueProgress.add(runId);
+              }
               const lastRunFinishedAt =
                 recentTerminalRuns[0]?.finishedAt ?? null;
               const latestRevision = readNonEmptyString(
