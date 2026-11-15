@@ -39,9 +39,21 @@ function tokens(source) {
       result.push({ type: quote === '`' ? 'opaque' : 'string', value });
       continue;
     }
+    const closesControlCondition = () => {
+      if (result.at(-1)?.value !== ')') return false;
+      let depth = 0;
+      for (let j = result.length - 1; j >= 0; j--) {
+        if (result[j].value === ')') depth++;
+        if (result[j].value === '(' && --depth === 0) {
+          return ['if', 'while', 'for', 'with', 'switch', 'catch'].includes(result[j - 1]?.value);
+        }
+      }
+      return false;
+    };
     if (c === '/' && source[i + 1] !== '/' && source[i + 1] !== '*' &&
         (!result.length || /^[({[=,:;!?&|+*~<>-]$/.test(result.at(-1).value) ||
-         ['return', 'throw', 'case', 'delete', 'void', 'typeof', 'yield', 'await', 'in', 'instanceof'].includes(result.at(-1).value))) {
+         ['return', 'throw', 'case', 'delete', 'void', 'typeof', 'yield', 'await', 'in', 'instanceof'].includes(result.at(-1).value) ||
+         closesControlCondition())) {
       let j = i + 1; let inClass = false; let closed = false;
       while (j < source.length) {
         if (source[j] === '\\') { j += 2; continue; }
