@@ -693,40 +693,42 @@ describe("stale OMP runner collection", () => {
     assert.equal(complete.staleOmpRunnersStopped, 1);
   });
 
-  it("resolves engN to a UUID before the agent detail lookup", async () => {
-    const requests = [];
+  it("resolves engN through the slim company list and plans only non-omp_local runners for removal", async () => {
     const previousCompanyId = process.env.MYRMIDON_COMPANY_ID;
     process.env.MYRMIDON_COMPANY_ID = "company-uuid";
-    let result;
+    const requests = [];
     try {
-      result = await fetchAgentAdapter("eng8", {
+      const adapter = await fetchAgentAdapter("eng8", {
         baseUrl: "http://board",
         apiKey: "test-key",
         fetchImpl: async (url, options) => {
           requests.push({ url, options });
-          if (url.includes("/companies/")) {
-            assert.match(url, /\/agents\?q=adm-dev-eng-8$/);
-            return { ok: true, status: 200, json: async () => [{ id: "agent-uuid-8", name: "adm-dev-eng-8" }] };
-          }
-          assert.equal(url, "http://board/api/agents/agent-uuid-8");
-          return { ok: true, status: 200, json: async () => ({ adapterType: "hermes_gateway" }) };
+          if (url === "http://board/api/agents/eng8") return { ok: false, status: 422 };
+          assert.equal(url, "http://board/api/companies/company-uuid/agents?q=adm-dev-eng-8");
+          return { ok: true, status: 200, json: async () => [{ id: "agent-uuid-8", name: "adm-dev-eng-8", adapterType: "hermes_gateway" }] };
         },
       });
+      assert.deepEqual(adapter, { ok: true, adapterType: "hermes_gateway" });
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].options.headers.Authorization, "Bearer test-key");
+
+      const dir = path.join(tmpDir, "docker-mock");
+      fs.mkdirSync(dir);
+      const docker = path.join(dir, "docker");
+      fs.writeFileSync(docker, `#!/bin/sh\nprintf '%s\\n' myrmidon-omp-runner-eng8 myrmidon-omp-runner-eng10\n`);
+      fs.chmodSync(docker, 0o755);
+      const plan = await planStaleOmpRunners(path.join(tmpDir, "runners"), {
+        docker,
+        fetchAdapter: async (agentKey) => ({ ok: true, adapterType: agentKey === "eng10" ? "omp_local" : adapter.adapterType }),
+      });
+      assert.deepEqual(plan.plan.map(({ agentKey, action, reason }) => [agentKey, action, reason]), [
+        ["eng8", "stop-remove", "adapter-changed"],
+        ["eng10", "keep", "omp-local"],
+      ]);
     } finally {
       if (previousCompanyId === undefined) delete process.env.MYRMIDON_COMPANY_ID;
       else process.env.MYRMIDON_COMPANY_ID = previousCompanyId;
     }
-    assert.equal(requests.length, 2);
-    assert.equal(requests[0].options.headers.Authorization, "Bearer test-key");
-    assert.deepEqual(result, { ok: true, adapterType: "hermes_gateway" });
-    const dir = path.join(tmpDir, "docker-mock");
-    fs.mkdirSync(dir);
-    const docker = path.join(dir, "docker");
-    const log = path.join(dir, "args");
-    fs.writeFileSync(docker, `#!/bin/sh\nprintf '%s\\n' "$@" > '${log}'\n`);
-    fs.chmodSync(docker, 0o755);
-    assert.equal(stopOmpRunner("myrmidon-omp-runner-eng8", { docker }), true);
-    assert.deepEqual(fs.readFileSync(log, "utf8").trim().split("\n"), ["rm", "-f", "myrmidon-omp-runner-eng8"]);
   });
 });
 

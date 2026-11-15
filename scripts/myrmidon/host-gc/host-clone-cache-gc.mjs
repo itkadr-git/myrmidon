@@ -961,12 +961,11 @@ export async function fetchAgentAdapter(agentId, {
     if (!Array.isArray(body)) return { ok: false, reason: "board-invalid-agent-list" };
     const agent = body.find((entry) => entry?.name === `adm-dev-eng-${number}`);
     if (!agent) return { ok: true, adapterType: null };
-    if (typeof agent.id !== "string") return { ok: false, reason: "board-invalid-agent-list" };
-    const detail = await fetchImpl(`${base}/agents/${encodeURIComponent(agent.id)}`, { headers });
-    if (!detail.ok) return { ok: false, reason: `board-http-${detail.status}`, statusCode: detail.status };
-    const detailBody = await detail.json();
-    if (!detailBody || typeof detailBody.adapterType !== "string") return { ok: false, reason: "board-invalid-agent" };
-    return { ok: true, adapterType: detailBody.adapterType };
+    // adapterType is part of AgentListItem; do not make a second detail request.
+    if (typeof agent.id !== "string" || typeof agent.adapterType !== "string") {
+      return { ok: false, reason: "board-invalid-agent-list" };
+    }
+    return { ok: true, adapterType: agent.adapterType };
   } catch {
     return { ok: false, reason: "board-unavailable" };
   }
