@@ -23,10 +23,12 @@ test('JSON nested credentials and PEM are removed while diagnostic fields surviv
 });
 
 test('text fields and multiline private key are redacted', () => {
-  const input = `state: INSTALLED\nbytes_out: 42\nroute_prefix: 2001:db8::/32\nPSK = canaryPsk\nauthorization: Bearer canaryBearer\nprivate_key: ${pem('canaryPem')}\n`;
+  const input = `state: INSTALLED\nbytes_out: 42\nroute_prefix: 2001:db8::/32\nPSK = canaryPsk\nauthorization: Bearer canaryBearer\nprivate_key: ${pem('canaryPem')}\nsa_state: ESTABLISHED\n`;
   const result = run('text', input);
   assert.equal(result.status, 0); noLeak(result, 'canaryPsk', 'canaryBearer', 'canaryPem');
   assert.match(result.stdout, /state: INSTALLED/); assert.match(result.stdout, /bytes_out: 42/); assert.match(result.stdout, /2001:db8::\/32/);
+  assert.match(result.stdout, /authorization: \[REDACTED\]/); assert.match(result.stdout, /private_key: \[REDACTED\]/);
+  assert.match(result.stdout, /sa_state: ESTABLISHED/);
 });
 
 test('unsupported and malformed input fails without output or source in errors', () => {
