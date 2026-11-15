@@ -250,7 +250,7 @@ describe("resolveRunCapNoCommitWakeTargetId", () => {
       select: () => ({
         from: () => ({
           where: () => ({
-            limit: () => Promise.resolve([{ leadAgentId: "lead-agent-1" }]),
+            limit: () => Promise.resolve([{ id: "lead-agent-1", leadAgentId: "lead-agent-1", casteKey: null, status: "idle" }]),
           }),
         }),
       }),
@@ -263,12 +263,38 @@ describe("resolveRunCapNoCommitWakeTargetId", () => {
     expect(target).toBe("lead-agent-1");
   });
 
-  it("resolves reportsTo when assignee has a manager and project has no lead", async () => {
+  it("falls back to another invokable lead when the assigned project lead is unavailable", async () => {
+    const leads = [
+      { id: "assigned-lead", status: "paused" },
+      { id: "backup-lead", status: "idle" },
+    ];
+    let agentRead = 0;
     const db = {
       select: () => ({
         from: () => ({
           where: () => ({
-            limit: () => Promise.resolve([{ reportsTo: "manager-agent-1" }]),
+            limit: () => {
+              if (agentRead++ === 0) return Promise.resolve([{ leadAgentId: "assigned-lead", casteKey: "eng" }]);
+              return Promise.resolve([leads[agentRead - 2]]);
+            },
+          }),
+          innerJoin: () => ({ where: () => Promise.resolve([{ id: "assigned-lead" }, { id: "backup-lead" }]) }),
+        }),
+      }),
+    } as any;
+    expect(await resolveRunCapNoCommitWakeTargetId(db, { companyId: "c1", projectId: "p1" })).toBe("backup-lead");
+  });
+  it("resolves reportsTo when assignee has a manager and project has no lead", async () => {
+    const rows = [
+      [{ reportsTo: "manager-agent-1" }],
+      [{ id: "manager-agent-1", status: "idle" }],
+    ];
+    let query = 0;
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () => Promise.resolve(rows[query++] ?? []),
           }),
         }),
       }),
@@ -285,7 +311,7 @@ describe("resolveRunCapNoCommitWakeTargetId", () => {
       select: () => ({
         from: () => ({
           where: () => ({
-            limit: () => Promise.resolve([{ id: "adm-agent-1" }]),
+            limit: () => Promise.resolve([{ id: "adm-agent-1", status: "idle" }]),
           }),
         }),
       }),
