@@ -135,6 +135,38 @@ describe("company migration dry run", () => {
     expect(afterRollback.filter((company) => company.name === "Rollback destination" && company.status !== "archived")).toHaveLength(0);
   });
 
+  it("serializes concurrent confirmed applies of the same migration", async () => {
+    const [source] = await db.insert(companies).values({ name: "Concurrent fixture", issuePrefix: "MCC" }).returning();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+
+    const payload = {
+      target: { mode: "new_company", newCompanyName: "Concurrent destination" },
+      dryRun: false,
+      apply: true,
+      confirm: "approved pilot",
+    };
+    const endpoint = `/api/companies/${source!.id}/migrations`;
+    const responses = await Promise.all([
+      request(app).post(endpoint).send(payload),
+      request(app).post(endpoint).send(payload),
+    ]);
+    expect(responses.some((response) => response.status === 200)).toBe(true);
+    expect(responses.every((response) => response.status === 200 || response.status === 409)).toBe(true);
+    expect((await db.select().from(companies)).filter((company) => company.name === "Concurrent destination")).toHaveLength(1);
+
+    const retry = await request(app).post(endpoint).send(payload);
+    expect(retry.status).toBe(200);
+    expect(retry.body.resume).toBe("already_completed");
+    expect((await db.select().from(companies)).filter((company) => company.name === "Concurrent destination")).toHaveLength(1);
+  });
+
   it("applies a confirmed migration once and reuses the completed run", async () => {
     const [source] = await db.insert(companies).values({ name: "Apply fixture", issuePrefix: "MAP" }).returning();
     const app = express();
