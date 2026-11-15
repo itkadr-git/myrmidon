@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { compareRoutes } from './route-matrix.mjs';
 
-const lan = { prefix: '10.0.0.0/24', table: 'main', via: '192.0.2.1', dev: 'eth0' };
-const observed = { dst: '10.0.0.0/24', gateway: '192.0.2.1', dev: 'eth0' };
+const lan = { prefix: '198.51.100.0/24', table: 'main', via: '192.0.2.1', dev: 'eth0' };
+const observed = { dst: '198.51.100.0/24', gateway: '192.0.2.1', dev: 'eth0' };
 
 test('exact route matches; default is not a LAN route', () => {
   assert.equal(compareRoutes([lan], [observed])[0].status, 'ok');

@@ -34,7 +34,7 @@ function normalize(route, expected) {
   const via = expected ? route.via : route.gateway;
   if (via !== undefined && via !== null && typeof via !== 'string') throw new Error('Invalid gateway');
   if (typeof route.dev !== 'string' || !route.dev.trim()) throw new Error('Route requires dev');
-  return { prefix: prefix(expected ? route.prefix : (route.dst ?? 'default')), table: table(route.table), via: via == null ? null : address(via), dev: route.dev };
+  return { prefix: prefix(expected ? route.prefix : (route.dst === undefined ? 'default' : route.dst)), table: table(route.table), via: via == null ? null : address(via), dev: route.dev };
 }
 
 export function compareRoutes(expected, snapshot) {
