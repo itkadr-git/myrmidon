@@ -111,6 +111,14 @@ class CollectorTests(unittest.TestCase):
         self.assertIn('-X', args[0])
         self.assertEqual(kwargs['env']['PGPASSFILE'], '/dev/null')
 
+    def test_operator_can_measure_an_explicit_local_disk_path(self):
+        result = subprocess.run([sys.executable, str(Path(collector.__file__)), '--disk-path', '/dev/shm'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        report = json.loads(result.stdout)
+        self.assertEqual(report['disk']['path'], '/dev/shm')
+        self.assertEqual(report['disk']['status'], 'ok')
+        self.assertGreater(report['disk']['total_bytes'], 0)
+
     def test_remote_socket_is_rejected(self):
         result = subprocess.run([sys.executable, str(Path(collector.__file__)), '--socket', 'example.com', '--database', 'db', '--user', 'operator'], capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
