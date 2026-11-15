@@ -145,7 +145,7 @@ import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/
 import { createPullRequestMergeDetailsResolver } from "../services/github-pull-request-merge.js";
 import { resolveGitHubRepositoryToken } from "../services/github-external-object-provider.js";
 import { checkCommitMembership, normaliseReleasePrefix, resolveReleaseRefs, routePullRequestVerdict } from "../myrmidon/release-membership.js";
-import { verifyReleaseComposition, aggregateReleaseCandidates, signReleaseVerificationVerdict } from "../myrmidon/release-verification.js";
+import { verifyReleaseComposition, aggregateReleaseCandidates, createReleaseVerificationEvidence, signReleaseVerificationVerdict } from "../myrmidon/release-verification.js";
 import { readBuildCommit } from "../build-commit.js";
 import { readProductEnv } from "@myrmidon/shared/env-alias";
 import { readBuildVersion } from "../build-version.js";
@@ -10364,6 +10364,16 @@ export function issueRoutes(
       const memberLines = result.members.map(
         (m) => `- ${m.id}: ${m.membership} (${m.releaseRefs.join(", ") || "no refs"})`,
       );
+      const verificationKey = readProductEnv("RELEASE_VERIFICATION_KEY");
+      const evidence = verificationKey ? createReleaseVerificationEvidence({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        releasePrefix,
+        deployedVersion: result.deployedVersion,
+        members,
+        verdict: result.verdict,
+        checkedAt: result.checkedAt,
+      }, verificationKey) : null;
       const body = [
         `VERIFY-ON-PROD release composition check: ${result.verdict}`,
         ``,
@@ -10376,6 +10386,7 @@ export function issueRoutes(
         `- Reason: ${result.reason}`,
         `- Checked at: ${result.checkedAt}`,
         ...(memberLines.length ? [``, ...memberLines] : []),
+        ...(evidence ? [``, `release-evidence-v1: ${JSON.stringify(evidence)}`] : []),
       ].join("\n");
 
       await svc.addComment(issue.id, body, {}, { authorType: "system" });
@@ -10385,7 +10396,6 @@ export function issueRoutes(
       // invalid signature).  No key configured → the response stays unsigned,
       // which the publisher refuses; the verification itself still runs and
       // its system comment is persisted above.
-      const verificationKey = readProductEnv("RELEASE_VERIFICATION_KEY");
       const signature = verificationKey
         ? signReleaseVerificationVerdict(
             {
