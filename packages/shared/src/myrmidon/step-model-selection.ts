@@ -53,8 +53,12 @@ export function resolveStepModelSelection(input: StepModelResolverInput): StepMo
   const agentModel = nonEmpty(input.agentModel);
   if (!agentModel) throw new Error("step_model_agent_fallback_missing");
 
-  const selectedRule = input.casteRule ?? input.companyRule ?? null;
-  const reason = input.casteRule ? "caste_rule" : input.companyRule ? "company_rule" : "agent_fallback";
+  const usableRule = (rule: StepModelRule | null | undefined) =>
+    ruleGroup(rule) || ruleModel(rule) ? rule : null;
+  const casteRule = usableRule(input.casteRule);
+  const companyRule = usableRule(input.companyRule);
+  const selectedRule = casteRule ?? companyRule ?? null;
+  const reason = casteRule ? "caste_rule" : companyRule ? "company_rule" : "agent_fallback";
   const group = ruleGroup(selectedRule);
   const model = ruleModel(selectedRule) ?? (group ? nonEmpty(input.modelGroups?.[group]) : null) ?? agentModel;
 
