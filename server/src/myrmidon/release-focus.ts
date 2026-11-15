@@ -16,7 +16,18 @@ export function strictReleaseFocusRelease(): string | null {
   return settings.currentRelease?.trim() ? settings.currentRelease : null;
 }
 
-/** Shared by swarm queue reads and assigned-task idle pickup; reviews bypass it. */
+/**
+ * A label name that looks like a release number (`1.8`, `1.6.9`). Only such a
+ * label marks a task as belonging to a release; `bug`, `ops` and the like do not.
+ */
+const RELEASE_LABEL_PATTERN = String.raw`^\d+\.\d+(\.\d+)?$`;
+
+/**
+ * Strict focus blocks a task only when it carries a release label of ANOTHER
+ * release. A task without a release label (operations, business bots, leads) and
+ * a task with the current release label pass; so does a task with both.
+ * Shared by swarm queue reads and assigned-task idle pickup; reviews bypass it.
+ */
 export function releaseFocusCondition(companyId: string): SQL {
   const release = strictReleaseFocusRelease();
   if (!release) return sql`true`;
@@ -61,6 +72,13 @@ export function releaseFocusCondition(companyId: string): SQL {
       and candidate_label.company_id = ${companyId}
     where candidate_link.company_id = ${companyId} and candidate_link.issue_id = ${issues.id}
       and ${matches(sql`candidate_label.name`)}
+  ) or not exists (
+    select 1 from issue_labels other_link
+    join labels other_label on other_label.id = other_link.label_id
+      and other_label.company_id = ${companyId}
+    where other_link.company_id = ${companyId} and other_link.issue_id = ${issues.id}
+      and trim(other_label.name) ~ ${RELEASE_LABEL_PATTERN}
+      and not (${matches(sql`other_label.name`)})
   ))`;
 }
 
