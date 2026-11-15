@@ -41,6 +41,12 @@ def render(c):
         p = c[key]
         if not isinstance(p, str) or not Path(p).is_absolute() or not Path(p).is_file() or not Path(p).stat().st_size:
             raise ValueError('missing or empty file: ' + key)
+        try:
+            with Path(p).open('rb') as source:
+                if not source.read(1):
+                    raise ValueError('empty file: ' + key)
+        except OSError as exc:
+            raise ValueError('unreadable file: ' + key) from exc
         mounts.append({'type': 'bind', 'source': p, 'target': '/run/standby/' + key, 'read_only': True})
     conn = (f"host={c['primary_host']} port={c['primary_port']} user={c['replication_user']} "
             "sslmode=verify-full sslrootcert=/run/standby/ca_file sslcert=/run/standby/cert_file "
@@ -49,7 +55,7 @@ def render(c):
         'standby': {'image': c['postgres_image'], 'profiles': ['manual-standby'], 'restart': 'no',
                     'cpus': str(c['cpu']), 'mem_limit': f"{c['memory_mb']}m", 'volumes': mounts + ['standby-data:/var/lib/postgresql/data'],
                     'entrypoint': ['/bin/sh', '-ec'],
-                    'command': [f"test -f /var/lib/postgresql/data/standby.signal && test \"$(cat /var/lib/postgresql/data/PG_VERSION)\" = {c['standby_major']} && test \"$(postgres -V | cut -d ' ' -f 3 | cut -d . -f 1)\" = {c['standby_major']} || exit 1; exec postgres \"$@\"", 'standby',
+                    'command': [f"test -f /var/lib/postgresql/data/standby.signal && test \"$(cat /var/lib/postgresql/data/PG_VERSION)\" = {c['standby_major']} && test \"$(postgres -V | cut -d ' ' -f 3 | cut -d . -f 1)\" = {c['standby_major']} || exit 1; exec docker-entrypoint.sh postgres \"$@\"", 'standby',
                                 '-c', 'primary_conninfo=' + conn, '-c', 'primary_slot_name=' + c['slot'],
                                 '-c', f"wal_keep_size={c['wal_keep_mb']}MB", '-c', f"max_slot_wal_keep_size={c['max_slot_wal_keep_mb']}MB"]},
         'cold-app': {'image': c['app_image'], 'profiles': ['manual-cold-app'], 'restart': 'no',

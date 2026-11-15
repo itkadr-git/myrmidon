@@ -1,6 +1,5 @@
 import json
 import os
-import stat
 import importlib.util
 from unittest import mock
 import subprocess
@@ -60,6 +59,36 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(cold['environment']['HEARTBEAT_SCHEDULER_ENABLED'], 'false')
         self.assertEqual(cold['environment']['MYRMIDON_DB_BACKUP_ENABLED'], 'false')
         self.assertEqual(cold['environment']['MYRMIDON_PROCESS_ROLE'], 'api')
+
+    def test_startup_guard_executes_only_for_prepared_compatible_data(self):
+        output = json.loads(self.run_config(self.config).stdout)
+        command = output['services']['standby']['command']
+        data = self.root / 'data'
+        data.mkdir()
+        bin_dir = self.root / 'bin'
+        bin_dir.mkdir()
+        marker = self.root / 'started'
+        for name, body in [('postgres', 'printf "postgres (PostgreSQL) 16.4\\n"'),
+                           ('docker-entrypoint.sh', f'printf "%s\\n" "$@" > "{marker}"')]:
+            path = bin_dir / name
+            path.write_text('#!/bin/sh\n' + body + '\n')
+            path.chmod(0o755)
+        script = command[0].replace('/var/lib/postgresql/data', str(data))
+        env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ['PATH'])
+        def start():
+            return subprocess.run(['/bin/sh', '-ec', script, *command[1:]], env=env, capture_output=True)
+        self.assertNotEqual(start().returncode, 0)
+        (data / 'standby.signal').touch()
+        (data / 'PG_VERSION').write_text('15\n')
+        self.assertNotEqual(start().returncode, 0)
+        self.assertFalse(marker.exists())
+        (data / 'PG_VERSION').write_text('16\n')
+        self.assertEqual(start().returncode, 0)
+        self.assertEqual(marker.read_text().splitlines()[0], 'postgres')
+        (bin_dir / 'postgres').write_text('#!/bin/sh\nprintf "postgres (PostgreSQL) 15.4\\n"\n')
+        marker.unlink()
+        self.assertNotEqual(start().returncode, 0)
+        self.assertFalse(marker.exists())
 
     def test_missing_parameters_fail(self):
         for key in self.config:
