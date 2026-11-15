@@ -179,6 +179,28 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockReporter.completion?.status).toBe("failed");
   });
 
+  it("fails preflight when memory information is unavailable", async () => {
+    const mockSsh = new MockSshExecutor();
+    mockSsh.mockResponse("free -m", { stdout: "", stderr: "free failed", exitCode: 1 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => mockSsh });
+    const mockReporter = createMockReporter();
+    const claim: any = {
+      job: { id: "job-memory", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["preflight"],
+      options: { keepPassword: true },
+      secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, mockReporter.reporter);
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("memory");
+    expect(mockReporter.steps).toContainEqual({
+      step: "preflight", result: "failed", detail: expect.stringContaining("memory"),
+    });
+    expect(mockReporter.completion?.status).toBe("failed");
+  });
+
   it("stops before key verification when authorized_keys installation fails", async () => {
     const mockSsh = new MockSshExecutor();
     mockSsh.mockResponse(/mkdir -p ~\/\.ssh/, { stdout: "", stderr: "permission denied", exitCode: 1 });
