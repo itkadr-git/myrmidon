@@ -1,0 +1,31 @@
+// Prisma schema reference for Myrmidon (OPE-12091)
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Company {
+  id          String        @id @default(uuid())
+  name        String
+  companyTier CompanyTier?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@map("companies")
+}
+
+model CompanyTier {
+  id         String   @id @default(uuid())
+  companyId  String   @unique @map("company_id")
+  tier       String   @default("free")
+  agentQuota Int      @default(5) @map("agent_quota")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @default(now()) @updatedAt @map("updated_at")
+  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@map("company_tiers")
+}
