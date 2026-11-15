@@ -690,6 +690,18 @@ describe("persisted release evidence", () => {
     expect(hasCurrentReleaseVerificationEvidence(comments, scope, "secret", new Date("2026-11-13T12:00:02.000Z"))).toBe(false);
   });
 
+  it("fails closed when confirmed and failed checks have the same timestamp, regardless of order", () => {
+    const failed = createReleaseVerificationEvidence({
+      ...scope, verdict: "failed", checkedAt: record.checkedAt,
+    }, "secret");
+    const comment = (evidence: typeof record) => ({
+      body: `release-evidence-v1: ${JSON.stringify(evidence)}`,
+      authorType: "system",
+    });
+    expect(hasCurrentReleaseVerificationEvidence([comment(record), comment(failed)], scope, "secret", NOW())).toBe(false);
+    expect(hasCurrentReleaseVerificationEvidence([comment(failed), comment(record)], scope, "secret", NOW())).toBe(false);
+  });
+
   it("rejects expired and future signed evidence", () => {
     expect(validateReleaseVerificationEvidence(record, scope, "secret", new Date("2026-11-14T12:00:00.001Z"))).toBe(false);
     expect(validateReleaseVerificationEvidence(record, scope, "secret", new Date("2026-11-13T11:59:59.999Z"))).toBe(false);
