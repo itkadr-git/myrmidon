@@ -2527,6 +2527,23 @@ describe("verify execution stages", () => {
     })).toThrow(/verify/i);
   });
 
+  it("rejects an unnumbered release-labelled issue with merged code and no policy", () => {
+    const issue = {
+      title: "Release candidate",
+      labels: ["1.6.6"],
+      workProducts: [{ type: "pull_request", status: "merged" }],
+      status: "in_progress",
+      assigneeAgentId: coderAgentId,
+      assigneeUserId: null,
+      executionPolicy: null,
+      executionState: null,
+    };
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue, policy: null, requestedStatus: "done", requestedAssigneePatch: {},
+      actor: { agentId: coderAgentId }, commentBody: "done",
+    })).toThrow(/verify/i);
+  });
+
   it("rejects final review approval when the release has no verify stage", () => {
     const policy = reviewOnlyPolicy();
     const issue = {
