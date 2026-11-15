@@ -123,6 +123,12 @@ export const DATA_RETENTION_MAX_BATCHES = 200;
  * pass instead of up to DATA_RETENTION_MAX_BATCHES.
  */
 export const DATA_RETENTION_WAKEUP_MAX_BATCHES_PER_PASS = 1;
+/**
+ * Every document_revisions batch ranks the whole table (row_number() over all
+ * documents, sorted, often spilling to disk), so the group runs one batch per
+ * pass instead of up to DATA_RETENTION_MAX_BATCHES full rankings.
+ */
+export const DATA_RETENTION_REVISIONS_MAX_BATCHES_PER_PASS = 1;
 
 /** The statement timeout the sweep transactions run under. */
 export const DATA_RETENTION_STATEMENT_TIMEOUT_MS = 60_000;
@@ -749,7 +755,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
       { key: "activity", days: settings.activityLogDays },
       { key: "access", days: settings.accessAuditDays },
       { key: "litellmCostEvents", days: settings.litellmCostEventsDays },
-      { key: "documentRevisions", days: settings.documentRevisionDays, keepPerDocument: settings.documentRevisionKeepPerDocument },
+      { key: "documentRevisions", days: settings.documentRevisionDays, keepPerDocument: settings.documentRevisionKeepPerDocument, maxBatchesPerPass: DATA_RETENTION_REVISIONS_MAX_BATCHES_PER_PASS },
       { key: "agentWakeupRequests", days: settings.agentWakeupRequestsDays, maxBatchesPerPass: DATA_RETENTION_WAKEUP_MAX_BATCHES_PER_PASS },
       { key: "environmentLeases", days: settings.environmentLeasesDays },
       { key: "executionWorkspaces", days: DATA_RETENTION_EXECUTION_WORKSPACES_ARCHIVED_DAYS },

@@ -308,6 +308,27 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     expect(await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)).toHaveLength(0);
   });
 
+  it("document revisions: at most one batch per pass; later passes continue and then settle", async () => {
+    const { companyId } = await seedCompany();
+    const documentId = randomUUID();
+    const old = new Date(Date.now() - 200 * DAY_MS);
+    const extra = 200;
+    const keep = 20;
+    const total = DATA_RETENTION_DELETE_BATCH_SIZE + extra + keep;
+    await db.insert(documents).values({ id: documentId, companyId, latestBody: "latest", latestRevisionNumber: total });
+    const revisions = Array.from({ length: total }, (_, index) => ({
+      id: randomUUID(), companyId, documentId, revisionNumber: index + 1,
+      body: `revision ${index + 1}`, format: "markdown", createdAt: old,
+    }));
+    await db.insert(documentRevisions).values(revisions);
+    await db.update(documents).set({ latestRevisionId: revisions[total - 1].id }).where(eq(documents.id, documentId));
+    const { sweep } = makeSweep({ freshBackup: true });
+    expect((await sweep.sweep()).perTable.documentRevisions.deleted).toBe(DATA_RETENTION_DELETE_BATCH_SIZE);
+    expect((await sweep.sweep()).perTable.documentRevisions.deleted).toBe(extra);
+    expect((await sweep.sweep()).perTable.documentRevisions.deleted).toBe(0);
+    expect(await db.select({ id: documentRevisions.id }).from(documentRevisions)).toHaveLength(keep);
+  });
+
   it("applies newest-N when revision age retention is disabled", async () => {
     const { companyId } = await seedCompany();
     const documentId = randomUUID();
