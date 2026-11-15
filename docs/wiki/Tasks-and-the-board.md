@@ -28,11 +28,13 @@ monitor is no longer overdue.
 
 ## Release focus and wake diagnostics
 
-The effective instance `runPriority.currentRelease` comes from stored run-priority settings, falling back to `MYRMIDON_CURRENT_RELEASE` (unset means no focus). Labels are compared case-insensitively after trimming: exact matches work, as does containment in either direction when both strings have at least three characters. The wake gate uses labels, not workspace branches.
+The effective instance `runPriority.currentRelease` comes from stored run-priority settings, falling back to `MYRMIDON_CURRENT_RELEASE` (unset means no focus). Focus is active only while `runPriority.strictReleaseFocus` is on (the default) and a current release is set. Labels are compared case-insensitively after trimming, and only an exact match counts (`1.6.90` does not match `1.6.9`). The gate uses labels, not workspace branches.
 
-For an agent with an assigned matching issue in `todo`, `in_progress`, `in_review`, or `blocked`, an automatic issue-bound wake for a nonmatching task is not queued. Its wake receipt is `skipped` with reason `release_focus`; its payload records `releaseFocus.currentRelease` and `open_current_release_issue`. Inspect the affected task's wake diagnostics and the agent's assigned open issues and labels to identify the holding task. A blocked current-release task still holds focus; resolve its blocker or close it as appropriate. If there is no matching open assignment, the wake passes this gate, as does a matching issue; other admission checks remain in force.
+While the company has an open, visible task with the current-release label (blocked and in-review tasks count), a run for a task that does not carry it is not started and not cancelled: it waits in `scheduled_retry` and is looked at again after 2, 5, 10 and then every 30 minutes, with no new wake made. The run gets one event with reason `release_focus` (once per run). It starts when `strictReleaseFocus` is turned off or the last open task of the current release is closed; after the focus is lifted, a parked run starts at its next look, up to 30 minutes later. A blocked current-release task still holds focus; resolve its blocker or close it as appropriate.
 
-An authenticated manual user wake bypasses this particular gate. Automatic task binding via `findTopReadyIssueForAgent` restricts candidates to the current release before ordinary readiness and ranking, and can return no task when none is ready. Existing queued runs are not cancelled retroactively. This behavior does not change swarm matching or the separate `idlePickupForAgent` selection algorithm; issue-bound wakes they generate still encounter wake admission. See [settings](../myrmidon/SETTINGS.md#release-focus-for-wake-admission).
+Exceptions: a task the board owner assigned (the latest assignment record is by a board user and names the agent, with no later swarm claim; an old assignment without such a record does not count and must be made again), a review the agent is the current participant of, a wake made by a user (manual wake), and a run without a task. Swarm matching and idle pickup use the same predicate and leave out tasks of other releases. Runs already running are not stopped.
+
+See [settings](../myrmidon/SETTINGS.md#release-focus-for-wake-admission).
 
 ## Role queues
 
