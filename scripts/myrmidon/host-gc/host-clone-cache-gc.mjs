@@ -1679,7 +1679,12 @@ function archiveClone(clonePath, archiveRoot) {
     const archivePath = path.join(archiveRoot, `${path.basename(clonePath)}-${crypto.randomUUID()}.tar.gz`);
     try {
       const members = [];
-      if (!isPushed(clonePath) || hasStash(clonePath)) {
+      const stashes = git(["stash", "list", "--format=%H"], clonePath);
+      if (stashes.status !== 0) throw new Error(`stash listing failed: ${stashes.stderr}`);
+      if (stashes.stdout.trim().split("\n").filter(Boolean).length > 1) {
+        throw new Error("multiple stash entries require reflog preservation; keeping checkout");
+      }
+      if (!isPushed(clonePath) || stashes.stdout.trim()) {
         const bundle = path.join(stage, "unpublished.bundle");
         const created = git(["bundle", "create", bundle, "HEAD", "--all", "--not", "--remotes"], clonePath);
         if (created.status !== 0) throw new Error(`bundle failed: ${created.stderr}`);
