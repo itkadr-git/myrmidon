@@ -29,11 +29,25 @@ import {
 } from "../myrmidon/pr-wait-monitor/policy.js";
 import { readAgentLastLookAt } from "../myrmidon/pr-wait-monitor/store.js";
 import {
+  CI_NO_ACCESS_DEFER_REASON,
+  CI_NO_ACCESS_MAX_FAILURES,
+  CI_NO_ACCESS_NOTE,
   decideIdleMonitor,
+  decideUnchangedBackoff,
+  isCiAccessDeniedReason,
+  maxAttemptsExhaustedNote,
   MONITOR_UNCHANGED_CLEAR_REASON,
   MONITOR_UNCHANGED_DEFER_REASON,
-} from "../myrmidon/issue-monitor-idle/policy.js"; // myrmidon(MONITOR-IDLE-LOOP, OPE-13141)
+  REVIEW_WAKE_QUOTA_DEFER_MS,
+  REVIEW_WAKE_QUOTA_DEFER_REASON,
+} from "../myrmidon/issue-monitor-idle/policy.js"; // myrmidon(MONITOR-IDLE-LOOP, OPE-13141; EMPTY-RUNS-MONITOR)
 import {
+  admitReviewerUnderWakesQuota,
+  reviewWakesQuotaForCompany,
+} from "../myrmidon/review-stage-recovery/review-wakes-quota.js";
+import {
+  countRecentCiNoAccessDeferrals,
+  issueHasCommentBody,
   loadMonitorUnchangedWakeLimit,
   readIssueMonitorSnapshotHash,
   readLastMonitorObservation,
@@ -12319,6 +12333,28 @@ export function heartbeatService(
     return null;
   }
 
+  // myrmidon(EMPTY-RUNS-MONITOR): the trigger strips `monitor` from the execution policy and the
+  // limits (maxAttempts, timeoutAt, recoveryPolicy) survive only in `execution_state.monitor`.
+  // A monitor re-armed after a trigger therefore had no limits at all (OPE-2749: 88 attempts,
+  // limit 20). The limits are read from the policy monitor, else from the persisted state.
+  function monitorLimitsFromState(
+    executionState: Record<string, unknown> | null,
+  ): IssueExecutionMonitorPolicy | null {
+    const state = parseIssueExecutionState(executionState)?.monitor ?? null;
+    if (!state) return null;
+    return {
+      nextCheckAt: state.nextCheckAt ?? new Date(0).toISOString(),
+      notes: state.notes ?? null,
+      scheduledBy: state.scheduledBy ?? "assignee",
+      kind: state.kind ?? null,
+      serviceName: state.serviceName ?? null,
+      externalRef: null,
+      timeoutAt: state.timeoutAt ?? null,
+      maxAttempts: state.maxAttempts ?? null,
+      recoveryPolicy: state.recoveryPolicy ?? null,
+    } as IssueExecutionMonitorPolicy;
+  }
+
   function monitorRecoveryPolicy(
     monitor: IssueExecutionMonitorPolicy | null,
   ): IssueExecutionMonitorRecoveryPolicy {
@@ -12533,6 +12569,23 @@ export function heartbeatService(
       return;
     }
 
+    // myrmidon(EMPTY-RUNS-MONITOR): a monitor that used up its attempts is removed; the owner
+    // is not woken for it (the wake used to re-arm the monitor and loop). One note records why.
+    if (input.clearReason === "max_attempts_exhausted" && !reviewPathContext) {
+      const note = maxAttemptsExhaustedNote({
+        attemptCount: input.nextAttemptCount - 1,
+        maxAttempts: input.monitor?.maxAttempts ?? null,
+      });
+      if (!(await issueHasCommentBody(db, { companyId: input.claimed.companyId, issueId: input.claimed.id, body: note }))) {
+        await db.insert(issueComments).values({
+          companyId: input.claimed.companyId,
+          issueId: input.claimed.id,
+          body: note,
+        });
+      }
+      return;
+    }
+
     await enqueueWakeup(input.claimed.assigneeAgentId!, {
       source: "automation",
       triggerDetail: "system",
@@ -12673,12 +12726,13 @@ export function heartbeatService(
       claimed.executionPolicy ?? null,
     );
     const monitor = policy?.monitor ?? null;
+    const limitMonitor = monitor ?? monitorLimitsFromState(claimed.executionState);
     const clearReason = issueMonitorLimitClearReason({
-      monitor,
+      monitor: limitMonitor,
       nextAttemptCount,
       now: input.now,
     });
-    const recoveryPolicy = monitorRecoveryPolicy(monitor);
+    const recoveryPolicy = monitorRecoveryPolicy(limitMonitor);
     const monitorMetadata = {
       serviceName: monitor?.serviceName ?? null,
       timeoutAt: monitor?.timeoutAt ?? null,
@@ -12748,7 +12802,7 @@ export function heartbeatService(
         nextAttemptCount,
         clearReason,
         recoveryPolicy,
-        monitor,
+        monitor: limitMonitor,
         now: input.now,
         actorType: input.actorType,
         actorId: input.actorId,
@@ -12756,6 +12810,45 @@ export function heartbeatService(
         runId: input.runId,
         activitySource: input.activitySource,
       });
+    }
+
+    // myrmidon(EMPTY-RUNS-MONITOR): the "Review CI wait" monitor is the board's own wait for the
+    // reviewer. Without a pending review participant nobody is left to wait for, and the
+    // executor can do nothing about it: remove the monitor instead of waking the executor.
+    if (
+      limitMonitor?.serviceName === REVIEW_CI_WAIT_MONITOR_SERVICE_NAME &&
+      !reviewParticipantAgentId
+    ) {
+      await db
+        .update(issues)
+        .set({
+          ...buildIssueMonitorClearedPatch({
+            issue: claimed,
+            policy,
+            clearReason: "dispatch_skipped",
+            clearedAt: input.now,
+          }),
+          updatedAt: input.now,
+        })
+        .where(eq(issues.id, claimed.id));
+      await logActivity(db, {
+        companyId: claimed.companyId,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        agentId: input.agentId,
+        runId: input.runId,
+        action: "issue.monitor_cleared",
+        entityType: "issue",
+        entityId: claimed.id,
+        details: {
+          identifier: claimed.identifier,
+          reason: "review_wait_without_reviewer",
+          attemptCount: nextAttemptCount,
+          notes: claimed.monitorNotes ?? null,
+          source: input.activitySource,
+        },
+      });
+      return { outcome: "skipped" as const, reason: "review_wait_without_reviewer" };
     }
 
     // myrmidon(MONITOR-IDLE-LOOP, OPE-13141): the snapshot this wake is based on.
@@ -12867,12 +12960,136 @@ export function heartbeatService(
                   : "green";
             }
           }
+          // myrmidon(EMPTY-RUNS-MONITOR): a repository the board cannot read (401/403/404) will not
+          // become readable by waiting. After CI_NO_ACCESS_MAX_FAILURES terms in a row the monitor
+          // is removed with one note; nobody is woken.
+          if (ci.state === "unknown" && isCiAccessDeniedReason(ci.reason)) {
+            const priorFailures = await countRecentCiNoAccessDeferrals(db, {
+              companyId: claimed.companyId,
+              issueId: claimed.id,
+              now: input.now,
+              limit: CI_NO_ACCESS_MAX_FAILURES - 1,
+            });
+            if (priorFailures + 1 >= CI_NO_ACCESS_MAX_FAILURES) {
+              await db
+                .update(issues)
+                .set({
+                  ...buildIssueMonitorClearedPatch({
+                    issue: claimed,
+                    policy,
+                    clearReason: "dispatch_skipped",
+                    clearedAt: input.now,
+                  }),
+                  updatedAt: input.now,
+                })
+                .where(eq(issues.id, claimed.id));
+              if (
+                !(await issueHasCommentBody(db, {
+                  companyId: claimed.companyId,
+                  issueId: claimed.id,
+                  body: CI_NO_ACCESS_NOTE,
+                }))
+              ) {
+                await db.insert(issueComments).values({
+                  companyId: claimed.companyId,
+                  issueId: claimed.id,
+                  body: CI_NO_ACCESS_NOTE,
+                });
+              }
+              await logActivity(db, {
+                companyId: claimed.companyId,
+                actorType: input.actorType,
+                actorId: input.actorId,
+                agentId: input.agentId,
+                runId: input.runId,
+                action: "issue.monitor_cleared",
+                entityType: "issue",
+                entityId: claimed.id,
+                details: {
+                  identifier: claimed.identifier,
+                  reason: CI_NO_ACCESS_DEFER_REASON,
+                  ciReason: ci.reason ?? null,
+                  attemptCount: nextAttemptCount,
+                  source: input.activitySource,
+                },
+              });
+              return { outcome: "skipped" as const, reason: CI_NO_ACCESS_DEFER_REASON };
+            }
+            const noAccessNextCheckAt = new Date(
+              input.now.getTime() + Math.min(10 * 60_000, 30_000 * Math.pow(2, Math.min(nextAttemptCount - 1, 4))),
+            );
+            await db.update(issues).set({
+              monitorNextCheckAt: noAccessNextCheckAt,
+              monitorAttemptCount: nextAttemptCount,
+              monitorWakeRequestedAt: null,
+              updatedAt: input.now,
+            }).where(eq(issues.id, claimed.id));
+            await logActivity(db, {
+              companyId: claimed.companyId,
+              actorType: input.actorType,
+              actorId: input.actorId,
+              agentId: input.agentId,
+              runId: input.runId,
+              action: "issue.monitor_deferred",
+              entityType: "issue",
+              entityId: claimed.id,
+              details: {
+                identifier: claimed.identifier,
+                reason: CI_NO_ACCESS_DEFER_REASON,
+                ciReason: ci.reason ?? null,
+                nextCheckAt: noAccessNextCheckAt.toISOString(),
+                attemptCount: nextAttemptCount,
+              },
+            });
+            return { outcome: "skipped" as const, reason: CI_NO_ACCESS_DEFER_REASON };
+          }
           const reviewCiWaitTick = decideReviewCiWaitTick({
             ci: ci.state,
             headFinalCheck: reviewHeadFinalCheck,
             critical: reviewIssueCritical,
             attempt: nextAttemptCount,
           });
+          // myrmidon(EMPTY-RUNS-MONITOR): the per-tick quota of new reviewer wakes is the board's
+          // own wait. A wake the quota cannot admit is retried on the next tick (a slot freed is the
+          // state change); it spends no attempt and wakes nobody.
+          if (
+            reviewCiWaitTick === "wake" &&
+            !reviewIssueCritical &&
+            input.activitySource === "scheduled" &&
+            admitReviewerUnderWakesQuota(
+              reviewWakesQuotaForCompany(claimed.companyId),
+              false,
+              reviewAdmissionDedupKey({
+                issueId: claimed.id,
+                headSha: ci.headSha,
+                agentId: reviewParticipantAgentId ?? "",
+              }),
+            ) === "quota_reached"
+          ) {
+            const quotaNextCheckAt = new Date(input.now.getTime() + REVIEW_WAKE_QUOTA_DEFER_MS);
+            await db.update(issues).set({
+              monitorNextCheckAt: quotaNextCheckAt,
+              monitorWakeRequestedAt: null,
+              updatedAt: input.now,
+            }).where(eq(issues.id, claimed.id));
+            await logActivity(db, {
+              companyId: claimed.companyId,
+              actorType: input.actorType,
+              actorId: input.actorId,
+              agentId: input.agentId,
+              runId: input.runId,
+              action: "issue.monitor_deferred",
+              entityType: "issue",
+              entityId: claimed.id,
+              details: {
+                identifier: claimed.identifier,
+                reason: REVIEW_WAKE_QUOTA_DEFER_REASON,
+                nextCheckAt: quotaNextCheckAt.toISOString(),
+                attemptCount: claimed.monitorAttemptCount ?? 0,
+              },
+            });
+            return { outcome: "skipped" as const, reason: REVIEW_WAKE_QUOTA_DEFER_REASON };
+          }
           if (reviewCiWaitTick !== "wake") {
             const deferReason = reviewCiWaitTick === "wait_red" ? "review_head_red" : "review_ci_pending";
             // CI that is still running is polled with the short growing step;
@@ -13095,6 +13312,56 @@ export function heartbeatService(
                 },
               });
               return { outcome: "skipped" as const, reason: MONITOR_UNCHANGED_CLEAR_REASON };
+            }
+          }
+          // myrmidon(EMPTY-RUNS-MONITOR): a task without subtasks has no board-side event to wait for,
+          // but the same fingerprint as at the previous term still means the wake finds nothing new:
+          // the pause doubles with each such term, up to four hours.
+          if (!idleSnapshotHash) {
+            const leafHash = await readIssueMonitorSnapshotHash(db, {
+              companyId: claimed.companyId,
+              issueId: claimed.id,
+              ownerAgentId: targetAgentId,
+              allowLeaf: true,
+            });
+            if (leafHash) {
+              idleSnapshotHash = leafHash;
+              const leafDecision = decideUnchangedBackoff({
+                now: input.now,
+                snapshotHash: leafHash,
+                previous: await readLastMonitorObservation(db, {
+                  companyId: claimed.companyId,
+                  issueId: claimed.id,
+                }),
+              });
+              if (leafDecision.action === "defer") {
+                await db.update(issues).set({
+                  monitorNextCheckAt: leafDecision.nextCheckAt,
+                  monitorAttemptCount: nextAttemptCount,
+                  monitorWakeRequestedAt: null,
+                  updatedAt: input.now,
+                }).where(eq(issues.id, claimed.id));
+                await logActivity(db, {
+                  companyId: claimed.companyId,
+                  actorType: input.actorType,
+                  actorId: input.actorId,
+                  agentId: input.agentId,
+                  runId: input.runId,
+                  action: "issue.monitor_deferred",
+                  entityType: "issue",
+                  entityId: claimed.id,
+                  details: {
+                    identifier: claimed.identifier,
+                    reason: MONITOR_UNCHANGED_DEFER_REASON,
+                    snapshotHash: leafHash,
+                    unchangedCount: leafDecision.unchangedCount,
+                    nextCheckAt: leafDecision.nextCheckAt.toISOString(),
+                    attemptCount: nextAttemptCount,
+                    source: input.activitySource,
+                  },
+                });
+                return { outcome: "skipped" as const, reason: MONITOR_UNCHANGED_DEFER_REASON };
+              }
             }
           }
         }

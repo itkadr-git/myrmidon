@@ -81,3 +81,51 @@ export function decideIdleMonitor(input: {
   );
   return { action: "defer", unchangedCount, nextCheckAt: new Date(input.now.getTime() + delayMs) };
 }
+
+// myrmidon(EMPTY-RUNS-MONITOR, 1.6.9): waits that cannot change anything must not cost a model run.
+
+/** Longest silent pause between two wakes of a monitor whose observed state did not change. */
+export const MONITOR_UNCHANGED_BACKOFF_MAX_MS = 4 * 60 * 60_000;
+
+export type UnchangedBackoffDecision =
+  | { action: "wake" }
+  | { action: "defer"; unchangedCount: number; nextCheckAt: Date };
+
+/**
+ * A monitor of a task without subtasks: the same fingerprint as at the previous term means the
+ * wake would find nothing new. The pause doubles with every unchanged term (10 min, 20 min, ...)
+ * and stops growing at four hours. A changed fingerprint, or no earlier record, wakes at once.
+ */
+export function decideUnchangedBackoff(input: {
+  now: Date;
+  snapshotHash: string;
+  previous: MonitorObservation | null;
+}): UnchangedBackoffDecision {
+  if (!input.previous || input.previous.snapshotHash !== input.snapshotHash) return { action: "wake" };
+  const unchangedCount = input.previous.unchangedCount + 1;
+  const delayMs = Math.min(
+    MONITOR_UNCHANGED_BACKOFF_MAX_MS,
+    MONITOR_UNCHANGED_MIN_INTERVAL_MS * 2 ** Math.min(20, Math.max(0, unchangedCount - 1)),
+  );
+  return { action: "defer", unchangedCount, nextCheckAt: new Date(input.now.getTime() + delayMs) };
+}
+
+/** Consecutive unreadable-CI terms (no access to the repository) after which the monitor is removed. */
+export const CI_NO_ACCESS_MAX_FAILURES = 3;
+export const CI_NO_ACCESS_DEFER_REASON = "review_ci_no_access";
+export const CI_NO_ACCESS_NOTE = "CI не читается: нет доступа к репозиторию. Монитор снят.";
+
+/** A CI read that GitHub refused for this repository (401/403/404, not a rate limit). */
+export function isCiAccessDeniedReason(reason: string | null | undefined): boolean {
+  if (!reason) return false;
+  return reason.split("+").some((part) => /http_(401|403|404)(?!_rate_limited)/.test(part));
+}
+
+/** The monitor stops after its limit of attempts: one note, no wake of the owner. */
+export function maxAttemptsExhaustedNote(input: { attemptCount: number; maxAttempts: number | null }): string {
+  return `Монитор снят: исчерпан предел попыток (${input.attemptCount} из ${input.maxAttempts ?? "?"}). Исполнитель не будится; новый монитор ставится только осознанно.`;
+}
+
+/** Pause of a reviewer wake the per-tick quota could not admit. */
+export const REVIEW_WAKE_QUOTA_DEFER_MS = 60_000;
+export const REVIEW_WAKE_QUOTA_DEFER_REASON = "review_wake_quota";

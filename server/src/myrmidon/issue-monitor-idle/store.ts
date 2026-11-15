@@ -1,7 +1,7 @@
 // myrmidon(MONITOR-IDLE-LOOP, OPE-13141): database reads for the idle-monitor policy.
 
 import { createHash } from "node:crypto";
-import { and, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   activityLog,
@@ -13,6 +13,7 @@ import {
   issues,
 } from "@myrmidon/db";
 import {
+  CI_NO_ACCESS_DEFER_REASON,
   DEFAULT_MONITOR_UNCHANGED_WAKE_LIMIT,
   MONITOR_OBSERVATION_ACTIONS,
   resolveMonitorUnchangedWakeLimit,
@@ -68,13 +69,14 @@ function pullRequestFact(product: { status: string; reviewState: string | null; 
  */
 export async function readIssueMonitorSnapshotHash(
   db: Db,
-  input: { companyId: string; issueId: string; ownerAgentId: string },
+  input: { companyId: string; issueId: string; ownerAgentId: string; allowLeaf?: boolean },
 ): Promise<string | null> {
   const children = await db
     .select({ id: issues.id, status: issues.status, assigneeAgentId: issues.assigneeAgentId })
     .from(issues)
     .where(and(eq(issues.companyId, input.companyId), eq(issues.parentId, input.issueId)));
-  if (children.length === 0) return null;
+  // myrmidon(EMPTY-RUNS-MONITOR): a task without subtasks has a fingerprint only when asked for.
+  if (children.length === 0 && !input.allowLeaf) return null;
   const own = await db
     .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
     .from(issues)
@@ -167,4 +169,57 @@ export async function readLastMonitorObservation(
   if (!snapshotHash) return null;
   const count = typeof details?.unchangedCount === "number" ? details.unchangedCount : 0;
   return { snapshotHash, unchangedCount: Math.max(0, Math.trunc(count)) };
+}
+
+/**
+ * Terms in a row (newest first, only the last `limit` rows are read, within a day) at which the
+ * CI of the task's pull request could not be read for lack of access. Counts rows written by
+ * the monitor tick itself, so any other outcome of a tick ends the streak.
+ */
+export async function countRecentCiNoAccessDeferrals(
+  db: Db,
+  input: { companyId: string; issueId: string; now: Date; limit: number },
+): Promise<number> {
+  const since = new Date(input.now.getTime() - 24 * 60 * 60_000);
+  const rows = await db
+    .select({ action: activityLog.action, details: activityLog.details })
+    .from(activityLog)
+    .where(
+      and(
+        eq(activityLog.companyId, input.companyId),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, input.issueId),
+        inArray(activityLog.action, [...MONITOR_OBSERVATION_ACTIONS]),
+        gte(activityLog.createdAt, since),
+      ),
+    )
+    .orderBy(desc(activityLog.createdAt))
+    .limit(input.limit);
+  let streak = 0;
+  for (const row of rows) {
+    if (asRecord(row.details)?.reason !== CI_NO_ACCESS_DEFER_REASON) break;
+    streak += 1;
+  }
+  return streak;
+}
+
+/** True when the issue already carries a comment with exactly this body (a note is written once). */
+export async function issueHasCommentBody(
+  db: Db,
+  input: { companyId: string; issueId: string; body: string },
+): Promise<boolean> {
+  const row = await db
+    .select({ id: issueComments.id })
+    .from(issueComments)
+    .where(
+      and(
+        eq(issueComments.companyId, input.companyId),
+        eq(issueComments.issueId, input.issueId),
+        eq(issueComments.body, input.body),
+        isNull(issueComments.deletedAt),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return Boolean(row);
 }
