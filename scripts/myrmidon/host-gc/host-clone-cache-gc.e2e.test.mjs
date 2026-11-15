@@ -374,16 +374,16 @@ describe("host-clone-cache-gc e2e", () => {
   });
 
   describe("scratch-gc e2e (BOT-DISK-SCRATCH)", () => {
-    it("prunes stale bot tmp entries without following a symlinked tmp directory", async () => {
+    it("prunes stale scratch without following a symlinked hermes directory", async () => {
       const root = path.join(tmpDir, "bots");
-      const botTmp = path.join(root, "bot-1/hermes/tmp");
+      const scratch = path.join(root, "bot-1/hermes/cache/scratch");
       const outside = path.join(tmpDir, "outside");
-      fs.mkdirSync(botTmp, { recursive: true });
-      fs.mkdirSync(outside);
-      fs.mkdirSync(path.join(root, "bot-2/hermes"), { recursive: true });
-      fs.symlinkSync(outside, path.join(root, "bot-2/hermes/tmp"));
-      const stale = path.join(botTmp, "stale");
-      const protectedFile = path.join(outside, "protected");
+      fs.mkdirSync(scratch, { recursive: true });
+      fs.mkdirSync(path.join(outside, "cache/scratch"), { recursive: true });
+      fs.mkdirSync(path.join(root, "bot-2"), { recursive: true });
+      fs.symlinkSync(outside, path.join(root, "bot-2/hermes"));
+      const stale = path.join(scratch, "stale");
+      const protectedFile = path.join(outside, "cache/scratch/protected");
       fs.writeFileSync(stale, "stale");
       fs.writeFileSync(protectedFile, "protected");
       const old = new Date(Date.now() - 7 * 3600 * 1000);
