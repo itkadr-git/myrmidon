@@ -137,6 +137,24 @@ describe("updateAgentAllowlistsForCompany", () => {
     expect(gateway.calls[0]?.models).toHaveLength(7);
   });
 
+  it("limits a card-save reconciliation to the edited agent", async () => {
+    const first = agentKeySecretName({ agentId: "agent-card", agentSlug: "Card Model" });
+    const second = agentKeySecretName({ agentId: "agent-other", agentSlug: "Other" });
+    const gateway = recordingGateway(undefined, { [first]: ["vendor/old"], [second]: ["vendor/old"] });
+    const db = scriptedDb([
+      [],
+      [
+        { id: "agent-card", name: "Card Model", adapterConfig: { model: "vendor/new" } },
+        { id: "agent-other", name: "Other", adapterConfig: { model: "vendor/other" } },
+      ],
+    ]);
+    await updateAgentAllowlistsForCompany(
+      db, deps({ db, gateway: () => gateway, findSecretId: async () => "id-key" }),
+      "company-a", [], [], false, { cardModelsOnly: true, agentId: "agent-card" },
+    );
+    expect(gateway.calls).toEqual([{ alias: first, models: ["vendor/old", "vendor/new"] }]);
+  });
+
   it("repairs a card model absent from the registry without granting unrelated models", async () => {
     const alias = agentKeySecretName({ agentId: "agent-card", agentSlug: "Card Model" });
     const gateway = recordingGateway(undefined, { [alias]: ["vendor/private"] });
