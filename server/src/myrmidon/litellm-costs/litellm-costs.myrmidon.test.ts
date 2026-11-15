@@ -341,4 +341,33 @@ describe("myrmidon(M2-A) gateway client (/spend/logs/v2)", () => {
     await expect(createLitellmGatewayClient("http://gateway.test", "sk-test").listKeyBudgets!()).rejects.toThrow(/over \d+ bytes/);
     expect(pulled).toBeLessThan(20);
   });
+
+  it("times out a silent gateway: no answer at all, and a body that never ends", async () => {
+    const quick = { keyListPageTimeoutMs: 40, keyListTotalTimeoutMs: 100 };
+    vi.stubGlobal("fetch", () => new Promise(() => undefined)); // ignores the signal on purpose
+    await expect(createLitellmGatewayClient("http://gateway.test", "sk-test", quick).listKeyBudgets!()).rejects.toThrow(/timed out/);
+    vi.stubGlobal("fetch", async () =>
+      new Response(new ReadableStream<Uint8Array>({ pull: () => new Promise(() => undefined) }), { status: 200 }),
+    );
+    await expect(createLitellmGatewayClient("http://gateway.test", "sk-test", quick).listKeyBudgets!()).rejects.toThrow(/timed out/);
+  });
+
+  it("answers a body that is not JSON with a fixed message, without a piece of the body", async () => {
+    vi.stubGlobal("fetch", async () => new Response("<html>secret-looking-token-abc</html>", { status: 200 }));
+    const err = await createLitellmGatewayClient("http://gateway.test", "sk-test").listKeyBudgets!().catch((e: Error) => e);
+    expect((err as Error).message).toMatch(/not JSON/);
+    expect((err as Error).message).not.toMatch(/secret-looking/);
+  });
+
+  it("counts keys once when the gateway ignores `page`, and stops at the first page with nothing new", async () => {
+    let served = 0;
+    vi.stubGlobal("fetch", async () => {
+      served += 1;
+      const keys = Array.from({ length: 25 }, (_, i) => ({ token: `hash-${i}`, max_budget: 10, spend: i }));
+      return new Response(JSON.stringify({ keys, total_pages: 60, total_count: 1500 }), { status: 200 });
+    });
+    const rows = await createLitellmGatewayClient("http://gateway.test", "sk-test").listKeyBudgets!();
+    expect(rows).toHaveLength(25);
+    expect(served).toBe(2);
+  });
 });

@@ -10,6 +10,8 @@ import {
 import {
   evaluateKeyBudgets,
   keyCapStatus,
+  kickKeyUsageRefresh,
+  refreshKeyUsageReport,
   readKeyUsageReport,
   resetKeyUsageReports,
   type KeyBudgetDeps,
@@ -252,6 +254,7 @@ describe("myrmidon(OPE-11776) gateway key list page", () => {
         { tokenHash: "hash-3", maxBudgetUsd: null, spendUsd: 0 },
       ],
       totalPages: 4,
+      totalCount: 3,
     });
   });
 
@@ -305,5 +308,65 @@ describe("myrmidon(1.6.9) key budget report over a large key list", () => {
     expect(report.rows[1]).toMatchObject({ capUsd: 100, gatewaySpendUsd: 10, status: "ok" });
     expect(report.rows.filter((row) => row.status === "near_cap")).toHaveLength(TOTAL / 2);
     expect(JSON.stringify(report).length).toBeLessThan(TOTAL * 400);
+  });
+
+  it("a 403 from the gateway degrades the report (gatewayAvailable=false) and does not throw", async () => {
+    vi.stubGlobal("fetch", async () => new Response("forbidden", { status: 403 }));
+    const { deps } = makeDeps({ client: createLitellmGatewayClient, readSpendWindows: async () => [] });
+    const report = await evaluateKeyBudgets(deps, COMPANY);
+    expect(report.gatewayAvailable).toBe(false);
+    expect(report.rows.length).toBeGreaterThan(0);
+    expect(report.rows.every((row) => row.status === "unknown" && row.capUsd === null)).toBe(true);
+  });
+
+  it("a hung gateway: the page timeout fires, the refresh fails without being cached, a kick never blocks or throws", async () => {
+    vi.stubGlobal("fetch", (_input: string, init?: { signal?: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      }),
+    );
+    const warnings: string[] = [];
+    const { deps } = makeDeps({
+      client: (baseUrl, keyValue) =>
+        createLitellmGatewayClient(baseUrl, keyValue, { keyListPageTimeoutMs: 40, keyListTotalTimeoutMs: 100 }),
+      log: { warn: (_fields, message) => void warnings.push(message) },
+    });
+    const started = Date.now();
+    kickKeyUsageRefresh(deps, COMPANY); // returns at once; nothing to await
+    expect(Date.now() - started).toBeLessThan(30);
+    // The evaluation itself degrades (the gateway read failed on the timeout) instead of hanging.
+    const report = await refreshKeyUsageReport(deps, COMPANY);
+    expect(report.gatewayAvailable).toBe(false);
+    expect(warnings.some((message) => /key list read failed/.test(message))).toBe(true);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it("a rejected evaluation is not kept in the cache", async () => {
+    let calls = 0;
+    const { deps } = makeDeps({
+      listBotKeys: async () => {
+        calls += 1;
+        throw new Error("db gone");
+      },
+    });
+    await expect(refreshKeyUsageReport(deps, COMPANY)).rejects.toThrow(/db gone/);
+    await expect(refreshKeyUsageReport(deps, COMPANY)).rejects.toThrow(/db gone/);
+    expect(calls).toBe(2);
+  });
+
+  it("concurrent readers share one evaluation", async () => {
+    let gateway = 0;
+    const { deps } = makeDeps({
+      client: () => ({
+        ...clientOf([]),
+        listKeyBudgets: async () => {
+          gateway += 1;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          return [];
+        },
+      }),
+    });
+    await Promise.all([refreshKeyUsageReport(deps, COMPANY), refreshKeyUsageReport(deps, COMPANY), readKeyUsageReport(deps, COMPANY)]);
+    expect(gateway).toBe(1);
   });
 });

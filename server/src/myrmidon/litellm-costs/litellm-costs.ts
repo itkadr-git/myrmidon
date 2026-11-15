@@ -84,6 +84,9 @@ const KEY_LIST_PAGE_SIZE = 25;
 const KEY_LIST_MAX_PAGES = 80;
 /** A /key/list page above this many bytes of body is refused, unread. */
 const KEY_LIST_MAX_PAGE_BYTES = 4 * 1024 * 1024;
+/** One /key/list page (connect, headers and body) gets this long; the whole list gets the second bound. */
+export const KEY_LIST_PAGE_TIMEOUT_MS = 15_000;
+export const KEY_LIST_TOTAL_TIMEOUT_MS = 120_000;
 /** Runs are matched with a start before the window; give the match slack. */
 const RUN_MATCH_LOOKBACK_MS = 6 * 3_600_000;
 
@@ -204,7 +207,9 @@ export interface LitellmGatewayClient {
  * "no keys"; entries without a hash are skipped. Only the hash, the cap and the
  * spend are read: nothing else of a key object leaves this function.
  */
-export function parseKeyListPage(payload: unknown): { rows: GatewayKeyBudgetRow[]; totalPages: number } | null {
+export function parseKeyListPage(
+  payload: unknown,
+): { rows: GatewayKeyBudgetRow[]; totalPages: number; totalCount?: number } | null {
   const body = asRecord(payload);
   if (!body || !Array.isArray(body.keys)) return null;
   const rows: GatewayKeyBudgetRow[] = [];
@@ -221,7 +226,12 @@ export function parseKeyListPage(payload: unknown): { rows: GatewayKeyBudgetRow[
     });
   }
   const pages = asNullableNumber(body.total_pages);
-  return { rows, totalPages: pages != null && pages >= 1 ? Math.floor(pages) : 1 };
+  const count = asNullableNumber(body.total_count);
+  return {
+    rows,
+    totalPages: pages != null && pages >= 1 ? Math.floor(pages) : 1,
+    ...(count != null && count >= 0 ? { totalCount: Math.floor(count) } : {}),
+  };
 }
 
 /**
@@ -300,8 +310,20 @@ export function readModelInfoProvider(info: Record<string, unknown> | null): str
   return null;
 }
 
-/** The body of a response as text; fails (and drops the rest of the body) once it passes `maxBytes`. */
-async function readTextWithin(response: Response, maxBytes: number, path: string): Promise<string> {
+/** Rejects when `signal` aborts; never settles otherwise. */
+function abortRejection(signal: AbortSignal, message: string): Promise<never> {
+  return new Promise<never>((_, reject) => {
+    if (signal.aborted) return reject(new Error(message));
+    signal.addEventListener("abort", () => reject(new Error(message)), { once: true });
+  });
+}
+
+/**
+ * The body of a response as text; fails (and drops the rest of the body) once
+ * it passes `maxBytes`, or when `signal` aborts — a silent gateway cannot hold
+ * the read forever, whether or not the fetch implementation honours the signal.
+ */
+async function readTextWithin(response: Response, maxBytes: number, path: string, signal: AbortSignal): Promise<string> {
   const tooLarge = () => new Error(`LLM gateway ${path} answered a body over ${maxBytes} bytes`);
   const declared = Number(response.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > maxBytes) {
@@ -311,29 +333,64 @@ async function readTextWithin(response: Response, maxBytes: number, path: string
   if (!response.body) return response.text();
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
+  const timedOut = abortRejection(signal, `LLM gateway ${path} timed out reading the body`);
+  timedOut.catch(() => undefined);
   let received = 0;
   let text = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    received += value.byteLength;
-    if (received > maxBytes) {
-      await reader.cancel().catch(() => undefined);
-      throw tooLarge();
+  try {
+    for (;;) {
+      const { done, value } = await Promise.race([reader.read(), timedOut]);
+      if (done) break;
+      received += value.byteLength;
+      if (received > maxBytes) throw tooLarge();
+      text += decoder.decode(value, { stream: true });
     }
-    text += decoder.decode(value, { stream: true });
+  } catch (err) {
+    void reader.cancel().catch(() => undefined); // not awaited: a stuck source must not hold the failure
+    throw err;
   }
   return text + decoder.decode();
 }
 
-export function createLitellmGatewayClient(baseUrl: string, keyValue: string): LitellmGatewayClient {
+export interface LitellmGatewayClientOptions {
+  /** Per-page and whole-list bounds of the key list read (tests shorten them). */
+  keyListPageTimeoutMs?: number;
+  keyListTotalTimeoutMs?: number;
+}
+
+export function createLitellmGatewayClient(
+  baseUrl: string,
+  keyValue: string,
+  options: LitellmGatewayClientOptions = {},
+): LitellmGatewayClient {
+  const pageTimeoutMs = options.keyListPageTimeoutMs ?? KEY_LIST_PAGE_TIMEOUT_MS;
+  const totalTimeoutMs = options.keyListTotalTimeoutMs ?? KEY_LIST_TOTAL_TIMEOUT_MS;
   const url = (path: string) => `${baseUrl.replace(/\/$/, "")}${path}`;
 
-  async function getJson<T>(path: string, maxBytes?: number): Promise<T> {
-    const response = await fetch(url(path), { headers: { Authorization: `Bearer ${keyValue}` } });
-    if (!response.ok) throw new Error(`LLM gateway ${path} answered ${response.status}`);
-    if (maxBytes == null) return (await response.json()) as T;
-    return JSON.parse(await readTextWithin(response, maxBytes, path)) as T;
+  async function getJson<T>(path: string, bounds?: { maxBytes: number; timeoutMs: number }): Promise<T> {
+    if (!bounds) {
+      const response = await fetch(url(path), { headers: { Authorization: `Bearer ${keyValue}` } });
+      if (!response.ok) throw new Error(`LLM gateway ${path} answered ${response.status}`);
+      return (await response.json()) as T;
+    }
+    // One signal bounds the fetch and the body read together.
+    const signal = AbortSignal.timeout(bounds.timeoutMs);
+    const timedOut = abortRejection(signal, `LLM gateway ${path} timed out after ${bounds.timeoutMs} ms`);
+    timedOut.catch(() => undefined);
+    const response = await Promise.race([
+      fetch(url(path), { headers: { Authorization: `Bearer ${keyValue}` }, signal }),
+      timedOut,
+    ]);
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`LLM gateway ${path} answered ${response.status}`);
+    }
+    const text = await readTextWithin(response, bounds.maxBytes, path, signal);
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      throw new Error(`LLM gateway ${path} answered a body that is not JSON`);
+    }
   }
 
   return {
@@ -366,24 +423,39 @@ export function createLitellmGatewayClient(baseUrl: string, keyValue: string): L
     },
 
     async listKeyBudgets() {
-      const rows: GatewayKeyBudgetRow[] = [];
+      // Keyed by hash: a gateway that ignores `page` answers the same keys again
+      // and again; they are counted once, and the read stops at the first page
+      // that adds nothing new.
+      const rows = new Map<string, GatewayKeyBudgetRow>();
+      const deadline = Date.now() + totalTimeoutMs;
       let totalPages = 1;
       for (let page = 1; page <= totalPages; page += 1) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw new Error(`LLM gateway key list read exceeded ${totalTimeoutMs} ms`);
         const payload = await getJson<unknown>(
           `/key/list?return_full_object=true&size=${KEY_LIST_PAGE_SIZE}&page=${page}`,
-          KEY_LIST_MAX_PAGE_BYTES,
+          { maxBytes: KEY_LIST_MAX_PAGE_BYTES, timeoutMs: Math.min(pageTimeoutMs, remaining) },
         );
         const parsed = parseKeyListPage(payload);
         if (!parsed) throw new Error("LLM gateway /key/list answered in an unexpected shape");
-        rows.push(...parsed.rows);
+        const before = rows.size;
+        for (const row of parsed.rows) rows.set(row.tokenHash, row);
         totalPages = parsed.totalPages;
         if (totalPages > KEY_LIST_MAX_PAGES) {
+          logger.warn(
+            { totalPages, totalCount: parsed.totalCount ?? null, pageSize: KEY_LIST_PAGE_SIZE, maxPages: KEY_LIST_MAX_PAGES },
+            "LiteLLM key list is larger than the page cap; the key budget read is refused",
+          );
           throw new Error(
             `LLM gateway key list is too large (${totalPages} pages of ${KEY_LIST_PAGE_SIZE}; cap ${KEY_LIST_MAX_PAGES})`,
           );
         }
+        if (page > 1 && rows.size === before) {
+          logger.warn({ page, totalPages }, "LiteLLM /key/list page added no new keys; the gateway ignores `page`, stopping");
+          break;
+        }
       }
-      return rows;
+      return [...rows.values()];
     },
 
     async listModels() {
