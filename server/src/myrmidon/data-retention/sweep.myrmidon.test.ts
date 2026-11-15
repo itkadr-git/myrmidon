@@ -225,7 +225,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     const revisions = Array.from({ length: 25 }, (_, index) => ({
       id: randomUUID(), companyId, documentId, revisionNumber: index + 1,
       body: `revision ${index + 1}`, format: "markdown",
-      createdAt: index === 0 ? old : young,
+      createdAt: index === 0 || index === 24 ? old : young,
     }));
     await db.insert(documents).values({ id: documentId, companyId, latestBody: "latest", latestRevisionNumber: 25, latestRevisionId: revisions[24].id });
     await db.insert(documentRevisions).values(revisions);
