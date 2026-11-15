@@ -116,7 +116,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     await db.insert(externalObjects).values({ companyId, providerKey: "github", objectType: "pull_request", externalId: "paperclipai/paperclip#pull/123", statusKey: "open", statusCategory: "open", statusTone: "info", isTerminal: false, data: { provider: "github", owner: "paperclipai", repo: "paperclip", number: 123, state: "open" } });
     const sync = (id: string, headSha: string) => ({
       id, provider: "github" as const, event: "pull_request", action: "synchronize", installationId: "101", repositoryId: "99", createdAt: "2026-11-16T12:00:00.000Z", bindingIds: [`${grantId}_101`],
-      payload: { repository: "paperclipai/paperclip", number: 123, state: "open", merged: false, updatedAt: "2026-11-16T12:00:00.000Z", url: "https://github.com/paperclipai/paperclip/pull/123", headRef: "bot/GHE-1", headSha },
+      payload: { repository: "paperclipai/paperclip", number: 123, state: "open", merged: false, updatedAt: "2026-11-16T12:00:00.000Z", url: "https://github.com/paperclipai/paperclip/pull/123", headRef: "bot/GHE-1", headSha, senderLogin: "bot-eng" },
     });
     const queue = [sync("delivery-sync-same", "a".repeat(40)), sync("delivery-sync-new", "b".repeat(40)), sync("delivery-sync-new-again", "b".repeat(40))];
     const connector = { getCapabilities: vi.fn(async () => ["github.code" as const]), startAuthorization: vi.fn(), claim: vi.fn(), refresh: vi.fn(), revoke: vi.fn(), setWebhookBinding: vi.fn(async () => undefined), leaseEvents: vi.fn(async () => ({ leaseId: randomUUID(), events: [queue.shift()!] })), acknowledgeEvents: vi.fn(async () => 1) } as unknown as PaperclipCloudConnector;
@@ -134,7 +134,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     const rows = await headRows();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ actorType: "system", entityType: "issue", runId: null });
-    expect(rows[0]!.details).toMatchObject({ workProductId: product!.id, headShaChanged: true, fromSha: "a".repeat(40), toSha: "b".repeat(40) });
+    expect(rows[0]!.details).toMatchObject({ workProductId: product!.id, headShaChanged: true, fromSha: "a".repeat(40), toSha: "b".repeat(40), sender: "bot-eng" });
 
     // the same new head again: still one row
     currentTime = new Date("2026-11-16T12:01:00.000Z");

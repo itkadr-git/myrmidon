@@ -294,21 +294,36 @@ export interface RunSpan {
 }
 
 /**
- * The runs that moved the head of the task's PR: a head-change row (any actor)
- * falls between the start of the run and its end plus
- * PR_HEAD_CHANGE_LATE_WINDOW_MS. A run that has not finished has no upper bound.
- * A run with neither start nor creation time is never credited.
+ * The runs that moved the head of the task's PR. One head change is credited to
+ * one run: the run whose span [start, end] holds the change (the latest started,
+ * if spans overlap); otherwise the run that ended last before the change, when
+ * the change comes at most PR_HEAD_CHANGE_LATE_WINDOW_MS after its end. A run
+ * that has not finished ends at `now`. A run with neither start nor creation
+ * time is never credited.
  */
 export function collectRunIdsWithPrHeadChange(
   runs: readonly RunSpan[],
   headChangeTimes: readonly Date[],
+  now: Date = new Date(),
 ): Set<string> {
-  const credited = new Set<string>();
-  for (const run of runs) {
+  const spans = runs.flatMap((run) => {
     const from = (run.startedAt ?? run.createdAt)?.getTime();
-    if (from === undefined) continue;
-    const to = run.finishedAt ? run.finishedAt.getTime() + PR_HEAD_CHANGE_LATE_WINDOW_MS : Infinity;
-    if (headChangeTimes.some((at) => at.getTime() >= from && at.getTime() <= to)) credited.add(run.id);
+    if (from === undefined) return [];
+    return [{ id: run.id, from, to: (run.finishedAt ?? now).getTime() }];
+  });
+  const credited = new Set<string>();
+  for (const change of headChangeTimes) {
+    const at = change.getTime();
+    let owner: { id: string; from: number; to: number } | undefined;
+    for (const span of spans) {
+      if (at >= span.from && at <= span.to && (!owner || span.from > owner.from)) owner = span;
+    }
+    if (!owner) {
+      for (const span of spans) {
+        if (span.to < at && at <= span.to + PR_HEAD_CHANGE_LATE_WINDOW_MS && (!owner || span.to > owner.to)) owner = span;
+      }
+    }
+    if (owner) credited.add(owner.id);
   }
   return credited;
 }

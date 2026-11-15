@@ -12,12 +12,13 @@ divergence-section: Трек 1 — платформа
   every run.
 - When the head of a task's pull request moves (`metadata.headSha` of the `pull_request` work product changes, seen by
   the GitHub `pull_request` event), the board now writes an `issue.work_product_head_changed` activity row on the task
-  (actor `system`, details `workProductId`, `headShaChanged: true`, `fromSha`, `toSha`). Nothing is written when the head
+  (actor `system`, details `workProductId`, `headShaChanged: true`, `fromSha`, `toSha`, and `sender`, the GitHub login, when the event has one). Nothing is written when the head
   stays the same or the event carries none. The row is not part of the progress and new-input action lists, so it wakes
   and thaws nothing by itself.
 - The no-progress read of the task cooling and of the rewake throttle credits a run with progress when such a row, from
-  any actor, falls between the start of the run and its end plus 15 minutes (the webhook arrives after the push). A run
-  without a head change is judged as before.
+  any actor, falls between the start of the run and its end plus 15 minutes (the webhook arrives after the push). One
+  head change is credited to one run: the run that holds it, otherwise the run that ended last before it; a run that has
+  not finished ends at now. At most 200 newest rows are read. A run without a head change is judged as before.
 
 ## changelog-ru
 
@@ -28,11 +29,13 @@ divergence-section: Трек 1 — платформа
   задача OPE-13243 остыла (два прогона, пауза 60 минут), хотя голова её PR менялась в каждом прогоне.
 - Когда голова PR задачи меняется (`metadata.headSha` рабочего продукта `pull_request`, по событию GitHub
   `pull_request`), доска пишет в журнал задачи строку `issue.work_product_head_changed` (актёр `system`, в details
-  `workProductId`, `headShaChanged: true`, `fromSha`, `toSha`). Если голова та же или в событии её нет, строки нет.
+  `workProductId`, `headShaChanged: true`, `fromSha`, `toSha`, а также `sender` — логин GitHub, если он есть в событии). Если голова та же или в событии её нет, строки нет.
   Строки нет в списках «прогресс» и «новый вход», поэтому сама по себе она никого не будит и не размораживает.
 - Проверка «без продвижения» в остывании задачи и в тормозе повторных побудок засчитывает прогону прогресс, если такая
   строка от любого актёра попала между началом прогона и его концом плюс 15 минут (вебхук приходит после пуша).
-  Прогон без смены головы оценивается как раньше.
+  Одна смена головы засчитывается одному прогону: тому, в чьём промежутке она лежит, иначе закончившемуся последним до
+  неё; незавершённый прогон длится до текущего момента. Читаются не более 200 новейших строк. Прогон без смены головы
+  оценивается как раньше.
 
 ## divergence
 

@@ -1309,6 +1309,7 @@ export function githubConnectionEventService(
     before: ReadonlyArray<{ id: string; issueId: string; headSha: string | null }>,
     toSha: string | null,
     deliveryId: string,
+    sender: string | null,
     afterCommit?: DeliveryWakes,
   ) {
     if (!toSha) return;
@@ -1319,7 +1320,7 @@ export function githubConnectionEventService(
         await logActivity(db, {
           companyId, actorType: "system", actorId: "system:github-webhook",
           action: PR_HEAD_CHANGE_ACTIVITY_ACTION, entityType: "issue", entityId: product.issueId,
-          details: { workProductId: product.id, headShaChanged: true, fromSha: product.headSha, toSha, deliveryId },
+          details: { workProductId: product.id, headShaChanged: true, fromSha: product.headSha, toSha, deliveryId, ...(sender ? { sender } : {}) },
         }, publications);
         for (const publication of publications) {
           await sendOrDeferAction(afterCommit, companyId, "PR head change activity publication", () => publishActivity(publication));
@@ -1368,7 +1369,7 @@ export function githubConnectionEventService(
       .from(issueWorkProducts).where(prWorkProductWhere);
     await db.update(issueWorkProducts).set({ metadata: sql`(${issueWorkProducts.metadata} - 'activeCi') || ${JSON.stringify({ repository: snapshot.repository, number: snapshot.number, headSha: snapshot.data.headSha })}::jsonb`, updatedAt: appliedAt })
       .where(prWorkProductWhere);
-    await recordPrHeadChanges(companyId, headBefore, stringValue(snapshot.data.headSha), event.id, afterCommit);
+    await recordPrHeadChanges(companyId, headBefore, stringValue(snapshot.data.headSha), event.id, stringValue(event.payload.senderLogin), afterCommit);
     if (snapshot.merged && event.action === "closed") {
       const products = await database.select({ product: issueWorkProducts, issue: issues })
         .from(issueWorkProducts)

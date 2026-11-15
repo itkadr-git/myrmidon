@@ -1,6 +1,6 @@
 // myrmidon(EMPTY-RUNS-1): the read side of the PR head-change rows (see
 // PR_HEAD_CHANGE_ACTIVITY_ACTION in issue-rewake-throttle.ts).
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import { activityLog } from "@myrmidon/db";
 import {
@@ -8,6 +8,9 @@ import {
   PR_HEAD_CHANGE_ACTIVITY_ACTION,
   type RunSpan,
 } from "./issue-rewake-throttle.js";
+
+/** The most head-change rows one read looks at (the newest ones inside the runs' window). */
+export const PR_HEAD_CHANGE_ROW_LIMIT = 200;
 
 /**
  * The runs among `runs` that moved the head of the task's pull request: the
@@ -36,6 +39,8 @@ export async function readRunIdsWithPrHeadChange(
         sql`${activityLog.details} ->> 'headShaChanged' = 'true'`,
         gte(activityLog.createdAt, new Date(Math.min(...starts))),
       ),
-    );
+    )
+    .orderBy(desc(activityLog.createdAt))
+    .limit(PR_HEAD_CHANGE_ROW_LIMIT);
   return collectRunIdsWithPrHeadChange(runs, rows.map((row) => row.at));
 }

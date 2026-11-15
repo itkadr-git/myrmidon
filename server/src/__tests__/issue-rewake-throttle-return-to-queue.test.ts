@@ -259,8 +259,27 @@ describe("collectRunIdsWithPrHeadChange (myrmidon EMPTY-RUNS-1: a PR head change
     expect(collectRunIdsWithIssueProgress(rows, () => AGENT).size).toBe(0);
   });
 
-  it("an unfinished run has no upper bound", () => {
-    expect([...collectRunIdsWithPrHeadChange([{ id: "r2", startedAt }], [at(startedAt.getTime() + 3 * 3600_000)])]).toEqual(["r2"]);
+  it("an unfinished run ends at now, not at infinity", () => {
+    const now = at(startedAt.getTime() + 60 * 60_000);
+    expect([...collectRunIdsWithPrHeadChange([{ id: "r2", startedAt }], [at(startedAt.getTime() + 30 * 60_000)], now)]).toEqual(["r2"]);
+    expect(collectRunIdsWithPrHeadChange([{ id: "r2", startedAt }], [at(now.getTime() + 1)], now).size).toBe(0);
+  });
+
+  it("one head change goes to one run: the run that holds it, else the last one that ended before it", () => {
+    const t = startedAt.getTime();
+    const a = { id: "A", startedAt: at(t), finishedAt: at(t + 10 * 60_000) };
+    const b = { id: "B", startedAt: at(t + 10 * 60_000 + 1_000), finishedAt: at(t + 20 * 60_000) };
+    // inside B: only B, though A's late window covers it too
+    expect([...collectRunIdsWithPrHeadChange([a, b], [at(t + 15 * 60_000)])]).toEqual(["B"]);
+    // between A and B (B not started yet): A, the last one that ended before
+    expect([...collectRunIdsWithPrHeadChange([a, b], [at(t + 10 * 60_000 + 500)])]).toEqual(["A"]);
+    // after both ended: the later one only
+    expect([...collectRunIdsWithPrHeadChange([a, b], [at(t + 25 * 60_000)])]).toEqual(["B"]);
+    // overlapping spans: the later started
+    const c = { id: "C", startedAt: at(t + 5 * 60_000), finishedAt: at(t + 12 * 60_000) };
+    expect([...collectRunIdsWithPrHeadChange([a, c], [at(t + 6 * 60_000)])]).toEqual(["C"]);
+    // two changes, two runs
+    expect([...collectRunIdsWithPrHeadChange([a, b], [at(t + 5 * 60_000), at(t + 15 * 60_000)])].sort()).toEqual(["A", "B"]);
   });
 
   it("the streak ends when the throttle counts the head change as progress", () => {
