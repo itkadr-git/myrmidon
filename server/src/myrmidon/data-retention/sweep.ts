@@ -652,7 +652,15 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
     let freedBytes = 0;
     let batchSize = DATA_RETENTION_DELETE_BATCH_SIZE;
     const maxBatches = group.maxBatchesPerPass ?? DATA_RETENTION_MAX_BATCHES;
-    for (let batch = 0; batch < maxBatches; batch++) {
+    // The per-pass limit counts only SUCCESSFUL batches (`completed`); a batch
+    // that times out is retried smaller and does not use up the limit, so a
+    // one-batch group still halves down to something that fits instead of
+    // restarting at the full size on every pass. Retries are bounded by the
+    // halving floor (DATA_RETENTION_MIN_BATCH_SIZE), after which the loop breaks.
+    let completed = 0;
+    let batch = -1;
+    while (completed < maxBatches) {
+      batch++;
       let batchResult: { deleted: number; freedBytes: number };
       try {
         // Every batch is its own transaction (operator review
@@ -691,6 +699,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
         }
         throw err;
       }
+      completed++;
       deleted += batchResult.deleted;
       freedBytes += batchResult.freedBytes;
       if (batchResult.deleted < batchSize) break;
