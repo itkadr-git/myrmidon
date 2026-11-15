@@ -16,6 +16,21 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
   const errors: string[] = [];
   const agentSlugs = new Set(manifest.agents.map((agent) => agent.slug));
   const validPermissions: ReadonlySet<string> = new Set(PERMISSION_KEYS);
+  const managers = new Map(manifest.agents.map((agent) => [agent.slug, agent.reportsToSlug]));
+  const checked = new Set<string>();
+  for (const agent of manifest.agents) {
+    const path = new Set<string>();
+    let current: string | null | undefined = agent.slug;
+    while (current && managers.has(current) && !checked.has(current)) {
+      if (path.has(current)) {
+        errors.push(`Agent ${current} is part of a management cycle.`);
+        break;
+      }
+      path.add(current);
+      current = managers.get(current);
+    }
+    for (const slug of path) checked.add(slug);
+  }
   for (const agent of manifest.agents) {
     if (agent.reportsToSlug && !agentSlugs.has(agent.reportsToSlug)) {
       errors.push(`Agent ${agent.slug} references missing manager ${agent.reportsToSlug}.`);
