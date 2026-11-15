@@ -18,6 +18,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import {
   agentWakeupRequests,
   authUsers,
+  chatActions,
   chatConversations,
   chatDeliveries,
   chatEndpoints,
@@ -595,6 +596,10 @@ describeEmbeddedPostgres("@<alias> addressing in the bridged Telegram chat (X9b)
     for (const value of ["Foo", "foo", fixture.assignedAgentId, fixture.gipAgentId]) expect(response).toContain(value);
     const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     expect(delivery).toMatchObject({ state: "filtered", redactedError: "Ambiguous agent mention: @foo" });
+    const effects = await db.select().from(chatActions).where(and(eq(chatActions.deliveryId, delivery.id), eq(chatActions.kind, "provider_effect")));
+    expect(effects).toHaveLength(1);
+    expect(effects[0]).toMatchObject({ status: "processed", payload: { text: expect.stringContaining(fixture.assignedAgentId) } });
+    expect(JSON.stringify(effects[0].payload)).toContain(fixture.gipAgentId);
     expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(0);
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId))).toHaveLength(0);
     const repeated = await send("@foo hello", 1);
