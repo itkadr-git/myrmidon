@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { and, eq, notInArray, sql } from "drizzle-orm";
@@ -24,8 +25,11 @@ import {
 } from "./helpers/route-test-harness.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { issueRoutes } from "../routes/issues.js";
+import { errorHandler } from "../middleware/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { parseIssueExecutionState } from "../services/issue-execution-policy.js";
 import { REVIEW_CI_WAIT_MONITOR_SERVICE_NAME, reviewAdmissionDedupKey } from "../myrmidon/review-stage-recovery/policy.js";
+import { clearReviewWakesQuotas } from "../myrmidon/review-stage-recovery/review-wakes-quota.js";
 import { readReviewRoutingSignals, resetReviewRoutingSignals } from "../myrmidon/review-routing/attention.js";
 
 /**
@@ -152,6 +156,131 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(0);
   });
 
+  describe("agent handoff without a review stage (OPE-13099)", () => {
+    async function seedHandoff(
+      label: string,
+      reviewerCount: number,
+      options?: { executorRole?: string },
+    ) {
+      const executorRole = options?.executorRole ?? "engineer";
+      const { companyId } = await seedCompanyWithBoardAccess(ctx.db, label);
+      const engineerId = randomUUID();
+      const runId = randomUUID();
+      const base = { companyId, status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} };
+      await ctx.db.insert(agents).values({ ...base, id: engineerId, name: `adm-dev-${executorRole}-1`, role: executorRole, metadata: { telegramGroup: "adm" } });
+      const reviewerIds: string[] = [];
+      for (let i = 0; i < reviewerCount; i += 1) {
+        const id = randomUUID();
+        reviewerIds.push(id);
+        await ctx.db.insert(agents).values({ ...base, id, name: `adm-dev-review-${i + 1}`, role: "reviewer", metadata: { telegramGroup: "adm" } });
+      }
+      await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: engineerId, status: "running", invocationSource: "manual", startedAt: new Date() });
+      const issueId = randomUUID();
+      await ctx.db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Agent handoff without review stage",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: engineerId,
+        createdByAgentId: engineerId,
+        checkoutRunId: runId,
+        executionRunId: runId,
+      });
+      await ctx.db.update(heartbeatRuns).set({ contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, runId));
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => {
+        (req as any).actor = { type: "agent", agentId: engineerId, companyId, runId, source: "agent_jwt" };
+        next();
+      });
+      app.use("/api", issueRoutes(ctx.db, {} as any));
+      app.use(errorHandler);
+      return { companyId, engineerId, reviewerIds, issueId, app };
+    }
+
+    it("adds a review stage with the group reviewers and picks the least loaded one", async () => {
+      const { companyId, reviewerIds, issueId, app } = await seedHandoff("Handoff routes to reviewer", 2);
+      // The first reviewer already holds two tasks in flight.
+      for (let i = 0; i < 2; i += 1) {
+        await ctx.db.insert(issues).values({
+          id: randomUUID(), companyId, title: `Busy ${i}`, status: "in_review", priority: "medium", assigneeAgentId: reviewerIds[0],
+        });
+      }
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const stages = res.body.executionPolicy?.stages ?? [];
+      expect(stages).toHaveLength(1);
+      expect(stages[0].type).toBe("review");
+      expect(stages[0].participants.map((p: { agentId: string }) => p.agentId).sort()).toEqual([...reviewerIds].sort());
+      expect(res.body.executionState?.currentParticipant).toMatchObject({ type: "agent", agentId: reviewerIds[1] });
+    });
+
+    it("keeps the 422 missing review_path when the group has no reviewer", async () => {
+      const { issueId, app } = await seedHandoff("Handoff without reviewers", 0);
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+      expect(res.status).toBe(422);
+      expect(res.body.details?.missing).toBe("review_path");
+    });
+
+    it("keeps the 422 missing review_path when the executor is not an engineer", async () => {
+      const { issueId, app } = await seedHandoff("Handoff from non-engineer", 2, { executorRole: "qa" });
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+      expect(res.status).toBe(422);
+      expect(res.body.details?.missing).toBe("review_path");
+    });
+
+    it("preserves an existing review stage without replacing its participants", async () => {
+      const { reviewerIds, issueId, app } = await seedHandoff("Handoff with existing review stage", 2);
+      const existingPolicy = {
+        mode: "normal",
+        stages: [
+          {
+            id: randomUUID(),
+            type: "review",
+            approvalsNeeded: 1,
+            participants: [{ type: "agent", agentId: reviewerIds[0] }],
+          },
+        ],
+      };
+      await ctx.db.update(issues).set({ executionPolicy: existingPolicy }).where(eq(issues.id, issueId));
+
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const stages = res.body.executionPolicy?.stages ?? [];
+      expect(stages).toHaveLength(1);
+      expect(stages[0].type).toBe("review");
+      expect(stages[0].participants).toHaveLength(1);
+      expect(stages[0].participants[0].agentId).toBe(reviewerIds[0]);
+      expect(res.body.executionState?.currentParticipant).toMatchObject({ type: "agent", agentId: reviewerIds[0] });
+    });
+
+    it("preserves existing non-review policy stages when adding the handoff review stage", async () => {
+      const { reviewerIds, issueId, app } = await seedHandoff("Handoff with approval stage", 2);
+      const approvalStageId = randomUUID();
+      const existingPolicy = {
+        mode: "normal",
+        stages: [
+          {
+            id: approvalStageId,
+            type: "approval",
+            approvalsNeeded: 1,
+            participants: [{ type: "agent", agentId: reviewerIds[0] }],
+          },
+        ],
+      };
+      await ctx.db.update(issues).set({ executionPolicy: existingPolicy }).where(eq(issues.id, issueId));
+
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const stages = res.body.executionPolicy?.stages ?? [];
+      expect(stages).toHaveLength(2);
+      expect(stages[0].type).toBe("review");
+      expect(stages[1].type).toBe("approval");
+      expect(stages[1].id).toBe(approvalStageId);
+    });
+  });
+
   it("raises no_reviewer when only an out-of-group reviewer has capacity", async () => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission group isolation");
     resetReviewRoutingSignals();
@@ -181,6 +310,254 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     expect(response.status).toBe(200);
     expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(1);
   });
+  // myrmidon(REVIEW-APPROVAL-RECORDED): the immediate review routing writes the
+  // stage into the stored policy; arming the admission monitor afterwards must
+  // keep that stage (it was rebuilt from the pre-routing policy and erased it,
+  // so the reviewer's approval hit the `done` gate with HTTP 409).
+  it("keeps the routed review stage in the policy when the admission monitor is armed (CI pending)", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review routing keeps stage");
+    const authorAgentId = randomUUID();
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: authorAgentId, companyId, name: "adm-dev-eng-1", metadata: { telegramGroup: "adm" },
+      role: "engineer", status: "idle", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId, companyId, name: "adm-dev-review-1", metadata: { telegramGroup: "adm" },
+      role: "reviewer", status: "idle", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId, companyId, title: "Routed stage must survive the admission monitor", status: "backlog",
+      priority: "medium", assigneeAgentId: authorAgentId, createdByAgentId: authorAgentId,
+    });
+    const routes = (db: any, storage: any) => issueRoutes(db, storage, {
+      resolveReviewPullRequestCi: async () => ({
+        state: "pending", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc",
+      }),
+      resolveReviewHeadFailedChecks: async () => ({ state: "ok", headSha: "head-abc", failed: [] }),
+    });
+    const response = await request(routeApp(ctx.db, actor, routes as any))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+    expect(response.status).toBe(200);
+    const [issue] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue?.status).toBe("in_review");
+    const state = issue?.executionState as { status?: string; currentStageId?: string; currentParticipant?: { agentId?: string } } | null;
+    expect(state).toMatchObject({ status: "pending", currentParticipant: { agentId: reviewerAgentId } });
+    const stages = ((issue?.executionPolicy as { stages?: Array<{ id: string }> } | null)?.stages) ?? [];
+    expect(stages.map((stage) => stage.id)).toContain(state?.currentStageId);
+  });
+
+  // myrmidon(REVIEW-CHANGES-LOST-STAGE): when the review stage is missing from
+  // the execution policy, a changes_requested decision from the assigned reviewer
+  // must return 2xx and persist the issue back to the author with status in_progress
+  // and executionState.status = "changes_requested".
+  it.each([
+    { name: "empty stages policy", policy: { mode: "normal", stages: [] } },
+    { name: "null policy", policy: null },
+  ])("records changes_requested and returns task to author when stage missing from policy ($name)", async ({ policy }) => {
+    const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Review changes requested lost stage");
+    const authorAgentId = randomUUID();
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: authorAgentId,
+      companyId,
+      name: "adm-dev-eng-1",
+      metadata: { telegramGroup: "adm" },
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "adm-dev-review-1",
+      metadata: { telegramGroup: "adm" },
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const issueId = randomUUID();
+    const stageId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Review changes requested when stage is missing from policy",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: reviewerAgentId,
+      createdByAgentId: authorAgentId,
+      executionPolicy: policy as any,
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: authorAgentId },
+        completedStageIds: [],
+        changesRequestedCount: 0,
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+
+    const reviewerRunId = randomUUID();
+    await ctx.db.insert(heartbeatRuns).values({
+      id: reviewerRunId,
+      companyId,
+      agentId: reviewerAgentId,
+      status: "running",
+      contextSnapshot: { issueId },
+    });
+
+    const reviewerActor = {
+      type: "agent" as const,
+      source: "agent_jwt" as const,
+      agentId: reviewerAgentId,
+      companyId,
+      runId: reviewerRunId,
+      isInstanceAdmin: false,
+    };
+
+    const routes = (db: any, storage: any) =>
+      issueRoutes(db, storage, {
+        resolveReviewPullRequestCi: async () => ({
+          state: "ok",
+          pullRequestUrl: "https://github.com/acme/app/pull/7",
+          headSha: "head-abc",
+        }),
+      });
+
+    const response = await request(routeApp(ctx.db, reviewerActor as any, routes as any))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "in_progress",
+        comment: "Please revise implementation in server/src/file.ts:42",
+      });
+
+    expect(response.status).toBe(200);
+
+    const [updated] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
+    expect(updated?.status).toBe("in_progress");
+    expect(updated?.assigneeAgentId).toBe(authorAgentId);
+    const updatedState = updated?.executionState as Record<string, unknown> | null;
+    expect(updatedState).toMatchObject({
+      status: "changes_requested",
+      currentStageId: stageId,
+      currentStageType: "review",
+      changesRequestedCount: 1,
+      lastDecisionOutcome: "changes_requested",
+      returnAssignee: { type: "agent", agentId: authorAgentId },
+    });
+  });
+
+  it("rejects changes_requested with 422 when comment is missing on lost-stage policy", async () => {
+    const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Review changes requested missing comment");
+    const authorAgentId = randomUUID();
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: authorAgentId,
+      companyId,
+      name: "adm-dev-eng-2",
+      metadata: { telegramGroup: "adm" },
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "adm-dev-review-2",
+      metadata: { telegramGroup: "adm" },
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const issueId = randomUUID();
+    const stageId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Review changes requested missing comment on lost stage",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: reviewerAgentId,
+      createdByAgentId: authorAgentId,
+      executionPolicy: { mode: "normal", stages: [] } as any,
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: authorAgentId },
+        completedStageIds: [],
+        changesRequestedCount: 0,
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+
+    const reviewerRunId = randomUUID();
+    await ctx.db.insert(heartbeatRuns).values({
+      id: reviewerRunId,
+      companyId,
+      agentId: reviewerAgentId,
+      status: "running",
+      contextSnapshot: { issueId },
+    });
+
+    const reviewerActor = {
+      type: "agent" as const,
+      source: "agent_jwt" as const,
+      agentId: reviewerAgentId,
+      companyId,
+      runId: reviewerRunId,
+      isInstanceAdmin: false,
+    };
+
+    const routes = (db: any, storage: any) =>
+      issueRoutes(db, storage, {
+        resolveReviewPullRequestCi: async () => ({
+          state: "ok",
+          pullRequestUrl: "https://github.com/acme/app/pull/7",
+          headSha: "head-abc",
+        }),
+      });
+
+    const response = await request(routeApp(ctx.db, reviewerActor as any, routes as any))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "in_progress",
+        comment: "   ",
+      });
+
+    expect(response.status).toBe(422);
+    expect(response.body.error).toMatch(/requires a comment/i);
+
+    const [updated] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
+    expect(updated?.status).toBe("in_review");
+    expect(updated?.assigneeAgentId).toBe(reviewerAgentId);
+    const updatedState = updated?.executionState as Record<string, unknown> | null;
+    expect(updatedState?.status).toBe("pending");
+  });
+
   it("defers reviewer admission while exact PR-head CI is pending", async () => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission waits for exact-head CI");
     const reviewerAgentId = randomUUID();
@@ -1081,5 +1458,252 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       .where(eq(agentWakeupRequests.idempotencyKey, key));
     expect(wakes).toHaveLength(1);
     expect(wakes[0]?.status).toBe("queued");
+  });
+
+  it("quota of 1 admits the first issue and schedules the second for the next tick (OPE-12886)", async () => {
+    clearReviewWakesQuotas(new Date());
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review wakes quota defer");
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "Quota Reviewer",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const policy = {
+      mode: "normal",
+      stages: [
+        {
+          id: randomUUID(),
+          type: "review" as const,
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent" as const, agentId: reviewerAgentId, userId: null }],
+        },
+      ],
+    };
+
+    const firstIssueId = randomUUID();
+    const secondIssueId = randomUUID();
+    for (const [issueId, title] of [
+      [firstIssueId, "Quota first admission"],
+      [secondIssueId, "Quota second admission"],
+    ] as const) {
+      await ctx.db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title,
+        status: "todo",
+        priority: "medium",
+        executionPolicy: policy,
+      });
+      await insertPullRequestWorkProduct({ db: ctx.db, companyId, issueId, headSha: "head-abc" });
+    }
+
+    const routesWithSuccessCi = (db: any, storage: any) => issueRoutes(db, storage, {
+      resolveReviewPullRequestCi: async () => ({ state: "complete", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc" }),
+      resolveReviewHeadFailedChecks: async () => ({ state: "unknown", reason: "not_under_test" }),
+    });
+    const patchToInReview = (issueId: string) =>
+      request(routeApp(ctx.db, actor, routesWithSuccessCi as any))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "in_review", executionPolicy: policy });
+
+    // First admission of the tick spends the whole quota (1 per tick).
+    const first = await patchToInReview(firstIssueId);
+    expect(first.status).toBe(200);
+    const firstKey = reviewAdmissionDedupKey({ issueId: firstIssueId, headSha: "head-abc", agentId: reviewerAgentId });
+    expect((await ctx.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, firstKey)))).toHaveLength(1);
+
+    // Second admission on the SAME tick hits quota_reached: deferred without
+    // loss, and the monitor must be re-armed as scheduled with a nextCheckAt,
+    // never left "triggered" with no timer (OPE-12886).
+    const second = await patchToInReview(secondIssueId);
+    expect(second.status).toBe(200);
+    const secondKey = reviewAdmissionDedupKey({ issueId: secondIssueId, headSha: "head-abc", agentId: reviewerAgentId });
+    expect((await ctx.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, secondKey)))).toHaveLength(0);
+
+    const [secondIssue] = await ctx.db.select().from(issues).where(eq(issues.id, secondIssueId));
+    expect(secondIssue?.status).toBe("in_review");
+    expect(parseIssueExecutionState(secondIssue?.executionState)?.monitor).toMatchObject({
+      status: "scheduled",
+      serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+      nextCheckAt: expect.any(String),
+    });
+    expect(secondIssue?.monitorNextCheckAt).toBeInstanceOf(Date);
+    expect(secondIssue?.monitorNextCheckAt!.getTime()).toBeGreaterThan(Date.now());
+
+    // Next tick: the quota clears and the deferred wake goes out when re-entering review.
+    clearReviewWakesQuotas(new Date(Date.now() + 60_000));
+    await ctx.db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, secondIssueId));
+    const third = await patchToInReview(secondIssueId);
+    expect(third.status).toBe(200);
+    const deferredWakes = await ctx.db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, secondKey));
+    expect(deferredWakes).toHaveLength(1);
+    expect(deferredWakes[0]?.status).toBe("queued");
+  });
+
+  it("rejects verdict comment from current review participant with 422 and hint, moves stage on PATCH", async () => {
+    const { companyId, actor: boardActor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission verdict reject");
+    const authorAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: authorAgentId,
+      companyId,
+      name: "Task Author",
+      metadata: { telegramGroup: "dev" },
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "Reviewer Agent",
+      metadata: { telegramGroup: "dev" },
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const otherAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "Other Agent",
+      metadata: { telegramGroup: "dev" },
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const issueId = randomUUID();
+    const stageId = randomUUID();
+    const policy = {
+      mode: "normal",
+      stages: [
+        {
+          id: stageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId: reviewerAgentId, userId: null }],
+        },
+      ],
+    };
+
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Verdict rejection test",
+      status: "in_review",
+      priority: "medium",
+      createdByAgentId: authorAgentId,
+      assigneeAgentId: authorAgentId,
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId, userId: null },
+        // Required by issueExecutionStateSchema: without it parseIssueExecutionState
+        // returns null and the verdict gate never sees the review stage.
+        returnAssignee: { type: "agent", agentId: authorAgentId, userId: null },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+
+    // Agent comments need a persisted heartbeat run whose source issue is this
+    // issue (cross-issue influence gate, issues.ts assertCrossIssueInfluenceWithinRunCap).
+    const reviewerRunId = randomUUID();
+    const otherRunId = randomUUID();
+    await ctx.db.insert(heartbeatRuns).values([
+      { id: reviewerRunId, companyId, agentId: reviewerAgentId, status: "succeeded", contextSnapshot: { issueId } },
+      { id: otherRunId, companyId, agentId: otherAgentId, status: "succeeded", contextSnapshot: { issueId } },
+    ]);
+
+    const reviewerActor = {
+      type: "agent" as const,
+      agentId: reviewerAgentId,
+      companyId,
+      source: "agent_key" as const,
+      runId: reviewerRunId,
+    };
+    const otherActor = {
+      type: "agent" as const,
+      agentId: otherAgentId,
+      companyId,
+      source: "agent_key" as const,
+      runId: otherRunId,
+    };
+
+    // 1. Current participant posts verdict comment -> 422 with hint, comment is not saved.
+    const rejectCommentRes = await request(routeApp(ctx.db, reviewerActor as any, issueRoutes))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "REQUEST CHANGES PR #1 abc" });
+    expect(rejectCommentRes.status).toBe(422);
+    expect(rejectCommentRes.body).toEqual({
+      error: "Verdict must be a status change",
+      hint: "PATCH /api/issues/<id> with status (APPROVE → done, REQUEST CHANGES → in_progress) and this text as comment in the same request",
+    });
+
+    const commentsAfterReject = await ctx.db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(commentsAfterReject).toHaveLength(0);
+
+    // Also verify APPROVE comment is rejected with 422
+    const approveCommentRes = await request(routeApp(ctx.db, reviewerActor as any, issueRoutes))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "APPROVE PR #1 looks good" });
+    expect(approveCommentRes.status).toBe(422);
+    expect(approveCommentRes.body).toEqual({
+      error: "Verdict must be a status change",
+      hint: "PATCH /api/issues/<id> with status (APPROVE → done, REQUEST CHANGES → in_progress) and this text as comment in the same request",
+    });
+
+    // 2. Normal comment by current participant -> 201
+    const normalCommentRes = await request(routeApp(ctx.db, reviewerActor as any, issueRoutes))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Reviewing this right now..." });
+    expect(normalCommentRes.status).toBe(201);
+
+    // 3. Verdict comment by operator (board) -> 201 (not rejected)
+    const boardVerdictRes = await request(routeApp(ctx.db, boardActor, issueRoutes))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "REQUEST CHANGES PR #1 abc" });
+    expect(boardVerdictRes.status).toBe(201);
+
+    // 4. Verdict comment by non-participant agent -> 201 (not rejected)
+    const otherAgentVerdictRes = await request(routeApp(ctx.db, otherActor as any, issueRoutes))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "REQUEST CHANGES PR #1 abc" });
+    expect(otherAgentVerdictRes.status).toBe(201);
+
+    // 5. Same verdict text through PATCH in_progress -> 200, stage moves
+    const patchRes = await request(routeApp(ctx.db, reviewerActor as any, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_progress", comment: "REQUEST CHANGES PR #1 abc" });
+    expect(patchRes.status).toBe(200);
+    expect(patchRes.body.status).toBe("in_progress");
   });
 });

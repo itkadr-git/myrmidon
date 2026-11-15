@@ -8,7 +8,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   REVIEW_ROUTING_BOARD_MERGED_ACTION,
+  REVIEW_ROUTING_BOARD_MERGE_BLOCKED_ACTION,
   REVIEW_ROUTING_BOARD_MERGE_LABELED_ACTION,
+  REVIEW_ROUTING_BOARD_MERGE_REFUSED_ACTION,
   REVIEW_ROUTING_BOARD_MERGE_RETURNED_ACTION,
   normalizeReviewRoutingSettings,
   type ReviewRoutingSettings,
@@ -131,6 +133,7 @@ function setup(
     },
   };
 
+  const log = { info: vi.fn(), warn: vi.fn() };
   const merger: BoardMerger = createBoardMerger({
     store: {
       listApprovedPrIssues: async (_companyId, options) =>
@@ -162,9 +165,9 @@ function setup(
     logActivity: async (entry) => {
       activities.push({ action: entry.action, issueId: entry.issueId, details: entry.details });
     },
-    log: { info: vi.fn(), warn: vi.fn() },
+    log,
   });
-  return { merger, settings, calls, comments, activities, wakes, returnedIssues, pulls };
+  return { merger, settings, log, calls, comments, activities, wakes, returnedIssues, pulls };
 }
 
 describe("board merge: approved, then CI turns green", () => {
@@ -387,7 +390,25 @@ describe("board merge: limits, refusals and the review marker", () => {
 
     await t.merger.mergePullRequest(COMPANY, { repository: REPO, number: 50 }, t.settings, at(BOARD_MERGE_REFUSED_COOLDOWN_MS + 2));
     expect(t.calls.merge).toHaveLength(3);
-    expect(t.activities).toEqual([]); // nothing was merged, nothing is claimed
+    // Nothing was merged, nothing is claimed; myrmidon(OPE-13136): GitHub's refusal is recorded once (throttled), not per attempt.
+    expect(t.activities.map((entry) => entry.action)).toEqual([REVIEW_ROUTING_BOARD_MERGE_REFUSED_ACTION]);
+  });
+
+  it("myrmidon(OPE-13136): a refused merge puts the HTTP status and GitHub's message on the task, once", async () => {
+    const message = "Required status check \"hot files review\" is expected.";
+    const t = setup([approved(53)], {
+      53: { facts: facts(), checks: "success", mergeOutcome: { status: "refused", httpStatus: 405, message } },
+    });
+    await t.merger.sweepCompany(COMPANY, t.settings, at(0));
+    await t.merger.sweepCompany(COMPANY, t.settings, at(BOARD_MERGE_REFUSED_COOLDOWN_MS + 1));
+    expect(t.calls.merge).toHaveLength(2);
+    expect(t.activities).toEqual([
+      {
+        action: REVIEW_ROUTING_BOARD_MERGE_REFUSED_ACTION,
+        issueId: "issue-53",
+        details: { repository: REPO, pullRequest: 53, headSha: HEAD, httpStatus: 405, message },
+      },
+    ]);
   });
 
   it("blocked only by the missing review marker: puts the marker, then merges once the gate is green", async () => {
@@ -409,6 +430,86 @@ describe("board merge: limits, refusals and the review marker", () => {
     const result = await t.merger.sweepCompany(COMPANY, t.settings, at(0));
     expect(result).toMatchObject({ merged: 0, labeled: 0, waiting: 1 });
     expect(t.calls.label).toEqual([]);
+  });
+});
+
+describe("myrmidon(OPE-13136): a PR that stays BLOCKED with green checks is reported", () => {
+  const MINUTE = 60_000;
+  const blockedPull = (overrides: Partial<BoardMergeFacts> = {}): PullState => ({
+    facts: facts({ mergeableState: "blocked", labels: ["review-approved"], ...overrides }),
+    checks: "success",
+  });
+  const blockedActivities = (t: ReturnType<typeof setup>) =>
+    t.activities.filter((entry) => entry.action === REVIEW_ROUTING_BOARD_MERGE_BLOCKED_ACTION);
+
+  it("beyond the threshold: exactly one activity and one warning, none on the next pass", async () => {
+    const t = setup([approved(60)], { 60: blockedPull() });
+    await t.merger.sweepCompany(COMPANY, t.settings, at(0));
+    await t.merger.sweepCompany(COMPANY, t.settings, at(29 * MINUTE));
+    expect(blockedActivities(t)).toEqual([]);
+    expect(t.log.warn).not.toHaveBeenCalled();
+
+    await t.merger.sweepCompany(COMPANY, t.settings, at(31 * MINUTE));
+    expect(blockedActivities(t)).toEqual([
+      {
+        action: REVIEW_ROUTING_BOARD_MERGE_BLOCKED_ACTION,
+        issueId: "issue-60",
+        details: {
+          repository: REPO,
+          pullRequest: 60,
+          headSha: HEAD,
+          minutesBlocked: 31,
+          requiredChecks: ["CI result"],
+          message: "GitHub reports the pull request BLOCKED although the required checks are green",
+        },
+      },
+    ]);
+    expect(t.log.warn).toHaveBeenCalledTimes(1);
+
+    await t.merger.sweepCompany(COMPANY, t.settings, at(40 * MINUTE));
+    await t.merger.sweepCompany(COMPANY, t.settings, at(120 * MINUTE));
+    expect(blockedActivities(t)).toHaveLength(1);
+    expect(t.log.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("a head change resets the count: the alert fires 30 minutes after the NEW head was first seen blocked", async () => {
+    const rows = [approved(61)];
+    const t = setup(rows, { 61: blockedPull() });
+    await t.merger.sweepCompany(COMPANY, t.settings, at(0));
+    await t.merger.sweepCompany(COMPANY, t.settings, at(20 * MINUTE));
+
+    // A new head, approved again (the verdict names it): the clock starts over.
+    t.pulls[61]!.facts = { ...t.pulls[61]!.facts, headSha: OTHER_HEAD };
+    rows[0]!.verdict = `APPROVE PR #61 ${OTHER_HEAD}\n\nExact head, CI complete.`;
+    await t.merger.sweepCompany(COMPANY, t.settings, at(25 * MINUTE));
+    await t.merger.sweepCompany(COMPANY, t.settings, at(31 * MINUTE)); // 31 min since the first head, 6 since the new one
+    expect(blockedActivities(t)).toEqual([]);
+    await t.merger.sweepCompany(COMPANY, t.settings, at(56 * MINUTE));
+    expect(blockedActivities(t)).toHaveLength(1);
+    expect(blockedActivities(t)[0]!.details).toMatchObject({ headSha: OTHER_HEAD, minutesBlocked: 31 });
+  });
+
+  it("a PR that stops being blocked forgets the spell: the later block counts from its own start", async () => {
+    const t = setup([approved(62)], { 62: blockedPull() });
+    await t.merger.sweepCompany(COMPANY, t.settings, at(0));
+    await t.merger.sweepCompany(COMPANY, t.settings, at(20 * MINUTE));
+    // GitHub is recomputing the mergeability: not "blocked" for a while.
+    t.pulls[62]!.facts = { ...t.pulls[62]!.facts, mergeable: null, mergeableState: "unknown" };
+    await t.merger.sweepCompany(COMPANY, t.settings, at(25 * MINUTE));
+    t.pulls[62]!.facts = { ...t.pulls[62]!.facts, mergeable: true, mergeableState: "blocked" };
+    await t.merger.sweepCompany(COMPANY, t.settings, at(30 * MINUTE)); // the new spell starts here
+    await t.merger.sweepCompany(COMPANY, t.settings, at(55 * MINUTE)); // 25 min into it
+    expect(blockedActivities(t)).toEqual([]);
+    await t.merger.sweepCompany(COMPANY, t.settings, at(61 * MINUTE)); // 31 min into it
+    expect(blockedActivities(t)).toHaveLength(1);
+  });
+
+  it("blockedAlertAfterMinutes 0 switches the alert off", async () => {
+    const t = setup([approved(64)], { 64: blockedPull() }, { blockedAlertAfterMinutes: 0 });
+    await t.merger.sweepCompany(COMPANY, t.settings, at(0));
+    await t.merger.sweepCompany(COMPANY, t.settings, at(600 * MINUTE));
+    expect(blockedActivities(t)).toEqual([]);
+    expect(t.log.warn).not.toHaveBeenCalled();
   });
 });
 

@@ -36,7 +36,7 @@ describeEmbeddedPostgres("hermes_local in planning work mode (X2)", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-myrmidon-planning-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     spawned.stdin.length = 0;

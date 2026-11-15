@@ -109,6 +109,7 @@ export { poolChatRoutes } from "./pool-chat/routes.js";
 export { createPoolChatHttpTransport } from "./pool-chat/transports.js";
 export type { PoolChatTransportResolver } from "./pool-chat/service.js";
 export { myrmidonAutonomyRoutes } from "./autonomy/index.js"; // myrmidon(1.6-AUTONOMY)
+export { myrmidonReleaseStageRoutes } from "./release-stage/routes.js"; // myrmidon(1.8 RELEASE-STAGE)
 export { myrmidonKnowledgeRoutes, myrmidonKnowledgeMcpRoutes } from "./knowledge/index.js"; // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2)
 export { myrmidonKnowledgeSettingsRoutes } from "./knowledge/index.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-11): Settings → Knowledge
 export { sweepTelegramNotifyProactivity } from "./channel-connectors/bridge/notify-sweep.js";

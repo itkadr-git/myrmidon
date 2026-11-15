@@ -388,7 +388,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -3043,7 +3043,7 @@ describeEmbeddedPostgres("issueService.findOpenAncestorCreatedByAgent", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issues);
@@ -3164,7 +3164,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -4249,7 +4249,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -5180,7 +5180,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -5851,7 +5851,7 @@ describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -6019,7 +6019,7 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-execution-lock-");
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -6489,7 +6489,7 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-accepted-plan-decomposition-");
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issuePlanDecompositions);
@@ -7188,7 +7188,7 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-checkout-owner-");
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -7405,6 +7405,81 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
 
 });
 
+describeEmbeddedPostgres("issueService.checkout stranded recovery handoff (OPE-12887)", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-checkout-recovery-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("lets the recovery blocker owner claim a stale-assignee blocked handoff", async () => {
+    const companyId = randomUUID();
+    const executorAgentId = randomUUID();
+    const leadAgentId = randomUUID();
+    const issueId = randomUUID();
+    const leadRunId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      { id: executorAgentId, companyId, name: "Executor", role: "engineer", status: "active", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+      { id: leadAgentId, companyId, name: "Lead", role: "lead", status: "active", adapterType: "hermes_gateway", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: leadRunId,
+      companyId,
+      agentId: leadAgentId,
+      status: "running",
+      invocationSource: "manual",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stranded recovery handoff",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: executorAgentId,
+      blockerMetadata: { blockReason: "recovery", owner: { agentId: leadAgentId } },
+      unblockDescriptor: {
+        owner: { agentId: leadAgentId },
+        action: "resume and drive to final status",
+        reasonRef: { kind: "event", eventKey: `stranded.disposition:${issueId}` },
+      },
+    });
+
+    const claimed = await svc.checkout(issueId, leadAgentId, ["blocked"], leadRunId);
+
+    expect(claimed.status).toBe("in_progress");
+    expect(claimed.assigneeAgentId).toBe(leadAgentId);
+    expect(claimed.blockerMetadata).toBeNull();
+    expect(claimed.unblockDescriptor).toBeNull();
+    expect(claimed.blockedTransitionAt).toBeNull();
+    expect(claimed.blockedOwnerNotifiedAt).toBeNull();
+  });
+});
+
 describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;
@@ -7450,7 +7525,7 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
       status: "todo",
       priority: "medium",
     });
-  }, 20_000);
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();

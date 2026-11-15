@@ -812,9 +812,13 @@ describe("myrmidon-bot-image.yml", () => {
       assert.match(devStage, /COPY --chown=root:root myr-ws\/ \/opt\/paperclip\/myr-ws\//);
       assert.match(devStage, /COPY --chown=root:root botd\/ \/opt\/paperclip\/botd\//);
       assert.match(devStage, /chmod 0755 \/opt\/paperclip\/myr-ws\/myr-ws/);
+      assert.match(devStage, /chmod 0755 \/opt\/paperclip\/myr-ws\/myr-handoff/);
       assert.match(devStage, /ln -s \/opt\/paperclip\/myr-ws\/myr-ws \/opt\/paperclip\/bin\/myr-ws/);
       assert.match(devStage, /ln -s \/opt\/paperclip\/myr-ws\/myr-ws \/usr\/local\/bin\/myr-ws/);
+      assert.match(devStage, /ln -s \/opt\/paperclip\/myr-ws\/myr-handoff \/opt\/paperclip\/bin\/myr-handoff/);
+      assert.match(devStage, /ln -s \/opt\/paperclip\/myr-ws\/myr-handoff \/usr\/local\/bin\/myr-handoff/);
       assert.match(devStage, /\[ -x \/usr\/local\/bin\/myr-ws \]/);
+      assert.match(devStage, /\[ -x \/usr\/local\/bin\/myr-handoff \]/);
       assert.match(devStage, /if \[ -f \/opt\/paperclip\/botd\/botd \]/);
       assert.match(devStage, /ln -s \/opt\/paperclip\/botd\/botd \/opt\/paperclip\/bin\/botd/);
       assert.match(devStage, /\[ -x \/opt\/paperclip\/bin\/botd \]/);

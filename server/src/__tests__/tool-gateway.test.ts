@@ -568,10 +568,11 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
   let db!: Db;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
+  // OPE-12978: the first file of a shard pays for the cold embedded Postgres start on a loaded runner; 60 s budget.
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-tool-gateway-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(activityLog);

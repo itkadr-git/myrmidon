@@ -33,6 +33,7 @@ import { RemoteSitesSection } from "../components/myrmidon/RemoteSitesSection"; 
 import { ReferenceTaskEvalsPanel } from "../components/myrmidon/evals/ReferenceTaskEvalsPanel"; // myrmidon(1.6.5 EVALS-JUDGE-FAMILY)
 import { TracingHealthCard } from "../components/myrmidon/tracing-health/TracingHealthCard"; // myrmidon(TRACING-HEALTH)
 import { TeamLivenessHealthCard } from "../components/myrmidon/TeamLivenessHealthCard"; // myrmidon(TEAM-LIVENESS-METRICS)
+import { ToolComplaintsPanel } from "../components/myrmidon/ToolComplaintsPanel"; // myrmidon(1.7 TOOL-COMPLAINTS-UI)
 import { CompanySkillPolicyEditor } from "@/components/skill-studio/CompanySkillPolicyEditor";
 import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
 
@@ -465,6 +466,9 @@ export function CompanySettings() {
 
       {/* myrmidon(TEAM-LIVENESS-METRICS): what the board did on its own in the last 24 h */}
       <TeamLivenessHealthCard />
+
+      {/* myrmidon(1.7 TOOL-COMPLAINTS-UI, OPE-12229): agents' tool complaints triage */}
+      <ToolComplaintsPanel />
 
       <InstanceGeneralSettings embedded />
 

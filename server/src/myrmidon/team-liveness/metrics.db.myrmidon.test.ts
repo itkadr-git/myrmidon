@@ -54,7 +54,7 @@ describeEmbeddedPostgres("team liveness metrics", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-team-liveness-metrics-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);

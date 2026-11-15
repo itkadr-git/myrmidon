@@ -65,7 +65,8 @@ export const createTaskAction = {
           "identifier": "EX-2",
           "parentId": "example-parent",
           "status": "todo",
-          "assigneeActorId": "example-agent"
+          "assigneeActorId": "example-agent",
+          "assigneeAgentName": "Example Agent"
         }
       }
     }
@@ -226,6 +227,10 @@ export const createTaskAction = {
                   "string",
                   "null"
                 ]
+              },
+              "assigneeAgentName": {
+                "type": "string",
+                "minLength": 1
               }
             },
             "required": [
@@ -233,7 +238,8 @@ export const createTaskAction = {
               "identifier",
               "parentId",
               "status",
-              "assigneeActorId"
+              "assigneeActorId",
+              "assigneeAgentName"
             ],
             "additionalProperties": false
           }

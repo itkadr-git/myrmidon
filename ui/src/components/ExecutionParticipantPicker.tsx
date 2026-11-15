@@ -16,7 +16,7 @@ import { User, Eye, ShieldCheck } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { useTranslation } from "@/i18n";
 
-type StageType = "review" | "approval";
+type StageType = "review" | "approval" | "verify";
 
 interface ExecutionParticipantPickerProps {
   issue: Issue;

@@ -99,7 +99,7 @@ describeEmbeddedPostgres("budget hard-stop signal delivery (M3)", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-budget-signal-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);

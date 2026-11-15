@@ -30,6 +30,7 @@ describe("PaperclipRunnerToolAuthority", () => {
   const companyId = "00000000-0000-4000-8000-000000000101";
   const agentId = "00000000-0000-4000-8000-000000000102";
   const issueId = "00000000-0000-4000-8000-000000000103";
+  const targetAgentId = "00000000-0000-4000-8000-000000000105";
   const runId = "00000000-0000-4000-8000-000000000104";
 
   beforeAll(async () => {
@@ -50,6 +51,15 @@ describe("PaperclipRunnerToolAuthority", () => {
       adapterType: "paperclip_runner",
       adapterConfig: { provider: "codex", apiKey: "must-not-leak" },
       runtimeConfig: { token: "must-not-leak" },
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: targetAgentId,
+      companyId,
+      name: "Target agent",
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex" },
+      runtimeConfig: {},
       status: "active",
     });
     await db.insert(issues).values({
@@ -755,11 +765,32 @@ describe("PaperclipRunnerToolAuthority", () => {
         parentId: issueId,
         status: "todo",
         assigneeActorId: agentId,
+        assigneeAgentName: "Runner agent",
       },
     });
-    expect(wakes).toHaveLength(1);
+    const explicitlyAssigned = await authority.execute({
+      tool: "create_task",
+      callId: "create-explicit-assignment",
+      arguments: {
+        idempotencyKey: "explicit-assignment",
+        title: "Explicitly assigned task",
+        assigneeActorId: targetAgentId,
+      },
+    });
+    expect(explicitlyAssigned).toMatchObject({
+      disposition: "applied",
+      task: { assigneeActorId: targetAgentId, assigneeAgentName: "Target agent" },
+    });
+    expect(wakes).toHaveLength(2);
     expect(wakes[0]).toMatchObject({
       agentId,
+      options: {
+        reason: "issue_assigned",
+        payload: { parentIssueId: issueId },
+      },
+    });
+    expect(wakes[1]).toMatchObject({
+      agentId: targetAgentId,
       options: {
         reason: "issue_assigned",
         payload: { parentIssueId: issueId },
@@ -782,7 +813,7 @@ describe("PaperclipRunnerToolAuthority", () => {
       scheduledWakeIds: [],
       task: { parentId: issueId, status: "blocked", assigneeActorId: agentId },
     });
-    expect(wakes).toHaveLength(1);
+    expect(wakes).toHaveLength(2);
     await expect(
       issueService(db).getRelationSummaries(issueId),
     ).resolves.toMatchObject({
@@ -822,7 +853,7 @@ describe("PaperclipRunnerToolAuthority", () => {
       task: { parentId: issueId, status: "todo", assigneeActorId: agentId },
       scheduledWakeIds: [expect.any(String)],
     });
-    expect(wakes).toHaveLength(2);
+    expect(wakes).toHaveLength(3);
 
     const nextRunId = "00000000-0000-4000-8000-000000000106";
     await db
@@ -926,6 +957,17 @@ describe("PaperclipRunnerToolAuthority", () => {
     await expect(
       retryAuthority.execute({
         tool: "create_task",
+        callId: "unknown-assignee",
+        arguments: {
+          idempotencyKey: "unknown-assignee",
+          title: "Invalid unknown assignment",
+          assigneeActorId: "00000000-0000-4000-8000-000000000299",
+        },
+      }),
+    ).rejects.toThrow("paperclip_runner_agent_not_found");
+    await expect(
+      retryAuthority.execute({
+        tool: "create_task",
         callId: "foreign-blocker",
         arguments: {
           idempotencyKey: "foreign-blocker",
@@ -937,7 +979,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     expect(retryWakes).toHaveLength(0);
     expect(
       await db.select().from(issues).where(eq(issues.parentId, issueId)),
-    ).toHaveLength(3);
+    ).toHaveLength(4);
   });
 
   it("rejects mutations after reassignment, run replacement, or terminalization", async () => {

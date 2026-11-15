@@ -64,7 +64,7 @@ const support = await getEmbeddedPostgresTestSupport();
         "paperclip-github-operation-",
       );
       db = createDb(database.connectionString);
-    }, 30_000);
+    }, 60_000);
     afterAll(async () => {
       await database?.cleanup();
       vi.unstubAllEnvs();

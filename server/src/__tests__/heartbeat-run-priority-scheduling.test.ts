@@ -311,6 +311,40 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
     expect(startedReview?.contextSnapshot).not.toHaveProperty("waitReason");
   }, 30_000);
 
+  // myrmidon(RESUME-QUEUE-AGE): the sweep's service keys (wait reason, queue
+  // position, queue length) are merged on the database side, so a key written to
+  // the run's context by someone else (the resume stamp) survives them.
+  it("keeps the resume stamp of a queued run when the sweep writes its wait reason and position", async () => {
+    pinAdmission({ maxConcurrentRuns: 0 });
+    applyRunPrioritySettings(defaultSettings());
+
+    const review = await seedCompanyAndAgent({ name: "StampReviewer", role: "review" });
+    const engineer = await seedCompanyAndAgent({ name: "StampEngineer", role: "engineer" });
+    const reviewIssueId = await seedIssue(review.companyId, {
+      title: "Review", priority: "medium", assigneeAgentId: review.agentId,
+    });
+    const engineerIssueId = await seedIssue(engineer.companyId, {
+      title: "Work", priority: "medium", assigneeAgentId: engineer.agentId,
+    });
+    const engineerRun = await wakeAndQueue(engineer.agentId, engineerIssueId);
+    await wakeAndQueue(review.agentId, reviewIssueId);
+    const stamp = Date.now() - 1000;
+    await db
+      .update(heartbeatRuns)
+      .set({ contextSnapshot: sql`${heartbeatRuns.contextSnapshot} || jsonb_build_object('queueWaitResumedAtMs', ${stamp}::bigint)` })
+      .where(eq(heartbeatRuns.id, engineerRun.id));
+
+    pinAdmission({ maxConcurrentRuns: 1 });
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const stillQueued = await runRow(engineerRun.id);
+    expect(stillQueued?.status).toBe("queued");
+    expect(stillQueued.contextSnapshot).toMatchObject({
+      waitReason: "global_cap", queuePosition: 2, queueLength: 2, queueWaitResumedAtMs: stamp,
+    });
+  }, 30_000);
+
   it("keeps the role in front of the issue priority: the review run starts before an older critical engineer run", async () => {
     applyRunPrioritySettings(defaultSettings());
     pinAdmission({ maxConcurrentRuns: 0 });

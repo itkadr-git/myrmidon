@@ -33,6 +33,8 @@ export interface SupersedeExplicitWakeSettledHoldInput {
    * confirm-continue verb may also pass "agent" for an agent's own task. */
   requestedByActorType: "user" | "agent";
   requestedByActorId: string;
+  /** myrmidon(RESUME-AFTER-CANCEL): supersede only holds of a cancelled run. */
+  cancelledRunOnly?: boolean;
 }
 
 /**
@@ -54,7 +56,7 @@ export interface SupersedeExplicitWakeSettledHoldInput {
 export async function supersedeExplicitWakeSettledHold(
   input: SupersedeExplicitWakeSettledHoldInput,
 ): Promise<{ recoveryActionIds: string[]; supersededCount: number } | null> {
-  const { db, companyId, issueId, successorRunId, requestedByActorType, requestedByActorId } = input;
+  const { db, companyId, issueId, successorRunId, requestedByActorType, requestedByActorId, cancelledRunOnly } = input;
   const actions = await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId),
     eq(issueRecoveryActions.sourceIssueId, issueId),
@@ -65,7 +67,7 @@ export async function supersedeExplicitWakeSettledHold(
   const recordedAt = new Date();
   const supersededIds: string[] = [];
   for (const action of actions) {
-    if (!(await explicitWakeBypassesSettledHold(db, companyId, action))) continue;
+    if (!(await explicitWakeBypassesSettledHold(db, companyId, action, { cancelledRunOnly }))) continue;
     const automaticRecovery = (action.evidence.automaticRecovery ?? {}) as Record<string, unknown>;
     const [updated] = await db.update(issueRecoveryActions).set({
       status: "resolved",

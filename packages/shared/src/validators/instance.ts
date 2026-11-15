@@ -338,6 +338,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // fix is ON — `{enabled: false}` restores the pre-feature agent behaviour
   // byte-for-byte (see packages/shared/src/myrmidon-issue-list-agent-defaults.ts).
   issuesListAgentDefaults: issueListAgentDefaultsSchema.optional(),
+  // myrmidon(OPE-13095): the agent that scouts a new engineer task and writes its
+  // `starter-pack` document before the first engineer run; absent means no scout
+  // (the assignee is woken at once, as before).
+  starterPackAgentId: z.string().uuid().optional(),
   // myrmidon(PAUSE-GUARD): the forgotten-pause guard (enabled, threshold,
   // interval, allowlist, per-pass ceiling), changed from
   // /api/myrmidon/pause-guard; absent means "use the environment variable, then
@@ -458,6 +462,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // packages/shared/src/types/instance.ts.
   blockerRootFanoutAlertLimit: z.number().int().min(1).max(1000).optional(),
   issueRewakeFreezeThreshold: z.number().int().min(2).max(8).optional(),
+  // myrmidon(1.8 AUTOPAUSE): consecutive empty runs before the empty-run
+  // streak monitor emits its SKIPPED signal; absent means the default (5).
+  // Same contract comment as the field in packages/shared/src/types/instance.ts.
+  emptyRunStreakThreshold: z.number().int().min(2).max(20).optional(),
   // myrmidon(1.6.6 PROCS-J): the counts of the board's process composition —
   // how many HTTP processes (`api`) and scheduler processes (`worker`) the
   // deployment asks for. The stored row is accepted as it is, including the

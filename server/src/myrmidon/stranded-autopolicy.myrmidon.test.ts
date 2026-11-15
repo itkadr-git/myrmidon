@@ -790,7 +790,7 @@ describe("OPE-9072: escalation chain target and workflow-safe blocked dispositio
     ).toBe("vendor_default");
   });
 
-  it("the blocked patch carries complete metadata and an agent-owned descriptor, no assignee change", () => {
+  it("the blocked patch transfers the assignee with complete recovery metadata", () => {
     const now = new Date("2026-10-24T10:00:00.000Z");
     const patch = buildStrandedDispositionBlockedPatch({ issueId: "issue-1", ownerAgentId: "adm-1", now });
     expect(patch.status).toBe("blocked");
@@ -813,7 +813,18 @@ describe("OPE-9072: escalation chain target and workflow-safe blocked dispositio
       eventKey: "stranded.disposition:issue-1",
       dueAt: "2026-10-25T10:00:00.000Z",
     });
-    expect(Object.keys(patch).sort()).toEqual(["blockerMetadata", "status", "unblockDescriptor"]);
+    // myrmidon(OPE-12887): the handoff must release the executor's
+    // assignment — a lead checkout against a still-assigned blocked row
+    // 409s behind the normal assignee guard (the BLOCKED-LOOP deadlock).
+    expect(patch.assigneeAgentId).toBeNull();
+    expect(patch.assigneeUserId).toBeNull();
+    expect(Object.keys(patch).sort()).toEqual([
+      "assigneeAgentId",
+      "assigneeUserId",
+      "blockerMetadata",
+      "status",
+      "unblockDescriptor",
+    ]);
   });
 
   it("the wake key is stable per (issue, source run)", () => {

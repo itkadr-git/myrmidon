@@ -1,6 +1,5 @@
 import type { Attachment, Message } from "chat";
 import { createHash } from "node:crypto";
-import { JSDOM } from "jsdom";
 import {
   isAllowedContentType,
   MAX_ATTACHMENT_BYTES,
@@ -520,22 +519,22 @@ export function githubAttachmentCommentFetch(
  * We support GitHub's image anchor mapping, not arbitrary HTML URL extraction.
  * No signed URL is returned to the model or added to durable descriptors.
  */
-export function resolveGitHubCommentAttachmentTarget(
+export async function resolveGitHubCommentAttachmentTarget(
   attachment: Attachment,
   value: unknown,
-): URL | null {
+): Promise<URL | null> {
   try {
-    return resolveCanonicalAttachmentTargetOrThrow(attachment, value);
+    return await resolveCanonicalAttachmentTargetOrThrow(attachment, value);
   } catch (error) {
     if (error instanceof GitHubAttachmentUnavailableError) return null;
     throw error;
   }
 }
 
-function resolveCanonicalAttachmentTargetOrThrow(
+async function resolveCanonicalAttachmentTargetOrThrow(
   attachment: Attachment,
   value: unknown,
-): URL {
+): Promise<URL> {
   const locator = handles.get(attachment);
   const request = githubAttachmentCommentRequest(attachment);
   if (
@@ -619,6 +618,7 @@ function resolveCanonicalAttachmentTargetOrThrow(
       ? target
       : null;
   };
+  const { JSDOM } = await import("jsdom");
   const fragment = JSDOM.fragment(row.body_html);
   const candidates: URL[] = [];
   for (const anchor of fragment.querySelectorAll("a[href]")) {
@@ -759,7 +759,7 @@ export async function prepareGitHubPublicAttachment(
           signal.throwIfAborted();
           const canonical = await resolveComment(commentRequest, signal);
           signal.throwIfAborted();
-          const target = resolveCanonicalAttachmentTargetOrThrow(
+          const target = await resolveCanonicalAttachmentTargetOrThrow(
             attachment,
             canonical,
           );

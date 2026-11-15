@@ -33,7 +33,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-github-events-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(activityLog);
@@ -231,15 +231,15 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
       },
     });
     expect(JSON.stringify(receipt)).not.toMatch(/private pull request|private review|ghu_|also-must-not/);
-    const [activity] = await db.select().from(activityLog).where(eq(activityLog.action, "tool_connection.webhook_processed"));
-    expect(activity?.details).toEqual({
-      provider: "github",
-      event: "pull_request",
-      action: "closed",
-      deliveryId: leasedEvent.id,
-      installationId: "101",
-      repositoryId: "99",
-    });
+    // OPE-13146: a successful delivery must NOT write an activity row —
+    // the receipt in connectionEventDeliveries is the audit trail.
+    const activities = await db.select().from(activityLog).where(eq(activityLog.action, "tool_connection.webhook_processed"));
+    expect(activities).toHaveLength(0);
+    const [delivery] = await db.select().from(connectionEventDeliveries).where(eq(
+      connectionEventDeliveries.providerDeliveryId,
+      leasedEvent.id,
+    ));
+    expect(delivery?.status).toBe("processed");
     expect(connector.acknowledgeEvents).toHaveBeenCalledTimes(1);
 
     currentTime = new Date(currentTime.getTime() + 6_000);

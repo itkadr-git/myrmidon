@@ -769,6 +769,10 @@ interface FakeDaemon {
      *  (the gate over its limit), optionally carrying a Retry-After header. */
     rateLimitFirstRequests: number;
     rateLimitRetryAfterSec: number | null;
+    /** myrmidon(OPE-12960): refuse a container start whose bind source does not
+     *  exist on the host, the way the real daemon does (`no such file or
+     *  directory` naming the missing path) instead of mkdir-ing it. */
+    failStartOnMissingBindSource: boolean;
   };
   close(): Promise<void>;
 }
@@ -818,7 +822,7 @@ async function startFakeDaemon(tmp: string, images: Record<string, Record<string
   const containers = new Map<string, FakeContainer>();
   const owners = new Map<string, Owner>();
   const requests: RecordedRequest[] = [];
-  const options: FakeDaemon["options"] = { healthOnStart: "healthy", failMarkerRead: false, bootNeedsProfile: true, rateLimitFirstRequests: 0, rateLimitRetryAfterSec: null };
+  const options: FakeDaemon["options"] = { healthOnStart: "healthy", failMarkerRead: false, bootNeedsProfile: true, rateLimitFirstRequests: 0, rateLimitRetryAfterSec: null, failStartOnMissingBindSource: false };
   const imageLabels = new Map<string, Record<string, string> | null>();
   for (const [ref, labels] of Object.entries(images)) {
     imageLabels.set(ref, labels);
@@ -1066,6 +1070,15 @@ async function startFakeDaemon(tmp: string, images: Record<string, Record<string
     }
     if (action === "start" && method === "POST") {
       if (container.state === "running") return send(304);
+      // myrmidon(OPE-12960): the real daemon refuses a start whose bind source
+      // does not exist (500, `no such file or directory` naming the path);
+      // mkdir-ing it here would hide the failure this suite must reproduce.
+      if (options.failStartOnMissingBindSource && !container.body.Labels?.[BOT_LABEL_KEYS.helper]) {
+        const missing = parseBinds(container).find(({ source }) => !fs.existsSync(source));
+        if (missing) {
+          return send(500, { message: `Cannot start service: open ${missing.source}: no such file or directory` });
+        }
+      }
       if (container.body.Labels?.[BOT_LABEL_KEYS.helper]) runHelper(container);
       else bootBot(container);
       return send(204);
@@ -1991,6 +2004,60 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
         await driver.start("agent-a");
         expect(await driver.status("agent-a")).toMatchObject({ state: "running", idleStopped: false });
         expect(fs.existsSync(stateFile)).toBe(false);
+      });
+
+      it("myrmidon(OPE-12960): bot data on the persistent volume survives an idle stop/start round trip", async () => {
+        await driver.create(spec());
+        await driver.writeProfile("agent-a", testProfile());
+        await driver.start("agent-a");
+        // Files the BOT writes while running (not profile-owned): session
+        // state on the hermes volume and a working file on workspace.
+        fs.mkdirSync(path.join(volumes.hermes, "sessions"), { recursive: true });
+        fs.writeFileSync(path.join(volumes.hermes, "sessions/session-1.json"), '{"open":true}');
+        fs.writeFileSync(path.join(volumes.workspace, "notes.txt"), "bot work\n");
+        fs.writeFileSync(path.join(volumes.scratch, "download.tmp"), "partial\n");
+
+        await driver.stopIdle!("agent-a");
+        expect(await driver.status("agent-a")).toMatchObject({ state: "stopped", idleStopped: true });
+
+        // The wake path (IdleStopService.ensureStartedAndHealthy → driver.start).
+        await driver.start("agent-a");
+        expect(await driver.status("agent-a")).toMatchObject({ state: "running", idleStopped: false });
+        // Nothing was recreated: the same container, the same binds.
+        expect(bot()?.body.HostConfig.Binds).toEqual([`${path.dirname(volumes.hermes)}:/bot`]);
+        // Every bot-written file is exactly where the bot left it.
+        expect(read(path.join(volumes.hermes, "sessions/session-1.json"))).toBe('{"open":true}');
+        expect(read(path.join(volumes.workspace, "notes.txt"))).toBe("bot work\n");
+        expect(read(path.join(volumes.scratch, "download.tmp"))).toBe("partial\n");
+        // The applied profile was not re-applied over the stop: the marker hash
+        // the gateway last verified is still in place.
+        expect((await driver.status("agent-a")).restartHash).toBe("restart-1");
+      });
+
+      it("myrmidon(OPE-12960): a start whose persistent volume is unavailable fails with an explicit error", async () => {
+        await driver.create(spec());
+        await driver.writeProfile("agent-a", testProfile());
+        await driver.start("agent-a");
+        await driver.stopIdle!("agent-a");
+
+        // The volume disappears under the stopped container (host path removed);
+        // its content is snapshotted, as an operator detach/reattach would restore it.
+        const botRoot = path.dirname(volumes.hermes);
+        const detached = path.join(tmp, "detached-volume");
+        fs.cpSync(botRoot, detached, { recursive: true });
+        fs.rmSync(botRoot, { recursive: true, force: true });
+        daemon.options.failStartOnMissingBindSource = true;
+
+        await expect(driver.start("agent-a")).rejects.toThrow(/persistent volume for bot agent-a is unavailable/);
+        // The container is still stopped and still marked idle-stopped: the
+        // wake failed without losing the fact that this stop was IDLE-STOP's.
+        expect(await driver.status("agent-a")).toMatchObject({ state: "stopped", idleStopped: true });
+
+        // Recovery: the volume is back, the next start boots and clears the mark.
+        daemon.options.failStartOnMissingBindSource = false;
+        fs.cpSync(detached, botRoot, { recursive: true });
+        await driver.start("agent-a");
+        expect(await driver.status("agent-a")).toMatchObject({ state: "running", idleStopped: false });
       });
 
       it("persists idle-stop in stateDir even when volumeRoot is unreachable", async () => {

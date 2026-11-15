@@ -107,7 +107,7 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-idle-pickup-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.update(issues).set({ executionRunId: null, checkoutRunId: null });
@@ -573,6 +573,65 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     expect(result.considered).toBe(1);
     expect(result.woken).toBe(1);
     expect(deps.enqueueWakeup).toHaveBeenCalledTimes(1);
+  });
+
+  // myrmidon(EMPTY-RUNS-2C): the pickup of a review participant asks for the head CI as it is now.
+  describe("review participant and the CI of the pull request head (EMPTY-RUNS-2C)", () => {
+    async function seedReviewTask(priority?: string) {
+      const { companyId, agentId } = await seedAgent();
+      const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+      await db.update(issues).set({
+        ...(priority ? { priority } : {}),
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+        },
+      }).where(eq(issues.id, issueId));
+      return { companyId, agentId, issueId };
+    }
+    const head = "d".repeat(40);
+    const ci = (state: string, finalCheckConclusion: string | null = null) =>
+      vi.fn(async () => ({ state, pullRequestUrl: null, headSha: head, finalCheckConclusion }) as never);
+    const noFailed = vi.fn(async () => ({ state: "ok", headSha: head, failed: [] }) as never);
+
+    it("does not pick the reviewer up while the head CI is unfinished or red, and does when it is green", async () => {
+      const { companyId, agentId } = await seedReviewTask();
+      for (const [state, conclusion] of [["pending", null], ["unknown", null], ["complete", "failure"]] as const) {
+        const deps = { ...fakeDeps(), resolveReviewPullRequestCi: ci(state, conclusion), resolveReviewHeadFailedChecks: noFailed };
+        const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+        expect(result.woken).toBe(0);
+        expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+      }
+      const green = { ...fakeDeps(), resolveReviewPullRequestCi: ci("complete", "success"), resolveReviewHeadFailedChecks: noFailed };
+      const result = await idlePickupForAgent(green, { id: agentId, companyId });
+      expect(result.woken).toBe(1);
+      expect(green.enqueueWakeup).toHaveBeenCalledTimes(1);
+    });
+
+    it("picks a critical issue up regardless of the head CI, and everything with the switch off", async () => {
+      const critical = await seedReviewTask("critical");
+      const deps = { ...fakeDeps(), resolveReviewPullRequestCi: ci("pending"), resolveReviewHeadFailedChecks: noFailed };
+      expect((await idlePickupForAgent(deps, { id: critical.agentId, companyId: critical.companyId })).woken).toBe(1);
+
+      const plain = await seedReviewTask();
+      const off = {
+        ...fakeDeps({ env: { MYRMIDON_REVIEW_COMMENT_WAKE_GATE_ENABLED: "off" } }),
+        resolveReviewPullRequestCi: ci("pending"),
+        resolveReviewHeadFailedChecks: noFailed,
+      };
+      expect((await idlePickupForAgent(off, { id: plain.agentId, companyId: plain.companyId })).woken).toBe(1);
+    });
+
+    it("wakes as before when the head CI cannot be read", async () => {
+      const { companyId, agentId } = await seedReviewTask();
+      const deps = {
+        ...fakeDeps(),
+        resolveReviewPullRequestCi: vi.fn(async () => { throw new Error("boom"); }),
+        resolveReviewHeadFailedChecks: noFailed,
+      };
+      expect((await idlePickupForAgent(deps, { id: agentId, companyId })).woken).toBe(1);
+    });
   });
 
   it("a container whose children are all done is itself ready again", async () => {
@@ -1635,7 +1694,7 @@ describeEmbeddedPostgres("createIdlePickupSweeper (IDLE-PICKUP tick)", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-idle-pickup-sweep-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.update(issues).set({ executionRunId: null, checkoutRunId: null });

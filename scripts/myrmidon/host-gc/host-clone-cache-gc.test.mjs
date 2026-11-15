@@ -25,6 +25,10 @@ const {
   isTreeOpen,
   loadEnvConfig,
   listBotContainers,
+  listOmpRunnerContainers,
+  fetchAgentAdapter,
+  planStaleOmpRunners,
+  stopOmpRunner,
   fetchAgentDecommissionState,
   scanBotDataForUnpushedWork,
   clearBotDiskProject,
@@ -37,6 +41,7 @@ const {
   scanRunnerTmp,
   pruneRunnerNpmCaches,
   issueIdentifierFromRunnerFolderName,
+  scanRunnerUnrecognizedWorkspaceFolders,
 } = await import(
   path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs")
 );
@@ -120,7 +125,7 @@ describe("parseArgs", () => {
     assert.equal(args.dryRun, true);
     assert.equal(args.journal, "/var/log/myrmidon-host-gc.jsonl");
     assert.equal(args.lock, "/var/run/myrmidon-host-gc.lock");
-    assert.equal(args.cloneTtlHours, 24);
+    assert.equal(args.cloneTtlHours, 3);
     assert.equal(args.cacheTtlHours, 72);
   });
 
@@ -370,11 +375,11 @@ describe("runner /tmp (OPE-12966)", () => {
   const plan = (runners, events = []) =>
     Object.fromEntries(scanRunnerTmp(runners, Date.now(), 24, { onEvent: (e) => events.push(e) }).map((i) => [i.name, i]));
 
-  function runGc(flags) {
+  function runGc(flags, extraEnv = {}) {
     const botsRoot = path.join(tmpDir, "bots");
     fs.mkdirSync(botsRoot, { recursive: true });
     const journal = path.join(tmpDir, "gc.jsonl");
-    const env = { ...process.env, HOST_GC_RUNNER_ROOTS: "", PATH: process.env.PATH, PAPERCLIP_API_URL: "http://127.0.0.1:9" };
+    const env = { ...process.env, HOST_GC_RUNNER_ROOTS: "", PATH: process.env.PATH, PAPERCLIP_API_URL: "http://127.0.0.1:9", ...extraEnv };
     const res = subprocess.spawnSync(process.execPath, [
       GC_SCRIPT, "--env", "/nonexistent", "--root", botsRoot,
       "--journal", journal, "--lock", path.join(tmpDir, "gc.lock"), "--proc-dir", path.join(tmpDir, "proc"),
@@ -507,6 +512,189 @@ describe("runner /tmp (OPE-12966)", () => {
     assert.equal(parseArgs(["node", "gc", "--runner-tmp-ttl", "12"]).runnerTmpTtlHours, 12);
     assert.throws(() => parseArgs(["node", "gc", "--runner-tmp-ttl", "1"]), UsageError);
     assert.throws(() => parseArgs(["node", "gc", "--runner-tmp-ttl", "abc"]), UsageError);
+  });
+});
+
+describe("stale OMP runner collection", () => {
+  function runGc(flags, extraEnv = {}) {
+    const botsRoot = path.join(tmpDir, "bots");
+    fs.mkdirSync(botsRoot, { recursive: true });
+    const journal = path.join(tmpDir, "gc.jsonl");
+    const env = { ...process.env, HOST_GC_RUNNER_ROOTS: "", PATH: process.env.PATH, PAPERCLIP_API_URL: "http://127.0.0.1:9", ...extraEnv };
+    const res = subprocess.spawnSync(process.execPath, [
+      path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs"), "--env", "/nonexistent", "--root", botsRoot,
+      "--journal", journal, "--lock", path.join(tmpDir, "gc.lock"), "--proc-dir", path.join(tmpDir, "proc"), ...flags,
+    ], { encoding: "utf8", env, timeout: 60_000 });
+    const events = fs.existsSync(journal) ? fs.readFileSync(journal, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
+    return { res, events };
+  }
+
+  it("keeps eng10 on omp_local and marks switched or removed agents for cleanup", async () => {
+    const root = path.join(tmpDir, "omp-runners");
+    const plan = await planStaleOmpRunners(root, { docker: "docker-that-does-not-exist" });
+    assert.equal(plan.ok, false);
+    assert.equal(plan.reason, "docker-unavailable");
+  });
+
+  it("marks an absent agent for stale-runner cleanup", async () => {
+    const dir = path.join(tmpDir, "docker-mock");
+    fs.mkdirSync(dir);
+    const docker = path.join(dir, "docker");
+    fs.writeFileSync(docker, "#!/bin/sh\nprintf '%s\\n' myrmidon-omp-runner-eng10 myrmidon-omp-runner-gone\n");
+    fs.chmodSync(docker, 0o755);
+    const plan = await planStaleOmpRunners(path.join(tmpDir, "root"), {
+      docker,
+      fetchAdapter: async (agent) => ({ ok: true, adapterType: agent === "eng10" ? "omp_local" : null }),
+    });
+    assert.deepEqual(plan.plan.map((item) => [item.agentKey, item.action, item.reason]), [
+      ["eng10", "keep", "omp-local"],
+      ["gone", "stop-remove", "agent-deleted"],
+    ]);
+  });
+
+  it("removes stale runner homes even after their containers were already removed", async () => {
+    const dir = path.join(tmpDir, "docker-mock");
+    fs.mkdirSync(dir);
+    const docker = path.join(dir, "docker");
+    fs.writeFileSync(docker, "#!/bin/sh\nprintf ''\n");
+    fs.chmodSync(docker, 0o755);
+    const root = path.join(tmpDir, "omp-runners");
+    fs.mkdirSync(path.join(root, "eng8", "home", "wt"), { recursive: true });
+    const plan = await planStaleOmpRunners(root, {
+      docker,
+      fetchAdapter: async () => ({ ok: true, adapterType: "hermes_gateway" }),
+    });
+    assert.deepEqual(plan.plan.map((item) => [item.agentKey, item.action]), [["eng8", "remove-stale-home"]]);
+    const boardScript = [
+      "const http = require('node:http');",
+      "const server = http.createServer((_req, res) => {",
+      "  res.writeHead(200, { 'Content-Type': 'application/json' });",
+      "  res.end(JSON.stringify({ adapterType: 'hermes_gateway' }));",
+      "});",
+      "server.listen(0, '127.0.0.1', () => console.log(server.address().port));",
+    ].join("\n");
+    const board = subprocess.spawn(process.execPath, ["-e", boardScript], { stdio: ["ignore", "pipe", "inherit"] });
+    const port = await new Promise((resolve, reject) => {
+      board.stdout.once("data", (chunk) => resolve(chunk.toString().trim()));
+      board.once("error", reject);
+      board.once("exit", (code) => reject(new Error(`board fixture exited: ${code}`)));
+    });
+    let result;
+    try {
+      result = runGc(["--apply", "--runner-root", root], {
+        PATH: `${dir}:${process.env.PATH}`,
+        MYRMIDON_HOST_GC_DOCKER: docker,
+        MYRMIDON_HOST_GC_DOCKER_BOT: docker,
+        BOARD_API_URL: `http://127.0.0.1:${port}`,
+      });
+    } finally {
+      board.kill();
+    }
+    assert.equal(result.res.status, 0, result.res.stderr);
+    assert.equal(fs.existsSync(path.join(root, "eng8")), false);
+    assert.ok(result.events.some((event) => event.event === "stale-omp-runner-root-removed" && event.name === "myrmidon-omp-runner-eng8"));
+  });
+
+  it("parses runner keys and fails closed when board adapter lookup is unavailable", async () => {
+    const dir = path.join(tmpDir, "docker-mock");
+    fs.mkdirSync(dir);
+    const docker = path.join(dir, "docker");
+    fs.writeFileSync(docker, "#!/bin/sh\nprintf '%s\\n' myrmidon-omp-runner-eng10 myrmidon-omp-runner-eng8 not-a-runner myrmidon-omp-runner-../bad\n");
+    fs.chmodSync(docker, 0o755);
+    assert.deepEqual(listOmpRunnerContainers({ docker }), { ok: true, names: ["myrmidon-omp-runner-eng10", "myrmidon-omp-runner-eng8"] });
+    const plan = await planStaleOmpRunners(path.join(tmpDir, "root"), {
+      docker,
+      fetchAdapter: async () => ({ ok: false, reason: "board-unavailable" }),
+    });
+    assert.ok(plan.plan.every((item) => item.action === "keep" && item.reason === "board-unavailable"));
+  });
+
+  it("recognizes the active omp_local agent without treating it as stale", async () => {
+    const dir = path.join(tmpDir, "docker-mock");
+    fs.mkdirSync(dir);
+    const docker = path.join(dir, "docker");
+    fs.writeFileSync(docker, "#!/bin/sh\nprintf '%s\\n' myrmidon-omp-runner-eng10 myrmidon-omp-runner-eng8\n");
+    fs.chmodSync(docker, 0o755);
+    const plan = await planStaleOmpRunners(path.join(tmpDir, "root"), {
+      docker,
+      fetchAdapter: async (agent) => ({ ok: true, adapterType: agent === "eng10" ? "omp_local" : "hermes_gateway" }),
+    });
+    assert.deepEqual(plan.plan.map((item) => [item.agentKey, item.action, item.reason]), [
+      ["eng10", "keep", "omp-local"],
+      ["eng8", "stop-remove", "adapter-changed"],
+    ]);
+  });
+
+  it("fails closed on board errors", async () => {
+    const unavailable = await fetchAgentAdapter("eng8", { baseUrl: "http://board", fetchImpl: async () => { throw new Error("offline"); } });
+    assert.deepEqual(unavailable, { ok: false, reason: "board-unavailable" });
+  });
+
+  it("rejects unsafe agent ids without a board call", async () => {
+    const result = await fetchAgentAdapter("../etc", { baseUrl: "http://board", fetchImpl: async () => { throw new Error("must not be called"); } });
+    assert.deepEqual(result, { ok: false, reason: "bad-agent-id" });
+  });
+
+  it("--apply stops the stale runner, removes its workspace/home/tmp, preserves eng10 and reports count", async () => {
+    const root = path.join(tmpDir, "omp-runners");
+    const old = path.join(root, "eng8", "home", "wt", "OPE-12845");
+    const active = path.join(root, "eng10", "home", "wt", "OPE-12900");
+    fs.mkdirSync(old, { recursive: true });
+    fs.mkdirSync(active, { recursive: true });
+    fs.writeFileSync(path.join(old, "ghcred.json"), "sensitive");
+    const dir = path.join(tmpDir, "docker");
+    fs.mkdirSync(dir);
+    const docker = path.join(dir, "docker");
+    const calls = path.join(dir, "calls");
+    fs.writeFileSync(docker, `#!/bin/sh\nif [ "$1" = ps ]; then printf '%s\\n' myrmidon-omp-runner-eng8 myrmidon-omp-runner-eng10; else printf '%s\\n' "$@" >> '${calls}'; fi\n`);
+    fs.chmodSync(docker, 0o755);
+    const boardScript = [
+      "const http = require('node:http');",
+      "const server = http.createServer((req, res) => {",
+      "  const adapterType = req.url.endsWith('/eng10') ? 'omp_local' : 'hermes_gateway';",
+      "  res.writeHead(200, { 'Content-Type': 'application/json' });",
+      "  res.end(JSON.stringify({ adapterType }));",
+      "});",
+      "server.listen(0, '127.0.0.1', () => console.log(server.address().port));",
+    ].join("\n");
+    const board = subprocess.spawn(process.execPath, ["-e", boardScript], { stdio: ["ignore", "pipe", "inherit"] });
+    const port = await new Promise((resolve, reject) => {
+      board.stdout.once("data", (chunk) => resolve(chunk.toString().trim()));
+      board.once("error", reject);
+      board.once("exit", (code) => reject(new Error(`board fixture exited: ${code}`)));
+    });
+    const envOverrides = { PATH: `${dir}:${process.env.PATH}`, MYRMIDON_HOST_GC_DOCKER: docker, BOARD_API_URL: `http://127.0.0.1:${port}`, MYRMIDON_HOST_GC_DOCKER_BOT: docker };
+    let result;
+    try {
+      result = runGc(["--apply", "--runner-root", root], envOverrides);
+    } finally {
+      board.kill();
+    }
+    const { res, events } = result;
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.existsSync(path.join(root, "eng8", "home")), false);
+    assert.equal(fs.existsSync(active), true);
+    assert.equal(fs.existsSync(path.join(old, "ghcred.json")), false);
+    const complete = events.find((event) => event.event === "apply-complete");
+    assert.equal(complete.staleOmpRunnersStopped, 1);
+  });
+
+  it("fetches the adapter from the agent endpoint and stops by exact container name", async () => {
+    let requestUrl;
+    const result = await fetchAgentAdapter("eng8", {
+      baseUrl: "http://board",
+      fetchImpl: async (url) => { requestUrl = url; return { ok: true, status: 200, json: async () => ({ adapterType: "hermes_gateway" }) }; },
+    });
+    assert.equal(requestUrl, "http://board/api/agents/eng8");
+    assert.deepEqual(result, { ok: true, adapterType: "hermes_gateway" });
+    const dir = path.join(tmpDir, "docker-mock");
+    fs.mkdirSync(dir);
+    const docker = path.join(dir, "docker");
+    const log = path.join(dir, "args");
+    fs.writeFileSync(docker, `#!/bin/sh\nprintf '%s\\n' "$@" > '${log}'\n`);
+    fs.chmodSync(docker, 0o755);
+    assert.equal(stopOmpRunner("myrmidon-omp-runner-eng8", { docker }), true);
+    assert.deepEqual(fs.readFileSync(log, "utf8").trim().split("\n"), ["rm", "-f", "myrmidon-omp-runner-eng8"]);
   });
 });
 
@@ -816,11 +1004,11 @@ describe("SSH runner run copies", () => {
   const GC_SCRIPT = path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs");
 
   // Runs the CLI against an empty bots root; returns the process result and the parsed journal.
-  function runGc(flags) {
+  function runGc(flags, extraEnv = {}) {
     const botsRoot = path.join(tmpDir, "bots");
     fs.mkdirSync(botsRoot, { recursive: true });
     const journal = path.join(tmpDir, "gc.jsonl");
-    const env = { ...process.env, HOST_GC_RUNNER_ROOTS: "", PATH: process.env.PATH, PAPERCLIP_API_URL: "http://127.0.0.1:9" };
+    const env = { ...process.env, HOST_GC_RUNNER_ROOTS: "", PATH: process.env.PATH, PAPERCLIP_API_URL: "http://127.0.0.1:9", ...extraEnv };
     const res = subprocess.spawnSync(process.execPath, [
       GC_SCRIPT, "--env", "/nonexistent", "--root", botsRoot,
       "--journal", journal, "--lock", path.join(tmpDir, "gc.lock"), "--proc-dir", path.join(tmpDir, "proc"),
@@ -1384,6 +1572,10 @@ describe("runner task folders", () => {
     const unpushed = makeTaskFolder(runners, "eng21", "OPE-9002", { ageHours: 30, ahead: true });
     const active = makeTaskFolder(runners, "eng21", "OPE-9003", { ageHours: 30 });
     const fresh = makeTaskFolder(runners, "eng21", "OPE-9004", { ageHours: 1 });
+    const typoDir = path.join(runners, "eng21", "workspace", "OPR-9001");
+    fs.mkdirSync(typoDir, { recursive: true });
+    const typoT = new Date(Date.now() - 30 * 60 * 60 * 1000);
+    fs.utimesSync(typoDir, typoT, typoT);
     const http = await import("node:http");
     const statuses = { "OPE-9001": "done", "OPE-9002": "done", "OPE-9003": "in_progress" };
     const fake = http.createServer((req, res) => {
@@ -1411,9 +1603,207 @@ describe("runner task folders", () => {
       const done = events.find((e) => e.event === "apply-complete");
       assert.equal(done.runnerTaskFoldersRemoved, 2);
       assert.equal(JSON.parse(res.stdout).runnerTaskFoldersRemoved, 2);
+      assert.equal(done.runnerUnrecognized, 1);
+      assert.ok(events.some((e) => e.event === "runner-unrecognized-workspace-folder" && e.name === "OPR-9001"));
+      assert.ok(fs.existsSync(typoDir), "typo folder must survive --apply (report-only)");
     } finally {
       fake.close();
     }
+  });
+
+  it("e2e: a failed archive (tar exits 2) leaves no partial archive and is journaled with the exit code", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const unpushed = makeTaskFolder(runners, "eng21", "OPE-9201", { ageHours: 30, ahead: true });
+    const fakeBin = path.join(tmpDir, "fakebin");
+    fs.mkdirSync(fakeBin, { recursive: true });
+    // No zstd, so the script takes the tar.gz path; the fake tar writes a partial archive and fails with code 2.
+    fs.writeFileSync(path.join(fakeBin, "zstd"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    fs.writeFileSync(path.join(fakeBin, "tar"), "#!/bin/sh\nhead -c 1024 /dev/zero > \"$2\"\nexit 2\n", { mode: 0o755 });
+    const http = await import("node:http");
+    const fake = http.createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "done" }));
+    });
+    await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
+    const port = fake.address().port;
+    try {
+      const { res, events } = await runGcTask(["--apply", "--runner-root", runners], {
+        PAPERCLIP_API_URL: `http://127.0.0.1:${port}`,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+      });
+      assert.equal(res.status, 0, res.stderr);
+      assert.equal(fs.existsSync(unpushed), true, "folder must stay when the archive failed");
+      const archiveDir = path.join(runners, ".gc-archive");
+      const left = fs.existsSync(archiveDir) ? fs.readdirSync(archiveDir).filter((n) => n.startsWith("OPE-9201-")) : [];
+      assert.deepEqual(left, [], "no partial archive may remain");
+      const failed = events.find((e) => e.event === "runner-task-folder-archive-failed" && e.path === unpushed);
+      assert.ok(failed, "failure journaled");
+      assert.match(failed.error, /exit code 2/);
+    } finally {
+      fake.close();
+    }
+  });
+
+  it("e2e: the archive skips git-ignored node_modules and build outputs but keeps .git and working files", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeTaskFolder(runners, "eng21", "OPE-9301", { ageHours: 30, ahead: true });
+    fs.writeFileSync(path.join(folder, "repo", ".gitignore"), "node_modules\ndist\n");
+    fs.mkdirSync(path.join(folder, "repo", "node_modules", "pkg"), { recursive: true });
+    fs.writeFileSync(path.join(folder, "repo", "node_modules", "pkg", "index.js"), "module.exports = 1;\n");
+    fs.mkdirSync(path.join(folder, "repo", "dist"), { recursive: true });
+    fs.writeFileSync(path.join(folder, "repo", "dist", "out.js"), "built\n");
+    fs.writeFileSync(path.join(folder, "repo", "notes.txt"), "keep me\n");
+    const http = await import("node:http");
+    const fake = http.createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "done" }));
+    });
+    await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
+    const port = fake.address().port;
+    try {
+      const { res } = await runGcTask(["--apply", "--runner-root", runners], { PAPERCLIP_API_URL: `http://127.0.0.1:${port}` });
+      assert.equal(res.status, 0, res.stderr);
+      const archiveDir = path.join(runners, ".gc-archive");
+      const names = fs.readdirSync(archiveDir).filter((n) => n.startsWith("OPE-9301-"));
+      assert.equal(names.length, 1, "one archive");
+      // GNU tar detects gzip and zstd by itself when listing a file.
+      const list = subprocess.spawnSync("tar", ["-tf", path.join(archiveDir, names[0])], { encoding: "utf8" });
+      assert.equal(list.status, 0, list.stderr);
+      assert.ok(list.stdout.includes("OPE-9301/repo/.git/HEAD"), "a .git file is archived");
+      assert.ok(list.stdout.includes("OPE-9301/repo/notes.txt"), "a working file is archived");
+      assert.ok(!list.stdout.includes("node_modules"), "node_modules is not archived");
+      assert.ok(!list.stdout.includes("dist/out.js"), "build output is not archived");
+    } finally {
+      fake.close();
+    }
+  });
+
+  // Runs one archive pass over `folder` (already built by the caller) and returns the `tar -tf` listing.
+  const archiveListing = async (runners, taskName) => {
+    const http = await import("node:http");
+    const fake = http.createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "done" }));
+    });
+    await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
+    const port = fake.address().port;
+    try {
+      const { res } = await runGcTask(["--apply", "--runner-root", runners], { PAPERCLIP_API_URL: `http://127.0.0.1:${port}` });
+      assert.equal(res.status, 0, res.stderr);
+      const archiveDir = path.join(runners, ".gc-archive");
+      const names = fs.readdirSync(archiveDir).filter((n) => n.startsWith(`${taskName}-`));
+      assert.equal(names.length, 1, "one archive");
+      const list = subprocess.spawnSync("tar", ["-tf", path.join(archiveDir, names[0])], { encoding: "utf8" });
+      assert.equal(list.status, 0, list.stderr);
+      return list.stdout;
+    } finally {
+      fake.close();
+    }
+  };
+
+  it("e2e: an uncommitted file git does not ignore inside dist/ is archived, an ignored node_modules is not", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeTaskFolder(runners, "eng21", "OPE-9302", { ageHours: 30, dirty: true });
+    fs.writeFileSync(path.join(folder, "repo", ".gitignore"), "node_modules\n");
+    fs.mkdirSync(path.join(folder, "repo", "dist"), { recursive: true });
+    fs.writeFileSync(path.join(folder, "repo", "dist", "keep.txt"), "my work\n");
+    fs.mkdirSync(path.join(folder, "repo", "node_modules", "x"), { recursive: true });
+    fs.writeFileSync(path.join(folder, "repo", "node_modules", "x", "y.js"), "1\n");
+    const listing = await archiveListing(runners, "OPE-9302");
+    assert.ok(listing.includes("OPE-9302/repo/dist/keep.txt"), "non-ignored file in dist/ is archived");
+    assert.ok(!listing.includes("node_modules"), "ignored node_modules is not archived");
+  });
+
+  it("e2e: ignored dirs are excluded by exact path, a similar path with a space or glob char elsewhere stays", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeTaskFolder(runners, "eng21", "OPE-9304", { ageHours: 30, dirty: true });
+    fs.writeFileSync(path.join(folder, "repo", ".gitignore"), "/dist\n/my app \\[1\\]/dist\n");
+    fs.mkdirSync(path.join(folder, "repo", "dist"), { recursive: true });
+    fs.writeFileSync(path.join(folder, "repo", "dist", "out.js"), "built\n");
+    fs.mkdirSync(path.join(folder, "repo", "my app [1]", "dist"), { recursive: true });
+    fs.writeFileSync(path.join(folder, "repo", "my app [1]", "dist", "out.js"), "built\n");
+    fs.mkdirSync(path.join(folder, "repo", "pkg", "dist"), { recursive: true });
+    fs.writeFileSync(path.join(folder, "repo", "pkg", "dist", "mine.txt"), "not ignored\n");
+    const listing = await archiveListing(runners, "OPE-9304");
+    assert.ok(!listing.includes("repo/dist/out.js"), "ignored /dist is not archived");
+    assert.ok(!listing.includes("my app [1]/dist"), "ignored path with space and brackets is not archived");
+    assert.ok(listing.includes("OPE-9304/repo/pkg/dist/mine.txt"), "dist elsewhere, not ignored, is archived");
+  });
+
+  it("e2e: a subtree without a working git repo is archived whole (git cannot confirm anything ignored)", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeTaskFolder(runners, "eng21", "OPE-9303", { ageHours: 30, dirty: true });
+    // `plain` has no .git at all; `broken` has a .git that is not a repository, so git fails there.
+    for (const sub of ["plain", "broken"]) {
+      fs.mkdirSync(path.join(folder, sub, "node_modules", "x"), { recursive: true });
+      fs.writeFileSync(path.join(folder, sub, "node_modules", "x", "y.js"), "1\n");
+      fs.mkdirSync(path.join(folder, sub, "dist"), { recursive: true });
+      fs.writeFileSync(path.join(folder, sub, "dist", "out.js"), "built\n");
+    }
+    fs.mkdirSync(path.join(folder, "broken", ".git"), { recursive: true });
+    // New subdirs bumped the folder's mtime: age it again so the TTL applies.
+    const aged = new Date(Date.now() - 30 * HOUR);
+    fs.utimesSync(folder, aged, aged);
+    const listing = await archiveListing(runners, "OPE-9303");
+    for (const sub of ["plain", "broken"]) {
+      assert.ok(listing.includes(`OPE-9303/${sub}/node_modules/x/y.js`), `${sub}: node_modules archived`);
+      assert.ok(listing.includes(`OPE-9303/${sub}/dist/out.js`), `${sub}: dist archived`);
+    }
+  });
+
+  // Shared by the two failing-archive tests: fake tar/zstd on PATH, a fake board that says "done".
+  const runWithFakeArchiveTools = async (name, { tarBody, zstdBody }, envExtra = {}) => {
+    const runners = path.join(tmpDir, "runners");
+    const unpushed = makeTaskFolder(runners, "eng21", name, { ageHours: 30, ahead: true });
+    const fakeBin = path.join(tmpDir, "fakebin2");
+    fs.mkdirSync(fakeBin, { recursive: true });
+    fs.writeFileSync(path.join(fakeBin, "zstd"), zstdBody, { mode: 0o755 });
+    fs.writeFileSync(path.join(fakeBin, "tar"), tarBody, { mode: 0o755 });
+    const http = await import("node:http");
+    const fake = http.createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "done" }));
+    });
+    await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
+    try {
+      const out = await runGcTask(["--apply", "--runner-root", runners], {
+        PAPERCLIP_API_URL: `http://127.0.0.1:${fake.address().port}`,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        ...envExtra,
+      });
+      const archiveDir = path.join(runners, ".gc-archive");
+      const left = fs.existsSync(archiveDir) ? fs.readdirSync(archiveDir).filter((n) => n.startsWith(`${name}-`)) : [];
+      return { ...out, unpushed, left, failed: out.events.find((e) => e.event === "runner-task-folder-archive-failed" && e.path === unpushed) };
+    } finally {
+      fake.close();
+    }
+  };
+
+  it("e2e: a hanging tar is killed by the archive timeout, no archive is left, the journal says timed out", async () => {
+    const started = Date.now();
+    // tar.gz branch (fake zstd refuses --version); the fake tar writes a partial file and then hangs.
+    const { res, unpushed, left, failed } = await runWithFakeArchiveTools("OPE-9302", {
+      zstdBody: "#!/bin/sh\nexit 1\n",
+      tarBody: "#!/bin/sh\nhead -c 1024 /dev/zero > \"$2\"\nsleep 60\n",
+    }, { HOST_GC_ARCHIVE_TIMEOUT_SECONDS: "2" });
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(Date.now() - started < 40_000, "the hang was cut short by the timeout");
+    assert.equal(fs.existsSync(unpushed), true, "folder stays");
+    assert.deepEqual(left, [], "no partial archive remains");
+    assert.ok(failed, "failure journaled");
+    assert.match(failed.error, /timed out after 2 s/);
+  });
+
+  it("e2e: pipefail: tar fails (exit 2) while zstd succeeds, the failure is not masked", async () => {
+    const { res, unpushed, left, failed } = await runWithFakeArchiveTools("OPE-9303", {
+      zstdBody: "#!/bin/sh\n[ \"$1\" = \"--version\" ] && exit 0\ncat > \"$3\"\nexit 0\n",
+      tarBody: "#!/bin/sh\nexit 2\n",
+    });
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.existsSync(unpushed), true, "folder stays");
+    assert.deepEqual(left, [], "no archive remains");
+    assert.ok(failed, "failure journaled");
+    assert.match(failed.error, /exit code 2/);
   });
 
   it("e2e: an unreachable board keeps every folder (fail-closed apply)", async () => {
@@ -1427,6 +1817,10 @@ describe("runner task folders", () => {
   it("e2e: dry-run removes nothing and lists the plan", async () => {
     const runners = path.join(tmpDir, "runners");
     const clean = makeTaskFolder(runners, "eng21", "OPE-9201", { ageHours: 30 });
+    const typoDir = path.join(runners, "eng21", "workspace", "OPR-9201");
+    fs.mkdirSync(typoDir, { recursive: true });
+    const t = new Date(Date.now() - 30 * 60 * 60 * 1000);
+    fs.utimesSync(typoDir, t, t);
     const http = await import("node:http");
     const fake = http.createServer((req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -1441,8 +1835,80 @@ describe("runner task folders", () => {
       assert.equal(events.find((e) => e.event === "dry-run").runnerTaskFolders, 1);
       const out = JSON.parse(res.stdout);
       assert.deepEqual(out.plan.runnerTaskFolders.map((i) => [i.path, i.action]), [[clean, "remove"]]);
+      assert.equal(out.plan.runnerUnrecognized.length, 1);
+      assert.equal(out.plan.runnerUnrecognized[0].name, "OPR-9201");
+      assert.equal(out.plan.runnerUnrecognized[0].action, "report");
+      assert.ok(events.some((e) => e.event === "runner-unrecognized-workspace-folder" && e.name === "OPR-9201"));
+      assert.ok(fs.existsSync(typoDir), "typo folder must survive the dry-run");
     } finally {
       fake.close();
     }
+  });
+});
+
+describe("runner unrecognized workspace folders (OPE-13018)", () => {
+  const HOUR = 60 * 60 * 1000;
+
+  const makeWorkspaceFolder = (runnersRoot, runner, name, { ageHours = 48 } = {}) => {
+    const dir = path.join(runnersRoot, runner, "workspace", name);
+    fs.mkdirSync(dir, { recursive: true });
+    const t = new Date(Date.now() - ageHours * HOUR);
+    fs.utimesSync(dir, t, t);
+    return dir;
+  };
+
+  it("reports an old folder with a typo'd name and never deletes it", () => {
+    const runners = path.join(tmpDir, "runners");
+    const typo = makeWorkspaceFolder(runners, "eng21", "OPR-12962", { ageHours: 48 });
+    const items = scanRunnerUnrecognizedWorkspaceFolders(runners, Date.now(), 24);
+    assert.deepEqual(items.map((i) => [i.path, i.action, i.reason]), [[typo, "report", "unrecognized-ttl"]]);
+    assert.ok(fs.existsSync(typo), "report-only: the folder must stay on disk");
+  });
+
+  it("does not report recognized task folders or the runtime directory", () => {
+    const runners = path.join(tmpDir, "runners");
+    makeWorkspaceFolder(runners, "eng21", "OPE-12962", { ageHours: 48 });
+    makeWorkspaceFolder(runners, "eng21", "OPE-12962-wt", { ageHours: 48 });
+    fs.mkdirSync(path.join(runners, "eng21", "workspace", ".paperclip-runtime"), { recursive: true });
+    const items = scanRunnerUnrecognizedWorkspaceFolders(runners, Date.now(), 24);
+    assert.deepEqual(items, []);
+  });
+
+  it("does not report a fresh unrecognized folder (the agent may still be in it)", () => {
+    const runners = path.join(tmpDir, "runners");
+    makeWorkspaceFolder(runners, "eng21", "scratch-pad", { ageHours: 1 });
+    const items = scanRunnerUnrecognizedWorkspaceFolders(runners, Date.now(), 24);
+    assert.deepEqual(items.map((i) => i.reason), ["unrecognized-fresh"]);
+  });
+
+  it("skips dot-directories and files", () => {
+    const runners = path.join(tmpDir, "runners");
+    fs.mkdirSync(path.join(runners, "eng21", "workspace", ".hidden"), { recursive: true });
+    fs.writeFileSync(path.join(runners, "eng21", "workspace", "notes.txt"), "x");
+    const items = scanRunnerUnrecognizedWorkspaceFolders(runners, Date.now(), 24);
+    assert.deepEqual(items, []);
+  });
+
+  it("a missing root and a file root are reported and yield nothing", () => {
+    const events = [];
+    const missing = path.join(tmpDir, "nope");
+    assert.deepEqual(scanRunnerUnrecognizedWorkspaceFolders(missing, Date.now(), 24, { onEvent: (e) => events.push(e) }), []);
+    const notDir = path.join(tmpDir, "file-root");
+    fs.writeFileSync(notDir, "x");
+    assert.deepEqual(scanRunnerUnrecognizedWorkspaceFolders(notDir, Date.now(), 24, { onEvent: (e) => events.push(e) }), []);
+    assert.deepEqual(events[0], { event: "runner-folder-root-missing", root: missing });
+    assert.equal(events[1].event, "runner-unrecognized-scan-failed");
+    assert.equal(events[1].root, notDir);
+    assert.match(events[1].error, /not a directory/);
+  });
+
+  it("a symlinked runner is skipped", () => {
+    const runners = path.join(tmpDir, "runners");
+    const outside = path.join(tmpDir, "outside");
+    makeWorkspaceFolder(outside, "victim", "OPR-1");
+    fs.mkdirSync(runners, { recursive: true });
+    fs.symlinkSync(path.join(outside, "victim"), path.join(runners, "eng8"));
+    const items = scanRunnerUnrecognizedWorkspaceFolders(runners, Date.now(), 24);
+    assert.deepEqual(items, []);
   });
 });

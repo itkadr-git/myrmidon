@@ -49,7 +49,7 @@ describeEmbeddedPostgres("model fallback attention feed card (BOT-RUNTIME-TUNING
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-fallback-attention-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     resetModelFallbackSignals();

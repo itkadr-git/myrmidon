@@ -32,6 +32,17 @@ export interface TelegramAddressee {
 }
 
 /**
+ * Result of resolving a bridged message addressee (OPE-13033).
+ * When an exact name/alias/title matches a single agent, it resolves.
+ * When multiple agents match the exact handle, it returns an ambiguous result
+ * with candidate names and IDs so the caller can inform the user.
+ */
+export type BridgeAddresseeResult =
+  | { kind: "resolved"; addressee: TelegramAddressee }
+  | { kind: "ambiguous"; handle: string; candidates: Array<{ agentId: string; name: string }> }
+  | { kind: "none" };
+
+/**
  * What `resolveTelegramAddressee` hands back: either the matched addressee,
  * or null with the list of valid mentions for a polite hint (part B).
  */
@@ -364,7 +375,12 @@ async function loadCompanyAgents(db: Db, companyId: string): Promise<AgentCandid
 /**
  * Resolves the first @-token in `text` that matches an agent of `companyId`.
  * Alias match first, then agent name, then title, case-insensitive; the
- * longest alias of a candidate wins. Returns null when no token resolves.
+ * longest alias of a candidate wins.
+ *
+ * When a token matches exactly one agent, returns `{ kind: "resolved", addressee }`.
+ * When a token matches multiple agents (e.g. duplicate names/aliases), returns
+ * `{ kind: "ambiguous", handle, candidates: [{ agentId, name }] }`.
+ * When no token matches, returns `{ kind: "none" }`.
  */
 export async function resolveBridgeAddressee(
   db: Db,
@@ -374,36 +390,63 @@ export async function resolveBridgeAddressee(
     /** The endpoint's assigned agent: also addressable by name/alias/title. */
     endpointAgentId: string;
   },
-): Promise<TelegramAddressee | null> {
+): Promise<BridgeAddresseeResult> {
   const tokens = extractMentionTokens(input.text);
-  if (tokens.length === 0) return null;
+  if (tokens.length === 0) return { kind: "none" };
   const candidates = await loadCompanyAgents(db, input.companyId);
-  const byToken = new Map<string, string>();
+  const candidateById = new Map(candidates.map((c) => [c.id, c]));
+  const byToken = new Map<string, string[]>();
+
+  const addTokenMapping = (key: string, agentId: string) => {
+    const current = byToken.get(key);
+    if (!current) {
+      byToken.set(key, [agentId]);
+    } else if (!current.includes(agentId)) {
+      current.push(agentId);
+    }
+  };
+
   for (const candidate of candidates) {
     for (const alias of candidate.aliases) {
       const key = normalizeAlias(alias);
       if (!key) continue;
-      if (!byToken.has(key)) byToken.set(key, candidate.id);
+      addTokenMapping(key, candidate.id);
     }
     for (const field of [candidate.name, candidate.title]) {
       if (!field) continue;
       const key = normalizeAlias(field);
       if (!key) continue;
-      if (!byToken.has(key)) byToken.set(key, candidate.id);
+      addTokenMapping(key, candidate.id);
     }
   }
   for (const token of tokens) {
     // Longest-match-first: try the whole token, then progressively shorter
     // prefixes, so `@гип2` does not resolve as `@гип` plus a stray `2`.
     for (let length = token.length; length > 0; length -= 1) {
-      const agentId = byToken.get(token.slice(0, length).toLowerCase());
-      if (agentId) {
-        const agent = candidates.find((candidate) => candidate.id === agentId)!;
-        return { agentId, displayName: agent.name };
+      const subKey = token.slice(0, length).toLowerCase();
+      const matchedAgentIds = byToken.get(subKey);
+      if (matchedAgentIds && matchedAgentIds.length > 0) {
+        if (matchedAgentIds.length === 1) {
+          const agentId = matchedAgentIds[0];
+          const agent = candidateById.get(agentId)!;
+          return {
+            kind: "resolved",
+            addressee: { agentId, displayName: agent.name },
+          };
+        }
+        const matchingCandidates = matchedAgentIds.map((id) => {
+          const agent = candidateById.get(id)!;
+          return { agentId: id, name: agent.name };
+        });
+        return {
+          kind: "ambiguous",
+          handle: subKey,
+          candidates: matchingCandidates,
+        };
       }
     }
   }
-  return null;
+  return { kind: "none" };
 }
 
 /**

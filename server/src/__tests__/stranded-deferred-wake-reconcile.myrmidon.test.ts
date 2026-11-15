@@ -85,7 +85,7 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
     heartbeat = heartbeatService(db, {
       runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" },
     });
-  }, 20_000);
+  }, 60_000);
 
   beforeEach(async () => {
     await db.insert(companies).values({

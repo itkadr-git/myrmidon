@@ -19,7 +19,7 @@ describeEmbeddedPostgres("myrmidon(M2-A) run windows from the database", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-litellm-costs-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(heartbeatRuns);

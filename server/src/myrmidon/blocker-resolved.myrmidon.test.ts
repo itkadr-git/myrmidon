@@ -42,7 +42,7 @@ describePg("swarm-claim queue honours a cancelled blocker as resolved", () => {
         "created_at" timestamptz NOT NULL DEFAULT now(), "updated_at" timestamptz NOT NULL DEFAULT now()
       );
     `));
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueRelations);

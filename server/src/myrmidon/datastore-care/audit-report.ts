@@ -169,21 +169,37 @@ export function evaluateCriteria(
         : null,
   });
 
-  // 2. Daily growth against the previous snapshot.
+  // 2. Daily growth against the previous snapshot. A window shorter than one
+  // hour is treated as not yet evaluable: right after a board restart the
+  // snapshot interval can be near zero and any tiny delta then inflates into
+  // a fake "+N %" daily growth warning on every rollout.
+  const MIN_GROWTH_WINDOW_HOURS = 1;
   if (previous && previous.databaseBytes > 0) {
     const hours =
       (new Date(payload.capturedAt).getTime() - new Date(previous.capturedAt).getTime()) / 3_600_000;
     const delta = payload.databaseBytes - previous.databaseBytes;
-    const perDay = hours > 0 ? (delta / previous.databaseBytes) * (24 / hours) * 100 : 0;
-    criteria.push({
-      id: "growth-24h",
-      title: "Рост базы за сутки",
-      threshold: "≤ 5 %/сутки",
-      value: `${perDay >= 0 ? "+" : ""}${percent(perDay)} (${prettyBytes(delta)} за ${hours.toFixed(1)} ч)`,
-      verdict: perDay > 5 ? "warn" : "ok",
-      source: `снимок ${previous.capturedAt} → ${payload.capturedAt}`,
-      detail: null,
-    });
+    if (hours >= MIN_GROWTH_WINDOW_HOURS) {
+      const perDay = (delta / previous.databaseBytes) * (24 / hours) * 100;
+      criteria.push({
+        id: "growth-24h",
+        title: "Рост базы за сутки",
+        threshold: "≤ 5 %/сутки",
+        value: `${perDay >= 0 ? "+" : ""}${percent(perDay)} (${prettyBytes(delta)} за ${hours.toFixed(1)} ч)`,
+        verdict: perDay > 5 ? "warn" : "ok",
+        source: `снимок ${previous.capturedAt} → ${payload.capturedAt}`,
+        detail: null,
+      });
+    } else {
+      criteria.push({
+        id: "growth-24h",
+        title: "Рост базы за сутки",
+        threshold: "≤ 5 %/сутки",
+        value: `окно ${hours.toFixed(1)} ч — рост не оценивался`,
+        verdict: "unknown",
+        source: `снимок ${previous.capturedAt} → ${payload.capturedAt}`,
+        detail: `между снимками меньше ${MIN_GROWTH_WINDOW_HOURS} ч (перезапуск или первый сбор после выката) — критерий оценивается со второго часа окна`,
+      });
+    }
   } else {
     criteria.push({
       id: "growth-24h",

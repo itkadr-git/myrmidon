@@ -100,6 +100,8 @@ export const wsDiskStateSchema = z.object({
   quotaPercent: z.number().min(0).max(100).nullable(),
   partitionPercent: z.number().min(0).max(100),
   pressure: wsDiskPressureLevelSchema,
+  /** myrmidon(OPE-13107): set when pressure is a guess (no board measurement, no local statfs). */
+  warning: z.string().optional(),
   updatedAt: z.string().datetime({ offset: false }),
 });
 export type WsDiskState = z.infer<typeof wsDiskStateSchema>;
@@ -275,6 +277,8 @@ export const wsDesiredStateSchema = z.object({
     quotaPercent: z.number().min(0).max(100).nullable(),
     partitionPercent: z.number().min(0).max(100),
     level: wsDiskPressureLevelSchema,
+    /** myrmidon(OPE-13107): false = the board has no partition measurement (0/none is "no data"). */
+    partitionMeasured: z.boolean().optional(),
   }),
   workspaces: z.array(wsDesiredWorkspaceSchema),
   /**
