@@ -21,6 +21,19 @@ function tokens(source) {
       result.push({ type: quote === '`' || escaped ? 'opaque' : 'string', value });
       continue;
     }
+    if (c === '/' && source[i + 1] !== '/' && source[i + 1] !== '*' &&
+        (!result.length || /[({[=,:;!?&|+*-~<>]/.test(result.at(-1).value))) {
+      let j = i + 1; let inClass = false; let closed = false;
+      while (j < source.length) {
+        if (source[j] === '\\') { j += 2; continue; }
+        if (source[j] === '[') inClass = true;
+        if (source[j] === ']' && inClass) inClass = false;
+        if (source[j] === '/' && !inClass) { j++; while (j < source.length && /[dgimsuvy]/.test(source[j])) j++; closed = true; break; }
+        if (source[j] === '\n') break;
+        j++;
+      }
+      if (closed) { i = j; result.push({ type: 'opaque', value: '' }); continue; }
+    }
     if (/[A-Za-z_$]/.test(c)) {
       const start = i++; while (i < source.length && /[\w$]/.test(source[i])) i++;
       result.push({ type: 'word', value: source.slice(start, i) }); continue;
