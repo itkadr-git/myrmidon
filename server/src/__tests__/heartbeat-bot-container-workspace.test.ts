@@ -270,6 +270,8 @@ describeEmbeddedPostgres("bot-container isolated workspace", () => {
     );
     expect((await waitForRunToLeaveActiveStates(run!.id))?.status).toBe("succeeded");
     await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, issueId));
+    // No follow-up run of the task may still be live when the sweep looks at it.
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
 
     const service = executionWorkspaceService(db, {
       workspaceReaperCooldownDays: 0,
@@ -279,6 +281,6 @@ describeEmbeddedPostgres("bot-container isolated workspace", () => {
     const sweep = await service.sweepTerminalWorkspaces();
     expect(sweep).toMatchObject({ skippedInspectFailed: 0, skippedDirty: 0, skippedUnmerged: 0 });
     const [row] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.sourceIssueId, issueId));
-    expect(row).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
+    expect(row, JSON.stringify(sweep)).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
   }, 60_000);
 });
