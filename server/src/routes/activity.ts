@@ -204,7 +204,12 @@ export function activityRoutes(db: Db) {
     assigneeAgentId: string | null;
     assigneeUserId: string | null;
     status: string;
+    isPrivate?: boolean | null;
   }) {
+    if (issue.isPrivate && req.actor.type === "agent") {
+      res.status(404).json({ error: "Issue not found" });
+      return false;
+    }
     const decision = await access.decide({
       actor: req.actor,
       action: "issue:read",
@@ -268,7 +273,13 @@ export function activityRoutes(db: Db) {
       throw badRequest("Invalid agent action audit query", parsedQuery.error.issues);
     }
     if (parsedQuery.data.actorScope === "agents") {
-      const result = await agentAudit.list({ companyId, ...parsedQuery.data });
+      const result = await agentAudit.list({
+        companyId,
+        ...parsedQuery.data,
+        // myrmidon(1.7 PRIVATE-TASKS F3): agents must not read private-issue
+        // rows (comment text, issue titles, details) through the audit feed.
+        excludePrivate: req.actor.type === "agent",
+      });
       res.json({ ...result, accessTier: "full" });
       return;
     }
@@ -277,7 +288,11 @@ export function activityRoutes(db: Db) {
     if (!canViewAttribution && hasAttributionFilters(parsedQuery.data)) {
       throw forbidden("Audit filters require permission: audit:view_agent_actions");
     }
-    const result = await agentAudit.list({ companyId, ...parsedQuery.data });
+    const result = await agentAudit.list({
+      companyId,
+      ...parsedQuery.data,
+      excludePrivate: req.actor.type === "agent",
+    });
     res.json({
       ...(canViewAttribution ? result : stripAuditAttribution(result)),
       accessTier: canViewAttribution ? "full" : "basic",
@@ -297,7 +312,15 @@ export function activityRoutes(db: Db) {
     const rows: Awaited<ReturnType<typeof agentAudit.list>>["items"] = [];
     let cursor: string | undefined;
     do {
-      const page = await agentAudit.list({ companyId, ...filters, cursor, limit: AUDIT_CSV_PAGE_SIZE });
+      const page = await agentAudit.list({
+        companyId,
+        ...filters,
+        cursor,
+        limit: AUDIT_CSV_PAGE_SIZE,
+        // myrmidon(1.7 PRIVATE-TASKS F3): exports carry the same private-issue
+        // wall as the read API.
+        excludePrivate: req.actor.type === "agent",
+      });
       for (const item of page.items) {
         if (rows.length >= AUDIT_CSV_EXPORT_MAX_ROWS) break;
         rows.push(item);
@@ -356,6 +379,7 @@ export function activityRoutes(db: Db) {
       companyId,
       ...filters,
       limit: limit ?? AUDIT_JSONL_PAGE_SIZE,
+      excludePrivate: req.actor.type === "agent",
     });
 
     // The export is itself an auditable act (same precedent as the CSV export):
@@ -440,7 +464,9 @@ export function activityRoutes(db: Db) {
     }
     assertCompanyAccess(req, run.companyId);
     if (!(await assertCompanyScopeReadAllowed(req, res, run.companyId))) return;
-    const result = await svc.issuesForRun(runId);
+    const result = await svc.issuesForRun(runId, {
+      excludePrivate: req.actor.type === "agent",
+    });
     res.json(result);
   });
 

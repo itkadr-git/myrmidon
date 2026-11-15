@@ -6,6 +6,9 @@
 // continuation machinery) and the issue is not blocked. These continuations have
 // their own ceiling (heartbeat.runGuardContinuation.maxAttempts, default 6, at
 // most 20) and do not spend the max-turn one (heartbeat.maxTurnContinuation).
+// myrmidon(OPE-12799): "made changes" is not enough twice in a row: the second
+// limit stop in a row of the issue that left nothing on the board (no comment,
+// no document revision, no work product) is final.
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -17,6 +20,7 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueWorkProducts,
   issues,
 } from "@myrmidon/db";
 import {
@@ -382,9 +386,25 @@ describeEmbeddedPostgres("run guard stops are not retried", () => {
       return heartbeat.applyRunGuardStop(runId);
     }
 
+    // myrmidon(OPE-12799): what a run leaves on the board for the next one: here a pushed branch.
+    async function leaveWorkProduct(input: { companyId: string; issueId: string; runId: string }) {
+      await db.insert(issueWorkProducts).values({
+        id: randomUUID(),
+        companyId: input.companyId,
+        issueId: input.issueId,
+        type: "branch",
+        provider: "github",
+        title: `work of run ${input.runId}`,
+        status: "active",
+        createdByRunId: input.runId,
+      });
+    }
+
     it("keeps continuing past the max-turn ceiling: three stops in a row with changes, a 4th continuation is queued", async () => {
       // The max-turn ceiling is 2 by default; the chain below is 3 stops long.
-      const { issueId, runId } = await seedRun({
+      // myrmidon(OPE-12799): every follow-up leaves a result on the board, so no
+      // two stops in a row are empty and the chain is work, not a loop.
+      const { companyId, issueId, runId } = await seedRun({
         shape: "retry",
         status: "cancelled",
         errorCode: "model_call_limit",
@@ -403,7 +423,8 @@ describeEmbeddedPostgres("run guard stops are not retried", () => {
         expect((successor?.contextSnapshot as Record<string, unknown>).runGuardContinuationAttempts).toBe(expectedAttempt);
         expect((await issueState(issueId)).status).toBe("in_progress");
         previous = successor!.id;
-        // The follow-up runs, changes things and hits the call limit again.
+        // The follow-up runs, changes things, leaves a result and hits the call limit again.
+        await leaveWorkProduct({ companyId, issueId, runId: previous });
         await stopFollowUp(previous, CHANGING_STATS);
       }
 
@@ -413,6 +434,39 @@ describeEmbeddedPostgres("run guard stops are not retried", () => {
       const state = await issueState(issueId);
       expect(state.status).toBe("in_progress");
       expect(state.comments).toHaveLength(0);
+    });
+
+    // myrmidon(OPE-12799): `writeCalls` > 0 twice in a row with nothing on the board is a loop.
+    it("blocks the issue on the second stop in a row that left nothing on the board, whatever the ceiling has left", async () => {
+      const { issueId, runId } = await seedRun({
+        shape: "retry",
+        status: "cancelled",
+        errorCode: "model_call_limit",
+        resultJson: { runGuardStopReason: "model_call_limit", runGuardStats: CHANGING_STATS },
+      });
+      // The seeded run is dated NOW; put it inside the look-back window of its follow-up.
+      await db
+        .update(heartbeatRuns)
+        .set({ createdAt: new Date(Date.now() - 60_000) })
+        .where(eq(heartbeatRuns.id, runId));
+
+      // The first empty stop still continues: one empty run is not a loop yet.
+      await heartbeat.applyRunGuardStop(runId);
+      const [followUp] = await successorsOf(runId);
+      expect(followUp).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 1 });
+      expect((await issueState(issueId)).status).toBe("in_progress");
+
+      // The follow-up makes "write" calls too and leaves nothing either: the stop is final.
+      expect(await stopFollowUp(followUp!.id, CHANGING_STATS)).toMatchObject({ outcome: "handled" });
+
+      expect(await successorsOf(followUp!.id)).toHaveLength(0);
+      const state = await issueState(issueId);
+      expect(state.status).toBe("blocked");
+      expect(
+        state.comments.some((comment) =>
+          comment.body.startsWith("Второй прогон подряд остановлен защитой без результата: лимит вызовов модели"),
+        ),
+      ).toBe(true);
     });
 
     it("blocks the issue with the usual comment when the own continuation ceiling (6) is spent", async () => {

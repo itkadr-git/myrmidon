@@ -1,0 +1,30 @@
+diff --git a/tools/skills_tool.py b/tools/skills_tool.py
+index b1e60f5..73243cd 100644
+--- a/tools/skills_tool.py
++++ b/tools/skills_tool.py
+@@ -365,6 +365,25 @@ def _collect_skill_candidates(name, local_category_name, all_dirs):
+             if (found_md.name != "SKILL.md" and not _is_skill_support_path(found_md)
+                     and not _is_package_owned_markdown(found_md, search_dir)):
+                 _record(None, found_md)
++    if not candidates:
++        # myrmidon(G1): board-managed skills materialize as
++        # <skills>/paperclip-managed/<slug>--<hash>/SKILL.md while the skills index
++        # exposes them as "paperclip-managed:<slug>" (category = first path segment,
++        # name = frontmatter `name:`). The exact-name passes above match neither the
++        # hashed directory nor the bare frontmatter name, so every such skill_view
++        # failed with "not found". When exact matching found nothing, accept the
++        # qualified alias: the parent-of-parent directory equals the namespace and the
++        # frontmatter name equals the bare part. Runs only on the zero-candidate path,
++        # so exact matches, project precedence and quarantine behavior are untouched;
++        # two same-slug skills from different board keys still collide into the
++        # caller's "Ambiguous skill name" refusal instead of a silent pick.
++        namespace, sep, bare = name.partition(":")
++        if sep and bare:
++            for search_dir in all_dirs:
++                for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
++                    if (found_skill_md.parent.parent.name == namespace
++                            and _safe_frontmatter(found_skill_md).get("name") == bare):
++                        _record(found_skill_md.parent, found_skill_md)
+     return candidates
+ 
+ 

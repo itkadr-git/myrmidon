@@ -59,7 +59,9 @@ Turning the cache off works the same way in reverse.
    another directory, as on the
    production host, the SOURCE directory is the one to give away) and give them to the bot user (uid and gid
    10001 in the bot image); Docker would otherwise create a missing one as root
-   and the bot could not write to it:
+   and the bot could not write to it. The cache root must be on the SAME filesystem
+   as the bot volumes (outside `MYRMIDON_BOT_VOLUME_ROOT`), not on the root disk:
+   a reflink works inside one filesystem only (OPE-12869).
 
    ```sh
    install -d -o 10001 -g 10001 /srv/package-cache/{pnpm,pnpm-store,uv,go-mod,go-build,gradle}
@@ -267,12 +269,17 @@ no supported contract is refused before anything is created.
 pnpm keeps one content-addressed store and links each project's `node_modules`
 to it with hard links. With the bot's tree one mount, the store sits inside it:
 
-- **Store**: `/workspace/.pnpm-store` by default (setting `pnpmStoreDir`; any
-  path under `/workspace`, `/data`, `/scratch` or `/bot`), set as
-  `npm_config_store_dir` in the image, in the entrypoint's self-check and in the
-  profile's `.env` (for bots with the shared cache) from the same setting. The
-  lifecycle sweep never treats the store as a draft. A store outside the single
-  mount is refused by the settings API.
+- **Store** (OPE-12869): `/cache/pnpm-store` by default — ONE store for all bots,
+  the host directory `<sharedPackageCachePath>/pnpm-store` bound read-write (setting
+  `pnpmStoreDir`; a path under `/workspace`, `/data`, `/scratch` or `/bot` is a
+  store per bot and draws a warning), set as `npm_config_store_dir` in the profile's
+  `.env` (for bots with the shared cache; the image's own default stays
+  `/workspace/.pnpm-store` for a bot without the cache bind). The cache root has to
+  be on the same XFS filesystem as the bot volumes: `pnpm install` imports by
+  reflink (`clone`), and on one filesystem every bot's `node_modules` shares the
+  store's blocks, so the store costs ~3 GB once, not per bot. OPE-12720 had moved
+  the store into each bot's tree (2.4-2.6 GB per bot) and is reverted for the store
+  path; its pnpm wrapper purge flag stays.
 - **Import method**: `package-import-method=hardlink` (setting
   `pnpmImportMethod`, default `hardlink`; `clone-or-copy` and `copy` are explicit
   opt-outs). `hardlink` makes pnpm try only hard links. It does **not** make a
@@ -378,6 +385,24 @@ Existing clones keep their copied `node_modules` until they are reinstalled
 (`rm -rf node_modules && pnpm install`) or reaped by the lifecycle; the store they
 link into is the one at `pnpmStoreDir`, which is created on first use. Roll back
 by deploying the previous image and dockergate (the host layout is the same).
+
+**Rollout of the shared store (OPE-12869).** Create `<packageCacheRoot>/pnpm-store`
+(owner 10001:10001) on the bot-volume filesystem, deploy dockergate together with or
+before the board (the old dockergate refuses the `pnpm-store` bind with
+`mount_source_not_allowed`), then the board. The board writes
+`npm_config_store_dir=/cache/pnpm-store` into every bot's profile on its next pass
+(a stored `/workspace/.pnpm-store` setting reads as that default). Clones installed
+under the per-bot store have the old `storeDir` in `node_modules/.modules.yaml`;
+the first `pnpm install` there purges `node_modules` and installs again from the
+shared store (the bot image's pnpm wrapper injects
+`--config.confirm-modules-purge=false`, since pnpm 10 aborts the purge without a
+TTY). The per-bot `workspace/.pnpm-store` directories are then unused and can be
+removed to return the space.
+
+**Verifying the link.** `du -xs node_modules` proves nothing: it counts a linked
+file in full. Compare `df` of the bot partition before and after a fresh
+`pnpm install` in a new clone: the delta is the size of the packages that were
+new to the store, not the ~3 GB of a full `node_modules`.
 
 ### Isolation scope: who shares a disk
 
@@ -564,7 +589,7 @@ its default:
 | `sharedPackageCachePath` | unset | The shared cache directory (above) |
 | `gitMirrorRepos` | `[]` | `owner/repo` names to mirror; empty: no mirrors and no `/cache/git` mount. Needs `sharedPackageCachePath` |
 | `gitMirrorRefreshMs` | `900000` (15 min) | How often each mirror is fetched, 1 min to 24 h |
-| `pnpmStoreDir` | `/workspace/.pnpm-store` | The pnpm store, a path under `/workspace`, `/data`, `/scratch` or `/bot` (above) |
+| `pnpmStoreDir` | `/cache/pnpm-store` | The pnpm store: the shared mount, or a path under `/workspace`, `/data`, `/scratch` or `/bot` (a store per bot, with a warning) (above) |
 | `pnpmImportMethod` | `hardlink` | `hardlink`, `clone-or-copy` or `copy` (above) |
 | `uvCacheDir` | `/cache/uv` | The shared uv cache; a path under `<sharedPackageCachePath>` by contract, a bot-tree path with a warning (Shared uv cache above) |
 | `uvLinkMode` | `clone` | `UV_LINK_MODE`: `clone`, `hardlink` or `copy`; `symlink` is refused (Shared uv cache above) |

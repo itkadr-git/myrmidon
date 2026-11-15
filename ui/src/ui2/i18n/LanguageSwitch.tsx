@@ -24,7 +24,7 @@ export function LanguageSwitch({ compact = false }: { compact?: boolean }) {
       role="radiogroup"
       aria-label={t("ui2.settings.language.title")}
     >
-      {availableLocales.map((candidate) => {
+      {availableLocales.map((candidate: Ui2Locale) => {
         const selected = locale === candidate;
         let label = candidate.toUpperCase();
         if (candidate === "ru") {

@@ -154,6 +154,13 @@ type Config struct {
 	VolumeRoot string   `json:"volumeRoot"`
 	Network    string   `json:"network"`
 	Images     []string `json:"images"`
+	// InspectOnlyImages are images whose A1 inspect (GET images/<ref>/json,
+	// answered as the labels-only summary) is allowed and nothing else: the
+	// board's stack registry reads the versions of host components (clickhouse,
+	// hermes-agent, base images) through it. They are never in the set a
+	// container may be created from; only "images" is. A ref is an exact
+	// repository[:tag] or repository@sha256:<digest>, no glob. Optional.
+	InspectOnlyImages []string `json:"inspectOnlyImages"`
 	// MountSources are the host directories a bot container may mount read-only
 	// on top of its three volumes (an empty list allows none). A bind naming any
 	// other source is refused.
@@ -206,9 +213,10 @@ func (c *Config) EffectiveScopeRoot() string {
 }
 
 var (
-	imageRe   = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\.[a-z0-9-]+)*(?::[0-9]+)?(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+@sha256:[0-9a-f]{64}$`)
-	botKeyRe  = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
-	networkRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
+	inspectRefRe = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\.[a-z0-9-]+)*(?::[0-9]+)?(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})$`)
+	imageRe      = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\.[a-z0-9-]+)*(?::[0-9]+)?(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+@sha256:[0-9a-f]{64}$`)
+	botKeyRe     = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	networkRe    = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 )
 
 // Parse decodes and checks a configuration. The second result is the first 12
@@ -391,6 +399,19 @@ func (c *Config) Validate() error {
 		}
 		seen[img] = true
 	}
+	seenInspect := map[string]bool{}
+	for _, img := range c.InspectOnlyImages {
+		if !inspectRefRe.MatchString(img) {
+			return errors.New("config: inspectOnlyImages must be repository:<tag> or repository@sha256:<digest>, without a glob")
+		}
+		if seenInspect[img] {
+			return errors.New("config: duplicate entry in inspectOnlyImages")
+		}
+		if seen[img] {
+			return errors.New("config: inspectOnlyImages must not repeat an entry of images")
+		}
+		seenInspect[img] = true
+	}
 	keys := map[string]bool{}
 	for _, b := range c.Bots {
 		if !botKeyRe.MatchString(b.BotKey) {
@@ -532,6 +553,9 @@ func (c *Config) Clone() *Config {
 	}
 	if c.Images != nil {
 		cp.Images = append([]string(nil), c.Images...)
+	}
+	if c.InspectOnlyImages != nil {
+		cp.InspectOnlyImages = append([]string(nil), c.InspectOnlyImages...)
 	}
 	if c.MountSources != nil {
 		cp.MountSources = append([]string(nil), c.MountSources...)

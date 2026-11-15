@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { fleetRoutingDriver, type FleetRoutingDeps, type RoutedBotAgent } from "./fleetd-routing.js";
-import { CLEANUP_UNSUPPORTED_MESSAGE, type BotContainerDriver, type BotContainerSpec, type BotContainerStatus, type BotSkillDirectory } from "./driver.js";
+import {
+  CLEANUP_UNSUPPORTED_MESSAGE,
+  DECOMMISSION_UNSUPPORTED_MESSAGE,
+  type BotContainerDriver,
+  type BotContainerSpec,
+  type BotContainerStatus,
+  type BotSkillDirectory,
+} from "./driver.js";
 import type { CompiledProfile } from "./types.js";
 
 // Everything here is placeholder data: fake bot keys and statuses.
@@ -350,7 +357,7 @@ describe("myrmidon(IDLE-STOP) fleet routing — optional driver methods", () => 
     // The router is typed Required<BotContainerDriver>, so a method added to the interface fails
     // the build until it is routed; this is the runtime half of the same guard.
     const routed = fleetRoutingDriver({ local: recordingDriver("local"), fleet: new Map() }, () => undefined);
-    for (const method of ["listRunning", "updateResources", "statusWithDrift", "stopIdle", "readCloneReport", "readBotSkills", "cleanup"] as const) {
+    for (const method of ["listRunning", "updateResources", "statusWithDrift", "stopIdle", "readCloneReport", "readBotSkills", "cleanup", "decommission"] as const) {
       expect(typeof routed[method], method).toBe("function");
     }
   });
@@ -370,6 +377,59 @@ describe("myrmidon(IDLE-STOP) fleet routing — optional driver methods", () => 
       const { local, routed } = twoHosts(fleetA);
       await expect(routed.cleanup!("bot-fleet")).rejects.toThrow(CLEANUP_UNSUPPORTED_MESSAGE);
       expect(fleetA.calls).toEqual([]);
+      expect(local.calls).toEqual([]);
+    });
+  });
+
+  // myrmidon(OPE-12654): the bot of an agent that left the runtime. The local driver has the
+  // decommission route; a fleetd site removes the container and the directory in its cleanup.
+  describe("decommission", () => {
+    const withDecommission = (driver: Recording, name: string): Recording =>
+      Object.assign(driver, {
+        async decommission(botKey: string) {
+          driver.calls.push(`${name}:decommission:${botKey}`);
+        },
+      });
+
+    it("a local bot goes to the local driver's decommission", async () => {
+      const fleetA = fullRecordingDriver("fleet-a");
+      const local = withDecommission(fullRecordingDriver("local"), "local");
+      const { routed } = twoHosts(fleetA, local);
+      await routed.decommission!("bot-local");
+      expect(local.calls).toEqual(["local:decommission:bot-local"]);
+      expect(fleetA.calls).toEqual([]);
+    });
+
+    it("a bot on a site without the decommission route goes to that site's cleanup", async () => {
+      const fleetA = plainDriver("fleet-a");
+      const local = withDecommission(fullRecordingDriver("local"), "local");
+      const { routed } = twoHosts(fleetA, local);
+      await routed.decommission!("bot-fleet");
+      expect(fleetA.calls).toEqual(["fleet-a:cleanup:bot-fleet"]);
+      expect(local.calls).toEqual([]);
+    });
+
+    it("a site driver with its own decommission is asked for it, not for cleanup", async () => {
+      const fleetA = withDecommission(fullRecordingDriver("fleet-a"), "fleet-a");
+      const { local, routed } = twoHosts(fleetA);
+      await routed.decommission!("bot-fleet");
+      expect(fleetA.calls).toEqual(["fleet-a:decommission:bot-fleet"]);
+      expect(local.calls).toEqual([]);
+    });
+
+    it("a host with neither fails with the decommission 'not supported' error and nothing is removed", async () => {
+      const fleetA = plainDriver("fleet-a");
+      delete (fleetA as Partial<Recording>).cleanup;
+      const { local, routed } = twoHosts(fleetA);
+      await expect(routed.decommission!("bot-fleet")).rejects.toThrow(DECOMMISSION_UNSUPPORTED_MESSAGE);
+      expect(fleetA.calls).toEqual([]);
+      expect(local.calls).toEqual([]);
+    });
+
+    it("an unknown host is an error, never a decommission on the local driver", async () => {
+      const local = withDecommission(fullRecordingDriver("local"), "local");
+      const routed = fleetRoutingDriver({ local, fleet: new Map() }, () => agent("host-x"));
+      await expect(routed.decommission!("bot-a")).rejects.toThrow(/names no configured fleet host/);
       expect(local.calls).toEqual([]);
     });
   });

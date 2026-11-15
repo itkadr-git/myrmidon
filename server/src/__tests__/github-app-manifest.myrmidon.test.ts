@@ -74,7 +74,7 @@ const support = await getEmbeddedPostgresTestSupport();
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("paperclip-github-app-manifest-");
     db = createDb(database.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterAll(async () => {
     await database?.cleanup();

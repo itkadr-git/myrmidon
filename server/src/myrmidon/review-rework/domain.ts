@@ -71,6 +71,9 @@ export interface ReviewReworkTaskFacts {
   priority: string | null;
   /** The agent recorded as the stage's return assignee (the author under review). */
   returnAssigneeAgentId: string | null;
+  /** Stored execution policy/state used by the review-cycle judge. */
+  executionPolicy?: Record<string, unknown> | null;
+  executionState?: Record<string, unknown> | null;
 }
 
 /** The rework child of a review task (`originKind = "review_rework"`). */

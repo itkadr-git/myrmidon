@@ -140,6 +140,9 @@ done
   || die "--resolution must be tag or sha (what deploy.sh resolved the release by)"
 [[ -n "$res_ref" ]] || die "--ref is required (the release tag, or the commit short sha)"
 load_config "$config"
+# The step journal: an open step must never survive the process. The preflight
+# subshell below installs its own trap on its own copy of the trap table.
+trap 'release_steps_flush EXIT' EXIT
 require_cmd docker curl jq
 
 # --- settings (see deploy.env.example) ---------------------------------------
@@ -598,6 +601,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   bot_log "  5. switch every bot card to the release image, one at a time${canary:+ (canary $canary first)}; busy cards are handed to the server reconciler for R3 application"
   bot_log "  6. remove the superseded bot images from images; SIGHUP"
   bot_log "  6b. DEPLOY-HYGIENE: remove the local bot/component images older than MYRMIDON_DEPLOY_IMAGE_KEEP=${MYRMIDON_DEPLOY_IMAGE_KEEP:-1} previous release(s) (images used by a container are kept)"
+  bot_log "  6c. IMAGE-GC (OPE-12696): remove the local myrmidon*/agent-runtime* images NO container uses and prune the build cache (MYRMIDON_DEPLOY_IMAGE_GC=0 switches it off)"
   bot_log "  7. journal: $MYR_BOT_ROLLOUT_LOG"
   categories="$(bot_categories || true)"
   if [[ -n "$categories" ]]; then
@@ -630,6 +634,7 @@ bots="$(list_bots)" \
   || die "cannot read the agents list from $BOARD_API_URL (company $BOARD_COMPANY_ID): the bot cards are the board's data"
 
 if [[ "$phase" != "cards" ]]; then
+step_begin "bot-config" "dockergate config + enrollment"
 # --- 3. images[] + check-config + SIGHUP (old bot images stay) -----------------
 mapfile -t NEW_REFS < <(for name in $(tr ',' ' ' <<<"$MYR_BOT_COMPONENTS"); do [[ -n "${BOT_IMAGE_BY_NAME[$name]:-}" ]] && printf '%s\n' "${BOT_IMAGE_BY_NAME[$name]}"; done)
 dockergate_add_images "$MYR_BOT_DOCKERGATE_CONFIG" "${NEW_REFS[@]}"
@@ -669,6 +674,7 @@ if [[ -n "$bots" ]]; then
 else
   bot_log "no eligible bots on the board (company $BOARD_COMPANY_ID): nothing to enroll, nothing to switch"
 fi
+step_end_ok "config complete"
 fi # phase != cards
 
 if [[ "$phase" == "config" ]]; then
@@ -1128,6 +1134,7 @@ stayed_deferred=0
 deferred_tail=()
 declare -A deferred_reasons=()
 batch_no=0
+step_begin "bot-cards" "total=$total batches=$batches"
 if ((total > 0)); then
   wait_for_maintenance_leaving || true
 fi
@@ -1264,6 +1271,7 @@ finalize_rollout() {
 
   bot_log "bot image rollout complete: $v_switched bot(s) on the release images, journal $MYR_BOT_ROLLOUT_LOG"
   journal "rollout complete: $v_switched bot(s) on the release images ($resolution $res_ref)"
+  step_end_ok "bots switched=$v_switched deferred=$v_deferred"
 
   # DEPLOY-HYGIENE (OPE-5107): the bots moved to the release images — free the
   # disk of the superseded ones (older than MYRMIDON_DEPLOY_IMAGE_KEEP previous
@@ -1273,6 +1281,13 @@ finalize_rollout() {
   if [[ -z "${MYRMIDON_DEPLOY_DISK_PRECHECK_DONE:-}" ]]; then
     if deploy_image_retention; then :; else
       bot_log "WARNING: the old image cleanup failed; the rollout itself is complete (remove old images by hand: docker image ls)"
+    fi
+    # IMAGE-GC (OPE-12696): the standalone rollout ends healthy here — sweep
+    # the myrmidon*/agent-runtime* images no container uses. When the rollout
+    # runs inside deploy.sh, deploy.sh does the sweep itself after its own
+    # success gate (MYRMIDON_DEPLOY_DISK_PRECHECK_DONE is set).
+    if deploy_image_gc; then :; else
+      bot_log "WARNING: the unused image sweep failed; the rollout itself is complete (remove unused images by hand: docker image ls)"
     fi
   fi
 

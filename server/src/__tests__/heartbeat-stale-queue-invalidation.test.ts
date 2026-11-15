@@ -170,7 +170,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       },
     });
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     beforeContinuationDispatchCheck = null;
@@ -2031,6 +2031,187 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
 
     expect(deferred?.status).not.toBe("deferred_issue_execution");
     expect(promotedRun?.agentId).toBe(peerAgentId);
+  });
+
+  // OPE-12800: one growing pause per agent after its model channel fails.
+  async function seedModelChannelFailures(input: {
+    companyId: string;
+    agentId: string;
+    /** How long ago each failure finished, newest last. */
+    finishedMsAgo: number[];
+  }) {
+    for (const msAgo of input.finishedMsAgo) {
+      const at = new Date(Date.now() - msAgo);
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId: input.companyId,
+        agentId: input.agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "failed",
+        error: "Hermes gateway HTTP 500",
+        errorCode: "hermes_gateway_upstream_error",
+        createdAt: new Date(at.getTime() - 4_000),
+        startedAt: new Date(at.getTime() - 4_000),
+        finishedAt: at,
+        resultJson: {
+          status: "failed",
+          errorCode: "hermes_gateway_upstream_error",
+          errorFamily: "transient_upstream",
+          failedBeforeModel: true,
+          modelResponseStarted: false,
+        },
+        usageJson: { inputTokens: 0, outputTokens: 0 },
+        contextSnapshot: { wakeReason: "idle_pickup" },
+      });
+    }
+  }
+
+  async function seedIssueForModelChannelTest(companyId: string, agentId: string) {
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Work behind a failing model channel",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+    return issueId;
+  }
+
+  it("drops an idle pickup wake while the agent's model channel is paused: no wake row, no run", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    // Three failures in a row, the newest 20 s ago: the pause is 5 minutes.
+    await seedModelChannelFailures({ companyId, agentId, finishedMsAgo: [90_000, 55_000, 20_000] });
+    const issueId = await seedIssueForModelChannelTest(companyId, agentId);
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "idle_pickup",
+      requestedByActorType: "system",
+      requestedByActorId: "idle_pickup",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "idle_pickup" },
+    });
+
+    expect(run).toBeNull();
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    const wakeups = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(0);
+    const runs = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs.map((row) => row.status)).toEqual(["failed", "failed", "failed"]);
+  });
+
+  it("parks a queued run of any wake reason until the model channel pause ends, with a growing delay", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const newestFailureMsAgo = 20_000;
+    await seedModelChannelFailures({
+      companyId,
+      agentId,
+      finishedMsAgo: [90_000, 55_000, newestFailureMsAgo],
+    });
+    const issueId = await seedIssueForModelChannelTest(companyId, agentId);
+    const seededAt = Date.now();
+    // The 30 s transient retry of the failed run, already promoted to the queue.
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "transient_failure_retry",
+      invocationSource: "automation",
+      scheduledRetryReason: "transient_failure",
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    const [run] = await db
+      .select({
+        status: heartbeatRuns.status,
+        error: heartbeatRuns.error,
+        finishedAt: heartbeatRuns.finishedAt,
+        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    expect(run).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryReason: "transient_failure",
+      error: null,
+      finishedAt: null,
+    });
+    // Third failure in a row: 5 minutes from the newest failure (plus a jitter
+    // of up to 15 s), not the 30 s of the per-run retry.
+    const expectedPauseEnd = seededAt - newestFailureMsAgo + 5 * 60 * 1000;
+    expect(run!.scheduledRetryAt!.getTime()).toBeGreaterThanOrEqual(expectedPauseEnd - 5_000);
+    expect(run!.scheduledRetryAt!.getTime()).toBeLessThanOrEqual(expectedPauseEnd + 20_000);
+    expect(run?.contextSnapshot).toMatchObject({
+      issueId,
+      modelChannelPause: { count: 1, streak: 3 },
+    });
+    const [wakeup] = await db
+      .select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    expect(wakeup).toMatchObject({ status: "queued" });
+  });
+
+  it("starts the queued run at once when the model answered after the failures", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    await seedModelChannelFailures({ companyId, agentId, finishedMsAgo: [90_000, 55_000, 20_000] });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "succeeded",
+      createdAt: new Date(Date.now() - 10_000),
+      startedAt: new Date(Date.now() - 10_000),
+      finishedAt: new Date(Date.now() - 5_000),
+      resultJson: { modelResponseStarted: true },
+      usageJson: { inputTokens: 1200, outputTokens: 80 },
+      contextSnapshot: {},
+    });
+    const issueId = await seedIssueForModelChannelTest(companyId, agentId);
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_assigned",
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => countExecuteCallsForRun(runId) > 0, 10_000);
+
+    expect(countExecuteCallsForRun(runId)).toBe(1);
+  });
+
+  it("does not hold a user's manual wake behind the model channel pause", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    await seedModelChannelFailures({ companyId, agentId, finishedMsAgo: [90_000, 55_000, 20_000] });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      manualUserWake: true,
+      requestedByActorType: "user",
+      requestedByActorId: "adm-user-1",
+    });
+
+    expect(run).not.toBeNull();
+    await waitForCondition(async () => countExecuteCallsForRun(run!.id) > 0, 10_000);
+    expect(countExecuteCallsForRun(run!.id)).toBe(1);
   });
 
   it("cancels queued max-turn continuations when another continuation owns the issue lock", async () => {

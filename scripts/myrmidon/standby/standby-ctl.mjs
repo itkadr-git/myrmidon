@@ -2268,7 +2268,12 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
 
   // The drill board needs real secrets from the environment; check BEFORE the long snapshot.
   if (keepDrill) {
-    const missing = ["BETTER_AUTH_SECRET", "PAPERCLIP_DB_PASSWORD"].filter((k) => !env[k]);
+    // myrmidon(REBRAND-C): MYRMIDON_DB_PASSWORD; PAPERCLIP_DB_PASSWORD is the deprecated alias
+    // (the compose file reads both, the new name first).
+    const missing = [
+      ...(env.BETTER_AUTH_SECRET ? [] : ["BETTER_AUTH_SECRET"]),
+      ...(env.MYRMIDON_DB_PASSWORD || env.PAPERCLIP_DB_PASSWORD ? [] : ["MYRMIDON_DB_PASSWORD"]),
+    ];
     if (missing.length > 0) {
       return {
         success: false,
@@ -2709,7 +2714,7 @@ export function runCli(argv = process.argv.slice(2), env = process.env, deps = {
 
     case "rehearse": {
       const rehearseTargets = target === "all" ? ["board"] : targets;
-      // --keep-drill reads BETTER_AUTH_SECRET / PAPERCLIP_DB_PASSWORD from this env.
+      // --keep-drill reads BETTER_AUTH_SECRET / MYRMIDON_DB_PASSWORD from this env.
       const rehearseDeps = { ...deps, env: deps.env || env };
       const results = rehearseTargets.map((t) => executeRehearsal(t, flags, rehearseDeps));
       // A dry-run or --cleanup-drill result carries no RTO; only an explicit rtoOk:false fails.
@@ -2768,7 +2773,7 @@ Options:
   --pg-image=<image>               Container image for --pg-runner=docker (default: pgvector/pgvector:pg18)
   --drill-dir=<dir> --drill-port=<p>  Rehearsal drill directory (in-container path in docker mode) and port
   --keep-drill                     Keep the drill cluster and START the drill board (needs BETTER_AUTH_SECRET,
-                                   PAPERCLIP_DB_PASSWORD in the environment)
+                                   MYRMIDON_DB_PASSWORD in the environment)
   --cleanup-drill                  Rehearse: tear down a kept drill (board + drill cluster + drill dir)
 `);
       return command === "help" ? 0 : 1;

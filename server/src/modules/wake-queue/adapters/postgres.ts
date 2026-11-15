@@ -176,16 +176,22 @@ function toDeferredWakeCandidate(row: typeof agentWakeupRequests.$inferSelect): 
 }
 
 export type WakeQueuePostgresAdapterDeps = {
-  resolveResponsibleUserId: WakeQueueHost["resolveResponsibleUserId"];
-  getRoutineEnv: WakeQueueHost["getRoutineEnv"];
-  resolveSessionBeforeForWakeup: WakeQueueHost["resolveSessionBeforeForWakeup"];
+  resolveResponsibleUserId: (
+    input: Parameters<WakeQueueHost["resolveResponsibleUserId"]>[0] & { tx: Db },
+  ) => ReturnType<WakeQueueHost["resolveResponsibleUserId"]>;
+  getRoutineEnv: (
+    input: Parameters<WakeQueueHost["getRoutineEnv"]>[0] & { tx: Db },
+  ) => ReturnType<WakeQueueHost["getRoutineEnv"]>;
+  resolveSessionBeforeForWakeup: (
+    input: Parameters<WakeQueueHost["resolveSessionBeforeForWakeup"]>[0] & { tx: Db },
+  ) => ReturnType<WakeQueueHost["resolveSessionBeforeForWakeup"]>;
 };
 
-function buildHost(_tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueHost {
+function buildHost(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueHost {
   return {
-    resolveResponsibleUserId: deps.resolveResponsibleUserId,
-    getRoutineEnv: deps.getRoutineEnv,
-    resolveSessionBeforeForWakeup: deps.resolveSessionBeforeForWakeup,
+    resolveResponsibleUserId: (input) => deps.resolveResponsibleUserId({ ...input, tx }),
+    getRoutineEnv: (input) => deps.getRoutineEnv({ ...input, tx }),
+    resolveSessionBeforeForWakeup: (input) => deps.resolveSessionBeforeForWakeup({ ...input, tx }),
   };
 }
 

@@ -67,9 +67,9 @@ Telegram, и вопросы, решения и дневные сводки пр�
 
 ## Подробнее
 
-- [Обращение к агентам из одного чата Telegram](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/telegram-multi-agent.md)
-- [Темы группы Telegram как входящие задачи](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/telegram-topic-inbound.md)
-- [Язык служебных текстов моста](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/telegram-bridge-locale.md)
-- [Редактируемый статус запуска и разбивка длинных ответов](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/telegram-dm-status.md)
-- [Карточки решений в Telegram владельца](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/owner-telegram-cards.md)
+- [Обращение к агентам из одного чата Telegram](Telegram-multi-agent.ru)
+- [Темы группы Telegram как входящие задачи](Telegram-topic-inbound.ru)
+- [Язык служебных текстов моста](Telegram-bridge-locale.ru)
+- [Редактируемый статус запуска и разбивка длинных ответов](Telegram-dm-status.ru)
+- [Карточки решений в Telegram владельца](Owner-telegram-cards.ru)
 - Настройки уведомлений и задачи Telegram: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), разделы «TG-NOTIFY-SETTINGS» и «TG-NOTIFY jobs»

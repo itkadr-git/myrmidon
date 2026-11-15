@@ -112,7 +112,12 @@ vi.mock("../services/index.js", async (importOriginal) => {
   issueService: () => mockIssueService,
   logActivity: mockLogActivity,
   projectService: () => ({
-    getById: vi.fn(async () => null),
+    // Create now validates the effective project (OPE-13073): known projects resolve in the company.
+    getById: vi.fn(async (id: string) =>
+      id === parentIssue.projectId || id === "c3333333-3333-4333-8333-333333333333"
+        ? { id, companyId: "company-1" }
+        : null,
+    ),
     listByIds: vi.fn(async () => []),
   }),
   routineService: () => ({

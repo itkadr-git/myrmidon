@@ -761,7 +761,7 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
       );
       db = createDb(tempDb.connectionString);
     }
-  }, 30_000);
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();

@@ -8,6 +8,7 @@ import { createHostDiskSweep, type HostDiskSweep } from "./sweep.js";
 import { type HostDiskSweepResult } from "./state.js";
 import { partitionClientFromEnv } from "./dockergate.js";
 import { botPartitionThresholdRuntime } from "./partition.js";
+import { hostRootThresholdRuntime } from "./root.js";
 import { createOwnerTelegramNotifier } from "./owner-notify.js";
 
 /**
@@ -40,12 +41,25 @@ export {
 export type { BotPartitionUsage, DockergateDiskClient } from "./dockergate.js";
 export { botPartitionThresholdRuntime, resetBotPartitionThresholdRuntime } from "./partition.js";
 export type { BotPartitionThresholdRuntime, BotPartitionThresholdState } from "./partition.js";
+export {
+  hostRootThresholdRuntime,
+  hostRootThresholdRuntimeForTest,
+  resetHostRootThresholdRuntime,
+  HOST_ROOT_REPEAT_INTERVAL_MS,
+} from "./root.js";
+export type {
+  HostRootThresholdRuntime,
+  HostRootThresholdState,
+  HostRootNotifyInput,
+} from "./root.js";
 
 export interface HostDiskRuntime {
   sweep: HostDiskSweep;
   service: HostDiskService;
   /** myrmidon(1.6.5-BOT-DISK-H10): bot-partition threshold state (attention feed and desired state read it). */
   partition: import("./partition.js").BotPartitionThresholdRuntime;
+  /** myrmidon(1.6.8 OPE-12697): host-root threshold state (attention feed reads it). */
+  root: import("./root.js").HostRootThresholdRuntime;
   /** Run one sweep and hand the work to the scheduler's tracker. */
   run(track: (work: Promise<unknown>) => void): void;
 }
@@ -91,15 +105,26 @@ function createRuntime(db: Db, options: HostDiskRuntimeOptions = {}): HostDiskRu
     }),
     env,
   });
+  // myrmidon(1.6.8 OPE-12697, DISK-ALERT): the host root signal. The same
+  // Telegram outbox, the dedup rule lives in the runtime: at most once per
+  // hour per level. The notifier dispatches on the settings shape.
+  const rootRuntime = hostRootThresholdRuntime(db, {
+    notify: createOwnerTelegramNotifier(db, {
+      listCompanyIds: () => settings.listCompanyIds(),
+    }),
+    env,
+  });
   const sweep = createHostDiskSweep({
     dataRootPath: hostDiskDataRoot(env),
     consumerPaths: hostDiskConsumerPaths(env),
     resolveSettings: () => resolveSweepSettings(settingsPort, env),
     logActivity: (entry) => logActivity(db, entry),
     lastSignalAt: store.lastSignalAt,
+    listCompanyIds: () => settings.listCompanyIds(),
     logger,
     partitionClient,
     partitionRuntime,
+    rootRuntime,
   });
   const service = hostDiskService({
     settings: settings as unknown as {
@@ -116,6 +141,7 @@ function createRuntime(db: Db, options: HostDiskRuntimeOptions = {}): HostDiskRu
     sweep,
     service,
     partition: partitionRuntime,
+    root: rootRuntime,
     run: (track) => {
       track(
         sweep.sweep().catch((err) => {

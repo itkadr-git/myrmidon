@@ -50,6 +50,8 @@ export interface SkillLifecycleStore {
   ): Promise<SkillLifecycleEvent>;
   listEvents(companyId: string, skillId: string): Promise<SkillLifecycleEvent[]>;
   getVersion(companyId: string, skillId: string, versionId: string): Promise<SkillLifecycleVersionRef | null>;
+  /** Historical snapshots let a git revert select the prior delivered revision. */
+  listVersions?(companyId: string, skillId: string): Promise<SkillLifecycleVersionRef[]>;
   getApproval(approvalId: string): Promise<SkillLifecycleApprovalRef | null>;
   /** Atomically claims an approved promotion approval for this company and skill. */
   consumeApproval(approvalId: string, companyId: string, skillId: string): Promise<SkillLifecycleApprovalRef | null>;
@@ -237,6 +239,31 @@ export function createDbSkillLifecycleStore(db: Db): SkillLifecycleStore {
           content: entry.content,
         })),
       };
+    },
+
+    async listVersions(companyId, skillId) {
+      const rows = await db
+        .select({
+          id: companySkillVersions.id,
+          revisionNumber: companySkillVersions.revisionNumber,
+          fileInventory: companySkillVersions.fileInventory,
+        })
+        .from(companySkillVersions)
+        .where(
+          and(
+            eq(companySkillVersions.companyId, companyId),
+            eq(companySkillVersions.companySkillId, skillId),
+          ),
+        );
+      return rows.map((row) => ({
+        id: row.id,
+        revisionNumber: row.revisionNumber,
+        fileInventory: (row.fileInventory ?? []).map((entry) => ({
+          path: entry.path,
+          kind: entry.kind,
+          content: entry.content,
+        })),
+      }));
     },
 
     async getApproval(approvalId) {

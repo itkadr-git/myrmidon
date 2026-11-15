@@ -109,7 +109,14 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   // myrmidon(OPE-7932): label for an overdue issue monitor.
   issue_monitor_overdue: { label: "Overdue issue monitor" },
   provider_usage_warning: { label: "Provider usage" },
+  // myrmidon(1.6.8 OPE-12709): labels for the role-model-down and provider
+  // no-credits operator signals.
+  role_model_down: { label: "Role model down" },
+  provider_no_credits: { label: "Provider no credits" },
   litellm_budget: { label: "LLM key budget" },
+  github_app_webhook_disabled: { label: "GitHub App webhook disabled" },
+  // myrmidon(OPE-12879): label for the done-with-open-PR attention card.
+  done_pr_not_merged: { label: "Done with open PR" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
@@ -183,6 +190,7 @@ export function attentionKind(item: AttentionItem): AttentionKind {
     case "auth_401_burst":
     case "foraging_limit":
     case "litellm_budget":
+    case "github_app_webhook_disabled":
       return "blocking";
     case "approval":
     case "issue_thread_interaction":
@@ -304,7 +312,11 @@ export function attentionDetailLine(item: AttentionItem): string | null {
         parts.push(gbPerHour >= 1 ? `+${gbPerHour.toFixed(1)} GB/hour` : `+${Math.round(gbPerHour * 1024)} MB/hour`);
       }
       if (detail.consumers.length > 0) {
-        parts.push(`biggest: ${detail.consumers.map((c) => `${c.path} (${c.sizeGb} GB)`).join(", ")}`);
+        parts.push(
+          `biggest: ${detail.consumers
+            .map((c) => (c.sizeGb !== null ? `${c.path} (${c.sizeGb} GB)` : c.path))
+            .join(", ")}`,
+        );
       }
       return parts.join(" — ");
     }

@@ -108,6 +108,17 @@ the refreshed value back through the board secret-rotation REST API; the
 connection keeps pointing at the same secret name, so no board-side
 action is needed for routine refreshes.
 
+## Gateway token lifetime and expiry monitoring
+
+External clients connecting to the board's MCP gateway use gateway tokens (`tool_mcp_gateway_tokens`). To prevent unexpected service interruptions or abandoned credentials, the platform monitors token lifecycles through the operator attention feed (`mcp_gateway_token_expiring`):
+
+- **14-day warning window**: Any active (unrevoked) token with `expiresAt <= now + 14 days` surfaces an attention card on the operator desk. Tokens with indefinite lifespans (`expiresAt IS NULL`) or already revoked tokens are omitted.
+- **Rotation vs. revocation guidance**:
+  - **Tokens expiring soon or active expired tokens**: Recommend `rotate` (verbs: `rotate`, `revoke` for expired, `dismiss`). Operators can generate a replacement token and update clients prior to or immediately after expiry.
+  - **Expired unused tokens (`lastUsedAt` is null)**: Recommend `revoke` (verbs: `revoke`, `rotate`, `dismiss`). If a token expired without handling any calls, the card prompts revocation. Expired unused tokens are **never auto-revoked** — the operator maintains governance.
+- **Credential confidentiality**: Cards never expose raw tokens, `tokenHash`, or `tokenPrefix` in card subjects, explanations, or metadata. Cards link directly to the gateway settings page (`/<prefix>/settings/gateways/:gatewayId`).
+- **Card resolution**: The notice clears automatically once the operator rotates or revokes the token, updates its expiration date, or dismisses the card.
+
 ## What this deployment must check before going live
 
 - The board env is `PAPERCLIP_DEPLOYMENT_MODE=authenticated`,

@@ -46,6 +46,19 @@ Metrics surfaced there include:
 | `mcp_runtime_connection_health_degraded` | Warning/Critical | Any active enabled connection with degraded/failed/missing-secret health, or any disabled enabled-path connection | Run health check, refresh catalog after recovery, or keep the connection disabled and route agents to alternatives. |
 | `mcp_runtime_missing_secret_failures` | Warning/Critical | Warning on any missing-secret failure; critical at >=3 in 1 hour | Check secret bindings and provider health without revealing secret values; rotate or rebind missing secrets. |
 | `mcp_runtime_audit_write_failures` | Critical | Any audit write failure | Treat as a control-plane incident; restore DB/audit durability before retrying tool workloads. |
+| `mcp_gateway_token_expiring` | Warning/Critical | Token expires within 14 days (`medium`) or already expired (`high`) | Review attention card: rotate active/expiring token, revoke unused expired token via gateway settings. |
+
+## Gateway Token Expiry Monitoring (Attention Feed)
+
+External clients authenticate to the board's MCP gateway using gateway access tokens (`tool_mcp_gateway_tokens`). Token lifecycles are monitored continuously by the attention service (`mcp_gateway_token_expiring` source kind) rather than ad-hoc shell scripts:
+
+- **Trigger window**: Surfaces cards for unrevoked tokens whose `expiresAt <= now + 14 days` (including already expired tokens). Non-expiring tokens (`expiresAt IS NULL`) and already revoked tokens are omitted.
+- **Action recommendations**:
+  - **Expiring in future (`now < expiresAt <= now + 14 days`)**: Severity `medium`, recommended action `rotate`, verbs: `rotate`, `dismiss`.
+  - **Expired active token (`expiresAt <= now` and `lastUsedAt IS NOT NULL`)**: Severity `high`, recommended action `rotate`, verbs: `rotate`, `revoke`, `dismiss`.
+  - **Expired unused token (`expiresAt <= now` and `lastUsedAt IS NULL`)**: Severity `high`, recommended action `revoke`, verbs: `revoke`, `rotate`, `dismiss`. Expired unused tokens are **never auto-revoked**; the card prompts deliberate operator review.
+- **Credential confidentiality**: Cards never expose raw tokens, `tokenHash`, or `tokenPrefix` in subject titles, `whyNow` explanations, detail summaries, or metadata. Links target `/<prefix>/settings/gateways/:gatewayId`.
+- **Deduplication & exit rules**: Cards are deduplicated by `mcp-gateway-token-expiring:${tokenId}`. A card exits the feed when the token is rotated, revoked, has its expiry extended, or is dismissed by an operator.
 
 ## Diagnose A Stuck Slot
 

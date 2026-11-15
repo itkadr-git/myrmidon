@@ -455,18 +455,22 @@ export function IssueRunLedger({
     queryFn: () => accessApi.getCurrentBoardAccess(),
     retry: false,
   });
+  // Live run state is invalidated by the company event stream; the fallback
+  // only reconciles missed events and reconnect gaps.
+  const liveRunFallbackMs = 30_000;
+  const runFallbackMs = 30_000;
   const { data: runs } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
     queryFn: () => activityApi.runsForIssue(issueId),
     refetchInterval:
-      hasLiveRuns || issueStatus === "in_progress" ? 5000 : false,
+      hasLiveRuns || issueStatus === "in_progress" ? runFallbackMs : false,
     placeholderData: keepPreviousDataForSameQueryTail<RunForIssue[]>(issueId),
   });
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId),
     enabled: hasLiveRuns,
-    refetchInterval: 3000,
+    refetchInterval: liveRunFallbackMs,
     placeholderData:
       keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId),
   });

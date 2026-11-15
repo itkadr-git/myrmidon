@@ -102,7 +102,7 @@ index 89a06ee..7c99cea 100644
 +            ).strip().split("/") if part
 +        )
 +        if cache_root:
-+            env["PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR"] = "/" + cache_root
++            env["MYRMIDON_GITHUB_CREDENTIALS_CACHE_DIR"] = env["PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR"] = "/" + cache_root
 +        # A broker capability is present, so managed GitHub credentials are in
 +        # charge: blank any inherited card/profile token (GH_TOKEN/GITHUB_TOKEN
 +        # plus the other keys the board's launcher blanks) so a dead or stale
@@ -151,7 +151,7 @@ index 0000000..ed67d39
 +from typing import Any, Callable, Mapping
 +
 +# (broker_url, capability), or None when the run carries no capability.
-+_GITHUB_BROKER: ContextVar[tuple[str, str] | None] = ContextVar("PAPERCLIP_GITHUB_BROKER", default=None)
++_GITHUB_BROKER: ContextVar[tuple[str, str] | None] = ContextVar("MYRMIDON_GITHUB_BROKER", default=None)
 +
 +
 +def set_github_broker_vars(broker: Mapping[str, str]) -> tuple[Callable[[], None], Callable[[Any], None]]:

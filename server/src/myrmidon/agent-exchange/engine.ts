@@ -110,6 +110,14 @@ export interface AgentExchangeStore {
   getRoom(roomId: string): Promise<AgentExchangeRoom | null>;
   updateRoom(roomId: string, patch: RoomPatch): Promise<AgentExchangeRoom>;
   listRooms(companyId: string, issueId: string): Promise<AgentExchangeRoom[]>;
+  /**
+   * myrmidon(1.7 AGENT-EXCHANGE-METRICS, OPE-12097): counts the exchange
+   * sessions the agent participated in. `started` counts every room whose
+   * frozen roster names the agent; `completed` counts only the rooms that
+   * reached the `completed` status (the summary landed). A stopped room
+   * counts as started but not completed.
+   */
+  countAgentSessions?(agentId: string): Promise<{ started: number; completed: number }>;
   insertMessage(input: { roomId: string; round: number; participantIndex: number }): Promise<AgentExchangeMessage>;
   updateMessage(messageId: string, patch: MessagePatch): Promise<void>;
   listMessages(roomId: string): Promise<AgentExchangeMessage[]>;

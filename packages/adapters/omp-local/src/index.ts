@@ -28,6 +28,7 @@ Core fields:
 - thinking (string, optional): thinking level (off, minimal, low, medium, high, xhigh)
 - command (string, optional): defaults to "omp"
 - env (object, optional): KEY=VALUE environment variables
+- workspaceSync (string, optional): remote SSH workspace mode: full (default) transfers and restores the working tree; git_checkout transfers only the Git checkout and leaves the shared local workspace untouched
 
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds

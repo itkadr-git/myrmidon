@@ -1,10 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createRunQueuedBusListener,
   createRunStartDispatcher,
   queuedResweepArmDecision,
   RUN_QUEUED_CHANNEL,
   buildRunQueuedPayload,
+  resetNoBusLogForTests,
   type RunQueuedBus,
   type RunQueuedPayload,
 } from "../myrmidon/run-dispatch/index.ts";
@@ -16,6 +17,8 @@ import {
 // run-dispatch-notify-two-process.myrmidon.test.ts.
 
 type Handler = (payload: unknown) => void;
+
+beforeEach(() => resetNoBusLogForTests());
 
 function fakeBus() {
   const handlers = new Set<Handler>();
@@ -305,5 +308,72 @@ describe("the run_queued payload contract (part B)", () => {
       schemaVersion: 1,
     });
     expect(RUN_QUEUED_CHANNEL).toBe("run_queued");
+  });
+});
+
+// myrmidon(OPE-13117): the board's worker process builds dispatchers for routes
+// and services without `executesRuns`; the heartbeat now passes a closure over
+// its own role, and the per-event dispatch skips an agent at its run limit.
+describe("notify mode: executor dispatcher without a bus (OPE-13117)", () => {
+  it("a dispatcher whose process executes runs starts the run and logs the missing bus at most once per 5 calls", async () => {
+    const startNextQueuedRunForAgent = vi.fn(async () => [{ id: "run-1" }]);
+    const info = vi.fn();
+    const debug = vi.fn();
+    const roleExecutesRuns = true;
+    const dispatcher = createRunStartDispatcher({
+      listQueuedAgents: async () => [],
+      startNextQueuedRunForAgent,
+      loadSettings: async () => ({ runStartDispatch: "notify", queuedResweepSec: 30 }),
+      executesRuns: () => roleExecutesRuns,
+      log: { info, debug },
+    });
+
+    for (let i = 0; i < 5; i += 1) {
+      expect(await dispatcher.dispatchRunStart("agent-1")).toEqual([{ id: "run-1" }]);
+    }
+    expect(startNextQueuedRunForAgent).toHaveBeenCalledTimes(5);
+    expect(info.mock.calls.length).toBeLessThanOrEqual(1);
+    expect(info.mock.calls.length + debug.mock.calls.length).toBe(5);
+  });
+
+  it("50 events of an agent at its run limit give at most two start calls", async () => {
+    const startNextQueuedRunForAgent = vi.fn(async () => []);
+    let atLimit = true;
+    const dispatcher = createRunStartDispatcher({
+      listQueuedAgents: async () => [],
+      startNextQueuedRunForAgent,
+      loadSettings: async () => ({ runStartDispatch: "notify", queuedResweepSec: 30 }),
+      executesRuns: () => true,
+      agentAtRunLimit: async () => atLimit,
+    });
+
+    for (let i = 0; i < 50; i += 1) await dispatcher.dispatchRunStartUnlessBusy("agent-1");
+    expect(startNextQueuedRunForAgent.mock.calls.length).toBeLessThanOrEqual(2);
+
+    // the run finished: the finish dispatch (plain dispatchRunStart) and the
+    // next event both reach the start path again
+    atLimit = false;
+    await dispatcher.dispatchRunStartUnlessBusy("agent-1");
+    expect(startNextQueuedRunForAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads the settings at most once per 5 s", async () => {
+    vi.useFakeTimers();
+    try {
+      const loadSettings = vi.fn(async () => ({ runStartDispatch: "notify" as const, queuedResweepSec: 30 }));
+      const dispatcher = createRunStartDispatcher({
+        listQueuedAgents: async () => [],
+        startNextQueuedRunForAgent: async () => [],
+        loadSettings,
+        executesRuns: () => true,
+      });
+      for (let i = 0; i < 20; i += 1) await dispatcher.dispatchRunStart("agent-1");
+      expect(loadSettings).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(5_001);
+      await dispatcher.dispatchRunStart("agent-1");
+      expect(loadSettings).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

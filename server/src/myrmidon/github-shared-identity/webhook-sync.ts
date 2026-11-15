@@ -27,6 +27,10 @@ import {
 } from "../../services/chat-github-webhook-config.js";
 import type { getActorInfo } from "../../routes/authz.js";
 import { githubAppJwt, GitHubAppTokenError } from "./app-token.js";
+import {
+  clearGitHubAppWebhookDisabledSignal,
+  recordGitHubAppWebhookDisabledSignal,
+} from "./webhook-disabled-signal.js";
 import { readGitHubSharedIdentitySettings, writeGitHubSharedIdentitySettings } from "./store.js";
 
 export async function syncGitHubAppWebhook(
@@ -133,6 +137,9 @@ export async function syncGitHubAppWebhook(
   try {
     await resyncGitHubAppWebhook({ fetch: fetchImpl, appToken, webhookUrl: input.webhookUrl, webhookSecret });
     const config = await readGitHubAppWebhookConfig({ fetch: fetchImpl, appToken });
+    // myrmidon(OPE-12868): a confirmed sync clears the webhook-disabled latch —
+    // the attention card exists exactly while the webhook is still broken.
+    clearGitHubAppWebhookDisabledSignal(input.companyId, entry.id);
     try {
       await logActivity(db, {
         companyId: input.companyId,
@@ -151,6 +158,25 @@ export async function syncGitHubAppWebhook(
     }
     return { url: config.url, contentType: config.contentType };
   } catch (error) {
+    // myrmidon(OPE-12868): GitHub answers 404 on the /app/hook/config PATCH
+    // while the App's webhook is not "Active" on the App's settings page — the
+    // one GitHub-side switch no API reaches. Raise the attention latch so the
+    // board says "webhook disabled" instead of failing silently for days.
+    // Match on our own closed PATCH-failure message (the constant prefix plus
+    // the status), not on provider content; the read-back stage's 404 is a
+    // different failure and must not trip this latch.
+    if (
+      error instanceof Error &&
+      error.message.includes("could not update this App's webhook") &&
+      error.message.includes("HTTP 404")
+    ) {
+      recordGitHubAppWebhookDisabledSignal({
+        companyId: input.companyId,
+        entryId: entry.id,
+        appId: entry.appId,
+        webhookHost: webhookUrl.host,
+      });
+    }
     throw badGateway(error instanceof Error ? error.message : "GitHub webhook configuration could not be confirmed", {
       code: "github_webhook_sync_failed",
     });

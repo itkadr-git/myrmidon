@@ -8,10 +8,12 @@ import {
   isMaintenanceInterruptedRun,
   decideStalledReviewRecovery,
   decideReviewAdmission,
+  decideReviewCiWaitTick,
   pullRequestHeadCiStateFromAllChecks,
   pullRequestHeadCiStateFromChecks,
   pullRequestHeadFinalCheckConclusion,
   reviewAdmissionDedupKey,
+  reviewVerdictCoversHead,
   selectOpenPullRequestWorkProduct,
 } from "./policy.js";
 import {
@@ -358,6 +360,53 @@ describe("decideReviewAdmission (OPE-12176)", () => {
   });
 });
 
+// myrmidon(EMPTY-RUNS-2B): the tick of the "Review CI wait" monitor applies the
+// green-head rule of the hand-off. A finished red head used to wake the
+// reviewer ten minutes after the hand-off had refused to.
+describe("decideReviewCiWaitTick (EMPTY-RUNS-2B)", () => {
+  const tick = (
+    ci: Parameters<typeof decideReviewCiWaitTick>[0]["ci"],
+    headFinalCheck: "green" | "red" | "unknown",
+    overrides: { critical?: boolean; attempt?: number } = {},
+  ) =>
+    decideReviewCiWaitTick({
+      ci,
+      headFinalCheck,
+      critical: overrides.critical ?? false,
+      attempt: overrides.attempt ?? 1,
+    });
+
+  it("keeps the reviewer asleep while the finished head is red", () => {
+    expect(tick("complete", "red")).toBe("wait_red");
+    expect(tick("complete", "red", { attempt: REVIEW_CI_WAIT_MAX_ATTEMPTS })).toBe("wait_red");
+  });
+
+  it("wakes the reviewer on a red head once the CI-wait budget of the stage is spent", () => {
+    expect(tick("complete", "red", { attempt: REVIEW_CI_WAIT_MAX_ATTEMPTS + 1 })).toBe("wake");
+  });
+
+  it("wakes the reviewer when the finished head is green, as before", () => {
+    expect(tick("complete", "green")).toBe("wake");
+  });
+
+  it("keeps waiting while CI runs or cannot be read, at any attempt, as before", () => {
+    expect(tick("pending", "unknown")).toBe("wait_for_ci");
+    expect(tick("unknown", "unknown")).toBe("wait_for_ci");
+    expect(tick("pending", "unknown", { attempt: REVIEW_CI_WAIT_MAX_ATTEMPTS + 5 })).toBe("wait_for_ci");
+    expect(tick("pending", "unknown", { critical: true })).toBe("wait_for_ci");
+  });
+
+  it("wakes the reviewer of a critical issue on a finished head whatever its colour", () => {
+    expect(tick("complete", "red", { critical: true })).toBe("wake");
+    expect(tick("complete", "unknown", { critical: true })).toBe("wake");
+  });
+
+  it("wakes the reviewer when there is no pull request or no hosted CI to wait for, as before", () => {
+    expect(tick("no_pull_request", "unknown")).toBe("wake");
+    expect(tick("not_configured", "unknown")).toBe("wake");
+  });
+});
+
 // myrmidon(OPE-12177): the dedup key of a review-admission wake is keyed on the
 // exact PR head; without a head it falls back to the legacy agent-keyed format.
 describe("reviewAdmissionDedupKey", () => {
@@ -389,5 +438,32 @@ describe("reviewAdmissionDedupKey", () => {
     expect(reviewAdmissionDedupKey({ issueId: "issue-1", headSha: "   ", agentId: "agent-1" })).toBe(
       `${REVIEW_ADMISSION_KEY_PREFIX}issue-1:agent-1`,
     );
+  });
+});
+
+// myrmidon(OPE-12859): a stored verdict suppresses reviewer re-wakes only for
+// the head it names; a new head needs a new verdict.
+describe("reviewVerdictCoversHead", () => {
+  it("covers the head when the verdict names it", () => {
+    expect(reviewVerdictCoversHead({ headSha: "ABC123" }, "abc123")).toBe(true);
+  });
+
+  it("does not cover a different head", () => {
+    expect(reviewVerdictCoversHead({ headSha: "abc123" }, "def456")).toBe(false);
+  });
+
+  it("does not cover when there is no verdict", () => {
+    expect(reviewVerdictCoversHead(null, "abc123")).toBe(false);
+    expect(reviewVerdictCoversHead(undefined, "abc123")).toBe(false);
+  });
+
+  it("counts a head-less verdict (older records) for any head", () => {
+    expect(reviewVerdictCoversHead({ headSha: null }, "abc123")).toBe(true);
+    expect(reviewVerdictCoversHead({}, "abc123")).toBe(true);
+  });
+
+  it("does not cover when the current head is unknown", () => {
+    expect(reviewVerdictCoversHead({ headSha: "abc123" }, null)).toBe(false);
+    expect(reviewVerdictCoversHead({ headSha: "abc123" }, undefined)).toBe(false);
   });
 });

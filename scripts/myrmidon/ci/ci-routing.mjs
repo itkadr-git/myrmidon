@@ -74,12 +74,12 @@ export function computeConcurrencyGroup({
   const isRel = isReleasePR({ title: prTitle, labels: prLabels, headRef, baseRef });
   const prefix = isRel ? 'release-' : '';
   const target = prNumber ? String(prNumber) : ref;
-  const isLabelNoop =
-    eventName === 'pull_request' &&
-    action === 'labeled' &&
-    labelName !== 'full-ci' &&
-    labelName !== 'review-approved';
-  return `myrmidon-ci-${prefix}${target}${isLabelNoop ? '-label-noop' : ''}`;
+  // myrmidon-ci.yml has no `labeled` trigger (CI-LABEL-NOOP-KEEPS-RESULT): no
+  // label-noop group any more; action/labelName stay in the signature for callers.
+  void eventName;
+  void action;
+  void labelName;
+  return `myrmidon-ci-${prefix}${target}`;
 }
 
 /**
@@ -96,17 +96,17 @@ export function computeCancelInProgress({
   runAttempt = 1,
   ref = '',
 }) {
+  // 10.11: main runs run to completion again (see .github/workflows/myrmidon-ci.yml).
+  // The concurrency group keeps one running and one pending main run, so they
+  // do not pile up (the OPE-12103 queue had no group at all).
   if (eventName === 'push' && ref === 'refs/heads/main') {
-    return true;
+    return false;
   }
   if (eventName === 'merge_group') {
     return false;
   }
   if (eventName === 'pull_request') {
     if (runAttempt > 1) {
-      return false;
-    }
-    if (action === 'labeled' && labelName !== 'full-ci' && labelName !== 'review-approved') {
       return false;
     }
     return true;

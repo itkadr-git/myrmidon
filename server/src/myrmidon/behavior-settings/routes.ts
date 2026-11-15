@@ -7,7 +7,9 @@
 // `instance_settings.general.behaviorSettings` (instance) or the
 // company-keyed area (company), applies the new settings to the running system
 // and asks for any necessary sweeps; the instance-level write is
-// instance-admin only, the same rule runtime-limits follows.
+// instance-admin only, the same rule runtime-limits follows. Since 1.6.8 the
+// company-level PATCH additionally admits agent keys only with an explicit
+// `users:manage_permissions` company grant (board actors unchanged).
 
 import { Router } from "express";
 import type { Db } from "@myrmidon/db";
@@ -17,10 +19,25 @@ import {
   type BehaviorSettingsPatch,
 } from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
-import { assertBoardOrgAccess, assertInstanceAdmin, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
+import { assertBoardOrgAccess, assertInstanceAdmin, assertCompanyAccess, assertBoardOrAgentGrant, type AgentGrantPermissionChecker, getActorInfo } from "../../routes/authz.js";
 import type { BehaviorSettingsService } from "./service.js";
 
-export function behaviorSettingsRoutes(_db: Db, service: BehaviorSettingsService) {
+/**
+ * myrmidon(1.6.8 BEHAVIOR-SETTINGS-AUTHZ): default permission predicate for
+ * the company settings write routes. The services barrel is imported lazily
+ * inside the call: a static import closes an import cycle
+ * (services -> routes/authz -> services) and changes module-evaluation order
+ * in production, the same constraint assertActorCompanyPermission documents
+ * in routes/authz.ts.
+ */
+function defaultHasPermission(db: Db): AgentGrantPermissionChecker {
+  return async (companyId, principalType, principalId, permissionKey) => {
+    const { accessService } = await import("../../services/index.js");
+    return accessService(db).hasPermission(companyId, principalType, principalId, permissionKey);
+  };
+}
+
+export function behaviorSettingsRoutes(db: Db, service: BehaviorSettingsService, hasPermission: AgentGrantPermissionChecker = defaultHasPermission(db)) {
   const router = Router();
 
   // Read definitions / metadata of all settings
@@ -129,6 +146,7 @@ export function behaviorSettingsRoutes(_db: Db, service: BehaviorSettingsService
   router.patch("/myrmidon/behavior-settings/company/:companyId", validate(createBehaviorSettingsPatchSchema()), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertBoardOrAgentGrant(req, hasPermission, companyId, "users:manage_permissions");
     res.json(await service.updateCompany(companyId, req.body as BehaviorSettingsPatch, getActorInfo(req)));
   });
 
@@ -158,6 +176,7 @@ export function behaviorSettingsRoutes(_db: Db, service: BehaviorSettingsService
   router.patch("/myrmidon/behavior-settings/:companyId", validate(createBehaviorSettingsPatchSchema()), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertBoardOrAgentGrant(req, hasPermission, companyId, "users:manage_permissions");
     res.json(await service.updateCompany(companyId, req.body as BehaviorSettingsPatch, getActorInfo(req)));
   });
 

@@ -62,8 +62,10 @@ async function realGitExecutable() {
       // the bot. A candidate must answer the incident command on its own
       // before it is trusted for the real command; a probe that never exits
       // proves a loop and the group is killed.
-      if (process.env.PAPERCLIP_GIT_PROBE_ACTIVE === "1") return candidate;
-      const probeEnv = { ...process.env, PAPERCLIP_GIT_PROBE_ACTIVE: "1", PAPERCLIP_GITHUB_OPERATION_ACTIVE: "1" };
+      // myrmidon(REBRAND-C): MYRMIDON_GIT_PROBE_ACTIVE; the PAPERCLIP_ spelling is
+      // still set and read so a bot image and a board one release apart agree.
+      if (process.env.MYRMIDON_GIT_PROBE_ACTIVE === "1" || process.env.PAPERCLIP_GIT_PROBE_ACTIVE === "1") return candidate;
+      const probeEnv = { ...process.env, MYRMIDON_GIT_PROBE_ACTIVE: "1", PAPERCLIP_GIT_PROBE_ACTIVE: "1", PAPERCLIP_GITHUB_OPERATION_ACTIVE: "1" };
       const probe = spawn(candidate, ["config", "--get", "remote.origin.url"], {
         cwd: process.cwd(), env: probeEnv, stdio: ["ignore", "ignore", "ignore"],
         // No spawn timeout here: it would signal only the direct child and
@@ -286,7 +288,8 @@ const ALLOWED_ENV_KEYS = /^(GH_TOKEN|GITHUB_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_TERMIN
 
 // myrmidon(OPE-12446): run-scoped on-disk credential cache (git-credential-paperclip
 // carries the same block). Keyed by sha256(capability|repository) inside the
-// per-run directory named by PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR; no
+// per-run directory named by MYRMIDON_GITHUB_CREDENTIALS_CACHE_DIR (the
+// deprecated PAPERCLIP_ spelling is still read); no
 // directory named → cache OFF (tests see exact request counts they assert).
 // Entry { issuedAt, expiresAt, env } with mode 0600; stale/corrupt entries are
 // removed, never trusted.
@@ -294,7 +297,7 @@ const CACHE_TTL_MS = 45 * 60 * 1000;
 const CACHE_EXPIRY_MARGIN_MS = 60 * 1000;
 
 function brokerCacheFile(env, repository) {
-  const dir = String(env.PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR || "").trim();
+  const dir = String(env.MYRMIDON_GITHUB_CREDENTIALS_CACHE_DIR || env.PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR || "").trim();
   if (!dir) return null;
   try {
     const fs = require("node:fs");
@@ -442,7 +445,7 @@ async function main() {
     const body = JSON.stringify(repository ? { repository } : {});
     // myrmidon(OPE-12446): serve a still-valid cached credential without
     // contacting the broker (per-run dir from
-    // PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR; off when unset).
+    // MYRMIDON_GITHUB_CREDENTIALS_CACHE_DIR; off when unset).
     const cached = brokerCacheLoad(env, repository, Date.now());
     if (cached) {
       for (const [key, value] of Object.entries(cached.env)) env[key] = value;

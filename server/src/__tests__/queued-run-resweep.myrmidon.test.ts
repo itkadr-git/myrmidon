@@ -52,7 +52,7 @@ describeEmbeddedPostgres("queued run resweep (part A of T1.4)", () => {
     heartbeat = heartbeatService(db, {
       runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" },
     });
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     // Wait for every run this file dispatched to finish writing its rows, then

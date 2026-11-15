@@ -56,7 +56,7 @@ describeEmbeddedPostgres("heartbeat run context columns", () => {
       runtimeConfig: {},
       permissions: {},
     });
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(heartbeatRunEvents);

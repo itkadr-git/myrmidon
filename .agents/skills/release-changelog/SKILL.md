@@ -265,7 +265,7 @@ If there are no contributors left after exclusions, then just skip this section 
 ## Step 5b — Upsert The Release Case
 
 After writing `releases/vYYYY.MDD.P.md`, emit or refresh the top-level release
-case when the run has Paperclip API context. Use `skills/paperclip/references/cases.md`
+case when the run has Paperclip API context. Use `skills/myrmidon/references/cases.md`
 as the API contract. If the API returns `403 Cases are disabled`, report that
 Cases must be enabled and continue with the changelog file only.
 

@@ -39,6 +39,7 @@ import {
   GIT_MIRROR_MOUNT,
   packageCacheEnv,
   PACKAGE_CACHE_MOUNTS,
+  pnpmEnv,
   PNPM_STORE_ROOTS,
   UV_CACHE_ROOTS,
   uvEnv,
@@ -157,6 +158,24 @@ describe("myrmidon(1.6.1-BOT-DISK-B) buildBinds with the shared package cache", 
     expect(mount?.containerPath).toBe(packageCacheEnv().npm_config_store_dir);
     // Without a cache there is no store mount.
     expect(buildBinds(volumeRoot, botKey).join()).not.toContain("pnpm-store");
+  });
+
+  it("gives two bots the same store mount point and the same store variable (OPE-12869)", () => {
+    // One store for the partition: both bots bind the SAME host directory at the SAME
+    // container path (reflink import then shares its blocks), and the profile env of
+    // either names that path. Only the per-bot volume bind differs.
+    const a = buildBinds(volumeRoot, "agent-a", { sharedPackageCachePath: cache });
+    const b = buildBinds(volumeRoot, "agent-b", { sharedPackageCachePath: cache });
+    const storeBind = `${cache}/pnpm-store:/cache/pnpm-store:rw`;
+    expect(a.filter((bind) => bind.includes("pnpm-store"))).toEqual([storeBind]);
+    expect(b.filter((bind) => bind.includes("pnpm-store"))).toEqual([storeBind]);
+    expect(a[0]).not.toBe(b[0]);
+    expect(a.slice(1)).toEqual(b.slice(1));
+    expect(packageCacheEnv().npm_config_store_dir).toBe("/cache/pnpm-store");
+    expect(pnpmEnv().npm_config_store_dir).toBe("/cache/pnpm-store");
+    expect(resolveBotDiskLayout({ sharedPackageCachePath: cache }).pnpmStoreDir).toBe("/cache/pnpm-store");
+    // The store is outside every bot's volume tree.
+    expect(storeBind.startsWith(volumeRoot)).toBe(false);
   });
 
   it("never lets the pnpm store be the /cache/pnpm mount, whatever the settings", () => {
@@ -316,7 +335,8 @@ describe("myrmidon(1.6.2-BOT-DISK-C) git mirror and pnpm store settings", () => 
     expect(set).toEqual({ ...base, ...patch });
     expect(mergeBotDiskSettings(set, { enabled: false })).toEqual({ ...set, enabled: false });
     expect(mergeBotDiskSettings(set, { gitMirrorRepos: null, gitMirrorRefreshMs: null, pnpmStoreDir: null, pnpmImportMethod: null })).toEqual(base);
-    expect(mergeBotDiskSettings(set, { gitMirrorRepos: [] }).gitMirrorRepos).toBeUndefined();
+    // OPE-13110: an explicit [] is stored (mirror off); only null returns to the default.
+    expect(mergeBotDiskSettings(set, { gitMirrorRepos: [] }).gitMirrorRepos).toEqual([]);
   });
 
   it("validates a PATCH of the keys; the pnpm store is the shared mount or inside the bot's own tree", () => {

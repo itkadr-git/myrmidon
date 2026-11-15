@@ -180,7 +180,7 @@ async function githubRequest(
 
 async function resolveInstallationId(input: {
   appId: string;
-  privateKeyPem: string;
+  privateKeyPem: string | (() => Promise<string> | string);
   repository: string;
   explicitInstallationId: string | null;
   fetchImpl: typeof fetch;
@@ -198,8 +198,9 @@ async function resolveInstallationId(input: {
   if (inflight) return inflight;
 
   const promise = (async () => {
+    const pem = typeof input.privateKeyPem === "function" ? await input.privateKeyPem() : input.privateKeyPem;
     const [owner, repo] = input.repository.split("/") as [string, string];
-    const jwt = githubAppJwt(input.appId, input.privateKeyPem, new Date(input.now()));
+    const jwt = githubAppJwt(input.appId, pem, new Date(input.now()));
     const installation = await githubRequest(
       input.fetchImpl,
       "GET",
@@ -225,7 +226,7 @@ async function resolveInstallationId(input: {
 
 export async function mintGitHubAppInstallationToken(input: {
   appId: string;
-  privateKeyPem: string;
+  privateKeyPem: string | (() => Promise<string> | string);
   installationId: string | null;
   /** Normalized `owner/repo`. */
   repository: string;
@@ -240,9 +241,39 @@ export async function mintGitHubAppInstallationToken(input: {
   const requestedPermissions = githubAppTokenPermissionsFor(input.permissions);
   const permissionsKey = GITHUB_APP_TOKEN_PERMISSION_KEYS.map((key) => `${key}=${requestedPermissions[key] ?? "none"}`).join(",");
 
+  // One lazy read per mint call: the installation lookup and the mint flight
+  // share the same promise, so a cold mint resolves the secret exactly once
+  // (previously twice when the installation id had to be discovered) and warm
+  // paths — token cache hit or joining an in-flight mint — resolve it zero
+  // times. Every avoided read is one fewer row in secret_access_events.
+  let pemPromise: Promise<string> | null = null;
+  const resolvePem = (): Promise<string> => {
+    if (!pemPromise) {
+      pemPromise = (async () => {
+        return typeof input.privateKeyPem === "function" ? await input.privateKeyPem() : input.privateKeyPem;
+      })();
+    }
+    return pemPromise;
+  };
+
+  // Check cache early if installationId is explicitly known or cached
+  const knownInstallationId = input.installationId
+    ? String(input.installationId).trim()
+    : installationCache.get(`${input.appId}:${repoKey}`) ?? null;
+
+  if (knownInstallationId) {
+    const cacheKey = `${input.appId}:${knownInstallationId}:${repoKey}:${permissionsKey}`;
+    const cached = tokenCache.get(cacheKey);
+    if (cached && cached.expiresAt - TOKEN_REUSE_MARGIN_MS > now()) {
+      return { token: cached.token, expiresAt: new Date(cached.expiresAt).toISOString(), installationId: knownInstallationId, reused: true };
+    }
+    const inflight = tokenInflight.get(cacheKey);
+    if (inflight) return inflight.then((minted) => ({ ...minted, reused: true }));
+  }
+
   const installationId = await resolveInstallationId({
     appId: input.appId,
-    privateKeyPem: input.privateKeyPem,
+    privateKeyPem: resolvePem,
     repository: input.repository,
     explicitInstallationId: input.installationId,
     fetchImpl,
@@ -264,7 +295,8 @@ export async function mintGitHubAppInstallationToken(input: {
   if (inflight) return inflight.then((minted) => ({ ...minted, reused: true }));
 
   const mint = (async () => {
-    const jwt = githubAppJwt(input.appId, input.privateKeyPem, new Date(now()));
+    const pem = await resolvePem();
+    const jwt = githubAppJwt(input.appId, pem, new Date(now()));
     const [, repo] = input.repository.split("/") as [string, string];
     const issued = await githubRequest(
       fetchImpl,

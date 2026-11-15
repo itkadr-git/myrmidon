@@ -34,6 +34,15 @@ describe("INSTANCE_FEATURE_CATALOG", () => {
     expect([...INSTANCE_FEATURE_KEYS]).toEqual(schemaBooleanFlagKeys());
   });
 
+  it("keeps isolated task workspaces disabled by default", () => {
+    const defaults = instanceExperimentalSettingsSchema.parse({});
+    for (const key of ["enableIsolatedWorkspaces", "enableIsolatedWorkspacesByDefault"] as const) {
+      expect(defaults[key]).toBe(false);
+      expect(INSTANCE_FEATURE_CATALOG[key].cloudDefault).toBe(false);
+      expect(INSTANCE_FEATURE_CATALOG[key].selfHostedDefault).toBe(false);
+    }
+  });
+
   it("keeps selfHostedDefault in sync with the schema defaults", () => {
     const schemaDefaults = instanceExperimentalSettingsSchema.parse({});
     for (const key of INSTANCE_FEATURE_KEYS) {

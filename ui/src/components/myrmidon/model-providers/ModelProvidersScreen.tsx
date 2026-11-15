@@ -40,6 +40,7 @@ import {
   type PoolAccountOAuthBeginResult,
 } from "./modelProvidersApi";
 import { HindsightModelGroupsPanel } from "../hindsight-models/HindsightModelGroupsPanel";
+import { ModelGroupRulesSection } from "./ModelGroupRulesSection";
 
 export function sanitizeErrorMessage(message: string): string {
   if (!message) return "";
@@ -116,6 +117,7 @@ const EMPTY_FORM: AddModelProviderInput = {
 
 export function ModelProvidersScreenView({
   view,
+  canManage,
   companyId,
   modelsQuery,
   channelsQuery,
@@ -138,6 +140,7 @@ export function ModelProvidersScreenView({
   error,
 }: {
   view: ModelProvidersView;
+  canManage?: boolean;
   companyId: string;
   /** Query key factory for the per-provider model list (container owns it). */
   modelsQuery: (providerId: string) => readonly unknown[];
@@ -455,6 +458,8 @@ export function ModelProvidersScreenView({
 
       {/* 3. Hindsight Memory Models (write, summarize, search) */}
       <HindsightModelGroupsPanel companyId={companyId} />
+      {canManage !== false ? <ModelGroupRulesSection companyId={companyId} /> : null}
+
 
       {/* 4. Change log */}
       <section className="space-y-2" data-testid="myrmidon-model-providers-changelog">

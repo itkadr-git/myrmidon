@@ -121,6 +121,34 @@ describe("errorHandler", () => {
     expect(res.__errorContext?.error?.message).toBe("db exploded");
   });
 
+  // myrmidon(EMPTY-RUNS-3): a failed query reaches the handler wrapped; its text
+  // is the statement and the reason is on the cause. The log line had no reason.
+  it("keeps the code and the reason of a Postgres error found on the cause", () => {
+    const req = makeReq();
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+    const cause = Object.assign(new Error("deadlock detected"), { code: "40P01", severity: "ERROR", table: "issue_work_products" });
+    const err = Object.assign(new Error('Failed query: update "issue_work_products" set "metadata" = $1'), { cause });
+
+    errorHandler(err, req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.__errorContext.error.db).toEqual({
+      code: "40P01",
+      message: "deadlock detected",
+      severity: "ERROR",
+      table: "issue_work_products",
+    });
+  });
+
+  it("adds no database reason to an error that is not from the database", () => {
+    const res = makeRes() as any;
+
+    errorHandler(new Error("boom"), makeReq(), res, vi.fn() as unknown as NextFunction);
+
+    expect(res.__errorContext.error).not.toHaveProperty("db");
+  });
+
   it("sanitizes chat setup errors before logs and crash reporting", () => {
     const req = {
       ...makeReq(),

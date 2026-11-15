@@ -995,17 +995,24 @@ describe('IdleStopService', () => {
       expect(mockLogger.error).not.toHaveBeenCalled();
     });
 
-    it('a site driver that cannot idle-stop still gets the clear error, and no plain stop is done in its place', async () => {
+    // myrmidon(OPE-12663): an unsupported driver is a permanent condition — one
+    // warning per process instead of an error on every sweep; no plain stop is
+    // done in its place (that would lose the idle-stopped mark contract).
+    it('a site driver that cannot idle-stop gets one warning per process, and no plain stop is done in its place', async () => {
       const { site, routed } = routedDrivers('host-a', { siteHasStopIdle: false });
       mockIdleBot();
       const service = new IdleStopService(routed, mockDb, testConfig, mockLogger);
 
       await service.performSweep();
+      mockIdleBot(); // the per-sweep query mock is single-use: reset it for the second sweep
+      await service.performSweep();
 
       expect(site.stop).not.toHaveBeenCalled();
-      expect(mockLogger.error).toHaveBeenCalledWith(
-        `Failed to stop container for bot ${botKey} [idle-stop route is not supported by this driver]`,
+      expect(mockLogger.warn).toHaveBeenCalledTimes(1);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'Bot containers on this driver cannot be idle-stopped [idle-stop route is not supported by this driver]',
       );
+      expect(mockLogger.error).not.toHaveBeenCalled();
     });
   });
 });

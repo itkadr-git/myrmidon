@@ -133,6 +133,7 @@ CVE, breaking changes или deprecations: пять самых свежих, к�
 | Переменная | По умолчанию | Смысл |
 |---|---|---|
 | `MYRMIDON_STACK_DOCKER_SOCKET` | `/var/run/docker.sock` | Unix-сокет Docker для локальных проб образов; читается при каждом refresh, перезапуск не нужен |
+| `MYRMIDON_STACK_IMAGE_<NAME>` | не задана | Точные ссылки образов (тег или дайджест, через запятую), которые локальная проба docker-image-компонента `<NAME>` осматривает (имя компонента в верхнем регистре, `-` заменяется на `_`: `MYRMIDON_STACK_IMAGE_CLICKHOUSE`, `MYRMIDON_STACK_IMAGE_HERMES_AGENT`, `MYRMIDON_STACK_IMAGE_BASE_IMAGES`). Ссылки берутся как есть (тег не отрезается); без переменной остаются ссылки из seed, осматриваемые как `:latest`. Через dockergate те же ссылки должны быть в его `inspectOnlyImages`, а `MYRMIDON_STACK_DOCKER_SOCKET` указывать на сокет dockergate (`/run/myrmidon-dockergate/engine.sock`); читается при каждом refresh |
 | `MYRMIDON_STACK_CHECK_INTERVAL_SEC` | не задана (выключено) | Интервал плановой сверки релизов; выключена, пока не задана, минимум 60 с |
 
 ## Когда сети нет

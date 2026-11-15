@@ -56,7 +56,7 @@
 
 import { CLONE_HYGIENE_REPORT_PATH } from "./clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { liveSavedSetting } from "../behavior-settings/live.js";
 import http from "node:http";
@@ -385,6 +385,7 @@ export interface DockerCreateContainerBody {
     NetworkMode: string;
     Binds: string[];
     Privileged: boolean;
+    Ulimits: Array<{ Name: string; Soft: number; Hard: number }>;
   };
 }
 
@@ -492,6 +493,7 @@ export function buildCreateContainerRequestBody(
         sharedMount: resolveSpecSharedMount(spec, config.volumeRoot),
       }),
       Privileged: false,
+      Ulimits: [{ Name: "core", Soft: 0, Hard: 0 }],
     },
   };
 }
@@ -516,6 +518,7 @@ export interface DockerHelperContainerBody {
     NetworkMode: string;
     Binds: string[];
     Privileged: boolean;
+    Ulimits: Array<{ Name: string; Soft: number; Hard: number }>;
   };
 }
 
@@ -564,6 +567,7 @@ export function buildHelperContainerRequestBody(params: {
       NetworkMode: "none",
       Binds: buildHelperBinds(params.volumeRoot, params.botKey, params.scope, asRoot, params.packageCachePath),
       Privileged: false,
+      Ulimits: [{ Name: "core", Soft: 0, Hard: 0 }],
     },
   };
 }
@@ -1979,7 +1983,21 @@ export function dockerBotContainerDriver(
     const name = containerNameFor(botKey);
     const release = await startSemaphore.acquire();
     try {
-      await startByName(name); // 304 (already running) is not an error
+      // myrmidon(OPE-12960): a start whose persistent volume is gone answers as
+      // an explicit missing-volume error, not a bare daemon refusal: the wake
+      // path (idle-stop) and the reconciler log this verbatim, and "volume
+      // unavailable" is the one cause an operator can act on. Docker itself
+      // fails such a start with `no such file or directory` naming the bind
+      // source; anything else keeps the plain describeFailure wording.
+      await startByName(name).catch(async (err) => {
+        if (err instanceof Error && /no such file or directory/i.test(err.message)) {
+          const binds = (await inspectByName(name))?.HostConfig?.Binds?.join(", ") ?? "<volumeRoot>/<botKey>";
+          throw new Error(
+            `persistent volume for bot ${botKey} is unavailable (docker could not mount ${binds}); the container was not started`,
+          );
+        }
+        throw err;
+      }); // 304 (already running) is not an error
       await waitForHealthy(botKey);
       await writeIdleStopped(botKey, false);
     } finally {
@@ -2008,17 +2026,47 @@ export function dockerBotContainerDriver(
     await writeIdleStopped(botKey, false).catch(() => undefined);
   }
 
-  async function cleanup(botKey: string): Promise<void> {
+  /**
+   * myrmidon(OPE-12654): the bot of an agent that left the bot-container runtime. dockergate
+   * deletes a main container through the plain delete (A9) only stopped AND with a `.next`
+   * replacement ready (the recreate rule), so the old cleanup's delete was refused on every
+   * lifecycle call, and its `rm` of the data directory did nothing: the board has no mount of
+   * the volume root. The decommission route (A22) deletes the stopped main container without a
+   * replacement, the bot's leftover `.next`/helper, its quota project and its data directory.
+   * A container that still runs is stopped first through the idle-stop route (A17: refused in
+   * the middle of a recreate or next to a running helper, so nothing is cut off mid-apply). A
+   * bot without a container is done (404). The callers hold the bot's lock (bot-key-lock.ts),
+   * so a `.next` found here is the stale leftover of an interrupted recreate, as in `create`:
+   * it is removed before the stop, which A17 would otherwise refuse as "recreate_active".
+   */
+  async function decommission(botKey: string): Promise<void> {
     const name = containerNameFor(botKey);
-    // 1. Remove the container (and anonymous volumes). If 404, removeByName ignores it.
-    await removeByName(name);
-    // 2. Remove the bot volume data directory on host if it exists.
-    const botDir = path.join(config.volumeRoot, botKey);
-    try {
-      await rm(botDir, { recursive: true, force: true });
-    } catch {
-      // Ignore filesystem errors or non-existing path
+    const info = await inspectByName(name);
+    if (info) {
+      const state = info.State?.Status;
+      if (state !== "created" && state !== "exited" && state !== "dead") {
+        await removeByName(replacementContainerNameFor(botKey));
+        const stopRes = await requestWithRateLimitRetry({
+          method: "POST",
+          path: `/containers/${nameSegment(name)}/stop?t=${BOT_STOP_TIMEOUT_SEC}&myrmidon-idle=true`,
+          timeoutMs: (BOT_STOP_TIMEOUT_SEC + 30) * 1000,
+        });
+        if (stopRes.status >= 400 && stopRes.status !== 404) throw describeFailure(`docker stop ${name} before its decommission`, stopRes);
+      }
+      const res = await requestWithRateLimitRetry({
+        method: "DELETE",
+        path: `/containers/${nameSegment(name)}?force=true&v=true&myrmidon-decommission=true`,
+      });
+      if (res.status >= 400 && res.status !== 404) throw describeFailure(`docker decommission ${name}`, res);
     }
+    // The bot is gone: nothing is left to wake or to template.
+    await writeIdleStopped(botKey, false).catch(() => undefined);
+    templateContextCache.delete(botKey);
+  }
+
+  /** myrmidon(OPE-12654): the lifecycle cleanup of a terminated or deleted agent is the decommission. */
+  async function cleanup(botKey: string): Promise<void> {
+    await decommission(botKey);
   }
 
   async function stopIdle(botKey: string): Promise<void> {
@@ -2039,5 +2087,5 @@ export function dockerBotContainerDriver(
     return client.getOomEvents(sinceNano);
   }
 
-  return { status, list, listRunning, templateDrift, statusWithDrift, updateResources, create, recreate, writeProfile, start, restart, stop, cleanup, stopIdle, readCloneReport, readBotSkills, getOomEvents };
+  return { status, list, listRunning, templateDrift, statusWithDrift, updateResources, create, recreate, writeProfile, start, restart, stop, cleanup, decommission, stopIdle, readCloneReport, readBotSkills, getOomEvents };
 }

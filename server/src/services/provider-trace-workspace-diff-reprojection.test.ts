@@ -85,4 +85,57 @@ describe("provider trace workspace diff reprojection", () => {
       expect.objectContaining({ reason: "malformed_diff", turnId: "turn-2", frameId: 3 }),
     ]);
   });
+
+  it("reprojects an empty diff as an authoritative empty runner_verified snapshot", () => {
+    const turnId = "01empty-diff-turn";
+    const projection = projectCodexWorkspaceDiffsFromTrace([
+      frame(1, {
+        method: "turn/diff/updated",
+        params: { turnId, diff: createdFile("src/first.ts", 1) },
+      }),
+      frame(2, {
+        method: "turn/diff/updated",
+        params: { turnId, diff: "" },
+      }),
+    ]);
+
+    // The empty snapshot is kept, not skipped: an empty diff is the
+    // provider's authoritative "nothing changed in this turn" state.
+    expect(projection.skipReasons).toEqual([]);
+    expect(projection.turns).toHaveLength(1);
+    const payload = projection.turns[0]?.payload;
+    expect(payload).toMatchObject({
+      schema: "paperclip.workspace.diff.v1",
+      changeSetId: `${turnId}:workspace`,
+      revision: 2,
+      source: "runner_verified",
+      complete: true,
+      files: [],
+      totals: { files: 0, additions: 0, deletions: 0 },
+      patchArtifactRef: null,
+    });
+    expect(payload?.files).toEqual([]);
+  });
+
+  it("reprojects an empty-only trace without emitting malformed_diff", () => {
+    const projection = projectCodexWorkspaceDiffsFromTrace([
+      frame(1, {
+        method: "turn/diff/updated",
+        params: { turnId: "turn-empty", diff: "   \n\t  " },
+      }),
+      frame(2, {
+        method: "turn/diff/updated",
+        params: { turnId: "turn-empty", diff: "" },
+      }),
+    ]);
+
+    expect(projection.skipReasons).toEqual([]);
+    expect(projection.turns.map((turn) => turn.turnId)).toEqual(["turn-empty"]);
+    expect(projection.turns[0]?.payload.revision).toBe(2);
+    expect(projection.turns[0]?.payload.totals).toEqual({
+      files: 0,
+      additions: 0,
+      deletions: 0,
+    });
+  });
 });

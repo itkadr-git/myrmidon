@@ -21,6 +21,19 @@ import {
   type SkillLifecycleState,
 } from "./domain.js";
 import type { SkillLifecycleSkillRef, SkillLifecycleStore } from "./store.js";
+import type { GitSkillEntry } from "../skill-git-record/domain.js";
+import { skillContentHash, skillGitDriftReason } from "../skill-git-record/domain.js";
+
+/**
+ * The git record owns verified skill content while enabled. Keeping this as a
+ * narrow port lets the lifecycle keep its database-focused tests and makes a
+ * failed repository operation fail closed before a promotion is persisted.
+ */
+export interface SkillGitRecordPort {
+  refresh(): Promise<void>;
+  listEntries(): Promise<GitSkillEntry[]>;
+  recordVerified(input: { key: string; files: Array<{ path: string; content: string }>; revisionNumber: number }): Promise<void>;
+}
 
 export interface SkillLifecycleActor {
   actorType: "agent" | "user" | "system";
@@ -50,6 +63,8 @@ export interface SkillLifecycleServiceDeps {
   readStoredPilotAgents?: (companyId: string) => Promise<string[] | null>;
   /** Replace the board-stored pilot list of one company (PUT of the setting). */
   writeStoredPilotAgents?: (companyId: string, agentIds: readonly string[]) => Promise<string[]>;
+  // myrmidon(1.7 KNOWLEDGE-2.0 L-13): a verified skill is recorded in git before delivery.
+  gitRecord?: SkillGitRecordPort | null;
 }
 
 export interface SkillLifecycleView {
@@ -68,6 +83,8 @@ export interface SkillLifecycleView {
   reason: string | null;
   updatedAt: string | null;
   verifiedRevisionNumber: number | null;
+  /** Git is the source of record for verified skills when configured. */
+  gitDrift?: "missing" | "content_mismatch" | null;
 }
 
 export interface SkillLifecycleDelivery {
@@ -122,6 +139,8 @@ export interface SkillLifecycleService {
     skillId: string,
   ): Promise<{ versionId: string; revisionNumber: number; files: Array<{ path: string; content: string }> } | null>;
   resolveDelivery(companyId: string, agentId: string, cache?: SkillLifecycleReadCache): Promise<SkillLifecycleDelivery>;
+  /** Re-point verified delivery to a matching git revision after a pull/revert. */
+  reconcileGitRecord(companyId: string): Promise<void>;
 }
 
 function actorIdOf(actor: SkillLifecycleActor): string {
@@ -153,6 +172,7 @@ export function createSkillLifecycleService(deps: SkillLifecycleServiceDeps): Sk
     skill: SkillLifecycleSkillRef,
     record: SkillLifecycleRecord | null,
     verifiedRevisionNumber: number | null,
+    gitDrift: SkillLifecycleView["gitDrift"] = null,
   ): SkillLifecycleView {
     return {
       skillId: skill.id,
@@ -170,6 +190,7 @@ export function createSkillLifecycleService(deps: SkillLifecycleServiceDeps): Sk
       reason: record?.reason ?? null,
       updatedAt: record?.updatedAt ?? null,
       verifiedRevisionNumber,
+      gitDrift,
     };
   }
 
@@ -179,9 +200,84 @@ export function createSkillLifecycleService(deps: SkillLifecycleServiceDeps): Sk
     return version?.revisionNumber ?? null;
   }
 
+  async function gitDriftFor(
+    companyId: string,
+    skill: SkillLifecycleSkillRef,
+    record: SkillLifecycleRecord | null,
+    entries: Map<string, GitSkillEntry> | null,
+  ): Promise<SkillLifecycleView["gitDrift"]> {
+    if (!deps.gitRecord || record?.state !== "verified" || !record.verifiedVersionId) return null;
+    const version = await store.getVersion(companyId, skill.id, record.verifiedVersionId);
+    if (!version) return "missing";
+    return skillGitDriftReason({
+      verified: true,
+      gitEntry: entries?.get(skill.key) ?? null,
+      versionFiles: version.fileInventory.map((entry) => ({ path: entry.path, content: entry.content })),
+    });
+  }
+
+  // myrmidon(OPE-9408): one snapshot for the whole reconcile+delivery pass.
+  // `reconcileGitRecord` used to run its own catalogue/entries reads, so the
+  // per-agent resolveDelivery paid a full walk twice per agent even with the
+  // pass cache. The snapshot type keeps `listVersions` off the shared read:
+  // it stays a per-skill store read inside the reconcile loop.
+  type GitRecordSnapshot = readonly [
+    SkillLifecycleSkillRef[],
+    SkillLifecycleRecord[],
+    Map<string, GitSkillEntry> | null,
+  ];
+  async function readGitRecordSnapshot(companyId: string): Promise<GitRecordSnapshot> {
+    const entries = await gitEntries();
+    const [skills, records] = await Promise.all([store.listSkills(companyId), store.listRecords(companyId)]);
+    return [skills, records, entries] as const;
+  }
+
+  async function reconcileGitRecord(companyId: string, snapshot?: GitRecordSnapshot): Promise<void> {
+    if (!deps.gitRecord) return;
+    const [skills, records, entries] = snapshot ?? (await readGitRecordSnapshot(companyId));
+    const recordsBySkillId = new Map(records.map((record) => [record.skillId, record] as const));
+    for (const skill of skills) {
+      const record = recordsBySkillId.get(skill.id);
+      if (record?.state !== "verified" || !record.verifiedVersionId) continue;
+      const entry = entries?.get(skill.key);
+      if (!entry) continue;
+      const versions = store.listVersions ? await store.listVersions(companyId, skill.id) : [];
+      const matched = versions.find((version) =>
+        skillContentHash(entry.files) === skillContentHash(version.fileInventory.map((file) => ({ path: file.path, content: file.content }))),
+      );
+      if (!matched || matched.id === record.verifiedVersionId) continue;
+      await store.saveRecord({
+        ...record,
+        verifiedVersionId: matched.id,
+        previousVerifiedVersionId: record.verifiedVersionId,
+        updatedAt: now().toISOString(),
+      });
+      await store.setSkillCurrentVersion(companyId, skill.id, matched.id);
+      await appendEvent(companyId, skill.id, "verified", "verified", { actorType: "system", actorId: null }, {
+        versionId: matched.id,
+        reason: `git record reconciled revision ${matched.revisionNumber}`,
+      });
+    }
+  }
+
+  async function gitEntries(): Promise<Map<string, GitSkillEntry> | null> {
+    if (!deps.gitRecord) return null;
+    try {
+      return new Map((await deps.gitRecord.listEntries()).map((entry) => [entry.key, entry] as const));
+    } catch {
+      // A broken checkout is an empty record: verified delivery remains fail-closed.
+      return new Map();
+    }
+  }
+
   async function viewFor(companyId: string, skill: SkillLifecycleSkillRef): Promise<SkillLifecycleView> {
-    const record = await store.getRecord(companyId, skill.id);
-    return viewOf(skill, record, await revisionNumber(companyId, skill.id, record?.verifiedVersionId ?? null));
+    const [record, entries] = await Promise.all([store.getRecord(companyId, skill.id), gitEntries()]);
+    return viewOf(
+      skill,
+      record,
+      await revisionNumber(companyId, skill.id, record?.verifiedVersionId ?? null),
+      await gitDriftFor(companyId, skill, record, entries),
+    );
   }
 
   async function appendEvent(
@@ -207,12 +303,19 @@ export function createSkillLifecycleService(deps: SkillLifecycleServiceDeps): Sk
 
   return {
     async list(companyId) {
-      const [skills, records] = await Promise.all([store.listSkills(companyId), store.listRecords(companyId)]);
+      const [skills, records, entries] = await Promise.all([store.listSkills(companyId), store.listRecords(companyId), gitEntries()]);
       const byId = new Map(records.map((record) => [record.skillId, record] as const));
       const out: SkillLifecycleView[] = [];
       for (const skill of skills) {
         const record = byId.get(skill.id) ?? null;
-        out.push(viewOf(skill, record, await revisionNumber(companyId, skill.id, record?.verifiedVersionId ?? null)));
+        out.push(
+          viewOf(
+            skill,
+            record,
+            await revisionNumber(companyId, skill.id, record?.verifiedVersionId ?? null),
+            await gitDriftFor(companyId, skill, record, entries),
+          ),
+        );
       }
       return out;
     },
@@ -305,6 +408,20 @@ export function createSkillLifecycleService(deps: SkillLifecycleServiceDeps): Sk
       const existing = await store.getRecord(companyId, skill.id);
       const timestamp = now();
       const fields = nextPromotionFields(existing, versionId, approved, timestamp);
+      const version = await store.getVersion(companyId, skill.id, versionId);
+      if (!version) {
+        throw new SkillLifecycleError("promotion_version_missing", "The skill version to promote no longer exists.");
+      }
+      // myrmidon(1.7 KNOWLEDGE-2.0 L-13): do not make a verified DB row until
+      // the immutable verified snapshot has been recorded in the configured git
+      // record. A repository failure therefore cannot deliver unrecorded code.
+      if (deps.gitRecord) {
+        await deps.gitRecord.recordVerified({
+          key: skill.key,
+          files: version.fileInventory.map((entry) => ({ path: entry.path, content: entry.content })),
+          revisionNumber: version.revisionNumber,
+        });
+      }
       const saved = await store.saveRecord({
         skillId: skill.id,
         companyId,
@@ -420,15 +537,33 @@ export function createSkillLifecycleService(deps: SkillLifecycleServiceDeps): Sk
       };
     },
 
-    // myrmidon(PERF-DIET-G): the two reads are company-scoped and identical for
+    async reconcileGitRecord(companyId) {
+      await reconcileGitRecord(companyId);
+    },
+
+    // myrmidon(PERF-DIET-G): the reads are company-scoped and identical for
     // every bot of the company — shared through `cache` when the caller compiles
     // more than one bot (a sweep). The decision below stays per agent: a
     // candidate reaches the pilot set, not the fleet.
+    // myrmidon(OPE-9408): the git snapshot is part of the shared read. The
+    // reconciliation walk AND `listEntries` full-directory walk used to run
+    // once per agent; they now run once per pass, keyed by the checkout's
+    // HEAD so a pull/revert between passes is picked up rather than served
+    // from a stale cache.
     async resolveDelivery(companyId, agentId, cache) {
-      const readCatalogue = () => Promise.all([store.listSkills(companyId), store.listRecords(companyId)]);
-      const [skills, records] = cache
-        ? await cache.once(`skill-lifecycle:${companyId}`, readCatalogue)
-        : await readCatalogue();
+      // myrmidon(1.7 KNOWLEDGE-2.0 L-13): each profile reconciliation treats
+      // the pulled git snapshot as authoritative, so a git revert restores the
+      // matching historical version before this agent receives its skills.
+      const readSnapshot = async (): Promise<GitRecordSnapshot> => {
+        const snapshot = await readGitRecordSnapshot(companyId);
+        // Reconcile against the SAME snapshot the delivery decision below
+        // reads: one catalogue/entries walk per pass, not per agent.
+        await reconcileGitRecord(companyId, snapshot);
+        return snapshot;
+      };
+      const [skills, records, entries] = cache
+        ? await cache.once(`skill-lifecycle:${companyId}`, readSnapshot)
+        : await readSnapshot();
       const byId = new Map(records.map((record) => [record.skillId, record] as const));
       // K-7: the board setting wins over env once written (an explicit empty
       // list is "no pilot"); env is the fallback. Shared per sweep like the
@@ -447,6 +582,12 @@ export function createSkillLifecycleService(deps: SkillLifecycleServiceDeps): Sk
         const state: SkillDeliveryState | null = record
           ? { state: record.state, verifiedVersionId: record.verifiedVersionId, authorAgentId: skill.originAgentId ?? null }
           : null;
+        const drift = await gitDriftFor(companyId, skill, record, entries);
+        if (drift) {
+          delivery.blockedKeys.add(skill.key);
+          delivery.reasons.set(skill.key, `verified skill is absent or different in the git record (${drift})`);
+          continue;
+        }
         const decision = decideSkillDelivery({ skillKey: skill.key, agentId, lifecycle: state, pilotAgentIds });
         if (decision.blocked) {
           delivery.blockedKeys.add(skill.key);

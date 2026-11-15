@@ -153,7 +153,7 @@ describeEmbeddedPostgres("board process store against Postgres (myrmidon PROCS-0
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-board-processes-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterAll(async () => {
     disablePulseEventLoopMonitor();

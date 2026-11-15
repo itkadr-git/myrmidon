@@ -84,7 +84,26 @@ const BACKSTOP_WRITE_RETRY_MS = 50;
 // exponential ramp below it keeps a hard-down channel from burning an exec
 // call every poll interval.
 const MAX_TRANSIENT_ITERATION_BACKOFF_MS = 5_000;
+// The worker's own idle-wait default: no remote block, every poll is a
+// single-shot list (the legacy behavior). The long-poll is opt-in per caller,
+// because only the command-managed (ssh) transport pays a process spawn per
+// poll; every other caller keeps the old cadence and drain semantics.
+const DEFAULT_BRIDGE_QUEUE_POLL_IDLE_WAIT_MS = 0;
+// How long one poll `listJsonFiles` exec may block inside the remote shell
+// waiting for a request file to appear (the long-poll idle budget) on the
+// command-managed (ssh) transport. The board CPU overload (OPE-12727) comes
+// from the ssh client spawning one `ssh` process per poll; a remote block turns
+// ~10 spawns a second at the 100 ms default cadence into one spawn per budget.
+// The ssh caller passes this value explicitly. The worker clamps any budget to
+// half of min(per-iteration timeout, watchdog), so a healthy idle poll — which
+// returns empty at budget end and so IS a successful iteration that re-arms the
+// watchdog — always finishes well inside both windows. The long-poll exec runs
+// under `iterationTimeoutMs + budget`, because the remote wait is by design not
+// a stall.
+export const SSH_BRIDGE_QUEUE_POLL_IDLE_WAIT_MS = 5_000;
 const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
+// Settles the race of an idle long-poll that `stop()` abandons (see the worker).
+const IDLE_POLL_ABANDONED = Symbol("sandbox-callback-bridge.idle-poll-abandoned");
 export const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
 const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
 const SANDBOX_EXEC_CHANNEL_BRIDGE = "bridge";
@@ -150,6 +169,15 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "GET", path: /^\/api\/companies\/[^/]+\/skills$/ },
   { method: "GET", path: /^\/api\/projects\/[^/]+$/ },
   { method: "GET", path: /^\/api\/goals\/[^/]+$/ },
+
+  // Run telemetry reads prescribed by ops runbooks (e.g. `runs-reconnecting`):
+  // the run list, one run's execution projection, and its log tail. GET-only;
+  // the server's `company_scope:read` authorization decides actor access, and
+  // `/metrics` itself stays out — its bearer token is scraper-scoped, not an
+  // agent key, so allowing it through the bridge only changes the failure mode.
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/heartbeat-runs$/ },
+  { method: "GET", path: /^\/api\/heartbeat-runs\/[^/]+$/ },
+  { method: "GET", path: /^\/api\/heartbeat-runs\/[^/]+\/log$/ },
 
   // Task-bound email actions. Company, inbox ownership, task/run authority,
   // and action policies are enforced by the controller; mailbox setup stays denied.
@@ -275,7 +303,12 @@ export interface SandboxCallbackBridgeQueueClient {
   // omits it; the worker falls back to sequential `makeDir` calls, so an
   // external implementation stays compatible without a change.
   makeDirs?(remotePaths: string[]): Promise<void>;
-  listJsonFiles(remotePath: string): Promise<string[]>;
+  // Long-poll idle option: when `options.waitMs` is > 0, a transport that
+  // supports it (the command-managed/ssh client) blocks inside the remote
+  // shell until a matching file appears or the budget elapses, so an idle
+  // window costs one exec instead of one exec per poll interval. Transports
+  // without a wait loop (the local file-system client) ignore the option.
+  listJsonFiles(remotePath: string, options?: { waitMs?: number }): Promise<string[]>;
   fileSize?(remotePath: string): Promise<number>;
   readTextFile(remotePath: string, maxBytes?: number): Promise<string>;
   writeTextFile(remotePath: string, body: string): Promise<void>;
@@ -660,11 +693,45 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
       const quoted = remotePaths.map((remotePath) => shellQuote(remotePath));
       await runChecked(`mkdir ${remotePaths.join(" ")}`, `mkdir -p ${quoted.join(" ")}`);
     },
-    listJsonFiles: async (remotePath) => {
+    listJsonFiles: async (remotePath, options) => {
+      // Long-poll idle budget (OPE-12727): over ssh, one exec per poll spawns
+      // one `ssh` process, so a short poll cadence burns most of a host core
+      // in `spawn` alone. When the caller passes `waitMs`, prepend a wait loop
+      // to the listing script: the same remote shell blocks until a matching
+      // file appears or the budget elapses, then lists once. The loop is bound
+      // twice. An iteration counter (`sleep 0.05` per step, portable: no
+      // `date +%s%N` on busybox) caps the step count, and a wall-clock check
+      // (`date +%s`, whole seconds, rounded up) caps the elapsed time, so a
+      // slow `sleep` under load cannot stretch the block past the budget. The
+      // wall-clock check is skipped on a remote whose `date` has no `%s`; the
+      // counter then still bounds the loop. The glob test (`set --` +
+      // `[ -f "$1" ]`) avoids `ls` and its no-match pitfalls.
+      const requestedWaitMs = options?.waitMs;
+      const waitMs =
+        typeof requestedWaitMs === "number" && Number.isFinite(requestedWaitMs) && requestedWaitMs > 0
+          ? requestedWaitMs
+          : 0;
+      const waitLines = waitMs > 0
+        ? [
+          "t0=$(date +%s 2>/dev/null)",
+          "case \"$t0\" in ''|*[!0-9]*) t0= ;; esac",
+          "i=0",
+          `while ! { set -- ${shellQuote(remotePath)}/*.json; [ -f "$1" ]; }; do`,
+          `  [ "$i" -ge ${Math.ceil(waitMs / 50)} ] && break`,
+          `  [ -n "$t0" ] && [ $(( $(date +%s) - t0 )) -ge ${Math.ceil(waitMs / 1000)} ] && break`,
+          "  sleep 0.05",
+          "  i=$((i+1))",
+          "done",
+        ]
+        : [];
+      // The wait is extra exec budget, not part of the base timeout: a healthy
+      // long-poll legitimately runs `waitMs` longer than a single-shot list.
+      const execTimeoutMs = timeoutMs + waitMs;
       const result = await runShell(
         input.runner,
         input.remoteCwd,
         [
+          ...waitLines,
           `if [ -d ${shellQuote(remotePath)} ]; then`,
           `  for file in ${shellQuote(remotePath)}/*.json; do`,
           `    [ -f "$file" ] || continue`,
@@ -672,7 +739,7 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
           "  done",
           "fi",
         ].join("\n"),
-        timeoutMs,
+        execTimeoutMs,
         shellCommand,
       );
       requireSuccessfulResult(`list ${remotePath}`, result);
@@ -801,6 +868,18 @@ export async function startSandboxCallbackBridgeWorker(input: {
   client: SandboxCallbackBridgeQueueClient;
   queueDir: string;
   pollIntervalMs?: number | null;
+  // Long-poll idle budget for the poll `listJsonFiles` exec (the
+  // SSH_BRIDGE_QUEUE_POLL_IDLE_WAIT_MS doc explains the transport and watchdog
+  // math). The value must be finite and ≥ 0; 0 disables the remote block
+  // (every poll is a single-shot list, the legacy behavior). Defaults to
+  // DEFAULT_BRIDGE_QUEUE_POLL_IDLE_WAIT_MS (0, disabled): only the
+  // command-managed (ssh) transport pays a process spawn per poll, so only that
+  // caller passes a budget. An invalid or negative value takes the default. A
+  // budget above half of min(`iterationTimeoutMs`, `watchdogTimeoutMs`) is
+  // clamped down to that half. The long-poll exec runs under `iterationTimeoutMs`
+  // plus the budget, and `stop()` abandons an idle long-poll instead of waiting
+  // it out.
+  pollIdleWaitMs?: number | null;
   // Per-iteration timeout for one poll-loop client call (the `listJsonFiles`
   // poll and one `processRequestFile`). On timeout the loop `catch` runs
   // `failPendingRequests`. Defaults to DEFAULT_BRIDGE_ITERATION_TIMEOUT_MS.
@@ -846,6 +925,19 @@ export async function startSandboxCallbackBridgeWorker(input: {
   const pollIntervalMs = normalizeTimeoutMs(input.pollIntervalMs, DEFAULT_BRIDGE_POLL_INTERVAL_MS);
   const iterationTimeoutMs = normalizeTimeoutMs(input.iterationTimeoutMs, DEFAULT_BRIDGE_ITERATION_TIMEOUT_MS);
   const watchdogTimeoutMs = normalizeTimeoutMs(input.watchdogTimeoutMs, DEFAULT_BRIDGE_WATCHDOG_TIMEOUT_MS);
+  // Unlike the other windows, 0 is a meaningful input here: it disables the
+  // remote block. An unset, null, negative, or non-finite value takes the
+  // default. A positive budget is clamped to half of the shorter of the
+  // per-iteration timeout and the watchdog threshold, so one healthy idle poll
+  // can never approach either window.
+  const requestedPollIdleWaitMs =
+    typeof input.pollIdleWaitMs === "number" && Number.isFinite(input.pollIdleWaitMs) && input.pollIdleWaitMs >= 0
+      ? Math.trunc(input.pollIdleWaitMs)
+      : DEFAULT_BRIDGE_QUEUE_POLL_IDLE_WAIT_MS;
+  const pollIdleWaitMs = Math.min(
+    requestedPollIdleWaitMs,
+    Math.floor(Math.min(iterationTimeoutMs, watchdogTimeoutMs) / 2),
+  );
   const abortedHandlerGraceMs = normalizeTimeoutMs(
     input.abortedHandlerGraceMs,
     DEFAULT_BRIDGE_ABORTED_HANDLER_GRACE_MS,
@@ -879,6 +971,16 @@ export async function startSandboxCallbackBridgeWorker(input: {
   let settleResolve: (() => void) | null = null;
   const settledPromise = new Promise<void>((resolve) => {
     settleResolve = resolve;
+  });
+  // Resolves when `stop()` finds the loop idle inside a long-poll. The poll
+  // loop races its idle long-poll against this, so a worker that is almost
+  // always parked in a multi-second remote block does not make every teardown
+  // wait that block out. The abandoned poll's exec still finishes on its own
+  // (the remote loop is time-bound) and its late result is dropped: the loop has
+  // already left, so nothing is processed after `stop()`.
+  let abandonIdlePoll: () => void = () => undefined;
+  const idlePollAbandoned = new Promise<typeof IDLE_POLL_ABANDONED>((resolve) => {
+    abandonIdlePoll = () => resolve(IDLE_POLL_ABANDONED);
   });
   const authorizeRequest = input.authorizeRequest ??
     ((request: SandboxCallbackBridgeRequest) => authorizeSandboxCallbackBridgeRequestWithRoutes(request));
@@ -1518,11 +1620,31 @@ export async function startSandboxCallbackBridgeWorker(input: {
       while (true) {
         let fileNames: string[];
         try {
-          fileNames = await withTimeout(
-            input.client.listJsonFiles(directories.requestsDir),
-            iterationTimeoutMs,
+          // The idle long-poll runs only while the worker is not stopping: a
+          // poll that starts during the stop drain is a quick single-shot list,
+          // so the drain never waits out a remote block. (The recovery/drain
+          // list call further down stays single-arg by design: it must not
+          // block on a dead channel.) The remote wait is by design not a stall,
+          // so the long-poll exec gets the wait on top of the per-iteration
+          // timeout; a budget of 0 keeps the single-shot list and the plain
+          // per-iteration timeout.
+          const longPoll = pollIdleWaitMs > 0 && !stopping;
+          const listing = withTimeout(
+            input.client.listJsonFiles(
+              directories.requestsDir,
+              longPoll ? { waitMs: pollIdleWaitMs } : undefined,
+            ),
+            longPoll ? iterationTimeoutMs + pollIdleWaitMs : iterationTimeoutMs,
             "Sandbox callback bridge list requests",
           );
+          const listed = longPoll ? await Promise.race([listing, idlePollAbandoned]) : await listing;
+          // `stop()` abandoned the idle poll, or it landed after `stop()` began:
+          // leave without processing. Whatever is queued is answered with the
+          // retry-safe 503 by `stop()`'s `failPendingRequests`.
+          if (listed === IDLE_POLL_ABANDONED || (longPoll && stopping)) {
+            break;
+          }
+          fileNames = listed;
           consecutivePollFailures = 0;
         } catch (error) {
           if (stopping) {
@@ -1637,11 +1759,23 @@ export async function startSandboxCallbackBridgeWorker(input: {
       stopping = true;
       const drainMs = normalizeTimeoutMs(options.drainTimeoutMs, DEFAULT_BRIDGE_STOP_TIMEOUT_MS);
       stopDeadline = Date.now() + drainMs;
+      // Nothing is being processed, so the loop is parked in its idle poll:
+      // abandon it instead of waiting out the remote block. With a request in
+      // flight the drain below still gives it up to `drainMs` to finish.
+      if (inFlight === 0) {
+        abandonIdlePoll();
+      }
       if (!settled) {
+        let drainTimer: ReturnType<typeof setTimeout> | undefined;
         await Promise.race([
           settledPromise,
-          new Promise<void>((resolve) => setTimeout(resolve, drainMs)),
+          new Promise<void>((resolve) => {
+            drainTimer = setTimeout(resolve, drainMs);
+          }),
         ]);
+        if (drainTimer !== undefined) {
+          clearTimeout(drainTimer);
+        }
       }
       await failPendingRequests("Bridge worker stopped before request could be handled.");
     },

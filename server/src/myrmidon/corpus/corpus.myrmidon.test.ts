@@ -1691,6 +1691,139 @@ describe("corpus API: documents by address, refreshed on a schedule", () => {
     expect(h.state.blobs.size).toBe(0);
   });
 
+  it("keeps previousBlobRef when deleting the replaced blob fails, and removes it on the next refresh", async () => {
+    const { h, web, app } = withSite({ [PAGE]: { body: "version 1 words" } });
+    const added = await addByUrl(app, { url: PAGE });
+    const documentId = added.body.document.id as string;
+    await h.worker.sweep();
+    const v1Ref = h.state.documents.get(documentId)!.blobRef;
+    expect(h.state.blobs.has(v1Ref)).toBe(true);
+
+    web.pages[PAGE] = { body: "version 2 words, changed" };
+    h.state.parse = { text: "v2 chunk", chunks: [{ index: 0, text: "v2 chunk" }] };
+    const { result: r1 } = await refreshAndWait(h, app);
+    expect(r1).toMatchObject({ checked: 1, updated: 1, failed: 0 });
+    const v2Ref = h.state.documents.get(documentId)!.blobRef;
+    expect(h.state.documents.get(documentId)!.previousBlobRef).toBe(v1Ref);
+
+    // Make blob delete fail when cleaning up v1 after parse
+    const originalDelete = h.ports.blobs.delete;
+    let failV1Delete = true;
+    h.ports.blobs.delete = async (ref) => {
+      if (failV1Delete && ref === v1Ref) {
+        throw new Error("EACCES: permission denied, unlink old blob");
+      }
+      return originalDelete(ref);
+    };
+
+    await h.worker.sweep();
+    // After parse, document is ready, previousBlobRef is still v1Ref, and v1 blob is still present
+    const docAfterFailedDelete = h.state.documents.get(documentId)!;
+    expect(docAfterFailedDelete).toMatchObject({ status: "ready", previousBlobRef: v1Ref });
+    expect(h.state.blobs.has(v1Ref)).toBe(true);
+    expect(h.state.blobs.has(v2Ref)).toBe(true);
+
+    // Now restore delete, and update to version 3. The next refresh removes the leftover v1 blob.
+    failV1Delete = false;
+    web.pages[PAGE] = { body: "version 3 words, newest" };
+    h.state.parse = { text: "v3 chunk", chunks: [{ index: 0, text: "v3 chunk" }] };
+    const { result: r2 } = await refreshAndWait(h, app);
+    expect(r2).toMatchObject({ checked: 1, updated: 1, failed: 0 });
+
+    // The two-generation-old v1Ref has been removed by the refresh pass
+    expect(h.state.blobs.has(v1Ref)).toBe(false);
+    const v3Ref = h.state.documents.get(documentId)!.blobRef;
+    expect(h.state.documents.get(documentId)!.previousBlobRef).toBe(v2Ref);
+    expect(h.state.blobs.has(v2Ref)).toBe(true);
+    expect(h.state.blobs.has(v3Ref)).toBe(true);
+
+    // After v3 parse, v2Ref is deleted as well
+    await h.worker.sweep();
+    expect(h.state.documents.get(documentId)).toMatchObject({ status: "ready", previousBlobRef: null });
+    expect(h.state.blobs.has(v2Ref)).toBe(false);
+    expect(h.state.blobs.size).toBe(1);
+    expect(h.state.blobs.has(v3Ref)).toBe(true);
+  });
+
+  it("removes the new blob and leaves the document unchanged when updateDocument throws", async () => {
+    const { h, web, app } = withSite({ [PAGE]: { body: "original words" } });
+    const added = await addByUrl(app, { url: PAGE });
+    const documentId = added.body.document.id as string;
+    await h.worker.sweep();
+    const oldRef = h.state.documents.get(documentId)!.blobRef;
+    const documentBefore = { ...h.state.documents.get(documentId)! };
+    expect(h.state.blobs.size).toBe(1);
+    expect(h.state.blobs.has(oldRef)).toBe(true);
+
+    web.pages[PAGE] = { body: "updated words that fail DB write" };
+
+    h.ports.store.updateDocument = async () => {
+      throw new Error("connection to server on socket failed: Connection refused");
+    };
+
+    const { result } = await refreshAndWait(h, app);
+
+    expect(result).toMatchObject({ checked: 1, updated: 0, failed: 1 });
+    expect(result.failures).toEqual([{ documentId, sourceUrl: PAGE, error: "internal_error" }]);
+
+    // In h.state.blobs, only the old file remains; the new one was cleaned up
+    expect(h.state.blobs.size).toBe(1);
+    expect([...h.state.blobs.keys()]).toEqual([oldRef]);
+
+    // Document is completely unchanged
+    expect(h.state.documents.get(documentId)).toEqual(documentBefore);
+    expect([...h.state.jobs.values()].filter((j) => j.documentId === documentId && j.state === "queued")).toHaveLength(0);
+  });
+
+  it("records sourceError and removes the new blob if updateDocument to queued fails but fail update succeeds", async () => {
+    const { h, web, app } = withSite({ [PAGE]: { body: "original words" } });
+    const added = await addByUrl(app, { url: PAGE });
+    const documentId = added.body.document.id as string;
+    await h.worker.sweep();
+    const oldRef = h.state.documents.get(documentId)!.blobRef;
+
+    web.pages[PAGE] = { body: "updated words" };
+    const originalUpdate = h.ports.store.updateDocument;
+    h.ports.store.updateDocument = async (companyId, id, patch) => {
+      if (patch.status === "queued") {
+        throw new Error("transient update failure");
+      }
+      return originalUpdate(companyId, id, patch);
+    };
+
+    const { result } = await refreshAndWait(h, app);
+    expect(result).toMatchObject({ checked: 1, updated: 0, failed: 1 });
+    expect(result.failures).toEqual([{ documentId, sourceUrl: PAGE, error: "internal_error" }]);
+
+    // New blob removed, only oldRef remains
+    expect([...h.state.blobs.keys()]).toEqual([oldRef]);
+    // Document status remains ready (not queued), blobRef remains oldRef
+    const doc = h.state.documents.get(documentId)!;
+    expect(doc.status).toBe("ready");
+    expect(doc.blobRef).toBe(oldRef);
+    expect(doc.sourceError).toBe("internal_error");
+    expect([...h.state.jobs.values()].filter((j) => j.documentId === documentId && j.state === "queued")).toHaveLength(0);
+  });
+
+  it("swallows blob deletion failure when rolling back after updateDocument throws", async () => {
+    const { h, web, app } = withSite({ [PAGE]: { body: "original words" } });
+    const added = await addByUrl(app, { url: PAGE });
+    const documentId = added.body.document.id as string;
+    await h.worker.sweep();
+
+    web.pages[PAGE] = { body: "updated words" };
+    h.ports.store.updateDocument = async () => {
+      throw new Error("db down");
+    };
+    h.ports.blobs.delete = async () => {
+      throw new Error("blob store down during cleanup");
+    };
+
+    const { result } = await refreshAndWait(h, app);
+    expect(result).toMatchObject({ checked: 1, updated: 0, failed: 1 });
+    expect(result.failures).toEqual([{ documentId, sourceUrl: PAGE, error: "internal_error" }]);
+  });
+
   it("parses a failed document again when the page still has the same hash", async () => {
     const { h, app } = withSite({ [PAGE]: { body: "same words" } });
     const added = await addByUrl(app, { url: PAGE });

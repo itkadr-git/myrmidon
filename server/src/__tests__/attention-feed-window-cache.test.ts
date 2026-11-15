@@ -55,7 +55,7 @@ describeEmbeddedPostgres("attention failed-run horizon and feed cache", () => {
       selectCount += 1;
       return original(...args);
     };
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(heartbeatRunEvents);

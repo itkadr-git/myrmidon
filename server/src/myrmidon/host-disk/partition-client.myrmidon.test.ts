@@ -44,6 +44,30 @@ describe("partitionClientFromSocketClient", () => {
     expect(usage!.usedPercent).toBeCloseTo((usage!.usedBytes / usage!.totalBytes) * 100, 0);
   });
 
+  it("myrmidon(1.6.8 OPE-12697): readRootUsage maps the root field of the same C5 answer", async () => {
+    const gate = createSocketClient({
+      transport: async () => ({ status: 200, body: JSON.stringify(fixture) }),
+    });
+    const usage = await partitionClientFromSocketClient(gate).readRootUsage();
+    expect(usage).toEqual({
+      mount: "/",
+      usedBytes: fixture.root.usedBytes,
+      totalBytes: fixture.root.totalBytes,
+      freeBytes: fixture.root.freeBytes,
+      usedPercent: 91.3,
+      at: fixture.at,
+    });
+  });
+
+  it("myrmidon(1.6.8 OPE-12697): a pre-1.6.8 gate without root reads null", async () => {
+    const legacy = { ...fixture } as Record<string, unknown>;
+    delete legacy.root;
+    const gate = createSocketClient({
+      transport: async () => ({ status: 200, body: JSON.stringify(legacy) }),
+    });
+    expect(await partitionClientFromSocketClient(gate).readRootUsage()).toBeNull();
+  });
+
   it("a dead gate, a deny or contract drift is null, not a throw", async () => {
     const down = createSocketClient({
       transport: async () => {

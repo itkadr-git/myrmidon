@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# scripts/update — Service update script with post-restart health verification
+# (OPE-12088, 1.7 AUTO-UPDATE-ROLLBACK).
+#
+# Usage:
+#   scripts/update [--config deploy.env] [--url <health-url>] [--digest <ref>]
+#                  [--retries 5] [--interval 5] [--restart-cmd <cmd>]
+#                  [--log-file <path>]
+#
+# Steps:
+#   1. Restarts the service via the specified or configured restart command.
+#   2. Runs the post-restart health gate (verify-restart.sh), polling the health
+#      endpoint up to --retries times (default: 5) with a pause between attempts.
+#   3. If the health check fails, records the failure event to the update log
+#      and exits with a nonzero code (propagating the exit code from verify-restart.sh)
+#      to trigger automated rollback in the orchestrator.
+#   4. If the health check succeeds, logs the success event and exits 0.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VERIFY_RESTART_SCRIPT="${SCRIPT_DIR}/myrmidon/deploy/verify-restart.sh"
+
+config=""
+url=""
+digest=""
+retries=""
+interval=""
+restart_cmd=""
+log_file=""
+
+while (($#)); do
+  case "$1" in
+    --config) config="$2"; shift 2 ;;
+    --url) url="$2"; shift 2 ;;
+    --digest) digest="$2"; shift 2 ;;
+    --retries) retries="$2"; shift 2 ;;
+    --interval) interval="$2"; shift 2 ;;
+    --restart-cmd) restart_cmd="$2"; shift 2 ;;
+    --log-file) log_file="$2"; shift 2 ;;
+    -h|--help)
+      sed -n '2,17p' "$0"
+      exit 0
+      ;;
+    *)
+      printf '[update] ERROR: unknown argument: %s\n' "$1" >&2
+      exit 3
+      ;;
+  esac
+done
+
+if [[ -n "$config" ]]; then
+  if [[ ! -r "$config" ]]; then
+    printf '[update] ERROR: config not readable: %s\n' "$config" >&2
+    exit 3
+  fi
+  # shellcheck source=/dev/null
+  source "$config"
+fi
+
+retries="${retries:-${HEALTH_RETRIES:-5}}"
+interval="${interval:-${POLL_INTERVAL_SEC:-5}}"
+url="${url:-${HEALTH_URL:-}}"
+restart_cmd="${restart_cmd:-${RESTART_CMD:-systemctl restart myrmidon}}"
+
+# Determine log file: explicit flag > UPDATE_LOG_FILE > STATE_DIR/history.log > update.log
+if [[ -z "$log_file" ]]; then
+  if [[ -n "${UPDATE_LOG_FILE:-}" ]]; then
+    log_file="$UPDATE_LOG_FILE"
+  elif [[ -n "${STATE_DIR:-}" ]]; then
+    log_file="${STATE_DIR}/history.log"
+  else
+    log_file="update.log"
+  fi
+fi
+
+record_log_event() {
+  local event="$1"
+  local detail="$2"
+  local log_dir
+  log_dir="$(dirname "$log_file")"
+  if [[ -n "$log_dir" && "$log_dir" != "." ]]; then
+    mkdir -p "$log_dir" 2>/dev/null || true
+  fi
+  printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$event" "$detail" >>"$log_file" 2>/dev/null || true
+}
+
+printf '[update] Step 1: restarting service (%s)...\n' "$restart_cmd"
+record_log_event "update:restart" "initiating service restart via: $restart_cmd"
+
+if ! eval "$restart_cmd"; then
+  printf '[update] ERROR: service restart command failed\n' >&2
+  record_log_event "update:restart:failed" "service restart command failed: $restart_cmd"
+  exit 1
+fi
+
+printf '[update] Step 2: post-restart health check (retries=%s, interval=%ss)...\n' "$retries" "$interval"
+record_log_event "update:health-check:starting" "polling health endpoint up to $retries times"
+
+verify_args=()
+[[ -n "$config" ]] && verify_args+=(--config "$config")
+[[ -n "$url" ]] && verify_args+=(--url "$url")
+[[ -n "$digest" ]] && verify_args+=(--digest "$digest")
+[[ -n "$retries" ]] && verify_args+=(--retries "$retries")
+[[ -n "$interval" ]] && verify_args+=(--interval "$interval")
+
+health_rc=0
+if [[ -f "$VERIFY_RESTART_SCRIPT" ]]; then
+  set +e
+  bash "$VERIFY_RESTART_SCRIPT" "${verify_args[@]}"
+  health_rc=$?
+  set -e
+else
+  printf '[update] ERROR: verify-restart script not found: %s\n' "$VERIFY_RESTART_SCRIPT" >&2
+  health_rc=3
+fi
+
+if ((health_rc != 0)); then
+  printf '[update] ERROR: post-restart health check failed (exit %d); signaling auto-rollback\n' "$health_rc" >&2
+  record_log_event "update:health-check:failed" "post-restart health check failed with exit code $health_rc"
+  exit "$health_rc"
+fi
+
+printf '[update] SUCCESS: post-restart health check passed\n'
+record_log_event "update:health-check:ok" "service restart and health verification succeeded"
+exit 0

@@ -24,7 +24,8 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const MIGRATIONS_DIR = path.join(ROOT, "packages/db/src/migrations");
 const OUT_FILE = path.join(ROOT, "cli/src/commands/myrmidon-migrate-vendor-releases.ts");
-const UPSTREAM = process.env.PAPERCLIP_UPSTREAM_REPO || "paperclipai/paperclip";
+// myrmidon(REBRAND-C): MYRMIDON_UPSTREAM_REPO; PAPERCLIP_UPSTREAM_REPO is the deprecated alias.
+const UPSTREAM = process.env.MYRMIDON_UPSTREAM_REPO || process.env.PAPERCLIP_UPSTREAM_REPO || "paperclipai/paperclip";
 const MIGRATION_WORKFLOW = path.join(ROOT, ".github/workflows/myrmidon-paperclip-migration.yml");
 const FIXTURES_GENERATOR = path.join(ROOT, "scripts/myrmidon/paperclip-migration-generate-fixture.mjs");
 const FIXTURES_DIR = path.join(ROOT, "tests/fixtures/paperclip-migration");

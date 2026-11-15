@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, gte, inArray, lt, ne, notInArray, or, sql } from "drizzle-orm";
+import { isDeepStrictEqual } from "node:util";
+import { and, desc, eq, gte, inArray, isNull, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import { resolveStatusOnResume } from "../myrmidon/pause-drain.js";
 import { versionKeyEtag } from "../middleware/version-key-etag.js";
 import {
@@ -33,6 +34,7 @@ import {
 } from "@myrmidon/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  deriveAgentProbeStatus,
   agentRuntimeConfigSchema,
   issueExecutionStateSchema,
   getAgentWorkEligibility,
@@ -53,8 +55,13 @@ import {
   mergeCompanyBaseSkillsIntoAgentConfig,
 } from "./company-base-skill-keys.js";
 import { readCompanyBaseSkillKeysPort } from "./company-base-skill-keys-port.js";
-import { conflict, notFound, unprocessable, badRequest } from "../errors.js";
+import { conflict, notFound, unprocessable, badRequest, forbidden } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
+import {
+  createAgentsModule,
+  AgentQuotaExceededError,
+  type AgentsModule,
+} from "../modules/agents/index.js";
 import {
   collectSecretRefs,
   collectUserSecretRefs,
@@ -384,11 +391,17 @@ export function agentService(
   db: Db,
   ports?: {
     castes?: AgentCasteDirectoryPort;
+    /** Reconciles the model card's gateway-key allowlist after a persisted config update. */
+    syncAgentModelAllowlist?: (input: { companyId: string; agentId: string; db: Db }) => Promise<void>;
+    /** Records an asynchronous allowlist reconciliation failure without undoing the card save. */
+    onAgentModelAllowlistSyncFailure?: (input: { companyId: string; agentId: string; error: unknown }) => void;
     /** Cleans an enabled bot container before lifecycle state or row changes. */
     cleanupBotContainer?: (agent: { id: string; adapterType: string; adapterConfig: Record<string, unknown> }) => Promise<void>;
+    agentsModule?: AgentsModule;
   },
 ) {
   const secretsSvc = secretService(db);
+  const agentsMod = ports?.agentsModule ?? createAgentsModule(db);
 
   async function cleanupBotContainerIfEnabled(existing: { id: string; adapterType: string; adapterConfig: unknown }): Promise<void> {
     const config = existing.adapterConfig;
@@ -499,6 +512,11 @@ export function agentService(
     createdAt: agents.createdAt,
     updatedAt: agents.updatedAt,
     adapterModel: sql<string | null>`${agents.adapterConfig}->>'model'`,
+    // myrmidon(OPE-13021): response-probe liveness projected from the
+    // agent's runtime state (left join below; absent state = all null).
+    lastResponseAt: agentRuntimeState.lastResponseAt,
+    lastProbeAt: agentRuntimeState.lastProbeAt,
+    lastProbeOutcome: agentRuntimeState.lastProbeOutcome,
   };
 
   const agentEligibilityColumns = {
@@ -518,7 +536,11 @@ export function agentService(
       conditions.push(ne(agents.status, "terminated"));
     }
     const [rows, allCompanyRows] = await Promise.all([
-      db.select(agentListSummaryColumns).from(agents).where(and(...conditions)),
+      db
+        .select(agentListSummaryColumns)
+        .from(agents)
+        .leftJoin(agentRuntimeState, eq(agentRuntimeState.agentId, agents.id))
+        .where(and(...conditions)),
       db.select(agentEligibilityColumns).from(agents).where(eq(agents.companyId, companyId)),
     ]);
     const hydrated = await hydrateAgentSpend<(typeof rows)[number]>(rows);
@@ -551,6 +573,16 @@ export function agentService(
       errorReason: row.errorReason,
       permissions: normalizeAgentPermissions(row.permissions),
       lastHeartbeatAt: row.lastHeartbeatAt,
+      lastResponseAt: row.lastResponseAt,
+      lastProbeAt: row.lastProbeAt,
+      lastProbeOutcome: (row.lastProbeOutcome ?? null) as AgentListItem["lastProbeOutcome"],
+      probeOutcome: (row.lastProbeOutcome ?? null) as AgentListItem["probeOutcome"],
+      derivedStatus: deriveAgentProbeStatus({
+        lastProbeAt: row.lastProbeAt,
+        lastProbeOutcome: row.lastProbeOutcome,
+        lastResponseAt: row.lastResponseAt,
+        now: new Date(),
+      }),
       metadata: row.metadata,
       orgChainHealth: getAgentWorkEligibility({
         agent: toEligibilityAgent(row),
@@ -619,6 +651,15 @@ export function agentService(
           gte(costEvents.occurredAt, start),
         ),
       );
+    // myrmidon(OPE-13021): the liveness projection reads agent_runtime_state,
+    // so its churn must be part of the ETag too or a 304 could hide a fresh
+    // probe/response stamp. Cheap: one aggregate over the same company rows.
+    const [runtimeAgg] = await db
+      .select({
+        runtimeMaxUpdatedAt: sql<string | null>`max(${agentRuntimeState.updatedAt})`,
+      })
+      .from(agentRuntimeState)
+      .where(eq(agentRuntimeState.companyId, companyId));
 
     let filterKey: string | null = null;
     if (typeof filters === "string") {
@@ -643,6 +684,7 @@ export function agentService(
       agg?.rowCount ?? 0,
       agg?.maxUpdatedAt ?? null,
       agg?.maxStatus ?? null,
+      runtimeAgg?.runtimeMaxUpdatedAt ?? null,
       spendAgg?.spendSum ?? "0",
       spendAgg?.spendRowCount ?? 0,
       start.toISOString().slice(0, 10),
@@ -999,15 +1041,24 @@ export function agentService(
       Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig") &&
       isPlainRecord(normalizedPatch.adapterConfig)
     ) {
-      const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
-        existing.companyId,
-        normalizedPatch.adapterConfig,
-        { adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string },
-      );
-      normalizedPatch.adapterConfig = normalizePaperclipRunnerAdapterConfig(
-        (normalizedPatch.adapterType ?? existing.adapterType) as string,
-        normalizedAdapterConfig,
-      );
+      const priorConfig = isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {};
+      const nextConfig = normalizedPatch.adapterConfig;
+      const { model: _priorModel, ...priorOther } = priorConfig;
+      const { model: _nextModel, ...nextOther } = nextConfig;
+      const onlyModelChanged = existing.adapterType === "hermes_gateway"
+        && (normalizedPatch.adapterType ?? existing.adapterType) === existing.adapterType
+        && isDeepStrictEqual(priorOther, nextOther);
+      if (!onlyModelChanged) {
+        const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+          existing.companyId,
+          nextConfig,
+          { adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string },
+        );
+        normalizedPatch.adapterConfig = normalizePaperclipRunnerAdapterConfig(
+          (normalizedPatch.adapterType ?? existing.adapterType) as string,
+          normalizedAdapterConfig,
+        );
+      }
     } else if (
       Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterType")
       && isPlainRecord(existing.adapterConfig)
@@ -1101,8 +1152,17 @@ export function agentService(
     const transaction = (db as unknown as {
       transaction?: (callback: (tx: unknown) => Promise<AgentUpdateResult>) => Promise<AgentUpdateResult>;
     }).transaction;
-    if (typeof transaction !== "function") return applyUpdate(db);
-    return transaction.call(db, async (tx) => applyUpdate(tx as unknown as Db));
+    const result = typeof transaction !== "function"
+      ? await applyUpdate(db)
+      : await transaction.call(db, async (tx) => applyUpdate(tx as unknown as Db));
+    if (result && Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig")) {
+      try {
+        await ports?.syncAgentModelAllowlist?.({ companyId: result.companyId, agentId: result.id, db });
+      } catch (error) {
+        ports?.onAgentModelAllowlistSyncFailure?.({ companyId: result.companyId, agentId: result.id, error });
+      }
+    }
+    return result;
   }
 
   return {
@@ -1134,6 +1194,16 @@ export function agentService(
       await assertRoleIsCompanyCaste(companyId, data.role);
       if (data.reportsTo) {
         await ensureManager(companyId, data.reportsTo);
+      }
+
+      // myrmidon(1.7 TIER-QUOTA-CHECK OPE-12092): enforce agent quota per company subscription tier
+      try {
+        await agentsMod.assertCompanyAgentQuota(companyId);
+      } catch (err: unknown) {
+        if (err instanceof AgentQuotaExceededError) {
+          throw forbidden(err.message, { code: "quota_exceeded" });
+        }
+        throw err;
       }
 
       const existingAgents = await db
@@ -1209,7 +1279,9 @@ export function agentService(
       });
     },
 
-    update: updateAgent,
+    update: async (id: string, data: Partial<typeof agents.$inferInsert>, options?: UpdateAgentOptions) => {
+      return updateAgent(id, data, options);
+    },
 
     pause: async (id: string, reason: "manual" | "budget" | "system" = "manual") => {
       const existing = await getById(id);
@@ -1400,7 +1472,10 @@ export function agentService(
         try {
           await issueThreadInteractionService(tx as unknown as Db)
             .cancelPendingForDeletedAddressee(existing.companyId, id);
-          await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
+          await tx
+            .update(agents)
+            .set({ reportsTo: null, updatedAt: new Date() })
+            .where(eq(agents.reportsTo, id));
           await tx
             .update(issues)
             .set({ assigneeAgentId: null, createdByAgentId: null })
@@ -1634,7 +1709,7 @@ export function agentService(
       id: string,
       name: string,
       scope: AgentApiKeyScope = { kind: "standard" },
-      options?: { responsibleUserId?: string | null },
+      options?: { responsibleUserId?: string | null; expiresAt?: Date | null },
     ) => {
       const existing = await getById(id);
       if (!existing) throw notFound("Agent not found");
@@ -1656,6 +1731,7 @@ export function agentService(
           keyHash,
           responsibleUserId: options?.responsibleUserId?.trim() || null,
           scopeConfig: scope.kind === "standard" ? null : scope,
+          expiresAt: options?.expiresAt ?? null,
         })
         .returning()
         .then((rows) => rows[0]);
@@ -1666,6 +1742,7 @@ export function agentService(
         scope: normalizeAgentApiKeyScope(created.scopeConfig),
         responsibleUserId: created.responsibleUserId,
         token,
+        expiresAt: created.expiresAt ?? null,
         createdAt: created.createdAt,
       };
     },
@@ -1677,6 +1754,7 @@ export function agentService(
           name: agentApiKeys.name,
           responsibleUserId: agentApiKeys.responsibleUserId,
           scopeConfig: agentApiKeys.scopeConfig,
+          expiresAt: agentApiKeys.expiresAt,
           createdAt: agentApiKeys.createdAt,
           revokedAt: agentApiKeys.revokedAt,
         })
@@ -1687,6 +1765,30 @@ export function agentService(
           name: row.name,
           scope: normalizeAgentApiKeyScope(row.scopeConfig),
           responsibleUserId: row.responsibleUserId,
+          expiresAt: row.expiresAt ?? null,
+          createdAt: row.createdAt,
+          revokedAt: row.revokedAt,
+        }))),
+
+    listApiKeys: (id: string) =>
+      db
+        .select({
+          id: agentApiKeys.id,
+          name: agentApiKeys.name,
+          responsibleUserId: agentApiKeys.responsibleUserId,
+          scopeConfig: agentApiKeys.scopeConfig,
+          expiresAt: agentApiKeys.expiresAt,
+          createdAt: agentApiKeys.createdAt,
+          revokedAt: agentApiKeys.revokedAt,
+        })
+        .from(agentApiKeys)
+        .where(eq(agentApiKeys.agentId, id))
+        .then((rows) => rows.map((row) => ({
+          id: row.id,
+          name: row.name,
+          scope: normalizeAgentApiKeyScope(row.scopeConfig),
+          responsibleUserId: row.responsibleUserId,
+          expiresAt: row.expiresAt ?? null,
           createdAt: row.createdAt,
           revokedAt: row.revokedAt,
         }))),
@@ -1700,6 +1802,7 @@ export function agentService(
           name: agentApiKeys.name,
           responsibleUserId: agentApiKeys.responsibleUserId,
           scopeConfig: agentApiKeys.scopeConfig,
+          expiresAt: agentApiKeys.expiresAt,
           createdAt: agentApiKeys.createdAt,
           revokedAt: agentApiKeys.revokedAt,
         })
@@ -1710,6 +1813,7 @@ export function agentService(
           return row
             ? {
               ...row,
+              expiresAt: row.expiresAt ?? null,
               scope: normalizeAgentApiKeyScope(row.scopeConfig),
             }
             : null;
@@ -1722,6 +1826,20 @@ export function agentService(
         .where(and(eq(agentApiKeys.id, keyId), eq(agentApiKeys.agentId, agentId)))
         .returning();
       return rows[0] ?? null;
+    },
+
+    authenticateApiKey: async (token: string) => {
+      const tokenHash = hashToken(token);
+      const rows = await db
+        .select()
+        .from(agentApiKeys)
+        .where(and(eq(agentApiKeys.keyHash, tokenHash), isNull(agentApiKeys.revokedAt)));
+      const key = rows[0] ?? null;
+      if (!key) return null;
+      if (key.expiresAt && key.expiresAt.getTime() <= Date.now()) {
+        return null;
+      }
+      return key;
     },
 
     orgForCompany: async (companyId: string) => {

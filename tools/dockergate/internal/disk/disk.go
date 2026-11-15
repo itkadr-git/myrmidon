@@ -50,18 +50,26 @@ type Partition struct {
 	UsedPercent float64 `json:"usedPercent"`
 }
 
+// rootFsPath is the host root filesystem dockergate reports alongside the bot
+// partition since OPE-12697 (contract C5 field `root`, read-only statfs).
+const rootFsPath = "/"
+
 // Other is the used space that no bot project owns.
 type Other struct {
 	UsedBytes uint64 `json:"usedBytes"`
 }
 
-// Response is the body of GET /myrmidon/disk (wsDiskApiResponseSchema).
+// Response is the body of GET /myrmidon/disk (wsDiskApiResponseSchema). Root is
+// the statfs of the host root filesystem and stays nil when the root cannot be
+// read: the bot-partition answer must survive a root that dockergate cannot
+// measure (contract: `root` is optional).
 type Response struct {
-	Partition    Partition `json:"partition"`
-	Projects     []Project `json:"projects"`
-	Other        Other     `json:"other"`
-	QuotaEnabled bool      `json:"quotaEnabled"`
-	At           string    `json:"at"`
+	Partition    Partition  `json:"partition"`
+	Root         *Partition `json:"root,omitempty"`
+	Projects     []Project  `json:"projects"`
+	Other        Other      `json:"other"`
+	QuotaEnabled bool       `json:"quotaEnabled"`
+	At           string     `json:"at"`
 }
 
 // Fs is the part of statfs(2) that the answer needs.
@@ -148,6 +156,13 @@ func Collect(ctx context.Context, volumeRoot string, deps Deps) (*Response, erro
 		Partition: partition(volumeRoot, fs),
 		Projects:  []Project{},
 		At:        deps.Now().UTC().Format("2006-01-02T15:04:05Z"),
+	}
+	// OPE-12697: statfs of the host root, read-only, best effort. A failure
+	// (permissions, the path is masked) leaves root nil — the route still
+	// answers the bot partition and the board treats root as "not measured".
+	if rootFs, rerr := deps.Statfs(rootFsPath); rerr == nil {
+		root := partition(rootFsPath, rootFs)
+		resp.Root = &root
 	}
 
 	args := append(append([]string{}, ReportArgs...), volumeRoot)

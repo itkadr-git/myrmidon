@@ -7,3 +7,4 @@ export * from "./prompts.js";
 export * from "./settings.js";
 export * from "./routes.js";
 export * from "./wiring.js";
+export * from "./controller.js";

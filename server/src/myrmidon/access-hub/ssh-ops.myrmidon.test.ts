@@ -9,6 +9,7 @@ import {
   readSshOpsSettings,
   DEFAULT_SSH_COMMAND_TIMEOUT_MS,
 } from "./ssh-ops.js";
+import { applyLiveBehaviorSettings, liveBehaviorSettingsView } from "../behavior-settings/live.js";
 
 const SECRET_ID = "sec-1";
 const FINGERPRINT = "SHA256:abc123";
@@ -193,12 +194,34 @@ ssh-ed25519 AAAAMARKED myrmidon-access-${SECRET_ID} ${FINGERPRINT}
 });
 
 describe("myrmidon(SEC1-C) ssh-ops: settings", () => {
-  it("defaults the timeout and honors the env override", () => {
+  const previousLive = liveBehaviorSettingsView();
+  beforeEach(() => applyLiveBehaviorSettings(previousLive));
+
+  it("uses the default when neither env nor saved setting is present", () => {
     expect(readSshOpsSettings({}).commandTimeoutMs).toBe(DEFAULT_SSH_COMMAND_TIMEOUT_MS);
+  });
+
+  it("uses a valid saved timeout unless env provides a valid forced override", () => {
+    applyLiveBehaviorSettings({
+      settings: { accessHubSshTimeoutMs: 15_000 },
+      sources: { accessHubSshTimeoutMs: "ui" } as never,
+    });
+    expect(readSshOpsSettings({}).commandTimeoutMs).toBe(15_000);
     expect(readSshOpsSettings({ MYRMIDON_ACCESS_HUB_SSH_TIMEOUT_MS: "5000" }).commandTimeoutMs).toBe(5000);
-    expect(readSshOpsSettings({ MYRMIDON_ACCESS_HUB_SSH_TIMEOUT_MS: "nope" }).commandTimeoutMs).toBe(
-      DEFAULT_SSH_COMMAND_TIMEOUT_MS,
-    );
+  });
+
+  it("rejects out-of-range env and saved timeouts", () => {
+    applyLiveBehaviorSettings({
+      settings: { accessHubSshTimeoutMs: 15_000 },
+      sources: { accessHubSshTimeoutMs: "ui" } as never,
+    });
+    expect(readSshOpsSettings({ MYRMIDON_ACCESS_HUB_SSH_TIMEOUT_MS: "500" }).commandTimeoutMs).toBe(15_000);
+    expect(readSshOpsSettings({ MYRMIDON_ACCESS_HUB_SSH_TIMEOUT_MS: "400000" }).commandTimeoutMs).toBe(15_000);
+    applyLiveBehaviorSettings({
+      settings: { accessHubSshTimeoutMs: 400_000 },
+      sources: { accessHubSshTimeoutMs: "ui" } as never,
+    });
+    expect(readSshOpsSettings({}).commandTimeoutMs).toBe(DEFAULT_SSH_COMMAND_TIMEOUT_MS);
   });
 });
 

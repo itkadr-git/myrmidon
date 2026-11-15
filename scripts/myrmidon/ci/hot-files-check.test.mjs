@@ -41,6 +41,14 @@ case "$sub" in
       shift
     done
     case "$url" in
+      *"commits/"*)
+        if [[ "$jq_filter" == ".commit.committer.date" ]]; then
+          printf '%s\\n' "\${HEAD_DATE:-}"
+        else
+          printf '2\\tdev\\tweb-flow\\tMerge branch main into update\\n'
+        fi ;;
+      *"issues/"*"/events")
+        printf '%s\\n' "\${LABEL_DATE:-}" ;;
       *"pulls/"*"/files")
         jq -r "$jq_filter" "${dir}/files.json" ;;
       *"issues/"*"/labels/"*)
@@ -61,6 +69,7 @@ esac
   const env = {
     ...process.env,
     BASH_ENV: "",
+    GITHUB_RUN_ATTEMPT: "1", // the CI re-run of this very test must not leak its attempt
     SANDBOX: dir,
     PATH: `${bin}:${process.env.PATH}`,
     EVENT: "pull_request",
@@ -115,6 +124,40 @@ describe("hot-files-check", () => {
     assert.match(res.calls, /check-runs call/);
     assert.match(res.calls, /field: name=hot files review/);
     assert.match(res.calls, /field: status=completed/);
+  });
+
+  it("a rerun removes approval when the label predates the current head", () => {
+    const res = runCheck(
+      { ACTION: "synchronize", GITHUB_RUN_ATTEMPT: "2", HEAD_DATE: "2026-11-14T12:00:00Z", LABEL_DATE: "2026-11-14T11:00:00Z" },
+      ["server/src/services/heartbeat.ts"],
+      ["review-approved"],
+    );
+    assert.equal(res.status, 0);
+    assert.match(res.calls, /-X DELETE/);
+    assert.match(res.stdout, /Новый push после ревью/);
+    assert.match(res.calls, /field: state=pending/);
+  });
+
+  it("a rerun preserves approval when the label is newer than the current head", () => {
+    const res = runCheck(
+      { ACTION: "synchronize", GITHUB_RUN_ATTEMPT: "2", HEAD_DATE: "2026-11-14T11:00:00Z", LABEL_DATE: "2026-11-14T12:00:00Z" },
+      ["server/src/services/heartbeat.ts"],
+      ["review-approved"],
+    );
+    assert.equal(res.status, 0);
+    assert.doesNotMatch(res.calls, /-X DELETE/);
+    assert.match(res.stdout, /Метка review-approved есть/);
+    assert.match(res.calls, /field: state=success/);
+  });
+
+  it("attempt 1 on synchronize still removes review-approved (a real push)", () => {
+    const res = runCheck(
+      { ACTION: "synchronize", GITHUB_RUN_ATTEMPT: "1" },
+      ["server/src/services/heartbeat.ts"],
+      ["review-approved"],
+    );
+    assert.match(res.calls, /gh api -X DELETE.*labels\/review-approved/);
+    assert.match(res.calls, /field: state=pending/);
   });
 
   it("removes review-approved on synchronize event and sets pending", () => {

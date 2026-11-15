@@ -1,0 +1,85 @@
+diff --git a/gateway/platforms/api_server_run_idempotency.py b/gateway/platforms/api_server_run_idempotency.py
+--- a/gateway/platforms/api_server_run_idempotency.py
++++ b/gateway/platforms/api_server_run_idempotency.py
+@@ -119,15 +119,48 @@
+             except OSError:
+                 logger.debug("Failed to restrict run idempotency store permissions", exc_info=True)
+ 
++    # myrmidon(G1): a write whose commit fails (disk full, I/O error, busy timeout) must not
++    # leave the connection inside its transaction; see _write_locked and _recover_open_txn_locked.
++    def _safe_rollback_locked(self) -> None:
++        """Roll back the open transaction (caller holds the lock); a failing rollback is logged."""
++        try:
++            self._conn.rollback()
++        except sqlite3.Error:
++            logger.warning("Run idempotency store: rollback failed", exc_info=True)
++
++    def _recover_open_txn_locked(self, where: str) -> None:
++        """Roll back a transaction a failed write left open (caller holds the lock).
++
++        A ``commit()`` that raises (disk full, I/O error, busy timeout) leaves the
++        connection inside its transaction. Without this, every later
++        ``BEGIN IMMEDIATE`` fails with "cannot start a transaction within a
++        transaction" and each run request answers 500 until the process restarts.
++        """
++        if self._conn.in_transaction:
++            logger.warning("Run idempotency store: rolling back a transaction left open before %s", where)
++            self._safe_rollback_locked()
++
++    def _write_locked(self, sql: str, params: tuple) -> int:
++        """Run one write and commit it (caller holds the lock); any error rolls back."""
++        self._recover_open_txn_locked("a write")
++        try:
++            rowcount = self._conn.execute(sql, params).rowcount
++            self._conn.commit()
++        except Exception:
++            self._safe_rollback_locked()
++            raise
++        return rowcount
++
+     @contextmanager
+     def _immediate_txn(self):
+         """Hold the lock inside ``BEGIN IMMEDIATE``; the body commits, errors roll back."""
+         with self._lock:
++            self._recover_open_txn_locked("BEGIN IMMEDIATE")
+             self._conn.execute("BEGIN IMMEDIATE")
+             try:
+                 yield
+             except Exception:
+-                self._conn.rollback()
++                self._safe_rollback_locked()
+                 raise
+ 
+     def reserve(self, scope: str, key: str, fingerprint: str, run_id: str, status: Dict[str, Any], *,
+@@ -191,8 +224,7 @@
+         retention_until = max(0.0, float(retention_until or 0))
+         with self._lock:
+             if retention_until:
+-                self._conn.execute(_EXTEND_RETENTION_BY_RUN, (retention_until, scope, run_id))
+-                self._conn.commit()
++                self._write_locked(_EXTEND_RETENTION_BY_RUN, (retention_until, scope, run_id))
+             row = self._conn.execute(
+                 "SELECT status_json, owner_pid, owner_started, updated_at "
+                 "FROM run_idempotency WHERE scope=? AND run_id=?",
+@@ -207,8 +239,7 @@
+         if not checked_until:
+             return False
+         with self._lock:
+-            changed = self._conn.execute(_EXTEND_RETENTION_BY_RUN, (checked_until, scope, run_id)).rowcount
+-            self._conn.commit()
++            changed = self._write_locked(_EXTEND_RETENTION_BY_RUN, (checked_until, scope, run_id))
+         return changed == 1
+ 
+     def owns_run(self, scope: str, run_id: str) -> bool:
+@@ -219,10 +250,9 @@
+ 
+     def update_status(self, run_id: str, status: Dict[str, Any]) -> None:
+         with self._lock:
+-            self._conn.execute(
++            self._write_locked(
+                 "UPDATE run_idempotency SET status_json=?, updated_at=? WHERE run_id=?",
+                 (_encode_status(status), time.time(), run_id))
+-            self._conn.commit()
+ 
+     def close(self) -> None:
+         with self._lock:

@@ -83,7 +83,7 @@ export function resolveTsxCliPath(serverRoot: string): string {
  * - `watch: true` adds the tsx `watch` flag (the dev stand hot-reloads; the
  *   future production supervisor passes `false`).
  * - `bootId` is the launcher's own identity, written into every child as
- *   `PAPERCLIP_PARENT_BOOT_ID` (`PARENT_BOOT_ID_ENV`, the PROCS-1.2 name),
+ *   `MYRMIDON_PARENT_BOOT_ID` (`PARENT_BOOT_ID_ENV`, the PROCS-1.2 name),
  *   so the children's registry rows can name their supervisor.
  * - The child env is the entry overlay from `config.ts` plus the parent
  *   bootId; nothing else is added — ambient `DATABASE_URL`, keys, and the

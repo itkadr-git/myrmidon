@@ -14,23 +14,45 @@
 // TTL) and dropped when the run's runtime status is cleared at the end of the
 // run. Same server process as the sweep that reads it; a restart only loses
 // the step list of runs in flight (the status falls back to "работаю").
+//
+// myrmidon(1.7-TG-LOCALE): a recorded step keeps the language-neutral FACTS —
+// the step kind, the normalized tool name, whether the call had a target
+// (richer label), the structured target itself — and NO owner-language text.
+// The DM status composer renders the label in the instance language at
+// output time (labels.ts `labelForStepFacts` + texts.ts), so wording is
+// never baked into the history. The `label` field keeps the legacy seam
+// contract: callers and tests that pass ready-made strings still work
+// verbatim, and a step recorded before this change still renders as before.
 
 import type { HeartbeatRunRuntimeStatus } from "../../services/heartbeat-run-runtime-status.js";
 import {
-  DM_PROGRESS_ANSWER_LABEL,
-  DM_PROGRESS_THINK_LABEL,
+  dmProgressAnswerLabel,
+  dmProgressThinkLabel,
   dmProgressToolLabel,
+  extractDmProgressTarget,
   normalizeDmProgressToolName,
   type DmProgressStepKind,
+  type DmProgressTarget,
 } from "./labels.js";
 
 export interface DmProgressRuntimeStep {
   kind: DmProgressStepKind;
+  /**
+   * Legacy: the ready-made label text of this step. Steps recorded by the
+   * catalog path carry the English-rendered text (the fork default); the
+   * composer re-renders from kind/target facts instead of trusting this
+   * string, so the owner language stays correct at output time.
+   */
   label: string;
   /** Normalized tool name, null for reasoning/answer steps. */
   toolName: string | null;
   /** Whether the label carries a target from the preview (richer label). */
   hasDetail: boolean;
+  /**
+   * The provider-safe structured target of the call (slides / document
+   * noun+basename / file basename), present on read/edit steps with detail.
+   */
+  target?: DmProgressTarget | null;
   at: Date;
 }
 
@@ -119,6 +141,8 @@ export function recordDmProgressStep(
  * Only statuses that name real work become steps: a tool in progress, the
  * reasoning phase, or the answer being streamed. Generic activity touches
  * ("Receiving agent output") and tool completions ("Used <tool>") do not.
+ * Labels are recorded language-neutrally (kind + target facts); the display
+ * language is chosen when the status text is composed.
  */
 export function recordDmProgressRuntimeStatus(
   status: Pick<
@@ -132,19 +156,37 @@ export function recordDmProgressRuntimeStatus(
     if (/^used\b/i.test(message)) return;
     const label = dmProgressToolLabel({ toolName: status.currentToolName });
     recordDmProgressStep(status.runId, {
-      ...label,
+      kind: label.kind,
+      label: label.label,
       toolName: normalizeDmProgressToolName(status.currentToolName),
       hasDetail: false,
+      target: null,
       at,
     });
     return;
   }
   if (/^reasoning\b/i.test(message)) {
-    recordDmProgressStep(status.runId, { ...DM_PROGRESS_THINK_LABEL, toolName: null, hasDetail: false, at });
+    const think = dmProgressThinkLabel();
+    recordDmProgressStep(status.runId, {
+      kind: think.kind,
+      label: think.label,
+      toolName: null,
+      hasDetail: false,
+      target: null,
+      at,
+    });
     return;
   }
   if (status.lastAssistantSnippet) {
-    recordDmProgressStep(status.runId, { ...DM_PROGRESS_ANSWER_LABEL, toolName: null, hasDetail: false, at });
+    const answer = dmProgressAnswerLabel();
+    recordDmProgressStep(status.runId, {
+      kind: answer.kind,
+      label: answer.label,
+      toolName: null,
+      hasDetail: false,
+      target: null,
+      at,
+    });
   }
 }
 
@@ -230,16 +272,34 @@ export function recordDmProgressLogChunk(
     const parsed = parseDmProgressLogLine(line);
     if (!parsed) continue;
     if (parsed.type === "think") {
-      recordDmProgressStep(runId, { ...DM_PROGRESS_THINK_LABEL, toolName: null, hasDetail: false, at });
+      const think = dmProgressThinkLabel();
+      recordDmProgressStep(runId, {
+        kind: think.kind,
+        label: think.label,
+        toolName: null,
+        hasDetail: false,
+        target: null,
+        at,
+      });
     } else if (parsed.type === "answer") {
-      recordDmProgressStep(runId, { ...DM_PROGRESS_ANSWER_LABEL, toolName: null, hasDetail: false, at });
+      const answer = dmProgressAnswerLabel();
+      recordDmProgressStep(runId, {
+        kind: answer.kind,
+        label: answer.label,
+        toolName: null,
+        hasDetail: false,
+        target: null,
+        at,
+      });
     } else {
       const label = dmProgressToolLabel({ toolName: parsed.toolName, preview: parsed.preview });
       const bare = dmProgressToolLabel({ toolName: parsed.toolName });
       recordDmProgressStep(runId, {
-        ...label,
+        kind: label.kind,
+        label: label.label,
         toolName: normalizeDmProgressToolName(parsed.toolName),
         hasDetail: label.label !== bare.label,
+        target: extractDmProgressTarget(parsed.preview),
         at,
       });
     }

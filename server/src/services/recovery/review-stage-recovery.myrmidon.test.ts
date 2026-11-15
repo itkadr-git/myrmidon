@@ -374,6 +374,10 @@ describeEmbeddedPostgres("escalateStrandedAssignedIssue: stalled execution revie
     expect(wakes).toHaveLength(0);
     const issue = await readIssue(seeded.issueId);
     expect(issue.status).toBe("blocked");
+    // myrmidon(OPE-12896): the block returns the issue to the engineer-author,
+    // not to the stalled reviewer.
+    expect(issue.assigneeAgentId).toBe(seeded.engineerAgentId);
+    expect(issue.assigneeUserId).toBeNull();
     expect(issue.executionState).toMatchObject({
       status: "pending",
       currentStageId: seeded.stageId,
@@ -390,6 +394,30 @@ describeEmbeddedPostgres("escalateStrandedAssignedIssue: stalled execution revie
     );
   });
 
+  // myrmidon(OPE-12896): a stalled review stage must not strand the engineer's
+  // task on the reviewer. The blocked transition hands the issue back to the
+  // recorded return assignee and leaves the reviewer without a wake.
+  it("returns the issue to the engineer-author when the review stage is blocked (OPE-12896)", async () => {
+    const seeded = await seed({ reviewerStatus: "paused" });
+    const { service, wakes } = createService({ state: "pending", pullRequestUrl: PR_URL, headSha: "abc123" });
+
+    const result = await escalate(service, seeded);
+
+    expect(result).toBeTruthy();
+    expect(wakes).toHaveLength(0);
+    const issue = await readIssue(seeded.issueId);
+    expect(issue.status).toBe("blocked");
+    expect(issue.assigneeAgentId).toBe(seeded.engineerAgentId);
+    expect(issue.assigneeAgentId).not.toBe(seeded.reviewerAgentId);
+    expect(issue.assigneeUserId).toBeNull();
+    expect(issue.executionState).toMatchObject({
+      status: "pending",
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: seeded.reviewerAgentId },
+      returnAssignee: { type: "agent", agentId: seeded.engineerAgentId },
+    });
+  });
+
   it("still escalates at once when the reviewer cannot be invoked", async () => {
     const seeded = await seed({ reviewerStatus: "paused" });
     const { service, wakes } = createService({ state: "pending", pullRequestUrl: PR_URL, headSha: "abc123" });
@@ -399,5 +427,80 @@ describeEmbeddedPostgres("escalateStrandedAssignedIssue: stalled execution revie
     expect(wakes).toHaveLength(0);
     expect(await deferrals(seeded.issueId)).toHaveLength(0);
     expect((await readIssue(seeded.issueId)).status).toBe("blocked");
+  });
+
+  // myrmidon(OPE-12859): once a verdict is recorded for the current PR head,
+  // a CI-wait must not be scheduled again — the merge gate enforces CI
+  // independently and further reviewer wakes are empty runs.
+  async function seedVerdictOnHead(headSha: string | null) {
+    const seeded = await seed();
+    if (headSha !== null) {
+      await db
+        .update(issues)
+        .set({
+          executionState: {
+            status: "pending",
+            currentStageId: seeded.stageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: seeded.reviewerAgentId, userId: null },
+            returnAssignee: { type: "agent", agentId: seeded.engineerAgentId, userId: null },
+            reviewRequest: null,
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+            // Real record shape written by withReviewVerdictRecord /
+            // readReviewVerdictRecord (server/src/myrmidon/review-verdict/record.ts).
+            reviewDecision: {
+              reviewDecision: "approved",
+              headSha,
+              pullRequestNumber: 1,
+            },
+          },
+        })
+        .where(eq(issues.id, seeded.issueId));
+    }
+    return seeded;
+  }
+
+  it("does not schedule a CI-wait monitor when a verdict on the current head exists (OPE-12859)", async () => {
+    const seeded = await seedVerdictOnHead("abc1234");
+    const { service, wakes } = createService({ state: "pending", pullRequestUrl: PR_URL, headSha: "abc1234" });
+
+    const result = await escalate(service, seeded);
+
+    expect(result).toBeFalsy();
+    expect(wakes).toHaveLength(0);
+    const issue = await readIssue(seeded.issueId);
+    expect(issue.status).toBe("in_review");
+    expect(issue.monitorNextCheckAt).toBeNull();
+    expect(await deferrals(seeded.issueId)).toHaveLength(0);
+  });
+
+  it("does not defer release recovery for CI when a verdict on the current head exists (OPE-12859)", async () => {
+    const seeded = await seedVerdictOnHead("abc1234");
+    const { service, wakes } = createService({ state: "pending", pullRequestUrl: PR_URL, headSha: "abc1234" });
+
+    expect(await service.deferReviewParticipantReleaseForCi({ companyId: seeded.companyId, runId: seeded.runId })).toBe(false);
+    expect(wakes).toHaveLength(0);
+    const issue = await readIssue(seeded.issueId);
+    expect(issue.monitorNextCheckAt).toBeNull();
+    expect(issue.executionPolicy).not.toMatchObject({
+      monitor: { serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME },
+    });
+  });
+
+  it("still schedules the CI-wait when the verdict names a different head (OPE-12859)", async () => {
+    // Use valid hex SHAs: readReviewVerdictRecord normalizes headSha through
+    // /^[0-9a-f]{7,40}$/ and drops non-hex values, which would make the
+    // verdict count for any head.
+    const seeded = await seedVerdictOnHead("1111111");
+    const { service, wakes } = createService({ state: "pending", pullRequestUrl: PR_URL, headSha: "abc1234" });
+
+    const result = await escalate(service, seeded);
+
+    expect(result).toBeTruthy();
+    expect(wakes).toHaveLength(0);
+    expect((await readIssue(seeded.issueId)).monitorNextCheckAt).toBeInstanceOf(Date);
   });
 });

@@ -214,6 +214,100 @@ export function parseOmpJsonl(stdout: string): ParsedOmpOutput {
   return result;
 }
 
+// myrmidon(OPE-12806): a run whose tool calls were rejected is not a success.
+//
+// omp exits 0 when the model gives up after its tool calls failed, so a run in
+// which every shell command was refused ("Service mode does not accept async
+// or timeout...") was recorded as succeeded, and the board then blocked the
+// issue with successful_run_missing_state. The adapter reports such a run as
+// failed with its own error code.
+export const OMP_TOOL_CALLS_REJECTED_ERROR_CODE = "omp_tool_calls_rejected";
+
+// A single tool counts as rejected when it finished at least this many calls
+// and every one of them ended with an error. One or two failed calls of a tool
+// are ordinary work (a wrong path, a failed edit that is then redone).
+export const OMP_REJECTED_TOOL_MIN_CALLS = 3;
+
+export interface OmpToolRejectionSummary {
+  /** Tool calls that finished (have a result). */
+  finishedCalls: number;
+  /** Finished calls that ended with an error. */
+  rejectedCalls: number;
+  /** True when at least one call finished and every finished call ended with an error. */
+  allRejected: boolean;
+  /** Tools with >= OMP_REJECTED_TOOL_MIN_CALLS finished calls, all ended with an error. */
+  rejectedTools: Array<{ toolName: string; calls: number; sampleError: string }>;
+  message: string;
+}
+
+function toolErrorText(result: string | null): string {
+  if (!result) return "";
+  let text = result;
+  const parsed = parseJson(result);
+  const content = parsed ? (parsed as Record<string, unknown>).content : null;
+  if (Array.isArray(content)) {
+    text = content
+      .map((part) => (asRecord(part)?.type === "text" ? asString(asRecord(part)?.text, "") : ""))
+      .join("");
+  }
+  return text.replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+/**
+ * Returns a summary when the run's tool calls were rejected: either every
+ * finished call ended with an error, or some tool finished at least
+ * OMP_REJECTED_TOOL_MIN_CALLS calls and none of them succeeded. Returns null
+ * otherwise (including a run without tool calls).
+ */
+export function summarizeOmpToolRejections(
+  toolCalls: ParsedOmpOutput["toolCalls"],
+): OmpToolRejectionSummary | null {
+  // One call is counted once: when several finished entries share a toolCallId
+  // (a repeated or intermediate end event), the last one decides the outcome.
+  const lastFinishedById = new Map<string, ParsedOmpOutput["toolCalls"][number]>();
+  for (const call of toolCalls) {
+    if (call.result !== null && call.toolCallId) lastFinishedById.set(call.toolCallId, call);
+  }
+  const finished = toolCalls.filter(
+    (call) => call.result !== null && (!call.toolCallId || lastFinishedById.get(call.toolCallId) === call),
+  );
+  if (finished.length === 0) return null;
+
+  const byTool = new Map<string, { calls: number; rejected: number; sampleError: string }>();
+  for (const call of finished) {
+    const entry = byTool.get(call.toolName) ?? { calls: 0, rejected: 0, sampleError: "" };
+    entry.calls += 1;
+    if (call.isError) {
+      entry.rejected += 1;
+      if (!entry.sampleError) entry.sampleError = toolErrorText(call.result);
+    }
+    byTool.set(call.toolName, entry);
+  }
+
+  const rejectedCalls = finished.filter((call) => call.isError).length;
+  const allRejected = rejectedCalls === finished.length;
+  const rejectedTools = [...byTool.entries()]
+    .filter(([, entry]) => entry.calls >= OMP_REJECTED_TOOL_MIN_CALLS && entry.rejected === entry.calls)
+    .map(([toolName, entry]) => ({ toolName, calls: entry.calls, sampleError: entry.sampleError }));
+
+  if (!allRejected && rejectedTools.length === 0) return null;
+
+  const sample =
+    rejectedTools[0]?.sampleError ||
+    [...byTool.values()].find((entry) => entry.sampleError)?.sampleError ||
+    "";
+  const scope = allRejected
+    ? `all ${finished.length} tool call(s) were rejected`
+    : rejectedTools.map((tool) => `all ${tool.calls} "${tool.toolName}" call(s) were rejected`).join("; ");
+  return {
+    finishedCalls: finished.length,
+    rejectedCalls,
+    allRejected,
+    rejectedTools,
+    message: `OMP finished, but ${scope}${sample ? `: ${sample}` : "."}`,
+  };
+}
+
 export function isOmpUnknownSessionError(stdout: string, stderr: string): boolean {
   const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)

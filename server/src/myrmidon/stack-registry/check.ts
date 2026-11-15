@@ -16,7 +16,7 @@
 // previous cache intact; an HTTP status is recorded per component.
 
 import { companies, issues, type Db } from "@myrmidon/db";
-import { and, eq, isNotNull, notInArray } from "drizzle-orm";
+import { and, eq, isNotNull } from "drizzle-orm";
 import { logger } from "../../middleware/logger.js";
 import {
   STACK_CHECKABLE_RELEASE_SOURCES,
@@ -77,7 +77,7 @@ export interface StackCheckOptions {
   osvApiBase?: string | null;
   lagThreshold?: number;
   createDraft?: (companyId: string, draft: StackBacklogDraft) => Promise<void>;
-  findOpenComponents?: (companyId: string) => Promise<string[]>;
+  findExistingDrafts?: (companyId: string) => Promise<Array<{ title: string; originId: string | null }>>;
   /**
    * Test seam: the fetch implementation the GitHub App token mint uses.
    * Production defaults to globalThis.fetch (the board calls GitHub itself).
@@ -191,7 +191,10 @@ async function checkComponent(
   const stableReleases = filtered.filter((release) => !isPrereleaseTag(release.tag));
   const { latest, behindBy } = countBehind(filtered, component.local.version ?? component.local.commit);
   const notes = source === "github-releases"
-    ? extractReleaseNotes(stableReleases, { limit: opts.noteLimit })
+    ? extractReleaseNotes(stableReleases, {
+        limit: opts.noteLimit,
+        localVersion: component.local.version ?? component.local.commit,
+      })
     : null;
   const firstSeenAt = latest && latest === previous?.latest
     ? previous?.firstSeenAt ?? checkedAt
@@ -284,6 +287,7 @@ export async function checkStackReleases(db: Db, options: StackCheckOptions = {}
     ? (stored.components.length > 0 ? stored : seedStackDocument())
     : await collectStackLocal({
       ...(options.collect ?? {}),
+      db,
       now: options.now,
       previous: stored.components.length > 0 ? stored : undefined,
     });
@@ -349,22 +353,21 @@ export async function checkStackReleases(db: Db, options: StackCheckOptions = {}
   const companiesList = await db.select({ id: companies.id }).from(companies);
   for (const company of companiesList) {
     try {
-      const openComponents = options.findOpenComponents
-        ? await options.findOpenComponents(company.id)
+      const existingDrafts = options.findExistingDrafts
+        ? await options.findExistingDrafts(company.id)
         : await db
-            .select({ originId: issues.originId })
+            .select({ title: issues.title, originId: issues.originId })
             .from(issues)
             .where(
               and(
                 eq(issues.companyId, company.id),
                 eq(issues.originKind, "stack_update"),
-                notInArray(issues.status, ["done", "cancelled"]),
                 isNotNull(issues.originId),
               ),
             )
-            .then((rows) => rows.map((r) => r.originId!).filter(Boolean));
+            .then((rows) => rows.map((r) => ({ title: r.title, originId: r.originId })));
 
-      const drafts = decideStackBacklogDrafts(next, { lagThreshold, openComponents });
+      const drafts = decideStackBacklogDrafts(next, { lagThreshold, existingDrafts });
       for (const draft of drafts) {
         if (options.createDraft) {
           await options.createDraft(company.id, draft);
@@ -376,7 +379,7 @@ export async function checkStackReleases(db: Db, options: StackCheckOptions = {}
             status: "todo",
             priority: "medium",
             originKind: "stack_update",
-            originId: draft.component,
+            originId: `${draft.component}:${next.components.find((c) => c.name === draft.component)?.upstreamState?.latest ?? ""}`.replace(/:$/, "") || draft.component,
             allowDuplicate: true,
           } as never);
         }

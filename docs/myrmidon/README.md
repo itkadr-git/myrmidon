@@ -75,6 +75,7 @@ Myrmidon — система управления компаниями из ИИ-
 | [guides/run-stall.md](guides/run-stall.md) | Обнаружение зависших прогонов: что считается прогрессом, прерывание `run_stalled`, возврат задачи в `todo`, настройки |
 | [guides/stale-block.md](guides/stale-block.md) | Гард причины-ссылки при переходе в blocked (STALE-BLOCK A) и сторож мёртвых блоков (часть B): какие причины мертвы, снятие блока с системным комментарием, карточка `stale_block` в attention-фиде, настройки |
 | [guides/workspace-cleanup.md](guides/workspace-cleanup.md) | Очистка рабочих копий после слияния и сигнал о застрявшей копии |
+| [guides/workspace-turn-checkpoints.md](guides/workspace-turn-checkpoints.md) | Чекпоинты turn'ов рабочего worktree (1.7 CHECKPOINT-PER-TURN): скрытые refs `refs/myrmidon/turns/<runId>/<turnN>`, удержание 10 снимков, эндпоинты list/diff/restore, защита чужих правок и активных прогонов |
 | [guides/telegram-bridge-locale.md](guides/telegram-bridge-locale.md) | Тексты Telegram-моста по языку пользователя: выбор, принуждение env, источник значения на экране «Язык» (TG-LOCALE) |
 | [guides/cloud-files-connector.md](guides/cloud-files-connector.md) | Коннектор Microsoft 365 для ботов-контейнеров: настройка и журнал |
 | [guides/maintenance-banner.md](guides/maintenance-banner.md) | Как баннер обслуживания группирует окна агентов |
@@ -137,6 +138,7 @@ Myrmidon — система управления компаниями из ИИ-
 | [guides/instance-users.md](guides/instance-users.md) | Instance users: поиск пользователей по всему инстансу, доступ только администраторам инстанса, состояния загрузки/пустого результата/ошибки и отказ 403 (русская версия: [guides/instance-users.ru.md](guides/instance-users.ru.md)) |
 | [guides/users-admin-ui.md](guides/users-admin-ui.md) | Экран «Пользователи» компании (1.7 USERS-ADMIN-UI B): управление пользователями в настройках компании (`/company/settings/users`), список и создание (пароль или одноразовая ссылка), блокировка, сброс пароля, роли (`instance_admin` / `member`), отключённая саморегистрация |
 | [guides/users-admin-a.md](guides/users-admin-a.md) | Управление пользователями и журнал аудита (1.7 USERS-ADMIN-A): REST API администрирования пользователей, одноразовые токены установки пароля, аудит-лог действий с дедупликацией и фильтрами |
+| [guides/redact-litellm-guardrail.md](guides/redact-litellm-guardrail.md) | Адаптер REDACT для LiteLLM: хуки `pre_call`/`post_call`, score-порог и режимы `flag`/`mask`/`block` (русская версия: [redact-litellm-guardrail.ru.md](guides/redact-litellm-guardrail.ru.md)) |
 
 ## Сборка и запуск
 

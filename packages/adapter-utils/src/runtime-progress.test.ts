@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { createRuntimeProgressReporter } from "./runtime-progress.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createRuntimeProgressReporter, withSilenceHeartbeat } from "./runtime-progress.js";
 
 const MB = 1024 * 1024;
 
@@ -277,5 +277,90 @@ describe("createRuntimeProgressReporter", () => {
     await failed.complete(); // suppressed — already failed
     expect(failLines).toHaveLength(2);
     expect(failLines.at(-1)).toContain("failed at 20%");
+  });
+});
+
+// myrmidon(OPE-12801)
+describe("withSilenceHeartbeat", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("writes a pulse line for every silent interval while the work is pending and stops when it ends", async () => {
+    vi.useFakeTimers();
+    const lines: string[] = [];
+    let finish: (value: string) => void = () => {};
+
+    const pending = withSilenceHeartbeat(
+      { sink: (line) => { lines.push(line); }, label: "Preparing workspace for ssh", intervalMs: 60_000 },
+      () => new Promise<string>((resolve) => { finish = resolve; }),
+    );
+
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(lines).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(121_000);
+    expect(lines).toEqual([
+      "[paperclip] Preparing workspace for ssh: still working (60s)\n",
+      "[paperclip] Preparing workspace for ssh: still working (120s)\n",
+      "[paperclip] Preparing workspace for ssh: still working (180s)\n",
+    ]);
+
+    finish("done");
+    await expect(pending).resolves.toBe("done");
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(lines).toHaveLength(3);
+  });
+
+  it("stays quiet while the work itself reports progress", async () => {
+    vi.useFakeTimers();
+    const lines: string[] = [];
+    let finish: () => void = () => {};
+
+    const pending = withSilenceHeartbeat(
+      { sink: (line) => { lines.push(line); }, label: "Restoring workspace from ssh", intervalMs: 60_000 },
+      async (sink) => {
+        const ticker = setInterval(() => { void sink?.("progress\n"); }, 30_000);
+        await new Promise<void>((resolve) => { finish = resolve; });
+        clearInterval(ticker);
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    finish();
+    await pending;
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.every((line) => line === "progress\n")).toBe(true);
+  });
+
+  it("stops pulsing after maxDurationMs so a real hang still goes silent", async () => {
+    vi.useFakeTimers();
+    const lines: string[] = [];
+    let finish: () => void = () => {};
+
+    const pending = withSilenceHeartbeat(
+      { sink: (line) => { lines.push(line); }, label: "Phase", intervalMs: 60_000, maxDurationMs: 180_000 },
+      () => new Promise<void>((resolve) => { finish = resolve; }),
+    );
+
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(lines).toHaveLength(3);
+    finish();
+    await pending;
+  });
+
+  it("runs the work without a sink and clears the timer when the work throws", async () => {
+    vi.useFakeTimers();
+    await expect(withSilenceHeartbeat({ sink: undefined, label: "Phase" }, async (sink) => sink)).resolves.toBeUndefined();
+
+    const lines: string[] = [];
+    await expect(
+      withSilenceHeartbeat({ sink: (line) => { lines.push(line); }, label: "Phase" }, async () => {
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(lines).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

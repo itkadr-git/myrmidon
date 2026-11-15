@@ -55,6 +55,13 @@ export interface DebateTaskRef {
    * or null when the task is not routed to an agent yet.
    */
   casteKey?: string | null;
+  /**
+   * PRIVATE-TASKS (G3): the task's privacy flag. An agent caller must not
+   * debate a private task (the title goes to the model, the result document
+   * lands on the task), so the service refuses with the same not-found answer
+   * a missing task gets. Undefined keeps the pre-privacy behaviour.
+   */
+  isPrivate?: boolean;
 }
 
 export interface DebateRunInput {
@@ -345,6 +352,13 @@ export function debateService(deps: DebateServiceDeps): DebateService {
   async function run(input: DebateRunInput, actor: DebateActor): Promise<DebateRunResult> {
     const issue = await deps.loadIssue(input.issueId);
     if (!issue || issue.companyId !== input.companyId) {
+      throw new DebateConfigError("debate_issue_not_found", `issue ${input.issueId} does not exist in this company`);
+    }
+    // PRIVATE-TASKS (G3): an agent caller gets the same not-found answer a
+    // missing task gets — the debate would send the task title to the model
+    // and land its document on a private task. Checked before the settings
+    // read and the gateway call so a refused debate spends nothing.
+    if (issue.isPrivate && actor.agentId) {
       throw new DebateConfigError("debate_issue_not_found", `issue ${input.issueId} does not exist in this company`);
     }
     const resolution = await deps.readSettings();

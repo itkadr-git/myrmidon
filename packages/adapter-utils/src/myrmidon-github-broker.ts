@@ -145,8 +145,8 @@ async function paperclipRequestBrokerCredentials(env, candidateUrls, limits, rep
 // soon as it is no longer usable — the token never outlives its validity on
 // disk. A missing, stale or unwritable cache degrades to the ordinary broker
 // walk and never breaks the operation.
-const PAPERCLIP_BROKER_CACHE_DEFAULT_TTL_MS = 45 * 60 * 1000;
-const PAPERCLIP_BROKER_CACHE_EXPIRY_MARGIN_MS = 60 * 1000;
+const MYRMIDON_BROKER_CACHE_DEFAULT_TTL_MS = 45 * 60 * 1000;
+const MYRMIDON_BROKER_CACHE_EXPIRY_MARGIN_MS = 60 * 1000;
 function paperclipBrokerCacheRoot(env) {
   for (const name of ['MYRMIDON_GITHUB_CREDENTIALS_CACHE_DIR', 'PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR']) {
     const value = typeof env[name] === 'string' ? env[name].trim() : '';
@@ -186,8 +186,8 @@ function paperclipLoadCachedBrokerCredential(env, repository, now) {
     const expiresAt = Number(parsed.expiresAt);
     const token = parsed.env && typeof parsed.env.GH_TOKEN === 'string' ? parsed.env.GH_TOKEN : '';
     if (!token || !Number.isFinite(issuedAt) || !Number.isFinite(expiresAt)
-        || expiresAt - PAPERCLIP_BROKER_CACHE_EXPIRY_MARGIN_MS <= now
-        || now - issuedAt > PAPERCLIP_BROKER_CACHE_DEFAULT_TTL_MS) {
+        || expiresAt - MYRMIDON_BROKER_CACHE_EXPIRY_MARGIN_MS <= now
+        || now - issuedAt > MYRMIDON_BROKER_CACHE_DEFAULT_TTL_MS) {
       try { nodeFs.rmSync(file, { force: true }); } catch {}
       return null;
     }
@@ -207,7 +207,7 @@ function paperclipStoreBrokerCredential(env, repository, result, now) {
       if (/^(GH_TOKEN|GITHUB_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_TERMINAL_PROMPT|GIT_AUTHOR_(NAME|EMAIL)|GIT_COMMITTER_(NAME|EMAIL))$/.test(key) && typeof value === 'string') cachedEnv[key] = value;
     }
     if (!cachedEnv.GH_TOKEN) return;
-    let expiresAt = now + PAPERCLIP_BROKER_CACHE_DEFAULT_TTL_MS;
+    let expiresAt = now + MYRMIDON_BROKER_CACHE_DEFAULT_TTL_MS;
     const declared = Date.parse(String(result.expiresAt || ''));
     if (Number.isFinite(declared)) expiresAt = Math.min(declared, expiresAt);
     require('node:fs').writeFileSync(file, JSON.stringify({
@@ -217,7 +217,7 @@ function paperclipStoreBrokerCredential(env, repository, result, now) {
   } catch { /* an unwritable cache must not break the operation */ }
 }
 function paperclipCachedBrokerCredentialIsFresh(entry, now) {
-  return Boolean(entry) && Number(entry.expiresAt) - PAPERCLIP_BROKER_CACHE_EXPIRY_MARGIN_MS > now;
+  return Boolean(entry) && Number(entry.expiresAt) - MYRMIDON_BROKER_CACHE_EXPIRY_MARGIN_MS > now;
 }
 // A cached entry answers the same shape the walk returns: an object with the
 // fields ok, status and json.

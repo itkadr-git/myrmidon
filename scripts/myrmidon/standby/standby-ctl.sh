@@ -17,7 +17,8 @@
 # is what lets setup/switchback hand the bind-mounted data directory to the in-container
 # postgres uid (999).
 #
-# Secrets (PG_REPLICATOR_PASSWORD, BETTER_AUTH_SECRET, PAPERCLIP_DB_PASSWORD) are
+# Secrets (PG_REPLICATOR_PASSWORD, BETTER_AUTH_SECRET, MYRMIDON_DB_PASSWORD — or its
+# deprecated alias PAPERCLIP_DB_PASSWORD) are
 # inherited by NAME (-e NAME); their values never appear on a command line.
 #
 # STANDBY_APP_COMPOSE_DIR=<dir> additionally mounts the production application compose directory
@@ -58,6 +59,7 @@ run_in_docker() {
     -e STANDBY_DRILL_DIR="${STANDBY_DRILL_DIR:-}" \
     -e STANDBY_APP_COMPOSE_FILE="${STANDBY_APP_COMPOSE_FILE:-}" \
     -e COMPOSE_BOARD_IMAGE="${COMPOSE_BOARD_IMAGE:-}" \
+    -e MYRMIDON_DB_PASSWORD \
     -e PAPERCLIP_DB_PASSWORD \
     -e BETTER_AUTH_SECRET \
     "$node_image" \

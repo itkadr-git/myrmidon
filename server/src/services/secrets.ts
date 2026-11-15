@@ -1189,6 +1189,31 @@ export function secretService(db: Db | DbTransaction) {
     errorCode?: string | null;
   }) {
     if (!input.context) return;
+    const configPath = input.context.configPath;
+    const isStaticAgentSecret =
+      input.outcome === "success" &&
+      input.context.consumerType === "agent" &&
+      input.context.actorType === "agent" &&
+      input.secretScope !== "user" &&
+      Boolean(input.context.actorId) &&
+      Boolean(configPath?.startsWith("env.") && configPath.length > "env.".length);
+    if (isStaticAgentSecret) {
+      const windowMs = Number(process.env.SECRET_ACCESS_AUDIT_DEDUPE_WINDOW_MS ?? 60 * 60_000);
+      const since = new Date(Date.now() - (Number.isFinite(windowMs) && windowMs >= 0 ? windowMs : 60 * 60_000));
+      const [priorEvent] = await db
+        .select({ id: secretAccessEvents.id })
+        .from(secretAccessEvents)
+        .where(and(
+          eq(secretAccessEvents.companyId, input.companyId),
+          eq(secretAccessEvents.secretId, input.secretId),
+          eq(secretAccessEvents.actorType, "agent"),
+          eq(secretAccessEvents.actorId, input.context.actorId!),
+          ...(input.outcome === "success" ? [eq(secretAccessEvents.outcome, "success")] : []),
+          sql`${secretAccessEvents.createdAt} >= ${since}`,
+        ))
+        .limit(1);
+      if (priorEvent) return;
+    }
     await db.insert(secretAccessEvents).values({
       companyId: input.companyId,
       secretId: input.secretId,
@@ -1380,6 +1405,13 @@ export function secretService(db: Db | DbTransaction) {
       }
       if (secret.status !== "active") {
         throw unprocessable("Secret is not active", { code: "secret_inactive" });
+      }
+      // myrmidon(OPE-12930 KEY-TTL): an expired short-lived managed credential
+      // is "not active" for every consumer — the same fail-closed shape as a
+      // disabled version, so a stale LiteLLM gateway key stops resolving the
+      // moment its deadline passes, with no sweep in the loop.
+      if (secret.expiresAt && secret.expiresAt.getTime() <= Date.now()) {
+        throw unprocessable("Secret has expired", { code: "secret_expired" });
       }
       const binding = await assertBindingContext(companyId, secret.id, bindingContext);
       const versionRow = await getSecretVersion(secret.id, resolvedVersion);
@@ -2291,6 +2323,8 @@ export function secretService(db: Db | DbTransaction) {
       externalRef?: string | null;
       providerVersionRef?: string | null;
       providerMetadata?: Record<string, unknown> | null;
+      /** Optional board-side expiry metadata for short-lived managed credentials. */
+      expiresAt?: Date | null;
     },
     actor?: { userId?: string | null; agentId?: string | null },
   ) {
@@ -2346,6 +2380,7 @@ export function secretService(db: Db | DbTransaction) {
         providerMetadata: input.providerMetadata ?? null,
         latestVersion: 0,
         description: input.description ?? null,
+        expiresAt: input.expiresAt ?? null,
         createdByAgentId: actor?.agentId ?? null,
         createdByUserId: actor?.userId ?? null,
       })
@@ -2506,6 +2541,9 @@ export function secretService(db: Db | DbTransaction) {
       // update matches the latest version, so a concurrent rotation between the
       // read and the write cannot pass. A mismatch throws a 409 conflict.
       expectedLatestVersion?: number;
+      // myrmidon(OPE-12930 KEY-TTL): replaces the board-side deadline with the
+      // rotation's. Undefined keeps the stored one; explicit null clears it.
+      expiresAt?: Date | null;
     },
     actor?: { userId?: string | null; agentId?: string | null },
   ) {
@@ -2646,6 +2684,7 @@ export function secretService(db: Db | DbTransaction) {
             externalRef: prepared.externalRef,
             providerConfigId,
             lastRotatedAt: new Date(),
+            ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
             updatedAt: new Date(),
           })
           .where(and(
@@ -4686,6 +4725,7 @@ export function secretService(db: Db | DbTransaction) {
         externalRef?: string | null;
         providerVersionRef?: string | null;
         providerMetadata?: Record<string, unknown> | null;
+        expiresAt?: Date | null;
       },
       actor?: { userId?: string | null; agentId?: string | null },
     ) => {
@@ -4719,6 +4759,7 @@ export function secretService(db: Db | DbTransaction) {
         providerVersionRef?: string | null;
         providerConfigId?: string | null;
         expectedLatestVersion?: number;
+        expiresAt?: Date | null;
       },
       actor?: { userId?: string | null; agentId?: string | null },
     ) => {

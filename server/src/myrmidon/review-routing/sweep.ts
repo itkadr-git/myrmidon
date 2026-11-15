@@ -6,7 +6,10 @@
 //  1. a task in `in_review` with no reviewer gets a one-stage review with the
 //     least-loaded eligible reviewer (reviewer roles, below the load ceiling,
 //     never the task's author or assignee); the choice is written as a system
-//     comment and an activity entry, and the reviewer is woken;
+//     comment and an activity entry, and the reviewer is woken. Every pool of
+//     this routing (assign, reassign, rebalance, PR lane) holds only
+//     queue-eligible reviewers of the task's own agent group (OPE-12683): an
+//     empty own group raises the signal or does nothing, it never widens;
 //  2. when no reviewer is eligible the task is signalled on the attention desk
 //     (`no_reviewer`) instead of staying silent;
 //  3. a review this routing started that has had no verdict for
@@ -70,6 +73,7 @@ import {
   issueAnchorAgentId,
   issueNeedsReviewer,
   minutesSince,
+  ownGroupReviewerPool,
   pickPrReviewer,
   pickReviewer,
   readPendingAgentReview,
@@ -184,6 +188,14 @@ export interface ReviewRoutingSweepDeps {
     issueId: string;
     details: Record<string, unknown>;
   }) => Promise<void>;
+  /**
+   * myrmidon(OPE-13149): the board's own reader of the CI result of the
+   * pull request head under review (the one that makes REQUEST CHANGES refuse
+   * with "CI result ... is not complete"). Without it the wake lane does not
+   * look at CI (older behaviour); with it a reviewer is not woken while the
+   * head's CI is still running.
+   */
+  resolveReviewCi?: (input: { companyId: string; issueId: string }) => Promise<{ state: string; headSha?: string | null }>;
   isUnderMaintenance?: () => Promise<boolean>;
   intervalMs?: number;
   now?: () => Date;
@@ -227,6 +239,15 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
   const recentReassignments = new Map<string, { signal: ReviewRoutingSignal; untilMs: number }>();
   /** PR-lane signals from the lane's last actual run, kept through throttle gaps. */
   const prLaneSignalsByCompany = new Map<string, ReviewRoutingSignal[]>();
+  /**
+   * myrmidon(OPE-13149): the last wake of the liveness lane per
+   * (issue, reviewer, stage, PR head, CI state). The same key is not woken
+   * again by the periodic pass: a reviewer who ran and left no verdict has
+   * nothing new to look at until the head, the stage or the CI state moves.
+   * A cancelled run (failed dispatch) still retries; the key is dropped after
+   * REVIEW_WAKE_REARM_AFTER_MS like an exhausted series.
+   */
+  const livenessWakeByKey = new Map<string, number>();
   const boardMerger = deps.boardMerge
     ? createBoardMerger({
         store: deps.store,
@@ -305,17 +326,31 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         : {};
       return state.status === "pending" && state.currentStageType === "review" && state.currentStageId === review.stageId && participant.type === "agent" && participant.agentId === review.reviewerAgentId && activeStageIdsByIssue.get(row.id)?.has(review.stageId) === true;
     });
-    const orderedPending = [...activeStages].sort((a, b) => a.row.createdAt.getTime() - b.row.createdAt.getTime());
+    // myrmidon(OPE-13149): only a task that is still `in_review` with a pending
+    // review stage awaiting this reviewer is woken; a task returned to the
+    // implementer (changes_requested, in_progress) has nothing for a reviewer.
+    const orderedPending = [...activeStages]
+      .filter(({ row }) => row.status === "in_review")
+      .sort((a, b) => a.row.createdAt.getTime() - b.row.createdAt.getTime());
+    for (const [key, at] of livenessWakeByKey) {
+      if (now.getTime() - at >= REVIEW_WAKE_REARM_AFTER_MS) livenessWakeByKey.delete(key);
+    }
     const reviewersWoken = new Set<string>();
     for (const { row, review } of orderedPending) {
       if (reviewersWoken.has(review.reviewerAgentId)) continue;
-      // A reviewer with a healthy queue (above idle, within queueThreshold) is
-      // owned by the queue-offload/rebalance lanes, which wake the *new*
-      // reviewer on a move; the liveness lane nudges stale reviews sitting
-      // idle with nothing behind them or stuck behind an overloaded queue.
-      const reviewerLoad = initialLoads.get(review.reviewerAgentId) ?? 0;
-      if (reviewerLoad > 0 && reviewerLoad <= settings.queueThreshold) continue;
+      // myrmidon(OPE-12886): liveness is about runs, not queue depth. On the
+      // incident of 13.11 every reviewer sat idle (0 runs) behind 4-7 assigned
+      // in_review tasks, so any load-derived skip here skipped ALL of them:
+      // `loadByAgent` counts pending in_review tasks plus active runs, hence a
+      // reviewer awaiting a review always has load >= 1 and a
+      // `load > 0 && load <= queueThreshold` gate skips every reviewer with a
+      // queue of 1..queueThreshold. The queue is owned by the
+      // offload/rebalance lanes (load > queueThreshold below); the liveness
+      // lane's contract is "idle reviewer gets woken on the oldest stale
+      // review", regardless of queue size.
       try {
+        const activeRunCount = await deps.store.countActiveRunsForAgent(companyId, review.reviewerAgentId);
+        if (activeRunCount > 0) continue;
         const wakeState = await deps.store.reviewWakeState({
           companyId,
           issueId: row.id,
@@ -353,13 +388,39 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           const lastActivity = row.updatedAt ?? row.createdAt;
           if (now.getTime() - lastActivity.getTime() < REVIEW_WAKE_STALE_AFTER_MS) continue;
         }
+        // myrmidon(OPE-13149): the reviewer cannot give a verdict on a head whose
+        // CI is still running (REQUEST CHANGES is refused with "CI result ... is
+        // not complete"), so a wake is an empty run. The `ci_completed` event
+        // wakes the reviewer when the result arrives; this pass stays a safety
+        // net for a completed head. An unreadable CI ("unknown") does not hold
+        // the wake: the backoff above still bounds it.
+        let ciState = "unread";
+        let headSha = "";
+        if (deps.resolveReviewCi) {
+          const ci = await deps.resolveReviewCi({ companyId, issueId: row.id }).catch(() => null);
+          if (ci) {
+            ciState = ci.state;
+            headSha = typeof ci.headSha === "string" ? ci.headSha : "";
+            if (ci.state === "pending") continue;
+          }
+        }
+        // The same head in the same stage and CI state was already woken and the
+        // run did not fail to dispatch: nothing new to review, no repeat wake.
+        const wakeKey = [row.id, review.reviewerAgentId, review.stageId, headSha, ciState].join("|");
+        const cancelledAfterWake = wakeState.lastCancelledRunAt != null
+          && (!wakeState.lastWakeAt || wakeState.lastCancelledRunAt > wakeState.lastWakeAt);
+        // Without a known head (no CI reader wired, or the head unreadable) there is
+        // no key to compare: the plain backoff above is the only bound.
+        if (headSha !== "" && livenessWakeByKey.has(wakeKey) && !cancelledAfterWake) continue;
         const attempt = seriesAttempts + 1;
         const wakeContext = buildReviewRoutingWakeContext(
           (row.executionState ?? {}) as Record<string, unknown>,
         );
         const currentStage = review.stageId;
-        const activeRunCount = await deps.store.countActiveRunsForAgent(companyId, review.reviewerAgentId);
-        if (activeRunCount > 0) continue;
+        // myrmidon(OPE-12886): the active-run check already ran at the top of
+        // this iteration (and would have skipped this reviewer); the budget
+        // cap stays the last gate so a burst of wakes can never exceed one
+        // dispatch per reviewer per pass and the company-wide ceiling.
         if (reviewersWoken.size >= REVIEW_ROUTING_MAX_WAKES_PER_PASS) break;
         // Persist the wake request before dispatch: a failure while enqueuing
         // still observes the cooldown on the next sweep rather than looping.
@@ -379,6 +440,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           executionStage: wakeContext as unknown as Record<string, unknown>,
           retryAttempt: attempt,
         });
+        if (headSha !== "") livenessWakeByKey.set(wakeKey, now.getTime());
         liveByReviewer.set(review.reviewerAgentId, (liveByReviewer.get(review.reviewerAgentId) ?? 0) + 1);
         result.woken += 1;
       } catch (err) {
@@ -497,12 +559,11 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       }
       return "";
     };
-    const poolForGroup = async (groupKey: string): Promise<ReviewerCandidate[]> => {
-      const all = await pool();
-      if (!groupKey) return all.filter((c) => c.swarmQueueEligible !== false);
-      const matching = all.filter((c) => c.swarmQueueEligible !== false && resolveAgentGroupKey(c) === groupKey);
-      return matching.length > 0 ? matching : all.filter((c) => c.swarmQueueEligible !== false);
-    };
+    // myrmidon(OPE-12683): a task is reviewed only inside its own agent group
+    // by queue-eligible reviewers. An empty own group yields an empty pool, never
+    // the whole company pool: shop and business bots must not review dev tasks.
+    const poolForGroup = async (groupKey: string): Promise<ReviewerCandidate[]> =>
+      ownGroupReviewerPool(await pool(), groupKey);
     const bumpLoad = (agentId: string, delta: number) => {
       if (reviewerPool) {
         const candidate = reviewerPool.find((entry) => entry.id === agentId);
@@ -720,7 +781,16 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           continue;
         }
 
-        const candidates = await pool();
+        // myrmidon(OPE-12683): only queue-eligible reviewers of the issue's own
+        // group may take a rebalanced review; none in the group, no rebalance.
+        let candidates: ReviewerCandidate[];
+        try {
+          candidates = await poolForGroup(await getIssueGroupKey(row, review.reviewerAgentId));
+        } catch (err) {
+          result.failed += 1;
+          log.warn({ err, issueId: row.id, companyId }, "review routing failed to read the own-group pool for a rebalance");
+          continue;
+        }
         const excluded = excludedReviewerIds(row, [
           review.reviewerAgentId,
           ...(review.returnAssigneeAgentId ? [review.returnAssigneeAgentId] : []),
@@ -802,6 +872,19 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     lastPrLaneAtMs = now.getTime();
 
     const signals: ReviewRoutingSignal[] = [];
+    // myrmidon(OPE-12683): a pull request is reviewed only inside the agent
+    // group of its engineer or author, by queue-eligible reviewers. A group is
+    // resolved from the agent row; an unknown group (no engineer, no linked
+    // author) leaves only the queue-eligibility filter.
+    const laneGroupByAgent = new Map<string, string>();
+    const laneAgentGroup = async (agentId: string | null | undefined): Promise<string> => {
+      if (!agentId) return "";
+      const cached = laneGroupByAgent.get(agentId);
+      if (cached !== undefined) return cached;
+      const key = resolveAgentGroupKey(await deps.store.getAgent(companyId, agentId));
+      laneGroupByAgent.set(agentId, key);
+      return key;
+    };
     const existingWork = await deps.store.listInProgressPrIssues(companyId, REVIEW_ROUTING_PR_PAGE_SIZE);
     for (const row of existingWork) {
       try {
@@ -816,8 +899,9 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           deps.store.loadByAgent(companyId),
           deps.store.openPrTaskLoadByAgent(companyId, "review"),
         ]);
+        const taskGroup = await laneAgentGroup(issueAnchorAgentId(row));
         const picked = pickPrReviewer({
-          reviewers: reviewerRows.map((agent) => ({ ...agent, load: 0 })),
+          reviewers: ownGroupReviewerPool(reviewerRows.map((agent) => ({ ...agent, load: 0 })), taskGroup),
           boardLoadByAgent: boardLoad,
           openPrLoadByAgent: openReviewLoad,
           excluded: new Set([row.assigneeAgentId ?? "", row.createdByAgentId ?? ""]),
@@ -907,6 +991,18 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         authorAgents.set(login.toLowerCase(), ids);
       }
       return new Set(ids);
+    };
+    // myrmidon(OPE-12683): the reviewers of a pull request are those of the
+    // group(s) of the author's linked agents. An author with no linked agent
+    // has no known group: only the queue-eligibility filter applies.
+    const reviewersForAuthor = async (login: string | null | undefined): Promise<ReviewerCandidate[]> => {
+      const groups = new Set<string>();
+      for (const agentId of await authorExcluded(login)) {
+        const group = await laneAgentGroup(agentId);
+        if (group) groups.add(group);
+      }
+      if (groups.size === 0) return ownGroupReviewerPool(reviewers, "");
+      return [...groups].flatMap((group) => ownGroupReviewerPool(reviewers, group));
     };
 
     let newAssignments = 0;
@@ -1006,7 +1102,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         const picked =
           kind === "review"
             ? pickPrReviewer({
-                reviewers,
+                reviewers: await reviewersForAuthor(head.authorLogin),
                 boardLoadByAgent: boardLoad,
                 openPrLoadByAgent: openReviewByAgent,
                 excluded,
@@ -1287,6 +1383,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       lastSweepAtMs = 0;
       lastPrLaneAtMs = 0;
       recentReassignments.clear();
+      livenessWakeByKey.clear();
       prLaneSignalsByCompany.clear();
       boardMerger?.resetForTest();
     },

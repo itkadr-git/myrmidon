@@ -121,6 +121,34 @@ describe("myrmidon(1.6.6 K-3) knowledge MCP: rule grade", () => {
     expect((await call(operator, mod, "knowledge_publish", { idOrSlug: "notes/x" })).status).toBe(200);
   });
 
+  it("1.7 L-12: knowledge_propose accepts a debate source and forwards sourceKind/sourceRef", async () => {
+    const mod = makeModule(ruleItem(["engineer"]));
+    const debateId = "44444444-4444-4444-8444-444444444444";
+    const response = await call(operator, mod, "knowledge_propose", {
+      body: "The debate concluded: rate-limit provider calls with backoff.",
+      sources: [{ kind: "debate", ref: debateId }],
+    });
+    expect(response.status).toBe(200);
+    expect(response.body.error).toBeUndefined();
+    expect(mod.suggest).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ sourceKind: "debate", sourceRef: debateId }),
+    );
+  });
+
+  it("knowledge_propose still refuses an unknown source kind", async () => {
+    const mod = makeModule(ruleItem(["engineer"]));
+    const response = await call(operator, mod, "knowledge_propose", {
+      body: "Unknown kind",
+      sources: [{ kind: "foo", ref: "whatever" }],
+    });
+    // A ZodError is not an HttpErrorLike, so the MCP surface reports it as an
+    // isError result (200) with code "unknown" — the refusal path, no store work.
+    expect(response.body.result?.isError).toBe(true);
+    expect(response.body.error).toBeUndefined();
+    expect(mod.suggest).not.toHaveBeenCalled();
+  });
+
   it("the tool list is pinned: only knowledge_publish publishes, nothing approves, rolls back, archives, supersedes or imports", () => {
     const GRADED_TOOLS = ["knowledge_publish"];
     const UNGRADED_TOOLS = [

@@ -57,10 +57,11 @@ import {
   encodeReworkFingerprint,
   reviewReworkPrKey,
   type ReviewReworkDecision,
+  type ReviewReworkChildFacts,
   type ReviewReworkExecutorCandidate,
   type ReviewReworkPrFact,
 } from "./domain.js";
-import type { ReviewReworkPrResolver, ReviewReworkPrSnapshot } from "./resolver.js";
+import type { ReviewReworkPrResolver, ReviewReworkPrSnapshot, ReviewReworkPrReference } from "./resolver.js";
 import type { ReworkCandidateRow, ReviewReworkStore } from "./store.js";
 
 export { DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC } from "@myrmidon/shared";
@@ -71,6 +72,10 @@ export const REVIEW_REWORK_PAGE_SIZE = 200;
 /** Moves (create/reopen/block/unblock/close) per company per pass. */
 export const REVIEW_REWORK_MAX_MOVES_PER_PASS = 20;
 export const REVIEW_REWORK_ACTOR_ID = "review_rework_sweep";
+/** Activity-log action for a goal-judge round applied by this sweep. */
+export const GOAL_JUDGE_ROUND_APPLIED_ACTION = "review_rework.goal_judge_round";
+/** The comment marker a goal-judge round writes; a new round only starts past it. */
+export const GOAL_JUDGE_ROUND_MARKER = "[GOAL-JUDGE]";
 
 const FULL_PR_REFERENCE_PATTERN =
   /(?:https?:\/\/(?:www\.)?github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:\/pull)?#([1-9][0-9]*)\b/g;
@@ -133,6 +138,23 @@ export interface ReviewReworkSweepDeps {
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
   log?: Pick<Logger, "info" | "warn">;
+  /** Optional resolver for PR unified diffs. */
+  resolveDiff?: (
+    companyId: string,
+    reference: ReviewReworkPrReference & { headSha?: string | null },
+  ) => Promise<string | null>;
+  /** Optional resolver for authoritative CI / test output. */
+  resolveCiOutput?: (
+    companyId: string,
+    issueId: string,
+    prs: readonly ReviewReworkPrFact[],
+  ) => Promise<string | null>;
+  /** Optional goal judge review-cycle round controller. */
+  goalJudge?: {
+    judge(input: import("../goal-judge/controller.js").GoalJudgeReviewTaskFacts): Promise<import("../goal-judge/controller.js").GoalJudgeDecision>;
+  };
+  /** Per-company judge factory; model providers and secrets are company-scoped. */
+  goalJudgeFactory?: (companyId: string) => ReviewReworkSweepDeps["goalJudge"];
 }
 
 function readIntervalSec(env: NodeJS.ProcessEnv | undefined, fallback: number) {
@@ -244,6 +266,28 @@ function reworkDescription(input: {
   ].join("\n");
 }
 
+/**
+ * myrmidon(OPE-12785): the per-task reads of one page, loaded in one query each
+ * before the loop over the candidates (the loop used to run them task by task:
+ * ~125k comment selects a day). Every field is optional — a store without the
+ * batch methods, or a failed batch read, leaves the per-task read in place.
+ */
+interface PagePrefetch {
+  comments?: Map<string, Array<{ id: string; body: string; createdAt: Date }>>;
+  children?: Map<string, ReviewReworkChildFacts | null>;
+  loopClosed?: Set<string>;
+}
+
+/** True when `processTask` would read the task at all (the cheap skip-guard, OPE-12397). */
+function isProcessable(row: ReworkCandidateRow): boolean {
+  const hasLivePrProduct = row.products.some(
+    (product) =>
+      product.status !== "archived" &&
+      !TERMINAL_PULL_REQUEST_PRODUCT_STATUSES.has(product.status.toLowerCase()),
+  );
+  return !((row.childPresent === false && row.verdictPresent === false) && !hasLivePrProduct);
+}
+
 export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewReworkSweep {
   const log = deps.log ?? logger;
   let lastSweepAtMs = 0;
@@ -335,6 +379,30 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
     }
   }
 
+  async function loadPrefetch(companyId: string, rows: readonly ReworkCandidateRow[]): Promise<PagePrefetch> {
+    // myrmidon(OPE-12785): only the candidates `processTask` will read.
+    const ids = rows.filter(isProcessable).map((row) => row.task.id);
+    const prefetch: PagePrefetch = {};
+    if (ids.length === 0) return prefetch;
+    // A failed batch read must not fail the pass: the per-task reads remain.
+    try {
+      if (deps.store.listCommentsForIssues) prefetch.comments = await deps.store.listCommentsForIssues(ids);
+    } catch (err) {
+      log.warn({ err, companyId }, "review rework comment batch read failed; reading per task");
+    }
+    try {
+      if (deps.store.findReworkChildren) prefetch.children = await deps.store.findReworkChildren(companyId, ids);
+    } catch (err) {
+      log.warn({ err, companyId }, "review rework child batch read failed; reading per task");
+    }
+    try {
+      if (deps.store.loopClosedIssueIds) prefetch.loopClosed = await deps.store.loopClosedIssueIds(companyId, ids);
+    } catch (err) {
+      log.warn({ err, companyId }, "review rework loop-close batch read failed; reading per task");
+    }
+    return prefetch;
+  }
+
   async function sweepCompany(
     companyId: string,
     settings: ReviewReworkSettings,
@@ -345,10 +413,11 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
   ): Promise<void> {
     const rows = await deps.store.listCandidateTasks(companyId, REVIEW_REWORK_PAGE_SIZE);
     result.scanned += rows.length;
+    const prefetch = await loadPrefetch(companyId, rows);
     for (const row of rows) {
       if (moves.count >= REVIEW_REWORK_MAX_MOVES_PER_PASS) return;
       try {
-        const moved = await processTask(row, settings, now, result, moves, prFactsCache);
+        const moved = await processTask(row, settings, now, result, moves, prFactsCache, prefetch);
         if (moved) moves.count += 1;
       } catch (err) {
         result.failed += 1;
@@ -364,6 +433,7 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
     result: ReviewReworkSweepResult,
     _moves: { count: number },
     prFactsCache: Map<string, ReviewReworkPrSnapshot | null>,
+    prefetch: PagePrefetch = {},
   ): Promise<boolean> {
     const { task } = row;
     // myrmidon(OPE-12397): a task with neither a rework child, nor a verdict
@@ -374,19 +444,13 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
     // processed. Terminal PR products (merged/closed/…) are not live either:
     // the loop already settled those tasks, and re-reading them every pass
     // burned reads on `pr_terminal` no-ops.
-    const hasLivePrProduct = row.products.some(
-      (product) =>
-        product.status !== "archived" &&
-        !TERMINAL_PULL_REQUEST_PRODUCT_STATUSES.has(product.status.toLowerCase()),
-    );
-    if (
-      (row.childPresent === false && row.verdictPresent === false)
-      && !hasLivePrProduct
-    ) {
-      return false;
-    }
-    const comments = await deps.store.listComments(task.id);
-    const child = await deps.store.findReworkChild(task.companyId, task.id);
+    if (!isProcessable(row)) return false;
+    // myrmidon(OPE-12785): the page's batch reads first, the per-task read only
+    // when the batch has no entry for the task.
+    const comments = prefetch.comments?.get(task.id) ?? (await deps.store.listComments(task.id));
+    const child = prefetch.children?.has(task.id)
+      ? (prefetch.children.get(task.id) ?? null)
+      : await deps.store.findReworkChild(task.companyId, task.id);
     const prs = await prFacts(row, comments.map((comment) => comment.body), prFactsCache);
     if (prs.length === 0) return false;
     // The delivering task's assignee: the first PR with coordinates that names
@@ -401,7 +465,97 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
       );
       if (deliveringTaskAssigneeAgentId) break;
     }
-    const reopenedAfterLoopClose = await deps.store.reopenedAfterLoopClose(task.companyId, task.id);
+    // Goal judge is a fail-open optional gate: disabled/unconfigured means noop,
+    // while a concrete return/escalation is applied under the same status guard
+    // as every other review-loop move.
+    const goalJudge = deps.goalJudgeFactory?.(task.companyId) ?? deps.goalJudge;
+    if (goalJudge && task.status === "in_review") {
+      let resolvedDiff: string | null = null;
+      if (deps.resolveDiff) {
+        const diffs: string[] = [];
+        for (const pr of prs) {
+          const [owner, repo] = pr.repo.split("/");
+          if (owner && repo) {
+            try {
+              const d = await deps.resolveDiff(task.companyId, {
+                owner,
+                repo,
+                number: pr.number,
+                headSha: pr.headSha,
+              });
+              if (d) diffs.push(d);
+            } catch {
+              // ignore diff fetch failures
+            }
+          }
+        }
+        if (diffs.length > 0) {
+          resolvedDiff = diffs.join("\n\n");
+        }
+      }
+      const fallbackDiff = prs.map((pr) => `${pr.prKey} @ ${pr.headSha ?? "unknown"}`).join("\n");
+
+      let resolvedCiOutput: string | null = null;
+      if (deps.resolveCiOutput) {
+        try {
+          resolvedCiOutput = await deps.resolveCiOutput(task.companyId, task.id, prs);
+        } catch {
+          // ignore CI output fetch failure
+        }
+      }
+      const fallbackCiOutput = comments.map((comment) => comment.body).join("\n");
+
+      const judgeDecision = await goalJudge.judge({
+        issueId: task.id,
+        companyId: task.companyId,
+        status: task.status,
+        criteria: task.description ?? task.title,
+        diff: resolvedDiff ?? fallbackDiff,
+        testOutput: resolvedCiOutput ?? fallbackCiOutput,
+        claims: comments.at(-1)?.body ?? null,
+        headSha: prs.map((pr) => pr.headSha).filter((sha): sha is string => Boolean(sha)).join(",") || null,
+        returnAssigneeAgentId: task.returnAssigneeAgentId,
+        executionPolicy: task.executionPolicy as import("@myrmidon/shared").IssueExecutionPolicy | null,
+        // myrmidon(1.7-GOAL-JUDGE, OPE-12149): seed the controller with the round
+        // state persisted by the previous sweeps (issues.executionState ->
+        // goalJudgeRound), so the <=maxReviewRounds budget spans real review
+        // cycles even when the controller instance was recreated per company.
+        roundState:
+          ((task.executionState as Record<string, unknown> | null | undefined)?.goalJudgeRound as
+            | import("../goal-judge/controller.js").GoalJudgeRoundState
+            | null
+            | undefined) ?? null,
+      });
+      if (judgeDecision.kind !== "noop" && judgeDecision.kind !== "pass") {
+        const applied = await deps.store.applyGoalJudgeDecision({
+          issueId: task.id,
+          companyId: task.companyId,
+          expectStatus: task.status,
+          patch: judgeDecision.patch ?? { status: task.status },
+          comment: judgeDecision.commentBody,
+        });
+        if (applied) {
+          await deps.logActivity({
+            companyId: task.companyId,
+            action: GOAL_JUDGE_ROUND_APPLIED_ACTION,
+            issueId: task.id,
+            details: {
+              kind: judgeDecision.kind,
+              roundsUsed: judgeDecision.roundsUsed,
+              verdict: judgeDecision.verdict,
+            },
+          });
+          return true;
+        }
+        return false;
+      }
+    }
+
+    // myrmidon(OPE-12785): the veto exists only for a task the loop closed.
+    const reopenedAfterLoopClose =
+      prefetch.loopClosed && !prefetch.loopClosed.has(task.id)
+        ? false
+        : await deps.store.reopenedAfterLoopClose(task.companyId, task.id);
     const decision = decideReviewRework({
       task,
       prs,

@@ -13,9 +13,19 @@
 // command line), not the full argument object. Structured arguments are
 // supported as well (`{ command: "..." }`, or a JSON string of that shape).
 
-export type RunGuardToolKind = "read" | "write";
+//
+// myrmidon(OPE-12799): a third kind, "opaque", for tools that run arbitrary code
+// whose effect the guard cannot see (`execute_code`: the preview is the first
+// characters of a script, the same wrapper prefix on every call). Such a call
+// proves neither a read nor a write. Counted as a write it switched the
+// no-progress and repeated-call checks off for agents that do everything through
+// it (151 of 151 calls in run 7cb1b9a2) and made every call-limit stop look
+// productive. An opaque call does not reset the exploration counters and is not
+// a confirmed write; it is never compared for repeats.
 
-/** Tools that only look at things. Everything not listed here is a write. */
+export type RunGuardToolKind = "read" | "write" | "opaque";
+
+/** Tools that only look at things. Everything not listed here or below is a write. */
 const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   "search_files",
   "read_file",
@@ -24,6 +34,9 @@ const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 const TERMINAL_TOOL_NAMES: ReadonlySet<string> = new Set(["terminal"]);
+
+/** myrmidon(OPE-12799): tools that run code the guard cannot inspect. */
+const OPAQUE_TOOL_NAMES: ReadonlySet<string> = new Set(["execute_code"]);
 
 /** Shell commands (first word of a pipeline segment) that only read. */
 const READ_ONLY_COMMANDS: ReadonlySet<string> = new Set([
@@ -278,7 +291,7 @@ function classifySegment(words: string[]): "read" | "neutral" | "write" {
  * command, nothing is redirected into a file and no command substitution hides
  * part of it. A line made only of neutral commands (`cd dir`) is not a read.
  */
-export function classifyTerminalCommand(command: string): RunGuardToolKind {
+export function classifyTerminalCommand(command: string): "read" | "write" {
   const scan = scanShell(command);
   if (scan.writesFile || scan.dynamic) return "write";
   let sawRead = false;
@@ -320,6 +333,7 @@ function commandFromArguments(args: unknown): string | null {
 export function classifyToolCall(name: string, args: unknown): RunGuardToolKind {
   const tool = name.trim().toLowerCase();
   if (READ_ONLY_TOOL_NAMES.has(tool)) return "read";
+  if (OPAQUE_TOOL_NAMES.has(tool)) return "opaque";
   if (TERMINAL_TOOL_NAMES.has(tool)) {
     const command = commandFromArguments(args);
     return command === null ? "write" : classifyTerminalCommand(command);

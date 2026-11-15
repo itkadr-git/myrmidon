@@ -10,22 +10,44 @@ import {
 } from "@myrmidon/db";
 import { unprocessable } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
+import { liveSavedSetting } from "../behavior-settings/live.js";
 
 export const KNOWLEDGE_NOTE_REQUIRED = "knowledge_note_required";
 export const KNOWLEDGE_GATE_START_DATE = new Date("2026-10-31T00:00:00Z");
 export const KNOWLEDGE_GATE_GRACE_PERIOD_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
 
+/**
+ * Parse a saved/env ISO date into a Date, or null when it is unreadable
+ * (garbage falls back to the built-in constant, never throws).
+ */
+function parseGateDate(raw: string | undefined): Date | null {
+  if (typeof raw !== "string" || raw.trim() === "") return null;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? new Date(parsed) : null;
+}
+
 export function getKnowledgeGateMode(
   now: Date = new Date(),
   options?: { startDate?: Date; gracePeriodMs?: number },
 ): "warning" | "enforce" {
+  // myrmidon(OPE-12627, SWEEP-2 KNOWLEDGE-GATE): the gate re-reads its values
+  // on every call, so a value saved in "Тонкие настройки" applies without a
+  // restart. Precedence (mirrors foragingMasterEnabled, the sweep-2 sample):
+  //  - an explicit env `warning`/`enforce` stays the forced mode override;
+  //  - otherwise the saved UI value decides (`warning`/`enforce`; the saved
+  //    `auto` is the date-based rollout itself, not a pin);
+  //  - otherwise the date-based rollout: the first grace days after the start
+  //    date are `warning`, then `enforce` — the byte-for-byte old behavior.
+  // The start date follows the same order: env, then saved, then the constant.
+  const savedMode = liveSavedSetting<string>("knowledgeGateMode");
   if (process.env.MYRMIDON_KNOWLEDGE_GATE_MODE === "enforce") return "enforce";
   if (process.env.MYRMIDON_KNOWLEDGE_GATE_MODE === "warning") return "warning";
+  if (savedMode === "enforce" || savedMode === "warning") return savedMode;
   const start =
     options?.startDate ??
-    (process.env.MYRMIDON_KNOWLEDGE_GATE_START_DATE
-      ? new Date(process.env.MYRMIDON_KNOWLEDGE_GATE_START_DATE)
-      : KNOWLEDGE_GATE_START_DATE);
+    parseGateDate(process.env.MYRMIDON_KNOWLEDGE_GATE_START_DATE) ??
+    parseGateDate(liveSavedSetting<string>("knowledgeGateStartDate")) ??
+    KNOWLEDGE_GATE_START_DATE;
   const grace = options?.gracePeriodMs ?? KNOWLEDGE_GATE_GRACE_PERIOD_MS;
   return now.getTime() - start.getTime() < grace ? "warning" : "enforce";
 }

@@ -591,7 +591,7 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-tool-gateway-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(activityLog);
@@ -784,7 +784,9 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
     }
   });
 
-  it("never flips connection health on tools/call failures and pauses only the failing tool", async () => {
+  it.each(Array.from({ length: 50 }, (_, index) => index + 1))(
+    "never flips connection health on tools/call failures and pauses only the failing tool (run %i)",
+    async () => {
     // Failures of one tool keep the connection listed and healthy, tell the
     // caller which tool failed and why, and pause only that tool.
     const company = await createCompany(db);
@@ -900,11 +902,14 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
         expect(await connectionHealth()).toBe("ok");
         expect(await connectionToolNames()).toEqual(allNames);
       }
-      expect(slowCallsReceived).toBe(3);
+      // The timeout may abort before the fake server's handler runs on a loaded
+      // runner; breaker accounting is based on failed gateway calls, not server hits.
+      expect(slowCallsReceived).toBeLessThanOrEqual(3);
 
       // Breaker open: the failing tool fails fast without reaching the server and
       // without recording an invocation...
       const recordedBefore = await invocationCount();
+      const slowCallsBeforeBreakerCall = slowCallsReceived;
       await call(4).then(
         () => {
           throw new Error("Expected the paused tool to fail fast");
@@ -929,7 +934,7 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
           });
         },
       );
-      expect(slowCallsReceived).toBe(3);
+      expect(slowCallsReceived).toBe(slowCallsBeforeBreakerCall);
       expect(await invocationCount()).toBe(recordedBefore);
       // ...while its sibling on the same connection keeps working.
       await expect(

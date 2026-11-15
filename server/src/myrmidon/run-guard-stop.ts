@@ -114,6 +114,94 @@ export function shouldContinueAfterRunGuardStop(
   return false;
 }
 
+// myrmidon(OPE-12799): the second empty stop in a row is final.
+//
+// `writeCalls` > 0 does not say the run produced anything: on 11-12.11 every run
+// stopped at the call limit had 34..150 "write" calls, and 23 of 32 engineer runs
+// left nothing on the board (no commit, no comment, no document). Each was
+// continued as productive, up to six times along a chain, and a wake of another
+// kind (idle pickup, monitor, maintenance retry) started the count over. So the
+// continuation is also judged by what the run left on the board, and the count
+// is by issue and agent, not by retry chain.
+
+/** The stops that come from the amount of work without a result: the two limits. */
+export function isRunGuardLimitStopReason(reason: RunGuardStopReason | null | undefined): boolean {
+  return reason === "model_call_limit" || reason === "no_progress_exploration";
+}
+
+/** How far back a previous empty stop of the same issue still counts. */
+export const RUN_GUARD_EMPTY_STOP_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+/** How many previous runs of the issue are looked at. */
+export const RUN_GUARD_EMPTY_STOP_LOOKBACK_RUNS = 10;
+
+/** What a run left on the board (a subset of the run liveness evidence). */
+export interface RunGuardOutcomeEvidence {
+  issueCommentsCreated?: number | null;
+  documentRevisionsCreated?: number | null;
+  workProductsCreated?: number | null;
+}
+
+/**
+ * True when the run left something on the board that the next run and the lead
+ * can see: a comment, a document revision (not the continuation summary, which
+ * the board writes itself), a work product (commit, branch, pull request,
+ * artifact). Tool calls do not count: they are not a result.
+ */
+export function runHasUsefulOutcome(evidence: RunGuardOutcomeEvidence | null | undefined): boolean {
+  if (!evidence) return false;
+  return (
+    readCount(evidence.issueCommentsCreated) > 0 ||
+    readCount(evidence.documentRevisionsCreated) > 0 ||
+    readCount(evidence.workProductsCreated) > 0
+  );
+}
+
+/**
+ * The previous limit stop of the same issue and agent, from the previous runs
+ * that started, newest first; null when the run before was not one. Runs that
+ * say nothing about the task (transport failures, maintenance interruptions,
+ * cancellations) are skipped. A run that succeeded, or a guard stop of another
+ * kind (final on its own), ends the search: the stops are not in a row.
+ */
+export function findPreviousLimitStopRun<T extends RunGuardStopRunShape & { status?: string | null }>(
+  previousRuns: readonly T[],
+): T | null {
+  for (const previous of previousRuns) {
+    const reason = readRunGuardStopReason(previous);
+    if (reason) return isRunGuardLimitStopReason(reason) ? previous : null;
+    if (previous.status === "succeeded") return null;
+  }
+  return null;
+}
+
+/**
+ * True when this limit stop is the second in a row for the issue without a
+ * result: the run left nothing on the board, and neither did the previous limit
+ * stop. Such a stop is final whatever `writeCalls` says and whatever ceiling
+ * the retry chain has left.
+ */
+export function isRepeatedEmptyLimitStop(input: {
+  run: RunGuardStopRunShape | null | undefined;
+  runHasUsefulOutcome: boolean;
+  /** null when the run before was not a limit stop (findPreviousLimitStopRun). */
+  previousLimitStop: { hasUsefulOutcome: boolean } | null;
+}): boolean {
+  if (!isRunGuardLimitStopReason(readRunGuardStopReason(input.run))) return false;
+  if (input.runHasUsefulOutcome) return false;
+  return input.previousLimitStop !== null && !input.previousLimitStop.hasUsefulOutcome;
+}
+
+/**
+ * myrmidon(OPE-12799): what the continuation of a call-limit stop is told. The
+ * session may be fresh (a `run` or `none` strategy, or a reset), so the run would
+ * otherwise start the task over.
+ */
+export const CALL_LIMIT_CONTINUATION_HINT =
+  "Предыдущий прогон этой задачи остановлен по лимиту вызовов модели и не дошёл до конца. Не начинай задачу заново. " +
+  "Сначала посмотри, что уже сделано: последние комментарии задачи, ветку задачи (git status, git log, git diff в рабочей копии и на origin). " +
+  "Продолжи с этого места. Рано закоммить и запушь сделанное и напиши в комментарии, что готово и что осталось: " +
+  "прогон ограничен по числу вызовов, а следующий увидит только запушенное и комментарий.";
+
 /** Default ceiling of call-limit continuations along one chain (RUN-GUARD-CONTINUE). */
 export const RUN_GUARD_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 6;
 /** Upper bound of `heartbeat.runGuardContinuation.maxAttempts`, whatever the agent config says. */
@@ -203,10 +291,19 @@ export const RUN_GUARD_STOP_NOTICE_NEXT_ACTION =
 export function buildRunGuardStopComment(
   run: RunGuardStopRunShape | null | undefined,
   stats?: RunGuardStopStats | null,
+  opts?: { repeatedEmpty?: boolean },
 ): string | null {
   const reason = readRunGuardStopReason(run);
   if (!reason || !run) return null;
   const calls = describeCalls(run, stats);
+  // myrmidon(OPE-12799): the second limit stop in a row without a result.
+  if (opts?.repeatedEmpty) {
+    return (
+      `Второй прогон подряд остановлен защитой без результата: ${REASON_LABELS[reason]}${calls ? ` (${calls})` : ""}. ` +
+      "Ни один из двух прогонов не оставил ни коммита, ни комментария, ни документа. Автоповтор остановлен. " +
+      "Нужна новая вводная: уточнить задачу или разбить её на части по 1–2 часа."
+    );
+  }
   return (
     `Прогон остановлен защитой: ${REASON_LABELS[reason]}${calls ? ` (${calls})` : ""}. ` +
     "Нужна новая вводная: уточнить задачу или разбить её; автоповтора не будет."
@@ -217,8 +314,9 @@ export function buildRunGuardStopComment(
 export function buildRunGuardStopNotice(
   run: RunGuardStopRunShape | null | undefined,
   stats?: RunGuardStopStats | null,
+  opts?: { repeatedEmpty?: boolean },
 ): { body: string; title: string; tone: "danger"; nextAction: string } | null {
-  const body = buildRunGuardStopComment(run, stats);
+  const body = buildRunGuardStopComment(run, stats, opts);
   return body
     ? { body, title: RUN_GUARD_STOP_NOTICE_TITLE, tone: "danger", nextAction: RUN_GUARD_STOP_NOTICE_NEXT_ACTION }
     : null;

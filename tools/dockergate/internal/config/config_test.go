@@ -399,3 +399,40 @@ func TestBotRuntimeRoot(t *testing.T) {
 		}
 	}
 }
+
+func TestParseInspectOnlyImages(t *testing.T) {
+	good := `"images": ["ghcr.io/example/runtime@sha256:` + digest + `"],
+  "inspectOnlyImages": ["clickhouse/clickhouse-server:25.12", "node:24-alpine", "ghcr.io/example/other@sha256:` + digest + `"],`
+	c := mustParse(t, replace(t, goodJSON, `"images": ["ghcr.io/example/runtime@sha256:`+digest+`"],`, good))
+	if len(c.InspectOnlyImages) != 3 {
+		t.Fatalf("inspectOnlyImages: %v", c.InspectOnlyImages)
+	}
+	cp := c.Clone()
+	if len(cp.InspectOnlyImages) != 3 || &cp.InspectOnlyImages[0] == &c.InspectOnlyImages[0] {
+		t.Errorf("the copy shares or loses inspectOnlyImages: %v", cp.InspectOnlyImages)
+	}
+	if len(mustParse(t, goodJSON).InspectOnlyImages) != 0 {
+		t.Errorf("inspectOnlyImages is optional")
+	}
+}
+
+func TestParseRefusesBadInspectOnlyImages(t *testing.T) {
+	img := `"images": ["ghcr.io/example/runtime@sha256:` + digest + `"],`
+	for name, list := range map[string]string{
+		"no tag or digest": `["clickhouse/clickhouse-server"]`,
+		"glob":             `["clickhouse/*:25.12"]`,
+		"space":            `["click house:1"]`,
+		"empty":            `[""]`,
+		"uppercase repo":   `["ClickHouse/server:1"]`,
+		"short digest":     `["a/b@sha256:` + digest[:63] + `"]`,
+		"duplicate":        `["a/b:1", "a/b:1"]`,
+		"repeats images":   `["ghcr.io/example/runtime@sha256:` + digest + `"]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			js := replace(t, goodJSON, img, img+`"inspectOnlyImages": `+list+`,`)
+			if _, _, err := config.Parse([]byte(js)); err == nil {
+				t.Errorf("accepted inspectOnlyImages %s", list)
+			}
+		})
+	}
+}

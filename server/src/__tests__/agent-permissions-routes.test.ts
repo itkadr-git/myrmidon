@@ -583,7 +583,7 @@ describe.sequential("agent permission routes", () => {
 
     expect(res.status).toBe(304);
     expect(res.text).toBe("");
-    expect(mockAgentService.listSummaries).not.toHaveBeenCalled();
+    expect(mockAgentService.listSummaries).toHaveBeenCalledWith(companyId);
     expect(mockAgentService.listSummariesVersionKey).toHaveBeenCalledOnce();
   }, 20_000);
 
@@ -660,6 +660,89 @@ describe.sequential("agent permission routes", () => {
     expect(afterVisibilityChange.headers.etag).not.toBe(etag);
     expect(afterVisibilityChange.body).toEqual([]);
   }, 20_000);
+
+  it("does not reuse an agent-list ETag when actor configuration read permissions change", async () => {
+    let canReadConfigs = true;
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
+      if (input.action === "company_scope:read") return { allowed: true };
+      if (input.action === "agent:read") return { allowed: true };
+      if (input.action === "agent_config:read") return { allowed: canReadConfigs };
+      return { allowed: Boolean(await mockAccessService.canUser()) };
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "reader-agent",
+      companyId,
+      companyIds: [companyId],
+    });
+    mockAgentService.listSummaries.mockResolvedValue([
+      { ...baseAgentListItem, id: "builder-agent", adapterModel: "claude-sonnet-4-5" },
+    ]);
+    mockAgentService.listSummariesVersionKey.mockImplementation(async (_companyId: string, actorShape?: string) => (
+      `"vk-agents-list:${actorShape ?? "default"}"`
+    ));
+
+    const first = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${companyId}/agents`),
+    );
+    expect(first.status).toBe(200);
+    expect(first.body[0]?.adapterModel).toBe("claude-sonnet-4-5");
+    const etag = first.headers.etag;
+    expect(etag).toBeTruthy();
+
+    canReadConfigs = false;
+    const afterRevocation = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .get(`/api/companies/${companyId}/agents`)
+        .set("If-None-Match", etag),
+    );
+
+    expect(afterRevocation.status).toBe(200);
+    expect(afterRevocation.headers.etag).not.toBe(etag);
+    expect(afterRevocation.body[0]?.adapterModel).toBeNull();
+  }, 20_000);
+
+  it("does not reuse an agent-list ETag when actor membership changes without agent rows changing", async () => {
+    mockAccessService.decide.mockResolvedValue({ allowed: true });
+    mockAgentService.listSummaries.mockResolvedValue([
+      { ...baseAgentListItem, id: "builder-agent" },
+    ]);
+    mockAgentService.listSummariesVersionKey.mockImplementation(async (_companyId: string, actorShape?: string) => (
+      `"vk-agents-list:${actorShape ?? "default"}"`
+    ));
+
+    const actor = {
+      type: "user",
+      userId: "user-1",
+      companyId,
+      companyIds: [companyId],
+      onBehalfOfMemberships: [
+        { companyId, status: "active", membershipRole: "admin" },
+      ],
+    };
+    const app = await createApp(actor);
+
+    const first = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${companyId}/agents`),
+    );
+    expect(first.status).toBe(200);
+    const etag = first.headers.etag;
+    expect(etag).toBeTruthy();
+
+    actor.onBehalfOfMemberships = [
+      { companyId, status: "active", membershipRole: "member" },
+    ];
+    const afterMembershipChange = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .get(`/api/companies/${companyId}/agents`)
+        .set("If-None-Match", etag),
+    );
+
+    expect(afterMembershipChange.status).toBe(200);
+    expect(afterMembershipChange.headers.etag).not.toBe(etag);
+  }, 20_000);
+
 
   // Mutation routes echo the stored row back, so they leak the same values the
   // GET paths redact.
@@ -876,6 +959,36 @@ describe.sequential("agent permission routes", () => {
       },
     });
     expect(JSON.stringify(res.body)).not.toContain(plaintextValue);
+  }, 20_000);
+
+  it("merges a model-only card patch with the server-side Hermes config", async () => {
+    const original = {
+      model: "chatgpt-pool/old",
+      env: {
+        PLAIN: { type: "plain", value: "private-value" },
+        REF: { type: "secret_ref", secretId: "44444444-4444-4444-8444-444444444444", version: 2 },
+      },
+      unknown: { nested: [1, { enabled: true }] },
+      password: "private-password",
+    };
+    let stored = { ...baseAgent, adapterType: "hermes_gateway", adapterConfig: original };
+    mockAgentService.getById.mockImplementation(async () => stored);
+    mockAgentService.update.mockImplementation(async (_id, patch) => {
+      stored = { ...stored, ...patch };
+      return stored;
+    });
+    const app = createApp({
+      type: "board", userId: "board-user", source: "local_implicit",
+      isInstanceAdmin: true, companyIds: [companyId],
+    });
+    const before = await requestApp(app, (url) => request(url).get(`/api/agents/${agentId}`));
+    expect(before.status).toBe(200);
+    expect(JSON.stringify(before.body)).not.toContain("private-password");
+    const saved = await requestApp(app, (url) => request(url).patch(`/api/agents/${agentId}`).send({
+      adapterConfig: { model: "chatgpt-pool/new" },
+    }));
+    expect(saved.status).toBe(200);
+    expect(stored.adapterConfig).toEqual({ ...original, model: "chatgpt-pool/new" });
   }, 20_000);
 
   it("preserves stored env values when a redacted detail response is submitted unchanged", async () => {
@@ -2180,6 +2293,7 @@ describe.sequential("agent permission routes", () => {
       inboxArchivedByUserId: "board-user",
       status: "backlog,todo,in_progress,in_review,blocked,done",
       limit: 500,
+      excludePrivate: true,
     });
   });
 

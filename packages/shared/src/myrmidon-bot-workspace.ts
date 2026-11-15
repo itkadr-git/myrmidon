@@ -100,6 +100,8 @@ export const wsDiskStateSchema = z.object({
   quotaPercent: z.number().min(0).max(100).nullable(),
   partitionPercent: z.number().min(0).max(100),
   pressure: wsDiskPressureLevelSchema,
+  /** myrmidon(OPE-13107): set when pressure is a guess (no board measurement, no local statfs). */
+  warning: z.string().optional(),
   updatedAt: z.string().datetime({ offset: false }),
 });
 export type WsDiskState = z.infer<typeof wsDiskStateSchema>;
@@ -275,6 +277,8 @@ export const wsDesiredStateSchema = z.object({
     quotaPercent: z.number().min(0).max(100).nullable(),
     partitionPercent: z.number().min(0).max(100),
     level: wsDiskPressureLevelSchema,
+    /** myrmidon(OPE-13107): false = the board has no partition measurement (0/none is "no data"). */
+    partitionMeasured: z.boolean().optional(),
   }),
   workspaces: z.array(wsDesiredWorkspaceSchema),
   /**
@@ -458,9 +462,15 @@ export type WsDiskProject = z.infer<typeof wsDiskProjectSchema>;
 /**
  * Answer of dockergate `GET /myrmidon/disk` (route id A14). `projects` is empty
  * and `quotaEnabled` false when the bot partition is mounted without prjquota.
+ *
+ * myrmidon(1.6.8 OPE-12697): `root` is the statfs of the host root filesystem
+ * (`/`), read-only, reported by dockergate since 1.6.8. Optional and absent
+ * when the gate predates the field or the root cannot be read — the bot
+ * partition answer and this schema keep working unchanged.
  */
 export const wsDiskApiResponseSchema = z.object({
   partition: wsDiskPartitionSchema,
+  root: wsDiskPartitionSchema.nullable().optional(),
   projects: z.array(wsDiskProjectSchema),
   /** Used bytes not attributable to any project. */
   other: z.object({ usedBytes: z.number().int().nonnegative() }),

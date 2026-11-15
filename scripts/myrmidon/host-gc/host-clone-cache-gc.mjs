@@ -4,13 +4,29 @@
 //
 // Targets:
 //   - vm-core:       /srv/myrmidon-bots/* (bot workspaces)
+//   - vm-core:       <runner root>/<runner>/workspace/.paperclip-runtime/runs/<runId> (SSH runner
+//                    run copies, OPE-12722; only when a runner root is configured)
+//   - vm-core:       <runner root>/<runner>/home/.npm/{_cacache,_npx} (runner agent npm/npx
+//                    caches, OPE-12855; only when a runner root is configured)
+//   - vm-core:       <runner root>/<runner>/tmp/* (the runner's /tmp bind-mounted from the data
+//                    disk, OPE-12966; only when a runner root is configured)
 //   - myr-dev-build: /srv/devbuild/* (build copies), /srv/devcache/* (build caches)
 //
 // Policy:
-//   - Task clones (done/cancelled >24h, clean+pushed): remove
-//   - Task clones (done/cancelled >24h, dirty/unpushed): archive first, then remove
+//   - Task clones (done/cancelled >3h, clean+pushed): remove
+//   - Task clones (done/cancelled >3h, dirty/unpushed): archive first, then remove
 //   - Active checkouts/worktrees: never touch
 //   - Build caches >72h: LRU eviction by mtime
+//   - SSH runner run copies >4h (by the run directory's mtime, set when the run starts): remove;
+//     runs only with --runner-root / HOST_GC_RUNNER_ROOTS
+//   - SSH runner npm/npx caches >4h (by the newest mtime in the cache tree, so a cache an
+//     npm/npx call is still writing stays fresh): remove; runs only with
+//     --runner-root / HOST_GC_RUNNER_ROOTS
+//   - SSH runner /tmp entries (top level of <runner>/tmp) whose newest mtime inside is >24h
+//     old: remove; symlinks and other filesystems are never entered; runs only with
+//     --runner-root / HOST_GC_RUNNER_ROOTS
+//   - SSH runner task folders for done/cancelled issues >3h: clean+pushed remove; unsafe
+//     git state archive first, then remove; active/board-unavailable folders stay
 //   - Atomic guards: lockfile, symlink checks, TOCTOU-safe deletion
 //   - JSONL journal at /var/log/myrmidon-host-gc.jsonl
 //
@@ -20,8 +36,13 @@
 //   --root <path>         Override root directory (for testing)
 //   --journal <path>      Override journal path (for testing)
 //   --lock <path>         Override lockfile path (for testing)
-//   --clone-ttl <hours>   Override clone TTL (default 24)
+//   --clone-ttl <hours>   Override clone TTL (default 3)
 //   --cache-ttl <hours>   Override cache TTL (default 72)
+//   --runner-root <path>  SSH runner root to prune run copies under (repeatable; also
+//                         HOST_GC_RUNNER_ROOTS, colon-separated). No root, no pass.
+//   --run-copy-ttl <hours> Override the run-copy TTL (default 4; finite, at least 3 = longest run timeout)
+//   --npm-cache-ttl <hours> Override the npm cache TTL (default 4; finite, at least 1)
+//   --runner-tmp-ttl <hours> Override the runner /tmp TTL (default 24; finite, at least 3)
 
 import fs from "node:fs";
 import path from "node:path";
@@ -30,10 +51,96 @@ import { spawnSync } from "node:child_process";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
-const CLONE_TTL_HOURS = 24;
+const CLONE_TTL_HOURS = 3;
 const CACHE_TTL_HOURS = 72;
-const SCRATCH_TTL_HOURS = 12;
+// Names of build and dependency dirs left out of safety-net archives (restored by an install or a
+// build, OPE-13104), but only where git confirms the path is ignored: see archiveExcludes().
+// A file git does not ignore (user or uncommitted work) is always archived, even inside `dist/`.
+const ARCHIVE_EXCLUDES = ["node_modules", ".pnpm-store", ".turbo", "dist", ".next", "coverage"];
+const SCRATCH_TTL_HOURS = 6;
+// Disk pressure (partitionThresholdPercent / partitionCriticalPercent of the bots disk): above the
+// first the scratch TTL drops to one hour; above the second the journal gets a disk-critical record
+// for the board operator. This mode does not change the 24 h life of archives (they expire after
+// 24 h in every mode, unpushed work included) and does not touch the checkouts of open tasks.
+const PRESSURE_PERCENT = 85;
+const CRITICAL_PERCENT = 95;
+const PRESSURE_SCRATCH_TTL_HOURS = 1;
+export function diskUsedPercent(dir) {
+  try {
+    const st = fs.statfsSync(dir);
+    return st.blocks > 0 ? Math.round(((st.blocks - st.bfree) / st.blocks) * 1000) / 10 : null;
+  } catch { return null; }
+}
+// myrmidon(1.6.8 OPE-12722 / OPE-12759): an SSH runner (the omp container) keeps one copy of
+// the workspace per run under `<runner>/workspace/.paperclip-runtime/runs/<runId>`. A run that
+// fails or is cancelled never reaches the restore that removes its copy, and the adapter prunes
+// old copies only when the next run on that runner starts. On 11.11 an idle fleet left 47 GB
+// of such copies; the bots disk filled up and nine bots stayed down for 15 hours. This pass
+// removes run copies older than the longest run timeout (3 h) plus a margin.
+// The 4 h matches REMOTE_RUN_DIR_RETENTION_MINUTES (240) in
+// packages/adapter-utils/src/remote-managed-runtime.ts, the adapter's own prune on the next run;
+// keep the two in step. The TTL cannot be set below the longest run timeout (3 h): a copy younger
+// than that may still belong to a live run.
+const RUN_COPY_TTL_HOURS = 4;
+const RUN_COPY_MIN_TTL_HOURS = 3;
 const DEFAULT_ENV_PATH = "/etc/myrmidon-host-gc.env";
+
+// myrmidon(1.6.8 OPE-12855): the npm/npx caches of a runner agent
+// (`<runner>/home/.npm/{_cacache,_npx}`) are pure download/index caches: npm refills them on
+// demand, so a removed entry costs a re-download and nothing else. The TTL is judged by the
+// newest mtime in the cache tree — a cache an npm/npx call is still writing stays `fresh` —
+// with a floor of 1 h so a scan cannot race a long npm install. Same runner-root gate as the
+// run-copy pass; no root, no pass.
+const NPM_CACHE_TTL_HOURS = 4;
+const NPM_CACHE_MIN_TTL_HOURS = 1;
+
+// myrmidon(OPE-12966): the omp SSH runner's /tmp lives on the data volume
+// (`<runner>/tmp`, docker/agent-runtime/omp-ssh/compose.yml) instead of the container's write
+// layer on the root disk, and nothing removed what tests and task tooling leave there (15.8 GB
+// in two days on 13.11). The pass removes top-level entries of `<runner>/tmp` not changed
+// anywhere inside for the TTL; the same gate as the run-copy pass (a runner root is configured).
+const RUNNER_TMP_TTL_HOURS = 24;
+const RUNNER_TMP_MIN_TTL_HOURS = 3;
+
+// myrmidon(1.6.8-BOT-CONTAINER-ORPHAN / OPE-12654): the data directory of a decommissioned
+// bot (the gate A22 removed its container, the board logs `bot_data_left_for_host_gc`) is
+// removed by this host pass, not by the gate: the gate is uid 65532 and holds the volume root
+// read-only, so its delete could never succeed (the ADM hand-off of 11.11). A directory goes
+// only when every guard says go:
+//   - the name is a lowercase UUID bot key (`botKeyPattern`),
+//   - the board lists no hermes_gateway card with this agent id (the adapter moved away, or
+//     the agent is gone),
+//   - the agent has no heartbeat run in "running",
+//   - the gate has no `myrmidon-bot-<key>` container (any state, including leftovers `.next`
+//     and `.helper`),
+//   - the directory is older than the retention delay (24 h, the clone TTL of the workspaces),
+//   - the git worktrees inside hold no unpushed work: no uncommitted edits, no stash, and no
+//     commits ahead of their upstream; a `.next` or `.helper` directory is not a worktree and
+//     is not touched.
+// A directory that fails any guard is kept and journalled with the reason — never archived,
+// never partially removed. Everything is best-effort: an unreachable board or gate keeps the
+// directories (fail-closed).
+const BOT_DATA_TTL_HOURS = 24;
+const BOT_KEY_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const DOCKER_TIMEOUT_MS = 30_000;
+const OMP_AGENT_KEY_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const GIT_TIMEOUT_MS = 30_000;
+const HERMES_GATEWAY_ADAPTER_TYPE = "hermes_gateway";
+
+// myrmidon(1.6.8 OPE-12855): a runner keeps one task folder per board issue it ever checked
+// out: the clone folder `<runner>/workspace/OPE-<n>/` (the repo inside is a full clone) and
+// worktree folders (`<runner>/workspace/OPE-<n>-wt/`, `<runner>/home/wt-ope<n>`), whose
+// `.git` file points into a run directory that is deleted when the run ends. A done or
+// cancelled issue's folder is never cleaned up: on 11.11 four runners held 41.5 GB of them
+// and the bots volume stood at 91%. The folder of a done/cancelled issue is removed like a
+// task clone (the clone TTL, git-clean guards), with one difference: a folder whose git
+// state cannot be proven from the host (a worktree with a dead gitdir fails every git
+// command) is archived to `<runner root>/.gc-archive/` first and only then removed — the
+// archive is the safety net for work the host cannot inspect. Folders of issues in any
+// other status are kept, and the pass runs only when a runner root is configured (the
+// same gate as the run-copy pass above).
+const RUNNER_TASK_FOLDER_NAME = /^(OPE-\d+(?:-wt)?|wt-ope\d+)$/i;
+const RUNNER_TASK_FOLDER_KEY = /^(?:OPE-(\d+)(?:-wt)?|wt-ope(\d+))$/i;
 
 // --- Env Config -------------------------------------------------------------
 
@@ -65,6 +172,42 @@ export function loadEnvConfig(envPath = DEFAULT_ENV_PATH) {
 
 // --- Args -------------------------------------------------------------------
 
+/** A usage error: the CLI prints it as JSON and exits non-zero (never a stack trace). */
+export class UsageError extends Error {}
+
+/** `null` when `hours` is a usable run-copy TTL, otherwise the reason it is refused. */
+export function runCopyTtlError(hours) {
+  if (typeof hours !== "number" || !Number.isFinite(hours)) {
+    return `--run-copy-ttl must be a finite number of hours (got ${String(hours)})`;
+  }
+  if (hours < RUN_COPY_MIN_TTL_HOURS) {
+    return `--run-copy-ttl must be at least ${RUN_COPY_MIN_TTL_HOURS} hours, the longest run timeout (got ${hours})`;
+  }
+  return null;
+}
+
+/** `null` when `hours` is a usable npm cache TTL, otherwise the reason it is refused. */
+export function npmCacheTtlError(hours) {
+  if (typeof hours !== "number" || !Number.isFinite(hours)) {
+    return `--npm-cache-ttl must be a finite number of hours (got ${String(hours)})`;
+  }
+  if (hours < NPM_CACHE_MIN_TTL_HOURS) {
+    return `--npm-cache-ttl must be at least ${NPM_CACHE_MIN_TTL_HOURS} hour(s), the longest npm install can run (got ${hours})`;
+  }
+  return null;
+}
+
+/** `null` when `hours` is a usable runner /tmp TTL, otherwise the reason it is refused. */
+export function runnerTmpTtlError(hours) {
+  if (typeof hours !== "number" || !Number.isFinite(hours)) {
+    return `--runner-tmp-ttl must be a finite number of hours (got ${String(hours)})`;
+  }
+  if (hours < RUNNER_TMP_MIN_TTL_HOURS) {
+    return `--runner-tmp-ttl must be at least ${RUNNER_TMP_MIN_TTL_HOURS} hours, the longest run timeout (got ${hours})`;
+  }
+  return null;
+}
+
 export function parseArgs(argv) {
   let envPath = DEFAULT_ENV_PATH;
   for (let i = 2; i < argv.length; i++) {
@@ -92,7 +235,18 @@ export function parseArgs(argv) {
     cloneTtlHours: CLONE_TTL_HOURS,
     cacheTtlHours: CACHE_TTL_HOURS,
     scratchTtlHours: defaultScratchTtl,
+    pressurePercent: Number(process.env.HOST_GC_PRESSURE_PERCENT) || PRESSURE_PERCENT,
+    criticalPercent: Number(process.env.HOST_GC_CRITICAL_PERCENT) || CRITICAL_PERCENT,
     procDir: process.env.PROC_DIR || "/proc",
+    runnerRoots: (process.env.HOST_GC_RUNNER_ROOTS || "").split(":").map((r) => r.trim()).filter(Boolean),
+    runnerContainerPrefix: process.env.MYRMIDON_HOST_GC_OMP_RUNNER_CONTAINER_PREFIX || "myrmidon-omp-runner-",
+    docker: process.env.MYRMIDON_HOST_GC_DOCKER || "docker",
+    runCopyTtlHours: RUN_COPY_TTL_HOURS,
+    runnerTmpTtlHours: RUNNER_TMP_TTL_HOURS,
+    npmCacheTtlHours: (() => {
+      const envTtl = process.env.MYRMIDON_HOST_GC_NPM_CACHE_TTL_HOURS;
+      return envTtl !== undefined && !isNaN(Number(envTtl)) ? Number(envTtl) : NPM_CACHE_TTL_HOURS;
+    })(),
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -105,13 +259,25 @@ export function parseArgs(argv) {
     else if (a === "--clone-ttl") args.cloneTtlHours = Number(argv[++i]);
     else if (a === "--cache-ttl") args.cacheTtlHours = Number(argv[++i]);
     else if (a === "--scratch-ttl") args.scratchTtlHours = Number(argv[++i]);
+    else if (a === "--pressure-percent") args.pressurePercent = Number(argv[++i]);
+    else if (a === "--critical-percent") args.criticalPercent = Number(argv[++i]);
     else if (a === "--proc-dir") args.procDir = argv[++i];
+    else if (a === "--runner-root") args.runnerRoots.push(argv[++i]);
+    else if (a === "--run-copy-ttl") args.runCopyTtlHours = Number(argv[++i]);
+    else if (a === "--npm-cache-ttl") args.npmCacheTtlHours = Number(argv[++i]);
+    else if (a === "--runner-tmp-ttl") args.runnerTmpTtlHours = Number(argv[++i]);
     else if (a === "--env") i++;
     else if (a === "--help") {
-      console.log("Usage: host-clone-cache-gc.mjs [--apply|--dry-run] [--root path] [--scratch-root path] [--journal path] [--lock path] [--clone-ttl h] [--cache-ttl h] [--scratch-ttl h] [--proc-dir path] [--env path]");
+      console.log("Usage: host-clone-cache-gc.mjs [--apply|--dry-run] [--root path] [--scratch-root path] [--journal path] [--lock path] [--clone-ttl h] [--cache-ttl h] [--scratch-ttl h] [--proc-dir path] [--runner-root path] [--run-copy-ttl h (>= 3)] [--runner-tmp-ttl h (>= 3)] [--env path]");
       process.exit(0);
     }
   }
+  const ttlError = runCopyTtlError(args.runCopyTtlHours);
+  if (ttlError) throw new UsageError(ttlError);
+  const npmTtlError = npmCacheTtlError(args.npmCacheTtlHours);
+  if (npmTtlError) throw new UsageError(npmTtlError);
+  const tmpTtlError = runnerTmpTtlError(args.runnerTmpTtlHours);
+  if (tmpTtlError) throw new UsageError(tmpTtlError);
   return args;
 }
 
@@ -161,14 +327,122 @@ function assertNotSymlink(p, label) {
 
 // --- Git helpers ------------------------------------------------------------
 
+// spawnSync's default maxBuffer is 1 MiB: a long `git status` or `ls-files` would end in ENOBUFS.
+const GIT_MAX_BUFFER = 256 * 1024 * 1024;
+
 function git(args, cwd) {
-  return spawnSync("git", args, { cwd, encoding: "utf8", timeout: 30000 });
+  return spawnSync("git", args, { cwd, encoding: "utf8", timeout: 30000, maxBuffer: GIT_MAX_BUFFER });
+}
+
+// --- Server-verified "pushed" (OPE-13218) ------------------------------------
+// Local refs/remotes/* only say what the last fetch saw: a branch deleted or rewritten on the
+// server since then still looks pushed. A commit counts as pushed only when a tip the server
+// itself advertises (`git ls-remote`) is present locally and reaches it.
+// One `ls-remote` per remote URL per pass: ~100 copies of one origin ask the server once. The
+// entry is what the server advertised ({ ok, shas } or { ok: false, reason }), kept in memory
+// for the process only (one GC pass), so a later pass always asks again.
+const REMOTE_ANSWERS = new Map();
+
+export function resetRemoteCache() {
+  REMOTE_ANSWERS.clear();
+}
+
+function remoteTimeoutSeconds() {
+  return Math.min(archiveTimeoutSeconds(), 60);
+}
+
+// A remote given as a path or `file://` is a directory on this host, not a server: it can vanish
+// with the copy or be a stale mirror, so it never proves anything is pushed.
+// Test hook HOST_GC_TEST_ALLOW_LOCAL_REMOTES=1 treats such a remote as a server, but only inside
+// a node:test process (NODE_TEST_CONTEXT) and never under --apply: a stray variable in the
+// service environment must not make the real pass trust a local directory.
+let applyMode = false;
+function isLocalRemote(url) {
+  if (process.env.HOST_GC_TEST_ALLOW_LOCAL_REMOTES === "1" && process.env.NODE_TEST_CONTEXT && !applyMode) return false;
+  return /^file:/i.test(url) || /^(\/|\.{1,2}\/|~)/.test(url) || (!url.includes("://") && !url.includes(":"));
+}
+
+function askRemote(repo, name, url) {
+  const cached = REMOTE_ANSWERS.get(url);
+  if (cached) return cached;
+  const timeoutS = remoteTimeoutSeconds();
+  const r = spawnSync("timeout", ["--kill-after=5s", `${timeoutS}s`, "git", "ls-remote", "--heads", "--tags", name], {
+    cwd: repo,
+    encoding: "utf8",
+    timeout: (timeoutS + 20) * 1000,
+    maxBuffer: GIT_MAX_BUFFER,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || "ssh -o BatchMode=yes" },
+  });
+  let answer;
+  if (r.status !== 0) {
+    const why = r.status === 124 || r.status === 137 || r.error?.code === "ETIMEDOUT" ? `timed out after ${timeoutS} s` : `exit ${r.status}: ${String(r.stderr ?? "").trim().slice(0, 200)}`;
+    answer = { ok: false, reason: `ls-remote ${name}: ${why}` };
+  } else {
+    const shas = new Set();
+    for (const line of r.stdout.split("\n")) {
+      const sha = line.split("\t")[0].trim();
+      if (/^[0-9a-f]{40,64}$/.test(sha)) shas.add(sha);
+    }
+    answer = { ok: true, shas };
+  }
+  REMOTE_ANSWERS.set(url, answer);
+  return answer;
+}
+
+// { verified, tips, reason }: `tips` are server tips (commits and tags) that exist locally.
+// `verified` is false when there is no remote, a remote is a local path, or any remote did not
+// answer: nothing is then known to be on the server.
+function serverTips(repo) {
+  const listed = git(["remote"], repo);
+  if (listed.status !== 0) return { verified: false, tips: [], reason: "remote listing failed" };
+  const names = listed.stdout.split("\n").map((n) => n.trim()).filter(Boolean);
+  if (!names.length) return { verified: false, tips: [], reason: "no remote" };
+  const advertised = new Set();
+  for (const name of names) {
+    const url = git(["remote", "get-url", name], repo).stdout.trim() || name;
+    if (isLocalRemote(url)) return { verified: false, tips: [], reason: `remote ${name} is a local path, not a server` };
+    const answer = askRemote(repo, name, url);
+    if (!answer.ok) return { verified: false, tips: [], reason: answer.reason };
+    for (const sha of answer.shas) advertised.add(sha);
+  }
+  if (!advertised.size) return { verified: true, tips: [] };
+  const checked = spawnSync("git", ["cat-file", "--batch-check=%(objecttype) %(objectname)"], {
+    cwd: repo, input: `${[...advertised].join("\n")}\n`, encoding: "utf8", timeout: 30000, maxBuffer: GIT_MAX_BUFFER,
+  });
+  if (checked.status !== 0) return { verified: false, tips: [], reason: "cat-file failed" };
+  const tips = [];
+  for (const line of checked.stdout.split("\n")) {
+    const m = /^(commit|tag) ([0-9a-f]{40,64})$/.exec(line.trim());
+    if (m) tips.push(m[2]);
+  }
+  if (tips.length > 10000) return { verified: false, tips: [], reason: "too many server refs" };
+  return { verified: true, tips };
+}
+
+// { verified, pushed, tips, reason }. `pushed` needs a verified server answer and no local
+// branch, tag or HEAD commit outside it.
+function pushState(repo) {
+  const server = serverTips(repo);
+  if (!server.verified) return { verified: false, pushed: false, tips: [], reason: server.reason };
+  const args = ["rev-list", "HEAD", "--branches", "--tags"];
+  if (server.tips.length) args.push("--not", ...server.tips);
+  const r = git(args, repo);
+  return { verified: true, pushed: r.status === 0 && r.stdout.trim() === "", tips: server.tips };
 }
 
 function isGitWorktree(dir) {
   try {
     const r = git(["rev-parse", "--is-inside-work-tree"], dir);
     return r.status === 0 && r.stdout.trim() === "true";
+  } catch { return false; }
+}
+
+// A `.git` that is empty or broken is skipped by git, which then finds the parent repository:
+// such a directory is no worktree of its own.
+function isOwnWorktree(dir) {
+  try {
+    const r = git(["rev-parse", "--show-toplevel"], dir);
+    return r.status === 0 && fs.realpathSync(r.stdout.trim()) === fs.realpathSync(dir);
   } catch { return false; }
 }
 
@@ -181,8 +455,7 @@ function isClean(dir) {
 
 function isPushed(dir) {
   try {
-    const r = git(["log", "@{u}..HEAD", "--oneline"], dir);
-    return r.status === 0 && r.stdout.trim() === "";
+    return pushState(dir).pushed;
   } catch { return false; }
 }
 
@@ -193,12 +466,58 @@ function hasStash(dir) {
   } catch { return false; }
 }
 
+// `.git` is a directory in a plain clone but a file (`gitdir: <path>`) in a linked worktree or a
+// submodule: the objects, and their alternates file, then live in the real gitdir (and the
+// common dir behind it), so look there.
 function hasAlternates(dir) {
   try {
-    const gitDir = path.join(dir, ".git");
-    const altFile = path.join(gitDir, "objects", "info", "alternates");
-    return fs.existsSync(altFile);
+    const dotGit = path.join(dir, ".git");
+    const st = fs.lstatSync(dotGit);
+    const gitDirs = [];
+    if (st.isDirectory()) {
+      gitDirs.push(dotGit);
+    } else if (st.isFile()) {
+      const m = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(dotGit, "utf8"));
+      if (m) gitDirs.push(path.resolve(dir, m[1].trim()));
+    }
+    for (const gd of [...gitDirs]) {
+      try {
+        const common = fs.readFileSync(path.join(gd, "commondir"), "utf8").trim();
+        if (common) gitDirs.push(path.resolve(gd, common));
+      } catch { /* no commondir: the gitdir is the common dir */ }
+    }
+    return gitDirs.some((gd) => fs.existsSync(path.join(gd, "objects", "info", "alternates")));
   } catch { return false; }
+}
+
+// Every directory under `top` (itself included) holding a `.git` entry, directory or file, at
+// any depth and inside any directory, node_modules, dist, .next, .helper or .gc-archive among
+// them. Symlinks are not followed and `.git` is not entered. `complete` is false when a
+// directory could not be read or the tree is implausibly large: nothing can be proven then.
+const GIT_TREE_ENTRY_LIMIT = 5_000_000;
+function scanGitTree(top) {
+  const roots = [];
+  let complete = true;
+  let seen = 0;
+  const stack = [top];
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      complete = false;
+      continue;
+    }
+    seen += entries.length;
+    if (seen > GIT_TREE_ENTRY_LIMIT) return { roots: roots.sort(), complete: false };
+    if (entries.some((e) => e.name === ".git")) roots.push(dir);
+    for (const e of entries) {
+      if (e.name === ".git" || e.isSymbolicLink() || !e.isDirectory()) continue;
+      stack.push(path.join(dir, e.name));
+    }
+  }
+  return { roots: roots.sort(), complete };
 }
 
 // --- Scanning ---------------------------------------------------------------
@@ -224,7 +543,8 @@ function scanTaskClones(root, now, ttlHours) {
     if (!isGit) continue; // not a git clone, skip
 
     const clean = isClean(fullPath);
-    const pushed = isPushed(fullPath);
+    // `pushed` asks the server (ls-remote): left to assessClone, which main runs only for clones the
+    // board reports closed. Open tasks are never touched and need no network round trip.
     const stash = hasStash(fullPath);
     const alternates = hasAlternates(fullPath);
 
@@ -235,14 +555,22 @@ function scanTaskClones(root, now, ttlHours) {
       mtimeMs: st.mtimeMs,
       isGit: true,
       clean,
-      pushed,
+      pushed: null,
       stash,
       alternates,
-      safeToRemove: clean && pushed && !stash && !alternates,
-      reason: clean && pushed && !stash && !alternates ? "clean-pushed" : "unsafe-archive",
+      safeToRemove: false,
+      reason: "unassessed",
     });
   }
   return results;
+}
+
+// Fills in `pushed` (checked against the server) and the removal verdict of a scanned clone.
+function assessClone(c) {
+  c.pushed = c.clean && !c.stash && !c.alternates ? isPushed(c.path) : false;
+  c.safeToRemove = c.clean && c.pushed && !c.stash && !c.alternates;
+  c.reason = c.safeToRemove ? "clean-pushed" : "unsafe-archive";
+  return c;
 }
 
 function scanBuildCaches(root, now, ttlHours) {
@@ -272,6 +600,350 @@ function scanBuildCaches(root, now, ttlHours) {
 }
 
 // --- Scratch GC (BOT-DISK-SCRATCH) -------------------------------------------
+
+// --- SSH runner run copies (OPE-12722) -----------------------------------------
+
+function lstatSafe(p) {
+  try {
+    return { st: fs.lstatSync(p), err: null };
+  } catch (err) {
+    return { st: null, err };
+  }
+}
+
+// The path is simply not there (a runner without runs yet, a copy the adapter removed between
+// two calls): expected, not worth a journal line. Anything else (EACCES, EIO, ...) is.
+function isAbsent(err) {
+  return err?.code === "ENOENT" || err?.code === "ENOTDIR";
+}
+
+/**
+ * Run copies under `<runnersRoot>/<runner>/workspace/.paperclip-runtime/runs/<runId>`.
+ * Every component of the path must be a real directory (a symlink anywhere skips the
+ * runner); a copy older than `ttlHours` (by the run directory's own mtime, set when the run
+ * starts) is `ttl`, a newer one is `fresh`. Each item carries `runnersRoot`, the root the
+ * removal is guarded against.
+ *
+ * The scan never throws on the filesystem: a configured root that does not exist is reported
+ * as `run-copy-root-missing`, any other failure (per root or per runner) as
+ * `run-copy-scan-failed` with the error message, through `onEvent`, and the scan continues
+ * with the next runner — one unreadable directory must not abort the whole `--apply` pass.
+ */
+export function scanSshRunCopies(runnersRoot, now, ttlHours, { onEvent = () => {} } = {}) {
+  const results = [];
+  const ttlMs = ttlHours * HOUR_MS;
+  const fail = (extra, err) => {
+    onEvent({ event: "run-copy-scan-failed", root: runnersRoot, ...extra, error: err?.message || String(err) });
+  };
+
+  const rootStat = lstatSafe(runnersRoot);
+  if (rootStat.err) {
+    if (isAbsent(rootStat.err)) onEvent({ event: "run-copy-root-missing", root: runnersRoot });
+    else fail({}, rootStat.err);
+    return results;
+  }
+  if (!rootStat.st.isDirectory()) {
+    fail({}, new Error("runner root is not a directory (a symlink is not followed)"));
+    return results;
+  }
+  let runners;
+  try {
+    runners = fs.readdirSync(runnersRoot, { withFileTypes: true });
+  } catch (err) {
+    fail({}, err);
+    return results;
+  }
+  for (const runner of runners) {
+    if (!runner.isDirectory()) continue;
+    try {
+      let dir = path.join(runnersRoot, runner.name);
+      let ok = true;
+      for (const part of ["workspace", ".paperclip-runtime", "runs"]) {
+        dir = path.join(dir, part);
+        const { st, err } = lstatSafe(dir);
+        if (err && !isAbsent(err)) throw err;
+        if (!st || !st.isDirectory()) {
+          ok = false;
+          break;
+        }
+      }
+      if (!ok) continue;
+      for (const run of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (!run.isDirectory()) continue;
+        const runPath = path.join(dir, run.name);
+        const { st, err } = lstatSafe(runPath);
+        if (err && !isAbsent(err)) {
+          fail({ runner: runner.name, path: runPath }, err);
+          continue;
+        }
+        if (!st || !st.isDirectory()) continue;
+        const ageMs = now - st.mtimeMs;
+        results.push({
+          runner: runner.name,
+          name: run.name,
+          path: runPath,
+          runsDir: dir,
+          runnersRoot,
+          ageMs,
+          mtimeMs: st.mtimeMs,
+          reason: ageMs >= ttlMs ? "ttl" : "fresh",
+        });
+      }
+    } catch (err) {
+      if (!isAbsent(err)) fail({ runner: runner.name }, err);
+    }
+  }
+  return results;
+}
+
+// --- Runner task folders (OPE-12855) -----------------------------------------
+
+export function issueIdentifierFromRunnerFolderName(name) {
+  const m = RUNNER_TASK_FOLDER_KEY.exec(name);
+  return m ? `OPE-${m[1] ?? m[2]}` : null;
+}
+
+// Git directories inside one task folder worth guarding: the folder itself when it carries
+// a `.git` entry (a worktree checked out as the task folder), `<folder>/repo` (the omp
+// clone layout), then any nested repository up to depth 3 — including linked worktrees,
+// whose `.git` is a file pointing at the main repo's worktrees dir. `node_modules`, `.next`
+// and `.helper` are never walked. Returns `null` when the folder is unreadable: the caller
+// cannot prove it clean.
+function runnerFolderGitDirs(folder) {
+  try {
+    fs.readdirSync(folder);
+  } catch {
+    return null;
+  }
+  if (fs.existsSync(path.join(folder, ".git"))) return [folder];
+  const dirs = [];
+  const seen = new Set();
+  const visit = (dir, depth) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
+      if (entry.name.startsWith(".") || BOT_SCAN_SKIP_NAMES.has(entry.name)) continue;
+      const child = path.join(dir, entry.name);
+      if (fs.existsSync(path.join(child, ".git")) && !seen.has(child)) {
+        seen.add(child);
+        dirs.push(child);
+      }
+      if (depth > 0) visit(child, depth - 1);
+    }
+  };
+  visit(folder, 3);
+  return dirs;
+}
+
+// Verdict for one folder: `remove` (every git repo inside is clean and fully pushed), or
+// `archive-remove` (unpushed work, or a git state the host cannot read — the archive keeps
+// what the host could not inspect). The board status is checked first.
+function judgeRunnerTaskFolder(folder, boardStatus) {
+  if (boardStatus !== undefined) {
+    if (!boardStatus.ok) {
+      return { action: "keep", reason: `board-unavailable${boardStatus.statusCode ? `-${boardStatus.statusCode}` : ""}` };
+    }
+    if (!["done", "cancelled"].includes(boardStatus.status)) {
+      return { action: "keep", reason: `issue-status:${boardStatus.status}` };
+    }
+  }
+  const gitDirs = runnerFolderGitDirs(folder);
+  if (gitDirs === null) return { action: "archive-remove", reason: "unreadable-folder" };
+  // Independent of the depth-limited list above: a `.git` anywhere (skipped directories too) that
+  // the list lacks sends the folder to the archive pass, which saves or keeps it.
+  const tree = scanGitTree(folder);
+  const listed = new Set(gitDirs);
+  if (!tree.complete || tree.roots.some((r) => !listed.has(r))) return { action: "archive-remove", reason: "unlisted-git-repository" };
+  if (gitDirs.length === 0) return { action: "remove", reason: "no-git-repos" };
+  for (const dir of gitDirs) {
+    const readable = isGitWorktree(dir);
+    if (!readable || !isClean(dir) || !isPushed(dir) || hasStash(dir) || hasAlternates(dir)) {
+      return { action: "archive-remove", reason: "unsafe-archive" };
+    }
+  }
+  return { action: "remove", reason: "clean-pushed" };
+}
+
+/**
+ * Task folders of runner issues (OPE-12855) under `<runnersRoot>/<runner>/{workspace,home}/`:
+ * names `OPE-<n>`, `OPE-<n>-wt` (workspace) and `wt-ope<n>` (home). A folder younger than
+ * `ttlHours` (the clone TTL, by the folder's own mtime) is `retention`; an older one asks the
+ * board for the issue status (fail-closed: an unreachable board keeps the folder) and the git
+ * guards decide `remove` vs `archive-remove`. Every component of the path must be a real
+ * directory; a symlink anywhere skips the entry. The scan never throws: per-root and
+ * per-runner failures go through `onEvent` (`runner-folder-root-missing`,
+ * `runner-folder-scan-failed`) and the scan continues — one unreadable runner must not abort
+ * the whole `--apply` pass. `fetchStatus` is injectable for tests; the default is the board
+ * call the clone pass uses.
+ */
+export async function scanRunnerTaskFolders(runnersRoot, now, ttlHours, { onEvent = () => {}, fetchStatus = fetchIssueStatus } = {}) {
+  const results = [];
+  const ttlMs = ttlHours * HOUR_MS;
+  const fail = (extra, err) => {
+    onEvent({ event: "runner-folder-scan-failed", root: runnersRoot, ...extra, error: err?.message || String(err) });
+  };
+  const rootStat = lstatSafe(runnersRoot);
+  if (rootStat.err) {
+    if (isAbsent(rootStat.err)) onEvent({ event: "runner-folder-root-missing", root: runnersRoot });
+    else fail({}, rootStat.err);
+    return results;
+  }
+  if (!rootStat.st.isDirectory()) {
+    fail({}, new Error("runner root is not a directory (a symlink is not followed)"));
+    return results;
+  }
+  let runners;
+  try {
+    runners = fs.readdirSync(runnersRoot, { withFileTypes: true });
+  } catch (err) {
+    fail({}, err);
+    return results;
+  }
+  for (const runner of runners) {
+    if (!runner.isDirectory()) continue;
+    for (const base of ["workspace", "home"]) {
+      const baseDir = path.join(runnersRoot, runner.name, base);
+      const { st: baseSt, err: baseErr } = lstatSafe(baseDir);
+      if (baseErr && !isAbsent(baseErr)) {
+        fail({ runner: runner.name }, baseErr);
+        continue;
+      }
+      if (!baseSt || !baseSt.isDirectory()) continue;
+      let entries;
+      try {
+        entries = fs.readdirSync(baseDir, { withFileTypes: true });
+      } catch (err) {
+        fail({ runner: runner.name }, err);
+        continue;
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory() || !RUNNER_TASK_FOLDER_NAME.test(entry.name)) continue;
+        const folder = path.join(baseDir, entry.name);
+        const { st, err } = lstatSafe(folder);
+        if (err && !isAbsent(err)) {
+          fail({ runner: runner.name, path: folder }, err);
+          continue;
+        }
+        if (!st || !st.isDirectory()) continue;
+        const item = {
+          runner: runner.name,
+          name: entry.name,
+          identifier: issueIdentifierFromRunnerFolderName(entry.name),
+          path: folder,
+          runnersRoot,
+          ageMs: now - st.mtimeMs,
+          mtimeMs: st.mtimeMs,
+          action: "keep",
+          reason: "retention",
+        };
+        if (now - st.mtimeMs >= ttlMs && item.identifier) {
+          try {
+            const verdict = judgeRunnerTaskFolder(folder, await fetchStatus(item.identifier));
+            item.action = verdict.action;
+            item.reason = verdict.reason;
+          } catch (err) {
+            fail({ runner: runner.name, path: folder }, err);
+            item.reason = "scan-failed";
+          }
+        }
+        results.push(item);
+      }
+    }
+  }
+  return results;
+}
+
+// --- Runner unrecognized workspace folders (OPE-13018) --------------------------
+
+// Names the runner workspace legitimately holds besides the task folders: the
+// runtime state directory the board spares from every cleanup. Everything else
+// the OMP agent created with a name that is not a task-folder pattern is
+// "unrecognized": the GC reports it, never removes it.
+const RUNNER_WORKSPACE_KNOWN_NAMES = new Set([".paperclip-runtime"]);
+
+/**
+ * Directories in `<runnersRoot>/<runner>/workspace` whose names do not match
+ * `RUNNER_TASK_FOLDER_NAME` and are not known runtime directories. A folder
+ * younger than `ttlHours` (by its own mtime) is fresh — the agent may still be
+ * working in it; an older one is reported so a typo'd task folder (e.g.
+ * `OPR-12962` for `OPE-12962`, myrmidon OPE-13018) does not sit on the disk
+ * forever without a trace. Report-only: nothing here is ever deleted, the
+ * entry is journaled as `runner-unrecognized-workspace-folder` and returned
+ * with `action: "report"`. Every path component must be a real directory; a
+ * symlink anywhere skips the entry. Failures go to `onEvent`
+ * (`runner-unrecognized-scan-failed`) and the scan continues.
+ */
+export function scanRunnerUnrecognizedWorkspaceFolders(runnersRoot, now, ttlHours, { onEvent = () => {} } = {}) {
+  const results = [];
+  const ttlMs = ttlHours * HOUR_MS;
+  const fail = (extra, err) => {
+    onEvent({ event: "runner-unrecognized-scan-failed", root: runnersRoot, ...extra, error: err?.message || String(err) });
+  };
+  const rootStat = lstatSafe(runnersRoot);
+  if (rootStat.err) {
+    if (isAbsent(rootStat.err)) onEvent({ event: "runner-folder-root-missing", root: runnersRoot });
+    else fail({}, rootStat.err);
+    return results;
+  }
+  if (!rootStat.st.isDirectory()) {
+    fail({}, new Error("runner root is not a directory (a symlink is not followed)"));
+    return results;
+  }
+  let runners;
+  try {
+    runners = fs.readdirSync(runnersRoot, { withFileTypes: true });
+  } catch (err) {
+    fail({}, err);
+    return results;
+  }
+  for (const runner of runners) {
+    if (!runner.isDirectory()) continue;
+    const workspaceDir = path.join(runnersRoot, runner.name, "workspace");
+    const { st: baseSt, err: baseErr } = lstatSafe(workspaceDir);
+    if (baseErr && !isAbsent(baseErr)) {
+      fail({ runner: runner.name }, baseErr);
+      continue;
+    }
+    if (!baseSt || !baseSt.isDirectory()) continue;
+    let entries;
+    try {
+      entries = fs.readdirSync(workspaceDir, { withFileTypes: true });
+    } catch (err) {
+      fail({ runner: runner.name }, err);
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (RUNNER_TASK_FOLDER_NAME.test(entry.name)) continue;
+      if (entry.name.startsWith(".")) continue;
+      if (RUNNER_WORKSPACE_KNOWN_NAMES.has(entry.name)) continue;
+      const folder = path.join(workspaceDir, entry.name);
+      const { st, err } = lstatSafe(folder);
+      if (err && !isAbsent(err)) {
+        fail({ runner: runner.name, path: folder }, err);
+        continue;
+      }
+      if (!st || !st.isDirectory()) continue;
+      const ageMs = now - st.mtimeMs;
+      results.push({
+        runner: runner.name,
+        name: entry.name,
+        path: folder,
+        runnersRoot,
+        ageMs,
+        mtimeMs: st.mtimeMs,
+        action: "report",
+        reason: ageMs >= ttlMs ? "unrecognized-ttl" : "unrecognized-fresh",
+      });
+    }
+  }
+  return results;
+}
 
 export function collectOpenProcInfo(procDir = "/proc") {
   const openPaths = new Set();
@@ -365,6 +1037,24 @@ export function isTreeOpen(targetPath, inodes, openPaths, openInodes) {
   return false;
 }
 
+// Scratch can hold a task checkout, not just disposable temporary files. Never
+// reclaim a tree containing git metadata or one that cannot be inspected safely.
+function scratchTreeIsDisposable(target, device) {
+  const stack = [target];
+  while (stack.length) {
+    const current = stack.pop();
+    let st;
+    try { st = fs.lstatSync(current); } catch { return false; }
+    if (st.dev !== device || st.isSymbolicLink()) return false;
+    if (!st.isDirectory()) continue;
+    let entries;
+    try { entries = fs.readdirSync(current); } catch { return false; }
+    if (entries.includes(".git")) return false;
+    for (const entry of entries) stack.push(path.join(current, entry));
+  }
+  return true;
+}
+
 export function scanScratchDirectory(scratchDir, now, ttlHours, openInfo = { openPaths: new Set(), openInodes: new Set() }) {
   const ttlMs = ttlHours * HOUR_MS;
   const results = [];
@@ -392,6 +1082,12 @@ export function scanScratchDirectory(scratchDir, now, ttlHours, openInfo = { ope
     }
 
     if (ageMs >= ttlMs) {
+      let device;
+      try { device = fs.lstatSync(scratchDir).dev; } catch { device = null; }
+      if (device === null || !scratchTreeIsDisposable(fullPath, device)) {
+        results.push({ name: entry.name, path: fullPath, reason: "unsafe-scratch-tree", sizeBytes: totalSizeBytes, ageMs });
+        continue;
+      }
       results.push({ name: entry.name, path: fullPath, reason: "ttl", sizeBytes: totalSizeBytes, ageMs, mtimeMs: maxMtimeMs });
     } else {
       results.push({ name: entry.name, path: fullPath, reason: "fresh", sizeBytes: totalSizeBytes, ageMs, mtimeMs: maxMtimeMs });
@@ -412,12 +1108,369 @@ export function discoverBotScratchDirs(botsRoot) {
   }
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-    const scratchDir = path.join(botsRoot, entry.name, "hermes/cache/scratch");
-    if (fs.existsSync(scratchDir)) {
-      dirs.push(scratchDir);
+    let scratchDir = path.join(botsRoot, entry.name);
+    let safe = true;
+    for (const part of ["hermes", "cache", "scratch"]) {
+      scratchDir = path.join(scratchDir, part);
+      const { st } = lstatSafe(scratchDir);
+      if (!st?.isDirectory()) { safe = false; break; }
     }
+    if (safe) dirs.push(scratchDir);
   }
   return dirs;
+}
+
+// --- Bot data GC (OPE-12654) -------------------------------------------------
+
+// Every container of the gate on this host, any state, with the bot label. The
+// plain `docker ps -a --filter label=myrmidon.bot` covers main, .next and
+// .helper: one key lists once, so a leftover keeps its data directory held as
+// well as a running main.
+export function listBotContainers({ docker = "docker", timeoutMs = DOCKER_TIMEOUT_MS } = {}) {
+  const res = spawnSync(docker, ["ps", "-a", "--format", "{{.Labels}}"], { encoding: "utf8", timeout: timeoutMs });
+  if (res.error || res.status !== 0) return { ok: false, reason: res.error?.code === "ENOENT" ? "docker-unavailable" : "docker-failed" };
+  const keys = new Set();
+  for (const line of (res.stdout || "").split("\n")) {
+    const m = /(?:^|,)myrmidon\.bot=([0-9a-f-]+)(?:,|$)/.exec(line.trim());
+    if (m) keys.add(m[1].toLowerCase());
+  }
+  return { ok: true, keys };
+}
+
+export function listOmpRunnerContainers({ docker = "docker", timeoutMs = DOCKER_TIMEOUT_MS, namePrefix = "myrmidon-omp-runner-" } = {}) {
+  const res = spawnSync(docker, ["ps", "-a", "--format", "{{.Names}}"], { encoding: "utf8", timeout: timeoutMs });
+  if (res.error || res.status !== 0) return { ok: false, reason: res.error?.code === "ENOENT" ? "docker-unavailable" : "docker-failed" };
+  const names = [];
+  for (const line of (res.stdout || "").split("\n")) {
+    const name = line.trim();
+    if (name.startsWith(namePrefix) && OMP_AGENT_KEY_PATTERN.test(name.slice(namePrefix.length))) names.push(name);
+  }
+  return { ok: true, names };
+}
+
+export async function fetchAgentAdapter(agentId, {
+  baseUrl = process.env.BOARD_API_URL || process.env.PAPERCLIP_API_URL || process.env.MYRMIDON_API_URL || "http://127.0.0.1:3100",
+  apiKey = process.env.PAPERCLIP_API_KEY,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  if (!OMP_AGENT_KEY_PATTERN.test(agentId)) return { ok: false, reason: "bad-agent-id" };
+  let base = (baseUrl || "").replace(/\/$/, "");
+  if (!base) base = "http://127.0.0.1:3100";
+  if (!base.endsWith("/api")) base += "/api";
+  if (typeof fetchImpl !== "function") return { ok: false, reason: "board-unavailable" };
+  const headers = { Accept: "application/json" };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  try {
+    // Runner names use engN, while GET /agents/{id} accepts only UUIDs. Resolve
+    // the canonical company agent name through the company-scoped list route.
+    const companyId = process.env.MYRMIDON_COMPANY_ID || process.env.PAPERCLIP_COMPANY_ID;
+    if (!companyId) return { ok: false, reason: "company-id-missing" };
+    const number = /^eng(\d+)$/.exec(agentId)?.[1];
+    if (!number) return { ok: false, reason: "bad-agent-id" };
+    const response = await fetchImpl(`${base}/companies/${encodeURIComponent(companyId)}/agents?q=${encodeURIComponent(`adm-dev-eng-${number}`)}`, { headers });
+    if (!response.ok) return { ok: false, reason: `board-http-${response.status}`, statusCode: response.status };
+    const body = await response.json();
+    if (!Array.isArray(body)) return { ok: false, reason: "board-invalid-agent-list" };
+    const agent = body.find((entry) => entry?.name === `adm-dev-eng-${number}`);
+    if (!agent) return { ok: true, adapterType: null };
+    // adapterType is part of AgentListItem; do not make a second detail request.
+    if (typeof agent.id !== "string" || typeof agent.adapterType !== "string") {
+      return { ok: false, reason: "board-invalid-agent-list" };
+    }
+    return { ok: true, adapterType: agent.adapterType };
+  } catch {
+    return { ok: false, reason: "board-unavailable" };
+  }
+}
+
+export async function planStaleOmpRunners(runnersRoot, {
+  docker = "docker",
+  namePrefix = "myrmidon-omp-runner-",
+  fetchAdapter = fetchAgentAdapter,
+} = {}) {
+  const containers = listOmpRunnerContainers({ docker, namePrefix });
+  if (!containers.ok) return { ok: false, reason: containers.reason, plan: [] };
+  const plan = [];
+  const activeKeys = new Set();
+  for (const name of containers.names) {
+    const agentKey = name.slice(namePrefix.length);
+    activeKeys.add(agentKey);
+    const runnerPath = path.join(runnersRoot, agentKey);
+    const adapter = await fetchAdapter(agentKey);
+    if (!adapter.ok) plan.push({ name, agentKey, path: runnerPath, action: "keep", reason: adapter.reason });
+    else if (adapter.adapterType === "omp_local") plan.push({ name, agentKey, path: runnerPath, action: "keep", reason: "omp-local" });
+    else plan.push({ name, agentKey, path: runnerPath, runnersRoot, action: "stop-remove", reason: adapter.adapterType ? "adapter-changed" : "agent-deleted" });
+  }
+  try {
+    for (const agentKey of fs.readdirSync(runnersRoot)) {
+      if (activeKeys.has(agentKey) || !OMP_AGENT_KEY_PATTERN.test(agentKey)) continue;
+      const adapter = await fetchAdapter(agentKey);
+      if (adapter.ok && adapter.adapterType !== "omp_local") plan.push({ name: `${namePrefix}${agentKey}`, agentKey, path: path.join(runnersRoot, agentKey), runnersRoot, action: "remove-stale-home", reason: adapter.adapterType ? "adapter-changed" : "agent-deleted" });
+      else plan.push({ agentKey, path: path.join(runnersRoot, agentKey), action: "keep", reason: adapter.ok ? "omp-local" : adapter.reason });
+    }
+  } catch (err) {
+    return { ok: false, reason: err.code === "ENOENT" ? "runner-root-missing" : "runner-root-unreadable", plan };
+  }
+  return { ok: true, plan };
+}
+
+export function stopOmpRunner(name, { docker = "docker", timeoutMs = DOCKER_TIMEOUT_MS } = {}) {
+  const res = spawnSync(docker, ["rm", "-f", name], { encoding: "utf8", timeout: timeoutMs });
+  return !res.error && res.status === 0;
+}
+
+// One `GET /api/agents/{id}` against the board (real route, server/src/routes/agents.ts).
+// The lookup happens per candidate directory, only after the container and retention
+// guards passed, so a pass makes a handful of calls at most. The verdict decides the
+// guard of the plan below:
+//   - 404: the agent row is gone (hard delete) — the bot may go;
+//   - 200 + status "terminated" — the agent was fired, the bot may go;
+//   - 200 + adapter "hermes_gateway" (any other status) — a live hermes card: never touch
+//     its bot data (the contract keeps hermes containers and their directories);
+//   - 200 + status "running" — a heartbeat run is in flight: keep, the bot may still be
+//     written to;
+//   - 200 + any other adapter and status — the agent moved off hermes_gateway and is
+//     idle: the bot may go;
+//   - 401/403/5xx, a network error or a malformed body — the board could not answer:
+//     fail-closed, the directory stays.
+export async function fetchAgentDecommissionState(agentId, {
+  baseUrl = process.env.BOARD_API_URL || process.env.PAPERCLIP_API_URL || process.env.MYRMIDON_API_URL || "http://127.0.0.1:3100",
+  apiKey = process.env.PAPERCLIP_API_KEY,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  if (!OMP_AGENT_KEY_PATTERN.test(agentId)) return { ok: false, reason: "bad-agent-id" };
+  let base = (baseUrl || "").replace(/\/$/, "");
+  if (!base) base = "http://127.0.0.1:3100";
+  if (!base.endsWith("/api")) base += "/api";
+  if (typeof fetchImpl !== "function") return { ok: false, reason: "board-unavailable" };
+  const headers = { Accept: "application/json" };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  const url = `${base}/agents/${encodeURIComponent(agentId)}`;
+  let response;
+  try {
+    response = await fetchImpl(url, { headers });
+  } catch {
+    return { ok: false, reason: "board-unavailable" };
+  }
+  if (response.status === 404) return { ok: true, state: "deleted" };
+  if (response.status === 401 || response.status === 403) return { ok: false, reason: "board-forbidden", statusCode: response.status };
+  if (!response.ok) return { ok: false, reason: "board-unavailable", statusCode: response.status };
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    return { ok: false, reason: "board-unavailable" };
+  }
+  if (!body || typeof body !== "object" || typeof body.adapterType !== "string" || typeof body.status !== "string") {
+    return { ok: false, reason: "board-unavailable" };
+  }
+  if (body.status === "terminated") return { ok: true, state: "terminated" };
+  if (body.adapterType === HERMES_GATEWAY_ADAPTER_TYPE) return { ok: true, state: "hermes_gateway" };
+  if (body.status === "running") return { ok: true, state: "running" };
+  return { ok: true, state: "left_hermes_gateway" };
+}
+
+// The unpushed-work scan of one bot data directory (OPE-12654): every git worktree under
+// <dir>/workspace must be clean, without stash, without an operation in progress, and
+// without unpushed commits. The clone layout is <dir>/workspace/<ISSUE-KEY>/repo (one task,
+// one clone per the working-copy rule), so the walk goes deep enough to find the repos;
+// `.next` and `.helper` are not worktrees and are skipped, like `node_modules`. The verdict
+// matches the clone-hygiene report the board holds a decommission for. Any git command that
+// fails unexpectedly (and an unreadable workspace) is fail-closed: the directory is held
+// with a reason, not removed.
+const BOT_SCAN_SKIP_NAMES = new Set([".next", ".helper", "node_modules", ".gc-archive"]);
+const BOT_SCAN_MAX_DEPTH = 4;
+
+function botDataGitOpInProgress(gitDir) {
+  for (const marker of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "rebase-merge", "rebase-apply"]) {
+    if (fs.existsSync(path.join(gitDir, marker))) return marker;
+  }
+  return null;
+}
+
+export function scanBotDataForUnpushedWork(dir, { gitBin = "git", timeoutMs = GIT_TIMEOUT_MS } = {}) {
+  const workspace = path.join(dir, "workspace");
+  const reasons = [];
+  let entries;
+  try {
+    entries = fs.readdirSync(workspace, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code === "ENOENT") return { unpushed: false, reasons: [] }; // no workspace: nothing unpushed by definition
+    return { unpushed: true, reasons: [`workspace: unreadable (${err?.code || "error"})`] };
+  }
+
+  const walk = (base, rel, depth) => {
+    let list;
+    try {
+      list = fs.readdirSync(base, { withFileTypes: true });
+    } catch (err) {
+      reasons.push(`${rel || "."}: unreadable (${err?.code || "error"})`);
+      return;
+    }
+    for (const entry of list) {
+      if (entry.isSymbolicLink()) continue;
+      if (!entry.isDirectory()) continue;
+      if (BOT_SCAN_SKIP_NAMES.has(entry.name)) continue;
+      const repo = path.join(base, entry.name);
+      const relName = rel ? `${rel}/${entry.name}` : entry.name;
+      const run = (args) => spawnSync(gitBin, args, { cwd: repo, encoding: "utf8", timeout: timeoutMs });
+      const inside = run(["rev-parse", "--is-inside-work-tree"]);
+      if (inside.error || (inside.status !== 0 && inside.status !== 128)) {
+        reasons.push(`${relName}: git failed (${inside.status ?? "spawn"})`);
+        continue;
+      }
+      if (inside.status === 128 || inside.stdout?.trim() !== "true") {
+        // Not a worktree — keep walking below it (e.g. <ISSUE>/<repo>).
+        if (depth < BOT_SCAN_MAX_DEPTH) walk(repo, relName, depth + 1);
+        continue;
+      }
+      // A worktree: inspect it.
+      if (run(["status", "--porcelain"]).stdout?.trim() !== "") reasons.push(`${relName}: uncommitted changes`);
+      if (run(["stash", "list"]).stdout?.trim() !== "") reasons.push(`${relName}: stash entries`);
+      const gitDirOut = run(["rev-parse", "--absolute-git-dir"]);
+      const gitDir = gitDirOut.status === 0 ? gitDirOut.stdout?.trim() : path.join(repo, ".git");
+      const op = botDataGitOpInProgress(gitDir);
+      if (op) reasons.push(`${relName}: ${op} in progress`);
+      const ahead = run(["log", "@{u}..HEAD", "--oneline"]);
+      if (ahead.status === 0) {
+        if (ahead.stdout?.trim() !== "") reasons.push(`${relName}: commits ahead of upstream`);
+      } else {
+        // No upstream configured: count commits that exist on no remote — a local
+        // branch or a detached HEAD with work that was never pushed.
+        const unpushed = run(["log", "--oneline", "--branches", "--not", "--remotes"]);
+        const detached = run(["log", "--oneline", "-1", "HEAD", "--not", "--remotes"]);
+        if (unpushed.error || detached.error) {
+          reasons.push(`${relName}: git failed checking upstream`);
+        } else if (unpushed.stdout?.trim() !== "" || detached.stdout?.trim() !== "") {
+          reasons.push(`${relName}: commits on no remote`);
+        }
+      }
+    }
+  };
+  walk(workspace, "", 0);
+  return { unpushed: reasons.length > 0, reasons };
+}
+
+// The XFS project quota of a removed bot (host side of the gate's hand-off): the gate
+// keeps `botKey -> project id` in /etc/projid and /etc/projects and leaves the entries
+// in place while the data directory exists (Quota.Remove refuses then). After this pass
+// removes the directory it clears the entries the same way the gate does — drop the
+// /etc/projid line, the matching /etc/projects lines, and reset the limits of the
+// project id — and then `xfs_quota project -s` is not needed: the directory is gone.
+// Best-effort and only when the files are readable/writable (root on vm-core): a
+// failure is journaled, not thrown, and never blocks the directory removal itself.
+export function clearBotDiskProject(botKey, {
+  projidFile = "/etc/projid",
+  projectsFile = "/etc/projects",
+  xfsQuotaBin = "xfs_quota",
+  volumeRoot = "/srv/myrmidon-bots",
+} = {}) {
+  const result = { cleared: false, projectId: null, reasons: [] };
+  let projidLines;
+  try {
+    projidLines = fs.readFileSync(projidFile, "utf8").split("\n");
+  } catch (err) {
+    result.reasons.push(`read ${projidFile}: ${err?.code || "error"}`);
+    return result;
+  }
+  let projectId = 0;
+  const newProjid = [];
+  for (const line of projidLines) {
+    const key = line.slice(0, Math.max(line.indexOf(":"), 0));
+    if (key === botKey) {
+      projectId = Number.parseInt(line.slice(key.length + 1), 10) || 0;
+      continue;
+    }
+    newProjid.push(line);
+  }
+  result.projectId = projectId || null;
+  if (projectId === 0) return result; // nothing registered: nothing to clear
+  let projectsLines;
+  try {
+    projectsLines = fs.readFileSync(projectsFile, "utf8").split("\n");
+  } catch (err) {
+    result.reasons.push(`read ${projectsFile}: ${err?.code || "error"}`);
+    return result;
+  }
+  const idText = String(projectId);
+  const dir = path.join(volumeRoot, botKey);
+  const newProjects = projectsLines.filter((line) => {
+    const idx = line.indexOf(":");
+    if (idx === -1) return true;
+    const lineKey = line.slice(0, idx);
+    const lineValue = line.slice(idx + 1);
+    return lineKey !== idText && lineValue !== dir;
+  });
+  // Reset the limits first: with the entries gone from the files, an xfs_quota call is
+  // the only way to lift a hard limit left on the project id.
+  if (fs.existsSync(xfsQuotaBin) || spawnSync(xfsQuotaBin, ["-V"], { encoding: "utf8" }).status === 0) {
+    const clear = spawnSync(xfsQuotaBin, ["-x", "-c", `limit -p bhard=0 bsoft=0 ${idText}`, volumeRoot], { encoding: "utf8", timeout: 30000 });
+    if (clear.status !== 0) result.reasons.push(`xfs_quota limit: ${clear.status}`);
+  }
+  try {
+    fs.writeFileSync(projidFile, newProjid.join("\n"));
+  } catch (err) {
+    result.reasons.push(`write ${projidFile}: ${err?.code || "error"}`);
+  }
+  try {
+    fs.writeFileSync(projectsFile, newProjects.join("\n"));
+  } catch (err) {
+    result.reasons.push(`write ${projectsFile}: ${err?.code || "error"}`);
+  }
+  result.cleared = result.reasons.length === 0;
+  return result;
+}
+
+// The bot-data plan: candidates, guards, verdicts. `now` is injected for the tests. The
+// board is asked per candidate (`fetchAgentDecommissionState`) — never when docker or the
+// retention guard already held every directory.
+export async function planBotDataGc(
+  root,
+  { now = Date.now(), ttlHours = BOT_DATA_TTL_HOURS, containers, agentState = fetchAgentDecommissionState, scan = scanBotDataForUnpushedWork } = {},
+) {
+  const ttlMs = ttlHours * HOUR_MS;
+  const plan = [];
+  if (!containers?.ok) {
+    return { ok: false, reason: containers?.reason || "docker-unavailable" };
+  }
+  let entries;
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return { ok: true, plan };
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink() || !BOT_KEY_PATTERN.test(entry.name)) continue;
+    const dir = safeJoin(root, entry.name);
+    const st = fs.statSync(dir);
+    const item = { name: entry.name, path: dir, ageMs: now - st.mtimeMs, action: "keep", reason: "" };
+    if (item.ageMs < ttlMs) {
+      item.reason = "retention";
+    } else if (containers.keys.has(entry.name)) {
+      item.reason = "container-exists";
+    } else {
+      const agent = await agentState(entry.name);
+      if (!agent?.ok) {
+        item.reason = "board-unavailable";
+        item.details = [agent?.reason || "board-unavailable"];
+      } else if (agent.state === "hermes_gateway") {
+        item.reason = "agent-on-hermes-gateway";
+      } else if (agent.state === "running") {
+        item.reason = "agent-has-running-run";
+      } else {
+        const { unpushed, reasons } = scan(dir);
+        if (unpushed) {
+          item.reason = "unpushed-work";
+          item.details = reasons;
+        } else {
+          item.action = "remove";
+          item.reason = agent.state === "terminated" ? "agent-terminated-clean" : agent.state === "deleted" ? "agent-deleted-clean" : "decommissioned-clean";
+        }
+      }
+    }
+    plan.push(item);
+  }
+  return { ok: true, plan };
 }
 
 function issueIdentifierFromCloneName(name) {
@@ -505,36 +1558,562 @@ export function atomicDrop(filePath, expectedRoot) {
   fs.unlinkSync(tempPath);
 }
 
+/**
+ * Removes the planned run copies (items of `scanSshRunCopies`, reason `ttl`). The drop is
+ * guarded against the configured runner root, not against the copy's own parent: a runner's
+ * `workspace` swapped for a symlink after the scan resolves outside the root and is refused
+ * (journaled `run-copy-remove-failed`). The size is measured before the removal, best-effort.
+ * Returns the paths actually removed.
+ */
+export function pruneSshRunCopies(items, journalPath) {
+  const removed = [];
+  for (const r of items) {
+    let sizeBytes = null;
+    try {
+      sizeBytes = inspectPathTree(r.path).totalSizeBytes;
+    } catch {
+      // best-effort: the size is informational
+    }
+    try {
+      atomicDrop(r.path, r.runnersRoot);
+    } catch (err) {
+      journalRecord(journalPath, { event: "run-copy-remove-failed", path: r.path, runner: r.runner, error: err.message });
+      continue;
+    }
+    removed.push(r.path);
+    journalRecord(journalPath, {
+      event: "run-copy-removed",
+      path: r.path,
+      runner: r.runner,
+      ageHours: Math.round(r.ageMs / HOUR_MS),
+      sizeBytes,
+    });
+  }
+  return removed;
+}
+
+/**
+ * npm/npx caches of one runner agent under `<runnersRoot>/<runner>/home/.npm/`:
+ * `_cacache` (the download/index cache) and `_npx` (the npx package cache). Every component
+ * of the path must be a real directory — a symlinked `.npm` or cache dir skips the runner —
+ * and the TTL is judged by the newest mtime in the cache tree (`inspectPathTree`), so a
+ * cache an npm/npx call is still writing stays `fresh` no matter how old its root is. Each
+ * item carries `kind` (`_cacache`|`_npx`) and `runnersRoot`, the root the removal is
+ * guarded against.
+ *
+ * The scan never throws on the filesystem: a configured root that does not exist is reported
+ * as `runner-npm-cache-root-missing`, any other failure (per root or per runner) as
+ * `runner-npm-cache-scan-failed` with the error message, through `onEvent`, and the scan
+ * continues with the next runner — one unreadable directory must not abort the whole
+ * `--apply` pass.
+ */
+export function scanRunnerNpmCaches(runnersRoot, now, ttlHours, { onEvent = () => {} } = {}) {
+  const results = [];
+  const ttlMs = ttlHours * HOUR_MS;
+  const fail = (extra, err) => {
+    onEvent({ event: "runner-npm-cache-scan-failed", root: runnersRoot, ...extra, error: err?.message || String(err) });
+  };
+
+  const rootStat = lstatSafe(runnersRoot);
+  if (rootStat.err) {
+    if (isAbsent(rootStat.err)) onEvent({ event: "runner-npm-cache-root-missing", root: runnersRoot });
+    else fail({}, rootStat.err);
+    return results;
+  }
+  if (!rootStat.st.isDirectory()) {
+    fail({}, new Error("runner root is not a directory (a symlink is not followed)"));
+    return results;
+  }
+  let runners;
+  try {
+    runners = fs.readdirSync(runnersRoot, { withFileTypes: true });
+  } catch (err) {
+    fail({}, err);
+    return results;
+  }
+  for (const runner of runners) {
+    if (!runner.isDirectory()) continue;
+    const npmDir = path.join(runnersRoot, runner.name, "home", ".npm");
+    try {
+      const { st, err } = lstatSafe(npmDir);
+      if (err && !isAbsent(err)) throw err;
+      if (!st || !st.isDirectory() || st.isSymbolicLink()) continue;
+      for (const kind of ["_cacache", "_npx"]) {
+        const cachePath = path.join(npmDir, kind);
+        const cacheStat = lstatSafe(cachePath);
+        if (cacheStat.err && !isAbsent(cacheStat.err)) throw cacheStat.err;
+        if (!cacheStat.st || !cacheStat.st.isDirectory() || cacheStat.st.isSymbolicLink()) continue;
+        const tree = inspectPathTree(cachePath);
+        const ageMs = now - tree.maxMtimeMs;
+        results.push({
+          runner: runner.name,
+          kind,
+          path: cachePath,
+          runnersRoot,
+          ageMs,
+          sizeBytes: tree.totalSizeBytes,
+          reason: ageMs >= ttlMs ? "ttl" : "fresh",
+        });
+      }
+    } catch (err) {
+      if (!isAbsent(err)) fail({ runner: runner.name }, err);
+    }
+  }
+  return results;
+}
+
+/**
+ * Removes the planned npm caches (items of `scanRunnerNpmCaches`, reason `ttl`). The drop is
+ * guarded against the configured runner root, not against the cache's own parent: a `.npm`
+ * directory swapped for a symlink after the scan resolves outside the root and is refused
+ * (journaled `runner-npm-cache-remove-failed`). The size in each item was measured before
+ * the removal by the scan; returns the paths actually removed.
+ */
+export function pruneRunnerNpmCaches(items, journalPath) {
+  const removed = [];
+  for (const r of items) {
+    try {
+      atomicDrop(r.path, r.runnersRoot);
+    } catch (err) {
+      journalRecord(journalPath, { event: "runner-npm-cache-remove-failed", path: r.path, runner: r.runner, kind: r.kind, error: err.message });
+      continue;
+    }
+    removed.push(r.path);
+    journalRecord(journalPath, {
+      event: "runner-npm-cache-removed",
+      path: r.path,
+      runner: r.runner,
+      kind: r.kind,
+      ageHours: Math.round(r.ageMs / HOUR_MS),
+      sizeBytes: r.sizeBytes,
+    });
+  }
+  return removed;
+}
+
+// --- Runner /tmp (OPE-12966) ---------------------------------------------------
+
+/**
+ * Newest mtime (lstat, no symlink followed) of a tree and its apparent size. Stops early when
+ * something younger than `freshAfterMs` is found (the entry is fresh, the rest does not
+ * matter). A directory on another filesystem than `dev` (a mount inside the entry) makes the
+ * entry `crossesFs`: the removal would descend into it. `error` is set when something cannot be
+ * read; the caller keeps the entry then.
+ */
+function newestMtimeInTree(entryPath, dev, freshAfterMs) {
+  let maxMtimeMs = 0;
+  let sizeBytes = 0;
+  const stack = [entryPath];
+  while (stack.length) {
+    const current = stack.pop();
+    const { st, err } = lstatSafe(current);
+    if (err) {
+      if (isAbsent(err)) continue; // vanished between two calls
+      return { maxMtimeMs, sizeBytes, crossesFs: false, error: err };
+    }
+    if (st.dev !== dev) return { maxMtimeMs, sizeBytes, crossesFs: true, error: null };
+    if (st.mtimeMs > maxMtimeMs) maxMtimeMs = st.mtimeMs;
+    sizeBytes += st.size || 0;
+    if (maxMtimeMs >= freshAfterMs) return { maxMtimeMs, sizeBytes, crossesFs: false, error: null };
+    if (st.isDirectory()) {
+      let names;
+      try {
+        names = fs.readdirSync(current);
+      } catch (e) {
+        if (isAbsent(e)) continue;
+        return { maxMtimeMs, sizeBytes, crossesFs: false, error: e };
+      }
+      for (const n of names) stack.push(path.join(current, n));
+    }
+  }
+  return { maxMtimeMs, sizeBytes, crossesFs: false, error: null };
+}
+
+/**
+ * Top-level entries (files and directories) of `<runnersRoot>/<runner>/tmp`, the runner's
+ * /tmp bind-mounted from the data disk. An entry's age is the newest mtime anywhere inside it
+ * (a symlink is never followed, a directory on another filesystem keeps the entry), so an
+ * entry something wrote to within `ttlHours` is `fresh`; an older one is `ttl`. A top-level
+ * symlink is never listed for removal (`symlink`), `tmp` itself is never removed. Every path
+ * component (`<runner>`, `tmp`) must be a real directory. Failures go to `onEvent`
+ * (`runner-tmp-root-missing`, `runner-tmp-scan-failed`) and the scan goes on with the next
+ * runner or entry. Each item carries `runnersRoot`, the root the removal is guarded against.
+ */
+// Treat unreadable trees as unsafe; symlinks are not followed by the removal path.
+function runnerTmpContainsGit(root) {
+  const stack = [root];
+  while (stack.length) {
+    const current = stack.pop();
+    let entries;
+    try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { return true; }
+    for (const entry of entries) {
+      if (entry.name === ".git") return true;
+      if (entry.isDirectory()) stack.push(path.join(current, entry.name));
+    }
+  }
+  return false;
+}
+
+export function scanRunnerTmp(runnersRoot, now, ttlHours, { onEvent = () => {} } = {}) {
+  const results = [];
+  const ttlMs = ttlHours * HOUR_MS;
+  const fail = (extra, err) => {
+    onEvent({ event: "runner-tmp-scan-failed", root: runnersRoot, ...extra, error: err?.message || String(err) });
+  };
+  const rootStat = lstatSafe(runnersRoot);
+  if (rootStat.err) {
+    if (isAbsent(rootStat.err)) onEvent({ event: "runner-tmp-root-missing", root: runnersRoot });
+    else fail({}, rootStat.err);
+    return results;
+  }
+  if (!rootStat.st.isDirectory()) {
+    fail({}, new Error("runner root is not a directory (a symlink is not followed)"));
+    return results;
+  }
+  let runners;
+  try {
+    runners = fs.readdirSync(runnersRoot, { withFileTypes: true });
+  } catch (err) {
+    fail({}, err);
+    return results;
+  }
+  for (const runner of runners) {
+    if (!runner.isDirectory()) continue;
+    const tmpDirPath = path.join(runnersRoot, runner.name, "tmp");
+    try {
+      const { st: tmpSt, err: tmpErr } = lstatSafe(tmpDirPath);
+      if (tmpErr && !isAbsent(tmpErr)) throw tmpErr;
+      if (!tmpSt || !tmpSt.isDirectory()) continue;
+      for (const entry of fs.readdirSync(tmpDirPath, { withFileTypes: true })) {
+        const entryPath = path.join(tmpDirPath, entry.name);
+        try {
+          const { st, err } = lstatSafe(entryPath);
+          if (err) {
+            if (!isAbsent(err)) fail({ runner: runner.name, path: entryPath }, err);
+            continue;
+          }
+          const base = { runner: runner.name, name: entry.name, path: entryPath, runnersRoot, mtimeMs: st.mtimeMs, ageMs: now - st.mtimeMs, sizeBytes: null };
+          if (st.isSymbolicLink()) {
+            results.push({ ...base, reason: "symlink" });
+            continue;
+          }
+          if (st.dev !== tmpSt.dev) {
+            results.push({ ...base, reason: "other-filesystem" });
+            continue;
+          }
+          const tree = newestMtimeInTree(entryPath, tmpSt.dev, now - ttlMs);
+          if (tree.error) {
+            fail({ runner: runner.name, path: entryPath }, tree.error);
+            results.push({ ...base, reason: "scan-failed" });
+            continue;
+          }
+          if (tree.crossesFs) {
+            results.push({ ...base, reason: "other-filesystem" });
+            continue;
+          }
+          const ageMs = now - Math.max(tree.maxMtimeMs, st.mtimeMs);
+          if (ageMs >= ttlMs && st.isDirectory() && runnerTmpContainsGit(entryPath)) {
+            results.push({ ...base, ageMs, sizeBytes: tree.sizeBytes, reason: "unsafe-git-tree" });
+            continue;
+          }
+          results.push({
+            ...base,
+            mtimeMs: Math.max(tree.maxMtimeMs, st.mtimeMs),
+            ageMs,
+            sizeBytes: tree.sizeBytes,
+            reason: ageMs >= ttlMs ? "ttl" : "fresh",
+          });
+        } catch (err) {
+          if (!isAbsent(err)) fail({ runner: runner.name, path: entryPath }, err);
+        }
+      }
+    } catch (err) {
+      if (!isAbsent(err)) fail({ runner: runner.name }, err);
+    }
+  }
+  return results;
+}
+
+/**
+ * Removes the planned runner /tmp entries (items of `scanRunnerTmp`, reason `ttl`), guarded
+ * against the configured runner root like the run copies. Returns the paths actually removed.
+ */
+export function pruneRunnerTmp(items, journalPath) {
+  const removed = [];
+  for (const r of items) {
+    try {
+      atomicDrop(r.path, r.runnersRoot);
+    } catch (err) {
+      journalRecord(journalPath, { event: "runner-tmp-remove-failed", path: r.path, runner: r.runner, error: err.message });
+      continue;
+    }
+    removed.push(r.path);
+    journalRecord(journalPath, { event: "runner-tmp-removed", path: r.path, runner: r.runner, ageHours: Math.round(r.ageMs / HOUR_MS), sizeBytes: r.sizeBytes });
+  }
+  return removed;
+}
+
 // --- Archive ----------------------------------------------------------------
 
-function archiveClone(clonePath, archiveRoot) {
+// Git repos inside a clone: the clone itself and every nested one (`.git` directory or file) at
+// any depth, skipped directories included (a repository inside node_modules is still one).
+function archiveRepos(clonePath) {
+  return scanGitTree(clonePath).roots;
+}
+
+// tar `--exclude` arguments: exact member paths (`<clone name>/<path>`) that git reports as ignored
+// and whose last segment is in ARCHIVE_EXCLUDES. A git failure or a non-repo gives no excludes:
+// the archive is whole, the safe default.
+function archiveExcludes(clonePath) {
+  const name = path.basename(clonePath);
+  const out = new Set();
+  const allRepos = archiveRepos(clonePath);
+  for (const repo of allRepos) {
+    let r;
+    try {
+      r = git(["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], repo);
+    } catch {
+      continue;
+    }
+    if (r.status !== 0 || typeof r.stdout !== "string") continue;
+    const repoRel = path.relative(clonePath, repo);
+    for (const entry of r.stdout.split("\0")) {
+      const rel = entry.replace(/\/+$/, "");
+      if (!rel || !ARCHIVE_EXCLUDES.includes(rel.split("/").pop())) continue;
+      // Never leave out a directory that holds a repository: its work is only safe inside the archive.
+      const abs = path.join(repo, rel);
+      if (allRepos.some((other) => other === abs || other.startsWith(`${abs}${path.sep}`))) continue;
+      out.add(`--exclude=${[name, repoRel, rel].filter(Boolean).join("/")}`);
+    }
+  }
+  return [...out];
+}
+
+// Per-archive limit, 10 min by default. The test hook is the env var (finite, > 0).
+function archiveTimeoutSeconds() {
+  const envTimeoutS = Number(process.env.HOST_GC_ARCHIVE_TIMEOUT_SECONDS);
+  return Number.isFinite(envTimeoutS) && envTimeoutS > 0 ? envTimeoutS : 600;
+}
+
+// Runs one tool of the archive under `timeout`, so a hang kills the whole process tree and a
+// failure is reported in words (stderr is often empty for a killed child).
+// 124 = `timeout` fired; 137 = it had to KILL the child after --kill-after.
+function runArchiveTool(cmd, args, what, extra = {}) {
+  const timeoutS = archiveTimeoutSeconds();
+  const result = spawnSync("timeout", ["--kill-after=10s", `${timeoutS}s`, cmd, ...args], { timeout: (timeoutS + 30) * 1000, maxBuffer: 1024 * 1024 * 1024, ...extra });
+  if (result.status !== 0) {
+    const timedOut = result.error?.code === "ETIMEDOUT" || result.status === 124 || result.status === 137;
+    const reason = timedOut
+      ? `timed out after ${timeoutS} s`
+      : `exit code ${result.status}, signal ${result.signal}${result.error ? `, error ${result.error.message}` : ""}`;
+    throw new Error(`${what} failed: ${reason}: ${String(result.stderr ?? "").trim()}`);
+  }
+  return result;
+}
+
+// Why a checkout cannot be archived compactly (bundle + patches). `{ keep: true }` means no
+// safe archive of any kind exists (a full copy would lack the borrowed objects): the checkout
+// stays. Otherwise the reason is journaled and the previous full archive is used.
+function compactBlocker(clonePath, repos) {
+  if (!repos.length) return { reason: "no-git-repository" };
+  for (const repo of repos) {
+    if (hasAlternates(repo)) return { keep: true, reason: `alternate-objects: ${repo}` };
+  }
+  for (const repo of repos) {
+    if (!isOwnWorktree(repo)) {
+      // The full archive leaves out git-ignored build and dependency directories: a broken
+      // repository inside one would be lost with the copy. Keep the copy then.
+      const skipped = path.relative(clonePath, repo).split(path.sep).some((seg) => ARCHIVE_EXCLUDES.includes(seg) || BOT_SCAN_SKIP_NAMES.has(seg));
+      return skipped ? { keep: true, reason: `unusable-repository in a skipped directory: ${repo}` } : { reason: `unusable-repository: ${repo}` };
+    }
+  }
+  // Files outside every git root (bundle and patches cannot carry them). `repos` holds every
+  // `.git` found at any depth (scanGitTree), so a root is never mistaken for plain files.
+  const roots = new Set(repos);
+  const hasFiles = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return true; }
+    return entries.some((e) => (e.isDirectory() && !e.isSymbolicLink() ? hasFiles(path.join(dir, e.name)) : true));
+  };
+  const outside = (dir) => {
+    if (roots.has(dir)) return false;
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return true; }
+    const hasRepoBelow = repos.some((r) => r.startsWith(`${dir}${path.sep}`));
+    if (!hasRepoBelow) return hasFiles(dir);
+    return entries.some((e) => {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory() && !e.isSymbolicLink()) return outside(p);
+      return true;
+    });
+  };
+  if (outside(clonePath)) return { reason: "files-outside-git" };
+  return null;
+}
+
+// Compact recovery of one git root into `dest`: unpublished commits (git bundle), staged and
+// unstaged changes (patches), untracked files. Returns the member names written (empty when
+// everything is already on the remote).
+function compactRepo(repo, dest, nestedRepos, journalPath, clonePath) {
+  fs.mkdirSync(dest, { recursive: true });
+  const members = [];
+  const stashes = git(["stash", "list", "--format=%H"], repo);
+  if (stashes.status !== 0) throw new Error(`stash listing failed: ${stashes.stderr}`);
+  const stashCount = stashes.stdout.trim().split("\n").filter(Boolean).length;
+  if (stashCount > 1) throw new Error("multiple stash entries require reflog preservation; keeping checkout");
+  const state = pushState(repo);
+  if (!state.verified && journalPath) {
+    journalRecord(journalPath, { event: "remote-unverified", path: repo, clone: clonePath, reason: state.reason });
+  }
+  if (!state.pushed || stashCount) {
+    const bundle = path.join(dest, "unpublished.bundle");
+    // A bundle includes stashes as well as unpublished branches and tags. Only commits the server
+    // itself advertised (and that exist here) are left out; without a verified answer nothing is.
+    const exclude = state.verified && state.tips.length ? ["--not", ...state.tips] : [];
+    runArchiveTool("git", ["-C", repo, "bundle", "create", bundle, "HEAD", "--all", ...exclude], "bundle creation");
+    runArchiveTool("git", ["-C", repo, "bundle", "verify", bundle], "bundle verification");
+    members.push("unpublished.bundle");
+  }
+  // Patches are bytes: the diff goes straight to the file, nothing is decoded or buffered.
+  for (const [name, diffArgs] of [
+    ["staged.patch", ["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--"]],
+    ["changes.patch", ["diff", "--binary", "--no-ext-diff", "--no-textconv", "--"]],
+  ]) {
+    const file = path.join(dest, name);
+    const fd = fs.openSync(file, "w");
+    try {
+      runArchiveTool("git", ["-C", repo, ...diffArgs], `${name} diff`, { stdio: ["ignore", fd, "pipe"] });
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (fs.statSync(file).size > 0) members.push(name);
+    else fs.rmSync(file, { force: true });
+  }
+  const listed = runArchiveTool("git", ["-C", repo, "ls-files", "--others", "--exclude-standard", "-z"], "untracked listing");
+  // A nested repository is archived by its own pass; the parent lists it as one directory. Names are
+  // handled as latin1 so non-UTF-8 bytes survive the round trip to tar unchanged.
+  const nestedRel = nestedRepos.map((r) => Buffer.from(path.relative(repo, r), "utf8").toString("latin1"));
+  const untracked = Buffer.from(listed.stdout).toString("latin1").split("\0").filter((entry) => {
+    if (!entry) return false;
+    const clean = entry.replace(/\/+$/, "");
+    return !nestedRel.some((n) => clean === n || clean.startsWith(`${n}/`));
+  });
+  if (untracked.length) {
+    runArchiveTool("tar", ["-cf", path.join(dest, "untracked.tar"), "-C", repo, "--null", "-T", "-"], "untracked archive", { input: Buffer.from(`${untracked.join("\0")}\0`, "latin1") });
+    members.push("untracked.tar");
+  }
+  return members;
+}
+
+// Archives only what could be lost: per git root (the checkout itself and repositories inside
+// it) unpublished commits, uncommitted changes and untracked files. Returns the archive path,
+// or null when everything is already pushed (nothing worth keeping). Where a compact archive is
+// impossible the previous full archive is made and the reason journaled; a checkout whose Git
+// state cannot be recovered by either way stays in place (throws).
+function archiveClone(clonePath, archiveRoot, journalPath) {
+  const tree = scanGitTree(clonePath);
+  // A directory that cannot be read may hide a repository: nothing can be proven, keep the copy.
+  if (!tree.complete) throw new Error(`cannot safely archive ${clonePath}: unreadable or oversized tree; keeping checkout`);
+  const repos = tree.roots;
+  const blocker = compactBlocker(clonePath, repos);
+  if (blocker?.keep) throw new Error(`cannot safely archive ${clonePath}: ${blocker.reason}; keeping checkout`);
+  if (blocker) {
+    // The full archive leaves out git-ignored build and dependency directories. A repository inside
+    // one is not archived on its own here, so its unpushed work would go with the copy: keep it.
+    const hidden = repos.find((r) => r !== clonePath && path.relative(clonePath, r).split(path.sep).some((seg) => ARCHIVE_EXCLUDES.includes(seg) || BOT_SCAN_SKIP_NAMES.has(seg)));
+    if (hidden) throw new Error(`cannot safely archive ${clonePath}: repository in a skipped directory (${hidden}) cannot go into the full archive; keeping checkout`);
+    if (journalPath) journalRecord(journalPath, { event: "archive-full-fallback", path: clonePath, reason: blocker.reason });
+    return archiveCloneFull(clonePath, archiveRoot);
+  }
+  const stage = fs.mkdtempSync(path.join(fs.existsSync(archiveRoot) ? archiveRoot : (fs.mkdirSync(archiveRoot, { recursive: true }), archiveRoot), ".bundle-"));
+  const archivePath = path.join(archiveRoot, `${path.basename(clonePath)}-${crypto.randomUUID()}.tar.gz`);
+  try {
+    const manifest = [];
+    for (const repo of repos) {
+      const rel = path.relative(clonePath, repo);
+      const nested = repos.filter((r) => r !== repo && r.startsWith(`${repo}${path.sep}`));
+      // The checkout's own repository keeps flat member names; inner ones go under repos/<path>.
+      const members = compactRepo(repo, rel ? path.join(stage, "repos", rel) : stage, nested, journalPath, clonePath);
+      if (members.length) manifest.push({ path: rel || ".", members });
+    }
+    if (!manifest.length) {
+      fs.rmSync(archivePath, { force: true });
+      return null;
+    }
+    fs.writeFileSync(path.join(stage, "manifest.json"), `${JSON.stringify({ clone: path.basename(clonePath), repos: manifest }, null, 2)}\n`);
+    runArchiveTool("tar", ["-czf", archivePath, "-C", stage, "."], `archive for ${clonePath}`);
+    runArchiveTool("tar", ["-tzf", archivePath], `archive verification for ${archivePath}`, { stdio: "ignore" });
+    return archivePath;
+  } catch (err) {
+    fs.rmSync(archivePath, { force: true });
+    throw err;
+  } finally {
+    fs.rmSync(stage, { recursive: true, force: true });
+  }
+}
+
+// Previous full archive (the whole checkout, minus git-ignored build output). Used only where the
+// compact archive is impossible; archiveClone journals why.
+function archiveCloneFull(clonePath, archiveRoot) {
   if (!fs.existsSync(archiveRoot)) fs.mkdirSync(archiveRoot, { recursive: true });
   const name = path.basename(clonePath);
   const ts = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-").slice(0, 15);
   const hasZstd = spawnSync("zstd", ["--version"], { stdio: "ignore" }).status === 0;
   const extension = hasZstd ? "tar.zst" : "tar.gz";
   const archivePath = path.join(archiveRoot, `${name}-${ts}.${extension}`);
+  // What an install or a build recreates is not worth archiving: a 13 GB task folder (three
+  // repo copies with node_modules) never fit the timeout, an archive without it is ~0.5 GB.
+  // Only build and dependency dirs that git reports as ignored are left out, as exact paths
+  // (--anchored, --no-wildcards: a name with `*` or `[` matches literally, nowhere else).
+  // Unpushed commits (.git), working files and anything git does not ignore stay in.
+  const excludes = ["--no-wildcards", "--anchored", ...archiveExcludes(clonePath)];
+  // Per-archive limit, 10 min by default. The test hook is the env var (finite, > 0).
+  const envTimeoutS = Number(process.env.HOST_GC_ARCHIVE_TIMEOUT_SECONDS);
+  const timeoutS = Number.isFinite(envTimeoutS) && envTimeoutS > 0 ? envTimeoutS : 600;
+  // `timeout` kills the whole pipeline (tar and zstd included) when the time is up, so no orphan keeps
+  // writing into a file we delete; spawnSync's own limit is only a backstop for `timeout` itself.
+  const limit = ["--kill-after=10s", `${timeoutS}s`];
+  const spawnOpts = { timeout: (timeoutS + 30) * 1000 };
   let result;
   let verify;
   if (hasZstd) {
     // Prefer zstd, but do not make archival depend on an optional host binary.
-    result = spawnSync("bash", ["-c", `tar -cf - -C "${path.dirname(clonePath)}" "${name}" | zstd -q -o "${archivePath}"`], { timeout: 120000 });
+    // pipefail: a failing tar must not be masked by zstd's exit code. Paths go in as arguments, not into the script text.
+    result = spawnSync("timeout", [...limit, "bash", "-c", `set -o pipefail; tar -cf - "\${@:4}" -C "$1" "$2" | zstd -q -o "$3"`, "archive", path.dirname(clonePath), name, archivePath, ...excludes], spawnOpts);
     verify = ["bash", ["-c", `zstd -q -d -c "${archivePath}" | tar -tf - > /dev/null`]];
   } else {
-    result = spawnSync("tar", ["-czf", archivePath, "-C", path.dirname(clonePath), name], { timeout: 120000 });
+    result = spawnSync("timeout", [...limit, "tar", "-czf", archivePath, ...excludes, "-C", path.dirname(clonePath), name], spawnOpts);
     verify = ["tar", ["-tzf", archivePath]];
   }
-  if (result.status !== 0) throw new Error(`archive failed for ${clonePath}: ${result.stderr}`);
+  if (result.status !== 0) {
+    // A failed run leaves a partial archive of 1-2 GB behind on every pass; remove exactly this file.
+    fs.rmSync(archivePath, { force: true });
+    // stderr is often empty (a killed or timed-out child), so say why in words.
+    // 124 = `timeout` fired; 137 = it had to KILL the pipeline after --kill-after.
+    const timedOut = result.error?.code === "ETIMEDOUT" || result.status === 124 || result.status === 137;
+    const reason = timedOut
+      ? `timed out after ${timeoutS} s`
+      : `exit code ${result.status}, signal ${result.signal}${result.error ? `, error ${result.error.message}` : ""}`;
+    throw new Error(`archive failed for ${clonePath}: ${reason}: ${String(result.stderr ?? "").trim()}`);
+  }
   const verification = spawnSync(verify[0], verify[1], { timeout: 60000, stdio: "ignore" });
-  if (verification.status !== 0) throw new Error(`archive verification failed for ${archivePath}`);
+  if (verification.status !== 0) {
+    fs.rmSync(archivePath, { force: true });
+    throw new Error(`archive verification failed for ${archivePath}`);
+  }
   return archivePath;
 }
+
 
 // --- Main -------------------------------------------------------------------
 
 async function main() {
   const args = parseArgs(process.argv);
   const now = Date.now();
+  applyMode = !args.dryRun;
+  if (applyMode && process.env.HOST_GC_TEST_ALLOW_LOCAL_REMOTES !== undefined) {
+    journalRecord(args.journal, { event: "test-hook-ignored", level: "warn", variable: "HOST_GC_TEST_ALLOW_LOCAL_REMOTES", reason: "ignored under --apply" });
+  }
 
   const lock = acquireLock(args.lock);
   if (!lock.ok) {
@@ -546,8 +2125,16 @@ async function main() {
     const root = args.root || "/srv/myrmidon-bots";
     const cloneTtlMs = args.cloneTtlHours * HOUR_MS;
     const cacheTtlMs = args.cacheTtlHours * HOUR_MS;
+    const usedPercent = diskUsedPercent(root);
+    if (usedPercent !== null && usedPercent >= args.pressurePercent) {
+      args.scratchTtlHours = Math.min(args.scratchTtlHours, PRESSURE_SCRATCH_TTL_HOURS);
+      journalRecord(args.journal, { event: "disk-pressure", usedPercent, thresholdPercent: args.pressurePercent, scratchTtlHours: args.scratchTtlHours });
+      if (usedPercent >= args.criticalPercent) {
+        journalRecord(args.journal, { event: "disk-critical", usedPercent, thresholdPercent: args.criticalPercent });
+      }
+    }
 
-    const plan = { clones: [], caches: [], scratch: [], kept: [], removed: [], archived: [] };
+    const plan = { clones: [], caches: [], scratch: [], botData: [], runCopies: [], staleOmpRunners: [], runnerTaskFolders: [], runnerNpmCaches: [], runnerTmp: [], runnerUnrecognized: [], kept: [], removed: [], archived: [] };
 
     // 1. Scan task clones
     const clones = scanTaskClones(root, now, args.cloneTtlHours);
@@ -562,7 +2149,12 @@ async function main() {
       });
     }
     for (const c of cloneStatuses.candidates) {
-      if (c.safeToRemove) {
+      assessClone(c);
+      // A nested repository may be ignored by its parent and contain unpublished work:
+      // archiveClone handles every git root of the clone on its own.
+      // The walk covers every depth and every skipped directory: an unseen `.git` means no plain removal.
+      const tree = c.safeToRemove ? scanGitTree(c.path) : null;
+      if (tree && tree.complete && tree.roots.every((repo) => repo === c.path)) {
         plan.clones.push({ ...c, action: "remove" });
       } else {
         plan.clones.push({ ...c, action: "archive-remove" });
@@ -590,6 +2182,12 @@ async function main() {
     const scratchDirs = [...args.scratchRoots];
     if (scratchDirs.length === 0) {
       scratchDirs.push(...discoverBotScratchDirs(root));
+      // The deployed wrapper invokes GC separately for each bot's workspace.
+      if (path.basename(path.resolve(root)) === "workspace" && lstatSafe(root).st?.isDirectory()) {
+        const botDir = path.dirname(path.resolve(root));
+        scratchDirs.push(...discoverBotScratchDirs(path.dirname(botDir)).filter((dir) =>
+          path.dirname(path.dirname(path.dirname(dir))) === botDir));
+      }
     }
     const openInfo = collectOpenProcInfo(args.procDir);
     for (const sDir of scratchDirs) {
@@ -604,22 +2202,212 @@ async function main() {
       }
     }
 
+    // 3b. Bot data directories of decommissioned bots (OPE-12654). Every guard
+    // must say go; an unreachable docker daemon or board keeps the directories
+    // (fail-closed) and only the journal says why.
+    const containers = listBotContainers();
+    const botData = await planBotDataGc(root, { now, containers });
+    if (botData.ok) {
+      for (const item of botData.plan) {
+        if (item.action === "remove") {
+          plan.botData.push({ ...item, action: "remove" });
+        } else if (item.reason === "unpushed-work") {
+          // The signal the issue asks for: the board holds the bot because of
+          // unpushed work — log it loudly, keep the directory.
+          plan.kept.push({ path: item.path, action: "keep", reason: `bot-data:${item.reason}`, details: item.details });
+          journalRecord(args.journal, { event: "bot-data-held-unpushed", path: item.path, details: item.details });
+          console.error(JSON.stringify({ ok: true, held: item.path, reason: "bot-data-held-unpushed", details: item.details }));
+        } else {
+          plan.kept.push({ path: item.path, action: "keep", reason: `bot-data:${item.reason}` });
+        }
+      }
+    } else {
+      journalRecord(args.journal, { event: "bot-data-gc-unavailable", reason: botData.reason });
+      console.error(JSON.stringify({ ok: false, reason: `bot-data-gc-unavailable: ${botData.reason}` }));
+    }
+
+    if (args.runnerRoots.length > 0) {
+      for (const runnersRoot of args.runnerRoots) {
+        const stale = await planStaleOmpRunners(runnersRoot, {
+          docker: args.docker,
+          namePrefix: args.runnerContainerPrefix,
+          fetchAdapter: (agentId) => fetchAgentAdapter(agentId),
+        });
+        if (!stale.ok) {
+          journalRecord(args.journal, { event: "stale-omp-runner-scan-unavailable", reason: stale.reason, root: runnersRoot });
+          console.error(JSON.stringify({ ok: false, event: "stale-omp-runner-scan-unavailable", reason: stale.reason, root: runnersRoot }));
+          continue;
+        }
+        for (const item of stale.plan) {
+          if (item.action === "keep") {
+            plan.kept.push(item);
+            journalRecord(args.journal, { event: "stale-omp-runner-kept", name: item.name, reason: item.reason });
+          } else {
+            plan.staleOmpRunners.push(item);
+          }
+        }
+      }
+    }
+
+    // 3c. SSH runner run copies (OPE-12722): only when a runner root is configured.
+    // A failure of one root or runner is journaled and skipped, never thrown: it must not
+    // abort the clones, caches, scratch and bot-data passes of the same --apply.
+    for (const runnersRoot of args.runnerRoots) {
+      const items = scanSshRunCopies(runnersRoot, now, args.runCopyTtlHours, {
+        onEvent: (event) => journalRecord(args.journal, event),
+      });
+      for (const item of items) {
+        if (item.reason === "ttl") plan.runCopies.push({ ...item, action: "remove" });
+        else plan.kept.push({ ...item, action: "keep", reason: "fresh" });
+      }
+    }
+
+    // 3d. Task folders of runner issues (OPE-12855): only when a runner root is configured,
+    // the same gate as 3c. The scan asks the board for the issue status (fail-closed: an
+    // unreachable board keeps the folder) and the git guards decide removal vs archive.
+    for (const runnersRoot of args.runnerRoots) {
+      const items = await scanRunnerTaskFolders(runnersRoot, now, args.cloneTtlHours, {
+        onEvent: (event) => journalRecord(args.journal, event),
+      });
+      for (const item of items) {
+        if (item.action === "keep") {
+          if (item.reason !== "retention") {
+            journalRecord(args.journal, {
+              event: "runner-task-folder-skipped",
+              path: item.path,
+              identifier: item.identifier,
+              runner: item.runner,
+              reason: item.reason,
+            });
+          }
+          plan.kept.push({ ...item, action: "keep", reason: item.reason });
+          continue;
+        }
+        plan.runnerTaskFolders.push({ ...item, action: item.action });
+      }
+    }
+
+    // 3e. npm/npx caches of runner agents (OPE-12855): only when a runner root is
+    // configured, the same gate as 3c/3d. No board call: the TTL decision is purely local
+    // (newest mtime in the cache tree), so a board outage cannot block cache pruning.
+    for (const runnersRoot of args.runnerRoots) {
+      const items = scanRunnerNpmCaches(runnersRoot, now, args.npmCacheTtlHours, {
+        onEvent: (event) => journalRecord(args.journal, event),
+      });
+      for (const item of items) {
+        if (item.reason === "ttl") plan.runnerNpmCaches.push({ ...item, action: "remove" });
+        else plan.kept.push({ ...item, action: "keep", reason: "fresh" });
+      }
+    }
+
+    // 3f. Runner /tmp (OPE-12966): the same gate as 3c. Entries whose newest mtime is inside
+    // the TTL, symlinks and other filesystems stay; only the journal says why for the odd ones.
+    for (const runnersRoot of args.runnerRoots) {
+      const items = scanRunnerTmp(runnersRoot, now, args.runnerTmpTtlHours, {
+        onEvent: (event) => journalRecord(args.journal, event),
+      });
+      for (const item of items) {
+        if (item.reason === "ttl") plan.runnerTmp.push({ ...item, action: "remove" });
+        else {
+          if (item.reason !== "fresh") {
+            journalRecord(args.journal, { event: "runner-tmp-skipped", path: item.path, runner: item.runner, reason: item.reason });
+          }
+          plan.kept.push({ ...item, action: "keep" });
+        }
+      }
+    }
+
+    // 3g. Unrecognized workspace folders of runner agents (OPE-13018): the same
+    // gate as 3c. A task folder the agent named with a typo (OPR-12962 for
+    // OPE-12962) never matches RUNNER_TASK_FOLDER_NAME, so 3d never sees it and
+    // it would sit on the disk forever. Report-only: the entry is journaled, the
+    // folder is never removed here.
+    for (const runnersRoot of args.runnerRoots) {
+      const items = scanRunnerUnrecognizedWorkspaceFolders(runnersRoot, now, args.cloneTtlHours, {
+        onEvent: (event) => journalRecord(args.journal, event),
+      });
+      for (const item of items) {
+        plan.runnerUnrecognized.push(item);
+        if (item.reason === "unrecognized-ttl") {
+          journalRecord(args.journal, {
+            event: "runner-unrecognized-workspace-folder",
+            path: item.path,
+            runner: item.runner,
+            name: item.name,
+            ageHours: Math.round(item.ageMs / HOUR_MS),
+          });
+        }
+      }
+    }
+
+    // Expire only regular archive files under the configured GC roots; never follow links.
+    plan.expiredArchives = [];
+    plan.archiveBytes = 0;
+    for (const archiveRoot of new Set([root, ...args.runnerRoots].map((r) => path.join(r, ".gc-archive")))) {
+      let entries;
+      try {
+        if (!fs.lstatSync(archiveRoot).isDirectory()) continue;
+        entries = fs.readdirSync(archiveRoot, { withFileTypes: true });
+      } catch (err) {
+        if (!isAbsent(err)) journalRecord(args.journal, { event: "archive-scan-failed", path: archiveRoot, error: err.message });
+        continue;
+      }
+      for (const entry of entries) {
+        if (!entry.isFile() || !/\.(?:tar\.gz|tar\.zst)$/.test(entry.name)) continue;
+        const archive = path.join(archiveRoot, entry.name);
+        try {
+          const st = fs.lstatSync(archive);
+          if (st.isFile()) {
+            plan.archiveBytes += st.size;
+            if (now - st.mtimeMs >= DAY_MS) plan.expiredArchives.push({ path: archive, root: archiveRoot });
+          }
+        } catch (err) {
+          if (!isAbsent(err)) journalRecord(args.journal, { event: "archive-scan-failed", path: archive, error: err.message });
+        }
+      }
+    }
+
     // 4. Execute or report
     if (args.dryRun) {
       journalRecord(args.journal, {
         event: "dry-run",
+        archiveBytes: plan.archiveBytes,
         clones: plan.clones.length,
         caches: plan.caches.length,
         scratch: plan.scratch.length,
+        staleOmpRunners: plan.staleOmpRunners.length,
+        runCopies: plan.runCopies.length,
+        runnerTaskFolders: plan.runnerTaskFolders.length,
+        runnerNpmCaches: plan.runnerNpmCaches.length,
+        runnerTmp: plan.runnerTmp.length,
+        runnerUnrecognized: plan.runnerUnrecognized.length,
         kept: plan.kept.length,
       });
       console.log(JSON.stringify({ ok: true, dryRun: true, plan }, null, 2));
     } else {
+      let staleOmpRunnersStopped = 0;
+      for (const archive of plan.expiredArchives) {
+        try {
+          const st = fs.lstatSync(archive.path);
+          if (!st.isFile() || now - st.mtimeMs < DAY_MS) continue;
+          atomicDrop(archive.path, archive.root);
+          journalRecord(args.journal, { event: "archive-expired", path: archive.path, sizeBytes: st.size });
+        } catch (err) {
+          if (!isAbsent(err)) journalRecord(args.journal, { event: "archive-expire-failed", path: archive.path, error: err.message });
+        }
+      }
       // Apply: process archives first, then removals
       const archiveRoot = path.join(root, ".gc-archive");
       for (const c of plan.clones.filter((x) => x.action === "archive-remove")) {
         try {
-          const archivePath = archiveClone(c.path, archiveRoot);
+          const archivePath = archiveClone(c.path, archiveRoot, args.journal);
+          if (!archivePath) {
+            // Everything is pushed (every git root): nothing to keep.
+            atomicDrop(c.path, root);
+            plan.removed.push({ path: c.path });
+            journalRecord(args.journal, { event: "clone-removed", path: c.path, reason: "all-pushed" });
+            continue;
+          }
           journalRecord(args.journal, { event: "clone-archived", path: c.path, archive: archivePath, sizeBytes: c.sizeBytes });
           atomicDrop(c.path, root);
           plan.archived.push({ path: c.path, archive: archivePath });
@@ -655,19 +2443,128 @@ async function main() {
           journalRecord(args.journal, { event: "scratch-prune-failed", path: s.path, error: err.message });
         }
       }
+      for (const b of plan.botData.filter((x) => x.action === "remove")) {
+        try {
+          atomicDrop(b.path, root);
+          plan.removed.push({ path: b.path });
+          journalRecord(args.journal, { event: "bot-data-removed", path: b.path, reason: b.reason });
+          // The gate left the XFS project entries in place while the directory
+          // existed (uid 65532 cannot remove them); this pass is the one that
+          // clears them, best-effort (root on vm-core).
+          const quota = clearBotDiskProject(b.name, { volumeRoot: root });
+          if (quota.projectId !== null) {
+            journalRecord(args.journal, {
+              event: "bot-data-quota-cleared",
+              path: b.path,
+              projectId: quota.projectId,
+              cleared: quota.cleared,
+              reasons: quota.reasons,
+            });
+          }
+        } catch (err) {
+          journalRecord(args.journal, { event: "bot-data-remove-failed", path: b.path, error: err.message });
+        }
+      }
+      staleOmpRunnersStopped = 0;
+      let staleOmpRunnerDataRemoved = 0;
+      for (const runner of plan.staleOmpRunners) {
+        if (runner.action === "stop-remove") {
+          if (!stopOmpRunner(runner.name, { docker: args.docker })) {
+            journalRecord(args.journal, { event: "stale-omp-runner-stop-failed", name: runner.name, reason: runner.reason });
+            continue;
+          }
+          staleOmpRunnersStopped++;
+          journalRecord(args.journal, { event: "stale-omp-runner-stopped", name: runner.name, reason: runner.reason });
+        }
+        for (const child of ["workspace", "home", "tmp", "scratch"]) {
+          const target = path.join(runner.path, child);
+          try {
+            if (!fs.existsSync(target)) continue;
+            atomicDrop(target, runner.runnersRoot);
+            staleOmpRunnerDataRemoved++;
+            journalRecord(args.journal, { event: "stale-omp-runner-data-removed", name: runner.name, path: target });
+          } catch (err) {
+            journalRecord(args.journal, { event: "stale-omp-runner-data-remove-failed", name: runner.name, path: target, error: err.message });
+          }
+        }
+        if (!["workspace", "home", "tmp", "scratch"].some((child) => fs.existsSync(path.join(runner.path, child)))) {
+          try {
+            atomicDrop(runner.path, runner.runnersRoot);
+            journalRecord(args.journal, { event: "stale-omp-runner-root-removed", name: runner.name, path: runner.path });
+          } catch (err) {
+            journalRecord(args.journal, { event: "stale-omp-runner-root-remove-failed", name: runner.name, path: runner.path, error: err.message });
+          }
+        }
+      }
+      const runCopiesGone = pruneSshRunCopies(plan.runCopies.filter((x) => x.action === "remove"), args.journal);
+      for (const gone of runCopiesGone) plan.removed.push({ path: gone });
+      const npmCachesGone = pruneRunnerNpmCaches(plan.runnerNpmCaches.filter((x) => x.action === "remove"), args.journal);
+      for (const gone of npmCachesGone) plan.removed.push({ path: gone });
+      const runnerTmpGone = pruneRunnerTmp(plan.runnerTmp, args.journal);
+      for (const gone of runnerTmpGone) plan.removed.push({ path: gone });
+      let runnerTaskFoldersRemoved = 0;
+      // myrmidon(1.6.8 OPE-12855): archive-then-remove for folders whose git state could not
+      // be proven, plain removal for clean closed ones; both guarded against the runner root.
+      for (const f of plan.runnerTaskFolders.filter((x) => x.action === "archive-remove")) {
+        try {
+          const archivePath = archiveClone(f.path, path.join(f.runnersRoot, ".gc-archive"), args.journal);
+          if (!archivePath) {
+            atomicDrop(f.path, f.runnersRoot);
+            plan.removed.push({ path: f.path });
+            journalRecord(args.journal, { event: "runner-task-folder-removed", path: f.path, reason: "all-pushed", runner: f.runner, ageHours: Math.round(f.ageMs / HOUR_MS) });
+            runnerTaskFoldersRemoved++;
+            continue;
+          }
+          journalRecord(args.journal, { event: "runner-task-folder-archived", path: f.path, archive: archivePath, reason: f.reason });
+          atomicDrop(f.path, f.runnersRoot);
+          plan.archived.push({ path: f.path, archive: archivePath });
+          journalRecord(args.journal, { event: "runner-task-folder-removed-after-archive", path: f.path, archive: archivePath });
+          runnerTaskFoldersRemoved++;
+        } catch (err) {
+          journalRecord(args.journal, { event: "runner-task-folder-archive-failed", path: f.path, error: err.message });
+        }
+      }
+      for (const f of plan.runnerTaskFolders.filter((x) => x.action === "remove")) {
+        try {
+          atomicDrop(f.path, f.runnersRoot);
+          plan.removed.push({ path: f.path });
+          journalRecord(args.journal, { event: "runner-task-folder-removed", path: f.path, reason: f.reason, runner: f.runner, ageHours: Math.round(f.ageMs / HOUR_MS) });
+          runnerTaskFoldersRemoved++;
+        } catch (err) {
+          journalRecord(args.journal, { event: "runner-task-folder-remove-failed", path: f.path, error: err.message });
+        }
+      }
       journalRecord(args.journal, {
         event: "apply-complete",
+        archiveBytesBeforeCleanup: plan.archiveBytes,
         removed: plan.removed.length,
         archived: plan.archived.length,
         scratchPruned: plan.scratch.length,
+        botDataRemoved: plan.botData.length,
+        staleOmpRunnersStopped,
+        staleOmpRunnerDataRemoved,
+        runCopiesRemoved: runCopiesGone.length,
+        runnerTaskFoldersRemoved,
+        runnerNpmCachesRemoved: npmCachesGone.length,
+        runnerTmpRemoved: runnerTmpGone.length,
+        runnerUnrecognized: plan.runnerUnrecognized.length,
         kept: plan.kept.length,
       });
       console.log(JSON.stringify({
         ok: true,
         dryRun: false,
+        archiveBytesBeforeCleanup: plan.archiveBytes,
         removed: plan.removed.length,
         archived: plan.archived.length,
         scratchPruned: plan.scratch.length,
+        botDataRemoved: plan.botData.length,
+        staleOmpRunnersStopped,
+        staleOmpRunnerDataRemoved,
+        runCopiesRemoved: runCopiesGone.length,
+        runnerTaskFoldersRemoved,
+        runnerNpmCachesRemoved: npmCachesGone.length,
+        runnerTmpRemoved: runnerTmpGone.length,
+        runnerUnrecognized: plan.runnerUnrecognized.length,
         kept: plan.kept.length,
       }, null, 2));
     }
@@ -679,6 +2576,11 @@ async function main() {
 // Only run main when executed directly (not when imported by tests)
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
   main().catch((err) => {
+    if (err instanceof UsageError) {
+      console.error(JSON.stringify({ ok: false, reason: err.message }));
+      process.exitCode = 2;
+      return;
+    }
     console.error(err);
     process.exitCode = 1;
   });

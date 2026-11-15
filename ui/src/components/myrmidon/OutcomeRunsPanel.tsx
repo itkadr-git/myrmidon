@@ -302,6 +302,19 @@ export function aggregateOutcomeMetrics(runs: HeartbeatRun[]): AggregatedOutcome
   };
 }
 
+/** myrmidon(OPE-12316): visible run outcome/stop code badge (separate from work-product category). */
+export function RunOutcomeBadge({
+  outcome,
+  stopKind,
+}: {
+  outcome: string | null | undefined;
+  stopKind?: string | null;
+}) {
+  if (!outcome) return null;
+  const label = stopKind ? `${outcome} (${stopKind})` : outcome;
+  return <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400">{label}</Badge>;
+}
+
 export function OutcomeBadge({ category }: { category: string | null | undefined }) {
   if (!category) return null;
   switch (category) {

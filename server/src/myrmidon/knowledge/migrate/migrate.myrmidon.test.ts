@@ -25,7 +25,7 @@ import {
   type MigrateMap,
 } from "./index.js";
 
-import { parseKnowledgeTree } from "../domain.js";
+import { parseKnowledgeTree, type KnowledgeSourceKind } from "../domain.js";
 
 const AGENT: KnowledgeActor = { actorType: "agent", actorId: "ef2496db-56cd-4700-be3e-194fcc6f2a6a", kind: null };
 
@@ -63,7 +63,7 @@ interface WriterLog {
   get: string[];
   listRevisions: string[];
   statuses: Map<string, { deliveredContent: string | null; status: string; supersededByItemId: string | null }>;
-  revisions: Map<string, Array<{ content: string; sources: Array<{ kind: "document" | "issue" | "url" | "task" | "pr" | "run" | "decision"; ref: string; note: string | null }> }>>;
+  revisions: Map<string, Array<{ content: string; sources: Array<{ kind: KnowledgeSourceKind; ref: string; note: string | null }> }>>;
   items: Map<string, { id: string; slug: string; kind: string; title: string; summary: string | null; folderPath: string; tags: string[]; approvalRequired: boolean; approverKind: string | null; deliveredContent: string | null; status: string; supersededByItemId: string | null }>;
   failDraftOn?: string;
 }

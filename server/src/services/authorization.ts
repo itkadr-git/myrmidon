@@ -134,6 +134,7 @@ export type AuthorizationDecision = {
     | "deny_policy_restricted"
     | "deny_low_trust_boundary"
     | "deny_scope"
+    | "deny_private_issue"
     | "deny_unsupported_action";
   grant?: {
     principalType: PrincipalType;
@@ -264,6 +265,7 @@ type IssueAuthorizationRow = {
   executionPolicy: unknown;
   originKind: string | null;
   originId: string | null;
+  isPrivate: boolean;
 };
 
 function evaluateAuthorizationPolicyForAssignment(
@@ -819,6 +821,7 @@ export function authorizationService(db: Db | DbTransaction) {
         executionPolicy: issues.executionPolicy,
         originKind: issues.originKind,
         originId: issues.originId,
+        isPrivate: issues.isPrivate,
       })
       .from(issues)
       .where(eq(issues.id, issueId))
@@ -1483,6 +1486,8 @@ export function authorizationService(db: Db | DbTransaction) {
      * future visibility scoping can be implemented in issue:read without
      * recreating per-action scope checks. The responsible-user ceiling remains
      * in decide(), after this base decision.
+     * The private-issue agent gate in decide() runs before this decision:
+     * visibility is upstream of any write.
      */
     async function decideVisibleIssueWrite(): Promise<AuthorizationDecision> {
       let visibilityResource: AuthorizationResource = input.resource;
@@ -2447,12 +2452,52 @@ export function authorizationService(db: Db | DbTransaction) {
     return responsibleUserAuthzShadowMode() ? agentDecision : denied;
   }
 
+  /**
+   * 1.7 PRIVATE-TASKS E1: private issues are invisible to agent actors on
+   * every issue channel. Runs before decideBase so even self-owned/assigned
+   * issue paths stay behind the visibility rule, and before the
+   * responsible-user intersection. Cross-company targets return null here so
+   * decideBase keeps issuing deny_company_boundary.
+   */
+  async function denyPrivateIssueForAgentIfNeeded(input: {
+    actor: AuthorizationActor;
+    action: AuthorizationAction;
+    resource: AuthorizationResource;
+  }): Promise<AuthorizationDecision | null> {
+    if (input.actor.type !== "agent") return null;
+    if (
+      input.action !== "issue:read" &&
+      input.action !== "issue:comment" &&
+      input.action !== "issue:mutate"
+    ) {
+      return null;
+    }
+    if (input.resource.type !== "issue") return null;
+    // Cross-company actors keep decideBase's deny_company_boundary: the
+    // privacy rule only fires for same-company agent decisions.
+    if (input.actor.companyId !== input.resource.companyId) return null;
+    const targetIssueId = input.resource.issueId ?? input.resource.parentIssueId ?? null;
+    if (!targetIssueId) return null;
+    const row = await loadIssue(targetIssueId);
+    // A missing row or a company mismatch is not a privacy verdict: leave
+    // those semantics to decideBase (deny_company_boundary, deny_missing_*).
+    if (!row || row.companyId !== input.resource.companyId) return null;
+    if (!row.isPrivate) return null;
+    return deny({
+      action: input.action,
+      reason: "deny_private_issue",
+      explanation: "Private issues are not visible to agent actors.",
+    });
+  }
+
   async function decide(input: {
     actor: AuthorizationActor;
     action: AuthorizationAction;
     resource: AuthorizationResource;
     scope?: Record<string, unknown> | null;
   }): Promise<AuthorizationDecision> {
+    const privateIssueGate = await denyPrivateIssueForAgentIfNeeded(input);
+    if (privateIssueGate) return privateIssueGate;
     const agentDecision = await decideBase(input);
     return applyResponsibleUserIntersection(input, agentDecision);
   }

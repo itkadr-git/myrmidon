@@ -5,12 +5,22 @@ import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, type SourceTrustMetadata } fro
 import { documentService } from "./documents.js";
 
 export { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY };
+
+// OPE-13086: the task starter pack is an ordinary issue document (written by the
+// pack generator, v2); the assignee wake delivers it as a separate first block.
+export const ISSUE_STARTER_PACK_DOCUMENT_KEY = "starter-pack" as const;
 export const ISSUE_CONTINUATION_SUMMARY_TITLE = "Continuation Summary";
 export const ISSUE_CONTINUATION_SUMMARY_MAX_BODY_CHARS = 8_000;
 const SUMMARY_SECTION_MAX_CHARS = 1_200;
 const PATH_CANDIDATE_RE = /(?:^|[\s`"'(])((?:server|ui|packages|doc|scripts|\.github)\/[A-Za-z0-9._/-]+)/g;
 const WAITING_FOR_REVIEW_OR_APPROVAL_RE =
   /\bwait(?:ing)? for\b.{0,160}\b(?:review(?:er)?(?: feedback)?|approval|board|human|user|operator)\b/i;
+
+// myrmidon(OPE-12799): the run guard stops that cut a run off at a limit.
+const RUN_GUARD_LIMIT_ERROR_CODES = new Set(["model_call_limit", "no_progress_exploration"]);
+export const RUN_GUARD_LIMIT_NEXT_ACTION =
+  "Do not start the task over. Check the working copy and the issue branch (git status, git log, git diff) and the latest issue comments, " +
+  "continue implementation from what is already there, and commit, push and comment early: runs are limited by the number of model calls.";
 
 type IssueSummaryInput = {
   id: string;
@@ -150,11 +160,24 @@ export function buildContinuationSummaryMarkdown(input: {
     recentActions.push(`Latest run error${run.errorCode ? ` (${run.errorCode})` : ""}: ${truncateText(run.error, 500)}`);
   }
 
+  // myrmidon(OPE-12799): a run the run guard stopped at a limit did not fail on
+  // the task. The next run starts in a fresh session and reads this summary, so
+  // it is told that the work was cut off and where to look for what was done.
+  const stoppedAtLimit = RUN_GUARD_LIMIT_ERROR_CODES.has(run.errorCode ?? "");
+  if (stoppedAtLimit) {
+    recentActions.push(
+      "The run was stopped by the run guard at a limit before it finished; it did not report what it did. " +
+        "Uncommitted work may be in the working copy, pushed work is on the issue branch.",
+    );
+  }
+
   const paths = extractPathCandidates(resultSummary, run.stdoutExcerpt, run.stderrExcerpt, input.previousSummaryBody);
   const objective = extractMarkdownSection(issue.description, "Objective") ?? issue.description?.trim() ?? "No objective captured.";
   const acceptanceCriteria = extractMarkdownSection(issue.description, "Acceptance Criteria") ?? "No explicit acceptance criteria captured.";
   const mode = inferMode(issue, run);
-  const nextAction = issue.status === "in_progress"
+  const nextAction = stoppedAtLimit && issue.status !== "done" && issue.status !== "in_review"
+    ? RUN_GUARD_LIMIT_NEXT_ACTION
+    : issue.status === "in_progress"
     ? run.status === "failed" || run.status === "timed_out"
       ? inferNextAction(issue, run, extractPreviousNextAction(input.previousSummaryBody))
       : "Continue implementation from the latest concrete actions and acceptance criteria; do not wait for reviewer feedback."
@@ -287,4 +310,38 @@ export async function refreshIssueContinuationSummary(input: {
     createdByRunId: run.id,
   });
   return result.document;
+}
+
+export type IssueStarterPackDocument = {
+  key: typeof ISSUE_STARTER_PACK_DOCUMENT_KEY;
+  title: string | null;
+  body: string;
+  sourceTrust: SourceTrustMetadata | null;
+  updatedAt: Date;
+};
+
+export async function getIssueStarterPackDocument(
+  db: Db,
+  issueId: string,
+): Promise<IssueStarterPackDocument | null> {
+  const row = await db
+    .select({
+      title: documents.title,
+      body: documents.latestBody,
+      sourceTrust: documents.sourceTrust,
+      updatedAt: documents.updatedAt,
+    })
+    .from(issueDocuments)
+    .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+    .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, ISSUE_STARTER_PACK_DOCUMENT_KEY)))
+    .then((rows) => rows[0] ?? null);
+
+  if (!row) return null;
+  return {
+    key: ISSUE_STARTER_PACK_DOCUMENT_KEY,
+    title: row.title,
+    body: row.body,
+    sourceTrust: row.sourceTrust ?? null,
+    updatedAt: row.updatedAt,
+  };
 }

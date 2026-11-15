@@ -36,6 +36,9 @@ const apiPrefixes: Record<string, string> = {
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
   "company-skill-policy.ts": "/api",
+  // myrmidon(1.7 COMPANY-BOUNDARIES, OPE-12766): the ADM access-request gateway
+  // routes mount under /api.
+  "adm-access-requests.ts": "/api",
   // myrmidon(1.6.5 BASE-SKILLS): the company base-skills registry routes.
   "company-base-skills.ts": "/api",
   "connection-intents.ts": "/api",
@@ -160,6 +163,11 @@ const specOnlyContractFirstRoutes = new Set<string>([
   "POST /api/myrmidon/companies/{companyId}/knowledge/suggestions/{suggestionId}/decline",
   "POST /api/myrmidon/companies/{companyId}/knowledge/import",
   "POST /api/myrmidon/companies/{companyId}/knowledge/mcp",
+  // myrmidon(1.7 KNOWLEDGE-2.0 L-11): the Settings → Knowledge routes are
+  // mounted from server/src/myrmidon/knowledge/ (see app.ts), outside the
+  // scanner's directory scope, and documented contract-first in openapi.ts.
+  "GET /api/myrmidon/companies/{companyId}/knowledge/settings",
+  "PATCH /api/myrmidon/companies/{companyId}/knowledge/settings",
   // admin-assistant routes are mounted directly by app.ts, outside the
   // scanner's route-file scope; their OpenAPI entries are contract-first here.
   "GET /api/admin-assistant/cluster-health",

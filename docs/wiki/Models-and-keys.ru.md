@@ -85,12 +85,12 @@
 
 ## Подробнее
 
-- [Провайдеры моделей компании](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/model-providers.md)
-- [Режимы исполнения бюджетов](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-enforcement.md)
-- [Проекция бюджетов в LiteLLM](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/litellm-budget-projection.md)
-- [Советы по бюджету промпта и глубокий анализ](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/prompt-budget-advice.md)
-- [Лимиты допуска запусков](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/run-limits.md)
-- [Здоровье трассировки LLM](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/tracing-health.md)
+- [Провайдеры моделей компании](Model-providers.ru)
+- [Режимы исполнения бюджетов](Budget-enforcement.ru)
+- [Проекция бюджетов в LiteLLM](Litellm-budget-projection.ru)
+- [Советы по бюджету промпта и глубокий анализ](Prompt-budget-advice.ru)
+- [Лимиты допуска запусков](Run-limits.ru)
+- [Здоровье трассировки LLM](Tracing-health.ru)
 
 ## Действующий лимит задачи
 
@@ -98,4 +98,4 @@ API лимитов бюджета разрешает действующий ли
 задачи, фуражировки, роли, проекта и компании. Ответ указывает уровень,
 который победил при разрешении, и источник лимита. Подробности о приоритете,
 доступе и режиме «только сигнал» — в
-[руководстве по лимитам бюджета](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-limits.ru.md).
+[руководстве по лимитам бюджета](Budget-limits.ru).

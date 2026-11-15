@@ -208,7 +208,7 @@ async function authorizeUpgrade(
     .where(and(eq(agentApiKeys.keyHash, tokenHash), isNull(agentApiKeys.revokedAt)))
     .then((rows) => rows[0] ?? null);
 
-  if (!key || key.companyId !== companyId) {
+  if (!key || key.companyId !== companyId || (key.expiresAt && key.expiresAt.getTime() <= Date.now())) {
     return null;
   }
 

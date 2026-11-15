@@ -12,13 +12,23 @@ const SINGLETON_KEY = "default";
 
 type Runner = Pick<Db, "select" | "insert" | "update">;
 
-export async function readStackDocument(db: Runner): Promise<StackDocument> {
+export async function readInstanceGeneral(
+  db: Pick<Db, "select">,
+): Promise<Record<string, unknown> | null> {
   const row = await db
     .select({ general: instanceSettings.general })
     .from(instanceSettings)
     .where(eq(instanceSettings.singletonKey, SINGLETON_KEY))
     .then((rows) => rows[0] ?? null);
-  return parseStackDocument(row?.general?.[STACK_GENERAL_KEY]);
+  const general = row?.general;
+  return general && typeof general === "object" && !Array.isArray(general)
+    ? (general as Record<string, unknown>)
+    : null;
+}
+
+export async function readStackDocument(db: Pick<Db, "select">): Promise<StackDocument> {
+  const general = await readInstanceGeneral(db);
+  return parseStackDocument(general?.[STACK_GENERAL_KEY]);
 }
 
 /** Overwrite the cached document under a row lock (the maintenance store pattern). */

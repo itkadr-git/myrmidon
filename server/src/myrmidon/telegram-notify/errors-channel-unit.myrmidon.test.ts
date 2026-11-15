@@ -174,4 +174,28 @@ describe("errorChannelPublicationKey", () => {
       "notify:errors:c1:agent_error:a1",
     );
   });
+
+  // myrmidon(1.6.8 OPE-12709): a role that stays down, or goes down again later,
+  // keeps the same dedup key; the hour bucket makes the delivery once per hour.
+  it("adds the hour bucket for role_model_down and provider_no_credits, and only for them", () => {
+    const hour = 60 * 60 * 1000;
+    const at = new Date(Date.UTC(2026, 10, 11, 12, 10));
+    const sameHour = new Date(at.getTime() + 20 * 60 * 1000);
+    const nextHour = new Date(at.getTime() + hour);
+    const role = { companyId: "c1", dedupKey: "role_model_down:reviewer", sourceKind: "role_model_down" as const };
+    const credits = { companyId: "c1", dedupKey: "provider_no_credits:kie", sourceKind: "provider_no_credits" as const };
+    expect(errorChannelPublicationKey(role, at)).toBe(
+      `notify:errors:c1:role_model_down:reviewer:h${Math.floor(at.getTime() / hour)}`,
+    );
+    expect(errorChannelPublicationKey(role, sameHour)).toBe(errorChannelPublicationKey(role, at));
+    expect(errorChannelPublicationKey(role, nextHour)).not.toBe(errorChannelPublicationKey(role, at));
+    expect(errorChannelPublicationKey(credits, nextHour)).not.toBe(errorChannelPublicationKey(credits, at));
+    // Every other kind keeps one row per card, ever.
+    expect(
+      errorChannelPublicationKey(
+        { companyId: "c1", dedupKey: "agent_error:a1", sourceKind: "agent_error_alert" },
+        nextHour,
+      ),
+    ).toBe("notify:errors:c1:agent_error:a1");
+  });
 });

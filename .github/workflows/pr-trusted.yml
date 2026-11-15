@@ -343,6 +343,9 @@ jobs:
       - name: Test PR quality-gate scripts
         run: node --test '.github/scripts/tests/*.test.mjs'
 
+      - name: Check llms.txt docs manifest is fresh
+        run: node ./scripts/myrmidon/docs/generate-llms-txt.mjs --check
+
       - name: Test general-server shard partition
         run: node --test ./scripts/__tests__/run-vitest-stable-shard.test.mjs
 

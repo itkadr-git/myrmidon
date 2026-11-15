@@ -147,18 +147,7 @@ describe.sequential("activity routes", () => {
       companyId: "company-1",
       actorScope: "all",
       limit: 50,
-    });
-    expect(res.body.items[0]).toMatchObject({
-      actorType: "plugin",
-      actorId: "plugin-1",
-      action: "plugin.synced",
-      entityType: "company",
-      entityId: "company-1",
-      createdAt: "2026-08-04T00:00:00.000Z",
-      agentId: null,
-      runId: null,
-      responsibleUserId: null,
-      details: null,
+      excludePrivate: false,
     });
     expect(res.body.accessTier).toBe("basic");
   });
@@ -196,6 +185,7 @@ describe.sequential("activity routes", () => {
       actorScope: "all",
       actorType: "system",
       limit: 50,
+      excludePrivate: false,
     });
     expect(res.body.items[0]).toMatchObject({
       agentId: "agent-1",

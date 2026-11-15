@@ -111,6 +111,9 @@ describe("CompanySettingsNav", () => {
     // myrmidon(1.7 GRD-MODES): the Guardrails tab
     expect(getCompanySettingsTab("/company/settings/guardrails")).toBe("guardrails");
     expect(getCompanySettingsTab("/PAP/company/settings/guardrails")).toBe("guardrails");
+    // myrmidon(1.7 KNOWLEDGE-2.0 L-11): the knowledge settings tab.
+    expect(getCompanySettingsTab("/company/settings/knowledge")).toBe("knowledge");
+    expect(getCompanySettingsTab("/PAP/company/settings/knowledge")).toBe("knowledge");
     expect(getCompanySettingsTab("/company/settings/models")).toBe("models");
   });
 
@@ -183,6 +186,7 @@ describe("CompanySettingsNav", () => {
           { value: "models", label: "Models & providers" }, // myrmidon(1.6.5 F-26 T3)
           { value: "owner-delivery", label: "Owner Telegram delivery" }, // myrmidon(1.6.5-OWNER-DM-FILTER)
           { value: "corpus", label: "Knowledge corpus" }, // myrmidon(1.6.6 CORPUS E)
+          { value: "knowledge", label: "Knowledge" }, // myrmidon(1.7 KNOWLEDGE-2.0 L-11)
           { value: "voice-stt", label: "Speech" }, // myrmidon(1.6.1 VOICE-STT C)
           { value: "agent-exchange", label: "Agent exchanges" }, // myrmidon(1.7-AGENT-EXCHANGE-B)
         ],
@@ -241,6 +245,7 @@ describe("CompanySettingsNav", () => {
       "models", // myrmidon(1.6.5 F-26 T3)
       "owner-delivery", // myrmidon(1.6.5-OWNER-DM-FILTER)
       "corpus", // myrmidon(1.6.6 CORPUS E)
+      "knowledge", // myrmidon(1.7 KNOWLEDGE-2.0 L-11)
       "voice-stt", // myrmidon(1.6.1 VOICE-STT C)
       "agent-exchange", // myrmidon(1.7-AGENT-EXCHANGE-B)
     ]);

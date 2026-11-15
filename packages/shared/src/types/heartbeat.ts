@@ -227,6 +227,13 @@ export interface HeartbeatRun {
   signal: string | null;
   usageJson: Record<string, unknown> | null;
   resultJson: Record<string, unknown> | null;
+  /**
+   * myrmidon(OPE-12316): Outcome and stopKind from the run's `result_json`,
+   * projected directly on heartbeat list items so consumers and UI badges do
+   * not need to detoast or unpack `resultJson`.
+   */
+  resultOutcome?: import("../myrmidon/run-outcome.js").RunOutcomeValue | string | null;
+  resultStopKind?: import("../myrmidon/run-outcome.js").RunStopKind | string | null;
   /** Bounded, prompt-free run correlation, usage, spend and outcome snapshot. */
   runTelemetry?: Record<string, unknown> | null;
   sessionIdBefore: string | null;
@@ -358,6 +365,9 @@ export interface AgentRuntimeState {
   totalCachedInputTokens: number;
   totalCostCents: number;
   lastError: string | null;
+  lastResponseAt: Date | null;
+  lastProbeAt: Date | null;
+  lastProbeOutcome: "ok" | "unreachable" | null;
   createdAt: Date;
   updatedAt: Date;
 }

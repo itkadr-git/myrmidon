@@ -65,9 +65,9 @@ what is wanted, and the proposed epic comes back as an approval card (see
 
 ## In detail
 
-- [Addressing agents from one Telegram chat](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/telegram-multi-agent.md)
-- [Telegram group topics as a task inbox](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/telegram-topic-inbound.md)
-- [Bridge locale: service texts follow your language](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/telegram-bridge-locale.md)
-- [Editable run status and split of long answers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/telegram-dm-status.md)
-- [Decision cards delivered to the owner's Telegram](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/owner-telegram-cards.md)
+- [Addressing agents from one Telegram chat](Telegram-multi-agent)
+- [Telegram group topics as a task inbox](Telegram-topic-inbound)
+- [Bridge locale: service texts follow your language](Telegram-bridge-locale)
+- [Editable run status and split of long answers](Telegram-dm-status)
+- [Decision cards delivered to the owner's Telegram](Owner-telegram-cards)
 - Telegram notification settings and jobs: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), sections «TG-NOTIFY-SETTINGS» and «TG-NOTIFY jobs»

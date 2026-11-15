@@ -31,9 +31,9 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
   const queryClient = useQueryClient();
   const [cancellingRunIds, setCancellingRunIds] = useState(new Set<string>());
 
-  // Live-run polling slows/stops for hidden tabs so a restored window doesn't
-  // hammer the live-run endpoints (PAP-12556).
-  const liveRunRefetchInterval = useVisibilityRefetchInterval({ visibleMs: 3000 });
+  // The company live-events stream invalidates these issue-scoped queries;
+  // retain a slow fallback for reconnect gaps and older server versions.
+  const liveRunRefetchInterval = useVisibilityRefetchInterval({ visibleMs: 30_000 });
 
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId),

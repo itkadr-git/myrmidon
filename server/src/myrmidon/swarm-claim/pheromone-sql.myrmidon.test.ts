@@ -411,15 +411,13 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
       qa: ["t3 project default", "t4 legacy label", "t6a explicit qa in engineer project"],
       docs: ["t5 legacy spaced label"],
     };
-    for (const [role, keys] of Object.entries(expected)) {
-      const rows = await roleQueueRows(db, companyId, role);
-      expect(new Set(rows.map((row) => row.issueId)), `SQL queue of ${role}`).toEqual(
-        new Set(keys.map((key) => ids.get(key)!)),
-      );
-    }
-    // The matcher's pools read the queue through the same routing predicate
-    // (there is no JS twin of it): with an agent in every caste, each pool holds
-    // exactly the SQL queue of its caste.
+    // myrmidon(OPE-12846 IDLE-DISPATCH): an unstaffed caste's queue now also
+    // rides the default role's queue, so the one-caste-per-task assertion needs
+    // every caste STAFFED — otherwise t2/t3/t4/t5/t6a would legitimately appear
+    // in the engineer queue too (that fallback is the fix itself, covered by
+    // routing-unstaffed-caste.myrmidon.test.ts). The agents go in before both
+    // reads; the matcher's pools read the queue through the same routing
+    // predicate (there is no JS twin of it).
     for (const role of ["reviewer", "qa", "docs"]) {
       await db.insert(agents).values({
         id: randomUUID(),
@@ -432,6 +430,12 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
         runtimeConfig: {},
         permissions: {},
       });
+    }
+    for (const [role, keys] of Object.entries(expected)) {
+      const rows = await roleQueueRows(db, companyId, role);
+      expect(new Set(rows.map((row) => row.issueId)), `SQL queue of ${role}`).toEqual(
+        new Set(keys.map((key) => ids.get(key)!)),
+      );
     }
     const pairs = await listIdleRolePairs(db, companyId);
     for (const [role, keys] of Object.entries(expected)) {

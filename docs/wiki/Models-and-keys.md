@@ -84,17 +84,17 @@ The board tracks virtual key budgets and spend directly from the `litellm_cost_e
 
 ## In detail
 
-- [Company model providers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/model-providers.md)
-- [Budget enforcement modes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-enforcement.md)
-- [LiteLLM budget projection](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/litellm-budget-projection.md)
-- [Prompt budget advice and deep analysis](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/prompt-budget-advice.md)
-- [Run admission limits](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/run-limits.md)
-- [LLM tracing health](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/tracing-health.md)
+- [Company model providers](Model-providers)
+- [Budget enforcement modes](Budget-enforcement)
+- [LiteLLM budget projection](Litellm-budget-projection)
+- [Prompt budget advice and deep analysis](Prompt-budget-advice)
+- [Run admission limits](Run-limits)
+- [LLM tracing health](Tracing-health)
 
 ## Effective issue limits
 
 The budget-limit API can resolve the active limit for a task across issue,
 foraging, role, project, and company scopes. The response identifies the
 winning scope and source limit; see the
-[budget limits guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-limits.md)
+[budget limits guide](Budget-limits)
 for precedence, authorization, and the signal-only override.

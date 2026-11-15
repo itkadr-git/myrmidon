@@ -88,6 +88,7 @@ import {
   issueService,
   instanceSettingsService,
   logActivity, // myrmidon(1.6.6 OPE-12000)
+  reconcileIssueParentCyclesOnStartup,
   reconcileBuiltInAgentsOnStartup,
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
@@ -147,6 +148,8 @@ import { resolveProcessesSettings } from "@myrmidon/shared";
 import { createIdempotentShutdown } from "./shutdown-once.js"; // myrmidon(OPE-9107)
 import { singletonProxyOptionsFor } from "./myrmidon/singleton-proxy/index.js"; // myrmidon(1.6.6 PROCS-1.5 / OPE-5412)
 import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
+import { createCiReturnFactsResolver } from "./myrmidon/review-return-guard/ci-failure-return-facts.js"; // myrmidon(EMPTY-RUNS-3)
+import { readCiFinalOnlyEnabled } from "./myrmidon/review-return-guard/ci-failure-return.js"; // myrmidon(EMPTY-RUNS-3)
 // myrmidon(PAUSE-GUARD): resumes operator pauses left older than a threshold
 import { createPauseGuardSweepFromHeartbeat } from "./myrmidon/pause-guard/index.js";
 import { startRunPriority } from "./myrmidon/run-priority/index.js"; // myrmidon(1.6.5 RUN-PRIORITY A)
@@ -172,7 +175,7 @@ import {
   type LeaderLeaseManager,
 } from "./myrmidon/leader-lease/index.js"; // myrmidon(PROCS-1.7): leader lease (design OPE-5394 §5)
 import { startLitellmBudgetSync } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
-import { startLitellmModelReconciliation } from "./myrmidon/litellm-sync/startup-reconciler.js"; // myrmidon(1.6.1 MODEL-PROVIDERS B)
+import { startLitellmModelReconciliation, startAgentAllowlistWatchdog, reconcileAgentAllowlistDrift } from "./myrmidon/litellm-sync/startup-reconciler.js";
 import { startModelFallbackSignalSweep } from "./myrmidon/litellm-fallback-signal/sweep.js"; // myrmidon(BOT-RUNTIME-TUNING D)
 import { startFeatureHealthSweep, stopFeatureHealthSweep } from "./myrmidon/features/sweep.js"; // myrmidon(FEATURES)
 import { startBaselineSnapshots, stopBaselineSnapshots } from "./myrmidon/baseline/startup.js"; // myrmidon(1.6-BASELINE)
@@ -182,7 +185,9 @@ import { startDistillSweep, stopDistillSweep } from "./myrmidon/distill/startup.
 import { startRedactionSubstitutionCleanup } from "./myrmidon/guardrails/index.js"; // myrmidon(1.7-REDACT)
 import { startKnowledgeExport, stopKnowledgeExport } from "./myrmidon/knowledge/git-export-job.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-8)
 import { startLessonDistillSweep, stopLessonDistillSweep } from "./myrmidon/lesson-distill/index.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-4)
+import { configuredGitSkillRecord } from "./myrmidon/skill-git-record/index.js";
 import { startAlertsSweep } from "./myrmidon/monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
+import { startIntakeWorker } from "./services/intake-worker.js"; // myrmidon(1.7 WEBHOOK-INTAKE)
 import { startRootFanoutAlertSweep } from "./myrmidon/monitoring/alerts/root-fanout.js"; // myrmidon(OPE-9165)
 import { startTracingAttentionSweep, stopTracingAttentionSweep } from "./myrmidon/tracing-health/attention-sweep.js"; // myrmidon(TRACING-HEALTH)
 import { startModelProviderPoolSweep, stopModelProviderPoolSweep } from "./myrmidon/model-providers/sweep.js"; // myrmidon(1.6.6 OPE-7198)
@@ -205,6 +210,8 @@ import { createDataRetentionScheduler } from "./myrmidon/data-retention/index.js
 import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
 // myrmidon(HERMES-RUN-REATTACH): reattach live gateway runs after a board restart
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
+// myrmidon(1.8 AGENT-LIVENESS A1, OPE-13021): periodic process probe of every probeable agent
+import { AGENT_LIVENESS_PROBE_SWEEP_INTERVAL_MS } from "./myrmidon/agent-liveness/probe-sweep.js";
 import { GATEWAY_REMOTE_CLOSE_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-close.js";
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
 import { createTaskPrSyncScheduler, reconcileClosedIssuePullRequests, backfillPullRequestWorkProducts } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
@@ -474,7 +481,7 @@ async function startServerWithDatabaseTeardown(
       if (Date.now() >= deadline) {
         throw new Error(
           `PostgreSQL migrations are still not applied after ${Math.round(MIGRATION_WAIT_TIMEOUT_MS / 1000)}s. ` +
-            `PAPERCLIP_PROCESS_ROLE=api waits for the migration-owning process (worker/all); ` +
+            `MYRMIDON_PROCESS_ROLE=api waits for the migration-owning process (worker/all); ` +
             `start it, or run pnpm db:migrate.`,
         );
       }
@@ -1184,7 +1191,7 @@ async function startServerWithDatabaseTeardown(
   // myrmidon(PROCS-1.1/1.2): the stored process settings are read once the
   // schema is in place. The worker resolves its supervisor first so this read
   // — and every later PATCH — drives it: a stored `split` forks the api
-  // children right away. The emergency escape PAPERCLIP_PROCESS_MODE=single
+  // children right away. The emergency escape MYRMIDON_PROCESS_MODE=single
   // wins over the stored row inside resolveProcessesSettings (§7.2).
   const processSupervisor = processRoleProfile.role === "worker"
     ? createProcessSupervisor({
@@ -1513,6 +1520,15 @@ async function startServerWithDatabaseTeardown(
   const workerLoopbackServer = await openWorkerLoopbackListener();
 
   try {
+    const result = await reconcileIssueParentCyclesOnStartup(db as any);
+    if (result.repaired > 0) {
+      logger.warn(result, "repaired cyclic issue parent relationships during startup");
+    }
+  } catch (err) {
+    logger.error({ err }, "startup reconciliation of cyclic issue parent relationships failed");
+  }
+
+  try {
     const result = await workspaceOperationService(db as any)
       .reconcileStaleRuntimeControlOperations();
     if (result.reconciled > 0) {
@@ -1690,6 +1706,7 @@ async function startServerWithDatabaseTeardown(
   // instead of doubling up on candidates the startup sweep just scanned.
   let lastGatewayReattachSweepAtMs = 0;
   let lastGatewayRemoteCloseSweepAtMs = 0; // myrmidon(HERMES-GATEWAY-CLOSE, OPE-11889)
+  let lastAgentLivenessProbeSweepAtMs = 0; // myrmidon(AGENT-LIVENESS, OPE-13021)
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     let tracked: Promise<void>;
@@ -2251,9 +2268,35 @@ async function startServerWithDatabaseTeardown(
         logger.error({ err }, "auto-resume sweep failed");
       }));
   };
+  // myrmidon(EMPTY-RUNS-3): the App webhook is served by the api processes, and
+  // an api process has no background heartbeat: `backgroundHeartbeat` is a stub
+  // there, so every wake the event service asked for was dropped without a
+  // trace (returns from review were written, the `ci_completed` wake never
+  // reached the queue). An api process enqueues the wake the way the worker's
+  // own heartbeat is built above — the role gate (it executes nothing itself)
+  // and the process bus that announces the queued run to the worker. The
+  // service is built on the first wake, not at start: an api process still
+  // creates no heartbeat service while it only serves the board.
+  // The real wake goes together with the handling by the final result only:
+  // with that switched off every finished job would wake an agent.
+  let githubEventsApiHeartbeat: ReturnType<typeof heartbeatService> | null = null;
+  const githubEventsWakeup: ReturnType<typeof heartbeatService>["wakeup"] = processRoleProfile.role === "api"
+    ? (agentId, opts) => {
+        if (!readCiFinalOnlyEnabled()) return backgroundHeartbeat.wakeup(agentId, opts);
+        githubEventsApiHeartbeat ??= heartbeatService(db as any, {
+          pluginWorkerManager,
+          executesRuns: false,
+          processBus,
+        });
+        return githubEventsApiHeartbeat.wakeup(agentId, opts);
+      }
+    : backgroundHeartbeat.wakeup;
   const githubConnectionEvents = githubConnectionEventService(db as any, {
-    wakeup: backgroundHeartbeat.wakeup,
-    assignmentWakeup: backgroundHeartbeat.wakeup,
+    wakeup: githubEventsWakeup,
+    assignmentWakeup: githubEventsWakeup,
+    // myrmidon(EMPTY-RUNS-3): one finished job is not a finished CI — a delivery
+    // is handled by the final result of the head, read from GitHub when needed.
+    resolveCiReturnFacts: createCiReturnFactsResolver({ db: db as any }),
   });
   // myrmidon(GITHUB-APP-WEBHOOK): the public App-webhook route (mounted in
   // createApp, before this exists) ingests through this very instance.
@@ -2540,6 +2583,7 @@ async function startServerWithDatabaseTeardown(
     startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set
     startLitellmBudgetSync(db as any); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection; a no-op unless the gateway contour is set and the document enables it
     startLitellmModelReconciliation(db as any); // myrmidon(1.6.1 MODEL-PROVIDERS B): reconcile LiteLLM models with DB state
+    if (processRoleProfile.runsBackground) startAgentAllowlistWatchdog(() => reconcileAgentAllowlistDrift(db as any));
     startModelFallbackSignalSweep(db as any); // myrmidon(BOT-RUNTIME-TUNING D): model fallback attention signals; a no-op unless MYRMIDON_MODEL_FALLBACK_ENABLED=1
     startFeatureHealthSweep(db as any); // myrmidon(FEATURES): feature health pass that feeds the attention signal
     startBaselineSnapshots(db as any); // myrmidon(1.6-BASELINE): freeze the 14-day metric window; a no-op unless MYRMIDON_BASELINE_INTERVAL_SEC is set
@@ -2548,8 +2592,17 @@ async function startServerWithDatabaseTeardown(
     startDistillSweep(db as any); // myrmidon(1.6.6-K5): knowledge distiller v2 pass; a no-op unless the distill setting (or MYRMIDON_DISTILL_ENABLED=1) is on
     startRedactionSubstitutionCleanup(db as any); // myrmidon(1.7-REDACT): expire reversible substitutions
     startKnowledgeExport(db as any); // myrmidon(1.7 KNOWLEDGE-2.0 L-8): no-op unless MYRMIDON_KNOWLEDGE_EXPORT_REPO is set
-    startLessonDistillSweep({ db: db as any }); // myrmidon(1.7 KNOWLEDGE-2.0 L-4): hindsight lessons -> knowledge suggestions; a no-op unless MYRMIDON_LESSON_DISTILL_ENABLED=1
+    startLessonDistillSweep({
+      db: db as any,
+      readGeneral: async () => ((await instanceSettingsService(db as any).getGeneral()) as any)?.agentMemory,
+    }); // myrmidon(1.7 KNOWLEDGE-2.0 L-4, OPE-12628): hindsight lessons -> knowledge suggestions
+    // myrmidon(1.7 KNOWLEDGE-2.0 L-13): pull the verified-skill record at boot;
+    // delivery stays fail-closed on a missing or changed git snapshot.
+    void configuredGitSkillRecord()?.refresh().catch((error) =>
+      logger.warn({ err: error }, "skill-git-record: startup refresh failed"),
+    );
     startAlertsSweep(db as any); // myrmidon(1.6.6-ALERTS): dedup registry cleanup of closed alerts; a no-op unless MYRMIDON_ALERTS_SWEEP_INTERVAL_SEC is set
+    startIntakeWorker(db as any); // myrmidon(1.7 WEBHOOK-INTAKE): background parse worker for webhook drafts
     startRootFanoutAlertSweep(db); // myrmidon(OPE-9165): collect blocker roots every minute
     startTracingAttentionSweep(db as any); // myrmidon(TRACING-HEALTH): keep the "LLM tracing" operator signal fresh; a no-op unless the tracing settings are on
     startModelProviderPoolSweep(db as any); // myrmidon(1.6.6 OPE-7198): keep Codex/ChatGPT pool attention signals fresh
@@ -3029,6 +3082,14 @@ async function startServerWithDatabaseTeardown(
                 );
               }
             })
+            // myrmidon(OPE-13202): the safety wake of an in_progress task whose
+            // executor has had no run and no wake for runPriority.inProgressIdleWakeMinutes.
+            .then(async () => {
+              const woken = await heartbeat.sweepInProgressIdleWake(new Date());
+              if (woken.woken > 0) {
+                logger.warn({ ...woken }, "periodic in-progress idle wake woke idle executors");
+              }
+            })
             // myrmidon(T1.6, design BOARD-PROCESSES §4.3): the periodic
             // orphan-reattach pass. When an executor process dies, its gateway
             // runs keep a frozen controller lease until expiry; once expired,
@@ -3067,6 +3128,20 @@ async function startServerWithDatabaseTeardown(
               const closed = await heartbeat.sweepTerminalGatewayRunCloses();
               if (closed.attempted > 0 || closed.failed > 0) {
                 logger.info({ ...closed }, "periodic terminal gateway run close pass complete");
+              }
+            })
+            // myrmidon(1.8 AGENT-LIVENESS A1, OPE-13021): the periodic process
+            // probe of every probeable agent (hermes_gateway / http): stamp
+            // lastProbeAt/lastProbeOutcome so the agents list can show an
+            // honest derived status instead of "spawned once, assumed alive".
+            .then(async () => {
+              if (Date.now() - lastAgentLivenessProbeSweepAtMs < AGENT_LIVENESS_PROBE_SWEEP_INTERVAL_MS) {
+                return;
+              }
+              lastAgentLivenessProbeSweepAtMs = Date.now();
+              const swept = await heartbeat.sweepAgentLivenessProbes();
+              if (swept.probed > 0) {
+                logger.info({ ...swept }, "periodic agent liveness probe pass complete");
               }
             })
             .catch((err) => {

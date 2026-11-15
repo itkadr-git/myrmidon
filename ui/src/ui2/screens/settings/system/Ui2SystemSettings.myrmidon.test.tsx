@@ -139,11 +139,11 @@ describe("myrmidon(UI2) Ui2SystemSettings screen parity", () => {
       },
     ]);
     mockBehaviorApi.get.mockResolvedValue({
-      settings: { debug_mode: false },
-      sources: { debug_mode: "default" },
+      settings: { bot_egress_mode: "off" },
+      sources: { bot_egress_mode: "default" },
     });
     mockBehaviorApi.getDefinitions.mockResolvedValue([
-      { key: "debug_mode", envName: "MYRMIDON_DEBUG_MODE", default: false, scope: "instance", section: "system", valueType: "boolean" },
+      { key: "bot_egress_mode", envName: "MYRMIDON_BOT_EGRESS_MODE", default: "off", scope: "instance", section: "system", valueType: "string" },
     ]);
   });
 
@@ -205,9 +205,9 @@ describe("myrmidon(UI2) Ui2SystemSettings screen parity", () => {
     await renderScreen();
 
     expect(mockBehaviorApi.get).toHaveBeenCalled();
-    const row = container.querySelector('[data-testid="ui2-fine-row-debug_mode"]');
+    const row = container.querySelector('[data-testid="ui2-fine-row-bot_egress_mode"]');
     expect(row).not.toBeNull();
-    expect(row?.textContent).toContain("false");
+    expect(row?.textContent).toContain("off");
     // Nothing on the fine-settings block writes.
     const fineTable = container.querySelector("table.ui2-fine");
     expect(fineTable?.querySelector("input, textarea, select")).toBeNull();

@@ -62,6 +62,8 @@ export interface DeferredRolloutRetryPort {
   (agent: { agentId: string; adapterType: string; adapterConfig: Record<string, unknown> }, opts: {
     force: boolean;
     env?: NodeJS.ProcessEnv;
+    /** True only past the soft timeout: the retry may drain and interrupt the run. */
+    drainBusy?: boolean;
   }): Promise<{ kind: string; reason?: string; message?: string }>;
 }
 
@@ -175,8 +177,11 @@ export async function runDeferredRolloutWatcher(db: Db, deps: DeferredRolloutWat
     if (gated) {
       let busy: boolean | null = null;
       try {
-        const view = await deps.maintenance.status(record.agentId);
-        busy = view.runningRuns > 0;
+        // myrmidon(BOT-PROFILE-NO-RUN-INTERRUPT): the live run count when the port has it —
+        // `status` reports 0 for an agent with no window, i.e. blind exactly when it matters.
+        busy = deps.maintenance.activeRuns
+          ? (await deps.maintenance.activeRuns(record.agentId)) > 0
+          : (await deps.maintenance.status(record.agentId)).runningRuns > 0;
       } catch (err) {
         await record0("error", record.agentId, record.botKey, "deferred bot rollout watcher could not read the busy signal; retrying next sweep", {
           error: err instanceof Error ? err.message : String(err),
@@ -197,7 +202,7 @@ export async function runDeferredRolloutWatcher(db: Db, deps: DeferredRolloutWat
 
     let outcome: { kind: string; reason?: string; message?: string };
     try {
-      outcome = await deps.applyNow(agent, { force: true, env: deps.env });
+      outcome = await deps.applyNow(agent, { force: true, env: deps.env, drainBusy: !gated });
     } catch (err) {
       // applyBotContainerNow never throws (reconcileBot catches); this guards
       // the paths around it so one bad record cannot fail the sweep.

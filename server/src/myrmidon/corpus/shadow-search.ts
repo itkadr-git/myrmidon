@@ -1,6 +1,6 @@
 import type { Db } from "@myrmidon/db";
 import { myrmidonCorpusMcpDeps } from "./index.js";
-import type { CorpusMcpPort } from "./contract.js";
+import { DEFAULT_CORPUS_CONTEXT_TOKEN_BUDGET, type CorpusMcpPort } from "./contract.js";
 import type { CorpusShadowSearch, CorpusShadowSearchQuery } from "../corpus-shadow.js";
 
 /**
@@ -30,6 +30,7 @@ export function createCorpusShadowSearch(db: Db): CorpusShadowSearch {
         datasets: matches.map((dataset) => dataset.id),
         topK: 10,
         minScore: null,
+        contextTokenBudget: DEFAULT_CORPUS_CONTEXT_TOKEN_BUDGET,
       });
       return response.hits.slice(0, 10).map((hit) => ({ chunkId: hit.chunkId }));
     },

@@ -528,7 +528,7 @@ export function activityService(db: Db) {
       });
     },
 
-    issuesForRun: async (runId: string) => {
+    issuesForRun: async (runId: string, options?: { excludePrivate?: boolean }) => {
       const run = await db
         .select({
           companyId: heartbeatRuns.companyId,
@@ -538,6 +538,16 @@ export function activityService(db: Db) {
         .where(eq(heartbeatRuns.id, runId))
         .then((rows) => rows[0] ?? null);
       if (!run) return [];
+
+      const activityConditions = [
+        eq(activityLog.companyId, run.companyId),
+        eq(activityLog.runId, runId),
+        eq(activityLog.entityType, "issue"),
+        visibleIssueCondition(),
+      ];
+      if (options?.excludePrivate) {
+        activityConditions.push(eq(issues.isPrivate, false));
+      }
 
       const fromActivity = await db
         .selectDistinctOn([issueIdAsText], {
@@ -549,14 +559,7 @@ export function activityService(db: Db) {
         })
         .from(activityLog)
         .innerJoin(issues, eq(activityLog.entityId, issueIdAsText))
-        .where(
-          and(
-            eq(activityLog.companyId, run.companyId),
-            eq(activityLog.runId, runId),
-            eq(activityLog.entityType, "issue"),
-            visibleIssueCondition(),
-          ),
-        )
+        .where(and(...activityConditions))
         .orderBy(issueIdAsText);
 
       const context = run.contextSnapshot;
@@ -567,6 +570,15 @@ export function activityService(db: Db) {
       if (!contextIssueId) return fromActivity;
       if (fromActivity.some((issue) => issue.issueId === contextIssueId)) return fromActivity;
 
+      const contextConditions = [
+        eq(issues.companyId, run.companyId),
+        eq(issues.id, contextIssueId),
+        visibleIssueCondition(),
+      ];
+      if (options?.excludePrivate) {
+        contextConditions.push(eq(issues.isPrivate, false));
+      }
+
       const fromContext = await db
         .select({
           issueId: issues.id,
@@ -576,13 +588,7 @@ export function activityService(db: Db) {
           priority: issues.priority,
         })
         .from(issues)
-        .where(
-          and(
-            eq(issues.companyId, run.companyId),
-            eq(issues.id, contextIssueId),
-            visibleIssueCondition(),
-          ),
-        )
+        .where(and(...contextConditions))
         .then((rows) => rows[0] ?? null);
 
       if (!fromContext) return fromActivity;

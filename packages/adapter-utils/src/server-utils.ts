@@ -41,11 +41,11 @@ import {
   type PaperclipWakeHistoryMode,
 } from "./wake-history.js";
 export {
-  PAPERCLIP_WAKE_PAYLOAD_JSON_MAX_CHARS,
-  PAPERCLIP_WAKE_RECENT_MAX_MESSAGES,
-  PAPERCLIP_WAKE_RECENT_MESSAGE_MAX_CHARS,
-  PAPERCLIP_WAKE_RECENT_TOTAL_MAX_CHARS,
-  PAPERCLIP_WAKE_SUMMARY_MAX_CHARS,
+  MYRMIDON_WAKE_PAYLOAD_JSON_MAX_CHARS,
+  MYRMIDON_WAKE_RECENT_MAX_MESSAGES,
+  MYRMIDON_WAKE_RECENT_MESSAGE_MAX_CHARS,
+  MYRMIDON_WAKE_RECENT_TOTAL_MAX_CHARS,
+  MYRMIDON_WAKE_SUMMARY_MAX_CHARS,
   resolvePaperclipWakeHistoryMode,
   type PaperclipWakeHistoryMode,
 } from "./wake-history.js";
@@ -122,6 +122,8 @@ interface SpawnTarget {
   args: string[];
   cwd?: string;
   env?: Record<string, string | undefined>;
+  /** myrmidon(OPE-12810): written to child stdin ahead of opts.stdin (SSH env block). */
+  stdinPrefix?: string;
   cleanup?: () => Promise<void>;
 }
 
@@ -589,7 +591,7 @@ type PaperclipWakeExecutionPrincipal = {
 };
 
 type PaperclipWakeExecutionStage = {
-  wakeRole: "reviewer" | "approver" | "executor" | null;
+  wakeRole: "reviewer" | "approver" | "verifier" | "executor" | null;
   stageId: string | null;
   stageType: string | null;
   currentParticipant: PaperclipWakeExecutionPrincipal | null;
@@ -735,6 +737,14 @@ type PaperclipWakeContinuationSummary = {
   updatedAt: string | null;
 };
 
+type PaperclipWakeStarterPack = {
+  key: string | null;
+  title: string | null;
+  body: string;
+  bodyTruncated: boolean;
+  updatedAt: string | null;
+};
+
 type PaperclipWakeLivenessContinuation = {
   attempt: number | null;
   maxAttempts: number | null;
@@ -867,6 +877,7 @@ export type PaperclipWakePayload = {
   unresolvedBlockerSummaries: PaperclipWakeBlockerSummary[];
   executionStage: PaperclipWakeExecutionStage | null;
   continuationSummary: PaperclipWakeContinuationSummary | null;
+  starterPack: PaperclipWakeStarterPack | null;
   planReviewContext: PaperclipWakePlanReviewContext | null;
   documentReviewContext: PaperclipWakeDocumentReviewContext | null;
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
@@ -1346,6 +1357,21 @@ function normalizePaperclipWakeContinuationSummary(
     body,
     bodyTruncated: asBoolean(summary.bodyTruncated, false),
     updatedAt: asString(summary.updatedAt, "").trim() || null,
+  };
+}
+
+function normalizePaperclipWakeStarterPack(
+  value: unknown,
+): PaperclipWakeStarterPack | null {
+  const pack = parseObject(value);
+  const body = asString(pack.body, "").trim();
+  if (!body) return null;
+  return {
+    key: asString(pack.key, "").trim() || null,
+    title: asString(pack.title, "").trim() || null,
+    body,
+    bodyTruncated: asBoolean(pack.bodyTruncated, false),
+    updatedAt: asString(pack.updatedAt, "").trim() || null,
   };
 }
 
@@ -1883,6 +1909,7 @@ export function normalizePaperclipWakePayload(
   const continuationSummary = normalizePaperclipWakeContinuationSummary(
     payload.continuationSummary,
   );
+  const starterPack = normalizePaperclipWakeStarterPack(payload.starterPack);
   const planReviewContext = normalizePaperclipWakePlanReviewContext(
     payload.planReviewContext,
   );
@@ -1974,6 +2001,7 @@ export function normalizePaperclipWakePayload(
     !executionStage &&
     !reviewRecoveryInstruction &&
     !continuationSummary &&
+    !starterPack &&
     !planReviewContext &&
     !documentReviewContext &&
     !livenessContinuation &&
@@ -2020,6 +2048,7 @@ export function normalizePaperclipWakePayload(
     reviewDecisionRetryAttempt,
     reviewDecisionMaxRetries,
     continuationSummary,
+    starterPack,
     planReviewContext,
     documentReviewContext,
     annotationDeltas,
@@ -2063,7 +2092,7 @@ export function normalizePaperclipWakePayload(
 // continuation evidence), so the JSON copy keeps the envelope's shape and
 // cursors but not its bulky parts (myrmidon(WAKE-HISTORY): the history reached the
 // model three times), and the whole block is capped at
-// PAPERCLIP_WAKE_PAYLOAD_JSON_MAX_CHARS with the emptied keys named in
+// MYRMIDON_WAKE_PAYLOAD_JSON_MAX_CHARS with the emptied keys named in
 // `jsonTruncation`.
 export function stringifyPaperclipWakePayload(
   value: unknown,
@@ -2081,6 +2110,11 @@ export function stringifyPaperclipWakePayload(
   const payload: Record<string, unknown> = { ...normalized };
   if (normalized.executionContinuation) {
     payload.executionContinuation = stripContinuationHistoryForJson(normalized.executionContinuation);
+  }
+  // OPE-13086: the prompt text already carries the starter pack as its first
+  // block; the structured JSON copy does not repeat it.
+  if (normalized.starterPack) {
+    payload.starterPack = null;
   }
   if (options.omitIssueDescription === true && normalized.issue) {
     payload.issue = {
@@ -2370,6 +2404,8 @@ export function renderWakeBlockDelta(
   return { blocks: rendered, digests };
 }
 
+const WAKE_STARTER_PACK_MAX_BODY_CHARS = 8_000;
+
 function renderPaperclipWakePromptBody(
   value: unknown,
   options: {
@@ -2621,6 +2657,22 @@ function renderPaperclipWakePromptBody(
         ...executionContractLines,
         ...wakeSummaryLines,
       ];
+
+  // OPE-13086: the task starter pack is the first task block of the wake,
+  // ahead of the continuation context, description and continuation summary.
+  if (normalized.starterPack) {
+    const packBody =
+      normalized.starterPack.body.length > WAKE_STARTER_PACK_MAX_BODY_CHARS
+        ? normalized.starterPack.body.slice(0, WAKE_STARTER_PACK_MAX_BODY_CHARS)
+        : normalized.starterPack.body;
+    lines.push("", "Starter pack (start here; do not re-explore the project):", packBody);
+    if (
+      normalized.starterPack.bodyTruncated ||
+      normalized.starterPack.body.length > WAKE_STARTER_PACK_MAX_BODY_CHARS
+    ) {
+      lines.push("[starter pack truncated]");
+    }
+  }
 
   if (normalized.executionContinuation) {
     if (normalized.executionContinuation.interruptedRunId) {
@@ -3049,12 +3101,15 @@ function renderPaperclipWakePromptBody(
     lines.push("");
     if (
       executionStage.wakeRole === "reviewer" ||
-      executionStage.wakeRole === "approver"
+      executionStage.wakeRole === "approver" ||
+      executionStage.wakeRole === "verifier"
     ) {
       lines.push(
         `You are waking as the active ${executionStage.wakeRole} for this issue.`,
         "Do not execute the task itself or continue executor work.",
-        "Review the issue and choose one of the allowed actions above.",
+        executionStage.wakeRole === "verifier"
+          ? "Verify the deployed result and, when approving, record the deploy version and the check method the verification ran with."
+          : "Review the issue and choose one of the allowed actions above.",
         "If you request changes, the workflow routes back to the stored return assignee.",
         "",
       );
@@ -3762,6 +3817,7 @@ async function resolveSpawnTarget(
       command: sshResolved,
       args: spawnTarget.args,
       cwd: process.cwd(),
+      stdinPrefix: spawnTarget.stdinPrefix,
       cleanup: spawnTarget.cleanup,
     };
   }
@@ -4882,7 +4938,7 @@ export async function runChildProcess(
           env: childEnv,
           detached: process.platform !== "win32",
           shell: false,
-          stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
+          stdio: [opts.stdin != null || target.stdinPrefix ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
@@ -5036,10 +5092,11 @@ export async function runChildProcess(
         });
 
         const stdin = child.stdin;
-        if (opts.stdin != null && stdin) {
+        if ((opts.stdin != null || target.stdinPrefix) && stdin) {
           void spawnPersistPromise.finally(() => {
             if (child.killed || stdin.destroyed) return;
-            stdin.write(opts.stdin as string);
+            // myrmidon(OPE-12810): SSH env block first, then the caller's stdin.
+            stdin.write((target.stdinPrefix ?? "") + ((opts.stdin as string | null | undefined) ?? ""));
             stdin.end();
           });
         }

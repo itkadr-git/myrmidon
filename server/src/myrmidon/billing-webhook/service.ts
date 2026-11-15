@@ -1,18 +1,17 @@
 // server/src/myrmidon/billing-webhook/service.ts
 //
-// myrmidon(1.7 PAYWALL-WEBHOOK-SKELETON, OPE-12093): the ingest half of the
-// payment webhook skeleton. The service does exactly one thing — store the
-// event in `billing_events` — and decides between two outcomes:
+// myrmidon(1.7 PAYWALL-WEBHOOK, OPE-12630): the ingest half of the payment
+// webhook. The service does exactly one thing — store the verified event in
+// `billing_events` — and decides between two outcomes:
 //
 //   received — the event type is one of the known payment types
 //              (invoice.paid / invoice.failed);
 //   ignored  — any other type: still stored (the provider log must not lose
 //              events) and still answered 200.
 //
-// The signature check is a STUB (ticket: "подпись пока заглушка"). It never
-// rejects a request; before real business logic consumes these rows, a real
-// signature verification has to gate this endpoint. There is no activity-log
-// write on purpose: the table itself is the audit trail of the skeleton.
+// The signature verification is performed by routes.ts before ingest is called.
+// Verified events are stored with signatureStatus "verified". There is no
+// activity-log write on purpose: the table itself is the audit trail.
 
 import type { Db } from "@myrmidon/db";
 import { billingEvents, type NewBillingEventRow } from "@myrmidon/db";
@@ -23,6 +22,7 @@ export type BillingWebhookKnownType = (typeof BILLING_WEBHOOK_KNOWN_TYPES)[numbe
 export interface BillingWebhookInput {
   eventType: string;
   payload: Record<string, unknown>;
+  signatureStatus?: string;
 }
 
 export interface BillingWebhookResult {
@@ -55,7 +55,7 @@ export function billingWebhookService(db: Db, deps: Partial<BillingWebhookServic
         eventType: input.eventType,
         status: known ? "received" : "ignored",
         payload: input.payload,
-        signatureStatus: "stub",
+        signatureStatus: input.signatureStatus ?? "verified",
       });
       return { accepted: true, stored: known ? "received" : "ignored", eventType: input.eventType };
     },

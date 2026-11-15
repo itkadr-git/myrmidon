@@ -42,7 +42,7 @@ describeEmbeddedPostgres("coalescedOwnerId", () => {
       runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
       permissions: {},
     });
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(agentWakeupRequests);

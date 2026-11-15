@@ -9,7 +9,8 @@
 # `setup`/`switchback` (`compose stop|up|run myrmidon-pg-standby`) would fail unless the
 # drill secrets were exported. The drill board therefore ships NO default secrets (empty
 # defaults) and standby-ctl.mjs `rehearse --keep-drill` refuses to start it unless
-# BETTER_AUTH_SECRET and PAPERCLIP_DB_PASSWORD are set in the environment.
+# BETTER_AUTH_SECRET and MYRMIDON_DB_PASSWORD (deprecated alias: PAPERCLIP_DB_PASSWORD)
+# are set in the environment.
 services:
   myrmidon-pg-standby:
     image: pgvector/pgvector:pg18
@@ -67,8 +68,8 @@ services:
     ports:
       - "127.0.0.1:3101:3100"
     environment:
-      # PAPERCLIP_DB_PASSWORD must be URL-encoded; there is deliberately no default.
-      DATABASE_URL: "postgres://paperclip:${PAPERCLIP_DB_PASSWORD:-}@myrmidon-pg-standby:5533/paperclip"
+      # MYRMIDON_DB_PASSWORD must be URL-encoded; there is deliberately no default.
+      DATABASE_URL: "postgres://paperclip:${MYRMIDON_DB_PASSWORD:-${PAPERCLIP_DB_PASSWORD:-}}@myrmidon-pg-standby:5533/paperclip"
       PORT: "3100"
       SERVE_UI: "true"
       MYRMIDON_DEPLOYMENT_MODE: "authenticated"

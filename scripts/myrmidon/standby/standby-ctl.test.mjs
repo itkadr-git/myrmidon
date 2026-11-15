@@ -2265,10 +2265,10 @@ test("rehearse --keep-drill needs real secrets, listens beyond loopback and STAR
   const w0 = makeWorld();
   const refused = executeRehearsal("board", { pgRunner: "docker", keepDrill: true }, { runner: w0.runner, fsOps: makeForbiddenFs(), env: {} });
   assert.equal(refused.success, false);
-  assert.match(refused.error, /BETTER_AUTH_SECRET and PAPERCLIP_DB_PASSWORD/);
+  assert.match(refused.error, /BETTER_AUTH_SECRET and MYRMIDON_DB_PASSWORD/);
   assert.equal(w0.calls.length, 0);
 
-  const env = { BETTER_AUTH_SECRET: "drill-secret", PAPERCLIP_DB_PASSWORD: "drill-pw" };
+  const env = { BETTER_AUTH_SECRET: "drill-secret", MYRMIDON_DB_PASSWORD: "drill-pw" };
   const w = makeWorld();
   const res = executeRehearsal(
     "board",
@@ -2387,6 +2387,8 @@ test("drill board reaches the drill PG over the compose network, not host.docker
 test("compose ships no default secrets (no weak 'paperclip' password) and the standby healthcheck uses psql -tA", () => {
   assert.doesNotMatch(composeCode, /PAPERCLIP_DB_PASSWORD:-paperclip/);
   assert.doesNotMatch(composeCode, /PAPERCLIP_DB_PASSWORD:-[^}]/);
+  // the only default of the canonical name is its deprecated alias, itself without a default
+  assert.doesNotMatch(composeCode, /MYRMIDON_DB_PASSWORD:-(?!\$\{PAPERCLIP_DB_PASSWORD:-\}\})/);
   assert.doesNotMatch(composeCode, /BETTER_AUTH_SECRET:-[^}]/);
   assert.match(composeCode, /psql -U paperclip -d paperclip -tA -c 'SELECT pg_is_in_recovery\(\)::int'/);
   assert.doesNotMatch(composeCode, /grep -q t\b/);
@@ -2400,6 +2402,7 @@ test("wrapper forwards the primary port and secrets by name, and can run compose
   assert.doesNotMatch(wrapperText, /PG_REPLICATOR_PASSWORD=/);
   assert.doesNotMatch(wrapperText, /BETTER_AUTH_SECRET=/);
   assert.doesNotMatch(wrapperText, /PAPERCLIP_DB_PASSWORD=/);
+  assert.doesNotMatch(wrapperText, /MYRMIDON_DB_PASSWORD=/);
   assert.match(wrapperText, /-e PG_REPLICATOR_PASSWORD(\s|\\)/);
 });
 

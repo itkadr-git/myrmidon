@@ -25,7 +25,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
 
 const temporaryDirectories: string[] = [];
-
+const occupiedQuorumListeners: QuorumListener[] = [];
 afterEach(async () => {
   vi.useRealTimers();
   vi.doUnmock("node:child_process");
@@ -38,6 +38,11 @@ afterEach(async () => {
       };
     }
   ).__paperclipDirectorySyncHelperRegistryV1?.activeParentOperations.clear();
+  await Promise.all(
+    occupiedQuorumListeners
+      .splice(0)
+      .map((listener) => listener.close()),
+  );
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -246,27 +251,20 @@ describe("managed Codex credentials", () => {
   });
 
   it("fails before auth mutation when two quorum candidates are occupied", async () => {
-    const fixture = await credentialFixture();
+    const { fixture } = await occupiedQuorumFixture();
     const destination = join(fixture.home, "auth.json");
     await writeFile(destination, '{"sentinel":true}', { mode: 0o600 });
-    const ports = credentialLeasePorts(await realpath(fixture.home));
-    const first = await listenSilently(ports[0]);
-    const second = await listenSilently(ports[1]);
-    try {
-      await expect(
-        stageManagedCodexCredential({
-          agentHomeDirectory: fixture.home,
-          environment: {
-            PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
-          },
-        }),
-      ).rejects.toThrow("already has an active lease");
-      await expect(readFile(destination, "utf8")).resolves.toBe(
-        '{"sentinel":true}',
-      );
-    } finally {
-      await Promise.all([first.close(), second.close()]);
-    }
+    await expect(
+      stageManagedCodexCredential({
+        agentHomeDirectory: fixture.home,
+        environment: {
+          PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
+        },
+      }),
+    ).rejects.toThrow("already has an active lease");
+    await expect(readFile(destination, "utf8")).resolves.toBe(
+      '{"sentinel":true}',
+    );
   });
 
   it("admits only one of two concurrent fresh-module contenders", async () => {
@@ -1650,6 +1648,40 @@ async function credentialFixture(): Promise<{ root: string; home: string }> {
   await mkdir(home, { mode: 0o700 });
   await chmod(home, 0o700);
   return { root, home: await realpath(home) };
+}
+
+// A hashed quorum candidate can be squatted by an unrelated socket in the
+// shared ephemeral port range. Rehash fresh homes until both candidates of
+// one home bind, mirroring silentPrimaryQuorumFixture's reservation retry.
+async function occupiedQuorumFixture(): Promise<{
+  fixture: { root: string; home: string };
+}> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const fixture = await credentialFixture();
+    const owned: QuorumListener[] = [];
+    try {
+      for (const port of credentialLeasePorts(fixture.home))
+        owned.push(await listenSilently(port));
+    } catch (error) {
+      const closed = await Promise.allSettled(
+        owned.map((listener) => listener.close()),
+      );
+      const closeFailure = closed.find(
+        (result) => result.status === "rejected",
+      );
+      if (closeFailure?.status === "rejected") throw closeFailure.reason;
+      if ((error as NodeJS.ErrnoException).code === "EADDRINUSE" && attempt < 7)
+        continue;
+      throw error;
+    }
+    occupiedQuorumListeners.push(...owned);
+    return { fixture };
+  }
+  throw new Error("Occupied-quorum credential fixture reservation exhausted.");
+}
+
+interface QuorumListener {
+  close(): Promise<void>;
 }
 
 async function silentPrimaryQuorumFixture(

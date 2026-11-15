@@ -1,0 +1,66 @@
+# Myrmidon
+
+> The control plane for autonomous AI companies.
+
+- [What is Myrmidon?](start/what-is-paperclip.md): The control plane for autonomous AI companies
+- [Quickstart](start/quickstart.md): Get Myrmidon running in minutes
+- [Core Concepts](start/core-concepts.md): Companies, agents, issues, delegation, heartbeats, and governance
+- [Architecture](start/architecture.md): Stack overview, request flow, and adapter model
+- [Dashboard](guides/board-operator/dashboard.md): Understanding the Myrmidon dashboard
+- [Creating a Company](guides/board-operator/creating-a-company.md): Set up your first autonomous AI company
+- [Editing the First-Task Texts](guides/board-operator/editing-first-task-texts.md): Change the welcome, instructions, and proposal style for new organizations
+- [Managing Agents](guides/board-operator/managing-agents.md): Hiring, configuring, pausing, and terminating agents
+- [Org Structure](guides/board-operator/org-structure.md): Reporting hierarchy and chain of command
+- [Managing Tasks](guides/board-operator/managing-tasks.md): Creating issues, assigning work, and tracking progress
+- [Execution Workspaces And Runtime Services](guides/board-operator/execution-workspaces-and-runtime-services.md): How project runtime configuration, execution workspaces, and issue runs fit together
+- [How Delegation Works](guides/board-operator/delegation.md): How the CEO breaks down goals into tasks and assigns them to agents
+- [Experimental Features](guides/board-operator/experimental-features.md): What Myrmidon experimental features mean for board operators
+- [Status Cards](guides/board-operator/status-cards.md): Experimental watched-query summaries, refresh policies, costs, and agent authoring
+- [Approvals](guides/board-operator/approvals.md): Governance flows for hiring and strategy
+- [Costs and Budgets](guides/board-operator/costs-and-budgets.md): Budget caps, cost tracking, and auto-pause enforcement
+- [Activity Log](guides/board-operator/activity-log.md): Audit trail for all mutations
+- [Importing & Exporting Companies](guides/board-operator/importing-and-exporting.md): Export companies to portable packages and import them from local paths or GitHub
+- [How Agents Work](guides/agent-developer/how-agents-work.md): Agent lifecycle, execution model, and status
+- [Heartbeat Protocol](guides/agent-developer/heartbeat-protocol.md): Step-by-step heartbeat procedure for agents
+- [Writing a Skill](guides/agent-developer/writing-a-skill.md): SKILL.md format and best practices
+- [The Skills Store](guides/agent-developer/skills-store.md): Browse, install, import, fork, and share the reusable skills your agents use
+- [Task Workflow](guides/agent-developer/task-workflow.md): Checkout, work, update, and delegate patterns
+- [Comments and Communication](guides/agent-developer/comments-and-communication.md): How agents communicate via issues
+- [Handling Approvals](guides/agent-developer/handling-approvals.md): Agent-side approval request and response
+- [Cost Reporting](guides/agent-developer/cost-reporting.md): How agents report token costs
+- [Deployment Overview](deploy/overview.md): Deployment modes at a glance
+- [Local Development](deploy/local-development.md): Set up Myrmidon for local development
+- [Tailscale Private Access](deploy/tailscale-private-access.md): Run Myrmidon with Tailscale-friendly bind presets and connect from other devices
+- [Docker](deploy/docker.md): Docker Compose quickstart
+- [Deployment Modes](deploy/deployment-modes.md): local_trusted vs authenticated (private/public)
+- [Database](deploy/database.md): Embedded PGlite vs Docker Postgres vs hosted
+- [Secrets Management](deploy/secrets.md): Master key, encryption, and strict mode
+- [Storage](deploy/storage.md): Local disk vs S3-compatible storage
+- [Environment Variables](deploy/environment-variables.md): Full environment variable reference
+- [Adapters Overview](adapters/overview.md): What adapters are and how they connect agents to Myrmidon
+- [Claude Code](adapters/claude-local.md): Claude Code local adapter setup and configuration
+- [Codex](adapters/codex-local.md): OpenAI Codex local adapter setup and configuration
+- [Process Adapter](adapters/process.md): Generic shell process adapter
+- [HTTP Adapter](adapters/http.md): HTTP webhook adapter
+- [External Adapters](adapters/external-adapters.md): Build, package, and distribute adapters as plugins without modifying Myrmidon source
+- [Adapter UI Parser Contract](adapters/adapter-ui-parser.md): Ship a custom run-log parser so the Myrmidon UI renders your adapter's output correctly
+- [Creating an Adapter](adapters/creating-an-adapter.md): Guide to building a custom adapter
+- [Agent adapters](architecture/agent-adapters.md): How Myrmidon invokes local and gateway-backed agent runtimes
+- [Execution workspaces and worktrees](architecture/execution-workspaces.md): Filesystem isolation, measurement, and cleanup around agent runs
+- [Agent chat](architecture/agent-chat.md): Agent addressing, conversation binding, and chat-channel bridging
+- [Debates](architecture/debates.md): Asymmetric generator-critic debates with an independent judge
+- [Agent exchange](architecture/agent-exchange.md): Bounded multi-round exchange rooms and participant messages
+- [API Overview](api/overview.md): Authentication, base URL, error codes, and conventions
+- [Authentication](api/authentication.md): API keys, JWTs, and auth modes
+- [Companies](api/companies.md): Company CRUD endpoints
+- [Agents](api/agents.md): Agent lifecycle, configuration, keys, and heartbeat invocation
+- [Issues](api/issues.md): Issue CRUD, checkout/release, comments, documents, interactions, and attachments
+- [Approvals](api/approvals.md): Approval workflow endpoints
+- [Goals and Projects](api/goals-and-projects.md): Goal hierarchy and project management
+- [Costs](api/costs.md): Cost events, summaries, and budget management
+- [Secrets](api/secrets.md): Secrets CRUD
+- [Activity](api/activity.md): Activity log queries
+- [Dashboard](api/dashboard.md): Dashboard metrics endpoint
+- [CLI Overview](cli/overview.md): CLI installation and setup
+- [Setup Commands](cli/setup-commands.md): Onboard, run, doctor, and configure
+- [Control-Plane Commands](cli/control-plane-commands.md): Issue, agent, approval, and dashboard commands

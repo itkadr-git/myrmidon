@@ -86,6 +86,36 @@ describe("issue continuation summaries", () => {
     expect(body).toContain("Inspect the failed run, fix the cause");
   });
 
+  // myrmidon(OPE-12799)
+  it("tells the run after a run guard limit stop to pick the work up, not to inspect a failure or start over", () => {
+    for (const errorCode of ["model_call_limit", "no_progress_exploration"]) {
+      const body = buildContinuationSummaryMarkdown({
+        issue: {
+          id: "issue-1",
+          identifier: "OPE-12707",
+          title: "Continuation",
+          description: null,
+          status: "in_progress",
+          priority: "high",
+        },
+        run: {
+          id: "run-2",
+          status: "cancelled",
+          error: "Run stopped by the run guard",
+          errorCode,
+          resultJson: null,
+        },
+        agent: { id: "agent-1", name: "engineer", adapterType: "hermes_gateway" },
+      });
+      const nextAction = extractContinuationSummaryNextAction(body);
+      expect(nextAction).toContain("Do not start the task over");
+      expect(nextAction).toContain("git status");
+      expect(nextAction).not.toContain("Inspect the failed run");
+      expect(body).toContain("stopped by the run guard at a limit before it finished");
+      expect(continuationSummaryParksExecutor(body)).toBe(false);
+    }
+  });
+
   it("keeps in-progress issues runnable even if the previous summary parked for review", () => {
     const body = buildContinuationSummaryMarkdown({
       issue: {

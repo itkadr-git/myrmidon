@@ -26,6 +26,16 @@ has not triggered within the overdue threshold, the Attention feed raises an
 and wake history, then resume or reschedule the task; the item clears when the
 monitor is no longer overdue.
 
+## Release focus and wake diagnostics
+
+The effective instance `runPriority.currentRelease` comes from stored run-priority settings, falling back to `MYRMIDON_CURRENT_RELEASE` (unset means no focus). Focus is active only while `runPriority.strictReleaseFocus` is on (the default) and a current release is set. Labels are compared case-insensitively after trimming, and only an exact match counts (`1.6.90` does not match `1.6.9`). The gate uses labels, not workspace branches.
+
+While the company has an open, visible task with the current-release label (blocked and in-review tasks count), a run for a task that does not carry it is not started and not cancelled: it waits in `scheduled_retry` and is looked at again after 2, 5, 10 and then every 30 minutes, with no new wake made. The run gets one event with reason `release_focus` (once per run). It starts when `strictReleaseFocus` is turned off or the last open task of the current release is closed; after the focus is lifted, a parked run starts at its next look, up to 30 minutes later. A blocked current-release task still holds focus; resolve its blocker or close it as appropriate.
+
+Exceptions: a task the board owner assigned (the latest assignment record is by a board user and names the agent, with no later swarm claim; an old assignment without such a record does not count and must be made again), a review the agent is the current participant of, a wake made by a user (manual wake), and a run without a task. Swarm matching and idle pickup use the same predicate and leave out tasks of other releases. Runs already running are not stopped.
+
+See [settings](../myrmidon/SETTINGS.md#release-focus-for-wake-admission).
+
 ## Role queues
 
 With the role-queue pilot, a free agent claims the top task of its role's
@@ -95,6 +105,14 @@ staying in review forever. The behavior is the `boardMerge` block of
 `boardMerge.enabled = false` restores the previous wait-for-a-human
 behavior.
 
+## Post-merge verification (VERIFY-ON-PROD)
+
+For release tasks, merge is not the end of the workflow: the runtime enforces a post-merge verification stage (`verify`) before the task can be completed (`done`).
+- **Independent verifier**: The verifying agent or user must differ from the task executor (`REVIEW-INDEPENDENCE`).
+- **Required evidence**: Verifier approval requires recorded evidence of the deployed version (`Deploy version: <version>`) and verification method (`Check method: <method>`).
+- **Done gate**: Release tasks with code work products cannot be closed directly without a completed verify stage or an explicit skip configuration (`requirements.skip: true`).
+- **Rejection return**: Rejecting the verification (`changes_requested`) automatically returns the task to the original executor, waking them with `execution_changes_requested`. Resubmitting routes directly back to the verify stage.
+
 ## Discussion rooms
 
 A discussion room lets 2–4 agents on different models debate a question
@@ -104,11 +122,12 @@ an optional finisher summarizes the outcome.
 
 ## In detail
 
-- [Role queues (SWARM-CLAIM) settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-claim-settings.md)
-- [WIP limit](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/wip-limit.md)
-- [Stale-block watchdog](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/stale-block.md)
-- [Commander chat](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/commander-chat.md)
-- [Discussion rooms](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-exchange.md)
+- [Role queues (SWARM-CLAIM) settings](Swarm-claim-settings)
+- [WIP limit](Wip-limit)
+- [Stale-block watchdog](Stale-block)
+- [Commander chat](Commander-chat)
+- [Discussion rooms](Agent-exchange)
+- [Verify execution stage (VERIFY-ON-PROD)](Verify-execution-stage)
 - Review routing: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), section «REVIEW-ROUTING»
 
 ## Knowledge-note gate for system changes
@@ -122,7 +141,9 @@ service updates cannot bypass it. During the first three days after
 `2026-10-31`, the default is warning-only; operators can explicitly select
 `warning` or `enforce` with `MYRMIDON_KNOWLEDGE_GATE_MODE`, and can override the
 rollout anchor with `MYRMIDON_KNOWLEDGE_GATE_START_DATE`. Non-system changes
-are unaffected. See the [knowledge gate change record](../myrmidon/changes/knowledge-gate-system-changes.md)
+are unaffected. See the knowledge gate settings
+`MYRMIDON_KNOWLEDGE_GATE_MODE` and `MYRMIDON_KNOWLEDGE_GATE_START_DATE` in
+[`docs/myrmidon/SETTINGS.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md)
 for the rollout and settings reference.
 
 ## Recovery and requeue holds

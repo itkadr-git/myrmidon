@@ -15,6 +15,13 @@ export const DEFAULT_REPEATED_TOOL_CALL_LIMIT = 3;
 export const DEFAULT_CODE_NO_PROGRESS_LIMIT = 100;
 export const DEFAULT_CODE_REPEATED_TOOL_CALL_LIMIT = 5;
 
+// myrmidon(OPE-12799): how many model calls before the call limit the guard hands
+// back the wrap-up hint ("save what is done: commit, push, write where you are"),
+// so the stop at the limit does not lose the work. Only for limits of at least
+// WRAP_UP_MIN_MODEL_CALL_LIMIT calls; a shorter run has no room for it.
+export const DEFAULT_WRAP_UP_RESERVE = 15;
+export const WRAP_UP_MIN_MODEL_CALL_LIMIT = 100;
+
 export const CODE_ROLES: ReadonlySet<string> = new Set([
   "engineer",
   "reviewer",
@@ -52,6 +59,11 @@ export interface RunGuardDecision {
     tool?: string;
     repeatCount?: number;
     modelCalls?: number;
+    /**
+     * myrmidon(OPE-12799): set on the wrap-up hint only: the model calls left
+     * before the run is stopped at the call limit.
+     */
+    remaining?: number;
   };
 }
 
@@ -211,8 +223,14 @@ export class RunGuard {
   // not take for read-only (patch, write_file, terminal commands that change
   // something, ...) over the whole run. It tells a call-limit stop of a run that
   // was changing things (work, continued by the board) from one that only looked.
+  // myrmidon(OPE-12799): `opaqueCalls` counts the calls whose effect the guard
+  // cannot see (execute_code). They are not confirmed writes: they do not reset
+  // `readOnlyStreak` (which is therefore "calls since the last confirmed write")
+  // and are not in `writeCalls`.
   private toolCalls = 0;
   private writeCalls = 0;
+  private opaqueCalls = 0;
+  private wrapUpHinted = false;
   private readOnlyStreak = 0;
   private readonly readCallCounts = new Map<string, number>();
   private stoppedReason: RunGuardStopReason | null = null;
@@ -248,6 +266,24 @@ export class RunGuard {
     this.modelCalls += 1;
     this.lastEventAt = this.now();
     this.scheduleIdleWatch();
+    // myrmidon(OPE-12799): one wrap-up hint DEFAULT_WRAP_UP_RESERVE calls before
+    // the limit, whatever the run did so far. The run goes on; the adapter tells
+    // the agent to save its work while it still has calls for that.
+    if (
+      !this.wrapUpHinted &&
+      this.modelCallLimit >= WRAP_UP_MIN_MODEL_CALL_LIMIT &&
+      this.modelCalls === this.modelCallLimit - DEFAULT_WRAP_UP_RESERVE
+    ) {
+      this.wrapUpHinted = true;
+      return {
+        stop: false,
+        hint: {
+          reason: "model_call_limit",
+          modelCalls: this.modelCalls,
+          remaining: DEFAULT_WRAP_UP_RESERVE,
+        },
+      };
+    }
     return { stop: false };
   }
 
@@ -336,6 +372,7 @@ export class RunGuard {
     toolRetryCount: number;
     toolCalls: number;
     writeCalls: number;
+    opaqueCalls: number;
     readOnlyStreak: number;
   } {
     return {
@@ -344,6 +381,7 @@ export class RunGuard {
       toolRetryCount: this.toolFailureCount,
       toolCalls: this.toolCalls,
       writeCalls: this.writeCalls,
+      opaqueCalls: this.opaqueCalls,
       readOnlyStreak: this.readOnlyStreak,
     };
   }
@@ -363,17 +401,22 @@ export class RunGuard {
   toolStarted(name: string, args: unknown): RunGuardDecision {
     if (this.stoppedReason) return { stop: true, reason: this.stoppedReason };
     this.toolCalls += 1;
-    if (classifyToolCall(name, args) === "write") {
+    const kind = classifyToolCall(name, args);
+    if (kind === "write") {
       this.writeCalls += 1;
       this.readOnlyStreak = 0;
       this.readCallCounts.clear();
       return this.event();
     }
+    // myrmidon(OPE-12799): an opaque call (execute_code) is not a confirmed write,
+    // so it counts toward the streak of calls without one. Its preview is the same
+    // script prefix on every call, so it is never compared for repeats.
+    if (kind === "opaque") this.opaqueCalls += 1;
     this.readOnlyStreak += 1;
     // A call with no argument text (the gateway sometimes sends an empty preview)
     // says nothing about what was read, so it never counts as a repeat; it still
     // counts toward the read-only streak above. The tool name is part of the hash.
-    if (this.repeatedToolCallLimit > 0 && !isEmptyCallArgument(args)) {
+    if (kind === "read" && this.repeatedToolCallLimit > 0 && !isEmptyCallArgument(args)) {
       const signature = toolFailureSignature(name, args);
       if (this.readCallCounts.size >= MAX_TRACKED_CALL_SIGNATURES && !this.readCallCounts.has(signature)) {
         this.readCallCounts.clear();

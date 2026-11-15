@@ -38,6 +38,9 @@ type botStatus struct {
 	RestartHash *string `json:"restartHash"`
 	FilesHash   *string `json:"filesHash"`
 	GatewayPort int     `json:"gatewayPort,omitempty"`
+	// OPE-12663: nil/absent — no mark or unreadable; true — IDLE-STOP stopped
+	// this container and the reconciler must leave it down until a wake.
+	IdleStopped *bool `json:"idleStopped,omitempty"`
 }
 
 // spec is the driver contract's BotContainerSpec.
@@ -501,6 +504,7 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 		}
 		status.GatewayPort = s.gatewayPort(enrolled.BotKey)
 		s.fillApplied(&status)
+		s.fillIdleStopped(&status)
 		statuses = append(statuses, status)
 	}
 	writeJSON(w, map[string]any{"bots": statuses})
@@ -533,6 +537,15 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case action == "stopIdle" && r.Method == http.MethodPost:
+		// OPE-12663: IDLE-STOP. The mark-write failure mode mirrors the local
+		// docker driver: the container is started back up, never left down
+		// without its mark.
+		if err := s.stopIdle(r.Context(), botKey); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		writeJSON(w, map[string]string{"botKey": botKey, "state": "stopped"})
 	case action == "status" && r.Method == http.MethodGet:
 		status, err := s.docker.status(r.Context(), botKey)
 		if err != nil {
@@ -541,6 +554,7 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 		}
 		status.GatewayPort = s.gatewayPort(botKey)
 		s.fillApplied(&status)
+		s.fillIdleStopped(&status)
 		writeJSON(w, status)
 	case action == "logs" && r.Method == http.MethodGet:
 		logs, err := s.docker.logs(r.Context(), botKey)
@@ -560,12 +574,19 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), status)
 			return
 		}
+		// OPE-12663: a fresh (re)created container is not idle-stopped.
+		s.clearIdleStopped(botKey)
 		writeJSON(w, map[string]string{"botKey": botKey, "state": "created"})
 	case (action == "start" || action == "restart" || action == "stop") && r.Method == http.MethodPost:
 		if err := s.docker.action(r.Context(), botKey, action); err != nil {
 			http.Error(w, err.Error(), 502)
 			return
 		}
+		// OPE-12663: a wake (start) or an operator stop/restart is not an
+		// idle stop — the mark must not survive it, or the reconciler would
+		// treat a running container as idle-stopped. Best effort: the mark is
+		// advisory state, a failed clear is not worth failing the action.
+		s.clearIdleStopped(botKey)
 		writeJSON(w, map[string]string{"botKey": botKey, "state": action})
 	case (action == "profile" && r.Method == http.MethodPut) || (action == "writeProfile" && r.Method == http.MethodPost):
 		var p profile

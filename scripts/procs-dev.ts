@@ -76,7 +76,7 @@ for (const arg of args) {
 }
 if (args.includes("--help") || args.includes("-h")) usage();
 
-const env: NodeJS.ProcessEnv = { ...process.env, PAPERCLIP_PROCESS_MODE: "split" };
+const env: NodeJS.ProcessEnv = { ...process.env, MYRMIDON_PROCESS_MODE: "split" };
 // Same normalization `pnpm dev` applies before its first child: children
 // auto-apply migrations without a prompt, and dev bind/deployment overrides
 // are cleared so the stand is local_trusted (design §2.1) regardless of an

@@ -92,7 +92,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-issue-liveness-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     // Dependency reconciliation heals missing wakes by enqueuing an

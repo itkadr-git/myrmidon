@@ -55,7 +55,9 @@ type runtime struct {
 	cfg    *config.Config
 	hash   string
 	images route.Images
-	set    map[string]struct{}
+	// set is the allowed-for-create set: cfg.Images only. images (the A1 paths)
+	// also covers cfg.InspectOnlyImages, which must never reach create.
+	set map[string]struct{}
 }
 
 func newRuntime(cfg *config.Config, hash string) *runtime {
@@ -63,7 +65,7 @@ func newRuntime(cfg *config.Config, hash string) *runtime {
 	for _, im := range cfg.Images {
 		set[im] = struct{}{}
 	}
-	return &runtime{cfg: cfg, hash: hash, images: route.NewImages(cfg.Images), set: set}
+	return &runtime{cfg: cfg, hash: hash, images: route.NewImages(append(append([]string(nil), cfg.Images...), cfg.InspectOnlyImages...)), set: set}
 }
 
 // Options configure a Gate. Everything but Cfg has a default.

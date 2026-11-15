@@ -53,8 +53,8 @@ API ограждений также маскирует найденные сущ
 меняется, возвращаются найденные диапазоны), а
 `POST /api/myrmidon/guardrails/restore` возвращает оригиналы, пока они не
 истекли. Подробности — в
-[руководстве по режимам маскирования](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/redaction-modes.ru.md)
-([английском](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/redaction-modes.md)).
+[руководстве по режимам маскирования](Redaction-modes.ru)
+([английском](Redaction-modes)).
 
 ## Аварийная остановка
 
@@ -80,13 +80,13 @@ API ограждений также маскирует найденные сущ
 - **Приоритет и подтверждение в интерфейсе**:
   - Приоритет: `ui` (сохранённое значение) > `env` (переменная окружения) > `default` (по умолчанию).
   - Редактирование белых списков и включение режима YOLO требуют подтверждения в модальном диалоге интерфейса во избежание случайного ослабления безопасности.
-  - Подробнее: [Настройки в интерфейсе](Settings-in-the-interface.ru.md#панель-ограждения-instance--general).
+  - Подробнее: [Настройки в интерфейсе](Settings-in-the-interface.ru#панель-ограждения-instance--general).
 
 ## Подробнее
 
-- [Матрица автономии: контроль изменений инструкций](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/autonomy-matrix-instructions.md)
-- [Матрица автономии: пауза, возобновление, пробуждение](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/autonomy-pause-wake-enforcement.md)
-- [Матрица автономии: удаление](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/autonomy-delete-enforcement.md)
-- [Аварийная остановка запусков после дренирующей паузы](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/emergency-stop.md)
-- [Режимы маскирования](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/redaction-modes.ru.md)
+- [Матрица автономии: контроль изменений инструкций](Autonomy-matrix-instructions.ru)
+- [Матрица автономии: пауза, возобновление, пробуждение](Autonomy-pause-wake-enforcement.ru)
+- [Матрица автономии: удаление](Autonomy-delete-enforcement.ru)
+- [Аварийная остановка запусков после дренирующей паузы](Emergency-stop.ru)
+- [Режимы маскирования](Redaction-modes.ru)
 - Хранилище и API матрицы: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), разделы «AUTONOMY-MATRIX» и «GUARDRAILS»

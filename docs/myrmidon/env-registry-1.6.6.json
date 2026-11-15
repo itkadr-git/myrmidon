@@ -41,10 +41,10 @@
     "Динамически собираемые имена не перечисляются поимённо, а описаны шаблонами в dynamic_patterns (префикс, допустимый набор значений, класс, источник); скрипт проверки находит в коде все динамические сборки имён и требует шаблон на каждую. Фактический набор имён в рантайме (по ботам/провайдерам экземпляра) определяется данными экземпляра и этим реестром не фиксируется."
   ],
   "counts": {
-    "unique_names": 903,
-    "secret": 108,
-    "infra": 374,
-    "product": 421
+    "unique_names": 910,
+    "secret": 109,
+    "infra": 375,
+    "product": 426
   },
   "entries": [
     {
@@ -3337,6 +3337,22 @@
       "secret_ref_or_instance_setup": "не секрет; задаётся при установке экземпляра (env юнита/compose); отдельной настройки в UI нет",
       "ticket_or_pr": "не требуется",
       "decision": "оставить в env установки (решение аудита 08.10); пересмотр владельцем при необходимости"
+    },
+    {
+      "name": "MYRMIDON_BRIDGE_QUEUE_POLL_IDLE_MS",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "packages/adapter-utils/src/execution-target.ts:4859",
+      "audit_reason": "deployment / runtime plumbing or security rate-limit (operator-only, set at install)",
+      "classification": "infra",
+      "class_basis": "name-rule",
+      "scope": "host",
+      "ui_or_store": "UI нет и не планируется (настройка установки/окружения)",
+      "secret_ref_or_instance_setup": "не секрет; задаётся при установке экземпляра (env юнита/compose); отдельной настройки в UI нет",
+      "ticket_or_pr": "OPE-12727",
+      "decision": "оставить в env установки; пересмотр владельцем при необходимости"
     },
     {
       "name": "MYRMIDON_BRIDGE_RESPONSE_TIMEOUT_MS",
@@ -9933,6 +9949,24 @@
       "decision": "оставить в env до решения владельца о настройке в UI"
     },
     {
+      "name": "MYRMIDON_RELEASE_VERIFICATION_KEY",
+      "aliases": [
+        "PAPERCLIP_RELEASE_VERIFICATION_KEY"
+      ],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "server/src/routes/issues.ts (release-verify route, readProductEnv)",
+      "audit_reason": "shared HMAC secret binding the release-verify verdict to the publish gate (OPE-13017)",
+      "classification": "secret",
+      "class_basis": "OPE-13017",
+      "scope": "process",
+      "ui_or_store": "UI нет; секрет процесса доски, общий с GitHub Actions-секретом MYRMIDON_RELEASE_VERIFICATION_KEY на publish-воркфлоу",
+      "secret_ref_or_instance_setup": "значение секрета только в env доски и в GitHub Actions secret publish-воркфлоу; совпадение обеих сторон обязательно (иначе подпись не сойдётся и публикация откажет — fail closed)",
+      "ticket_or_pr": "OPE-13017",
+      "decision": "оставить секретом процесса; перенос в хранилище секретов доски не требуется (должен совпадать с CI-секретом)"
+    },
+    {
       "name": "MYRMIDON_RELEASE_VENDOR_SHARE_STATE",
       "aliases": [],
       "in_main_code": false,
@@ -14787,6 +14821,81 @@
       "secret_ref_or_instance_setup": "не секрет; задаётся при установке экземпляра (env юнита/compose); отдельной настройки в UI нет",
       "ticket_or_pr": "не требуется",
       "decision": "оставить в env установки (решение аудита 08.10); пересмотр владельцем при необходимости"
+    },
+    {
+      "name": "MYRMIDON_KNOWLEDGE_MAX_ITEMS",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "packages/shared/src/myrmidon-knowledge-settings.ts:26",
+      "classification": "product",
+      "class_basis": "settings-md",
+      "scope": "company",
+      "ui_or_store": "UI: Company Settings → Knowledge; хранимая настройка company (knowledge_settings.maxItems), env-резерв",
+      "secret_ref_or_instance_setup": "не секрет; значение хранится как настройка компании (экран Settings → Knowledge либо env-резерв)",
+      "ticket_or_pr": "OPE-7923",
+      "decision": "настройка компании через экран Settings → Knowledge; env-переменная — резерв при отсутствии сохранённого значения"
+    },
+    {
+      "name": "MYRMIDON_KNOWLEDGE_MAX_REVISION_BYTES",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "packages/shared/src/myrmidon-knowledge-settings.ts:27",
+      "classification": "product",
+      "class_basis": "settings-md",
+      "scope": "company",
+      "ui_or_store": "UI: Company Settings → Knowledge; хранимая настройка company (knowledge_settings.maxRevisionBytes), env-резерв",
+      "secret_ref_or_instance_setup": "не секрет; значение хранится как настройка компании (экран Settings → Knowledge либо env-резерв)",
+      "ticket_or_pr": "OPE-7923",
+      "decision": "настройка компании через экран Settings → Knowledge; env-переменная — резерв при отсутствии сохранённого значения"
+    },
+    {
+      "name": "MYRMIDON_KNOWLEDGE_AUTO_ACCEPT",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "packages/shared/src/myrmidon-knowledge-settings.ts:28",
+      "classification": "product",
+      "class_basis": "settings-md",
+      "scope": "company",
+      "ui_or_store": "UI: Company Settings → Knowledge; хранимая настройка company (knowledge_settings.autoAcceptEnabled), env-резерв",
+      "secret_ref_or_instance_setup": "не секрет; значение хранится как настройка компании (экран Settings → Knowledge либо env-резерв)",
+      "ticket_or_pr": "OPE-7923",
+      "decision": "настройка компании через экран Settings → Knowledge; env-переменная — резерв при отсутствии сохранённого значения"
+    },
+    {
+      "name": "MYRMIDON_KNOWLEDGE_AUTO_ACCEPT_MIN_CONFIDENCE",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "packages/shared/src/myrmidon-knowledge-settings.ts:29",
+      "classification": "product",
+      "class_basis": "settings-md",
+      "scope": "company",
+      "ui_or_store": "UI: Company Settings → Knowledge; хранимая настройка company (knowledge_settings.autoAcceptMinConfidence), env-резерв",
+      "secret_ref_or_instance_setup": "не секрет; значение хранится как настройка компании (экран Settings → Knowledge либо env-резерв)",
+      "ticket_or_pr": "OPE-7923",
+      "decision": "настройка компании через экран Settings → Knowledge; env-переменная — резерв при отсутствии сохранённого значения"
+    },
+    {
+      "name": "MYRMIDON_KNOWLEDGE_SCHEDULE",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "packages/shared/src/myrmidon-knowledge-settings.ts:30",
+      "classification": "product",
+      "class_basis": "settings-md",
+      "scope": "company",
+      "ui_or_store": "UI: Company Settings → Knowledge; хранимая настройка company (knowledge_settings.schedule), env-резерв",
+      "secret_ref_or_instance_setup": "не секрет; значение хранится как настройка компании (экран Settings → Knowledge либо env-резерв)",
+      "ticket_or_pr": "OPE-7923",
+      "decision": "настройка компании через экран Settings → Knowledge; env-переменная — резерв при отсутствии сохранённого значения"
     }
   ],
   "dynamic_patterns": [
@@ -14861,6 +14970,18 @@
       "secret_ref_or_instance_setup": "отдельной настройки нет: класс определяется именем в entries",
       "ticket_or_pr": "OPE-8820",
       "decision": "не отдельная переменная; учтено правилом алиасов"
+    },
+    {
+      "id": "stack-image-exact-refs",
+      "template": "MYRMIDON_STACK_IMAGE_<NAME>",
+      "prefix": "MYRMIDON_STACK_IMAGE_",
+      "suffix_domain": "имя компонента реестра стека в верхнем регистре, «-» заменён на «_» (HERMES_AGENT, CLICKHOUSE, BASE_IMAGES)",
+      "classification": "infra",
+      "scope": "instance",
+      "source": "server/src/myrmidon/stack-registry/collector.ts (STACK_IMAGE_ENV_PREFIX)",
+      "secret_ref_or_instance_setup": "не секрет; точные ссылки образов (тег или дайджест) через запятую, задаются при установке экземпляра",
+      "ticket_or_pr": "OPE-12922",
+      "decision": "настройка установки; те же ссылки должны быть в inspectOnlyImages dockergate"
     }
   ]
 }

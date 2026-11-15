@@ -1523,6 +1523,13 @@ export function scheduleQueuedResweep(sweep: () => unknown, delayMs = RESWEEP_DE
   resweepTimer.unref?.();
 }
 
+export function cancelQueuedResweep(): void {
+  if (resweepTimer) {
+    clearTimeout(resweepTimer);
+    resweepTimer = null;
+  }
+}
+
 let shared: RunAdmission | null = null;
 
 // myrmidon(C0): the memory guard is inactive when the cgroup limit is not
@@ -1653,6 +1660,7 @@ export function sharedRunAdmission(): RunAdmission {
 
 /** Test hook: drop the process-wide admission so the next call rereads the env. */
 export function resetSharedRunAdmissionForTests(): void {
+  cancelQueuedResweep();
   shared = null;
   memoryLimitWarningLogged = false;
   hostMemoryWarningLogged = false;

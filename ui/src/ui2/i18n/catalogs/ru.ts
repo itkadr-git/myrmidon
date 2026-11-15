@@ -487,6 +487,11 @@ export const ru: Ui2Catalog = {
         status: "Владелец · Веб",
       },
       chip: {
+        runs: "Прогоны: {{running}}",
+        runsFailed: "Прогоны: {{running}} · ошибок сегодня: {{failed}}",
+        spend: "{{spend}} из {{budget}}",
+        empty: "—",
+        waitingUnavailable: "Число ожидающих недоступно",
         colony: "{{active}} из {{total}}",
         fleet: "Флот",
         fleetAttention: "Флот: 1 требует внимания",

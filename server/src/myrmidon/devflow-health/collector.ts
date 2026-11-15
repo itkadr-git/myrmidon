@@ -214,55 +214,9 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
     }
   }
 
-  // Decisions and comments for verdict extraction
-  const decisions = await db
-    .select()
-    .from(issueExecutionDecisions)
-    .where(and(eq(issueExecutionDecisions.companyId, companyId), eq(issueExecutionDecisions.stageType, "review")));
-
-  const verdictComments = await db
-    .select({
-      id: issueComments.id,
-      issueId: issueComments.issueId,
-      body: issueComments.body,
-      createdAt: issueComments.createdAt,
-      authorAgentId: issueComments.authorAgentId,
-      authorUserId: issueComments.authorUserId,
-      authorType: issueComments.authorType,
-    })
-    .from(issueComments)
-    .where(
-      and(
-        eq(issueComments.companyId, companyId),
-        or(
-          ilike(issueComments.body, "%verdict%"),
-          ilike(issueComments.body, "%вердикт%"),
-          ilike(issueComments.body, "%approve%"),
-          ilike(issueComments.body, "%одобр%"),
-          ilike(issueComments.body, "%request changes%"),
-          ilike(issueComments.body, "%changes requested%"),
-          ilike(issueComments.body, "%rework%"),
-          ilike(issueComments.body, "%доработк%"),
-        ),
-      ),
-    );
-
-  const commentsByIssueId = new Map<string, Array<{
-    id: string;
-    issueId: string;
-    body: string;
-    createdAt: Date;
-    authorAgentId?: string | null;
-    authorUserId?: string | null;
-    authorType?: string | null;
-  }>>();
-  for (const comment of verdictComments) {
-    const list = commentsByIssueId.get(comment.issueId) ?? [];
-    list.push(comment);
-    commentsByIssueId.set(comment.issueId, list);
-  }
-
-  // 4. Products: redCiMs, staleMarkerMs, stalledMergeMs, approvedNotMergedMs
+  // Products first: verdict comments are only read for issues with an active
+  // PR, so the comments query is scoped to those issue ids instead of scanning
+  // every company comment (OPE-12784).
   const products = await db
     .select({ product: issueWorkProducts, issue: issues })
     .from(issueWorkProducts)
@@ -279,6 +233,61 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
     );
 
   const activePrProducts = products.filter(({ product }) => !["merged", "closed"].includes(product.status));
+  const allPrIssueIds = activePrProducts.map(({ issue }) => issue.id);
+  const prIssueIds = allPrIssueIds.filter((id, index) => allPrIssueIds.indexOf(id) === index);
+
+  // Decisions and comments for verdict extraction
+  const decisions = await db
+    .select()
+    .from(issueExecutionDecisions)
+    .where(and(eq(issueExecutionDecisions.companyId, companyId), eq(issueExecutionDecisions.stageType, "review")));
+
+  const verdictComments =
+    prIssueIds.length > 0
+      ? await db
+          .select({
+            id: issueComments.id,
+            issueId: issueComments.issueId,
+            body: issueComments.body,
+            createdAt: issueComments.createdAt,
+            authorAgentId: issueComments.authorAgentId,
+            authorUserId: issueComments.authorUserId,
+            authorType: issueComments.authorType,
+          })
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.companyId, companyId),
+              isNull(issueComments.deletedAt),
+              inArray(issueComments.issueId, prIssueIds),
+              or(
+                ilike(issueComments.body, "%verdict%"),
+                ilike(issueComments.body, "%вердикт%"),
+                ilike(issueComments.body, "%approve%"),
+                ilike(issueComments.body, "%одобр%"),
+                ilike(issueComments.body, "%request changes%"),
+                ilike(issueComments.body, "%changes requested%"),
+                ilike(issueComments.body, "%rework%"),
+                ilike(issueComments.body, "%доработк%"),
+              ),
+            ),
+          )
+      : [];
+
+  const commentsByIssueId = new Map<string, Array<{
+    id: string;
+    issueId: string;
+    body: string;
+    createdAt: Date;
+    authorAgentId?: string | null;
+    authorUserId?: string | null;
+    authorType?: string | null;
+  }>>();
+  for (const comment of verdictComments) {
+    const list = commentsByIssueId.get(comment.issueId) ?? [];
+    list.push(comment);
+    commentsByIssueId.set(comment.issueId, list);
+  }
 
   for (const { product, issue } of activePrProducts) {
     const meta = (product.metadata ?? {}) as Record<string, unknown>;

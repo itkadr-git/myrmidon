@@ -140,8 +140,19 @@ export function buildConflictComment(input: {
   return `PR ${refs}: merge conflict (mergeable=CONFLICTING), влей свежий main.`;
 }
 
+/** The options of a board wake, as `heartbeatService(db).wakeup` takes them. */
+export type TaskPrSyncParentWakeOptions = Parameters<
+  ReturnType<typeof import("../../services/heartbeat.js").heartbeatService>["wakeup"]
+>[1];
+export type TaskPrSyncParentWake = (agentId: string, wakeup: TaskPrSyncParentWakeOptions) => Promise<unknown>;
+
 export interface TaskPrSyncSweepDeps {
   db: Db;
+  /**
+   * Wakes the owner of a parent task when a subtask's pull request is merged.
+   * Defaults to the heartbeat service; injected so tests never start a run.
+   */
+  wakeParent?: TaskPrSyncParentWake;
   /** The existing company-scoped GitHub resolver; injected so tests never use the network. */
   resolvePullRequestDetails: PullRequestMergeDetailsResolver;
   /** Maintenance gate; defaults to the instance-wide check. */
@@ -521,6 +532,86 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
     return row?.createdAt ?? null;
   }
 
+  /**
+   * myrmidon(MONITOR-IDLE-LOOP, OPE-13141): the owner of an epic waits for the pull
+   * requests of its subtasks. The board notices the merge here and wakes the owner
+   * exactly once per merged subtask (the idempotency key is the parent and the
+   * subtask), so waiting needs no monitor that polls with a model. Same reason and
+   * key as the route-time wake for the last finished subtask: the two cannot both fire.
+   */
+  async function wakeParentOfSettledChild(child: { id: string; companyId: string; parentId: string }) {
+    const [parent] = await deps.db
+      .select({
+        id: issues.id,
+        assigneeAgentId: issues.assigneeAgentId,
+        status: issues.status,
+        conversationAgentId: issues.conversationAgentId,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, child.companyId), eq(issues.id, child.parentId)))
+      .limit(1);
+    if (
+      !parent ||
+      parent.conversationAgentId ||
+      !parent.assigneeAgentId ||
+      ["backlog", "done", "cancelled"].includes(parent.status)
+    ) {
+      return false;
+    }
+    const services = await loadTaskPrSyncServices();
+    const allDone = await services.issueService(deps.db).getWakeableParentAfterChildCompletion(parent.id, {
+      issueId: child.id,
+      summary: null,
+    });
+    let context: Record<string, unknown>;
+    if (allDone) {
+      context = {
+        completedChildIssueId: child.id,
+        childIssueIds: allDone.childIssueIds,
+        childIssueSummaries: allDone.childIssueSummaries,
+        childIssueSummaryTruncated: allDone.childIssueSummaryTruncated,
+        allChildrenTerminal: true,
+      };
+    } else {
+      const siblings = await deps.db
+        .select({ id: issues.id, identifier: issues.identifier, title: issues.title, status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.companyId, child.companyId), eq(issues.parentId, parent.id)))
+        .orderBy(asc(issues.issueNumber), asc(issues.createdAt));
+      context = {
+        completedChildIssueId: child.id,
+        childIssueIds: siblings.map((sibling) => sibling.id),
+        childIssueSummaries: siblings.map((sibling) => ({ ...sibling, summary: null })),
+        childIssueSummaryTruncated: false,
+        allChildrenTerminal: false,
+      };
+    }
+    const wake: TaskPrSyncParentWake =
+      deps.wakeParent ??
+      (async (agentId, wakeup) => {
+        const { heartbeatService } = await import("../../services/heartbeat.js");
+        return heartbeatService(deps.db).wakeup(agentId, wakeup);
+      });
+    await wake(parent.assigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_children_completed",
+      idempotencyKey: `issue_children_completed:${parent.id}:${child.id}`,
+      payload: { issueId: parent.id, ...context, childPullRequestMerged: true },
+      requestedByActorType: "system",
+      requestedByActorId: TASK_PR_SYNC_ACTIVITY_ACTOR,
+      contextSnapshot: {
+        issueId: parent.id,
+        taskId: parent.id,
+        wakeReason: "issue_children_completed",
+        source: "issue.children_completed",
+        ...context,
+        childPullRequestMerged: true,
+      },
+    });
+    return true;
+  }
+
   async function settleIssue(
     issue: { id: string; companyId: string },
     decision: Extract<TaskPrSyncDecision, { kind: "settle_done" }>,
@@ -534,6 +625,7 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
     const services = await loadTaskPrSyncServices();
     const publications: ActivityPublication[] = [];
     const actions: IssuePostCommitAction[] = [];
+    let settledParentId: string | null = null;
     const settled = await deps.db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       const locked = await tx
@@ -544,6 +636,7 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
         .then((rows) => rows[0] ?? null);
       if (!locked) return false;
       if (TERMINAL_ISSUE_STATUSES.has(locked.status)) return false;
+      settledParentId = locked.parentId ?? null;
       // Transaction callers cannot perform provider I/O. Persist freshly verified
       // merge state before issueService enforces the completion guard.
       for (const pr of prFacts) {
@@ -606,6 +699,14 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
     if (!settled) return false;
     for (const publication of publications) publishActivity(publication);
     await services.executeIssuePostCommitActions(deps.db, actions);
+    const parentId = settledParentId as string | null;
+    if (parentId) {
+      try {
+        await wakeParentOfSettledChild({ id: issue.id, companyId: issue.companyId, parentId });
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id, parentId }, "task PR sync: waking the parent of a settled subtask failed");
+      }
+    }
     // Record the merge sha on each merged work product so a re-run that somehow
     // sees the same merge does not comment a second time.
     const productsService = await workProducts();

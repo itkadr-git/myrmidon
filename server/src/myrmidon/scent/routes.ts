@@ -11,15 +11,18 @@
 // - GET  /myrmidon/companies/:companyId/swarm/scent/status — whether the
 //   classifier is on, the settings in force, and the backlog counters.
 //
-// Access follows the swarm-claim routes: any company member. The per-record
-// hourly budget (classifierMaxPerRecordPerHour) applies to refreshes too —
-// the ledger counts every classification attempt, success or failure.
+// myrmidon(1.6.8 SCENT-AUTHZ OPE-12698): the refresh routes are BOARD-ONLY —
+// an agent key gets 403 before any db read or gateway call. The refresh
+// responses carry an explicit field allowlist (id + the scent fields), never
+// the raw db row. The per-record hourly budget (classifierMaxPerRecordPerHour)
+// applies to refreshes too — the ledger counts every classification attempt,
+// success or failure.
 
 import { Router } from "express";
 import { and, eq } from "drizzle-orm";
 import { agents, issues, type Db } from "@myrmidon/db";
 import { readScentSettings } from "@myrmidon/shared";
-import { assertCompanyAccess } from "../../routes/authz.js";
+import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { logActivity } from "../../services/activity-log.js";
 import { secretService } from "../../services/index.js";
@@ -104,6 +107,7 @@ export function myrmidonScentRoutes(db: Db, ports: ScentQueuePorts = {}) {
       const companyId = String(req.params.companyId);
       const issueId = String(req.params.issueId);
       assertCompanyAccess(req, companyId);
+      assertBoard(req);
 
       const [row] = await db
         .select()
@@ -152,7 +156,16 @@ export function myrmidonScentRoutes(db: Db, ports: ScentQueuePorts = {}) {
       }
       await db.update(issues).set(patch).where(eq(issues.id, issueId));
 
-      const [fresh] = await db.select().from(issues).where(eq(issues.id, issueId));
+      const [fresh] = await db
+        .select({
+          id: issues.id,
+          casteKey: issues.casteKey,
+          casteSource: issues.casteSource,
+          pheromoneStrength: issues.pheromoneStrength,
+          scent: issues.scent,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId));
       res.json({ issue: fresh });
     },
   );
@@ -163,6 +176,7 @@ export function myrmidonScentRoutes(db: Db, ports: ScentQueuePorts = {}) {
       const companyId = String(req.params.companyId);
       const agentId = String(req.params.agentId);
       assertCompanyAccess(req, companyId);
+      assertBoard(req);
 
       const [row] = await db
         .select()
@@ -184,7 +198,15 @@ export function myrmidonScentRoutes(db: Db, ports: ScentQueuePorts = {}) {
         res.status(502).json({ error: "scent_classifier_unavailable_or_no_capabilities" });
         return;
       }
-      const [fresh] = await db.select().from(agents).where(eq(agents.id, agentId));
+      const [fresh] = await db
+        .select({
+          id: agents.id,
+          scentTags: agents.scentTags,
+          modelTier: agents.modelTier,
+          scentClassifiedAt: agents.scentClassifiedAt,
+        })
+        .from(agents)
+        .where(eq(agents.id, agentId));
       res.json({ agent: fresh });
     },
   );

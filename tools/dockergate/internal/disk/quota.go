@@ -46,6 +46,11 @@ var (
 	ErrBadQuota = errors.New("disk: quota out of range")
 	// ErrQuotaUnavailable: project quota is not enabled on the bot partition.
 	ErrQuotaUnavailable = errors.New("disk: project quota is not enabled")
+	// ErrBotDirStillExists: Remove refuses to drop the project-table entries
+	// while the bot's data directory is still there. On a recreate the volume
+	// outlives the container, so this refusal is the expected case, not a
+	// failure of the removal.
+	ErrBotDirStillExists = errors.New("disk: bot directory still exists")
 )
 
 // Executor runs a program of the host and returns its standard output. It is
@@ -231,7 +236,7 @@ func (q *Quota) Remove(ctx context.Context, botKey string) error {
 	}
 	dir := filepath.Join(root, botKey)
 	if _, err := os.Lstat(dir); err == nil {
-		return fmt.Errorf("disk: bot directory still exists")
+		return ErrBotDirStillExists
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("disk: inspect bot directory: %w", err)
 	}

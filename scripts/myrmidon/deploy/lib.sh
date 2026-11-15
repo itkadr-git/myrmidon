@@ -497,6 +497,11 @@ load_config() {
   : "${MYRMIDON_DEPLOY_DB_DUMP_RESERVE_GB:=5}"
   : "${MYRMIDON_DEPLOY_IMAGE_KEEP:=1}"
   : "${MYRMIDON_DEPLOY_IMAGE_REPOS:=$MYRMIDON_IMAGE,ghcr.io/itkadr-git/myrmidon-dockergate,ghcr.io/itkadr-git/myrmidon-fleetd,ghcr.io/itkadr-git/myrmidon-hermes,ghcr.io/itkadr-git/myrmidon-hermes-dev,ghcr.io/itkadr-git/myrmidon-hermes-node}"
+  # myrmidon(IMAGE-GC, OPE-12696): after a healthy deploy every image of these
+  # repository globs that NO container uses is removed and the build cache is
+  # pruned (deploy_image_gc). Rollback images stay in GHCR.
+  : "${MYRMIDON_DEPLOY_IMAGE_GC:=1}"
+  : "${MYRMIDON_DEPLOY_IMAGE_GC_REPOS:=ghcr.io/itkadr-git/myrmidon*,ghcr.io/itkadr-git/agent-runtime*}"
   # DB-TUNING (OPE-5009): the PostgreSQL settings from the database audit
   # (OPE-4270) are applied DECLARATIVELY by the deploy — the values live in
   # scripts/myrmidon/deploy/db-tuning.sql, the reset in db-tuning-rollback.sql,
@@ -527,6 +532,7 @@ load_config() {
   PREVIOUS_FILE="$STATE_DIR/previous-digest"
   PREVIOUS_IMAGE_FILE="$STATE_DIR/previous-image"
   HISTORY_FILE="$STATE_DIR/history.log"
+  RELEASE_STEPS_LOG="$STATE_DIR/release-steps.log"
 }
 
 compose() {
@@ -969,6 +975,48 @@ record_history() {
   printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >>"$HISTORY_FILE"
 }
 
+MYR_STEP_ATTEMPT_ID=""
+MYR_STEP_CURRENT=""
+
+step_begin() {
+  local step="$1" detail="${2:-}"
+  mkdir -p "$STATE_DIR" || return 1
+  if [[ -z "$MYR_STEP_ATTEMPT_ID" ]]; then
+    MYR_STEP_ATTEMPT_ID="${BASHPID:-$$}-$(date -u +%Y%m%dT%H%M%S%N)"
+  fi
+  MYR_STEP_CURRENT="$step"
+  printf '%s attempt=%s step-begin %s %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MYR_STEP_ATTEMPT_ID" "$step" "$detail" >>"$RELEASE_STEPS_LOG"
+}
+
+step_end_ok() {
+  [[ -n "$MYR_STEP_CURRENT" ]] || return 0
+  printf '%s attempt=%s step-end %s ok %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MYR_STEP_ATTEMPT_ID" "$MYR_STEP_CURRENT" "${1:-}" >>"$RELEASE_STEPS_LOG"
+  MYR_STEP_CURRENT=""
+}
+
+step_end_error() {
+  [[ -n "$MYR_STEP_CURRENT" ]] || return 0
+  printf '%s attempt=%s step-end %s error %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MYR_STEP_ATTEMPT_ID" "$MYR_STEP_CURRENT" "${1:-failed}" >>"$RELEASE_STEPS_LOG"
+  MYR_STEP_CURRENT=""
+}
+
+release_steps_flush() {
+  local sig="${1:-EXIT}" status="${2:-0}"
+  [[ -n "$MYR_STEP_CURRENT" ]] || return 0
+  if [[ "$sig" == INT || "$sig" == TERM ]]; then
+    printf '%s attempt=%s step-end %s interrupted signal=%s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MYR_STEP_ATTEMPT_ID" "$MYR_STEP_CURRENT" "$sig" >>"$RELEASE_STEPS_LOG"
+  elif ((status != 0)); then
+    step_end_error "exit-status=$status"
+  else
+    printf '%s attempt=%s step-end %s interrupted unexpected-exit=0\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MYR_STEP_ATTEMPT_ID" "$MYR_STEP_CURRENT" >>"$RELEASE_STEPS_LOG"
+  fi
+  MYR_STEP_CURRENT=""
+}
 # --- COMPOSE-SET-ANCHOR (the 07.10 drift) -------------------------------------
 # myrmidon(COMPOSE-SET-ANCHOR): a release deploy can itself change the set of
 # compose files the board runs from (COMPOSE_FILES, the board image override
@@ -2224,6 +2272,60 @@ done | sed 's/^sha256://' | sort -u)" || used_ids=""
   log "image retention: $removed image(s) removed, $skipped in use and kept, $fresh newer than the running release kept (keep $keep previous release(s) per repository)"
 }
 
+# IMAGE-GC (OPE-12696): after a successful deploy sweep every image of the
+# repository globs in MYRMIDON_DEPLOY_IMAGE_GC_REPOS that NO container uses —
+# including exited and `created` ones (`docker ps -a` is authoritative) — and
+# prune the build cache. Foreign images (hindsight, langfuse, grafana…) are
+# never touched. Set MYRMIDON_DEPLOY_IMAGE_GC=0 to switch the sweep off.
+# Callers run it only after a fully successful deploy, so a failed deploy
+# never deletes anything; failures inside the sweep are logged, not fatal.
+deploy_image_gc() {
+  local enabled="${MYRMIDON_DEPLOY_IMAGE_GC:-1}"
+  if [[ "$enabled" != "1" ]]; then
+    log "image gc: disabled (MYRMIDON_DEPLOY_IMAGE_GC=$enabled)"
+    return 0
+  fi
+  local -A seen=()
+  local id repo glob size freed=0 removed=0 skipped=0 failed=0 matched
+  local -a globs=()
+  IFS=',' read -ra globs <<<"${MYRMIDON_DEPLOY_IMAGE_GC_REPOS:-}"
+  # `docker image ls` prints one line per tag; dedupe image ids so a
+  # multi-tag image is checked, counted and removed exactly once.
+  while IFS=$'\t' read -r repo id; do
+    [[ -n "$repo" && -n "$id" ]] || continue
+    [[ -z "${seen[$id]:-}" ]] || continue
+    matched=""
+    for glob in "${globs[@]}"; do
+      # shellcheck disable=SC2254 # the glob list is operator-controlled
+      case "$repo" in
+        $glob) matched="$glob"; break ;;
+      esac
+    done
+    [[ -n "$matched" ]] || continue
+    seen[$id]=1
+    if [[ -n "$(docker ps -a -q --filter "ancestor=$id" 2>/dev/null)" ]]; then
+      skipped=$((skipped + 1))
+      continue
+    fi
+    size="$(docker image inspect "$id" --format '{{.Size}}' 2>/dev/null || true)"
+    [[ "$size" =~ ^[0-9]+$ ]] || size=0
+    if docker image rm "$id" >/dev/null 2>&1; then
+      removed=$((removed + 1))
+      freed=$((freed + size))
+      log "image gc: removed $repo image ${id#sha256:} (no container uses it; freed $size bytes)"
+    else
+      failed=$((failed + 1))
+      log "image gc: WARNING: failed to remove $repo image ${id#sha256:}"
+    fi
+  done < <(docker image ls --format '{{.Repository}}\t{{.ID}}' 2>/dev/null)
+  if ((removed > 0)); then
+    # Layer blobs of the removed images may still sit in the build cache.
+    docker builder prune -af >/dev/null 2>&1 \
+      || log "image gc: WARNING: docker builder prune failed (cache kept)"
+  fi
+  log "image gc: $removed image(s) removed, $skipped in use kept, $failed failed, $freed bytes freed"
+}
+
 MYR_DEPLOY_LOCK_FILE=""
 MYR_DEPLOY_LOCK_DIR_CREATED=""
 
@@ -2233,7 +2335,7 @@ release_deploy_lock() {
   # "unbound variable" under set -u on bash 5.2 (CI printed
   # "deploy.sh: line 1: lock_file: unbound variable" for every test).
   sig="${1:-EXIT}"
-  trap - EXIT INT TERM
+  release_steps_flush "$sig"
   if [[ -n "${MYR_DEPLOY_LOCK_FILE:-}" && -f "$MYR_DEPLOY_LOCK_FILE" ]]; then
     flock -u 200 2>/dev/null || true
     exec 200>&- 2>/dev/null || true

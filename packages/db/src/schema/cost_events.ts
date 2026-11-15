@@ -41,11 +41,6 @@ export const costEvents = pgTable(
       table.provider,
       table.occurredAt,
     ),
-    companyBillerOccurredIdx: index("cost_events_company_biller_occurred_idx").on(
-      table.companyId,
-      table.biller,
-      table.occurredAt,
-    ),
     companyHeartbeatRunIdx: index("cost_events_company_heartbeat_run_idx").on(
       table.companyId,
       table.heartbeatRunId,

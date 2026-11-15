@@ -488,7 +488,7 @@ export interface MetricsCollectorDeps {
   engineerIdleWindowSec?: number;
   /**
    * myrmidon(1.6.6 OPE-6959): the process role stamped on every sample as the
-   * `role` label. Absent → resolved from `PAPERCLIP_PROCESS_ROLE` (the same
+   * `role` label. Absent → resolved from `MYRMIDON_PROCESS_ROLE` (the same
    * resolution the process registry uses), so `mode=single` keeps rendering
    * `role="all"`.
    */

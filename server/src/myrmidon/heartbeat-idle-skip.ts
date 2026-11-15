@@ -33,11 +33,13 @@ export async function hasOtherActionableWork(
   const [interaction] = await db
     .select({ id: issueThreadInteractions.id })
     .from(issueThreadInteractions)
+    .innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId))
     .where(
       and(
         eq(issueThreadInteractions.companyId, agent.companyId),
         eq(issueThreadInteractions.addresseeAgentId, agent.id),
         eq(issueThreadInteractions.status, "pending"),
+        eq(issues.isPrivate, false),
       ),
     )
     .limit(1);
@@ -51,6 +53,7 @@ export async function hasOtherActionableWork(
         eq(issues.companyId, agent.companyId),
         eq(issues.status, "in_review"),
         isNull(issues.hiddenAt),
+        eq(issues.isPrivate, false),
         sql`${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent'`,
         sql`${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agent.id}`,
       ),

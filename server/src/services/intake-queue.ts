@@ -10,6 +10,10 @@ export interface IntakeQueueItem {
   rawBody?: string;
   headers: Record<string, string | string[] | undefined>;
   status: IntakeItemStatus;
+  retryCount?: number;
+  lastError?: string | null;
+  issueId?: string | null;
+  issueIdentifier?: string | null;
   enqueuedAt: string;
   receivedAt: string;
   clientIp?: string;
@@ -25,6 +29,10 @@ export type EnqueueIntakeInput = {
   rawBody?: string;
   headers?: Record<string, string | string[] | undefined>;
   status?: IntakeItemStatus;
+  retryCount?: number;
+  lastError?: string | null;
+  issueId?: string | null;
+  issueIdentifier?: string | null;
   enqueuedAt?: string;
   receivedAt?: string;
   clientIp?: string;
@@ -33,11 +41,23 @@ export type EnqueueIntakeInput = {
   metadata?: Record<string, unknown>;
 };
 
+export type UpdateIntakeStatusOptions = {
+  metadata?: Record<string, unknown>;
+  retryCount?: number;
+  lastError?: string | null;
+  issueId?: string | null;
+  issueIdentifier?: string | null;
+};
+
 export interface IntakeQueue {
   enqueue(item: EnqueueIntakeInput): Promise<IntakeQueueItem>;
   get(id: string): Promise<IntakeQueueItem | null>;
   list(filter?: { source?: string; status?: IntakeItemStatus; limit?: number }): Promise<IntakeQueueItem[]>;
-  updateStatus(id: string, status: IntakeItemStatus, metadata?: Record<string, unknown>): Promise<IntakeQueueItem | null>;
+  updateStatus(
+    id: string,
+    status: IntakeItemStatus,
+    options?: UpdateIntakeStatusOptions | Record<string, unknown>,
+  ): Promise<IntakeQueueItem | null>;
   size(): Promise<number>;
   clear(): Promise<void>;
 }
@@ -61,6 +81,10 @@ export class InMemoryIntakeQueue implements IntakeQueue {
       rawBody: input.rawBody,
       headers: input.headers ?? {},
       status: input.status ?? "pending",
+      retryCount: input.retryCount ?? 0,
+      lastError: input.lastError ?? null,
+      issueId: input.issueId ?? null,
+      issueIdentifier: input.issueIdentifier ?? null,
       enqueuedAt: input.enqueuedAt ?? now,
       receivedAt: input.receivedAt ?? now,
       clientIp: input.clientIp,
@@ -105,13 +129,34 @@ export class InMemoryIntakeQueue implements IntakeQueue {
   async updateStatus(
     id: string,
     status: IntakeItemStatus,
-    metadata?: Record<string, unknown>,
+    options?: UpdateIntakeStatusOptions | Record<string, unknown>,
   ): Promise<IntakeQueueItem | null> {
     const item = this.items.get(id);
     if (!item) return null;
     item.status = status;
-    if (metadata) {
-      item.metadata = { ...(item.metadata ?? {}), ...metadata };
+
+    if (options) {
+      const opts = options as UpdateIntakeStatusOptions;
+      if (opts.retryCount !== undefined) {
+        item.retryCount = opts.retryCount;
+      }
+      if (opts.lastError !== undefined) {
+        item.lastError = opts.lastError;
+      }
+      if (opts.issueId !== undefined) {
+        item.issueId = opts.issueId;
+      }
+      if (opts.issueIdentifier !== undefined) {
+        item.issueIdentifier = opts.issueIdentifier;
+      }
+      if (opts.metadata) {
+        item.metadata = { ...(item.metadata ?? {}), ...opts.metadata };
+      } else {
+        const { retryCount, lastError, issueId, issueIdentifier, ...rest } = options as any;
+        if (Object.keys(rest).length > 0) {
+          item.metadata = { ...(item.metadata ?? {}), ...rest };
+        }
+      }
     }
     return item;
   }

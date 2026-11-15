@@ -158,6 +158,7 @@ describe("issueWriteDenialCodeForResponsibleUserDenial", () => {
 describe("isIssueWriteDenialCode", () => {
   it("accepts shipped codes and rejects everything else", () => {
     expect(isIssueWriteDenialCode("issue_write_not_visible")).toBe(true);
+    expect(isIssueWriteDenialCode("issue_write_private_flag_rejected")).toBe(true);
     expect(isIssueWriteDenialCode("RESPONSIBLE_USER_UNAUTHORIZED")).toBe(false);
     expect(isIssueWriteDenialCode(null)).toBe(false);
     expect(isIssueWriteDenialCode(undefined)).toBe(false);
@@ -195,5 +196,6 @@ describe("issueWriteDenialResponse", () => {
     expect(issueWriteDenialResponse("issue_write_assignee_run_lock").status).toBe(409);
     expect(issueWriteDenialResponse("issue_write_attribution_spoof_rejected").status).toBe(422);
     expect(issueWriteDenialResponse("issue_write_not_visible").status).toBe(403);
+    expect(issueWriteDenialResponse("issue_write_private_flag_rejected").status).toBe(403);
   });
 });

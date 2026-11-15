@@ -329,6 +329,7 @@ export const queryKeys = {
     dryRun: (id: string) => ["status-cards", "detail", id, "dry-run"] as const,
   },
   issues: {
+    releaseStatus: (issueId: string) => ["issues", issueId, "release-status"] as const,
     list: (companyId: string) => ["issues", companyId] as const,
     mentionPool: (companyId: string) =>
       ["issues", companyId, "mention-pool"] as const,
@@ -406,6 +407,9 @@ export const queryKeys = {
       options.excludeRoot
         ? (["issues", "cost-summary", issueId, "exclude-root"] as const)
         : (["issues", "cost-summary", issueId] as const),
+    // myrmidon(1.7 TOKEN-BUDGET-SIGNAL, OPE-12232): the soft token-budget signal of one issue.
+    tokenBudgetSignal: (issueId: string) =>
+      ["issues", "token-budget-signal", issueId] as const,
     attachments: (issueId: string) =>
       ["issues", "attachments", issueId] as const,
     attachmentPreview: (attachmentId: string) =>

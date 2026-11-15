@@ -212,8 +212,9 @@ export function normalizeAgentApiKeyScope(value: unknown): AgentApiKeyScope {
 }
 
 export const createAgentKeySchema = z.object({
-  name: z.string().min(1).default("default"),
+  name: z.string().trim().min(1).max(100).optional().default("default"),
   scope: agentApiKeyScopeSchema.optional().default({ kind: "standard" }),
+  expiresAt: z.coerce.date().nullable().optional(),
 });
 
 export type CreateAgentKey = z.infer<typeof createAgentKeySchema>;
@@ -248,6 +249,12 @@ export const wakeAgentSchema = z.object({
   }).strict().optional(),
   payload: z.record(z.string(), z.unknown()).optional().nullable(),
   idempotencyKey: z.string().optional().nullable(),
+  /**
+   * myrmidon(OPE-12929): optional ISO-8601 instant; the queued run stays
+   * pending until the instant is reached (UTC instant comparison at start
+   * time). A missing or unparsable value keeps the pre-feature behavior.
+   */
+  notBefore: z.string().optional().nullable(),
   forceFreshSession: z.preprocess(
     (value) => (value === null ? undefined : value),
     z.boolean().optional().default(false),

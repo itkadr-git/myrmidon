@@ -120,7 +120,15 @@ vi.mock("../api/resourceMemberships", () => ({
 }));
 
 vi.mock("../adapters/adapter-display-registry", () => ({
+  getAdapterDisplay: (type: string) => ({
+    type,
+    label: type,
+    description: "",
+    icon: () => null,
+  }),
   getAdapterLabel: (type: string) => type,
+  getAdapterLabels: () => ({}) as Record<string, string>,
+  isKnownAdapterType: () => true,
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -438,6 +446,40 @@ describe("Agents", () => {
       const buttons = Array.from(row?.querySelectorAll("button") ?? []).map((button) => button.textContent);
       expect(buttons).not.toEqual(expect.arrayContaining([expect.stringMatching(/Assign Task|Run Heartbeat|Run with provider trace|Pause|Resume/)]));
     }
+  });
+
+  // myrmidon(1.6.8 OPE-12709): "model unavailable since HH:MM" mark.
+  it.each([
+    ["streamlined", Agents],
+    ["production", ProductionAgents],
+  ] as const)("marks only agents whose role model is down in the %s list", async (_mode, AgentList) => {
+    const since = "2026-11-11T12:05:00.000Z";
+    const local = new Date(since);
+    const hhmm = `${String(local.getHours()).padStart(2, "0")}:${String(local.getMinutes()).padStart(2, "0")}`;
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ name: "Alpha", status: "active", roleModelDownSince: since }),
+      makeAgent({ id: "agent-ok", name: "Healthy agent", status: "active" }),
+    ]);
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <AgentList />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    const listToggle = container.querySelector<HTMLButtonElement>('button[aria-label="List view"]');
+    await act(async () => { listToggle?.click(); });
+    await flushReact();
+
+    const marked = findAgentRow(container, "Alpha");
+    const healthy = findAgentRow(container, "Healthy agent");
+    expect(marked?.querySelector('[data-testid="agent-role-model-down-agent-1"]')?.textContent).toContain(hhmm);
+    expect(healthy?.querySelector('[data-testid^="agent-role-model-down"]')).toBeNull();
   });
 
   it("shows the configured model beside the adapter on the all agents page", async () => {

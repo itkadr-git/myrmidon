@@ -41,7 +41,9 @@ function scheduleBehaviorSettingsResweep(changedKeys: readonly string[]): void {
     stopStackCheckSweep();
     startStackCheckSweep(runtimeDb);
   }
-  if (changedKeys.includes("baseline_interval_sec")) {
+  if (changedKeys.includes("baseline_interval_sec") || changedKeys.includes("baselineEnabled")) {
+    // myrmidon(OPE-12124): the master switch joins the interval key — a UI
+    // toggle restarts the job, so even "off → on" applies without a restart.
     stopBaselineSnapshots();
     startBaselineSnapshots(runtimeDb);
   }

@@ -1,11 +1,11 @@
 // server/src/myrmidon/billing-webhook/index.ts
 //
-// myrmidon(1.7 PAYWALL-WEBHOOK-SKELETON, OPE-12093): entry point. Router for
-// app.ts; the store is the real `billing_events` table, everything else stays
+// myrmidon(1.7 PAYWALL-WEBHOOK, OPE-12630): entry point. Router for app.ts;
+// the store is the real `billing_events` table, everything else stays
 // injectable for tests.
 
 import type { Db } from "@myrmidon/db";
-import { billingWebhookRoutes } from "./routes.js";
+import { billingWebhookRoutes, type BillingWebhookRoutesDeps } from "./routes.js";
 
 export {
   billingWebhookService,
@@ -14,9 +14,14 @@ export {
   type BillingWebhookResult,
   type BillingWebhookServiceDeps,
 } from "./service.js";
-export { BILLING_WEBHOOK_PATH } from "./routes.js";
+export {
+  BILLING_WEBHOOK_PATH,
+  BILLING_WEBHOOK_SECRET_REF_ENV,
+  billingWebhookRoutes,
+  type BillingWebhookRoutesDeps,
+} from "./routes.js";
 
 /** Router for app.ts: POST /api/billing/webhook. */
-export function myrmidonBillingWebhookRoutes(db: Db) {
-  return billingWebhookRoutes(db);
+export function myrmidonBillingWebhookRoutes(db: Db, deps: BillingWebhookRoutesDeps = {}) {
+  return billingWebhookRoutes(db, deps);
 }

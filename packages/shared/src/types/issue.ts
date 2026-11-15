@@ -725,6 +725,20 @@ export interface IssueExecutionStage {
   type: IssueExecutionStageType;
   approvalsNeeded: 1;
   participants: IssueExecutionStageParticipant[];
+  /**
+   * OPE-12995 (VERIFY-ON-PROD): evidence required from a verify stage
+   * participant before its approve decision is accepted. Verify stages only.
+   */
+  requirements?: IssueExecutionStageRequirements | null;
+}
+
+export interface IssueExecutionStageRequirements {
+  /** Deploy version the verification ran against (non-empty text). */
+  deployVersion: boolean;
+  /** Check method used during verification (non-empty text). */
+  checkMethod: boolean;
+  /** Explicitly allow this verify stage to be skipped for non-code work. */
+  skip?: boolean;
 }
 
 export interface IssueExecutionMonitorPolicy {
@@ -826,6 +840,23 @@ export interface IssueExecutionState {
     reviewDecision: "approved" | "changes_requested";
     headSha: string | null;
     pullRequestNumber: number | null;
+  } | null;
+  /**
+   * myrmidon(1.7-GOAL-JUDGE, OPE-12149): durable round state of the goal-achievement
+   * judge in the review loop. Written by the goal-judge round controller so the
+   * ≤maxReviewRounds budget survives sweep processes and server restarts; the
+   * policy transition builders carry it forward unchanged.
+   */
+  goalJudgeRound?: {
+    rounds: number;
+    lastJudgedAtMs: number | null;
+    lastHeadSha: string | null;
+    lastVerdict?: {
+      score: number;
+      complete: boolean;
+      missing: string[];
+      summary?: string;
+    } | null;
   } | null;
 }
 

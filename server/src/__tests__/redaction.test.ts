@@ -698,4 +698,23 @@ second-line\" status=401`,
       apiKey: REDACTED_EVENT_VALUE,
     });
   });
+
+  // myrmidon(OPE-12579): a long run of name characters (a base64 blob in a run's
+  // stdout) must not make the secret-field text scan backtrack quadratically.
+  it("scans a long word run in linear time and still redacts a field after it", () => {
+    const blob = "A".repeat(200_000);
+    const input = `token ${blob} {"api_key": "sk-live-123"}`;
+    const startedAt = performance.now();
+    const result = redactSensitiveText(input);
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
+    expect(result).toContain(blob);
+    expect(result).not.toContain("sk-live-123");
+    expect(result).toContain(`"api_key": "${REDACTED_EVENT_VALUE}"`);
+  });
+
+  it("redacts a field whose name carries a long prefix", () => {
+    const name = `${"x".repeat(100)}_secret`;
+    const result = redactSensitiveText(`{"${name}": "s3cr3t-value"}`);
+    expect(result).not.toContain("s3cr3t-value");
+  });
 });

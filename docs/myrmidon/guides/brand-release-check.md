@@ -1,6 +1,6 @@
 # Brand release check (read-only, before the tag)
 
-> DEBRAND 1.6.6 (OPE-8127). Краткая русская версия — в конце файла.
+> DEBRAND 1.6.6 (OPE-8127).
 
 This is the manual, read-only pass over UI copy, bot/log texts and API
 answers that the file-based guards cannot see. Run it before cutting a
@@ -73,15 +73,3 @@ In the release report state: gate output (count + paths), which control
 points were checked by hand, and any residual finding with its path/category
 and the epic that owns it. A red whole-repo audit before the parallel parts
 land is an expected, reportable state — not a release blocker for this gate.
-
----
-
-## Кратко (RU)
-
-Read-only проверка перед тегом: (1) оба сторожа зелёные или их вывод записан
-в отчёт с числом и путями; (2) в UI везде Myrmidon, кроме строки атрибуции
-«Based on Paperclip (MIT)»; (3) живые статусы прогонов, ответы API и новые
-строки логов — без старого бренда (старое тело recovery-уведомления —
-легаси-алиас, его приём от старых инстансов нормален); (4) юридическая
-атрибуция и машинные идентификаторы — не дефект; (5) результат — в отчёт
-релиза с количеством/путями остатков и владельцем каждого.

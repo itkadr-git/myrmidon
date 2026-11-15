@@ -128,7 +128,7 @@ the directory already exists.
 **Optional — keep drill alive for board/fleet verification (D6)**:
 ```bash
 export BETTER_AUTH_SECRET=...      # drill-only secret
-export PAPERCLIP_DB_PASSWORD=...   # URL-encoded password of the paperclip role in the restored database
+export MYRMIDON_DB_PASSWORD=...    # URL-encoded password of the paperclip role in the restored database
 export COMPOSE_BOARD_IMAGE=ghcr.io/itkadr-git/myrmidon@sha256:...   # release component under test
 scripts/myrmidon/standby/standby-ctl.sh rehearse --target board --keep-drill --drill-port=5533
 curl -s http://127.0.0.1:3101/healthz

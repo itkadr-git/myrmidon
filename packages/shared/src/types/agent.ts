@@ -13,6 +13,7 @@ import type {
   TrustPreset,
 } from "../trust-policy.js";
 import type { AgentOrgChainHealth } from "../agent-eligibility.js";
+import type { AgentDerivedStatus, AgentProbeOutcome } from "../agent-liveness.js";
 import type { AgentApiKeyScope } from "../validators/agent.js";
 
 export interface AgentPermissions extends Record<string, unknown> {
@@ -112,8 +113,19 @@ export interface Agent {
   errorReason?: string | null;
   permissions: AgentPermissions;
   lastHeartbeatAt: Date | null;
+  // myrmidon(OPE-13021): response-probe liveness, projected from
+  // agent_runtime_state on list reads and absent on some narrow projections.
+  lastResponseAt?: Date | null;
+  lastProbeAt?: Date | null;
+  lastProbeOutcome?: AgentProbeOutcome | null;
+  probeOutcome?: AgentProbeOutcome | null;
+  derivedStatus?: AgentDerivedStatus;
   metadata: Record<string, unknown> | null;
   orgChainHealth?: AgentOrgChainHealth;
+  // myrmidon(1.6.8 OPE-12709): ISO time of the first model refusal while the
+  // agent's role has an active ROLE_MODEL_DOWN signal ("model unavailable
+  // since"). Absent when the role is healthy; clears on the role's next success.
+  roleModelDownSince?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -170,6 +182,7 @@ export interface AgentKeyCreated {
   name: string;
   scope: AgentApiKeyScope;
   token: string;
+  expiresAt: Date | null;
   createdAt: Date;
 }
 

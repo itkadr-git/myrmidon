@@ -14,7 +14,9 @@ import {
   hoursSince,
   isEscalatedReviewStage,
   isReviewOverdue,
+  issueAnchorAgentId,
   issueNeedsReviewer,
+  ownGroupReviewerPool,
   pickPrReviewer,
   pickReviewer,
   readPendingAgentReview,
@@ -688,5 +690,71 @@ describe("buildPrRoutingTaskPatch", () => {
     expect(state.status).toBe("pending");
     expect(state.currentParticipant).toMatchObject({ type: "agent", agentId: REV_A });
     expect(state.currentStageId).toBe((policy.stages[0] as any).id);
+  });
+});
+
+describe("ownGroupReviewerPool (OPE-12683)", () => {
+  const pool: ReviewerCandidate[] = [
+    { id: "dev-1", name: "adm-dev-review-1", role: "reviewer", load: 0 },
+    { id: "dev-off", name: "adm-dev-review-2", role: "reviewer", load: 0, swarmQueueEligible: false },
+    { id: "dev-meta-off", name: "adm-dev-review-3", role: "reviewer", load: 0, metadata: { swarmQueueEligible: false } },
+    { id: "shop", name: "bbq-worker-1", role: "reviewer", load: 0 },
+    { id: "work", name: "work-dev-lead-1", role: "lead", load: 0 },
+    { id: "dispatch", name: "dispatch", role: "reviewer", load: 0 },
+  ];
+
+  it("keeps only queue-eligible reviewers of the group", () => {
+    expect(ownGroupReviewerPool(pool, "adm").map((candidate) => candidate.id)).toEqual(["dev-1"]);
+    expect(ownGroupReviewerPool(pool, "bbq").map((candidate) => candidate.id)).toEqual(["shop"]);
+  });
+
+  it("returns an empty pool when the group has no eligible reviewer, never the whole pool", () => {
+    expect(ownGroupReviewerPool(pool, "qa")).toEqual([]);
+    expect(ownGroupReviewerPool(pool.filter((candidate) => candidate.id !== "dev-1"), "adm")).toEqual([]);
+  });
+
+  it("with an unknown group only the queue flag filters", () => {
+    expect(ownGroupReviewerPool(pool, "").map((candidate) => candidate.id)).toEqual(["dev-1", "shop", "work", "dispatch"]);
+  });
+
+  it("reads the telegramGroup metadata before the name prefix", () => {
+    const tagged: ReviewerCandidate[] = [
+      { id: "tagged", name: "bbq-worker-9", role: "reviewer", load: 0, metadata: { telegramGroup: "Dev" } },
+      { id: "named", name: "dev-reviewer-1", role: "reviewer", load: 0 },
+    ];
+    expect(ownGroupReviewerPool(tagged, "dev").map((candidate) => candidate.id)).toEqual(["tagged", "named"]);
+    expect(ownGroupReviewerPool(tagged, "bbq")).toEqual([]);
+  });
+});
+
+describe("issueAnchorAgentId (OPE-12683)", () => {
+  it("is the assignee, else the author, outside a pending review", () => {
+    expect(issueAnchorAgentId(issue())).toBe(ASSIGNEE);
+    expect(issueAnchorAgentId(issue({ assigneeAgentId: null }))).toBe(AUTHOR);
+    expect(issueAnchorAgentId(issue({ assigneeAgentId: null, createdByAgentId: null }))).toBeNull();
+  });
+
+  it("is the agent a pending review returns to, not the reviewer who holds it", () => {
+    const patch = buildReviewRoutingAssignPatch({ issue: issue(), reviewerAgentId: REV_A });
+    const pending = issue({
+      assigneeAgentId: REV_A,
+      executionPolicy: patch.executionPolicy,
+      executionState: patch.executionState,
+    });
+    expect(issueAnchorAgentId(pending)).toBe(ASSIGNEE);
+  });
+
+  it("is the author when a pending review returns to a person", () => {
+    const pending = issue({
+      assigneeAgentId: REV_A,
+      executionState: {
+        status: "pending",
+        currentStageId: "s",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: REV_A },
+        returnAssignee: { type: "user", userId: "board-user" },
+      },
+    });
+    expect(issueAnchorAgentId(pending)).toBe(AUTHOR);
   });
 });

@@ -6,6 +6,13 @@
     "freeBytes": 241322967040,
     "usedPercent": 55.1
   },
+  "root": {
+    "mount": "/",
+    "totalBytes": 306783783424,
+    "usedBytes": 280248225792,
+    "freeBytes": 26535557632,
+    "usedPercent": 91.3
+  },
   "projects": [
     {
       "botKey": "bot-001",

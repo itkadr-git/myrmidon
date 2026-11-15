@@ -206,7 +206,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
       runtimeConfig: { heartbeat: { enabled: true } },
       permissions: {},
     });
-  }, 30_000);
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();

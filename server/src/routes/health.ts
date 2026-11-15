@@ -35,6 +35,7 @@ import {
   WORKSPACE_READINESS_USER_ID_HEADER,
 } from "../auth/workspace-login-handoff.js";
 import { serverVersion } from "../version.js";
+import { readBuildVersion } from "../build-version.js";
 import { getStartupRecoveryState } from "../startup-recovery-state.js";
 import { nativeRestartRecoverySummary } from "../services/native-runtime/native-restart-recovery.js";
 import { maintenanceHealth } from "../myrmidon/maintenance/index.js"; // myrmidon(R3)
@@ -42,7 +43,7 @@ import {
   removeHotRestartIntent,
   writeHotRestartIntent,
 } from "../services/hot-restart.js";
-import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv, readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 import { getGitHubRateLimitMetrics } from "../services/github-rate-limit.js";
 
 function shouldExposeFullHealthDetails(
@@ -51,6 +52,25 @@ function shouldExposeFullHealthDetails(
 ) {
   if (deploymentMode !== "authenticated") return true;
   return actorType === "board" || actorType === "agent";
+}
+
+/**
+ * The release version for the health response, or null when this build carries
+ * no release stamp (local development).
+ *
+ * Release version (the `version` field) is not the server version: it is the
+ * exact string the CI image workflow writes to the image's
+ * `org.opencontainers.image.version` label (e.g. `1.6.7-rc.27`, or
+ * `<last release>+<commits>.git.<sha>` between releases). CI passes the same
+ * value as the `PAPERCLIP_BUILD_VERSION` build-arg, which the image bakes into
+ * the runtime environment, so a deploy check can compare the health answer
+ * with the image label it already trusts. `serverVersion` keeps its own
+ * meaning (package/git-describe based) and is untouched.
+ */
+function resolveReleaseVersion(env: CloudInstanceEnv): string | null {
+  return readBuildVersion({
+    environmentVersion: readProductEnvFrom(env, "BUILD_VERSION") ?? null,
+  });
 }
 
 function matchesSharedToken(expectedToken: string | undefined | null, providedToken: string | undefined) {
@@ -264,6 +284,7 @@ export function healthRoutes(
       opts.deploymentMode,
     );
     const runtimeEnv = opts.runtimeEnv ?? process.env;
+    const releaseVersion = resolveReleaseVersion(runtimeEnv);
     const startupRecovery = getStartupRecoveryState();
     const healthStatus =
       startupRecovery.phase === "ready" ? "ok" : "starting";
@@ -303,7 +324,7 @@ export function healthRoutes(
         exposeFullDetails
           ? {
               status: healthStatus,
-              version: serverVersion,
+              version: releaseVersion,
               serverVersion: serverVersion,
               commit,
               serverInfo,
@@ -312,6 +333,7 @@ export function healthRoutes(
             }
           : {
               status: healthStatus,
+              version: releaseVersion,
               deploymentMode: opts.deploymentMode,
               commit,
               ...(cloud ? { cloud } : {}),
@@ -333,7 +355,7 @@ export function healthRoutes(
         : null;
       res.status(503).json({
         status: "unhealthy",
-        version: serverVersion,
+        version: releaseVersion,
         serverVersion,
         commit,
         error: "database_unreachable",
@@ -419,6 +441,7 @@ export function healthRoutes(
       const redactedWarnings = redactedDatabaseBackup?.warnings.length ? redactedDatabaseBackup.warnings : undefined;
       res.json({
         status: healthStatus,
+        version: releaseVersion,
         deploymentMode: opts.deploymentMode,
         deploymentExposure: opts.deploymentExposure,
         localAiLoginSupported: supportsLocalAiLogin(opts),
@@ -441,7 +464,7 @@ export function healthRoutes(
 
     res.json({
       status: healthStatus,
-      version: serverVersion,
+      version: releaseVersion,
       serverVersion,
       commit,
       deploymentMode: opts.deploymentMode,

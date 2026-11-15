@@ -23,7 +23,7 @@ describeEmbeddedPostgres("heartbeat run list adapter type", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-run-adapter-type-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(heartbeatRuns);

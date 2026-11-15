@@ -8,7 +8,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "..");
 
 const PORT = process.env.PORT || "3100";
-const BASE_URL = process.env.PAPERCLIP_BASE_URL || `http://127.0.0.1:${PORT}`;
+// myrmidon(REBRAND-C): MYRMIDON_BASE_URL; PAPERCLIP_BASE_URL is the deprecated alias.
+const BASE_URL = process.env.MYRMIDON_BASE_URL || process.env.PAPERCLIP_BASE_URL || `http://127.0.0.1:${PORT}`;
 const THRESHOLD_SECONDS = Number(process.env.PLUGIN_READY_THRESHOLD_SEC || 10);
 const OUTPUT_FILE = path.resolve(
   REPO_ROOT,

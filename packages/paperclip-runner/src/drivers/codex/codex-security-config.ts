@@ -133,7 +133,8 @@ export function checkUserNamespacesAvailable(
   if (process.platform !== "linux") return true;
   if (userNamespaceProbe === null) {
     userNamespaceProbe = probeCodexSandboxOnce(
-      source.PAPERCLIP_RUNNER_SANDBOX_COMMAND?.trim() || "bwrap",
+      // myrmidon(REBRAND-C): our knob, MYRMIDON_ name first; PAPERCLIP_ is the deprecated alias.
+      source.MYRMIDON_RUNNER_SANDBOX_COMMAND?.trim() || source.PAPERCLIP_RUNNER_SANDBOX_COMMAND?.trim() || "bwrap",
     );
   }
   return userNamespaceProbe;

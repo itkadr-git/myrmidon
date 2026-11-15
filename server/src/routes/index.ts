@@ -1,5 +1,6 @@
 export { healthRoutes } from "./health.js";
 export { haRoutes } from "./ha.js";
+export { admAccessRequestRoutes } from "./adm-access-requests.js";
 export { companyRoutes } from "./companies.js";
 export { companySkillRoutes } from "./company-skills.js";
 export { companySkillPolicyRoutes } from "./company-skill-policy.js";

@@ -39,6 +39,7 @@ function report(
     window: WINDOW,
     generatedAt,
     source: SOURCE,
+    runSuccess: { succeeded: 0, failed: 0, total: 0, rate: null },
     byProject,
     byRole,
     overall: group("overall"),

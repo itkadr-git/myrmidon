@@ -33,8 +33,8 @@ export const billingEvents = pgTable(
     status: text("status").notNull().default("received"),
     // The parsed provider payload; kept verbatim for later replay/audit.
     payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
-    // Signature verification is a stub in the skeleton; when real verification
-    // lands this records what was checked (e.g. "stub", "hmac-sha256:ok").
+    // Signature verification status: "stub" (skeleton default) or "verified"
+    // (1.7 PAYWALL-WEBHOOK, OPE-12630: HMAC-SHA256 verified).
     signatureStatus: text("signature_status").notNull().default("stub"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

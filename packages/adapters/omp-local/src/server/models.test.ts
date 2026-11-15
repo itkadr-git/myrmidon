@@ -8,11 +8,17 @@ import {
 
 describe("omp models", () => {
   afterEach(() => {
+    delete process.env.MYRMIDON_OMP_COMMAND;
     delete process.env.PAPERCLIP_OMP_COMMAND;
     resetOmpModelsCacheForTests();
   });
 
   it("returns an empty list when discovery command is unavailable", async () => {
+    process.env.MYRMIDON_OMP_COMMAND = "__myrmidon_missing_omp_command__";
+    await expect(listOmpModels()).resolves.toEqual([]);
+  });
+
+  it("still honours the deprecated PAPERCLIP_OMP_COMMAND name", async () => {
     process.env.PAPERCLIP_OMP_COMMAND = "__paperclip_missing_omp_command__";
     await expect(listOmpModels()).resolves.toEqual([]);
   });
@@ -24,7 +30,7 @@ describe("omp models", () => {
   });
 
   it("rejects when discovery cannot run for configured model", async () => {
-    process.env.PAPERCLIP_OMP_COMMAND = "__paperclip_missing_omp_command__";
+    process.env.MYRMIDON_OMP_COMMAND = "__myrmidon_missing_omp_command__";
     await expect(
       ensureOmpModelConfiguredAndAvailable({
         model: "xai/grok-4",

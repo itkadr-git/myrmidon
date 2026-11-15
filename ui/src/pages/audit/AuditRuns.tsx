@@ -10,6 +10,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import {
   OutcomeBadge,
   OutcomeRunsPanel,
+  RunOutcomeBadge,
   filterRunsByTimeRange,
   formatWakeReason,
   getRunTelemetryMetrics,
@@ -366,6 +367,10 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
                         {run.id.slice(0, 8)}
                       </span>
                       <StatusBadge status={run.status} />
+                      <RunOutcomeBadge
+                        outcome={run.resultOutcome ?? (run.resultJson as { outcome?: unknown } | null)?.outcome as string | undefined ?? undefined}
+                        stopKind={run.resultStopKind ?? (run.resultJson as { stopKind?: unknown } | null)?.stopKind as string | undefined ?? undefined}
+                      />
                       {telemetry?.outcomeCategory ? (
                         <OutcomeBadge category={telemetry.outcomeCategory as string} />
                       ) : null}

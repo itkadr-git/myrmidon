@@ -127,6 +127,61 @@ describeEmbeddedPostgres("stack registry", () => {
     }
   });
 
+  it("OPE-12922: MYRMIDON_STACK_IMAGE_<NAME> passes the exact refs to the images port untouched", async () => {
+    const asked: string[] = [];
+    const images = async (ref: string) => {
+      asked.push(ref);
+      return ref === "clickhouse/clickhouse-server:25.12"
+        ? { repoTag: ref, digest: "sha256:" + "c".repeat(64), labels: {} }
+        : null;
+    };
+    const doc = await collectStackLocal({
+      ...collectOptions({ images }),
+      env: { MYRMIDON_STACK_IMAGE_CLICKHOUSE: " clickhouse/clickhouse-server:25.12 " },
+    });
+    expect(asked).toContain("clickhouse/clickhouse-server:25.12");
+    expect(asked).not.toContain("clickhouse/clickhouse-server");
+    const clickhouse = doc.components.find((c) => c.name === "clickhouse")!;
+    expect(clickhouse.local.version).toBe("clickhouse/clickhouse-server:25.12");
+    // Components without the env keep the seed refs (old behaviour).
+    expect(asked).toContain("ghcr.io/nousresearch/hermes-agent");
+  });
+
+  it("OPE-12922: a labels-only summary (no repoTag/digest) for an exact ref yields version and digest from the ref", async () => {
+    const dg = "sha256:" + "e".repeat(64);
+    const images = async (ref: string) =>
+      ref === "clickhouse/clickhouse-server:25.12" || ref === "ghcr.io/nousresearch/hermes-agent@" + dg
+        ? { repoTag: null, digest: null, labels: { "org.opencontainers.image.version": "x" } }
+        : null;
+    const doc = await collectStackLocal({
+      ...collectOptions({ images }),
+      env: {
+        MYRMIDON_STACK_IMAGE_CLICKHOUSE: "clickhouse/clickhouse-server:25.12",
+        MYRMIDON_STACK_IMAGE_HERMES_AGENT: "ghcr.io/nousresearch/hermes-agent@" + dg,
+      },
+    });
+    const clickhouse = doc.components.find((c) => c.name === "clickhouse")!;
+    expect(clickhouse.local.version).toBe("clickhouse/clickhouse-server:25.12");
+    expect(clickhouse.local.unknownReason).toBeNull();
+    const hermes = doc.components.find((c) => c.name === "hermes-agent")!;
+    expect(hermes.local.digest).toBe(dg);
+  });
+
+  it("OPE-12922: the hyphenated component name maps to MYRMIDON_STACK_IMAGE_HERMES_AGENT, comma-separated refs", async () => {
+    const asked: string[] = [];
+    const images = async (ref: string) => {
+      asked.push(ref);
+      return null;
+    };
+    await collectStackLocal({
+      ...collectOptions({ images }),
+      env: { MYRMIDON_STACK_IMAGE_HERMES_AGENT: "ghcr.io/nousresearch/hermes-agent:v1,ghcr.io/nousresearch/hermes-agent@sha256:" + "d".repeat(64) },
+    });
+    expect(asked).toContain("ghcr.io/nousresearch/hermes-agent:v1");
+    expect(asked).toContain("ghcr.io/nousresearch/hermes-agent@sha256:" + "d".repeat(64));
+    expect(asked).not.toContain("ghcr.io/nousresearch/hermes-agent");
+  });
+
   it("collect fills the board commit from the same source as /api/health, digests from the docker port, honest unknowns", async () => {
     const doc = await collectStackLocal(
       collectOptions({

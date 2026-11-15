@@ -317,6 +317,12 @@ func (s *server) applyGatewayPort(sp *spec) error {
 // bot's volume root; the same file name the local driver uses, inside hermes.
 const markerRelativePath = "hermes/.myrmidon/applied.json"
 
+// idleStoppedRelativePath is where the IDLE-STOP mark lives, relative to the
+// bot's volume root (OPE-12663). The bot owns this directory: the mark is read
+// with the same distrust as the applied marker (readMarker) and written with
+// the same atomic discipline (writeProfileFile).
+const idleStoppedRelativePath = "hermes/.myrmidon/idle-stopped.json"
+
 // appliedMarker is what a successful writeProfile leaves behind, so status can
 // report which profile hashes are on disk.
 type appliedMarker struct {
@@ -469,6 +475,91 @@ func (s *server) fillApplied(st *botStatus) {
 		return
 	}
 	st.RestartHash, st.FilesHash = &m.RestartHash, &m.FilesHash
+}
+
+// idleStoppedMark is the on-disk shape of the IDLE-STOP mark.
+type idleStoppedMark struct {
+	BotKey      string `json:"botKey"`
+	IdleStopped bool   `json:"idleStopped"`
+}
+
+// stopIdle implements the IDLE-STOP action (OPE-12663): stop the container,
+// then record the mark. If the mark cannot be written the container is started
+// back up — never left down without its mark — and the error travels to the
+// board, same failure mode as the local docker driver's stopIdle.
+func (s *server) stopIdle(ctx context.Context, botKey string) error {
+	if err := s.docker.action(ctx, botKey, "stop"); err != nil {
+		return err
+	}
+	if err := s.writeIdleStopped(botKey, true); err != nil {
+		_ = s.docker.action(ctx, botKey, "start")
+		return fmt.Errorf("failed to record idle-stopped state for bot %s: %w", botKey, err)
+	}
+	return nil
+}
+
+// writeIdleStopped atomically writes or removes the mark under the bot's
+// volume root. The path is fixed by fleetd (the bot key is validated, the
+// write goes through writeProfileFile), so a mark file is always fleetd's own,
+// not bot-authored data.
+func (s *server) writeIdleStopped(botKey string, stopped bool) error {
+	if s.cfg.VolumeRoot == "" {
+		return errForbidden("volume_root_not_configured")
+	}
+	if !validBotKey(botKey) {
+		return errForbidden("bad_bot_key")
+	}
+	root := filepath.Join(s.cfg.VolumeRoot, botKey)
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return err
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return err
+	}
+	if !stopped {
+		target := filepath.Join(realRoot, filepath.Clean(idleStoppedRelativePath))
+		if rel, e := filepath.Rel(realRoot, target); e != nil || rel == "." || strings.HasPrefix(rel, "..") {
+			return errForbidden("profile_path_invalid")
+		}
+		if e := os.Remove(target); e != nil && !os.IsNotExist(e) {
+			return e
+		}
+		return nil
+	}
+	mark, err := json.Marshal(idleStoppedMark{BotKey: botKey, IdleStopped: true})
+	if err != nil {
+		return err
+	}
+	return s.writeProfileFile(realRoot, profileFile{Path: idleStoppedRelativePath, Content: string(mark) + "\n", Mode: 0600, Secret: true})
+}
+
+// clearIdleStopped removes the mark best-effort: it is advisory state, and the
+// callers (start/restart/stop/create/recreate) must not fail because a stale
+// mark could not be removed.
+func (s *server) clearIdleStopped(botKey string) {
+	_ = s.writeIdleStopped(botKey, false)
+}
+
+// fillIdleStopped sets the idle-stopped flag of a status from the mark file
+// (OPE-12663). A missing container, a missing mark or an unreadable one leaves
+// it nil — the board then reads "not idle-stopped". The file lives on a volume
+// the bot can write: it is read with the applied marker's distrust, and only
+// a well-formed mark naming this bot counts.
+func (s *server) fillIdleStopped(st *botStatus) {
+	if st.State == "missing" || s.cfg.VolumeRoot == "" || !validBotKey(st.BotKey) {
+		return
+	}
+	raw, ok := readMarker(filepath.Join(s.cfg.VolumeRoot, st.BotKey, idleStoppedRelativePath))
+	if !ok {
+		return
+	}
+	var m idleStoppedMark
+	if json.Unmarshal(raw, &m) != nil || !m.IdleStopped || m.BotKey != st.BotKey {
+		return
+	}
+	stopped := true
+	st.IdleStopped = &stopped
 }
 
 var secretPattern = regexp.MustCompile(`(?i)(["']?(?:api[_-]?key|token|password|secret)["']?\s*[:=]\s*["']?)[^\s"']+`)

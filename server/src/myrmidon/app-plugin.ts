@@ -18,6 +18,7 @@ export { myrmidonProcessesRouter } from "./processes/index.js"; // myrmidon(PROC
 export { myrmidonPauseGuardRoutes } from "./pause-guard/index.js";
 export { myrmidonRunPriorityRoutes } from "./run-priority/index.js"; // myrmidon(1.6.5 RUN-PRIORITY A)
 export { myrmidonBudgetEnforcementRoutes } from "./budget-enforcement/index.js"; // myrmidon(1.7-BUDGET-CONFIG-B)
+export { nestRedactRoutes } from "./redact/index.js"; // myrmidon(1.7-REDACT): GET/PATCH per-nest redaction dictionaries and rules (OPE-8660)
 export { myrmidonBehaviorSettingsRoutes } from "./behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 export { myrmidonTelegramDmProgressRoutes } from "./telegram-dm-progress/index.js"; // myrmidon(DM-PROGRESS)
 export { myrmidonBridgeLanguageRoutes } from "./bridge-language/index.js";
@@ -43,6 +44,8 @@ export { myrmidonBrowserConsoleRoutes } from "./browser-console/wiring.js"; // m
 export { myrmidonLitellmCostsRoutes } from "./litellm-costs/routes.js"; // myrmidon(M2-A)
 export { myrmidonLitellmKeysRoutes } from "./litellm-keys/routes.js"; // myrmidon(M2-B)
 export { myrmidonModelProviderRoutes, createPluginProviderModelSync } from "./model-providers/wiring.js";
+export { defaultAgentGatewayKeyDeps } from "./litellm-keys/agent-keys.js";
+export { updateAgentAllowlistsForCompany } from "./litellm-sync/agent-allowlist-handler.js";
 export { bindModelProviderPluginLifecycle } from "./model-providers/plugin-lifecycle.js"; // myrmidon(1.6.6 OPE-7198)
 export { myrmidonAgentExchangeRoutes } from "./agent-exchange/wiring.js"; // myrmidon(1.7-AGENT-EXCHANGE-A)
 export { myrmidonAgentExchangeFeedRoutes } from "./agent-exchange/feed-wiring.js"; // myrmidon(1.7-AGENT-EXCHANGE-B)
@@ -82,6 +85,7 @@ export { projectTokenQuotaRoutes } from "./project-token-quota/index.js"; // myr
 export { myrmidonPromptBudgetRoutes } from "./prompt-budget/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 export { modelFallbackSignalRoutes } from "./litellm-fallback-signal/routes.js"; // myrmidon(BOT-RUNTIME-TUNING D2)
 export { myrmidonOwnerDeliveryRoutes } from "./owner-delivery/index.js"; // myrmidon(1.6.5-OWNER-DM-FILTER)
+export { toolComplaintRoutes } from "./tool-complaints/routes.js"; // myrmidon(1.7 TOOL-COMPLAINTS-API, OPE-12228)
 export { reviewRoutingRoutes } from "./review-routing/routes.js"; // myrmidon(REVIEW-ROUTING)
 export { reviewReworkRoutes } from "./review-rework/routes.js"; // myrmidon(REVIEW-REWORK)
 export { pluginEntitlementRoutes } from "./plugin-entitlement/index.js";
@@ -100,13 +104,16 @@ export { siteHealthRoutes } from "./bot-containers/site-health-routes.js"; // my
 export { myrmidonPromptBudgetAdviceRoutes } from "./prompt-budget-advice/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET C)
 export { myrmidonMonitoringLinkRoutes } from "./monitoring/links/index.js"; // myrmidon(1.6.6 MONITORING E)
 export { myrmidonMonitoringDashboardRoutes } from "./monitoring/dashboard/index.js"; // myrmidon(1.6.6 MONITORING C)
+export { myrmidonWebhookIntakeRoutes } from "./monitoring/intake/index.js"; // myrmidon(1.7 WEBHOOK-INTAKE, OPE-12041)
 export { myrmidonCloudConnectorRoutes } from "./cloud-connector/index.js"; // myrmidon(CLOUD-CONNECTOR)
 export { myrmidonBoardProcessRegistryRoutes } from "./process-registry/index.js"; // myrmidon(1.6.6 PROCS-0.1)
 export { poolChatRoutes } from "./pool-chat/routes.js";
 export { createPoolChatHttpTransport } from "./pool-chat/transports.js";
 export type { PoolChatTransportResolver } from "./pool-chat/service.js";
 export { myrmidonAutonomyRoutes } from "./autonomy/index.js"; // myrmidon(1.6-AUTONOMY)
+export { myrmidonReleaseStageRoutes } from "./release-stage/routes.js"; // myrmidon(1.8 RELEASE-STAGE)
 export { myrmidonKnowledgeRoutes, myrmidonKnowledgeMcpRoutes } from "./knowledge/index.js"; // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2)
+export { myrmidonKnowledgeSettingsRoutes } from "./knowledge/index.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-11): Settings → Knowledge
 export { sweepTelegramNotifyProactivity } from "./channel-connectors/bridge/notify-sweep.js";
 export { accessHubRoutes } from "./access-hub/routes.js"; // myrmidon(SEC1)
 export { ui2LanguageRoutes } from "./ui2-language/routes.js"; // myrmidon(UI2-I18N)
@@ -141,8 +148,10 @@ export { chatReconcileMinimumSpacingMs, getChatReconcileFallbackIntervalMs, crea
 export { createChatReconciliationWorkGates } from "./chat-reconciliation/work-gates.js";
 export type { ChatReconciliationWorkGates } from "./chat-reconciliation/work-gates.js";
 export { myrmidonCasteRoutes } from "./castes/wiring.js";
+export { myrmidonModelGroupRulesRoutes } from "./model-group-rules/wiring.js"; // myrmidon(1.8 MODEL-BY-STEP, OPE-12997)
 export { myrmidonGuardrailsRoutes } from "./guardrails/index.js"; // myrmidon(1.6-GRD)
 export { goalJudgeRoutes, myrmidonGoalJudgeRoutes } from "./goal-judge/routes.js"; // myrmidon(1.7-GOAL-JUDGE)
 export { goalJudgeSettingsService } from "./goal-judge/settings.js"; // myrmidon(1.7-GOAL-JUDGE)
 export { createGoalJudgeModelPort, evaluateGoalJudge } from "./goal-judge/wiring.js"; // myrmidon(1.7-GOAL-JUDGE)
 export { apiPathAliasMiddleware } from "./api-path-aliases.js"; // myrmidon(1.7-RB-PATH / OPE-12082)
+export { configuredGitSkillRecord, skillGitRecordRoutes } from "./skill-git-record/index.js";

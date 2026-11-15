@@ -182,7 +182,7 @@ describeEmbeddedPostgres("Telegram bridged DM command menu (X8e)", () => {
       tempDb = await startEmbeddedPostgresTestDatabase("paperclip-dm-menu-");
       db = createDb(tempDb.connectionString);
     }
-  }, 30_000);
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();

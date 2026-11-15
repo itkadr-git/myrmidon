@@ -269,6 +269,9 @@ export function debateServiceForDb(db: Db, env: NodeJS.ProcessEnv = process.env)
           // The task's caste (1.7-DEBATE-ASYM-B) is the assignee agent's role;
           // an unrouted task has none and keeps the instance-level debate path.
           casteKey: agents.role,
+          // PRIVATE-TASKS (G3): an agent caller is refused below in the
+          // service with the same not-found answer a missing task gets.
+          isPrivate: issues.isPrivate,
         })
         .from(issues)
         .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))

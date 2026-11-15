@@ -55,6 +55,7 @@ import { summarySlotRoutes } from "./routes/summary-slots.js";
 import { statusCardRoutes } from "./routes/status-cards.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
+
 import type { SetupTokenSessionService } from "./services/setup-token-session.js";
 import {
   buildSetupTokenLoginTransport,
@@ -80,6 +81,8 @@ import { onboardingSeedRoutes } from "./routes/onboarding-seed.js";
 import { serverOnboardingRoutes } from "./routes/servers.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
+import { admAccessRequestRoutes } from "./routes/adm-access-requests.js";
+import { createAdmCapabilityToolExecutor } from "./services/adm-capability-tool-executor.js";
 import { secretRoutes } from "./routes/secrets.js";
 import { toolAccessRoutes } from "./routes/tool-access.js";
 import {
@@ -113,6 +116,7 @@ import {
   myrmidonPauseGuardRoutes,
   myrmidonRunPriorityRoutes,
   myrmidonBudgetEnforcementRoutes,
+  nestRedactRoutes,
   myrmidonBehaviorSettingsRoutes,
   myrmidonTelegramDmProgressRoutes,
   myrmidonBridgeLanguageRoutes,
@@ -167,6 +171,7 @@ import {
   boardLoadRequestMiddleware,
   myrmidonMonitoringAlertsRoutes,
   myrmidonZabbixSinkRoutes,
+  myrmidonWebhookIntakeRoutes,
   swarmClaimApp,
   createCasteDirectoryReader,
   myrmidonEmergencyStopRoutes,
@@ -177,6 +182,7 @@ import {
   myrmidonPromptBudgetRoutes,
   modelFallbackSignalRoutes,
   myrmidonOwnerDeliveryRoutes,
+  toolComplaintRoutes,
   reviewRoutingRoutes,
   reviewReworkRoutes,
   goalJudgeRoutes,
@@ -201,8 +207,10 @@ import {
   createPoolChatHttpTransport,
   type PoolChatTransportResolver,
   myrmidonAutonomyRoutes,
+  myrmidonReleaseStageRoutes,
   myrmidonKnowledgeRoutes,
   myrmidonKnowledgeMcpRoutes,
+  myrmidonKnowledgeSettingsRoutes,
   sweepTelegramNotifyProactivity,
   accessHubRoutes,
   ui2LanguageRoutes,
@@ -240,11 +248,14 @@ import {
   createChatReconciliationWorkGates,
   type ChatReconciliationWorkGates,
   myrmidonCasteRoutes,
+  myrmidonModelGroupRulesRoutes,
   myrmidonGuardrailsRoutes,
   myrmidonInstalledLocalesRoutes,
   myrmidonVendorNameCheckRoutes,
   startDenyListPuller,
   createPluginProviderModelSync,
+  updateAgentAllowlistsForCompany,
+  defaultAgentGatewayKeyDeps,
   localeUploadRoutes,
   localeModuleRoutes,
   myrmidonHindsightModelsRoutes,
@@ -253,6 +264,8 @@ import {
   buildTokensTraceRoutes,
   myrmidonOnboardRoutes,
   apiPathAliasMiddleware,
+  configuredGitSkillRecord,
+  skillGitRecordRoutes,
 } from "./myrmidon/app-plugin.js";
 import { decisionTrainingRoutes } from "./routes/decision-training.js";
 import { decisionRoutes } from "./routes/decisions.js";
@@ -921,6 +934,12 @@ export async function createApp(
     }),
   );
   app.use("/api", apiCompression());
+  // myrmidon(1.7 KNOWLEDGE-2.0 L-13): provider-authenticated git pushes must
+  // reach the signed ingress before normal board actor authentication.
+  app.use("/api", skillGitRecordRoutes({
+    gitRecord: configuredGitSkillRecord(),
+    secret: process.env.MYRMIDON_SKILL_GIT_WEBHOOK_SECRET,
+  }));
   app.use(httpLogger);
   // myrmidon(PROCS-1.1): one flag decides whether this app process performs its
   // own periodic work. The `api` role passes false; anything that omits the
@@ -969,6 +988,11 @@ export async function createApp(
     // which the split wiring fills in while booting.
     myrmidonProcessReadinessRoutes(db, { processSupervisor: opts.processSupervisor ?? null }),
   );
+  // myrmidon(OPE-9408): the signed git-record ingress is mounted ONCE, early,
+  // right after the JSON parser with verify:captureRawBody (see the mount
+  // above httpLogger) — the HMAC must see the exact request bytes and the
+  // webhook must not pass board actor auth. A second mount here would both
+  // re-run capture and put a provider-authenticated route behind actorMiddleware.
   app.use("/api/auth", authRoutes(db));
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
@@ -1157,6 +1181,23 @@ export async function createApp(
   });
   api.use(
     agentRoutes(db, {
+      syncAgentModelAllowlist: async ({ companyId, agentId, db: transactionDb }) => {
+        const result = await updateAgentAllowlistsForCompany(
+          transactionDb,
+          defaultAgentGatewayKeyDeps(transactionDb),
+          companyId,
+          [],
+          [],
+          { cardModelsOnly: true, agentId, apply: true },
+        );
+        const failures = result.skipped.filter((reason) => reason !== "gateway-key-management-not-configured" && reason !== `agent-without-key:${agentId}` && reason !== `key-all-models:${agentId}`);
+        if (failures.length) {
+          logger.warn({ companyId, agentId, failures }, "agent card saved but gateway allowlist reconciliation failed");
+        }
+      },
+      onAgentModelAllowlistSyncFailure: ({ companyId, agentId, error }) => {
+        logger.warn({ companyId, agentId, err: error }, "agent card saved but gateway allowlist reconciliation failed");
+      },
       chatRunRetries: chatChannels,
       pluginWorkerManager: workerManager,
       deploymentMode: opts.deploymentMode,
@@ -1197,6 +1238,9 @@ export async function createApp(
   api.use(serverOnboardingRoutes(db)); // myrmidon(SERVER-ONBOARD): SSH dry-run probe
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(admAccessRequestRoutes(db, {
+    capabilityExecutor: createAdmCapabilityToolExecutor(db, () => app.locals.toolGateway),
+  })); // myrmidon(1.7 COMPANY-BOUNDARIES, OPE-12766)
   api.use(secretRoutes(db));
   api.use(managedAgentProfileRoutes(db));
   api.use(remoteAgentProfileRoutes(db));
@@ -1247,6 +1291,7 @@ export async function createApp(
   api.use(myrmidonCorpusRoutes(db, { ports: resolveCorpusPorts })); // myrmidon(1.6.6 CORPUS-2.0 ч.C): corpus datasets/documents/search + module settings
   api.use(myrmidonProcessesRouter(db as any, opts.processSupervisor ?? null, opts.processBus ?? null)); // myrmidon(PROCS-1.1/1.2): GET/PATCH /api/myrmidon/processes, applied without a restart; myrmidon(OPE-10011): the save reaches the worker's supervisor over the bus
   api.use(myrmidonBudgetEnforcementRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG-B)
+  api.use(nestRedactRoutes(db)); // myrmidon(1.7-REDACT): GET/PATCH per-nest redaction dictionaries and rules (OPE-8660)
   api.use(myrmidonBehaviorSettingsRoutes(db)); // myrmidon(SETTINGS-CORE): unified behavior settings, UI→env→default without restart
   api.use(myrmidonTelegramDmProgressRoutes(db)); // myrmidon(DM-PROGRESS): live progress steps of the Telegram DM status
   api.use(myrmidonChannelSettingsRoutes(db)); // myrmidon(1.7-SETTINGS-TO-UI): GET/PATCH /api/myrmidon/channel-settings
@@ -1322,6 +1367,7 @@ export async function createApp(
   api.use(projectTokenQuotaRoutes(db)); // myrmidon(1.6.6 QUOTA-V2): project token quota read/write
   api.use(modelFallbackSignalRoutes(db)); // myrmidon(BOT-RUNTIME-TUNING D2): fallback-signal settings and the live per-agent fallback share
   api.use(myrmidonOwnerDeliveryRoutes(db)); // myrmidon(1.6.5-OWNER-DM-FILTER): GET/PATCH /api/myrmidon/owner-delivery
+  api.use(toolComplaintRoutes(db)); // myrmidon(1.7 TOOL-COMPLAINTS-API, OPE-12228): POST/GET /api/myrmidon/tool-complaints
   api.use(reviewRoutingRoutes(db)); // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings
   api.use(reviewReworkRoutes(db)); // myrmidon(REVIEW-REWORK): review-return loop settings
   api.use(goalJudgeRoutes(db)); // myrmidon(1.7 GOAL-JUDGE): GET/PATCH /api/myrmidon/goal-judge
@@ -1342,7 +1388,9 @@ export async function createApp(
   api.use(myrmidonMonitoringLinkRoutes(db)); // myrmidon(1.6.6 MONITORING E): link liveness feed and the link pulse endpoint
   api.use(myrmidonPromptBudgetRoutes(db)); // myrmidon(1.6.3 PROMPT-BUDGET B): prompt-budget threshold settings and status
   api.use(myrmidonAutonomyRoutes(db)); // myrmidon(1.6-AUTONOMY): role × action-class matrix and regulations
+  api.use(myrmidonReleaseStageRoutes(db)); // myrmidon(1.8 RELEASE-STAGE): release authority, gates, signed publication
   api.use(myrmidonKnowledgeRoutes(db)); // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): one service, one set of rights (REST)
+  api.use(myrmidonKnowledgeSettingsRoutes(db)); // myrmidon(1.7 KNOWLEDGE-2.0 L-11): Settings → Knowledge limits/schedule/reviewers
   api.use(myrmidonKnowledgeMcpRoutes(db)); // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): company knowledge MCP endpoint (tools/list + tools/call)
   api.use(accessHubRoutes(db)); // myrmidon(SEC1): access-hub routes
   api.use(myrmidonBrowserBridgeRoutes(db)); // myrmidon(EXTCASE-B): bridge panel (codes, devices, allowlist)
@@ -1372,6 +1420,7 @@ export async function createApp(
   api.use(myrmidonForagingRoutes(db)); // myrmidon(1.6-FORAGE): source registry, findings and the manual sweep
   api.use(myrmidonMonitoringAlertsRoutes(db)); // myrmidon(1.6.6-ALERTS): monitoring alerts webhook (Zabbix/Alertmanager) and its settings
   api.use(myrmidonZabbixSinkRoutes(db)); // myrmidon(1.7-ZABBIX-SINK / OPE-12126): Zabbix alarm sink -> role-task draft
+  api.use(myrmidonWebhookIntakeRoutes(db)); // myrmidon(1.7 WEBHOOK-INTAKE, OPE-12041): signed inbound webhook drafts (signature + dedup + raw payload)
   api.use(myrmidonMonitoringDashboardRoutes(db)); // myrmidon(1.6.6 MONITORING C): fleet dashboard from VictoriaMetrics + Zabbix, connection settings, selfcheck
   api.use(myrmidonForagingIdleGateRoutes(db)); // myrmidon(1.6.3-FORAGING-IDLE-GATE): the idle-gate toggle
   api.use(myrmidonForagingPassRoutes(db)); // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass history
@@ -1562,6 +1611,7 @@ export async function createApp(
     }),
   );
   api.use(myrmidonCasteRoutes(db)); // myrmidon(CUSTOM-CASTES): caste directory CRUD
+  api.use(myrmidonModelGroupRulesRoutes(db)); // myrmidon(1.8 MODEL-BY-STEP, OPE-12997)
   api.use(myrmidonGuardrailsRoutes(db)); // myrmidon(1.6-GRD): flag-only guardrail event journal (board-only read route)
   api.use(
     accessRoutes(db, {
