@@ -136,6 +136,17 @@ describe("host-clone-cache-gc e2e", () => {
     assert.equal(fs.existsSync(clone), false);
   });
 
+  it("keeps an alternate-object checkout rather than archiving the whole directory", async () => {
+    const root = path.join(tmpDir, "root");
+    fs.mkdirSync(root);
+    const clone = makeGitClone(path.join(root, "OPE-12345"), { alternates: true });
+    const r = await runScript(["--root", root, "--lock", path.join(tmpDir, "gc.lock"), "--journal", path.join(tmpDir, "gc.jsonl"), "--apply"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(fs.existsSync(clone), "unrecoverable checkout must be retained");
+    const archiveRoot = path.join(root, ".gc-archive");
+    assert.ok(!fs.existsSync(archiveRoot) || fs.readdirSync(archiveRoot).length === 0);
+  });
+
   it("keeps a closed clone when a nested repository has unpublished work", async () => {
     const root = path.join(tmpDir, "root");
     fs.mkdirSync(root);
