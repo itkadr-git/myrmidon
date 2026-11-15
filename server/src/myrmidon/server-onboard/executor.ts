@@ -138,9 +138,9 @@ export class FleetOnboardExecutor {
 
             // 1. Disk check (threshold >= 90%)
             const dfRes = await activeSsh.execute("df -P /");
-            const lines = dfRes.stdout.trim().split("\\n");
+            const lines = dfRes.stdout.trim().split("\n");
             if (lines.length > 1) {
-              const match = lines[1]?.match(/(\\d+)%/);
+              const match = lines[1]?.match(/(\d+)%/);
               if (match && match[1]) {
                 const usedPercent = Number.parseInt(match[1], 10);
                 if (usedPercent >= 90) {
