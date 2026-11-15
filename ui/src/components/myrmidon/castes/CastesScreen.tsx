@@ -12,6 +12,10 @@
 //      edit (inline form: everything except key/builtIn), remove with
 //      confirmation. A 409 from the DELETE (live agents hold the role)
 //      surfaces as a readable error row, not a stack dump.
+//   3. Model eval (OPE-12948) — the reference-run model comparison for a
+//      chosen caste: model → score table, best free enabled model marked,
+//      explicit confirm/decline before the caste default model changes.
+//      Rendered only when the eval endpoint serves comparisons (OPE-12933).
 //
 // Token rule: every color value comes from the token layer; the swatch
 // background uses the stored `color` value itself, which the API contract
@@ -24,8 +28,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { getAgentIcon } from "@/lib/agent-icons";
 import { AGENT_ICON_NAMES } from "@myrmidon/shared";
-import type { AddCasteInput, CasteView, UpdateCasteInput } from "./castesApi";
+import type { AddCasteInput, CasteView, CasteModelEvalResultView, UpdateCasteInput } from "./castesApi";
 import type { CasteCounts } from "./casteCounts";
+import { CasteModelEvalView } from "./CasteModelEvalPanel";
 
 /**
  * The color palette a caste may carry. Values are the token-layer color
@@ -82,6 +87,7 @@ export function CastesScreenView({
   onSetDefault,
   defaulting = false,
   counts,
+  modelEval,
 }: {
   castes: CasteView[];
   onAdd: (input: AddCasteInput) => void;
@@ -111,6 +117,30 @@ export function CastesScreenView({
    * casteCounts.ts. Absent before the company lists load, shown as "—".
    */
   counts?: Record<string, CasteCounts>;
+  /**
+   * myrmidon(1.8 CASTE-MODEL-EVAL OPE-12948): model-eval state for the
+   * selected caste (section 3). `evalSelectedKey` drives both the selector
+   * and the panel; null eval state = the endpoint is unavailable/erroring —
+   * the section hides, the directory stays usable.
+   */
+  modelEval?: {
+    castesWithEval: readonly string[];
+    selectedKey: string | null;
+    onSelect: (key: string) => void;
+    loading: boolean;
+    loadError: string | null;
+    results: readonly CasteModelEvalResultView[];
+    suggestedModel: string | null;
+    /**
+     * The default model displayed for a caste: the API's PATCH response right
+     * after an explicit confirmation (criterion 3), otherwise the directory
+     * value. The panel's "current" column reads this, not `castes` directly.
+     */
+    displayModel: (key: string) => string | null;
+    confirming: boolean;
+    onConfirm: (model: string) => void;
+    onDecline: () => void;
+  };
 }) {
   const { t } = useTranslation();
   const [form, setForm] = useState<AddCasteInput>(EMPTY_FORM);
@@ -659,6 +689,65 @@ export function CastesScreenView({
           </table>
         )}
       </section>
+
+      {/* 3. Model eval — myrmidon(1.8 CASTE-MODEL-EVAL OPE-12948): reference
+          run comparison for the chosen caste, with an explicit confirm/decline
+          pair. The section is absent entirely when no eval endpoint / no
+          comparisons exist for the company. */}
+      {modelEval ? (
+        <section className="space-y-3" data-testid="myrmidon-castes-model-eval">
+          <h2 className="text-sm font-semibold">{t("castes.modelEval.sectionTitle")}</h2>
+          {modelEval.castesWithEval.length > 0 ? (
+            <div className="space-y-1">
+              <Label htmlFor="myrmidon-castes-model-eval-caste">
+                {t("castes.modelEval.casteLabel")}
+              </Label>
+              <select
+                id="myrmidon-castes-model-eval-caste"
+                className="w-full max-w-xs rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+                value={modelEval.selectedKey ?? ""}
+                onChange={(e) => modelEval.onSelect(e.target.value)}
+                data-testid="myrmidon-castes-model-eval-caste-select"
+              >
+                {modelEval.castesWithEval.map((key) => {
+                  const candidate = castes.find((caste) => caste.key === key);
+                  return (
+                    <option key={key} value={key}>
+                      {candidate ? casteDisplayName(candidate) : key}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+          ) : null}
+          {modelEval.loading ? (
+            <p
+              className="text-sm text-muted-foreground"
+              data-testid="myrmidon-castes-model-eval-loading"
+            >
+              {t("castes.modelEval.loading")}
+            </p>
+          ) : modelEval.loadError ? (
+            <p
+              className="text-sm text-destructive"
+              data-testid="myrmidon-castes-model-eval-error"
+            >
+              {modelEval.loadError}
+            </p>
+          ) : modelEval.selectedKey ? (
+            <CasteModelEvalView
+              key={modelEval.selectedKey}
+              casteKey={modelEval.selectedKey}
+              results={modelEval.results}
+              suggestedModel={modelEval.suggestedModel}
+              currentModel={modelEval.displayModel(modelEval.selectedKey)}
+              confirming={modelEval.confirming}
+              onConfirm={modelEval.onConfirm}
+              onDecline={modelEval.onDecline}
+            />
+          ) : null}
+        </section>
+      ) : null}
     </div>
   );
 }

@@ -86,6 +86,12 @@ export const MAX_REVIEW_ROUTING_BOARD_MERGE_CHECK_LENGTH = 100;
 /** Merges the board performs for one company per pass; the rest wait for the next pass. */
 export const DEFAULT_REVIEW_ROUTING_BOARD_MERGE_MAX_PER_PASS = 3;
 export const MAX_REVIEW_ROUTING_BOARD_MERGE_MAX_PER_PASS = 20;
+/**
+ * myrmidon(OPE-13136): minutes an approved PR may stay BLOCKED (marker present, required checks
+ * green) before the board writes an activity record on the task; 0 switches the alert off.
+ */
+export const DEFAULT_REVIEW_ROUTING_BOARD_MERGE_BLOCKED_ALERT_AFTER_MINUTES = 30;
+export const MAX_REVIEW_ROUTING_BOARD_MERGE_BLOCKED_ALERT_AFTER_MINUTES = 1440;
 
 /** `owner/repo` shape, GitHub-lean: one slash, non-empty slug-safe segments. */
 export const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -235,6 +241,13 @@ export const reviewRoutingBoardMergeSchema = z
       .min(1)
       .max(MAX_REVIEW_ROUTING_BOARD_MERGE_MAX_PER_PASS)
       .default(DEFAULT_REVIEW_ROUTING_BOARD_MERGE_MAX_PER_PASS),
+    // myrmidon(OPE-13136): 0 = the blocked-PR alert is off.
+    blockedAlertAfterMinutes: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_REVIEW_ROUTING_BOARD_MERGE_BLOCKED_ALERT_AFTER_MINUTES)
+      .default(DEFAULT_REVIEW_ROUTING_BOARD_MERGE_BLOCKED_ALERT_AFTER_MINUTES),
   })
   .strict();
 
@@ -273,6 +286,11 @@ export function normalizeReviewRoutingBoardMerge(raw: unknown): ReviewRoutingBoa
       z.number().int().min(1).max(MAX_REVIEW_ROUTING_BOARD_MERGE_MAX_PER_PASS),
       DEFAULT_REVIEW_ROUTING_BOARD_MERGE_MAX_PER_PASS,
       record.maxMergesPerPass,
+    ),
+    blockedAlertAfterMinutes: parseOr(
+      z.number().int().min(0).max(MAX_REVIEW_ROUTING_BOARD_MERGE_BLOCKED_ALERT_AFTER_MINUTES),
+      DEFAULT_REVIEW_ROUTING_BOARD_MERGE_BLOCKED_ALERT_AFTER_MINUTES,
+      record.blockedAlertAfterMinutes,
     ),
   };
 }
@@ -366,5 +384,9 @@ export const REVIEW_ROUTING_BOARD_MERGED_ACTION = "issue.review_routing.board_me
 export const REVIEW_ROUTING_BOARD_MERGE_RETURNED_ACTION = "issue.review_routing.board_merge_returned";
 /** myrmidon(OPE-11767): the board put the review-approved marker on a blocked approved head. */
 export const REVIEW_ROUTING_BOARD_MERGE_LABELED_ACTION = "issue.review_routing.board_merge_labeled";
+/** myrmidon(OPE-13136): an approved PR stayed BLOCKED with the marker present and the required checks green. */
+export const REVIEW_ROUTING_BOARD_MERGE_BLOCKED_ACTION = "issue.review_routing.board_merge_blocked";
+/** myrmidon(OPE-13136): GitHub refused the board's merge call (405 / 422); the details carry its message. */
+export const REVIEW_ROUTING_BOARD_MERGE_REFUSED_ACTION = "issue.review_routing.board_merge_refused";
 /** The PR label the hot-files-review gate reads as "reviewed". */
 export const REVIEW_ROUTING_APPROVED_LABEL = "review-approved";

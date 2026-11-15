@@ -168,8 +168,11 @@ import {
   buildRunCapNoCommitBlockedPatch,
   buildRunCapNoCommitComment,
   resolveRunCapNoCommitWakeTargetId,
+  buildRunCapNoCommitWakeEvidence,
   loadTaskRunsWithoutCommitLimit,
   RUN_CAP_NO_COMMIT_REASON,
+  RUN_CAP_NO_COMMIT_BLOCK_REASON,
+  RUN_CAP_NO_COMMIT_UNBLOCK_ACTION,
   type RunCapNoCommitStop,
 } from "../myrmidon/run-cap-no-commit.js"; // myrmidon(OPE-13080)
 import { WakeStormGuard, wakeStormSourceKey } from "../myrmidon/wake-storm-guard.js";
@@ -13450,6 +13453,17 @@ export function heartbeatService(
           isNull(issues.assigneeUserId),
           sql`${issues.assigneeAgentId} is not null`,
           inArray(issues.status, ["in_progress", "in_review", "blocked"]),
+          // A review-stage monitor belongs to the active review participant;
+          // monitors on other statuses must not wake the returned assignee.
+          sql`not (
+            ${issues.status} = 'in_review'
+            and ${issues.executionState} ->> 'status' = 'pending'
+            and ${issues.executionState} ->> 'currentStageType' = 'review'
+            and coalesce(${issues.executionPolicy} -> 'monitor' ->> 'serviceName', '') not in (
+              ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME},
+              ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+            )
+          )`,
           or(
             isNull(issues.monitorWakeRequestedAt),
             lt(issues.monitorWakeRequestedAt, staleClaimThreshold),
@@ -13478,6 +13492,15 @@ export function heartbeatService(
               isNull(issues.assigneeUserId),
               sql`${issues.assigneeAgentId} is not null`,
               inArray(issues.status, ["in_progress", "in_review", "blocked"]),
+              sql`not (
+                ${issues.status} = 'in_review'
+                and ${issues.executionState} ->> 'status' = 'pending'
+                and ${issues.executionState} ->> 'currentStageType' = 'review'
+                and coalesce(${issues.executionPolicy} -> 'monitor' ->> 'serviceName', '') not in (
+                  ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME},
+                  ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+                )
+              )`,
               or(
                 isNull(issues.monitorWakeRequestedAt),
                 lt(issues.monitorWakeRequestedAt, staleClaimThreshold),
@@ -32786,7 +32809,15 @@ export function heartbeatService(
           .where(and(eq(issues.id, stop.issueId), eq(issues.companyId, stop.companyId)))
           .for("update")
           .limit(1);
-        if (!current || !isContinuationActionable(current, stop.agentId)) return;
+        if (!current || current.assigneeAgentId !== stop.agentId) return;
+        const blockerMetadata = current.blockerMetadata as Record<string, unknown> | null;
+        const unblockDescriptor = current.unblockDescriptor as Record<string, unknown> | null;
+        if (
+          current.status === "blocked" &&
+          blockerMetadata?.blockReason === RUN_CAP_NO_COMMIT_BLOCK_REASON &&
+          blockerMetadata.externalRef === `run_cap_no_commit:${stop.headSha}:${stop.count}` &&
+          unblockDescriptor?.action === RUN_CAP_NO_COMMIT_UNBLOCK_ACTION
+        ) return;
         const patch = buildRunCapNoCommitBlockedPatch({
           agentId: stop.agentId,
           count: stop.count,
@@ -32848,6 +32879,7 @@ export function heartbeatService(
                   headSha: stop.headSha,
                   summary: parked.comment,
                 },
+                evidence: await buildRunCapNoCommitWakeEvidence(db, stop.companyId, stop.issueId),
               },
               requestedByActorType: "system",
               requestedByActorId: null,
@@ -32861,6 +32893,7 @@ export function heartbeatService(
                   limit: stop.limit,
                   headSha: stop.headSha,
                 },
+                evidence: await buildRunCapNoCommitWakeEvidence(db, stop.companyId, stop.issueId),
               },
             });
           } catch (err) {

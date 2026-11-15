@@ -118,6 +118,7 @@ export async function writeDataRetentionSettings(
     heartbeatRunsDays: patch.heartbeatRunsDays ?? current.heartbeatRunsDays,
     activityLogDays: patch.activityLogDays ?? current.activityLogDays,
     accessAuditDays: patch.accessAuditDays ?? current.accessAuditDays,
+    secretAccessDays: patch.secretAccessDays ?? current.secretAccessDays,
     litellmCostEventsDays: patch.litellmCostEventsDays ?? current.litellmCostEventsDays,
     agentWakeupRequestsDays: patch.agentWakeupRequestsDays ?? current.agentWakeupRequestsDays,
     environmentLeasesDays: patch.environmentLeasesDays ?? current.environmentLeasesDays,

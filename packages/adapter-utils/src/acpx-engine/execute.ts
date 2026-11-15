@@ -1,4 +1,8 @@
 import { cancellableSandboxStartup } from "./startup-cancellation.js";
+import {
+  mapTerminalCallback,
+  TerminalCallbackRegistry,
+} from "./terminal-callback-mapping.js";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import os from "node:os";
@@ -359,6 +363,7 @@ export interface AcpxRemoteManagedHomeResult {
 
 export interface AcpxEngineExecutorOptions {
   createRuntime?: AcpxRuntimeFactory;
+  terminalCallbackRegistry?: TerminalCallbackRegistry;
   now?: () => number;
   /**
    * The bound on how long the fail-fast seam waits for a cooperative
@@ -3885,6 +3890,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
   const warmHandles = deps.warmHandles ?? defaultWarmHandles;
   const stagedRuntimes = deps.stagedRuntimes ?? defaultStagedRuntimes;
   const stagingLocks = deps.stagingLocks ?? defaultStagingLocks;
+  // Registry lifetime matches the executor instance, so repeated turns handled
+  // by this executor deduplicate callbacks while separate executors stay isolated.
+  const terminalCallbackRegistry = deps.terminalCallbackRegistry ?? new TerminalCallbackRegistry();
   const engine = resolveEngineSettings(deps);
 
   return async function executeAcpxEngine(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -4755,6 +4763,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           thinkingEffort: prepared.requestedThinkingEffort || null,
           fastMode: prepared.fastMode,
         });
+        const externalJobId = sessionHandle.backendSessionId ?? sessionHandle.agentSessionId ?? sessionHandle.runtimeSessionName;
+        if (externalJobId && ctx.onExternalRunId) {
+          try {
+            await ctx.onExternalRunId(externalJobId);
+          } catch {
+            // Failure to persist external run id does not abort ACP execution
+          }
+        }
         if (ctx.onMeta) {
           await ctx.onMeta({
             adapterType: engine.adapterType,
@@ -5029,8 +5045,29 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ? channelLostMessage
             : resultErrorMessage(terminal);
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
+        // An operator abort interrupts this invocation; it is not the external
+        // job's terminal cancellation verdict. Preserve the session so it can resume.
+        const callbackStatus = ctx.signal?.aborted === true && preserveInterruptedSession
+          ? "in_progress"
+          : terminal.status;
+        const recordedCallback = terminalCallbackRegistry.apply({
+          provider: prepared.acpxAgent,
+          providerJobId: sessionHandle.backendSessionId ?? sessionHandle.agentSessionId ?? sessionHandle.runtimeSessionName,
+          status: callbackStatus,
+          completionEvidence: {
+            output: outputSegments.join("").trim() || null,
+            result: terminalStopReason || null,
+          },
+        });
+        const mappedTerminal = recordedCallback.mapping;
+        // Only an accepted terminal callback with completion evidence may mark
+        // this external turn successful. Holds remain failed for reconciliation.
+        const effectiveTurnSucceeded = turnSucceeded
+          && callbackStatus === "completed"
+          && mappedTerminal.kind === "terminal"
+          && mappedTerminal.boardState === "done";
         await emitAcpxLog(ctx, {
-          type: turnSucceeded ? "acpx.result" : "acpx.error",
+          type: effectiveTurnSucceeded ? "acpx.result" : "acpx.error",
           summary: channelLost ? "duplex_channel_lost" : terminal.status,
           stopReason: terminalStopReason,
           message: errorMessage,
@@ -5038,9 +5075,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // The one clean-completion path clears the run failure flag; every other
         // path keeps it set, so the run root span closes with error status. A
         // completed terminal with a lost duplex channel keeps the flag set.
-        runFailed = turnSucceeded ? false : true;
+        runFailed = effectiveTurnSucceeded ? false : true;
         capturedResult = {
-          exitCode: turnSucceeded ? 0 : 1,
+          exitCode: effectiveTurnSucceeded ? 0 : 1,
           signal: timedOut ? "SIGTERM" : null,
           timedOut,
           errorMessage,
@@ -5067,6 +5104,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             requestedModel: prepared.requestedModel || null,
             requestedThinkingEffort: prepared.requestedThinkingEffort || null,
             fastMode: prepared.fastMode,
+            mappedTerminal,
             ...(turnUsage.usageDetail ? { usage: turnUsage.usageDetail } : {}),
             ...(turnUsage.cumulativeCostUsd != null
               ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }
@@ -5083,13 +5121,23 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         await emitPhase(
           "turn",
           turnPhaseStart,
-          turnSucceeded ? "ok" : "failed",
+          effectiveTurnSucceeded ? "ok" : "failed",
         );
         // Return the typed turn completion so the coordinator settles for the right
         // cause. The completion carries no live resources; the settlement claims the
         // ledger and owns the release. A clean completed turn carries no cause, so
         // the reuse decision can permit a save; a timed-out, failed, or cancelled
         // turn carries its cause, which forbids the save.
+        if (turnSucceeded && !effectiveTurnSucceeded) {
+          return {
+            kind: "failed",
+            cause: {
+              kind: "turn_failed",
+              error: new Error(`External terminal callback was not accepted: ${mappedTerminal.kind === "non_terminal" ? mappedTerminal.holdReason : mappedTerminal.boardState}`),
+            },
+            resources: emptyConsumed,
+          };
+        }
         if (timedOut) {
           return {
             kind: "timed_out",
