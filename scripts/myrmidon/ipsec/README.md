@@ -66,3 +66,22 @@ Each side requires an IP literal endpoint, local and remote CIDRs, IKEv2 proposa
 Output is JSON with `status` and an `errors` array of `{path, message}`. Exit 0 means `PASS`; exit 1 means manifest validation `FAIL`; exit 2 means usage, read or JSON parse `ERROR`. No validation result applies configuration.
 
 Run tests with `node --test scripts/myrmidon/ipsec/config-check.test.mjs`.
+# Offline swanctl SA parser
+
+Run `node scripts/myrmidon/ipsec/parse-sas.mjs [file]`; without a file it reads
+saved text from stdin. The command never invokes swanctl or connects to a host.
+It prints JSON with IKE and CHILD names, numeric IDs, states, installed flags,
+and inbound/outbound byte counters as decimal strings (avoiding integer precision
+loss). It does not copy addresses, identities, keys, or other source lines.
+
+`healthy` requires at least one IKE SA, every IKE SA to be ESTABLISHED, and
+at least one CHILD per IKE, all INSTALLED with both counters present. Empty,
+unsupported, incomplete or malformed input is `unknown`; an input read error
+exits nonzero. This is a conservative snapshot interpretation, not proof of
+connectivity or current traffic.
+
+The fixtures are hand-authored synthetic examples of the standard human-readable
+`swanctl --list-sas` layout. Names, documentation addresses, identifiers and
+counters are invented; no node output or production data was used. The rekey
+fixture models overlapping CHILD SAs. Run the tests with
+`node --test scripts/myrmidon/ipsec/parse-sas.test.mjs`.
