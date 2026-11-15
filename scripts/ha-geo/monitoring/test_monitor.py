@@ -101,6 +101,27 @@ class MonitoringTest(unittest.TestCase):
         self.check('critical', wal_limit_bytes=0)
         self.check('critical', wal_retained_bytes=-1)
 
+    def test_adapter_combines_timestamped_sources_and_evaluates(self):
+        command = [sys.executable, str(Path(__file__).with_name('adapter.py'))]
+        now = time.time()
+        sources = {
+            'replication': {'observed_at': now, 'value': self.sample['replication']},
+            'receiver': {'observed_at': now, 'value': {'receiver_status': 'streaming'}},
+            'wal': {'observed_at': now, 'value': {'wal_retained_bytes': 100, 'wal_limit_bytes': 1000}},
+            'host': {'observed_at': now, 'value': {'disk_used_percent': 40, 'memory_used_percent': 40, 'cpu_used_percent': 40}},
+        }
+        result = subprocess.run(command, input=json.dumps(sources), text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['status'], 'ok')
+        sources['wal']['observed_at'] = now - 61
+        result = subprocess.run(command, input=json.dumps(sources), text=True, capture_output=True)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['status'], 'critical')
+        del sources['receiver']
+        result = subprocess.run(command, input=json.dumps(sources), text=True, capture_output=True)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['status'], 'critical')
+
 
 if __name__ == '__main__':
     unittest.main()
