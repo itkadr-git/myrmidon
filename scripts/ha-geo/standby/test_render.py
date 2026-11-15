@@ -1,0 +1,59 @@
+import json
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+SCRIPT = Path(__file__).with_name('render.py')
+
+class RenderTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.secret = self.root / 'secret'
+        self.secret.write_text('SYNTHETIC_PRIVATE_VALUE')
+        self.config = dict(primary_major=16, standby_major=16, postgres_image='postgres@sha256:' + 'a'*64,
+            app_image='ghcr.io/itkadr-git/myrmidon@sha256:' + 'b'*64, cpu=2, memory_mb=4096,
+            required_cpu=1, required_memory_mb=2048, free_disk_mb=20000, required_disk_mb=10000,
+            wal_keep_mb=1024, max_slot_wal_keep_mb=4096, slot='geo_slot', primary_host='primary.example',
+            primary_port=5432, replication_user='replicator', tls_server_name='primary.example',
+            ca_file=str(self.secret), passfile=str(self.secret), cert_file=str(self.secret), key_file=str(self.secret))
+
+    def run_config(self, config):
+        path = self.root / 'input.json'
+        path.write_text(json.dumps(config))
+        return subprocess.run([sys.executable, str(SCRIPT), str(path)], capture_output=True, text=True)
+
+    def test_valid_stable_and_secret_free(self):
+        a = self.run_config(self.config)
+        b = self.run_config(self.config)
+        self.assertEqual(a.returncode, 0, a.stderr)
+        self.assertEqual(a.stdout, b.stdout)
+        self.assertNotIn('SYNTHETIC_PRIVATE_VALUE', a.stdout + a.stderr)
+        out = json.loads(a.stdout)
+        self.assertNotIn('ports', out['services']['standby'])
+        self.assertEqual(out['services']['cold-app']['profiles'], ['manual-cold-app'])
+        self.assertNotIn('ports', out['services']['cold-app'])
+
+    def test_missing_parameters_fail(self):
+        for key in self.config:
+            with self.subTest(key=key):
+                config = dict(self.config)
+                del config[key]
+                self.assertNotEqual(self.run_config(config).returncode, 0)
+
+    def test_invalid_inputs_fail(self):
+        for key, value in [('app_image', 'ghcr.io/itkadr-git/myrmidon:latest'), ('postgres_image', 'postgres:16'),
+                           ('primary_major', 15), ('cpu', 0), ('memory_mb', 1), ('free_disk_mb', 1),
+                           ('wal_keep_mb', 0), ('max_slot_wal_keep_mb', -1), ('slot', 'BAD SLOT'),
+                           ('ca_file', '/nonexistent'), ('primary_host', 'bad host'), ('primary_port', 0)]:
+            with self.subTest(key=key):
+                config = dict(self.config, **{key: value})
+                result = self.run_config(config)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn('SYNTHETIC_PRIVATE_VALUE', result.stdout + result.stderr)
+
+if __name__ == '__main__':
+    unittest.main()
