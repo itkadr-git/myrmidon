@@ -927,11 +927,25 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
         expect(await statusOf(issueId)).not.toBe("blocked");
       });
 
-      it("does not cap an agent that is not an engineer", async () => {
-        const { agentId, issueId } = await seedScene({ role: "cto" });
-        await wakeWith(agentId, issueId);
-        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(0);
-        expect(await statusOf(issueId)).not.toBe("blocked");
+      // myrmidon(MONITOR-IDLE-LOOP, OPE-13141): the ceiling is for every caste, not only
+      // for engineers. A lead that spent four runs on the same head without a new
+      // commit is stopped by the same rule.
+      it("caps a lead the same way as an engineer", async () => {
+        const { agentId, issueId } = await seedScene({ role: "lead" });
+        expect(await wakeWith(agentId, issueId)).toBeNull();
+        const skips = skippedWith(await wakeRequests(agentId), SKIP);
+        expect(skips).toHaveLength(1);
+        expect(skips[0]!.payload).toMatchObject({
+          heartbeatSkip: { consecutiveRunsWithoutCommit: 4, limit: 4 },
+        });
+        expect(await statusOf(issueId)).toBe("blocked");
+      });
+
+      it.each(["cto", "architect", "operator"])("caps an agent of role %s", async (role) => {
+        const { agentId, issueId } = await seedScene({ role });
+        expect(await wakeWith(agentId, issueId)).toBeNull();
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(1);
+        expect(await statusOf(issueId)).toBe("blocked");
       });
     });
   });
