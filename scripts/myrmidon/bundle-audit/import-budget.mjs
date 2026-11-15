@@ -33,7 +33,7 @@ function tokens(source) {
       if (quote !== '`' && escaped) {
         value = value.replace(/\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|.)/g, (_, escape) => {
           if (escape[0] === 'u' || escape[0] === 'x') return String.fromCodePoint(parseInt(escape.slice(1), 16));
-          return ({ n: '\\n', r: '\\r', t: '\\t', b: '\\b', f: '\\f', v: '\\v', '0': '\\0' }[escape] ?? escape);
+          return ({ n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', v: '\v', '0': '\0' }[escape] ?? escape);
         });
       }
       result.push({ type: quote === '`' ? 'opaque' : 'string', value });
