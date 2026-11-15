@@ -40,6 +40,7 @@ import {
   unregisterServerAdapter,
   type AdapterExecutionContext,
 } from "../adapters/index.ts";
+import { resolveManagedProjectWorkspaceDir } from "../home-paths.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { executionWorkspaceService } from "../services/execution-workspaces.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
@@ -49,6 +50,7 @@ const execFileAsync = promisify(execFile);
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const BOT_CONTAINER_TEST_ADAPTER = "bot_container_workspace_test";
+const REPO_ONLY_URL = "https://github.com/example/bot-container-repo.git";
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -137,7 +139,7 @@ describeEmbeddedPostgres("bot-container isolated workspace", () => {
     return await heartbeat.getRun(runId);
   }
 
-  async function seedTwoIssuesOfOneAgent() {
+  async function seedTwoIssuesOfOneAgent(options: { repoOnly?: boolean } = {}) {
     await instanceSettingsService(db).updateExperimental({
       enableIsolatedWorkspaces: true,
       enableIsolatedWorkspacesByDefault: false,
@@ -161,8 +163,14 @@ describeEmbeddedPostgres("bot-container isolated workspace", () => {
       companyId,
       projectId,
       name: "Primary workspace",
-      sourceType: "local_path",
-      cwd: projectCwd,
+      ...(options.repoOnly
+        ? {
+            sourceType: "git_repo",
+            cwd: null,
+            repoUrl: REPO_ONLY_URL,
+            repoRef: "main",
+          }
+        : { sourceType: "local_path", cwd: projectCwd }),
       isPrimary: true,
     });
     await db.insert(agents).values({
@@ -239,6 +247,38 @@ describeEmbeddedPostgres("bot-container isolated workspace", () => {
     await expect(fs.stat(path.join(projectCwd, ".paperclip", "worktrees"))).rejects.toThrow();
     const worktrees = await execFileAsync("git", ["-C", projectCwd, "worktree", "list", "--porcelain"]);
     expect(worktrees.stdout.match(/^worktree /gm)).toHaveLength(1);
+  }, 60_000);
+
+  it("clones and creates nothing on the board for a project that has only a repository", async () => {
+    const fixture = await seedTwoIssuesOfOneAgent({ repoOnly: true });
+    const issueId = fixture.issueIds[0]!;
+    const run = await heartbeat.invoke(
+      fixture.agentId,
+      "assignment",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+    );
+    expect(run).not.toBeNull();
+    expect((await waitForRunToLeaveActiveStates(run!.id))?.status).toBe("succeeded");
+
+    const identifier = `${fixture.issuePrefix}-1`;
+    const [row] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.sourceIssueId, issueId));
+    expect(row).toMatchObject({ strategyType: "bot_container", cwd: `/workspace/${identifier}`, repoUrl: REPO_ONLY_URL });
+    expect(executedInputs.get(run!.id)?.context.paperclipWorkspace).toMatchObject({
+      cwd: `/workspace/${identifier}`,
+      repoUrl: REPO_ONLY_URL,
+      repoRef: "main",
+    });
+
+    // The managed checkout directory of the project, its parents and any clone temp
+    // directory stay absent: the board holds no copy.
+    const managedDir = resolveManagedProjectWorkspaceDir({
+      companyId: fixture.companyId,
+      projectId: fixture.projectId,
+      repoName: "bot-container-repo",
+    });
+    await expect(fs.stat(path.dirname(managedDir))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.stat(path.dirname(path.dirname(managedDir)))).rejects.toMatchObject({ code: "ENOENT" });
   }, 60_000);
 
   it("reuses the same row on the next run of the same task", async () => {
