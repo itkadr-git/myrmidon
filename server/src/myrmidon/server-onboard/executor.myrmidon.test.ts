@@ -134,6 +134,26 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockSsh.hasExecuted(/pkill -f 'sleep 300/)).toBe(true);
   });
 
+  it("never disables password authentication for a key generated only in executor memory", async () => {
+    const mockSsh = new MockSshExecutor();
+    mockSsh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
+    const executor = new FleetOnboardExecutor({
+      createSshExecutor: () => mockSsh,
+      generateKeyPair: () => ({ publicKey: "ssh-ed25519 test", privateKey: "private-key" }),
+    });
+    const mockReporter = createMockReporter();
+    const claim: any = {
+      job: { id: "job-ephemeral", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root", accessKeySecretKey: null },
+      steps: ["access"],
+      options: { keepPassword: false },
+      secretValues: { bootstrapPassword: "pass" },
+    };
+    const result = await executor.execute(claim, mockReporter.reporter);
+    expect(result.status).toBe("failed");
+    expect(mockSsh.hasExecuted(/PasswordAuthentication no/)).toBe(false);
+  });
+
   it("fails preflight when disk usage exceeds 90%", async () => {
     const mockSsh = new MockSshExecutor();
     mockSsh.mockResponse(/ssh-keygen -l/, {
