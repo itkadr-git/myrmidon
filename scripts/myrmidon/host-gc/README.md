@@ -117,6 +117,19 @@ see "SSH runner run copies" below for the one that matters, `HOST_GC_RUNNER_ROOT
    them. A checkout whose files lie outside every git root, or with a broken repository, gets the
    previous full archive instead (journal event `archive-full-fallback` with the reason); a
    checkout with alternate objects stays on disk. When everything is pushed no archive is made.
+   **Files matched by `.gitignore` are not in the compact archive** (build output, dependencies,
+   secrets): only commits, staged and unstaged changes and untracked files that git does not
+   ignore are kept; a full-archive fallback also leaves out git-ignored build and dependency
+   directories. "Pushed" is judged against the server, not against local `refs/remotes/*`: the
+   host runs `git ls-remote` (bounded by the archive timeout, at most 60 s) and leaves out of the
+   bundle only commits the server advertises and the clone has. If the remote cannot be asked
+   (no remote, no access, timeout), nothing counts as pushed: the bundle holds the whole history
+   (`remote-unverified` in the journal) and the clone is never removed without an archive. The
+   host needs read access to the clones' remotes for compact archives to stay small. A `.git`
+   (directory or file) is looked for at any depth, inside `node_modules`, `dist` and the like
+   too, and every repository found is archived on its own; a broken one in such a directory keeps
+   the copy on disk. Patches and the untracked list are written as raw bytes (non-UTF-8 content
+   and names survive).
    Disk pressure: at `--pressure-percent` (default 85, env `HOST_GC_PRESSURE_PERCENT`) the scratch
    TTL drops to 1 h and `disk-pressure` is journaled; at `--critical-percent` (95) `disk-critical`
    is journaled for the board operator. Stashes and detached HEADs may require inspecting bundle refs with
@@ -233,13 +246,19 @@ configured (`--runner-root` / `HOST_GC_RUNNER_ROOTS`), per the same host matrix.
   (`issue-status:<status>`); an unreachable board keeps the folder (fail-closed,
   `board-unavailable`).
 - The folder is removed when every git repository found inside (the folder itself, `repo/`,
-  or nested up to depth 3; `.next`, `.helper`, `node_modules`, `.gc-archive` are not walked) is
-  clean, fully pushed, stash-free and alternates-free. A folder with no git repository at all
-  is removed outright (`no-git-repos`).
-- Unpushed work triggers a compact archive attempt. The current implementation can archive only
-  a repository at the task-folder root with readable Git state and no alternates. Nested
-  repositories, missing gitdirs and other unsupported states are retained and journaled as
-  `runner-task-folder-archive-failed`; they are not replaced with a whole-folder archive.
+  or nested up to depth 3; `.next`, `.helper`, `node_modules`, `.gc-archive` are not walked by
+  this listing) is clean, fully pushed (checked against the server, see Restore), stash-free and
+  alternates-free (the real gitdir is checked when `.git` is a file). Before a removal the whole
+  folder is walked independently for any `.git` at any depth, skipped directories included;
+  one the listing missed sends the folder to the archive pass (`unlisted-git-repository`). A
+  folder with no git repository at all is removed outright (`no-git-repos`).
+- Unpushed work, or a git state the host cannot prove, triggers the same compact archive as for
+  task clones (`runner-task-folder-archived`, under `<runner root>/.gc-archive`): every git
+  root, nested ones included, gets its bundle and patches. A folder that cannot be archived
+  compactly (broken repository, files outside any git root) gets the full archive
+  (`archive-full-fallback`). A folder with borrowed objects (alternates), a broken repository
+  inside a skipped directory, an unreadable tree or a failed or timed-out archive step is
+  retained and journaled (`runner-task-folder-archive-failed`); it is retried on the next pass.
 - Every removal is guarded against the runner root (`runner-task-folder-remove-failed` on a
   containment violation); a missing root is journaled as `runner-folder-root-missing`, an
   unreadable root or runner as `runner-folder-scan-failed`. Neither stops the rest of the

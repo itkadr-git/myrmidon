@@ -60,7 +60,8 @@ const ARCHIVE_EXCLUDES = ["node_modules", ".pnpm-store", ".turbo", "dist", ".nex
 const SCRATCH_TTL_HOURS = 6;
 // Disk pressure (partitionThresholdPercent / partitionCriticalPercent of the bots disk): above the
 // first the scratch TTL drops to one hour; above the second the journal gets a disk-critical record
-// for the board operator. Archives of unpushed work and open tasks are never touched by this mode.
+// for the board operator. This mode does not change the 24 h life of archives (they expire after
+// 24 h in every mode, unpushed work included) and does not touch the checkouts of open tasks.
 const PRESSURE_PERCENT = 85;
 const CRITICAL_PERCENT = 95;
 const PRESSURE_SCRATCH_TTL_HOURS = 1;
@@ -326,14 +327,95 @@ function assertNotSymlink(p, label) {
 
 // --- Git helpers ------------------------------------------------------------
 
+// spawnSync's default maxBuffer is 1 MiB: a long `git status` or `ls-files` would end in ENOBUFS.
+const GIT_MAX_BUFFER = 256 * 1024 * 1024;
+
 function git(args, cwd) {
-  return spawnSync("git", args, { cwd, encoding: "utf8", timeout: 30000 });
+  return spawnSync("git", args, { cwd, encoding: "utf8", timeout: 30000, maxBuffer: GIT_MAX_BUFFER });
+}
+
+// --- Server-verified "pushed" (OPE-13218) ------------------------------------
+// Local refs/remotes/* only say what the last fetch saw: a branch deleted or rewritten on the
+// server since then still looks pushed. A commit counts as pushed only when a tip the server
+// itself advertises (`git ls-remote`) is present locally and reaches it.
+const REMOTE_FAILURES = new Map();
+
+export function resetRemoteFailureCache() {
+  REMOTE_FAILURES.clear();
+}
+
+function remoteTimeoutSeconds() {
+  return Math.min(archiveTimeoutSeconds(), 60);
+}
+
+// { verified, tips, reason }: `tips` are server tips (commits and tags) that exist locally.
+// `verified` is false when there is no remote or any remote did not answer: nothing is then
+// known to be on the server.
+function serverTips(repo) {
+  const listed = git(["remote"], repo);
+  if (listed.status !== 0) return { verified: false, tips: [], reason: "remote listing failed" };
+  const names = listed.stdout.split("\n").map((n) => n.trim()).filter(Boolean);
+  if (!names.length) return { verified: false, tips: [], reason: "no remote" };
+  const advertised = new Set();
+  const timeoutS = remoteTimeoutSeconds();
+  for (const name of names) {
+    const url = git(["remote", "get-url", name], repo).stdout.trim() || name;
+    if (REMOTE_FAILURES.has(url)) return { verified: false, tips: [], reason: `ls-remote ${name}: ${REMOTE_FAILURES.get(url)}` };
+    const r = spawnSync("timeout", ["--kill-after=5s", `${timeoutS}s`, "git", "ls-remote", "--heads", "--tags", name], {
+      cwd: repo,
+      encoding: "utf8",
+      timeout: (timeoutS + 20) * 1000,
+      maxBuffer: GIT_MAX_BUFFER,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || "ssh -o BatchMode=yes" },
+    });
+    if (r.status !== 0) {
+      const why = r.status === 124 || r.status === 137 || r.error?.code === "ETIMEDOUT" ? `timed out after ${timeoutS} s` : `exit ${r.status}: ${String(r.stderr ?? "").trim().slice(0, 200)}`;
+      REMOTE_FAILURES.set(url, why);
+      return { verified: false, tips: [], reason: `ls-remote ${name}: ${why}` };
+    }
+    for (const line of r.stdout.split("\n")) {
+      const sha = line.split("\t")[0].trim();
+      if (/^[0-9a-f]{40,64}$/.test(sha)) advertised.add(sha);
+    }
+  }
+  if (!advertised.size) return { verified: true, tips: [] };
+  const checked = spawnSync("git", ["cat-file", "--batch-check=%(objecttype) %(objectname)"], {
+    cwd: repo, input: `${[...advertised].join("\n")}\n`, encoding: "utf8", timeout: 30000, maxBuffer: GIT_MAX_BUFFER,
+  });
+  if (checked.status !== 0) return { verified: false, tips: [], reason: "cat-file failed" };
+  const tips = [];
+  for (const line of checked.stdout.split("\n")) {
+    const m = /^(commit|tag) ([0-9a-f]{40,64})$/.exec(line.trim());
+    if (m) tips.push(m[2]);
+  }
+  if (tips.length > 10000) return { verified: false, tips: [], reason: "too many server refs" };
+  return { verified: true, tips };
+}
+
+// { verified, pushed, tips, reason }. `pushed` needs a verified server answer and no local
+// branch, tag or HEAD commit outside it.
+function pushState(repo) {
+  const server = serverTips(repo);
+  if (!server.verified) return { verified: false, pushed: false, tips: [], reason: server.reason };
+  const args = ["rev-list", "HEAD", "--branches", "--tags"];
+  if (server.tips.length) args.push("--not", ...server.tips);
+  const r = git(args, repo);
+  return { verified: true, pushed: r.status === 0 && r.stdout.trim() === "", tips: server.tips };
 }
 
 function isGitWorktree(dir) {
   try {
     const r = git(["rev-parse", "--is-inside-work-tree"], dir);
     return r.status === 0 && r.stdout.trim() === "true";
+  } catch { return false; }
+}
+
+// A `.git` that is empty or broken is skipped by git, which then finds the parent repository:
+// such a directory is no worktree of its own.
+function isOwnWorktree(dir) {
+  try {
+    const r = git(["rev-parse", "--show-toplevel"], dir);
+    return r.status === 0 && fs.realpathSync(r.stdout.trim()) === fs.realpathSync(dir);
   } catch { return false; }
 }
 
@@ -346,8 +428,7 @@ function isClean(dir) {
 
 function isPushed(dir) {
   try {
-    const r = git(["rev-list", "HEAD", "--branches", "--tags", "--not", "--remotes"], dir);
-    return r.status === 0 && r.stdout.trim() === "";
+    return pushState(dir).pushed;
   } catch { return false; }
 }
 
@@ -358,12 +439,58 @@ function hasStash(dir) {
   } catch { return false; }
 }
 
+// `.git` is a directory in a plain clone but a file (`gitdir: <path>`) in a linked worktree or a
+// submodule: the objects, and their alternates file, then live in the real gitdir (and the
+// common dir behind it), so look there.
 function hasAlternates(dir) {
   try {
-    const gitDir = path.join(dir, ".git");
-    const altFile = path.join(gitDir, "objects", "info", "alternates");
-    return fs.existsSync(altFile);
+    const dotGit = path.join(dir, ".git");
+    const st = fs.lstatSync(dotGit);
+    const gitDirs = [];
+    if (st.isDirectory()) {
+      gitDirs.push(dotGit);
+    } else if (st.isFile()) {
+      const m = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(dotGit, "utf8"));
+      if (m) gitDirs.push(path.resolve(dir, m[1].trim()));
+    }
+    for (const gd of [...gitDirs]) {
+      try {
+        const common = fs.readFileSync(path.join(gd, "commondir"), "utf8").trim();
+        if (common) gitDirs.push(path.resolve(gd, common));
+      } catch { /* no commondir: the gitdir is the common dir */ }
+    }
+    return gitDirs.some((gd) => fs.existsSync(path.join(gd, "objects", "info", "alternates")));
   } catch { return false; }
+}
+
+// Every directory under `top` (itself included) holding a `.git` entry, directory or file, at
+// any depth and inside any directory, node_modules, dist, .next, .helper or .gc-archive among
+// them. Symlinks are not followed and `.git` is not entered. `complete` is false when a
+// directory could not be read or the tree is implausibly large: nothing can be proven then.
+const GIT_TREE_ENTRY_LIMIT = 5_000_000;
+function scanGitTree(top) {
+  const roots = [];
+  let complete = true;
+  let seen = 0;
+  const stack = [top];
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      complete = false;
+      continue;
+    }
+    seen += entries.length;
+    if (seen > GIT_TREE_ENTRY_LIMIT) return { roots: roots.sort(), complete: false };
+    if (entries.some((e) => e.name === ".git")) roots.push(dir);
+    for (const e of entries) {
+      if (e.name === ".git" || e.isSymbolicLink() || !e.isDirectory()) continue;
+      stack.push(path.join(dir, e.name));
+    }
+  }
+  return { roots: roots.sort(), complete };
 }
 
 // --- Scanning ---------------------------------------------------------------
@@ -591,6 +718,11 @@ function judgeRunnerTaskFolder(folder, boardStatus) {
   }
   const gitDirs = runnerFolderGitDirs(folder);
   if (gitDirs === null) return { action: "archive-remove", reason: "unreadable-folder" };
+  // Independent of the depth-limited list above: a `.git` anywhere (skipped directories too) that
+  // the list lacks sends the folder to the archive pass, which saves or keeps it.
+  const tree = scanGitTree(folder);
+  const listed = new Set(gitDirs);
+  if (!tree.complete || tree.roots.some((r) => !listed.has(r))) return { action: "archive-remove", reason: "unlisted-git-repository" };
   if (gitDirs.length === 0) return { action: "remove", reason: "no-git-repos" };
   for (const dir of gitDirs) {
     const readable = isGitWorktree(dir);
@@ -1687,26 +1819,10 @@ export function pruneRunnerTmp(items, journalPath) {
 
 // --- Archive ----------------------------------------------------------------
 
-// Git repos inside a clone: the clone itself and nested ones (`.git` dir or file) a few levels down.
+// Git repos inside a clone: the clone itself and every nested one (`.git` directory or file) at
+// any depth, skipped directories included (a repository inside node_modules is still one).
 function archiveRepos(clonePath) {
-  const repos = [];
-  const visit = (dir, depth) => {
-    if (fs.existsSync(path.join(dir, ".git"))) repos.push(dir);
-    if (depth === 0) return;
-    let entries;
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
-      if (entry.name === ".git" || ARCHIVE_EXCLUDES.includes(entry.name) || BOT_SCAN_SKIP_NAMES.has(entry.name)) continue;
-      visit(path.join(dir, entry.name), depth - 1);
-    }
-  };
-  visit(clonePath, 3);
-  return repos;
+  return scanGitTree(clonePath).roots;
 }
 
 // tar `--exclude` arguments: exact member paths (`<clone name>/<path>`) that git reports as ignored
@@ -1744,7 +1860,7 @@ function archiveTimeoutSeconds() {
 // 124 = `timeout` fired; 137 = it had to KILL the child after --kill-after.
 function runArchiveTool(cmd, args, what, extra = {}) {
   const timeoutS = archiveTimeoutSeconds();
-  const result = spawnSync("timeout", ["--kill-after=10s", `${timeoutS}s`, cmd, ...args], { timeout: (timeoutS + 30) * 1000, ...extra });
+  const result = spawnSync("timeout", ["--kill-after=10s", `${timeoutS}s`, cmd, ...args], { timeout: (timeoutS + 30) * 1000, maxBuffer: 1024 * 1024 * 1024, ...extra });
   if (result.status !== 0) {
     const timedOut = result.error?.code === "ETIMEDOUT" || result.status === 124 || result.status === 137;
     const reason = timedOut
@@ -1764,9 +1880,15 @@ function compactBlocker(clonePath, repos) {
     if (hasAlternates(repo)) return { keep: true, reason: `alternate-objects: ${repo}` };
   }
   for (const repo of repos) {
-    if (!isGitWorktree(repo)) return { reason: `unusable-repository: ${repo}` };
+    if (!isOwnWorktree(repo)) {
+      // The full archive leaves out git-ignored build and dependency directories: a broken
+      // repository inside one would be lost with the copy. Keep the copy then.
+      const skipped = path.relative(clonePath, repo).split(path.sep).some((seg) => ARCHIVE_EXCLUDES.includes(seg) || BOT_SCAN_SKIP_NAMES.has(seg));
+      return skipped ? { keep: true, reason: `unusable-repository in a skipped directory: ${repo}` } : { reason: `unusable-repository: ${repo}` };
+    }
   }
-  // Files outside every git root (bundle and patches cannot carry them).
+  // Files outside every git root (bundle and patches cannot carry them). `repos` holds every
+  // `.git` found at any depth (scanGitTree), so a root is never mistaken for plain files.
   const roots = new Set(repos);
   const hasFiles = (dir) => {
     let entries;
@@ -1792,44 +1914,52 @@ function compactBlocker(clonePath, repos) {
 // Compact recovery of one git root into `dest`: unpublished commits (git bundle), staged and
 // unstaged changes (patches), untracked files. Returns the member names written (empty when
 // everything is already on the remote).
-function compactRepo(repo, dest, nestedRepos) {
+function compactRepo(repo, dest, nestedRepos, journalPath, clonePath) {
   fs.mkdirSync(dest, { recursive: true });
   const members = [];
   const stashes = git(["stash", "list", "--format=%H"], repo);
   if (stashes.status !== 0) throw new Error(`stash listing failed: ${stashes.stderr}`);
   const stashCount = stashes.stdout.trim().split("\n").filter(Boolean).length;
   if (stashCount > 1) throw new Error("multiple stash entries require reflog preservation; keeping checkout");
-  if (!isPushed(repo) || stashCount) {
+  const state = pushState(repo);
+  if (!state.verified && journalPath) {
+    journalRecord(journalPath, { event: "remote-unverified", path: repo, clone: clonePath, reason: state.reason });
+  }
+  if (!state.pushed || stashCount) {
     const bundle = path.join(dest, "unpublished.bundle");
-    // A bundle includes stashes as well as unpublished branches and tags.
-    const created = git(["bundle", "create", bundle, "HEAD", "--all", "--not", "--remotes"], repo);
-    if (created.status !== 0) throw new Error(`bundle failed: ${created.stderr}`);
-    const verified = git(["bundle", "verify", bundle], repo);
-    if (verified.status !== 0) throw new Error(`bundle verification failed: ${verified.stderr}`);
+    // A bundle includes stashes as well as unpublished branches and tags. Only commits the server
+    // itself advertised (and that exist here) are left out; without a verified answer nothing is.
+    const exclude = state.verified && state.tips.length ? ["--not", ...state.tips] : [];
+    runArchiveTool("git", ["-C", repo, "bundle", "create", bundle, "HEAD", "--all", ...exclude], "bundle creation");
+    runArchiveTool("git", ["-C", repo, "bundle", "verify", bundle], "bundle verification");
     members.push("unpublished.bundle");
   }
+  // Patches are bytes: the diff goes straight to the file, nothing is decoded or buffered.
   for (const [name, diffArgs] of [
-    ["staged.patch", ["diff", "--cached", "--binary", "HEAD", "--"]],
-    ["changes.patch", ["diff", "--binary", "--"]],
+    ["staged.patch", ["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--"]],
+    ["changes.patch", ["diff", "--binary", "--no-ext-diff", "--no-textconv", "--"]],
   ]) {
-    const diff = git(diffArgs, repo);
-    if (diff.status !== 0) throw new Error(`diff failed: ${diff.stderr}`);
-    if (diff.stdout) {
-      fs.writeFileSync(path.join(dest, name), diff.stdout);
-      members.push(name);
+    const file = path.join(dest, name);
+    const fd = fs.openSync(file, "w");
+    try {
+      runArchiveTool("git", ["-C", repo, ...diffArgs], `${name} diff`, { stdio: ["ignore", fd, "pipe"] });
+    } finally {
+      fs.closeSync(fd);
     }
+    if (fs.statSync(file).size > 0) members.push(name);
+    else fs.rmSync(file, { force: true });
   }
-  const listed = git(["ls-files", "--others", "--exclude-standard", "-z"], repo);
-  if (listed.status !== 0) throw new Error(`untracked listing failed: ${listed.stderr}`);
-  // A nested repository is archived by its own pass; the parent lists it as one directory.
-  const nestedRel = nestedRepos.map((r) => path.relative(repo, r));
-  const untracked = listed.stdout.split("\0").filter((entry) => {
+  const listed = runArchiveTool("git", ["-C", repo, "ls-files", "--others", "--exclude-standard", "-z"], "untracked listing");
+  // A nested repository is archived by its own pass; the parent lists it as one directory. Names are
+  // handled as latin1 so non-UTF-8 bytes survive the round trip to tar unchanged.
+  const nestedRel = nestedRepos.map((r) => Buffer.from(path.relative(repo, r), "utf8").toString("latin1"));
+  const untracked = Buffer.from(listed.stdout).toString("latin1").split("\0").filter((entry) => {
     if (!entry) return false;
     const clean = entry.replace(/\/+$/, "");
     return !nestedRel.some((n) => clean === n || clean.startsWith(`${n}/`));
   });
   if (untracked.length) {
-    runArchiveTool("tar", ["-cf", path.join(dest, "untracked.tar"), "-C", repo, "--null", "-T", "-"], "untracked archive", { input: `${untracked.join("\0")}\0` });
+    runArchiveTool("tar", ["-cf", path.join(dest, "untracked.tar"), "-C", repo, "--null", "-T", "-"], "untracked archive", { input: Buffer.from(`${untracked.join("\0")}\0`, "latin1") });
     members.push("untracked.tar");
   }
   return members;
@@ -1841,7 +1971,10 @@ function compactRepo(repo, dest, nestedRepos) {
 // impossible the previous full archive is made and the reason journaled; a checkout whose Git
 // state cannot be recovered by either way stays in place (throws).
 function archiveClone(clonePath, archiveRoot, journalPath) {
-  const repos = archiveRepos(clonePath);
+  const tree = scanGitTree(clonePath);
+  // A directory that cannot be read may hide a repository: nothing can be proven, keep the copy.
+  if (!tree.complete) throw new Error(`cannot safely archive ${clonePath}: unreadable or oversized tree; keeping checkout`);
+  const repos = tree.roots;
   const blocker = compactBlocker(clonePath, repos);
   if (blocker?.keep) throw new Error(`cannot safely archive ${clonePath}: ${blocker.reason}; keeping checkout`);
   if (blocker) {
@@ -1856,7 +1989,7 @@ function archiveClone(clonePath, archiveRoot, journalPath) {
       const rel = path.relative(clonePath, repo);
       const nested = repos.filter((r) => r !== repo && r.startsWith(`${repo}${path.sep}`));
       // The checkout's own repository keeps flat member names; inner ones go under repos/<path>.
-      const members = compactRepo(repo, rel ? path.join(stage, "repos", rel) : stage, nested);
+      const members = compactRepo(repo, rel ? path.join(stage, "repos", rel) : stage, nested, journalPath, clonePath);
       if (members.length) manifest.push({ path: rel || ".", members });
     }
     if (!manifest.length) {
@@ -1970,7 +2103,9 @@ async function main() {
     for (const c of cloneStatuses.candidates) {
       // A nested repository may be ignored by its parent and contain unpublished work:
       // archiveClone handles every git root of the clone on its own.
-      if (c.safeToRemove && !archiveRepos(c.path).some((repo) => repo !== c.path)) {
+      // The walk covers every depth and every skipped directory: an unseen `.git` means no plain removal.
+      const tree = c.safeToRemove ? scanGitTree(c.path) : null;
+      if (tree && tree.complete && tree.roots.every((repo) => repo === c.path)) {
         plan.clones.push({ ...c, action: "remove" });
       } else {
         plan.clones.push({ ...c, action: "archive-remove" });
