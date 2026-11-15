@@ -1296,7 +1296,7 @@ export async function listIdleRolePairs(
   const pairs: SwarmIdleRolePair[] = [];
   roles.forEach((role, index) => {
     const queue = queues[index] ?? [];
-    if (queue.length === 0) return;
+    if (queue.length === 0 && !wanted) return;
     const roleAgents = agentRows
       .filter((agent) => agent.role === role)
       .map((agent) => ({
