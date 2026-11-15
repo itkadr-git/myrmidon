@@ -1214,6 +1214,7 @@ type ProviderEffectPayload = {
   text: string;
   fallbackText?: string;
   settleDelivery: boolean;
+  filteredDeliveryError?: string;
   completeConversationId?: string;
   resourceId?: string;
   runtimeGeneration: number;
@@ -1488,6 +1489,7 @@ function providerEffectPayload(
     "authorizationMode",
     "userId",
     "fallbackText",
+    "filteredDeliveryError",
     "completeConversationId",
     "resourceId",
   ] as const) {
@@ -5734,10 +5736,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 const [settled] = await tx
                   .update(chatDeliveries)
                   .set({
-                    state: "processed",
+                    state: payload.filteredDeliveryError ? "filtered" : "processed",
                     processedAt: new Date(),
                     nextAttemptAt: null,
-                    redactedError: null,
+                    redactedError: payload.filteredDeliveryError ?? null,
                     updatedAt: new Date(),
                   })
                   .where(
@@ -16228,18 +16230,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             .map((c) => `${c.name} (${c.agentId})`)
             .join(", ");
           const refusalText = `Ambiguous mention "@${x9Result.handle}": multiple agents match (${candidateList}). Please specify by agent ID.`;
-          await db
-            .update(chatDeliveries)
-            .set({
-              state: "filtered",
-              normalizedEvent: redactedDestinationNormalized,
-              principalId: null,
-              nextAttemptAt: null,
-              redactedError: `Ambiguous agent mention: @${x9Result.handle}`,
-              processedAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .where(eq(chatDeliveries.id, activeDelivery.id));
           const effectContext =
             runtimeContext ??
             runtimeContextForRecord(
@@ -16260,6 +16250,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 threadId: thread.id,
                 text: refusalText,
                 settleDelivery: true,
+                filteredDeliveryError: `Ambiguous agent mention: @${x9Result.handle}`,
                 resourceId: resource.id,
               },
               runtimeContext: effectContext,
