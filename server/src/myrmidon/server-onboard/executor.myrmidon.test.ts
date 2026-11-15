@@ -160,6 +160,25 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     });
   });
 
+  it("fails preflight when disk usage cannot be determined", async () => {
+    const mockSsh = new MockSshExecutor();
+    mockSsh.mockResponse("df -P /", { stdout: "", stderr: "df failed", exitCode: 1 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => mockSsh });
+    const mockReporter = createMockReporter();
+    const claim: any = {
+      job: { id: "job-disk", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["preflight"],
+      options: { keepPassword: true },
+      secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, mockReporter.reporter);
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("disk usage");
+    expect(mockReporter.completion?.status).toBe("failed");
+  });
+
   it("rolls back firewall and fails job when firewall connectivity check fails", async () => {
     const mockSsh = new MockSshExecutor();
     mockSsh.mockResponse(/ssh-keygen -l/, {
