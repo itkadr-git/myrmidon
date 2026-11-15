@@ -249,6 +249,41 @@ describe("pool models behavior tests (1.6.6 OPE-9932)", () => {
     vi.restoreAllMocks();
   });
 
+  it("exposes every LiteLLM ChatGPT pool catalog group through the Hermes models route", async () => {
+    const names = ["chatgpt-pool/gpt-6-astra", "chatgpt-pool/gpt-6.1-terra", "chatgpt-pool/new-model"];
+    const query = (rows: unknown[]) => {
+      const result = {
+        where: () => result,
+        orderBy: () => result,
+        then: (resolve: (value: unknown[]) => unknown, reject: (reason: unknown) => unknown) => Promise.resolve(rows).then(resolve, reject),
+      };
+      return result;
+    };
+    const db = {
+      select: (projection?: unknown) => ({
+        from: () => query(projection ? [...names, "other/model"].map((modelName) => ({ modelName })) : []),
+      }),
+    };
+    await registerTestAdapter({
+      type: "hermes_gateway",
+      label: "Hermes Gateway",
+      models: [],
+      validateConfig: () => null,
+      execute: async () => ({ exitCode: 0 }),
+    });
+    try {
+      const app = await createApp(db);
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/adapters/hermes_gateway/models"),
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.filter((model: { id: string }) => model.id.startsWith("chatgpt-pool/")).map((model: { id: string }) => model.id)).toEqual(names);
+      expect(res.body.some((model: { id: string }) => model.id === "other/model")).toBe(false);
+    } finally {
+      await unregisterTestAdapter("hermes_gateway");
+    }
+  });
+
   it("(a) GET /adapters/:type/models enriches pool models with non-banned accounts and excludes banned-only models", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
