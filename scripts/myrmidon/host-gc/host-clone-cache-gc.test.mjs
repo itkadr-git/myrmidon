@@ -7,6 +7,8 @@ import path from "node:path";
 import subprocess from "node:child_process";
 import { describe, it, beforeEach, afterEach } from "node:test";
 
+// Fixtures use bare repositories on disk as "servers"; production treats a local-path remote as no server.
+process.env.HOST_GC_TEST_ALLOW_LOCAL_REMOTES = "1";
 const ROOT = path.resolve(new URL("../../..", import.meta.url).pathname);
 // A bot container exports empty GIT_AUTHOR_*/GIT_COMMITTER_* variables; git honors an
 // empty env var over config, which breaks commit fixtures. Strip them everywhere.
@@ -442,6 +444,19 @@ describe("runner /tmp (OPE-12966)", () => {
     assert.equal(res.status, 0, res.stderr);
     assert.equal(fs.existsSync(entry), false);
     assert.equal(fs.existsSync(path.join(outside, "young.txt")), true, "the link target must survive");
+  });
+
+  it("retains an old runner tmp checkout with unpublished work", () => {
+    const runners = path.join(tmpDir, "runners");
+    const checkout = makeTmpEntry(runners, "eng17", "checkout", { ageHours: 48, dir: true });
+    fs.mkdirSync(path.join(checkout, ".git"));
+    fs.writeFileSync(path.join(checkout, ".git", "HEAD"), "unpublished");
+    setAge(path.join(checkout, ".git", "HEAD"), 48);
+    setAge(path.join(checkout, ".git"), 48);
+    setAge(checkout, 48);
+    const { res } = runGc(["--apply", "--runner-root", runners]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.readFileSync(path.join(checkout, ".git", "HEAD"), "utf8"), "unpublished");
   });
 
   it("a runner whose tmp is a symlink is skipped", () => {
@@ -1788,6 +1803,8 @@ describe("runner task folders", () => {
     const aged = new Date(Date.now() - 30 * HOUR);
     fs.utimesSync(folder, aged, aged);
     const listing = await archiveListing(runners, "OPE-9303");
+    const gcJournal = fs.readFileSync(path.join(tmpDir, "gc-task.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.ok(gcJournal.some((e) => e.event === "archive-full-fallback" && e.path === folder), "the compact-archive blocker is journaled");
     for (const sub of ["plain", "broken"]) {
       assert.ok(listing.includes(`OPE-9303/${sub}/node_modules/x/y.js`), `${sub}: node_modules archived`);
       assert.ok(listing.includes(`OPE-9303/${sub}/dist/out.js`), `${sub}: dist archived`);
