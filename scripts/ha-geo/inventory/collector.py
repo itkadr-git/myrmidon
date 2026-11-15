@@ -58,6 +58,30 @@ def capability(name, label):
             'reason': 'binary availability does not establish configuration or service health'}
 
 
+def login_profile():
+    binary = shutil.which('sshd', path='/usr/bin:/bin:/usr/sbin:/sbin')
+    profile = {'status': 'unknown', 'sshd_available': binary is not None,
+               'reason': 'effective default SSH configuration unavailable; service and Match rules not assessed'}
+    if not binary:
+        return profile
+    try:
+        result = subprocess.run([binary, '-T'], env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'},
+                                capture_output=True, text=True, timeout=3, check=True)
+        keys = {'passwordauthentication': 'password', 'pubkeyauthentication': 'public_key',
+                'kbdinteractiveauthentication': 'keyboard_interactive'}
+        values = {}
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[0] in keys and parts[1] in ('yes', 'no'):
+                values[keys[parts[0]]] = parts[1] == 'yes'
+        if len(values) == len(keys):
+            profile.update(status='ok', sshd_authentication=values,
+                           reason='default configuration only; service and Match rules not assessed')
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return profile
+
+
 def browser_profile(cgroup_dir=None):
     profile = capability('chromium', 'chromium_available')
     profile['cpu_quota_cores'] = None
@@ -139,7 +163,7 @@ def collect(socket=None, database=None, user=None, disk_path='/'):
             'ci_browser_profile': browser_profile(),
             'time_sync': time_sync_status(),
             'tls': capability('openssl', 'openssl_available'),
-            'login_method': capability('sshd', 'sshd_available'),
+            'login_method': login_profile(),
             'backup': backup_profile()}
 
 

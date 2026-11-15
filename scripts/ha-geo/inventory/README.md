@@ -23,8 +23,12 @@ collector does not enable TLS for a Unix socket; it does not assess remote TLS.
 The disk measurement defaults to `/`, not necessarily the database volume. Pass
 `--disk-path /APPROVED/DATABASE/VOLUME` to measure an approved local volume;
 the supplied path is not included in the JSON. The collector
-checks only whether the `chromium`, `openssl` and `sshd` executables are present;
-this does not identify the CI profile, configured TLS, or allowed login methods.
+checks whether the `chromium`, `openssl` and `sshd` executables are present;
+this does not identify the CI profile or configured TLS. If sshd is available,
+`sshd -T` reports default password, public-key and keyboard-interactive settings.
+Only those booleans are retained; other output and errors are suppressed. This
+does not evaluate Match rules, confirm service health, or establish access for a
+specific user or source address. Inaccessible configuration remains unknown.
 The CI/browser section also reports the total size of `/dev/shm` when available;
 this is the current mount's capacity, not proof of the CI job configuration.
 When accessible, cgroup v2 CPU quota and memory limit describe this process's
