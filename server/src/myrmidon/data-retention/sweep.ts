@@ -591,7 +591,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
       { key: "activity", days: settings.activityLogDays },
       { key: "access", days: settings.accessAuditDays },
       { key: "litellmCostEvents", days: settings.litellmCostEventsDays },
-      { key: "executionWorkspaces", days: settings.heartbeatRunsDays },
+      { key: "executionWorkspaces", days: 90 },
     ];
 
     for (const group of groups) {
