@@ -7,7 +7,10 @@ type MigrationManifest = {
       permissionGrants: Array<{ permissionKey: string }>;
     }>;
   skills: Array<Pick<CompanyPortabilityManifest["skills"][number], "key" | "slug">>;
-  projects?: Array<Pick<CompanyPortabilityManifest["projects"][number], "slug">>;
+  projects?: Array<Pick<CompanyPortabilityManifest["projects"][number], "slug"> &
+    Partial<Pick<CompanyPortabilityManifest["projects"][number], "ownerAgentSlug" | "leadAgentSlug">>>;
+  issues?: Array<Pick<CompanyPortabilityManifest["issues"][number],
+    "slug" | "projectSlug" | "assigneeAgentSlug" | "parentSlug" | "blockedBy">>;
   envInputs: Array<Pick<CompanyPortabilityManifest["envInputs"][number],
     "key" | "agentSlug" | "projectSlug" | "kind" | "requirement">>;
 };
@@ -57,6 +60,23 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
   for (const project of manifest.projects ?? []) {
     if (projectSlugs.has(project.slug)) errors.push(`Duplicate project slug: ${project.slug}.`);
     projectSlugs.add(project.slug);
+  }
+  for (const project of manifest.projects ?? []) {
+    for (const agentSlug of [project.ownerAgentSlug, project.leadAgentSlug]) {
+      if (agentSlug && !agentSlugs.has(agentSlug)) errors.push(`Project ${project.slug} references missing agent ${agentSlug}.`);
+    }
+  }
+  const issueSlugs = new Set<string>();
+  for (const issue of manifest.issues ?? []) {
+    if (issueSlugs.has(issue.slug)) errors.push(`Duplicate task slug: ${issue.slug}.`);
+    issueSlugs.add(issue.slug);
+  }
+  for (const issue of manifest.issues ?? []) {
+    if (issue.projectSlug && !projectSlugs.has(issue.projectSlug)) errors.push(`Task ${issue.slug} references missing project ${issue.projectSlug}.`);
+    if (issue.assigneeAgentSlug && !agentSlugs.has(issue.assigneeAgentSlug)) errors.push(`Task ${issue.slug} references missing agent ${issue.assigneeAgentSlug}.`);
+    for (const related of [issue.parentSlug, ...(issue.blockedBy ?? [])]) {
+      if (related && !issueSlugs.has(related)) errors.push(`Task ${issue.slug} references missing task ${related}.`);
+    }
   }
   for (const input of manifest.envInputs) {
     if (input.kind !== "secret") continue;

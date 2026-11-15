@@ -60,6 +60,20 @@ describe("migration manifest validation", () => {
       .toEqual(expect.arrayContaining([expect.stringContaining("management cycle")]));
   });
 
+  it("rejects dangling project and task relationships before migration", () => {
+    const result = validateMigrationManifest({
+      agents: [], skills: [], envInputs: [],
+      projects: [{ slug: "project", ownerAgentSlug: "absent", leadAgentSlug: null }],
+      issues: [{ slug: "task", projectSlug: "missing-project", assigneeAgentSlug: "missing-agent",
+        parentSlug: "missing-parent", blockedBy: ["missing-blocker"] }],
+    });
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("absent"), expect.stringContaining("missing-project"),
+      expect.stringContaining("missing-agent"), expect.stringContaining("missing-parent"),
+      expect.stringContaining("missing-blocker"),
+    ]));
+  });
+
   it("accepts references inside the package and rejects cross-company references", () => {
     const agent = { slug: "worker", reportsToSlug: "boss", reportsToExistingAgentId: null,
       reportsToExistingAgentSlug: null, skills: ["skill-key"], permissionGrants: [] };
