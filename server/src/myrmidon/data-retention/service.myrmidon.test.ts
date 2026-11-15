@@ -157,6 +157,10 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
       accessAuditDays: 180,
       secretAccessDays: 45,
       litellmCostEventsDays: 30,
+      agentWakeupRequestsDays: 30,
+      environmentLeasesDays: 30,
+      documentRevisionKeepPerDocument: 20,
+      documentRevisionDays: 90,
     });
     expect((stored as Record<string, any>).dataRetention).toBeUndefined();
 
