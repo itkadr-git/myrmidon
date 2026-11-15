@@ -2603,6 +2603,25 @@ describe("verify execution stages", () => {
     })).toThrow(/evidence/i);
   });
 
+  it("completes a merged release verification with current evidence and an independent verifier", () => {
+    const policy = verifyPolicy();
+    const result = applyIssueExecutionPolicyTransition({
+      issue: {
+        ...pendingIssue(policy),
+        title: "Release candidate",
+        labels: ["1.6"],
+        workProducts: [{ type: "pull_request", status: "merged" }],
+        hasCurrentReleaseEvidence: true,
+      },
+      policy, requestedStatus: "done", requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "deploy version: 2026.11.12\ncheck method: manual smoke on production",
+    });
+    expect(result.patch.executionState).toMatchObject({
+      status: "completed", completedStageIds: [policy.stages[0].id],
+    });
+  });
+
   it("rejects auto-skipping verification for merged release code without signed evidence", () => {
     const policy = makePolicy([{
       type: "verify", participants: [{ type: "agent", agentId: coderAgentId }],
