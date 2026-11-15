@@ -524,6 +524,25 @@ export function validateReleaseVerificationEvidence(
   return timingSafeEqual(Buffer.from(record.signature, "hex"), Buffer.from(evidenceSignature(payload, key), "hex"));
 }
 
+/** Read signed evidence only from system-authored comments for this issue. */
+export function hasCurrentReleaseVerificationEvidence(
+  comments: readonly { body: string; authorType: string | null }[],
+  scope: ReleaseEvidenceScope,
+  key: string,
+  now: Date = new Date(),
+): boolean {
+  return comments.some((comment) => {
+    if (comment.authorType !== "system") return false;
+    const line = comment.body.split("\n").find((item) => item.startsWith("release-evidence-v1: "));
+    if (!line) return false;
+    try {
+      return validateReleaseVerificationEvidence(JSON.parse(line.slice("release-evidence-v1: ".length)), scope, key, now);
+    } catch {
+      return false;
+    }
+  });
+}
+
 /**
  * OPE-13017: the release verification verdict is the publish prerequisite —
  * the publisher (scripts/myrmidon/release/publish-github-release.sh) binds the
