@@ -175,7 +175,7 @@ import {
   type LeaderLeaseManager,
 } from "./myrmidon/leader-lease/index.js"; // myrmidon(PROCS-1.7): leader lease (design OPE-5394 §5)
 import { startLitellmBudgetSync } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
-import { startLitellmModelReconciliation } from "./myrmidon/litellm-sync/startup-reconciler.js"; // myrmidon(1.6.1 MODEL-PROVIDERS B)
+import { startLitellmModelReconciliation, startAgentAllowlistWatchdog, reconcileAgentAllowlistDrift } from "./myrmidon/litellm-sync/startup-reconciler.js";
 import { startModelFallbackSignalSweep } from "./myrmidon/litellm-fallback-signal/sweep.js"; // myrmidon(BOT-RUNTIME-TUNING D)
 import { startFeatureHealthSweep, stopFeatureHealthSweep } from "./myrmidon/features/sweep.js"; // myrmidon(FEATURES)
 import { startBaselineSnapshots, stopBaselineSnapshots } from "./myrmidon/baseline/startup.js"; // myrmidon(1.6-BASELINE)
@@ -2580,6 +2580,7 @@ async function startServerWithDatabaseTeardown(
     startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set
     startLitellmBudgetSync(db as any); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection; a no-op unless the gateway contour is set and the document enables it
     startLitellmModelReconciliation(db as any); // myrmidon(1.6.1 MODEL-PROVIDERS B): reconcile LiteLLM models with DB state
+    if (processRoleProfile.runsBackground) startAgentAllowlistWatchdog(() => reconcileAgentAllowlistDrift(db as any));
     startModelFallbackSignalSweep(db as any); // myrmidon(BOT-RUNTIME-TUNING D): model fallback attention signals; a no-op unless MYRMIDON_MODEL_FALLBACK_ENABLED=1
     startFeatureHealthSweep(db as any); // myrmidon(FEATURES): feature health pass that feeds the attention signal
     startBaselineSnapshots(db as any); // myrmidon(1.6-BASELINE): freeze the 14-day metric window; a no-op unless MYRMIDON_BASELINE_INTERVAL_SEC is set
