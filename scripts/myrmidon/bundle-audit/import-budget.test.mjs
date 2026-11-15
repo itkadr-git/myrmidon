@@ -16,6 +16,7 @@ test('CLI reports eager graph, lazy edges, unknowns, and never executes input', 
       import 'node:fs'; import 'uninstalled-package';
       // import './fake1.js';
       const text = "require('./fake2.js')";
+      const pattern = /require('.\/fake-regex.js')/;
       export const marker = 1
       const from = './fake3.js';
       require('node:fs').writeFileSync(${JSON.stringify(join(dir, 'executed'))}, 'bad');`);
