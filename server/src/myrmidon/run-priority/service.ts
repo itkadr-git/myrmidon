@@ -8,7 +8,13 @@
 // run, so new weights reach the queue without a restart. Both sweeps read the
 // in-force settings fresh on every pass (`currentRunPrioritySettings`).
 
-import { and, eq, notInArray } from "drizzle-orm";
+import {
+  and,
+  eq,
+  inArray,
+  isNotNull,
+  notInArray,
+} from "drizzle-orm";
 import { issueLabels, issues, labels, type Db } from "@myrmidon/db";
 import {
   mergeRunPrioritySettings,

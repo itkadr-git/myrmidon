@@ -55,7 +55,7 @@ export function RunPrioritySettingsPanel() {
         if (raw.length > 64) { setError(t("area.settings-models-runtime-2.run-priority-settings-panel.releaseTooLong")); return; }
         continue;
       }
-      if (key === "enabled") { patch.enabled = raw === "true"; continue; }
+      if (key === "enabled" || key === "strictReleaseFocus") { Object.assign(patch, { [key]: raw === "true" }); continue; }
       const max = key === "starvationTopWeight" ? 1_000_000 :
         key === "starvationLimitMinutes" ? 239 : key === "agingMaxBonus" ? 10_000 :
           key === "agingStepMinutes" ? 1440 : 1000;
