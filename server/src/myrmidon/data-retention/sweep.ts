@@ -762,6 +762,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
               activity: { deleted: 0, freedBytes: 0 },
               access: { deleted: 0, freedBytes: 0 },
               litellmCostEvents: { deleted: 0, freedBytes: 0 },
+              executionWorkspaces: { deleted: 0, freedBytes: 0 },
             },
           });
         }
