@@ -436,19 +436,21 @@ export function idlePickupCandidateRows(db: Db, companyId: string, agentId: stri
     .where(
       and(
         eq(issues.companyId, companyId),
-        or(isNotNull(issues.assigneeAgentId), focus),
-        and(
-          or(
-            and(
-              eq(issues.assigneeAgentId, agentId),
-              isNull(issues.assigneeUserId),
-              inArray(issues.status, [...WAKEABLE_ISSUE_STATUSES]),
-            ),
-            and(isNull(issues.assigneeAgentId), isReviewParticipant),
+        // Owner-assigned tasks and review participation preserve existing wake behavior.
+        or(
+          and(
+            eq(issues.assigneeAgentId, agentId),
+            isNull(issues.assigneeUserId),
+            inArray(issues.status, [...WAKEABLE_ISSUE_STATUSES]),
           ),
-          isNull(issues.assigneeUserId),
-          inArray(issues.status, [...WAKEABLE_ISSUE_STATUSES]),
+          isReviewParticipant,
         ),
+        // Release focus applies only to automatic assigned-task pickup candidates.
+        or(
+          and(eq(issues.assigneeAgentId, agentId), focus),
+          and(isNull(issues.assigneeAgentId), isReviewParticipant),
+        ),
+        isNull(issues.hiddenAt),
         isNull(issues.conversationAgentId),
         // 1.7 PRIVATE-TASKS part C: private tasks never become idle-pickup
         // candidates for an agent (neither general assigned-task lane nor
