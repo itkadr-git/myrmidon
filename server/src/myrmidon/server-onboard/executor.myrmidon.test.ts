@@ -224,6 +224,20 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockSsh.hasExecuted(/restore-myrmidon-password-config/)).toBe(true);
   });
 
+  it("rejects an invalid SSH port before issuing firewall commands", async () => {
+    const mockSsh = new MockSshExecutor();
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => mockSsh });
+    const mockReporter = createMockReporter();
+    const claim: any = {
+      job: { id: "job-firewall-port", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 65536, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, mockReporter.reporter);
+    expect(result.status).toBe("failed");
+    expect(mockSsh.hasExecuted(/ufw/)).toBe(false);
+  });
+
   it("does not enable the firewall when the SSH allow rule fails", async () => {
     const mockSsh = new MockSshExecutor();
     mockSsh.mockResponse(/sudo ufw allow/, { stdout: "", stderr: "rule rejected", exitCode: 1 });
