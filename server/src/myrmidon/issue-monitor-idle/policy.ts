@@ -34,7 +34,13 @@ function readProcessesRecord(general: unknown): Record<string, unknown> | null {
 
 /** `general.processes.monitorUnchangedWakeLimit`: default 3, 0 turns the protection off. */
 export function resolveMonitorUnchangedWakeLimit(general: unknown): number {
-  const raw = readProcessesRecord(general)?.[MONITOR_UNCHANGED_WAKE_LIMIT_KEY];
+  const behaviorSettings = general && typeof general === "object" && !Array.isArray(general)
+    ? (general as Record<string, unknown>).behaviorSettings
+    : null;
+  const saved = behaviorSettings && typeof behaviorSettings === "object" && !Array.isArray(behaviorSettings)
+    ? (behaviorSettings as Record<string, unknown>)[MONITOR_UNCHANGED_WAKE_LIMIT_KEY]
+    : undefined;
+  const raw = saved ?? readProcessesRecord(general)?.[MONITOR_UNCHANGED_WAKE_LIMIT_KEY];
   const numeric =
     typeof raw === "number"
       ? raw

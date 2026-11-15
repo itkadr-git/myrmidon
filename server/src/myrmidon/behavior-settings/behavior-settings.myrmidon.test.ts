@@ -145,6 +145,19 @@ describe("myrmidon(1.7) behavior settings: guardrail and fleet keys (SETTINGS-TO
 });
 
 describe("myrmidon(1.7) behavior settings: reading the effective values", () => {
+  it("exposes and updates the idle monitor limit without an environment override", async () => {
+    const h = harness({ env: {} });
+    const app = h.withActor(admin);
+    const definitions = await request(app).get(`${INSTANCE_URL}/definitions`).expect(200);
+    expect(definitions.body).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "monitorUnchangedWakeLimit", default: 3, valueType: "number" }),
+    ]));
+    const updated = await request(app).patch(INSTANCE_URL).send({ monitorUnchangedWakeLimit: 2 }).expect(200);
+    expect(updated.body.settings.monitorUnchangedWakeLimit).toBe(2);
+    expect(updated.body.sources.monitorUnchangedWakeLimit).toBe("ui");
+    expect((await request(app).get(INSTANCE_URL).expect(200)).body.settings.monitorUnchangedWakeLimit).toBe(2);
+    await request(app).patch(INSTANCE_URL).send({ monitorUnchangedWakeLimit: 101 }).expect(400);
+  });
   it("reports the environment as the source when it declares a value", async () => {
     const { app } = harness({ env: { MYRMIDON_DEBUG_MODE: "true" } });
     const res = await request(app).get(INSTANCE_URL).expect(200);

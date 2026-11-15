@@ -12,6 +12,7 @@ describe("resolveMonitorUnchangedWakeLimit", () => {
     expect(DEFAULT_MONITOR_UNCHANGED_WAKE_LIMIT).toBe(3);
     expect(resolveMonitorUnchangedWakeLimit({})).toBe(3);
     expect(resolveMonitorUnchangedWakeLimit({ processes: { monitorUnchangedWakeLimit: 5 } })).toBe(5);
+    expect(resolveMonitorUnchangedWakeLimit({ processes: { monitorUnchangedWakeLimit: 5 }, behaviorSettings: { monitorUnchangedWakeLimit: 2 } })).toBe(2);
     expect(resolveMonitorUnchangedWakeLimit({ processes: { monitorUnchangedWakeLimit: "2" } })).toBe(2);
     expect(resolveMonitorUnchangedWakeLimit({ processes: { monitorUnchangedWakeLimit: 0 } })).toBe(0);
     expect(resolveMonitorUnchangedWakeLimit({ processes: { monitorUnchangedWakeLimit: "x" } })).toBe(3);
