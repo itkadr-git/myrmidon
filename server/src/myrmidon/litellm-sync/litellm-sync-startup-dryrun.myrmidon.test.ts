@@ -1,10 +1,8 @@
 // server/src/myrmidon/litellm-sync/litellm-sync-startup-dryrun.myrmidon.test.ts
 //
-// myrmidon(1.6.7 OPE-12345): the DEFAULT startup port runs the agent key
-// allowlist pass as a dry run. Applying it adds every enabled registry model to
-// every restricted key (76 keys on the production board), so a boot must only
-// count and log the differences. The other startup tests inject their own
-// port; this one lets the real default port run against a mocked pass.
+// myrmidon(OPE-13188): startup applies scoped card-key reconciliation, not the
+// full registry to every restricted key. The other startup tests inject ports;
+// this one exercises the real default allowlist port with a mocked pass.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@myrmidon/db";
@@ -49,7 +47,7 @@ describe("the default startup allowlist port", () => {
     vi.unstubAllGlobals();
   });
 
-  it("calls the pass with apply: false, so no key is rewritten at boot", async () => {
+  it("applies scoped card allowlists at boot rather than widening keys to the registry", async () => {
     const lines: Array<{ fields: object; message: string }> = [];
     await startLitellmModelReconciliation(emptyDb(), {
       env: ENV,
@@ -66,11 +64,7 @@ describe("the default startup allowlist port", () => {
     expect(handler.updateAgentAllowlistsForCompany).toHaveBeenCalledTimes(1);
     const args = handler.updateAgentAllowlistsForCompany.mock.calls[0]!;
     expect(args[2]).toBe("company-a");
-    expect(args[6]).toEqual({ apply: false });
-    expect(lines.some((l) => l.message.includes("nothing applied"))).toBe(true);
-    expect(lines.find((l) => l.message.includes("nothing applied"))?.fields).toMatchObject({
-      mode: "dry-run",
-      keysToChange: 3,
-    });
+    expect(args[6]).toEqual({ apply: true, cardModelsOnly: true });
+    expect(lines.some((l) => l.message.includes("nothing applied"))).toBe(false);
   });
 });

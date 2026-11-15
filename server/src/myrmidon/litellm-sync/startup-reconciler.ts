@@ -81,7 +81,7 @@ const defaultPorts: LitellmReconcilePorts = {
       [],
       [],
       false,
-      { apply: true },
+      { apply: true, cardModelsOnly: true },
     );
   },
   log: logger,
