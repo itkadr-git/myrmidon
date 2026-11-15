@@ -41,6 +41,8 @@ export const IN_PROGRESS_NO_RUN_ACTIVITY_ACTION = "issue.in_progress_no_run_wake
 /** Passes closer than this are skipped (the tick of the heartbeat is faster). */
 export const IN_PROGRESS_IDLE_WAKE_PASS_INTERVAL_MS = 30_000;
 const CANDIDATE_LIMIT = 200;
+/** Pages one pass reads at most (200 each): a bound, not a cut of the working set. */
+const MAX_PAGES = 50;
 const MINUTE_MS = 60_000;
 const ACTIVE_CI_STATUSES = new Set(["queued", "in_progress", "pending"]);
 
@@ -84,13 +86,23 @@ export interface InProgressIdleWakeResult {
   issueIds: string[];
 }
 
-/** Whether the stored PR work-product metadata says the head CI is still running. */
+/**
+ * Whether the stored PR work-product metadata says the CI of the CURRENT head is
+ * still running. The `activeCi` record carries the head it belongs to; CI of an
+ * older head (a new commit was pushed since) must not hold the wake back.
+ */
 export function isHeadCiInProgress(metadata: unknown): boolean {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return false;
-  const activeCi = (metadata as Record<string, unknown>).activeCi;
+  const record = metadata as Record<string, unknown>;
+  const activeCi = record.activeCi;
   if (!activeCi || typeof activeCi !== "object" || Array.isArray(activeCi)) return false;
-  const status = (activeCi as Record<string, unknown>).status;
-  return typeof status === "string" && ACTIVE_CI_STATUSES.has(status.trim().toLowerCase());
+  const ci = activeCi as Record<string, unknown>;
+  if (typeof ci.status !== "string" || !ACTIVE_CI_STATUSES.has(ci.status.trim().toLowerCase())) return false;
+  const ciHead = typeof ci.headSha === "string" ? ci.headSha.trim() : "";
+  const currentHead = typeof record.headSha === "string" ? record.headSha.trim() : "";
+  // Both heads known and different: the running CI is for a superseded commit.
+  if (ciHead && currentHead && ciHead !== currentHead) return false;
+  return true;
 }
 
 /** True once the task has stood idle for the whole window. */
@@ -200,67 +212,84 @@ export function createInProgressIdleWakeSweeper(deps: InProgressIdleWakeDeps): I
       const cutoff = new Date(now.getTime() - minutes * MINUTE_MS);
 
       // Cheap prefilter: in_progress tasks of an agent whose row has not moved
-      // for the window. The per-task checks below look at the runs and wakes.
-      const stale = await deps.db
-        .select({
-          id: issues.id,
-          companyId: issues.companyId,
-          agentId: issues.assigneeAgentId,
-          updatedAt: issues.updatedAt,
-          role: agents.role,
-        })
-        .from(issues)
-        .innerJoin(agents, eq(agents.id, issues.assigneeAgentId))
-        .innerJoin(companies, eq(companies.id, issues.companyId))
-        .where(
-          and(
-            eq(issues.status, "in_progress"),
-            eq(companies.status, "active"),
-            sql`${issues.assigneeUserId} is null`,
-            sql`${issues.updatedAt} <= ${cutoff.toISOString()}::timestamptz`,
-          ),
-        )
-        .orderBy(issues.updatedAt)
-        .limit(CANDIDATE_LIMIT);
-      if (stale.length === 0) return result;
-
-      const byAgent = new Map<string, typeof stale>();
-      for (const row of stale) {
-        if (!row.agentId) continue;
-        const list = byAgent.get(row.agentId) ?? [];
-        list.push(row);
-        byAgent.set(row.agentId, list);
-      }
+      // for the window, read page by page in (updatedAt, id) order until the set
+      // is exhausted. A fixed first page would let rows that are always excluded
+      // below (blocked, busy executor, CI running, cap) starve every task behind
+      // them. The per-task checks look at the runs and wakes.
       const capLimitByCompany = new Map<string, number>();
+      const agentGate = new Map<string, { ok: boolean; ready: Set<string> }>();
+      const wokenAgents = new Set<string>();
+      const seen = new Set<string>();
+      let cursor: { updatedAt: Date; id: string } | null = null;
+      for (let page = 0; page < MAX_PAGES; page += 1) {
+        const stale = await deps.db
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            agentId: issues.assigneeAgentId,
+            updatedAt: issues.updatedAt,
+            role: agents.role,
+          })
+          .from(issues)
+          .innerJoin(agents, eq(agents.id, issues.assigneeAgentId))
+          .innerJoin(companies, eq(companies.id, issues.companyId))
+          .where(
+            and(
+              eq(issues.status, "in_progress"),
+              eq(companies.status, "active"),
+              sql`${issues.assigneeUserId} is null`,
+              sql`${issues.updatedAt} <= ${cutoff.toISOString()}::timestamptz`,
+              cursor
+                ? sql`(${issues.updatedAt}, ${issues.id}) > (${new Date(cursor.updatedAt.getTime() - 1).toISOString()}::timestamptz, ${cursor.id}::uuid)`
+                : undefined,
+            ),
+          )
+          .orderBy(issues.updatedAt, issues.id)
+          .limit(CANDIDATE_LIMIT);
+        if (stale.length === 0) break;
+        const lastRow = stale[stale.length - 1]!;
+        cursor = { updatedAt: new Date(lastRow.updatedAt), id: lastRow.id };
 
-      for (const [agentId, rows] of byAgent) {
-        const agent = { id: agentId, companyId: rows[0]!.companyId, role: rows[0]!.role };
-        try {
-          if (!(await deps.isAgentInvokable(agent))) continue;
-          if (await deps.isAgentUnderMaintenance(agentId)) continue;
-          // An agent with a live run is busy: the wake would only queue behind it.
-          const [live] = await deps.db
-            .select({ id: heartbeatRuns.id })
-            .from(heartbeatRuns)
-            .where(
-              and(
-                eq(heartbeatRuns.companyId, agent.companyId),
-                eq(heartbeatRuns.agentId, agentId),
-                inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
-              ),
-            )
-            .limit(1);
-          if (live) continue;
-
-          // The same prefilter idle pickup uses: blockers, containers, holds,
-          // monitors, pending interactions, private and chat tasks.
-          const ready = new Set(
-            (await idlePickupCandidateRows(deps.db, agent.companyId, agentId))
-              .filter((candidate) => candidate.status === "in_progress")
-              .map((candidate) => candidate.id),
-          );
-          for (const issue of rows) {
-            if (!ready.has(issue.id)) continue;
+        for (const issue of stale) {
+          if (seen.has(issue.id)) continue;
+          seen.add(issue.id);
+          const agentId = issue.agentId;
+          if (!agentId || wokenAgents.has(agentId)) continue;
+          const agent = { id: agentId, companyId: issue.companyId, role: issue.role };
+          try {
+            let gate = agentGate.get(agentId);
+            if (!gate) {
+              gate = { ok: false, ready: new Set<string>() };
+              agentGate.set(agentId, gate);
+              if (
+                (await deps.isAgentInvokable(agent)) &&
+                !(await deps.isAgentUnderMaintenance(agentId))
+              ) {
+                // An agent with a live run is busy: the wake would only queue behind it.
+                const [live] = await deps.db
+                  .select({ id: heartbeatRuns.id })
+                  .from(heartbeatRuns)
+                  .where(
+                    and(
+                      eq(heartbeatRuns.companyId, agent.companyId),
+                      eq(heartbeatRuns.agentId, agentId),
+                      inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+                    ),
+                  )
+                  .limit(1);
+                if (!live) {
+                  gate.ok = true;
+                  // The same prefilter idle pickup uses: blockers, containers, holds,
+                  // monitors, pending interactions, private and chat tasks.
+                  gate.ready = new Set(
+                    (await idlePickupCandidateRows(deps.db, agent.companyId, agentId))
+                      .filter((candidate) => candidate.status === "in_progress")
+                      .map((candidate) => candidate.id),
+                  );
+                }
+              }
+            }
+            if (!gate.ok || !gate.ready.has(issue.id)) continue;
             result.considered += 1;
             const lastTry = lastAttemptMs.get(issue.id);
             if (lastTry !== undefined && now.getTime() - lastTry < minutes * MINUTE_MS) continue;
@@ -297,6 +326,8 @@ export function createInProgressIdleWakeSweeper(deps: InProgressIdleWakeDeps): I
             if (!wake) continue;
             result.woken += 1;
             result.issueIds.push(issue.id);
+            // One wake per executor per pass: the next pass sees its live run.
+            wokenAgents.add(agentId);
             await deps.logActivity?.({
               companyId: agent.companyId,
               actorType: "system",
@@ -313,12 +344,11 @@ export function createInProgressIdleWakeSweeper(deps: InProgressIdleWakeDeps): I
                 idempotencyKey,
               },
             });
-            // One wake per executor per pass: the next pass sees its live run.
-            break;
+          } catch (err) {
+            logger.warn({ err, agentId }, "in-progress idle wake: the task was skipped after an error");
           }
-        } catch (err) {
-          logger.warn({ err, agentId }, "in-progress idle wake: the agent was skipped after an error");
         }
+        if (stale.length < CANDIDATE_LIMIT) break;
       }
       if (result.woken > 0) {
         logger.warn({ woken: result.woken, issueIds: result.issueIds }, "in-progress idle wake woke idle executors");

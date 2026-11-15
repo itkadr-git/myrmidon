@@ -70,6 +70,9 @@ describe("in-progress idle wake: setting and pure rules", () => {
     expect(isHeadCiInProgress({ activeCi: { status: "pending" } })).toBe(true);
     expect(isHeadCiInProgress({ activeCi: { status: "completed" } })).toBe(false);
     expect(isHeadCiInProgress({ activeCi: null })).toBe(false);
+    // CI of the current head holds the wake, CI of a superseded head does not.
+    expect(isHeadCiInProgress({ headSha: "new", activeCi: { status: "in_progress", headSha: "new" } })).toBe(true);
+    expect(isHeadCiInProgress({ headSha: "new", activeCi: { status: "in_progress", headSha: "old" } })).toBe(false);
     expect(isHeadCiInProgress(null)).toBe(false);
   });
 });
@@ -246,6 +249,80 @@ describeEmbeddedPostgres("in-progress idle wake sweep (OPE-13202)", () => {
     expect((await sweeper.sweep(new Date())).woken).toBe(0);
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
+
+  it("wakes when the running CI belongs to an older head than the current one", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, idleMinutes: 21 });
+    await seedPullRequest({
+      companyId,
+      issueId,
+      metadata: { headSha: "new-head", activeCi: { status: "in_progress", headSha: "old-head" } },
+    });
+    const { sweeper, enqueueWakeup } = makeSweeper();
+
+    expect((await sweeper.sweep(new Date())).woken).toBe(1);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not wake while the CI of the current head runs (matching SHA)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, idleMinutes: 21 });
+    await seedPullRequest({
+      companyId,
+      issueId,
+      metadata: { headSha: "same", activeCi: { status: "queued", headSha: "same" } },
+    });
+    const { sweeper, enqueueWakeup } = makeSweeper();
+
+    expect((await sweeper.sweep(new Date())).woken).toBe(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("is not starved by 200 older excluded tasks: the eligible task behind them is woken", async () => {
+    const { companyId, agentId: busyAgentId } = await seedAgent();
+    const freeAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: freeAgentId,
+      companyId,
+      name: "agent-free",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    // The busy executor has a live run, so all its 200 older tasks are excluded.
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: busyAgentId,
+      status: "running",
+      invocationSource: "automation",
+      contextSnapshot: {},
+    });
+    const oldAt = new Date(Date.now() - 600 * MIN);
+    await db.insert(issues).values(
+      Array.from({ length: 200 }, (_, i) => ({
+        id: randomUUID(),
+        companyId,
+        title: `Excluded ${i}`,
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: busyAgentId,
+        createdAt: oldAt,
+        updatedAt: new Date(oldAt.getTime() + i * 1000),
+      })),
+    );
+    const eligibleId = await seedIssue({ companyId, agentId: freeAgentId, idleMinutes: 30 });
+    const { sweeper, enqueueWakeup } = makeSweeper();
+
+    const result = await sweeper.sweep(new Date());
+
+    expect(result.issueIds).toEqual([eligibleId]);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(enqueueWakeup).toHaveBeenCalledWith(freeAgentId, expect.anything());
+  }, 60_000);
 
   it("wakes once the head CI has finished", async () => {
     const { companyId, agentId } = await seedAgent();
