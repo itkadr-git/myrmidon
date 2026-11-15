@@ -547,25 +547,7 @@ describeEmbeddedPostgres("in-progress idle wake sweep (OPE-13202)", () => {
     );
   });
 
-  it("continues after 2 minutes a run that created a pull_request work product under its run id", async () => {
-    const { companyId, agentId } = await seedAgent();
-    const issueId = await seedIssue({ companyId, agentId, idleMinutes: 3 });
-    const run = await seedFinishedRun({ companyId, agentId, issueId, finishedMinutesAgo: 3 });
-    await seedActivity({
-      companyId,
-      issueId,
-      action: "issue.work_product_created",
-      at: new Date(run.finishedAt.getTime() - 30_000),
-      runId: run.runId,
-      agentId,
-      details: { type: "pull_request" },
-    });
-    const { sweeper, enqueueWakeup } = makeSweeper();
-    expect((await sweeper.sweep(new Date())).issueIds).toEqual([issueId]);
-    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
-  });
-
-  it("a document or a non-code work product without a push keeps the full 20 minutes", async () => {
+  it("a document or a (re)registered pull_request work product without a push keeps the full 20 minutes", async () => {
     const { companyId, agentId } = await seedAgent();
     const issueId = await seedIssue({ companyId, agentId, idleMinutes: 3 });
     const run = await seedFinishedRun({ companyId, agentId, issueId, finishedMinutesAgo: 3 });
@@ -579,6 +561,15 @@ describeEmbeddedPostgres("in-progress idle wake sweep (OPE-13202)", () => {
       runId: run.runId,
       agentId,
       details: { type: "preview_url" },
+    });
+    await seedActivity({
+      companyId,
+      issueId,
+      action: "issue.work_product_created",
+      at,
+      runId: run.runId,
+      agentId,
+      details: { type: "pull_request" },
     });
     const { sweeper, enqueueWakeup } = makeSweeper();
     const start = Date.now();

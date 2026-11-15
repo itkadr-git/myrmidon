@@ -1,6 +1,5 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
-  activityLog,
   agentWakeupRequests,
   agents,
   companies,
@@ -37,8 +36,8 @@ import {
  * and `runPriority.strictReleaseFocus` (OPE-13200).
  *
  * Continuation after progress: an executor whose last run on the task ended
- * `advanced` and left real progress (the PR head moved inside the run's window,
- * or a pull request / commit work product is bound to the run) is woken after
+ * `advanced` and left real progress (the PR head moved inside the run's window)
+ * is woken after
  * `CONTINUATION_AFTER_PROGRESS_MINUTES` instead of the full window. A run that
  * pushed a piece of work and stopped (engineers do this: one to two minutes of
  * work, then 10-30 minutes of waiting) should not sit out the idle window; a run
@@ -72,8 +71,6 @@ const MINUTE_MS = 60_000;
  * Never longer than the configured window.
  */
 export const CONTINUATION_AFTER_PROGRESS_MINUTES = 2;
-/** Work product types whose creation under a run counts as progress for the short wake. */
-const CONTINUATION_WORK_PRODUCT_TYPES = ["pull_request", "commit"];
 const ACTIVE_CI_STATUSES = new Set(["queued", "in_progress", "pending"]);
 
 export interface InProgressIdleWakeDeps {
@@ -204,11 +201,11 @@ async function readIdleSince(
 
 /**
  * Did the executor's last run on the task leave progress that justifies the
- * short wake? True when that run succeeded with liveness `advanced` and either
- * moved the head of the task's PR inside its window (`readRunIdsWithPrHeadChange`)
- * or created a `pull_request` / `commit` work product under its run id. Only
- * code progress counts: documents, other work products, comments and status
- * moves do not. An agent that updates its worklog every run must not be woken
+ * short wake? True when that run succeeded with liveness `advanced` and moved
+ * the head of the task's PR inside its window (`readRunIdsWithPrHeadChange`,
+ * the `issue.work_product_head_changed` rows). Only a real push counts:
+ * registering a PR or a commit again, documents, other work products, comments
+ * and status moves do not (an agent can register its PR on every run). An agent that updates its worklog every run must not be woken
  * every 2 minutes; it keeps the full window. `runId` is the run judged (null
  * when the executor has no run on the task), the key of the "no progress" memory.
  */
@@ -242,21 +239,7 @@ export async function lastRunLeftProgress(
   if ((await readRunIdsWithPrHeadChange(db, companyId, issueId, [run])).has(run.id)) {
     return { progress: true, runId: run.id };
   }
-  const [row] = await db
-    .select({ id: activityLog.id })
-    .from(activityLog)
-    .where(
-      and(
-        eq(activityLog.companyId, companyId),
-        eq(activityLog.entityType, "issue"),
-        eq(activityLog.entityId, issueId),
-        eq(activityLog.runId, run.id),
-        eq(activityLog.action, "issue.work_product_created"),
-        inArray(sql<string>`${activityLog.details} ->> 'type'`, CONTINUATION_WORK_PRODUCT_TYPES),
-      ),
-    )
-    .limit(1);
-  return { progress: row !== undefined, runId: run.id };
+  return { progress: false, runId: run.id };
 }
 
 /** True when the task sits at the runs-without-commit cap (it is for a person, not for a wake). */

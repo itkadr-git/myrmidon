@@ -19,10 +19,9 @@
   board and the task is frozen as an empty run); later pushes go into that PR; a finished task gets
   `gh pr ready` and `in_review` with a reviewer.
 - Board: for a task in `in_progress` whose executor's last run ended `advanced` and left real
-  progress (the PR head moved inside the run's window, or a `pull_request` / `commit` work product
-  was created under the run) the in-progress wake fires after 2 minutes (`CONTINUATION_AFTER_PROGRESS_MINUTES`)
+  progress (the PR head moved inside the run's window) the in-progress wake fires after 2 minutes (`CONTINUATION_AFTER_PROGRESS_MINUTES`)
   instead of `runPriority.inProgressIdleWakeMinutes` (20). Without progress the window is the
-  previous one. A comment, a document, another work product or a status move alone is not progress,
+  previous one. A comment, a document, a (re)registered work product or a status move is not progress,
   so an agent that updates its worklog every run is not woken every 2 minutes. A task judged "no
   progress" is not read again by the short check until the full window ends (in-memory, no queries). Every other guard stays: CI of the
   head in progress, the runs-without-commit cap, blockers and holds, the wake admission, the
@@ -58,10 +57,9 @@
   без PR для доски невидима, и задача замораживается как пустой прогон), дальше пуши идут в этот PR,
   по завершении — `gh pr ready` и `in_review` с ревьюером.
 - Доска: для задачи в `in_progress`, у которой последний прогон исполнителя закончился `advanced` и
-  дал реальный прогресс (голова PR сменилась в окне прогона либо под прогоном создан work product
-  `pull_request` / `commit`), побудка задачи в работе срабатывает через 2 минуты
+  дал реальный прогресс (голова PR сменилась в окне прогона), побудка задачи в работе срабатывает через 2 минуты
   (`CONTINUATION_AFTER_PROGRESS_MINUTES`), а не через `runPriority.inProgressIdleWakeMinutes` (20).
-  Без прогресса окно прежнее. Комментарий, документ, прочий work product или смена статуса прогрессом не считаются, поэтому агент,
+  Без прогресса окно прежнее. Комментарий, документ, (пере)регистрация work product или смена статуса прогрессом не считаются, поэтому агент,
   обновляющий worklog каждый прогон, не получает побудку раз в 2 минуты. Задача с решением «прогресса
   нет» короткой проверкой до конца полного окна не читается (в памяти, без запросов). Все
   остальные защиты сохраняются: идущий CI головы, предел прогонов без коммита, блокеры и удержания,
