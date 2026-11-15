@@ -171,6 +171,8 @@ run_deploy() { # run_deploy <jobId> <digest>
   # warns. A successful rollback still has to pass its health check, so
   # "rolled-back" means the board answers on the previous image again.
   if [[ "$AUTO_ROLLBACK" != "0" ]]; then
+    record_release_event "deploy.result" "$job" "$digest" "failed" "deploy.sh failed with exit $rc; automatic rollback follows" \
+      || log "WARNING: release audit: could not record deploy result for $job"
     report "$job" rolling-back "deploy failed (exit $rc); rolling back automatically; see $STATE_DIR/job-$job.log" "$version" "$commit"
     record_release_event "rollback.intent" "$job" "$digest" "planned" "automatic rollback initiated after failed deploy (exit $rc)" \
       || log "WARNING: release audit: could not record rollback intent for $job"
