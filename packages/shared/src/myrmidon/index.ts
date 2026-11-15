@@ -9,6 +9,7 @@ export * from "../interaction-routing.js";
 export * from "../myrmidon-agent-board-admin.js";
 export * from "../myrmidon-agent-exchange-feed.js";
 export * from "../myrmidon-agent-exchange.js";
+export * from "../myrmidon-agent-liveness.js";
 export * from "../myrmidon-agent-memory.js";
 export * from "../myrmidon-agent-nests.js";
 export * from "../myrmidon-agent-tool-permissions.js";

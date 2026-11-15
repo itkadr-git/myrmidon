@@ -42,6 +42,7 @@ export const DEFAULTABLE_GENERAL_SETTINGS = [
   "timeZone",
   "numberFormat",
   "dateFormat",
+  "agentLiveness",
 ] as const;
 
 export type DefaultableGeneralSetting = (typeof DEFAULTABLE_GENERAL_SETTINGS)[number];

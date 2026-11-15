@@ -41,6 +41,7 @@ import { storedRunPrioritySchema } from "../myrmidon-run-priority.js";
 // myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
 // subagents, changed from the instance settings page and /api/myrmidon/parallel-helpers.
 import { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema } from "../myrmidon-parallel-helpers.js";
+import { storedAgentLivenessSettingsSchema } from "../myrmidon-agent-liveness.js";
 // myrmidon(BOT-LSP-DEFAULTS): the language-server mode per role, changed from the instance
 // settings page and /api/myrmidon/bot-lsp.
 import { botLspSettingsSchema } from "../myrmidon-bot-lsp.js";
@@ -234,6 +235,8 @@ export const instanceGeneralSettingsSchema = z.object({
   // packages/shared/src/myrmidon-run-stall.ts). Canonical: every key present,
   // numbers whole and in range, so a strict miss here cannot hide behind an
   // older row — the key did not exist before 1.6.5.
+  // myrmidon(AGENT-LIVENESS-D1): stored watchdog thresholds; absent keeps the feature off.
+  agentLiveness: storedAgentLivenessSettingsSchema.optional(),
   runStall: runStallSettingsSchema.optional(),
   // myrmidon(1.6.6 CORPUS-2.0 ч.C): the knowledge-corpus module settings,
   // changed from /api/myrmidon/corpus/settings; absent means "use the
