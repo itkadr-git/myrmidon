@@ -23,6 +23,14 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
     if (agentSlugs.has(agent.slug)) errors.push(`Duplicate agent slug: ${agent.slug}.`);
     agentSlugs.add(agent.slug);
   }
+  const skillKeys = new Set<string>();
+  const skillSlugs = new Set<string>();
+  for (const skill of manifest.skills) {
+    if (skillKeys.has(skill.key)) errors.push(`Duplicate skill key: ${skill.key}.`);
+    if (skillSlugs.has(skill.slug)) errors.push(`Duplicate skill slug: ${skill.slug}.`);
+    skillKeys.add(skill.key);
+    skillSlugs.add(skill.slug);
+  }
   const validPermissions: ReadonlySet<string> = new Set(PERMISSION_KEYS);
   const managers = new Map(manifest.agents.map((agent) => [agent.slug, agent.reportsToSlug]));
   const checked = new Set<string>();

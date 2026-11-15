@@ -48,6 +48,21 @@ describe("migration manifest validation", () => {
     ]));
   });
 
+  it("rejects duplicate skill identities even when no agent references them", () => {
+    const result = validateMigrationManifest({
+      agents: [], envInputs: [],
+      skills: [
+        { key: "first", slug: "shared" },
+        { key: "first", slug: "other" },
+        { key: "third", slug: "shared" },
+      ],
+    });
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("Duplicate skill key: first"),
+      expect.stringContaining("Duplicate skill slug: shared"),
+    ]));
+  });
+
   it("rejects cycles in the imported management hierarchy", () => {
     const agent = { slug: "worker", reportsToSlug: "boss", reportsToExistingAgentId: null,
       reportsToExistingAgentSlug: null, skills: [], permissionGrants: [] };
