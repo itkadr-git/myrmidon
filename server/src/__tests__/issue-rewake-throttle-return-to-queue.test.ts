@@ -262,7 +262,7 @@ describe("collectRunIdsWithPrHeadChange (myrmidon EMPTY-RUNS-1: a PR head change
   it("an unfinished run ends at now, not at infinity", () => {
     const now = at(startedAt.getTime() + 60 * 60_000);
     expect([...collectRunIdsWithPrHeadChange([{ id: "r2", startedAt }], [at(startedAt.getTime() + 30 * 60_000)], now)]).toEqual(["r2"]);
-    expect(collectRunIdsWithPrHeadChange([{ id: "r2", startedAt }], [at(now.getTime() + 1)], now).size).toBe(0);
+    expect(collectRunIdsWithPrHeadChange([{ id: "r2", startedAt }], [at(now.getTime() + PR_HEAD_CHANGE_LATE_WINDOW_MS + 1)], now).size).toBe(0);
   });
 
   it("one head change goes to one run: the run that holds it, else the last one that ended before it", () => {
