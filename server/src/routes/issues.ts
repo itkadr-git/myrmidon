@@ -14034,6 +14034,7 @@ export function issueRoutes(
         details: {
           title: issue.title,
           identifier: issue.identifier,
+          assigneeAgentId: issue.assigneeAgentId,
           ...(watchdogProductBugFollowUp
             ? {
                 watchdogDiscovery: {
