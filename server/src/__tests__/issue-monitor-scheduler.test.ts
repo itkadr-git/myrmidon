@@ -259,6 +259,31 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(wakeup?.payload).toMatchObject({ issueId, nextCheckAt: nextCheckAt.toISOString() });
   });
 
+  it("does not wake the assignee for a due monitor while an issue is in an active review stage", async () => {
+    const { issueId, agentId, nextCheckAt } = await seedFixture({ issueStatus: "in_review" });
+    await db.update(issues).set({
+      executionState: {
+        status: "pending",
+        currentStageId: randomUUID(),
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: randomUUID() },
+        returnAssignee: { type: "agent", agentId },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: null,
+      },
+    }).where(eq(issues.id, issueId));
+
+    const result = await heartbeatService(db).tickTimers(new Date(nextCheckAt.getTime() + 60_000));
+
+    expect(result.enqueued).toBe(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.monitorNextCheckAt?.getTime()).toBe(nextCheckAt.getTime());
+  });
+
   it("triggers due issue monitors once and clears the one-shot schedule", async () => {
     const { issueId, agentId } = await seedFixture();
     const heartbeat = heartbeatService(db);

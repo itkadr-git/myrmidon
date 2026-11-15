@@ -22,10 +22,9 @@ import express from "express";
 import request from "supertest";
 import { createHmac, generateKeyPairSync, randomInt, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  activityLog,
   agents,
   companies,
   companySecrets,
@@ -379,12 +378,8 @@ const support = await getEmbeddedPostgresTestSupport();
       );
       const [product] = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, issueId));
       expect(product?.metadata).toMatchObject({ activeCi: null, lastCompletedCi: { headSha: HEAD_SHA, conclusion: "failure", runId: "456" } });
-      // No connector binding exists: the activity entry names the App instead.
-      const [activity] = await db
-        .select()
-        .from(activityLog)
-        .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "tool_connection.webhook_processed")));
-      expect(activity).toMatchObject({ entityType: "tool_connection", entityId: `github-app:${appId}` });
+      // OPE-13146: the delivery trace lives in connection_event_deliveries;
+      // a per-webhook activity row is noise and must not be written.
     });
 
     it("tracks a running check_run as the active CI of the exact head", async () => {
