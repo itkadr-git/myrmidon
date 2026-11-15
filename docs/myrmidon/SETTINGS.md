@@ -52,14 +52,6 @@ A successful write returns the updated effective values. A malformed value, unkn
 | `MYRMIDON_RUNNER_API_TOOLS_COMPANY_IDS` | 1.6.6 DEBRAND | unset | Optional comma-separated company allowlist for native runner API tools | Unset allows all companies only after explicit operator opt-in |
 | `MYRMIDON_AUTH_DISABLE_SIGN_UP` | OPE-8649 | `true` (closed) | Controls public credential self-registration; without an explicit setting, signup is rejected | Set `false` to allow signup; legacy `PAPERCLIP_AUTH_DISABLE_SIGN_UP` remains supported |
 
-## Release focus for wake admission
-
-Wake admission and task binding use the effective `runPriority.currentRelease` (stored instance settings take precedence over `MYRMIDON_CURRENT_RELEASE`; unset defaults to no release focus). This is separate from the queue scorer's release bonus. The wake gate compares issue labels, not branch names: matching is case-insensitive after trimming, with equality or containment in either direction; containment requires both strings to be at least three characters.
-
-When an agent has an assigned current-release issue in `todo`, `in_progress`, `in_review` or `blocked`, an automatic wake with an issue ID whose labels do not match is recorded as `skipped` with reason `release_focus`, rather than enqueued. The receipt payload includes `releaseFocus.currentRelease` and `releaseFocus.reason = open_current_release_issue`. A matching wake, or a wake when no such issue exists, passes this gate; other admission checks still apply. An authenticated manual user wake bypasses this gate. A blocked release issue still holds the focus: resolve its blocker rather than expecting another release to run automatically.
-
-The task-binding helper `findTopReadyIssueForAgent` restricts its candidates to that release before normal readiness and priority checks; if none is ready it can return no task. The separate swarm matcher and `idlePickupForAgent` selection algorithm are unchanged; their issue-bound wakes still pass through wake admission. Already queued runs are not retroactively cancelled. For operator troubleshooting and examples see [Tasks and the board](../wiki/Tasks-and-the-board.md#release-focus-and-wake-diagnostics).
-
 ## Track 2 — wake and run core
 
 | Variable | Function | Default | What it does | How to disable / special |
