@@ -15,7 +15,7 @@ function tokens(source) {
     if (c === '"' || c === "'" || c === '`') {
       const quote = c; let value = ''; let escaped = false; i++;
       while (i < source.length && source[i] !== quote) {
-        if (source[i] === '\\') { escaped = true; i += 2; continue; }
+        if (source[i] === '\\') { escaped = true; value += source.slice(i, i + 2); i += 2; continue; }
         if (quote === '`' && source[i] === '$' && source[i + 1] === '{') {
           let depth = 1, start = i + 2; i += 2;
           while (i < source.length && depth) {
@@ -30,7 +30,13 @@ function tokens(source) {
         value += source[i++];
       }
       i++;
-      result.push({ type: quote === '`' || escaped ? 'opaque' : 'string', value });
+      if (quote !== '`' && escaped) {
+        value = value.replace(/\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|.)/g, (_, escape) => {
+          if (escape[0] === 'u' || escape[0] === 'x') return String.fromCodePoint(parseInt(escape.slice(1), 16));
+          return ({ n: '\\n', r: '\\r', t: '\\t', b: '\\b', f: '\\f', v: '\\v', '0': '\\0' }[escape] ?? escape);
+        });
+      }
+      result.push({ type: quote === '`' ? 'opaque' : 'string', value });
       continue;
     }
     if (c === '/' && source[i + 1] !== '/' && source[i + 1] !== '*' &&
