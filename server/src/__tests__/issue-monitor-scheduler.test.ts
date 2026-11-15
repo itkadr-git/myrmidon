@@ -259,6 +259,31 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(wakeup?.payload).toMatchObject({ issueId, nextCheckAt: nextCheckAt.toISOString() });
   });
 
+  it("does not wake the assignee for a due monitor while an issue is in an active review stage", async () => {
+    const { issueId, agentId, nextCheckAt } = await seedFixture({ issueStatus: "in_review" });
+    await db.update(issues).set({
+      executionState: {
+        status: "pending",
+        currentStageId: randomUUID(),
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: randomUUID() },
+        returnAssignee: { type: "agent", agentId },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: null,
+      },
+    }).where(eq(issues.id, issueId));
+
+    const result = await heartbeatService(db).tickTimers(new Date(nextCheckAt.getTime() + 60_000));
+
+    expect(result.enqueued).toBe(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.monitorNextCheckAt?.getTime()).toBe(nextCheckAt.getTime());
+  });
+
   it("triggers due issue monitors once and clears the one-shot schedule", async () => {
     const { issueId, agentId } = await seedFixture();
     const heartbeat = heartbeatService(db);
@@ -502,7 +527,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(activity).toContain("issue.monitor_skipped");
   });
 
-  it("clears exhausted monitors and queues bounded owner recovery instead of another due check", async () => {
+  it("clears exhausted monitors without waking the owner and leaves one note (EMPTY-RUNS-MONITOR)", async () => {
     const { issueId, agentId } = await seedFixture({
       monitorAttemptCount: 1,
       monitor: {
@@ -525,17 +550,11 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       clearReason: "max_attempts_exhausted",
     });
 
-    const wakeup = await db
-      .select()
-      .from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.agentId, agentId))
-      .then((rows) => rows[0] ?? null);
-    expect(wakeup?.reason).toBe("issue_monitor_recovery");
-    expect(wakeup?.payload).toMatchObject({
-      issueId,
-      clearReason: "max_attempts_exhausted",
-      maxAttempts: 1,
-    });
+    // myrmidon(EMPTY-RUNS-MONITOR): the owner is not woken for an exhausted monitor; one note says why.
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId))).toHaveLength(0);
+    const notes = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]?.body).toContain("исчерпан предел попыток");
 
     const activity = await db
       .select()
@@ -543,7 +562,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(activityLog.entityId, issueId))
       .then((rows) => rows.map((row) => row.action));
     expect(activity).toContain("issue.monitor_exhausted");
-    expect(activity).toContain("issue.monitor_recovery_wake_queued");
+    expect(activity).not.toContain("issue.monitor_recovery_wake_queued");
     expect(activity).not.toContain("issue.monitor_triggered");
   });
 

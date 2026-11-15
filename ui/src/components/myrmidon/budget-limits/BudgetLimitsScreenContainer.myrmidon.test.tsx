@@ -137,6 +137,8 @@ describe("myrmidon(1.7 BUDGET-CONFIG D) container", () => {
     });
     await act(async () => byTestId<HTMLButtonElement>("budget-limits-save-nest:company").click());
     await settle();
+    await act(async () => byTestId<HTMLButtonElement>("budget-limits-confirm-nest:company").click());
+    await settle();
 
     expect(budgetLimitsApiMock.saveLimit).toHaveBeenCalledWith("company-1", "nest", "company", {
       amountCents: 75000,
@@ -177,6 +179,8 @@ describe("myrmidon(1.7 BUDGET-CONFIG D) container", () => {
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await act(async () => byTestId<HTMLButtonElement>("budget-limits-save-nest:company").click());
+    await settle();
+    await act(async () => byTestId<HTMLButtonElement>("budget-limits-confirm-nest:company").click());
     await settle();
 
     expect(byTestId("myrmidon-budget-limits-error").textContent).toContain("Saving failed");

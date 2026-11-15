@@ -8,7 +8,7 @@ import { getGitHubRateLimitResetEpochSeconds, isGitHubRateLimited, recordGitHubR
 import { secretService } from "./secrets.js";
 import { readGitHubSharedIdentitySettings } from "../myrmidon/github-shared-identity/store.js";
 import { isRepositoryAllowed, normalizeGitHubRepository } from "../myrmidon/github-shared-identity/settings.js";
-import { mintGitHubAppInstallationToken } from "../myrmidon/github-shared-identity/app-token.js";
+import { mintGitHubAppInstallationToken, type GitHubAppPermissions } from "../myrmidon/github-shared-identity/app-token.js";
 import type {
   ExternalObjectDetection,
   ExternalObjectDetector,
@@ -378,6 +378,15 @@ export const READ_ONLY_APP_PERMISSIONS = {
   workflows: "none",
 } as const;
 
+export const JOB_LOG_APP_PERMISSIONS = {
+  ...READ_ONLY_APP_PERMISSIONS,
+  actions: "read",
+} as const;
+
+export type GitHubRepositoryTokenOptions = {
+  permissions?: Partial<GitHubAppPermissions>;
+};
+
 /**
  * Token for reading one repository, in order:
  *   1. a company secret by name (GITHUB_TOKEN, ...);
@@ -391,10 +400,32 @@ export async function resolveGitHubRepositoryToken(
   db: Db,
   companyId: string,
   repository: string,
-  secretNames: readonly string[] = DEFAULT_GITHUB_TOKEN_SECRET_NAMES,
+  secretNames?: readonly string[],
   fetchImpl?: FetchLike,
-) {
-  return defaultTokenProvider(db, companyId, repository, secretNames, fetchImpl);
+  options?: GitHubRepositoryTokenOptions,
+): Promise<string | null>;
+export async function resolveGitHubRepositoryToken(
+  db: Db,
+  companyId: string,
+  repository: string,
+  options?: GitHubRepositoryTokenOptions,
+): Promise<string | null>;
+export async function resolveGitHubRepositoryToken(
+  db: Db,
+  companyId: string,
+  repository: string,
+  secretNamesOrOptions?: readonly string[] | GitHubRepositoryTokenOptions,
+  fetchImpl?: FetchLike,
+  options?: GitHubRepositoryTokenOptions,
+): Promise<string | null> {
+  let secretNames: readonly string[] = DEFAULT_GITHUB_TOKEN_SECRET_NAMES;
+  let resolvedOptions = options;
+  if (Array.isArray(secretNamesOrOptions)) {
+    secretNames = secretNamesOrOptions;
+  } else if (secretNamesOrOptions && typeof secretNamesOrOptions === "object") {
+    resolvedOptions = secretNamesOrOptions as GitHubRepositoryTokenOptions;
+  }
+  return defaultTokenProvider(db, companyId, repository, secretNames, fetchImpl, resolvedOptions);
 }
 
 export async function defaultTokenProvider(
@@ -403,6 +434,7 @@ export async function defaultTokenProvider(
   repository: string,
   secretNames: readonly string[],
   fetchImpl?: FetchLike,
+  options?: GitHubRepositoryTokenOptions,
 ) {
   const secrets = secretService(db);
   const accessContext = {
@@ -448,7 +480,7 @@ export async function defaultTokenProvider(
         privateKeyPem: getPrivateKeyPem,
         installationId: app.installationId,
         repository: normalized,
-        permissions: READ_ONLY_APP_PERMISSIONS,
+        permissions: options?.permissions ?? READ_ONLY_APP_PERMISSIONS,
         fetchImpl: fetchImpl as typeof fetch | undefined,
       });
       return minted.token;

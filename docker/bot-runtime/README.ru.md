@@ -571,6 +571,12 @@ loopback и стримит один кусок в секунду, чтобы п�
   `/scratch/<name>`. Флаги `--filter`, `--depth`, `--mirror` и `--bare`
   игнорируются с сообщением — объекты уже есть в базе. Настоящий git лежит в
   `/opt/paperclip/libexec/git` вне PATH.
+- `myr-ws open <KEY> <owner/repo> --review [--branch <ветка PR>]` открывает
+  копию для ревью: worktree без рабочего каталога (только файл `.git`,
+  килобайты), без установки зависимостей, git-хуки выключены; ветка сначала
+  обновляется с remote. Читать через `git diff origin/main...HEAD` и
+  `git show HEAD:<путь>`; нет ветки на remote — ошибка, если не задан
+  `--branch`.
 - Команды `myr-ws`: `open <KEY> [owner/repo] [--base <ref>] [--scratch]`,
   `list`, `close <KEY> [--force]`, `restore <KEY>`, `migrate`; общий флаг
   `--json`. Коды выхода: `0` — ок, `2` — неверные аргументы, `3` — отказ по

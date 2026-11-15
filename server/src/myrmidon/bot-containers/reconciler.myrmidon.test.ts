@@ -1017,6 +1017,46 @@ describe("reconcileBot", () => {
       });
     });
 
+    describe("unhealthy with a live run (OPE-13119)", () => {
+      const NOW = new Date("2026-11-14T06:00:00Z");
+      const unhealthy = () => {
+        const applied = profile({ maxConcurrentRuns: 3 });
+        return fakeDriver({ botKey: "agent-a", state: "unhealthy", ...hashesOf(applied), maxConcurrentRuns: 3 });
+      };
+      const pass = (driver: FakeDriver, lastEvent: Date | null, activity = fakeActivity()) =>
+        run(driver, fakeMaintenance([0]), {
+          activity,
+          busyPolicy: "defer",
+          now: () => NOW,
+          liveRunGraceSec: 120,
+          readLiveRunActivity: async () => lastEvent,
+          compile: async () => profile({ maxConcurrentRuns: 3 }),
+        });
+
+      it("run event 30 s ago: no restart, the deferral is journalled", async () => {
+        const driver = unhealthy();
+        const activity = fakeActivity();
+        const outcome = await pass(driver, new Date(NOW.getTime() - 30_000), activity);
+        expect(outcome.kind).toBe("deferred");
+        expect(driver.calls).not.toContain("restart");
+        expect(detailsOf(activity, "health recovery deferred: live run")).toMatchObject({ silentSec: 30, graceSec: 120 });
+      });
+
+      it("run silent for 10 min: the container is restarted", async () => {
+        const driver = unhealthy();
+        const outcome = await pass(driver, new Date(NOW.getTime() - 600_000));
+        expect(outcome).toEqual({ kind: "applied_restart" });
+        expect(driver.calls).toContain("restart");
+      });
+
+      it("no run: the container is restarted", async () => {
+        const driver = unhealthy();
+        const outcome = await pass(driver, null);
+        expect(outcome).toEqual({ kind: "applied_restart" });
+        expect(driver.calls).toContain("restart");
+      });
+    });
+
     it("template drift: the recreate marks running:drift:<class> and the template window reason", async () => {
       const applied = profile({ maxConcurrentRuns: 3 });
       const driver = fakeDriver(

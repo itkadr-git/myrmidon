@@ -1472,6 +1472,28 @@
           "onDemand": "По запросу",
           "alwaysOn": "Всегда включён"
         }
+      },
+      "tool-complaints-panel": {
+        "title": "Жалобы на инструменты",
+        "loading": "Загрузка жалоб...",
+        "requestFailed": "Не удалось загрузить жалобы.",
+        "empty": "Под этот фильтр жалоб нет.",
+        "filter": {
+          "all": "Все",
+          "open": "Открытые",
+          "acknowledged": "Принятые",
+          "resolved": "Закрытые"
+        },
+        "status": {
+          "open": "Открыта",
+          "acknowledged": "Принята",
+          "resolved": "Закрыта"
+        },
+        "agentLabel": "агент {{agent}}",
+        "acknowledge": "Принять",
+        "resolve": "Закрыть",
+        "disableTool": "Отключить инструмент агенту",
+        "thresholdWarning": "Жалоб на инструмент {{tool}}: {{count}} (порог {{threshold}}) — проверьте, пока это не заблокировало работу."
       }
     }
   }

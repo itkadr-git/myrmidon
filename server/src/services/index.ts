@@ -40,6 +40,7 @@ export {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   buildContinuationSummaryMarkdown,
   getIssueContinuationSummaryDocument,
+  getIssueStarterPackDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
 export { projectService } from "./projects.js";
@@ -57,6 +58,7 @@ export {
   type IssueReviewVerdictActor,
 } from "./issue-review-policy.js";
 export { issueTreeControlService } from "./issue-tree-control.js";
+export { reconcileIssueParentCyclesOnStartup } from "./issue-parent-cycle-reconciliation.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { issueReferenceService } from "./issue-references.js";
 export { issueRecoveryActionService } from "./issue-recovery-actions.js";

@@ -1382,6 +1382,28 @@
           "onDemand": "On demand",
           "alwaysOn": "Always on"
         }
+      },
+      "tool-complaints-panel": {
+        "title": "Tool complaints",
+        "loading": "Loading complaints...",
+        "requestFailed": "The complaints request failed.",
+        "empty": "No complaints match this filter.",
+        "filter": {
+          "all": "All",
+          "open": "Open",
+          "acknowledged": "Acknowledged",
+          "resolved": "Resolved"
+        },
+        "status": {
+          "open": "Open",
+          "acknowledged": "Acknowledged",
+          "resolved": "Resolved"
+        },
+        "agentLabel": "agent {{agent}}",
+        "acknowledge": "Acknowledge",
+        "resolve": "Resolve",
+        "disableTool": "Disable tool for agent",
+        "thresholdWarning": "{{count}} open complaints on tool {{tool}} (threshold {{threshold}}) — review before it blocks work."
       }
     }
   }

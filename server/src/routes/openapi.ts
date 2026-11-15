@@ -4087,10 +4087,47 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/issues/{id}/release-status",
+  tags: ["issues"],
+  summary: "Release membership status for the issue's pull request work products",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({ refreshPullRequests: z.enum(["true"]).optional() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 500: r.serverError },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/release-verify",
+  tags: ["issues"],
+  summary: "Verify the deployed release composition against the pull request work products of EVERY issue carrying the release label and persist the verdict",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({ refreshPullRequests: z.enum(["true"]).optional() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 500: r.serverError },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/issues/{id}/ci-status",
   tags: ["issues"],
   summary: "CI status on the exact head of the issue's pull request",
   request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/release-status",
+  tags: ["issues"],
+  summary:
+    "Release membership: whether each merged pull request of the issue is reachable from the release refs of the issue's release label",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({ refreshPullRequests: z.enum(["true"]).optional() }),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 

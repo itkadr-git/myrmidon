@@ -46,6 +46,8 @@ Deep-dive guides from [`docs/myrmidon/guides`](https://github.com/itkadr-git/myr
 
 - [The board chat planner: owner text to a proposed epic (CTO-CHAT B)](Cto-chat-planner)
 
+- [Verify execution stage (VERIFY-ON-PROD)](Verify-execution-stage)
+
 
 
 ### Telegram and channels

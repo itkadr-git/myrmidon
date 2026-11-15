@@ -114,6 +114,7 @@ import { extractReleasePrefix } from "../myrmidon/board-janitor/policy.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { assertTaskCardReady } from "../myrmidon/task-card-readiness/guard.js";
 import { requiresEngineer } from "../myrmidon/swarm-claim/requires-engineer.js";
+import { isLargeEngineeringTask } from "../myrmidon/plan-gate/large-task.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import {
@@ -133,7 +134,10 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
   type ParsedExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
-import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
+import {
+  archiveSharedExecutionWorkspacesForTerminalIssue,
+  mergeExecutionWorkspaceConfig,
+} from "./execution-workspaces.js";
 import { hasChatRunOwnedProviderInteraction } from "./chat-interaction-arbitration.js";
 import { readChatControlChronology } from "./chat-control-chronology.js";
 import { authorizeChatConversationForBoundRun } from "./native-runtime/chat-attachment-reuse.js";
@@ -1916,6 +1920,26 @@ type IssueUserContextInput = {
 };
 type ProjectGoalReader = Pick<Db, "select">;
 type DbReader = Pick<Db, "select">;
+/** Conversation containers cannot acquire new child edges, even with the experiment disabled. */
+async function assertIssueParentDoesNotCreateCycle(db: Db, companyId: string, issueId: string, parentId: string | null | undefined) {
+  if (!parentId) return;
+  if (parentId === issueId) throw unprocessable("Issue parent cannot be itself");
+  const [cycle] = await db.select({ id: issues.id }).from(issues).where(and(
+    eq(issues.companyId, companyId),
+    sql<boolean>`exists (
+      with recursive descendants(id, path, depth) as (
+        select ${issues.id}::text, array[${issues.id}::text], 0
+        from ${issues} where ${issues.companyId} = ${companyId} and ${issues.id} = ${issueId}
+        union all
+        select child.id::text, descendants.path || child.id::text, descendants.depth + 1
+        from ${issues} child join descendants on child.parent_id::text = descendants.id
+        where child.company_id = ${companyId} and descendants.depth < 1000
+          and not child.id::text = any(descendants.path)
+      ) select 1 from descendants where id = ${parentId}
+    )`,
+  ));
+  if (cycle) throw unprocessable("An issue cannot be parented to one of its descendants");
+}
 /** Conversation containers cannot acquire new child edges, even with the experiment disabled. */
 async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: string | null) {
   if (!parentId) return;
@@ -10330,6 +10354,27 @@ export function issueService(db: Db) {
         }
 
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
+        const createLabelNames = inputLabelIds && inputLabelIds.length > 0
+          ? await tx
+              .select({ name: labels.name })
+              .from(labels)
+              .where(and(eq(labels.companyId, companyId), inArray(labels.id, inputLabelIds)))
+              .then((rows) => rows.map((row) => row.name))
+          : [];
+        if (
+          !initialPlan?.trim() &&
+          !issueData.workMode &&
+          (issueData.status === undefined || issueData.status === "backlog" || issueData.status === "todo") &&
+          isLargeEngineeringTask({
+            labels: createLabelNames,
+            assigneeAgentRole: issueData.assigneeAgentId
+              ? await tx.select({ role: agents.role }).from(agents).where(and(eq(agents.id, issueData.assigneeAgentId), eq(agents.companyId, companyId))).then((rows) => rows[0]?.role ?? null)
+              : null,
+            casteKey: issueData.casteKey ?? null,
+          })
+        ) {
+          issueData.workMode = "planning";
+        }
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
         let executionWorkspacePreference =
@@ -11298,6 +11343,7 @@ export function issueService(db: Db) {
         : null;
       if (data.parentId !== undefined && data.parentId !== existing.parentId) {
         await assertExecutionTaskParent(dbOrTx, existing.companyId, data.parentId);
+        await assertIssueParentDoesNotCreateCycle(dbOrTx, existing.companyId, id, data.parentId);
       }
       // 1.6.5 (F-27 rework 09.10): validate a changed caste against the
       // company's directory (design §2.1); null clears to the defaults.
@@ -11810,6 +11856,7 @@ export function issueService(db: Db) {
             }
           }
           if (updated.status === "done" || updated.status === "cancelled") {
+            await archiveSharedExecutionWorkspacesForTerminalIssue(tx, updated);
             await finalizeSummarySlotsForTerminalIssue(tx, updated);
             // myrmidon(DEFERRED-WAKE-LEAK): cancel all deferred executions for terminal issue
             await cancelDeferredExecutionsForTerminalIssue(
@@ -11917,6 +11964,23 @@ export function issueService(db: Db) {
             await finalizeStatusCardsForStalledGeneration(tx, updated);
           }
         }
+        // myrmidon(OPE-13081): plan gate on update. Cheap checks first; the DB
+        // lookups run only for a not-started task whose labels or assignee really changed.
+        const planGateCandidate =
+          updated.workMode === "standard" &&
+          (updated.status === "backlog" || updated.status === "todo");
+        let planGateLabelsChanged = false;
+        if (planGateCandidate && nextLabelIds !== undefined) {
+          const previousLabelIds = await tx
+            .select({ labelId: issueLabels.labelId })
+            .from(issueLabels)
+            .where(and(eq(issueLabels.companyId, existing.companyId), eq(issueLabels.issueId, updated.id)))
+            .then((rows: Array<{ labelId: string }>) => rows.map((row: { labelId: string }) => row.labelId));
+          const nextSet = new Set(nextLabelIds);
+          planGateLabelsChanged =
+            previousLabelIds.length !== nextSet.size ||
+            previousLabelIds.some((labelId: string) => !nextSet.has(labelId));
+        }
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(
             updated.id,
@@ -11924,6 +11988,32 @@ export function issueService(db: Db) {
             nextLabelIds,
             tx,
           );
+        }
+        const planGateAssigneeChanged =
+          issueData.assigneeAgentId !== undefined &&
+          (issueData.assigneeAgentId ?? null) !== (existing.assigneeAgentId ?? null);
+        if (planGateCandidate && (planGateLabelsChanged || planGateAssigneeChanged)) {
+          const labelNames = await tx
+            .select({ name: labels.name })
+            .from(issueLabels)
+            .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+            .where(and(eq(issueLabels.companyId, existing.companyId), eq(issueLabels.issueId, updated.id)))
+            .then((rows: Array<{ name: string }>) => rows.map((row: { name: string }) => row.name));
+          const assigneeRole = updated.assigneeAgentId
+            ? await tx.select({ role: agents.role }).from(agents).where(and(eq(agents.id, updated.assigneeAgentId), eq(agents.companyId, existing.companyId))).then((rows: Array<{ role: string }>) => rows[0]?.role ?? null)
+            : null;
+          if (isLargeEngineeringTask({ labels: labelNames, assigneeAgentRole: assigneeRole, casteKey: updated.casteKey })) {
+            const hasPlan = await tx
+              .select({ id: issueDocuments.id })
+              .from(issueDocuments)
+              .where(and(eq(issueDocuments.companyId, existing.companyId), eq(issueDocuments.issueId, updated.id), eq(issueDocuments.key, "plan")))
+              .limit(1)
+              .then((rows: Array<{ id: string }>) => rows.length > 0);
+            if (!hasPlan) {
+              await tx.update(issues).set({ workMode: "planning", updatedAt: new Date() }).where(eq(issues.id, updated.id));
+              updated.workMode = "planning";
+            }
+          }
         }
         if (blockedByIssueIds !== undefined) {
           await syncBlockedByIssueIds(

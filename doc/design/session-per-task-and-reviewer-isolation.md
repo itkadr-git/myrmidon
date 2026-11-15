@@ -13,7 +13,8 @@
 ### 1.1 Developer-Only Isolation Scope (Alex 05.11) and "No Previous Runs" (Alex 06.11)
 - Изоляция применяется **исключительно** к разработчикам: карточки `adm-dev-eng`, `adm-dev-eng-<n>` (инженеры) и `adm-dev-review`, `adm-dev-review-<n>` (ревьюеры кода). Признак — точная форма имени (`isDeveloperRole`), а не роль карточки: роль `engineer` носят и devrel, техписатель, лиды и боты других команд, а явного флага «разработчик» на карточке нет. Лиды, релиз-инженеры, devrel, техписатели, adm, операторы, bbq, work, life и личные боты — не разработчики.
 - Все остальные боты компании сохраняют общую память, сессию и контекст между задачами без изменений: их `sessionKeyStrategy` не переопределяется, их контекст не урезается.
-- **06.11 (Alex): «разрабам вообще не нужно грузить прошлые прогоны».** Разработчик не загружает прошлые прогоны вовсе: каждый прогон — новая сессия Hermes (стратегия ключа сессии `run`), а не сессия на задачу (`issue`, которая несёт историю прошлых прогонов) и не сессия агента (`agent`). Это отменяет вариант «сессия на задачу для разработчика» из первой редакции этого документа. Карточка с явным `run` или `none` никогда не «повышается» до `issue`/`agent`; карточка с `issue`/`agent`/без значения у разработчика работает как `run`. На 06.11 карточки инженеров и ревьюеров уже переключены на `sessionKeyStrategy = "run"`; флаг на стороне доски страхует новые и непереключённые карточки.
+- **Alex 06.11, clarified 14.11 (OPE-13087):** developers get no Hindsight memory; the task session continues between runs (strategy `issue`); never an agent-wide session.
+  06.11–14.11 действовал неверный перевод (стратегия `run`), исправлено задачей OPE-13087: разработчикам действует стратегия ключа сеанса из карточки (`issue` — сеанс на задачу, `run`, `none`); `agent` заменяется на `issue`. Профиль разработчика собирается без долговременной памяти Hindsight.
 - Ревьюер разработчика получает изолированный вход: текст задачи и ссылку на PR; сам читает diff своими инструментами (`gh pr diff <n> -R <repo>`). Доска diff не загружает и в GitHub для этого не ходит (лимит GitHub App 5000/ч общий на весь флот). Сессия, транскрипт и сообщения продолжения инженера ревьюеру не передаются.
 
 Telemetry from October 26, 2026 revealed severe token waste and model churn during developer wake cycles:
@@ -53,7 +54,9 @@ This document establishes the architecture, data contracts, threat models, and a
 
 ## 3. Architecture: Session-Per-Task (1.7 WAKE-9A)
 
-> **Update 06.11.** For developers the session lifetime is **one run**, not one task (see 1.1): the adapter uses the `run` strategy and the board never hands a developer a stored session. The task-key, resumption and scratch contracts below stay as guards that constrain a resumption if one is ever attempted (for example by a non-developer agent); they never widen what a developer loads. Where this section says "session per task", read "no session carried across runs" for developers.
+> **Update 14.11 (OPE-13087).** Alex 06.11, clarified 14.11: developers get no Hindsight memory; the task session continues between runs (strategy `issue`); never an agent-wide session. 06.11–14.11 действовал неверный перевод (стратегия `run`), исправлено задачей OPE-13087: разработчики получают сеанс на задачу (`issue`, или `run`/`none` из карточки; `agent` заменяется на `issue`).
+>
+> **Update 06.11.** For developers the session lifetime was temporarily set to **one run** due to the earlier misinterpretation.
 
 ### 3.1 Deterministic Task Key Contract
 For every issue-bound run, the task session key MUST be strictly derived as:
@@ -157,10 +160,10 @@ The contracts and isolation guarantees are verified by the unit test suite in:
    - Match approval and rejection of mismatched issue IDs (`cross_task_context_leak_detected`).
    - Rejection of unscoped session fallback during issue assignments.
    - Isolation of scratch directories per task identifier.
-2. `Developer scope and session strategy` (05.11, 06.11):
+2. `Developer scope and session strategy` (05.11; Alex 06.11, clarified 14.11 OPE-13087):
    - Only `adm-dev-eng-*` and `adm-dev-review-*` are developers; leads, release, devrel, techwriter, `bbq-web-developer`, `work-gip` and the rest are not, whatever their role.
-   - Developer strategy is `run` for `issue`/`agent`/unset; a card's `run` and `none` are never upgraded.
-   - `applyDeveloperRunIsolation`: a developer gets the flag and `run`; any other bot keeps its configured strategy and a card-supplied flag is ignored.
+   - Developer strategy is `issue` for `issue`/`agent`/unset; a card's `run` and `none` are honored and kept as is.
+   - `applyDeveloperRunIsolation`: a developer gets the flag and `issue` (or card's `run`/`none`); any other bot keeps its configured strategy and a card-supplied flag is ignored.
 3. `Reviewer Input Fixture Isolation`:
    - Only task specs, acceptance criteria, a PR reference and the diff command are present; no diff property.
    - Assertion that forbidden fields (coder thoughts, scratchpads, comments, secrets) are absent.
@@ -177,9 +180,9 @@ The contracts and isolation guarantees are verified by the unit test suite in:
    - Sanitization of environment credential maps.
 
 Adapter tests (`packages/adapters/hermes/src/gateway/server/execute.test.ts`):
-- A developer run gets `paperclip:run:<runId>` and a distinct session per run, including across runs of one task, whatever the card says; a card's `none` sends no session key.
-- A developer gets the full task brief and no compact (resumed) variant even when the board still holds a stored session of an earlier run.
-- A non-developer keeps its configured `issue`/`agent` key and its compact resumed brief.
+- A developer run gets an issue-scoped session by default (`paperclip:company:<cid>:agent:<aid>:issue:<iid>`) or respects a card's `run` / `none`; `agent` is mapped to `issue`.
+- A developer gets the full task brief or resumed variant per standard issue session lifecycle.
+- A non-developer keeps its configured `issue`/`agent`/`run`/`none` key and its compact resumed brief.
 
 ---
 
@@ -187,7 +190,7 @@ Adapter tests (`packages/adapters/hermes/src/gateway/server/execute.test.ts`):
 
 | Subtask | Estimate | Description |
 |---|---|---|
-| **1.7 WAKE-9A** | 1.5 h | Developers load no previous runs (06.11): the board marks developer runs, resets their saved task session and sets the strategy to `run`; the Hermes adapter uses a fresh session per run and never `issue`/`agent` for them (`server/src/services/heartbeat.ts`, `packages/adapters/hermes`). Other bots are untouched. |
+| **1.7 WAKE-9A** | 1.5 h | Developers get task-scoped session (Alex 06.11, clarified 14.11 OPE-13087): the board marks developer runs with `developerOnlyTaskSession`, strategy defaults to `issue` (`agent` mapped to `issue`, `run`/`none` kept); the Hermes adapter uses `issue` session and never `agent` for them (`packages/shared`, `packages/adapters/hermes`). Other bots are untouched. |
 | **1.7 WAKE-9B** | 1.5 h | Isolated reviewer input for developer reviewers: task text, PR reference and the instruction to read the diff itself, rendered into the task context (`packages/shared`, `server/src/services/heartbeat.ts`); no diff and no GitHub call on the board. Enforcing the Zod `reviewVerdictSchema` on review completions stays open. |
 
 ---

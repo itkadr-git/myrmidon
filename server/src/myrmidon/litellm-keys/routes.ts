@@ -8,6 +8,14 @@
 //   POST /api/myrmidon/companies/:companyId/litellm/keys/:agentId   (board only)
 //   POST /api/myrmidon/companies/:companyId/litellm/keys/:agentId/rotate (board only)
 //
+// myrmidon(OPE-12930 KEY-TTL): a create or a rotation carries an optional
+// `ttlMs` body field, at most 24 h (default 24 h). The resulting key has a
+// verifiable `expiresAt` on BOTH halves: the gateway key (`expires` on
+// /key/generate and /key/update) and the board secret metadata
+// (`company_secrets.expires_at`), and the store refuses to resolve the secret
+// past that instant. A new run therefore gets a fresh value by rotating the
+// key, with no operator action.
+//
 // Reads answer the state of a key — its store name and the sha256 of its value,
 // never the value. A create or a rotation is board-only: it mints a credential
 // and calls the gateway. When the instance has no gateway admin key configured
@@ -189,16 +197,19 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
   });
 
   /**
-   * Company-wide pass that sets every restricted agent key to the company's
-   * enabled registry models: it adds the enabled names a key lacks and drops
-   * the registry names that are no longer enabled; names the registry does not
-   * own are kept, and a key with no restriction (all models) is left alone.
+   * Explicit admin pass over every restricted agent key (full mode, NOT
+   * `cardModelsOnly`): it removes EVERY model the registry has disabled from
+   * every key, whether or not the agent's card names it, and adds the enabled
+   * models each agent's card names. Models the registry does not own are kept,
+   * and a key with no restriction (all models) is left alone. A key left with
+   * nothing gets the disabled sentinel, so applying can lock a bot out.
    *
    * A DRY RUN by default: it reads the keys and answers what would change
    * (`dryRun.changes` per agent, `added` / `removed` per model name) and sends
-   * nothing. Only `?apply=true` writes. Applying widens every curated list by
-   * the enabled names, so it is an explicit owner/admin action: the startup
-   * check and the provider-change hooks only report.
+   * nothing. Only `?apply=true` writes. The automatic paths (watchdog, startup,
+   * provider and card changes) run scoped (`cardModelsOnly`): they remove a
+   * disabled model only from keys whose card names it, so this endpoint is the
+   * only place that sweeps disabled models the cards do not mention.
    *
    * Registered before the `/:agentId` routes, which would take "allowlist-sync"
    * for an agent id.
@@ -213,7 +224,7 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
     const applyParam = String(req.query.apply ?? "").trim().toLowerCase();
     const apply = applyParam === "true" || applyParam === "1";
     const result = await withCompanySyncGuard(companyId, () =>
-      updateAgentAllowlistsForCompany(db, input.deps, companyId, [], [], false, { apply }),
+      updateAgentAllowlistsForCompany(db, input.deps, companyId, [], [], { apply }),
     );
     if (apply) {
       const actor = getActorInfo(req);
@@ -260,7 +271,8 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
     const models = Array.isArray(req.body?.models)
       ? (req.body.models as unknown[]).map(String)
       : undefined;
-    const created = await createAgentGatewayKey(input.deps, { companyId, agentId, models });
+    const ttlMs = typeof req.body?.ttlMs === "number" ? req.body.ttlMs : undefined;
+    const created = await createAgentGatewayKey(input.deps, { companyId, agentId, models, ttlMs });
     const actor = getActorInfo(req);
     await auditService.record({
       companyId, category: "keys", action: "litellm_key_created", entityId: agentId,
@@ -281,7 +293,8 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
       disabled(res);
       return;
     }
-    const rotated = await rotateAgentGatewayKey(input.deps, { companyId, agentId });
+    const ttlMs = typeof req.body?.ttlMs === "number" ? req.body.ttlMs : undefined;
+    const rotated = await rotateAgentGatewayKey(input.deps, { companyId, agentId, ttlMs });
     const actor = getActorInfo(req);
     await auditService.record({
       companyId,

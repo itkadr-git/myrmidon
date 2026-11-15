@@ -68,6 +68,7 @@ describeEmbeddedPostgres("a final run guard stop wakes the manager", () => {
   async function insertAgent(input: {
     companyId: string;
     name: string;
+    role?: string;
     reportsTo?: string | null;
     status?: "idle" | "paused";
   }) {
@@ -76,7 +77,7 @@ describeEmbeddedPostgres("a final run guard stop wakes the manager", () => {
       id,
       companyId: input.companyId,
       name: input.name,
-      role: "engineer",
+      role: input.role ?? "engineer",
       status: input.status ?? "idle",
       reportsTo: input.reportsTo ?? null,
       adapterType: "codex_local",
@@ -150,7 +151,7 @@ describeEmbeddedPostgres("a final run guard stop wakes the manager", () => {
       requireBoardApprovalForNewAgents: false,
     });
     const managerId = input.withManager
-      ? await insertAgent({ companyId, name: "Lead", status: input.managerStatus })
+      ? await insertAgent({ companyId, name: "Lead", role: "lead", status: input.managerStatus })
       : null;
     const admId = input.withAdm ? await insertAgent({ companyId, name: "adm" }) : null;
     const agentId = await insertAgent({ companyId, name: input.assigneeName ?? "CodexCoder", reportsTo: managerId });
@@ -258,6 +259,201 @@ describeEmbeddedPostgres("a final run guard stop wakes the manager", () => {
     const issue = await issueRow(issueId);
     expect(issue.status).toBe("blocked");
     expect(issue.assigneeAgentId).toBe(agentId);
+    expect(await isRunGuardStopWakeRecipient(db, { companyId, assigneeAgentId: agentId, agentId: managerId! })).toBe(true);
+  });
+
+  it("wakes the lead (and not the reviewer) when an engineer reports to a reviewer who reports to a lead", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "company-chain",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    const leadId = await insertAgent({ companyId, name: "Lead", role: "lead" });
+    const reviewerId = await insertAgent({ companyId, name: "Reviewer", role: "reviewer", reportsTo: leadId });
+    const engineerId = await insertAgent({ companyId, name: "Engineer", role: "engineer", reportsTo: reviewerId });
+    const runId = await insertStoppedRun({ companyId, agentId: engineerId, issueId });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Task whose run was stopped in chain",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: engineerId,
+      checkoutRunId: runId,
+      executionRunId: null,
+      startedAt: STOPPED_AT,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    await heartbeat.applyRunGuardStop(runId);
+
+    const wakes = await wakesFor(companyId);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({
+      agentId: leadId,
+      reason: RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON,
+      status: expect.not.stringMatching(/^skipped$/),
+    });
+    expect(wakes[0]?.agentId).not.toBe(reviewerId);
+    expect(wakes[0]?.payload).toMatchObject({
+      issueId,
+      assigneeAgentId: engineerId,
+      runGuardStop: { runId },
+    });
+    const issue = await issueRow(issueId);
+    expect(issue.status).toBe("blocked");
+    expect(issue.assigneeAgentId).toBe(engineerId);
+
+    // Acceptance criteria: isRunGuardStopWakeRecipient is true for lead, false for reviewer
+    expect(await isRunGuardStopWakeRecipient(db, { companyId, assigneeAgentId: engineerId, agentId: leadId })).toBe(true);
+    expect(await isRunGuardStopWakeRecipient(db, { companyId, assigneeAgentId: engineerId, agentId: reviewerId })).toBe(false);
+  });
+
+  it("wakes an architect when the reports_to chain leads to an architect", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "company-architect",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    const architectId = await insertAgent({ companyId, name: "Architect", role: "architect" });
+    const reviewerId = await insertAgent({ companyId, name: "Reviewer", role: "reviewer", reportsTo: architectId });
+    const engineerId = await insertAgent({ companyId, name: "Engineer", role: "engineer", reportsTo: reviewerId });
+    const runId = await insertStoppedRun({ companyId, agentId: engineerId, issueId });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Task whose run was stopped with architect",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: engineerId,
+      checkoutRunId: runId,
+      executionRunId: null,
+      startedAt: STOPPED_AT,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    await heartbeat.applyRunGuardStop(runId);
+
+    const wakes = await wakesFor(companyId);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ agentId: architectId });
+    expect(await isRunGuardStopWakeRecipient(db, { companyId, assigneeAgentId: engineerId, agentId: architectId })).toBe(true);
+  });
+
+  it("wakes adm when the lead above the reviewer is paused", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "company-paused-lead",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    const admId = await insertAgent({ companyId, name: "adm" });
+    const leadId = await insertAgent({ companyId, name: "Lead", role: "lead", status: "paused" });
+    const reviewerId = await insertAgent({ companyId, name: "Reviewer", role: "reviewer", reportsTo: leadId });
+    const engineerId = await insertAgent({ companyId, name: "Engineer", role: "engineer", reportsTo: reviewerId });
+    const runId = await insertStoppedRun({ companyId, agentId: engineerId, issueId });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Task with paused lead in chain",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: engineerId,
+      checkoutRunId: runId,
+      executionRunId: null,
+      startedAt: STOPPED_AT,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    await heartbeat.applyRunGuardStop(runId);
+
+    const wakes = await wakesFor(companyId);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ agentId: admId });
+  });
+
+  it("falls back to adm without looping when there is a cycle in reports_to", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "company-cycle",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    const admId = await insertAgent({ companyId, name: "adm" });
+    const rev1Id = randomUUID();
+    const rev2Id = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: rev1Id,
+        companyId,
+        name: "Reviewer1",
+        role: "reviewer",
+        status: "idle",
+        reportsTo: rev2Id,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: rev2Id,
+        companyId,
+        name: "Reviewer2",
+        role: "reviewer",
+        status: "idle",
+        reportsTo: rev1Id,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    const engineerId = await insertAgent({ companyId, name: "Engineer", role: "engineer", reportsTo: rev1Id });
+    const runId = await insertStoppedRun({ companyId, agentId: engineerId, issueId });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Task with cycle in reports_to",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: engineerId,
+      checkoutRunId: runId,
+      executionRunId: null,
+      startedAt: STOPPED_AT,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    await heartbeat.applyRunGuardStop(runId);
+
+    const wakes = await wakesFor(companyId);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ agentId: admId });
   });
 
   // myrmidon(OPE-12577): the stopped run's environment lease is released a moment

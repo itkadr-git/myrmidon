@@ -164,6 +164,39 @@ export async function readRunProgress(db: Db, runId: string): Promise<RunProgres
   };
 }
 
+/** The newest recorded progress of a run row, in SQL (the policy's `progressAnchorAt`). */
+function runProgressAnchorSql() {
+  return sql`greatest(
+    coalesce(${heartbeatRuns.lastOutputAt}, to_timestamp(0)),
+    coalesce(${heartbeatRuns.lastUsefulActionAt}, to_timestamp(0)),
+    coalesce(${heartbeatRuns.processStartedAt}, ${heartbeatRuns.startedAt}, to_timestamp(0)),
+    coalesce((
+      select max(e.created_at)
+      from heartbeat_run_events e
+      where e.run_id = heartbeat_runs.id
+    ), to_timestamp(0))
+  )`;
+}
+
+/**
+ * myrmidon(OPE-13119): the newest recorded progress across the agent's running
+ * runs, or null when it has none. The bot container reconciler asks it before
+ * recovering an unhealthy gateway: a run that wrote an event seconds ago is
+ * alive, whatever Docker's health probe says under host load.
+ */
+export async function readAgentLiveRunActivity(db: Db, agentId: string): Promise<Date | null> {
+  const rows = await db
+    .select({ anchorAt: sql<unknown>`${runProgressAnchorSql()}` })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, RUNNING_STATUS)));
+  let newest: Date | null = null;
+  for (const row of rows) {
+    const at = toDate(row.anchorAt);
+    if (at && at.getTime() > 0 && (!newest || at > newest)) newest = at;
+  }
+  return newest;
+}
+
 /**
  * The prefilter: running runs whose own recorded progress is already older than
  * the cutoff. The expression is the same anchor the policy uses, evaluated in
@@ -175,16 +208,7 @@ export async function readRunProgress(db: Db, runId: string): Promise<RunProgres
  * "cannot judge", never "stalled".
  */
 function candidateRuns(db: Db, cutoffIso: string, pageSize: number) {
-  const anchor = sql`greatest(
-    coalesce(${heartbeatRuns.lastOutputAt}, to_timestamp(0)),
-    coalesce(${heartbeatRuns.lastUsefulActionAt}, to_timestamp(0)),
-    coalesce(${heartbeatRuns.processStartedAt}, ${heartbeatRuns.startedAt}, to_timestamp(0)),
-    coalesce((
-      select max(e.created_at)
-      from heartbeat_run_events e
-      where e.run_id = heartbeat_runs.id
-    ), to_timestamp(0))
-  )`;
+  const anchor = runProgressAnchorSql();
   return db
     .select({
       id: heartbeatRuns.id,

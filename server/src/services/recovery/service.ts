@@ -1261,6 +1261,7 @@ export function recoveryService(
       retryReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON ||
       wakeReason === "execution_review_requested" ||
       wakeReason === "execution_approval_requested" ||
+      wakeReason === "execution_verify_requested" ||
       // A continuation wake that carried the reviewer stage context (a
       // reviewer woken as the issue assignee).
       (retryReason === "issue_continuation_needed" &&
@@ -4543,7 +4544,8 @@ export function recoveryService(
     const retryReason = context.retryReason;
     if (retryReason !== EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON &&
         wakeReason !== "execution_review_requested" &&
-        wakeReason !== "execution_approval_requested") return false;
+        wakeReason !== "execution_approval_requested" &&
+        wakeReason !== "execution_verify_requested") return false;
     const issue = await db.query.issues.findFirst({
       where: and(eq(issues.companyId, input.companyId), eq(issues.id, issueId)),
     });
@@ -4802,6 +4804,24 @@ export function recoveryService(
     scheduledRetryReason?: string | null;
     hasPendingCi?: boolean;
   }) {
+    // Recovery must not take ownership away from a live assignee. The issue
+    // checkout lock can be transiently absent while checkout is being claimed;
+    // a queued/running wake is the authoritative signal to leave it untouched.
+    const liveAssigneeWork = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, input.issue.companyId),
+        ...(input.issue.assigneeAgentId
+          ? [eq(heartbeatRuns.agentId, input.issue.assigneeAgentId)]
+          : []),
+        inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issue.id}`,
+        sql`${heartbeatRuns.contextSnapshot} ->> 'source' IS DISTINCT FROM ${STRANDED_AUTO_POLICY_RETRY_SOURCE}`,
+      ))
+      .limit(1);
+    if (liveAssigneeWork.length > 0) return null;
+
     // myrmidon(OPE-10045): a pending review stage whose reviewer run ended
     // without a decision first waits for CI on the PR head, then gets one more
     // explicit decision request. Only after that is it escalated, and the
@@ -8445,7 +8465,7 @@ export function recoveryService(
   // `run_guard_stop_needs_input`, once per issue per 30 minutes. Callers: the guard
   // stop handling in heartbeat.ts and the stranded sweep below.
   async function wakeManagerForRunGuardStop(input: {
-    issue: { id: string; companyId: string; assigneeAgentId: string | null };
+    issue: { id: string; companyId: string; projectId?: string | null; assigneeAgentId: string | null };
     latestRun: { id: string; errorCode?: string | null; resultJson?: unknown };
     stopText?: string | null;
   }) {
@@ -8454,13 +8474,13 @@ export function recoveryService(
     // Only a task the escalation actually blocked is worth the manager's attention: a
     // deferred review stage or a rerouted task keeps its status and its own path.
     const current = await db
-      .select({ status: issues.status })
+      .select({ status: issues.status, projectId: issues.projectId })
       .from(issues)
       .where(and(eq(issues.companyId, input.issue.companyId), eq(issues.id, input.issue.id)))
       .then((rows) => rows[0] ?? null);
     if (current?.status !== "blocked") return null;
     return wakeManagerForRunGuardStopImpl(db, deps.enqueueWakeup, {
-      issue: input.issue,
+      issue: { ...input.issue, projectId: input.issue.projectId ?? current.projectId },
       latestRun: input.latestRun,
       stopReason,
       stopText: input.stopText ?? buildRunGuardStopComment(input.latestRun),

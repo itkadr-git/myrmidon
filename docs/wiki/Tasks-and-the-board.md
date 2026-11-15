@@ -26,6 +26,14 @@ has not triggered within the overdue threshold, the Attention feed raises an
 and wake history, then resume or reschedule the task; the item clears when the
 monitor is no longer overdue.
 
+## Release focus and wake diagnostics
+
+The effective instance `runPriority.currentRelease` comes from stored run-priority settings, falling back to `MYRMIDON_CURRENT_RELEASE` (unset means no focus). Labels are compared case-insensitively after trimming: exact matches work, as does containment in either direction when both strings have at least three characters. The wake gate uses labels, not workspace branches.
+
+For an agent with an assigned matching issue in `todo`, `in_progress`, `in_review`, or `blocked`, an automatic issue-bound wake for a nonmatching task is not queued. Its wake receipt is `skipped` with reason `release_focus`; its payload records `releaseFocus.currentRelease` and `open_current_release_issue`. Inspect the affected task's wake diagnostics and the agent's assigned open issues and labels to identify the holding task. A blocked current-release task still holds focus; resolve its blocker or close it as appropriate. If there is no matching open assignment, the wake passes this gate, as does a matching issue; other admission checks remain in force.
+
+An authenticated manual user wake bypasses this particular gate. Automatic task binding via `findTopReadyIssueForAgent` restricts candidates to the current release before ordinary readiness and ranking, and can return no task when none is ready. Existing queued runs are not cancelled retroactively. This behavior does not change swarm matching or the separate `idlePickupForAgent` selection algorithm; issue-bound wakes they generate still encounter wake admission. See [settings](../myrmidon/SETTINGS.md#release-focus-for-wake-admission).
+
 ## Role queues
 
 With the role-queue pilot, a free agent claims the top task of its role's
@@ -95,6 +103,14 @@ staying in review forever. The behavior is the `boardMerge` block of
 `boardMerge.enabled = false` restores the previous wait-for-a-human
 behavior.
 
+## Post-merge verification (VERIFY-ON-PROD)
+
+For release tasks, merge is not the end of the workflow: the runtime enforces a post-merge verification stage (`verify`) before the task can be completed (`done`).
+- **Independent verifier**: The verifying agent or user must differ from the task executor (`REVIEW-INDEPENDENCE`).
+- **Required evidence**: Verifier approval requires recorded evidence of the deployed version (`Deploy version: <version>`) and verification method (`Check method: <method>`).
+- **Done gate**: Release tasks with code work products cannot be closed directly without a completed verify stage or an explicit skip configuration (`requirements.skip: true`).
+- **Rejection return**: Rejecting the verification (`changes_requested`) automatically returns the task to the original executor, waking them with `execution_changes_requested`. Resubmitting routes directly back to the verify stage.
+
 ## Discussion rooms
 
 A discussion room lets 2–4 agents on different models debate a question
@@ -109,6 +125,7 @@ an optional finisher summarizes the outcome.
 - [Stale-block watchdog](Stale-block)
 - [Commander chat](Commander-chat)
 - [Discussion rooms](Agent-exchange)
+- [Verify execution stage (VERIFY-ON-PROD)](Verify-execution-stage)
 - Review routing: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), section «REVIEW-ROUTING»
 
 ## Knowledge-note gate for system changes

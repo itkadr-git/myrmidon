@@ -45,6 +45,7 @@ export const FINE_SETTINGS_KEYS = [
   "tool_timeout_slow_ms",
   "bot_reconcile_interval_sec",
   "input_limit_precheck",
+  "monitorUnchangedWakeLimit",
 ] as const;
 
 type FineValueType = BehaviorSettingDefinition["valueType"];
@@ -84,7 +85,7 @@ export function buildFineSettingsRows(view: FineSettingsDefs): FineSettingRow[] 
       key,
       value: formatFineSettingValue(view.settings[key]),
       source: source === "ui" || source === "env" ? source : "default",
-      envName: definition?.envName ?? key,
+      envName: definition?.envName || "—",
     };
   });
 }

@@ -542,4 +542,103 @@ describe("myr-ws open — two repositories for one task (OPE-8946)", { skip: !ha
     assert.equal(second.path, first.path);
     assert.equal(second.repo, OTHER);
   });
+
+  describe("--review (OPE-13111)", () => {
+    // The fake base points at github.com after its first fetch; a review open fetches, so aim it at the local origin.
+    function base() {
+      const b = ctx.ensureBase(REPO);
+      git(b, "config", "remote.origin.url", `file://${originDir}`);
+      return b;
+    }
+    // Pushes branch <name> with file change.txt = <text> to the local origin.
+    function pushBranch(name, text) {
+      const seed = path.join(tmp, `seed-${name.replace(/\W/g, "-")}-${++n}`);
+      git(tmp, "clone", "-q", originDir, seed);
+      const exists = spawnSync(GIT, ["rev-parse", "--verify", "--quiet", `origin/${name}`], { cwd: seed }).status === 0;
+      git(seed, "checkout", "-q", "-B", name, exists ? `origin/${name}` : "origin/main");
+      fs.writeFileSync(path.join(seed, "change.txt"), text);
+      git(seed, "add", ".");
+      git(seed, "commit", "-q", "-m", `change ${text}`);
+      git(seed, "push", "-q", "origin", name);
+    }
+    // A hook of the base and a pnpm stub on PATH, each writing its own marker.
+    function markers(name) {
+      const b = base();
+      const marker = path.join(tmp, `${name}-hook-marker`);
+      const pnpmMarker = path.join(tmp, `${name}-pnpm-marker`);
+      fs.mkdirSync(path.join(b, "hooks"), { recursive: true });
+      fs.writeFileSync(path.join(b, "hooks", "post-checkout"), `#!/bin/sh\necho ran > "${marker}"\n`, { mode: 0o755 });
+      const bin = path.join(tmp, `${name}-bin`);
+      fs.mkdirSync(bin, { recursive: true });
+      fs.writeFileSync(path.join(bin, "pnpm"), `#!/bin/sh\necho "$@" > "${pnpmMarker}"\n`, { mode: 0o755 });
+      return { marker, pnpmMarker, env: { ...ctx.env, PATH: `${bin}:${ctx.env.PATH}` } };
+    }
+
+    it("has no working files, no pnpm call, no hooks; refs diff and git show work", async () => {
+      const t = markers("review");
+      pushBranch("bot/ABC-501", "pr\n");
+      const r = copyOf(await run(["ABC-501", REPO, "--review", "--json"], { env: t.env }));
+      assert.equal(r.branch, "bot/ABC-501");
+      assert.deepEqual(fs.readdirSync(r.path), [".git"]);
+      assert.equal(git(r.path, "rev-parse", "--abbrev-ref", "HEAD"), "bot/ABC-501");
+      assert.equal(git(r.path, "status", "--porcelain"), "", "a review copy must not look dirty (myr-ws close, recover)");
+      assert.match(git(r.path, "diff", "--stat", "origin/main...HEAD"), /change\.txt/);
+      assert.equal(git(r.path, "show", "HEAD:change.txt"), "pr");
+      assert.equal(git(r.path, "show", "HEAD:README.md"), "# widgets");
+      assert.equal(fs.existsSync(t.pnpmMarker), false);
+      assert.equal(fs.existsSync(t.marker), false, "post-checkout hook must not run in review mode");
+    });
+
+    it("refreshes a stale local branch from the remote", async () => {
+      base();
+      pushBranch("bot/ABC-502", "v1\n");
+      const first = copyOf(await run(["ABC-502", REPO, "--review", "--json"]));
+      fs.rmSync(first.path, { recursive: true, force: true });
+      git(ctx.ensureBase(REPO), "worktree", "prune");
+      pushBranch("bot/ABC-502", "v2\n"); // the pushed branch moves on: local branch is now behind
+      const second = copyOf(await run(["ABC-502", REPO, "--review", "--json"]));
+      assert.equal(git(second.path, "show", "HEAD:change.txt"), "v2");
+    });
+
+    it("fails with a clear message when the PR branch is not on the remote", async () => {
+      base();
+      const r = await run(["ABC-503", REPO, "--review", "--json"]);
+      assert.equal(r.exitCode, 6);
+      assert.match(JSON.parse(r.stdout).error, /--branch/);
+      assert.equal(fs.existsSync(path.join(ctx.workspaceRoot, "ABC-503")), false);
+    });
+
+    it("--branch names the PR branch of the review copy", async () => {
+      base();
+      pushBranch("feature/x", "fx\n");
+      const r = copyOf(await run(["ABC-504", REPO, "--review", "--branch", "feature/x", "--json"]));
+      assert.equal(r.branch, "feature/x");
+      assert.equal(git(r.path, "show", "HEAD:change.txt"), "fx");
+    });
+
+    it("warns when the copy is already open and --review is asked", async () => {
+      base();
+      pushBranch("bot/ABC-505", "x\n");
+      await run(["ABC-505", REPO, "--review", "--json"]);
+      const warnings = [];
+      const r = copyOf(await run(["ABC-505", REPO, "--review", "--json"], { warn: (m) => warnings.push(m) }));
+      assert.equal(r.reused, true);
+      assert.equal(warnings.length, 1);
+      assert.match(warnings[0], /already open/);
+    });
+
+    it("the plain open is unchanged: working files, hooks run, no install by myr-ws", async () => {
+      const t = markers("plain");
+      const r = copyOf(await run(["ABC-506", REPO, "--json"], { env: t.env }));
+      assert.equal(r.branch, "bot/ABC-506");
+      assert.equal(fs.existsSync(path.join(r.path, "README.md")), true);
+      assert.equal(fs.existsSync(t.marker), true, "post-checkout hook runs in the plain open");
+      assert.equal(fs.existsSync(t.pnpmMarker), false);
+    });
+
+    it("rejects --review with --scratch", async () => {
+      const r = await run(["rv", "--scratch", "--review"]);
+      assert.equal(r.exitCode, 2);
+    });
+  });
 });

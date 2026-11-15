@@ -148,6 +148,7 @@ export interface QueuedResweepOutcome {
 
 export interface RunDispatchLog {
   info?: (fields: Record<string, unknown>, message: string) => void;
+  debug?: (fields: Record<string, unknown>, message: string) => void;
   warn?: (fields: Record<string, unknown>, message: string) => void;
   error?: (fields: Record<string, unknown>, message: string) => void;
 }
@@ -200,6 +201,14 @@ export interface RunStartDispatcher {
   mode: () => Promise<RunStartDispatchMode>;
   /** Dispatch one start attempt for an agent through the configured strategy. */
   dispatchRunStart: (agentId: string, options?: RunStartDispatchOptions) => Promise<unknown[]>;
+  /**
+   * myrmidon(OPE-13117): the dispatch of an EVENT (a queued-run effect, a
+   * wakeup). An agent already at its run limit cannot start anything, and the
+   * finish of its run dispatches again, so the event is skipped without a
+   * settings read, a start attempt or a bus publish. Without `agentAtRunLimit`
+   * this is `dispatchRunStart`.
+   */
+  dispatchRunStartUnlessBusy: (agentId: string, options?: RunStartDispatchOptions) => Promise<unknown[]>;
   /** One resweep pass: queued without running -> startNextQueuedRunForAgent. */
   sweepQueuedWithoutRunning: () => Promise<QueuedResweepOutcome>;
 }
@@ -235,15 +244,42 @@ export interface RunStartDispatcherDeps {
    * that never wires the role) is `true`: the default stays the vendor path.
    */
   executesRuns?: () => boolean;
+  /**
+   * myrmidon(OPE-13117): whether the agent already runs as many runs as its
+   * limit allows. Used only by `dispatchRunStartUnlessBusy`.
+   */
+  agentAtRunLimit?: (agentId: string) => Promise<boolean>;
   log?: RunDispatchLog;
 }
 
+/** myrmidon(OPE-13117): how long the dispatcher reuses a read of the settings. */
+export const RUN_DISPATCH_SETTINGS_CACHE_MS = 5_000;
+
+// myrmidon(OPE-13117): the "no process bus" line is written once per process,
+// later occurrences go to debug (it was 10-40 lines a second on the board).
+let noBusLogged = false;
+export function resetNoBusLogForTests(): void {
+  noBusLogged = false;
+}
+
 export function createRunStartDispatcher(deps: RunStartDispatcherDeps): RunStartDispatcher {
-  const loadSettings = deps.loadSettings ?? (async () => ({
+  const readSettings = deps.loadSettings ?? (async () => ({
     runStartDispatch: "inline" as RunStartDispatchMode,
     queuedResweepSec: DEFAULT_QUEUED_RESWEEP_SEC,
     queuedRunStaleAfterSec: DEFAULT_QUEUED_RUN_STALE_AFTER_SEC,
   }));
+  // myrmidon(OPE-13117): every dispatch and every sweep read the settings from
+  // the database; a 5 s cache (per dispatcher) takes that off the event path.
+  let settingsCache: { at: number; value: RunDispatchSettings } | null = null;
+  const loadSettings = async (): Promise<RunDispatchSettings> => {
+    const now = Date.now();
+    if (settingsCache && now - settingsCache.at >= 0 && now - settingsCache.at < RUN_DISPATCH_SETTINGS_CACHE_MS) {
+      return settingsCache.value;
+    }
+    const value = await readSettings();
+    settingsCache = { at: now, value };
+    return value;
+  };
 
   const mode = async (): Promise<RunStartDispatchMode> =>
     (await loadSettings()).runStartDispatch;
@@ -300,10 +336,22 @@ export function createRunStartDispatcher(deps: RunStartDispatcherDeps): RunStart
     // would contradict the mode (an api process must not execute runs once the
     // board is split), so the attempt is published nowhere and the run stays
     // queued — the resweep below is what guarantees it starts.
-    deps.log?.info?.(
-      { agentId, runStartDispatch },
-      "run start dispatch requested a remote start but no process bus is wired in this process; the queued run waits for the resweep",
-    );
+    const message =
+      "run start dispatch requested a remote start but no process bus is wired in this process; the queued run waits for the resweep";
+    if (!noBusLogged) {
+      noBusLogged = true;
+      deps.log?.info?.({ agentId, runStartDispatch }, message);
+    } else {
+      deps.log?.debug?.({ agentId, runStartDispatch }, message);
+    }
+  };
+
+  const dispatchRunStartUnlessBusy = async (
+    agentId: string,
+    options: RunStartDispatchOptions = {},
+  ): Promise<unknown[]> => {
+    if (deps.agentAtRunLimit && (await deps.agentAtRunLimit(agentId))) return [];
+    return dispatchRunStart(agentId, options);
   };
 
   const sweepQueuedWithoutRunning = async (): Promise<QueuedResweepOutcome> => {
@@ -355,7 +403,7 @@ export function createRunStartDispatcher(deps: RunStartDispatcherDeps): RunStart
     return { agents: agents.length, started, failed };
   };
 
-  return { mode, dispatchRunStart, sweepQueuedWithoutRunning };
+  return { mode, dispatchRunStart, dispatchRunStartUnlessBusy, sweepQueuedWithoutRunning };
 }
 
 /** Env kill switch of the periodic resweep (ops safety valve, not a setting). */

@@ -48,7 +48,7 @@ describe("omp SSH runner image", () => {
   });
 
   it("smoke-checks the toolchain and the sshd configuration at build time", () => {
-    for (const check of ["omp --version", "bun --version", "pnpm --version", "gh --version", "command -v git", "command -v tar", "sshd -t -f /etc/ssh/omp-runner/sshd_config"]) {
+    for (const check of ["omp --version", "bun --version", "pnpm --version", "gh --version", "command -v git", "command -v tar", "sshd -t -f /etc/ssh/omp-runner/sshd_config", "test -x /usr/local/bin/run-reap"]) {
       assert.ok(dockerfile.includes(check), `missing smoke check: ${check}`);
     }
     assert.match(dockerfile, /usermod -p '\*' paperclip/, "a locked account refuses key logins with UsePAM off");
@@ -293,12 +293,22 @@ describe("omp SSH runner git wrapper behaviour (OPE-12722)", () => {
     assert.deepEqual(rewrite("-c", "clone=x", "status"), ["-c", "clone=x", "status"]);
   });
 
-  it("finds the URL past clone options that take a value, and keeps limits and named references", () => {
+  it("finds the URL past clone options that take a value, and strips shallow options when mirror exists", () => {
     assert.deepEqual(rewrite("clone", "-c", "core.autocrlf=false", URL), ["clone", ...withMirror("-c", "core.autocrlf=false", URL)]);
-    assert.deepEqual(rewrite("clone", "--depth", "1", URL), ["clone", ...withMirror("--depth", "1", URL)]);
-    assert.deepEqual(rewrite("clone", "--depth=1", "--no-local", URL), ["clone", ...withMirror("--depth=1", "--no-local", URL)]);
+    assert.deepEqual(rewrite("clone", "--depth", "1", URL), ["clone", ...withMirror(URL)]);
+    assert.deepEqual(rewrite("clone", "--depth=1", "--no-local", URL), ["clone", ...withMirror("--no-local", URL)]);
+    assert.deepEqual(rewrite("clone", "--shallow-since", "2026-01-01", URL), ["clone", ...withMirror(URL)]);
+    assert.deepEqual(rewrite("clone", "--shallow-exclude", "v1.0", URL), ["clone", ...withMirror(URL)]);
+    assert.deepEqual(rewrite("clone", "--shallow-submodules", URL), ["clone", ...withMirror(URL)]);
     // a caller's own --reference does not decide where objects live: the mirror is added next to it
     assert.deepEqual(rewrite("clone", "--reference", "/elsewhere/x.git", URL), ["clone", ...withMirror("--reference", "/elsewhere/x.git", URL)]);
+  });
+
+  it("keeps shallow clone options when no mirror exists", () => {
+    const missingUrl = "https://github.com/owner/missing.git";
+    assert.deepEqual(rewrite("clone", "--depth", "1", missingUrl), ["clone", "--depth", "1", missingUrl]);
+    assert.deepEqual(rewrite("clone", "--depth=1", "--no-local", missingUrl), ["clone", "--depth=1", "--no-local", missingUrl]);
+    assert.deepEqual(rewrite("clone", "--shallow-since", "2026-01-01", missingUrl), ["clone", "--shallow-since", "2026-01-01", missingUrl]);
   });
 
   it("leaves clones that decide the storage of their own objects alone", () => {
@@ -383,5 +393,87 @@ describe("omp SSH runner git wrapper behaviour (OPE-12722)", () => {
     const missing = run(["--version"], { MYRMIDON_GIT_IMAGE: path.join(tmp, "no-such-git") });
     assert.equal(missing.status, 127);
     assert.match(missing.stderr, /git: cannot run /);
+  });
+
+  const hasGit = spawnSync("git", ["--version"]).status === 0;
+
+  it("borrows objects from mirror without shallow limits, and keeps shallow clone without mirror (OPE-13113)", { skip: !hasGit }, () => {
+    const origin = path.join(tmp, "e2e-origin");
+    fs.mkdirSync(origin);
+    const gitCmd = (cwd, ...args) => {
+      const r = spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.com", ...args], {
+        cwd,
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          HOME: tmp,
+          GIT_CONFIG_NOSYSTEM: "1",
+        },
+      });
+      assert.equal(r.status, 0, `git ${args.join(" ")} failed: ${r.stderr}`);
+      return r.stdout.trim();
+    };
+
+    gitCmd(origin, "init", "-q", "-b", "main");
+    fs.writeFileSync(path.join(origin, "a.txt"), "first\n");
+    gitCmd(origin, "add", ".");
+    gitCmd(origin, "commit", "-q", "-m", "commit 1");
+    fs.writeFileSync(path.join(origin, "a.txt"), "second\n");
+    gitCmd(origin, "add", ".");
+    gitCmd(origin, "commit", "-q", "-m", "commit 2");
+
+    // Finished bare mirror for owner/repo.git
+    fs.rmSync(mirror, { recursive: true, force: true });
+    gitCmd(tmp, "clone", "-q", "--bare", origin, mirror);
+
+    const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+
+    // 1. Clone with mirror: --depth 1 is stripped, --reference-if-able is added
+    const destMirrored = path.join(tmp, "e2e-clone-mirrored");
+    const r1 = spawnSync(process.execPath, [
+      wrapperPath,
+      "-c", `url.file://${origin}.insteadOf=https://github.com/owner/repo`,
+      "clone",
+      "--depth", "1",
+      "https://github.com/owner/repo",
+      destMirrored,
+    ], {
+      cwd: tmp,
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, HOME: tmp, GIT_CONFIG_NOSYSTEM: "1", MYRMIDON_GIT_REAL: realGit, MYRMIDON_GIT_MIRROR_ROOT: root },
+    });
+    assert.equal(r1.status, 0, r1.stderr);
+    const alternates = fs.readFileSync(path.join(destMirrored, ".git", "objects", "info", "alternates"), "utf8").trim();
+    assert.equal(alternates, fs.realpathSync(path.join(mirror, "objects")));
+    assert.ok(!fs.existsSync(path.join(destMirrored, ".git", "shallow")), "clone with mirror must not be shallow");
+    assert.equal(gitCmd(destMirrored, "rev-list", "--count", "HEAD"), "2", "receives full history from mirror");
+
+    // Acceptance criteria: .git size < 50 MB
+    let dotGitSize = 0;
+    for (const entry of fs.readdirSync(path.join(destMirrored, ".git"), { withFileTypes: true, recursive: true })) {
+      if (entry.isFile()) {
+        dotGitSize += fs.statSync(path.join(entry.parentPath || path.join(destMirrored, ".git"), entry.name)).size;
+      }
+    }
+    assert.ok(dotGitSize < 50 * 1024 * 1024, `.git size is ${dotGitSize} bytes, expected < 50MB`);
+
+    // 2. Clone without mirror: clone keeps --depth 1 and creates shallow clone
+    const destNoMirror = path.join(tmp, "e2e-clone-nomirror");
+    const r2 = spawnSync(process.execPath, [
+      wrapperPath,
+      "-c", `url.file://${origin}.insteadOf=https://github.com/owner/missing`,
+      "clone",
+      "--depth", "1",
+      "https://github.com/owner/missing",
+      destNoMirror,
+    ], {
+      cwd: tmp,
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, HOME: tmp, GIT_CONFIG_NOSYSTEM: "1", MYRMIDON_GIT_REAL: realGit, MYRMIDON_GIT_MIRROR_ROOT: root },
+    });
+    assert.equal(r2.status, 0, r2.stderr);
+    assert.ok(!fs.existsSync(path.join(destNoMirror, ".git", "objects", "info", "alternates")), "clone without mirror has no alternates");
+    assert.ok(fs.existsSync(path.join(destNoMirror, ".git", "shallow")), "clone without mirror must remain shallow");
+    assert.equal(gitCmd(destNoMirror, "rev-list", "--count", "HEAD"), "1", "shallow clone has only 1 commit");
   });
 });

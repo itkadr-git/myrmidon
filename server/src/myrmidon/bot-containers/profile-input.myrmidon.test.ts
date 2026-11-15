@@ -640,6 +640,42 @@ describe("myrmidon(TOOL-DIET-ROLES) role tool diet in the profile input", () => 
   });
 });
 
+describe("myrmidon(DEV-NO-HINDSIGHT) buildHermesProfileInput — hindsightMemory", () => {
+  it("sets hindsightMemory false for developer roles, true for lead/other roles, true without role", () => {
+    for (const role of ["engineer", "reviewer", "release"]) {
+      const { input } = buildHermesProfileInput(source({ role }), settings());
+      expect(input.hindsightMemory).toBe(false);
+    }
+    for (const role of ["lead", "operator", "analyst", "infra", "qa"]) {
+      const { input } = buildHermesProfileInput(source({ role }), settings());
+      expect(input.hindsightMemory).toBe(true);
+    }
+    expect(buildHermesProfileInput(source(), settings()).input.hindsightMemory).toBe(true);
+    expect(buildHermesProfileInput(source({ role: undefined }), settings()).input.hindsightMemory).toBe(true);
+    expect(buildHermesProfileInput(source({ role: "" }), settings()).input.hindsightMemory).toBe(true);
+  });
+
+  it("respects developerRoles from settings", () => {
+    const custom = settings({ developerRoles: ["custom-caste"] });
+    expect(buildHermesProfileInput(source({ role: "custom-caste" }), custom).input.hindsightMemory).toBe(false);
+    expect(buildHermesProfileInput(source({ role: "engineer" }), custom).input.hindsightMemory).toBe(true);
+  });
+
+  it("developer bot has no memory.provider in config.yaml; other or unset role preserves memory.provider: 'hindsight'", () => {
+    const devInput = buildHermesProfileInput(source({ role: "engineer" }), settings()).input;
+    const devYaml = fileContent(compileHermesProfile(devInput), "hermes/config.yaml");
+    expect(devYaml).not.toContain('provider: "hindsight"');
+
+    const leadInput = buildHermesProfileInput(source({ role: "lead" }), settings()).input;
+    const leadYaml = fileContent(compileHermesProfile(leadInput), "hermes/config.yaml");
+    expect(leadYaml).toContain('memory:\n  provider: "hindsight"');
+
+    const noRoleInput = buildHermesProfileInput(source(), settings()).input;
+    const noRoleYaml = fileContent(compileHermesProfile(noRoleInput), "hermes/config.yaml");
+    expect(noRoleYaml).toContain('memory:\n  provider: "hindsight"');
+  });
+});
+
 function baseEnv(): Record<string, string> {
   return {
     [BOT_BOARD_URL_ENV]: "http://board.example.com:3100",

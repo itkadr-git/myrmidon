@@ -1,5 +1,15 @@
 // myrmidon(UPSTREAM-13539): resolved interaction cards project into the comment queue (wait/steer/interrupt).
 import { isBlockerResolved } from "../myrmidon/blocker-resolved.js";
+import {
+  STARTER_PACK_DOCUMENT_KEY,
+  STARTER_PACK_READY_SOURCE,
+  hasStarterPackScoutWake,
+  isStarterPackScoutWriteAllowed,
+  maybeWakeStarterPackScout,
+  readStarterPackAgentId,
+  wakeAssigneeAfterStarterPack,
+} from "../myrmidon/starter-pack.js";
+import { shouldCancelNotStartedHolderOnReassignment } from "../myrmidon/reassignment-queued-holder.js";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued-interaction-response.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
@@ -44,6 +54,7 @@ import {
   type RoutingIssue,
 } from "../myrmidon/review-routing/policy.js";
 import { readReviewRoutingSettings } from "../myrmidon/review-routing/settings.js";
+import { buildHandoffReviewPolicy, selectHandoffReviewerIds } from "../myrmidon/review-routing/handoff-stage.js";
 import { createPgReviewRoutingStore } from "../myrmidon/review-routing/store.js";
 // myrmidon(OPE-10460): gate REQUEST CHANGES on final CI status for the live PR head.
 import { createReviewHeadFailedChecksResolver, createReviewPullRequestCiResolver, readReviewPullRequestHeadSha } from "../myrmidon/review-stage-recovery/github-ci.js";
@@ -132,6 +143,12 @@ import type { ChatChannelService } from "../services/chat-channels.js";
 import type { WakeupOptions } from "../services/heartbeat.js";
 import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/github-pull-request-ci.js";
 import { createPullRequestMergeDetailsResolver } from "../services/github-pull-request-merge.js";
+import { resolveGitHubRepositoryToken } from "../services/github-external-object-provider.js";
+import { checkCommitMembership, normaliseReleasePrefix, resolveReleaseRefs, routePullRequestVerdict } from "../myrmidon/release-membership.js";
+import { verifyReleaseComposition, aggregateReleaseCandidates, signReleaseVerificationVerdict } from "../myrmidon/release-verification.js";
+import { readBuildCommit } from "../build-commit.js";
+import { readProductEnv } from "@myrmidon/shared/env-alias";
+import { readBuildVersion } from "../build-version.js";
 import {
   companies,
   activityLog,
@@ -152,6 +169,7 @@ import {
   issueRelations,
   issueRecoveryActions,
   issueThreadInteractions,
+  issueLabels,
   labels,
   issues as issueRows,
   issueWorkProducts,
@@ -662,7 +680,7 @@ type ActivityExecutionParticipant = Pick<
   "type" | "agentId" | "userId"
 >;
 type ExecutionStageWakeContext = {
-  wakeRole: "reviewer" | "approver" | "executor" | "observer";
+  wakeRole: "reviewer" | "approver" | "verifier" | "executor" | "observer";
   stageId: string | null;
   stageType: ParsedExecutionState["currentStageType"];
   currentParticipant: ParsedExecutionState["currentParticipant"];
@@ -1596,6 +1614,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "execution_reconciliation_required",
   "execution_review_participant_recovery",
   "execution_review_requested",
+  "execution_verify_requested",
   "finish_successful_run_handoff",
   "queued_run_stale_timeout",
   "goal_control",
@@ -1608,11 +1627,13 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "heartbeat.worktree_execution_cutoff",
   "heartbeat_timer",
   "idle_pickup",
+  "in_progress_no_run",
   "interaction_pending",
   "issue_assigned",
   "issue_blockers_resolved",
   "issue_checked_out",
   "issue_comment_mentioned",
+  "issue_children_completed",
   "issue_commented",
   "issue_dependencies_blocked",
   "issue_disposition_repair",
@@ -1636,15 +1657,19 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "missing_issue_comment",
   "native_safe_replacement",
   "pause_resume",
+  "plan_approval_pending",
   "process_lost_retry",
   "project.token_quota_exceeded",
   "provider_quota_recovery",
+  "release_focus",
   "resurrection_execution_reconciliation_required",
   "retry_failed_run",
   "run_guard_stop_needs_input",
   "run_liveness_continuation",
   "run_stalled",
+  "runs_without_commit_limit_reached",
   "skill_test_run_created",
+  "starter_pack_scout",
   "swarm_claim_queue",
   "task_watchdog_stopped_subtree",
   "wake_skipped_pr_settle_pending",
@@ -3217,13 +3242,19 @@ function buildExecutionStageWakeup(input: {
     const reason =
       nextState.currentStageType === "approval"
         ? "execution_approval_requested"
-        : isExecutionReviewParticipantRecovery
-          ? "execution_review_participant_recovery"
-          : "execution_review_requested";
+        : nextState.currentStageType === "verify"
+          ? "execution_verify_requested"
+          : isExecutionReviewParticipantRecovery
+            ? "execution_review_participant_recovery"
+            : "execution_review_requested";
     const executionStage = buildExecutionStageWakeContext({
       state: nextState,
       wakeRole:
-        nextState.currentStageType === "approval" ? "approver" : "reviewer",
+        nextState.currentStageType === "approval"
+          ? "approver"
+          : nextState.currentStageType === "verify"
+            ? "verifier"
+            : "reviewer",
       allowedActions: ["approve", "request_changes"],
     });
 
@@ -3807,6 +3838,7 @@ export function issueRoutes(
   db: Db,
   storage: StorageService,
   opts: {
+    issueService?: ReturnType<typeof issueService>;
     chatRunRetries?: Pick<
       ChatChannelService,
       "prepareFailedChatRunRetry" | "processFailedChatRunRetry"
@@ -3870,7 +3902,7 @@ export function issueRoutes(
   } = {},
 ) {
   const router = Router();
-  const svc = issueService(db);
+  const svc = opts.issueService ?? issueService(db);
   const runRedactions = createRunSecretRedactionRegistry(db);
   const access = accessService(db);
   const secretProposals = createSecretProposalsService(db);
@@ -5505,7 +5537,7 @@ export function issueRoutes(
     ) =>
       new Set(
         (candidatePolicy?.stages ?? []).flatMap((stage) =>
-          stage.type === "review" || stage.type === "approval"
+          stage.type === "review" || stage.type === "approval" || stage.type === "verify"
             ? stage.participants.flatMap((participant) =>
               participant.type === "agent" && participant.agentId ? [participant.agentId] : [],
             )
@@ -8909,6 +8941,211 @@ export function issueRoutes(
       });
       return;
     }
+
+    const rawParticipantAgentId = req.query.participantAgentId as string | undefined;
+    let participantAgentId: string | undefined;
+    if (rawParticipantAgentId !== undefined) {
+      if (typeof rawParticipantAgentId !== "string") {
+        logger.warn(
+          { parameter: "participantAgentId", value: rawParticipantAgentId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "participantAgentId must be a UUID" });
+        return;
+      }
+      const trimmed = rawParticipantAgentId.trim();
+      if (!isUuidLike(trimmed)) {
+        logger.warn(
+          { parameter: "participantAgentId", value: rawParticipantAgentId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "participantAgentId must be a UUID" });
+        return;
+      }
+      participantAgentId = trimmed;
+    }
+
+    const rawProjectId = req.query.projectId as string | undefined;
+    let projectId: string | undefined;
+    if (rawProjectId !== undefined) {
+      if (typeof rawProjectId !== "string") {
+        logger.warn(
+          { parameter: "projectId", value: rawProjectId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "projectId must be a UUID" });
+        return;
+      }
+      const trimmed = rawProjectId.trim();
+      if (!isUuidLike(trimmed)) {
+        logger.warn(
+          { parameter: "projectId", value: rawProjectId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "projectId must be a UUID" });
+        return;
+      }
+      projectId = trimmed;
+    }
+
+    const rawWorkspaceId = req.query.workspaceId as string | undefined;
+    let workspaceId: string | undefined;
+    if (rawWorkspaceId !== undefined) {
+      if (typeof rawWorkspaceId !== "string") {
+        logger.warn(
+          { parameter: "workspaceId", value: rawWorkspaceId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "workspaceId must be a UUID" });
+        return;
+      }
+      const trimmed = rawWorkspaceId.trim();
+      if (!isUuidLike(trimmed)) {
+        logger.warn(
+          { parameter: "workspaceId", value: rawWorkspaceId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "workspaceId must be a UUID" });
+        return;
+      }
+      workspaceId = trimmed;
+    }
+
+    const rawExecutionWorkspaceId = req.query.executionWorkspaceId as string | undefined;
+    let executionWorkspaceId: string | undefined;
+    if (rawExecutionWorkspaceId !== undefined) {
+      if (typeof rawExecutionWorkspaceId !== "string") {
+        logger.warn(
+          { parameter: "executionWorkspaceId", value: rawExecutionWorkspaceId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "executionWorkspaceId must be a UUID" });
+        return;
+      }
+      const trimmed = rawExecutionWorkspaceId.trim();
+      if (!isUuidLike(trimmed)) {
+        logger.warn(
+          { parameter: "executionWorkspaceId", value: rawExecutionWorkspaceId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "executionWorkspaceId must be a UUID" });
+        return;
+      }
+      executionWorkspaceId = trimmed;
+    }
+
+    const rawLabelId = req.query.labelId as string | undefined;
+    let labelId: string | undefined;
+    if (rawLabelId !== undefined) {
+      if (typeof rawLabelId !== "string") {
+        logger.warn(
+          { parameter: "labelId", value: rawLabelId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "labelId must be a UUID" });
+        return;
+      }
+      const trimmed = rawLabelId.trim();
+      if (!isUuidLike(trimmed)) {
+        logger.warn(
+          { parameter: "labelId", value: rawLabelId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "labelId must be a UUID" });
+        return;
+      }
+      labelId = trimmed;
+    }
+
+    const rawParentId = (req.query.parentId ?? req.query.parentIssueId) as string | undefined;
+    let parentId: string | undefined;
+    if (rawParentId !== undefined) {
+      if (typeof rawParentId !== "string") {
+        logger.warn(
+          { parameter: "parentId", value: rawParentId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "parentId must be a UUID or issue identifier" });
+        return;
+      }
+      const trimmed = rawParentId.trim();
+      if (isUuidLike(trimmed)) {
+        parentId = trimmed;
+      } else {
+        const identifier = normalizeIssueReferenceIdentifier(trimmed);
+        const parentIssue = identifier ? await svc.getByIdentifier(identifier) : null;
+        if (parentIssue && parentIssue.companyId === companyId) {
+          parentId = parentIssue.id;
+        } else {
+          logger.warn(
+            { parameter: "parentId", value: rawParentId, companyId },
+            "invalid identifier query parameter format",
+          );
+          res.status(400).json({ error: "parentId must be a UUID or issue identifier" });
+          return;
+        }
+      }
+    }
+
+    const rawDescendantOf = req.query.descendantOf as string | undefined;
+    let descendantOf: string | undefined;
+    if (rawDescendantOf !== undefined) {
+      if (typeof rawDescendantOf !== "string") {
+        logger.warn(
+          { parameter: "descendantOf", value: rawDescendantOf, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "descendantOf must be a UUID or issue identifier" });
+        return;
+      }
+      const trimmed = rawDescendantOf.trim();
+      if (isUuidLike(trimmed)) {
+        descendantOf = trimmed;
+      } else {
+        const identifier = normalizeIssueReferenceIdentifier(trimmed);
+        const ancestorIssue = identifier ? await svc.getByIdentifier(identifier) : null;
+        if (ancestorIssue && ancestorIssue.companyId === companyId) {
+          descendantOf = ancestorIssue.id;
+        } else {
+          logger.warn(
+            { parameter: "descendantOf", value: rawDescendantOf, companyId },
+            "invalid identifier query parameter format",
+          );
+          res.status(400).json({ error: "descendantOf must be a UUID or issue identifier" });
+          return;
+        }
+      }
+    }
+
+    const rawCreatedFromIssueId = req.query.createdFromIssueId as string | undefined;
+    let createdFromIssueId: string | undefined;
+    if (rawCreatedFromIssueId !== undefined) {
+      if (typeof rawCreatedFromIssueId !== "string") {
+        logger.warn(
+          { parameter: "createdFromIssueId", value: rawCreatedFromIssueId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "createdFromIssueId must be a UUID or issue identifier" });
+        return;
+      }
+      const trimmed = rawCreatedFromIssueId.trim();
+      if (isUuidLike(trimmed)) {
+        createdFromIssueId = trimmed;
+      } else {
+        const identifier = normalizeIssueReferenceIdentifier(trimmed);
+        const sourceIssue = identifier ? await svc.getByIdentifier(identifier) : null;
+        if (sourceIssue && sourceIssue.companyId === companyId) {
+          createdFromIssueId = sourceIssue.id;
+        } else {
+          logger.warn(
+            { parameter: "createdFromIssueId", value: rawCreatedFromIssueId, companyId },
+            "invalid identifier query parameter format",
+          );
+          res.status(400).json({ error: "createdFromIssueId must be a UUID or issue identifier" });
+          return;
+        }
+      }
+    }
     const assigneeUserFilterRaw = req.query.assigneeUserId as
       string | undefined;
     const touchedByUserFilterRaw = req.query.touchedByUserId as
@@ -9134,26 +9371,25 @@ export function issueRoutes(
       });
       return;
     }
+
     const offset = parsedOffset ?? pageOffset ?? 0;
 
     const listFilters: IssueFilters = {
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId,
-      participantAgentId: req.query.participantAgentId as string | undefined,
+      participantAgentId,
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
       unreadForUserId,
-      projectId: req.query.projectId as string | undefined,
-      workspaceId: req.query.workspaceId as string | undefined,
-      executionWorkspaceId: req.query.executionWorkspaceId as
-        string | undefined,
-      parentId: (req.query.parentId ?? req.query.parentIssueId) as
-        string | undefined,
-      descendantOf: req.query.descendantOf as string | undefined,
-      createdFromIssueId: req.query.createdFromIssueId as string | undefined,
-      labelId: req.query.labelId as string | undefined,
+      projectId,
+      workspaceId,
+      executionWorkspaceId,
+      parentId,
+      descendantOf,
+      createdFromIssueId,
+      labelId,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
       originId: req.query.originId as string | undefined,
@@ -9920,6 +10156,251 @@ export function issueRoutes(
     } catch (err) {
       return res.status(500).json({
         error: err instanceof Error ? err.message : "Failed to resolve CI status",
+      });
+    }
+  });
+
+  // VERIFY-ON-PROD (OPE-12994): for every pull_request work product of the
+  // issue, report whether its merge commit is reachable from the release refs
+  // (tags myr-v<prefix>* and branches rel/<prefix>*) of the issue's release
+  // label ("<major>.<minor>"). verdict "missing_from_release" marks a PR merged
+  // into the default branch that is absent from the release line — the gap the
+  // done gate does not see (it only proves delivery to main or rel/*).
+  router.get("/issues/:id/release-status", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(
+      req,
+      res,
+      getIssueById(req, id),
+      "Issue not found",
+    );
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    try {
+      const refresh = req.query.refreshPullRequests === "true";
+      const workProducts = await workProductsSvc.listForIssue(issue.id, { refreshPullRequests: refresh });
+      const labelRows = await db
+        .select({ name: labels.name })
+        .from(issueLabels)
+        .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+        .where(eq(issueLabels.issueId, issue.id));
+      const releasePrefix = labelRows
+        .map((row) => normaliseReleasePrefix(row.name))
+        .find((prefix): prefix is string => prefix !== null) ?? null;
+      const pullRequests = [] as Array<{
+        workProductId: string;
+        repo: string | null;
+        number: number | null;
+        url: string | null;
+        state: string;
+        mergeCommitSha: string | null;
+        inDefaultBranch: boolean | null;
+        verdict: "present" | "missing_from_release" | "no_release_label" | "unknown";
+        releaseRefs: string[];
+      }>;
+      for (const product of workProducts) {
+        if (product.type !== "pull_request") continue;
+        const metadata = product.metadata ?? {};
+        const repo = typeof metadata.repo === "string" ? metadata.repo : null;
+        const number = typeof metadata.number === "number" ? metadata.number : null;
+        const mergeCommitSha = typeof metadata.mergeCommitSha === "string" ? metadata.mergeCommitSha : null;
+        const baseRef = typeof metadata.baseRef === "string" ? metadata.baseRef : null;
+        const defaultBranch = typeof metadata.defaultBranch === "string" ? metadata.defaultBranch : "main";
+        const merged = product.status === "merged";
+        const inDefaultBranch = merged
+          ? (!baseRef || baseRef === defaultBranch)
+          : null;
+        if (!merged || !releasePrefix) {
+          pullRequests.push({
+            workProductId: product.id,
+            repo,
+            number,
+            url: product.url,
+            state: product.status,
+            mergeCommitSha,
+            inDefaultBranch,
+            verdict: merged && !releasePrefix ? "no_release_label" : "unknown",
+            releaseRefs: [],
+          });
+          continue;
+        }
+        const token = await resolveGitHubRepositoryToken(db, issue.companyId, repo ?? "");
+        const refs = await resolveReleaseRefs({
+          repository: repo ?? "",
+          releasePrefix,
+          token,
+        });
+        const membership = await checkCommitMembership({
+          repository: repo ?? "",
+          sha: mergeCommitSha,
+          releasePrefix,
+          refs,
+          token,
+        });
+        const verdict = routePullRequestVerdict({
+          merged,
+          releaseLabel: releasePrefix,
+          membershipVerdict: membership.verdict,
+          inDefaultBranch,
+        });
+        pullRequests.push({
+          workProductId: product.id,
+          repo,
+          number,
+          url: product.url,
+          state: product.status,
+          mergeCommitSha,
+          inDefaultBranch,
+          verdict,
+          releaseRefs: membership.releaseRefs.map((ref) => ref.ref),
+        });
+      }
+      return res.json({ issueId: issue.id, releaseLabel: releasePrefix, pullRequests });
+    } catch (err) {
+      return res.status(500).json({
+        error: err instanceof Error ? err.message : "Failed to resolve release status",
+      });
+    }
+  });
+
+  // VERIFY-ON-PROD (OPE-13014): aggregate the full release candidate set from
+  // the issue's pull_request work products, verify the composition against the
+  // deployed version, and persist the verdict as a system comment. The release
+  // must not be treated as proven while this check is missing or failed.
+  router.post("/issues/:id/release-verify", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(
+      req,
+      res,
+      getIssueById(req, id),
+      "Issue not found",
+    );
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    try {
+      const refresh = req.query.refreshPullRequests === "true";
+      const labelRows = await db
+        .select({ name: labels.name })
+        .from(issueLabels)
+        .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+        .where(eq(issueLabels.issueId, issue.id));
+      const releasePrefix = labelRows
+        .map((row) => normaliseReleasePrefix(row.name))
+        .find((prefix): prefix is string => prefix !== null) ?? null;
+
+      // The publisher binds the release to the exact commit SHA the tag
+      // dereferences to (scripts/myrmidon/release/publish-github-release.sh
+      // compares deployedVersion against that SHA), so the verified
+      // deployedVersion MUST be the build commit, not the human-readable
+      // version/describe string.  OPE-13017 review.
+      const deployedVersion = readBuildCommit();
+      const deployedVersionLabel = readBuildVersion();
+      // Without a release label we cannot name the release line to verify
+      // against; fail closed instead of guessing.
+      if (!releasePrefix) {
+        const body = [
+          `VERIFY-ON-PROD release composition check: failed`,
+          ``,
+          `- Release label: none`,
+          `- Deployed version: ${deployedVersion ?? "not set"}`,
+          `- Reason: На задаче нет релизной метки; состав выпуска не проверяем.`,
+        ].join("\n");
+        await svc.addComment(issue.id, body, {}, { authorType: "system" });
+        return res.status(409).json({ issueId: issue.id, releaseLabel: null, deployedVersion, verdict: "failed", failureReason: "release_label_missing", reason: "На задаче нет релизной метки; состав выпуска не проверяем." });
+      }
+
+      // The candidate set is the FULL set of pull_request work products across
+      // EVERY issue of this release (all issues carrying the same release
+      // label), merged or not. Review finding (PR #3093): restricting the set
+      // to the single issue's work products would let a release be confirmed
+      // on a partial list whenever sibling release issues were skipped.
+      const releaseLabelRows = await db
+        .select({ id: labels.id, name: labels.name })
+        .from(labels)
+        .where(eq(labels.companyId, issue.companyId));
+      const releaseLabelIds = releaseLabelRows
+        .filter((row) => normaliseReleasePrefix(row.name) === releasePrefix)
+        .map((row) => row.id);
+      const candidateIssueRows = releaseLabelIds.length
+        ? await db
+            .select({ issueId: issueLabels.issueId })
+            .from(issueLabels)
+            .where(inArray(issueLabels.labelId, releaseLabelIds))
+        : [];
+      const candidateIssueIds = [...new Set(candidateIssueRows.map((row) => row.issueId))];
+
+      // Include the current issue even if its label row was missed, so the
+      // route always verifies at least the issue it was called on.
+      if (!candidateIssueIds.includes(issue.id)) candidateIssueIds.push(issue.id);
+
+      const memberWorkProducts = new Map<string, Awaited<ReturnType<typeof workProductsSvc.listForIssue>>>();
+      for (const candidateIssueId of candidateIssueIds) {
+        const products = await workProductsSvc.listForIssue(candidateIssueId, { refreshPullRequests: refresh });
+        memberWorkProducts.set(candidateIssueId, products);
+      }
+      const members = aggregateReleaseCandidates(memberWorkProducts);
+
+      // Resolve the actual release refs from the repository so the deployed
+      // version can be validated against them (not just the prefix defaults).
+      // Members with incomplete metadata (no repo) are surfaced by the
+      // verification itself; here we just pick the first usable repo.
+      const firstRepo = members.find((m) => m.repository)?.repository ?? null;
+      const token = firstRepo ? await resolveGitHubRepositoryToken(db, issue.companyId, firstRepo) : null;
+      const resolvedRefs = firstRepo
+        ? await resolveReleaseRefs({ repository: firstRepo, releasePrefix, token })
+        : [];
+
+      const result = await verifyReleaseComposition({
+        releasePrefix,
+        deployedVersion,
+        members,
+        refs: resolvedRefs,
+        resolvedRefs,
+        token,
+      });
+
+      const memberLines = result.members.map(
+        (m) => `- ${m.id}: ${m.membership} (${m.releaseRefs.join(", ") || "no refs"})`,
+      );
+      const body = [
+        `VERIFY-ON-PROD release composition check: ${result.verdict}`,
+        ``,
+        `- Release label: ${releasePrefix ?? "none"}`,
+        `- Candidate issues scanned: ${candidateIssueIds.length}`,
+        `- Deployed version: ${result.deployedVersion ?? "not set"}`,
+        ...(deployedVersionLabel && deployedVersionLabel !== result.deployedVersion
+          ? [`- Deployed version label: ${deployedVersionLabel}`]
+          : []),
+        `- Reason: ${result.reason}`,
+        `- Checked at: ${result.checkedAt}`,
+        ...(memberLines.length ? [``, ...memberLines] : []),
+      ].join("\n");
+
+      await svc.addComment(issue.id, body, {}, { authorType: "system" });
+      // OPE-13017: the verdict is the publish prerequisite.  Sign it with the
+      // shared secret so the publisher can prove the file came from this
+      // board (fail closed in publish-github-release.sh on a missing or
+      // invalid signature).  No key configured → the response stays unsigned,
+      // which the publisher refuses; the verification itself still runs and
+      // its system comment is persisted above.
+      const verificationKey = readProductEnv("RELEASE_VERIFICATION_KEY");
+      const signature = verificationKey
+        ? signReleaseVerificationVerdict(
+            {
+              verdict: result.verdict,
+              deployedVersion: result.deployedVersion,
+              checkedAt: result.checkedAt,
+              issueId: issue.id,
+            },
+            verificationKey,
+          )
+        : undefined;
+      return res.json({ issueId: issue.id, releaseLabel: releasePrefix, candidateIssueIds, deployedVersion: result.deployedVersion, verdict: result.verdict, failureReason: result.failureReason, reason: result.reason, checkedAt: result.checkedAt, members: result.members, ...(signature ? { signature } : {}) });
+    } catch (err) {
+      return res.status(500).json({
+        error: err instanceof Error ? err.message : "Failed to verify release composition",
       });
     }
   });
@@ -11604,7 +12085,37 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
-      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      // myrmidon(OPE-13095): the starter-pack scout may write exactly the document
+      // `starter-pack` on a task that is not its own; any other key stays refused.
+      // The scout must also have been woken for this very task.
+      let isStarterPackScoutWrite = false;
+      if (
+        req.actor.type === "agent" &&
+        String(req.params.key ?? "").trim().toLowerCase() === STARTER_PACK_DOCUMENT_KEY
+      ) {
+        const scoutAgentId = await readStarterPackAgentId(db);
+        isStarterPackScoutWrite = isStarterPackScoutWriteAllowed(
+          String(req.params.key ?? ""),
+          req.actor.agentId,
+          scoutAgentId,
+          scoutAgentId !== null && req.actor.agentId === scoutAgentId
+            ? await hasStarterPackScoutWake(db, {
+                companyId: issue.companyId,
+                issueId: issue.id,
+                scoutAgentId,
+              })
+            : false,
+        );
+      }
+      if (
+        !(await assertAgentIssueMutationAllowed(
+          req,
+          res,
+          issue,
+          isStarterPackScoutWrite ? { allowVisibleIssueWrite: true } : {},
+        ))
+      )
+        return;
       if (
         !(await assertDeliverableMutationAllowedByRunContext(req, res, issue))
       )
@@ -11757,6 +12268,27 @@ export function issueRoutes(
         actor,
         documentChanged: true,
       });
+
+      // myrmidon(OPE-13095): the scout's document is ready — wake the assignee
+      // once (the end of the scout's run is the fallback, same idempotency key).
+      if (isStarterPackScoutWrite && doc.key === STARTER_PACK_DOCUMENT_KEY) {
+        try {
+          await wakeAssigneeAfterStarterPack(db, issue, (idempotencyKey) =>
+            queueIssueAssignmentWakeup({
+              heartbeat,
+              issue,
+              reason: "issue_assigned",
+              mutation: "starter_pack",
+              contextSource: STARTER_PACK_READY_SOURCE,
+              requestedByActorType: "system",
+              requestedByActorId: null,
+              idempotencyKey,
+            }),
+          );
+        } catch (err) {
+          logger.warn({ err, issueId: issue.id }, "failed to wake assignee after starter pack");
+        }
+      }
 
       res.status(result.created ? 201 : 200).json(doc);
     },
@@ -13168,7 +13700,7 @@ export function issueRoutes(
           createParent = await svc.getById(effectiveParentId);
         }
         if (!createParent || createParent.companyId !== companyId) {
-          res.status(404).json({ error: "Parent issue not found" });
+          res.status(422).json({ error: "parent issue not found" });
           return;
         }
         if (
@@ -13186,6 +13718,33 @@ export function issueRoutes(
         typeof rawCreateBody.projectId === "string" && rawCreateBody.projectId.length > 0
           ? rawCreateBody.projectId
           : (inheritedProjectId ?? null);
+      if (effectiveProjectId) {
+        const project = await projectsSvc.getById(effectiveProjectId);
+        if (!project || project.companyId !== companyId) {
+          res.status(422).json({ error: "project not found" });
+          return;
+        }
+      }
+      if (rawCreateBody.goalId) {
+        const goal = await goalsSvc.getById(rawCreateBody.goalId);
+        if (!goal || goal.companyId !== companyId) {
+          res.status(422).json({ error: "goal not found" });
+          return;
+        }
+      }
+      let createLabelNames: string[] = [];
+      if (Array.isArray(rawCreateBody.labelIds) && rawCreateBody.labelIds.length > 0) {
+        const uniqueLabelIds = [...new Set(rawCreateBody.labelIds as string[])];
+        const existingLabels = await db
+          .select({ id: labels.id, name: labels.name })
+          .from(labels)
+          .where(and(eq(labels.companyId, companyId), inArray(labels.id, uniqueLabelIds)));
+        if (existingLabels.length !== uniqueLabelIds.length) {
+          res.status(422).json({ error: "label not found" });
+          return;
+        }
+        createLabelNames = existingLabels.map((r) => r.name);
+      }
       if (
         !watchdogProductBugFollowUp &&
         !(await assertTaskWatchdogCreateIssueAllowed(
@@ -13196,12 +13755,21 @@ export function issueRoutes(
         ))
       )
         return;
-      const normalizedAssigneeAgentId =
-        await normalizeIssueAssigneeAgentReference(
-          companyId,
-          rawCreateBody.assigneeAgentId as string | null | undefined,
-          { actorType: req.actor.type },
-        );
+      let normalizedAssigneeAgentId: string | null | undefined;
+      try {
+        normalizedAssigneeAgentId =
+          await normalizeIssueAssigneeAgentReference(
+            companyId,
+            rawCreateBody.assigneeAgentId as string | null | undefined,
+            { actorType: req.actor.type },
+          );
+      } catch (err: any) {
+        if (err?.status === 404 && err?.message === "Agent not found") {
+          res.status(422).json({ error: "agent not found" });
+          return;
+        }
+        throw err;
+      }
       const initialStatus = typeof rawCreateBody.status === "string" ? rawCreateBody.status : "todo";
       await assertEngineerForCodeIssue({
         companyId,
@@ -13217,8 +13785,6 @@ export function issueRoutes(
             ? rawCreateBody.executionWorkspacePreference
             : null,
       });
-      // TASK-CARD-READINESS-3: when creating a task born in todo for an
-      // engineer, assert readiness at the route boundary before insertion.
       // Only explicit engineer signals on the create body itself gate the
       // create (casteKey: "engineer" pinned by the caller or a
       // needs-engineer label): the project default and the workspace
@@ -13228,14 +13794,6 @@ export function issueRoutes(
       // assertEngineerForCodeIssue and the swarm queue; this gate only needs
       // the card-completeness subset.
       if (initialStatus === "todo") {
-        let createLabelNames: string[] = [];
-        if (Array.isArray(rawCreateBody.labelIds) && rawCreateBody.labelIds.length > 0) {
-          createLabelNames = await db
-            .select({ name: labels.name })
-            .from(labels)
-            .where(and(eq(labels.companyId, companyId), inArray(labels.id, rawCreateBody.labelIds as string[])))
-            .then((rows) => rows.map((r) => r.name));
-        }
         const createCasteKey =
           typeof rawCreateBody.casteKey === "string" && rawCreateBody.casteKey.trim().length > 0
             ? rawCreateBody.casteKey
@@ -13478,6 +14036,7 @@ export function issueRoutes(
         details: {
           title: issue.title,
           identifier: issue.identifier,
+          assigneeAgentId: issue.assigneeAgentId,
           ...(watchdogProductBugFollowUp
             ? {
                 watchdogDiscovery: {
@@ -13617,15 +14176,21 @@ export function issueRoutes(
       // (deterministic, no LLM) and the user's first comment wakes the assignee
       // through the normal comment path. Every other create path keeps its wake.
       if (!isOnboardingFirstTask) {
-        void queueIssueAssignmentWakeup({
-          heartbeat,
-          issue,
-          reason: "issue_assigned",
-          mutation: "create",
-          contextSource: "issue.create",
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-        });
+        // myrmidon(OPE-13095): with `general.starterPackAgentId` set, a new engineer
+        // task wakes the scout first; the assignee is woken after the scout's
+        // document or the end of the scout's run. Only this first wake is held back.
+        const scoutPlaced = await maybeWakeStarterPackScout(db, heartbeat.wakeup, issue);
+        if (!scoutPlaced) {
+          void queueIssueAssignmentWakeup({
+            heartbeat,
+            issue,
+            reason: "issue_assigned",
+            mutation: "create",
+            contextSource: "issue.create",
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+          });
+        }
       }
       await queueTaskWatchdogEvaluation(issue, actor.runId);
 
@@ -14545,7 +15110,9 @@ export function issueRoutes(
       const stageReturnAssignee = stageState?.returnAssignee as Record<string, unknown> | null | undefined;
       const stageHandsBack =
         stageState?.status === "pending" &&
-        (stageState?.currentStageType === "review" || stageState?.currentStageType === "approval") &&
+        (stageState?.currentStageType === "review" ||
+          stageState?.currentStageType === "approval" ||
+          stageState?.currentStageType === "verify") &&
         normalizedAssigneeAgentId === undefined &&
         targetStatus === "in_progress" &&
         stageParticipant?.type === "agent" &&
@@ -14957,6 +15524,91 @@ export function issueRoutes(
           actor.actorType,
         );
       }
+      // myrmidon(OPE-13099): an agent hands the task to review but it has no review
+      // path (assertInReviewReviewPath would answer 422 missing: review_path).
+      // Instead the board adds a review stage with the reviewers of the
+      // executor's group and names the least loaded one for the transition below.
+      let handoffPreferredReviewer: { type: "agent"; agentId: string; userId: null } | null = null;
+      if (
+        actor.actorType === "agent" &&
+        updateFields.status === "in_review" &&
+        existing.status !== "in_review" &&
+        requestedReviewInteractionId === undefined &&
+        reviewRequest === undefined &&
+        existing.reviewPolicy !== "human_only" &&
+        updateFields.reviewPolicy !== "human_only" &&
+        !isConversation(existing)
+      ) {
+        const currentPolicy =
+          updateFields.executionPolicy !== undefined
+            ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
+            : safeNormalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
+        const hasReviewStage = (currentPolicy?.stages ?? []).some((stage) => stage.type === "review");
+        const reviewRoutingSettings = hasReviewStage ? null : await readReviewRoutingSettings(instanceSettings);
+        if (reviewRoutingSettings?.enabled) {
+          let missingReviewPath = false;
+          try {
+            await assertInReviewReviewPath({
+              existing,
+              updateFields,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              actorAgentId: actor.agentId,
+              actorRunId: actor.runId,
+            });
+          } catch (err) {
+            missingReviewPath =
+              err instanceof HttpError &&
+              err.status === 422 &&
+              (err.details as { missing?: unknown } | undefined)?.missing === "review_path";
+            if (!missingReviewPath) throw err;
+          }
+          if (missingReviewPath) {
+            const routingStore = createPgReviewRoutingStore(db);
+            const executorAgentId = existing.assigneeAgentId ?? actor.agentId ?? null;
+            const executorRow = executorAgentId
+              ? await routingStore.getAgent(existing.companyId, executorAgentId)
+              : null;
+            const actorRow =
+              actor.agentId && actor.agentId !== executorAgentId
+                ? await routingStore.getAgent(existing.companyId, actor.agentId)
+                : executorRow;
+            const isEngineer =
+              executorRow?.role === "engineer" && (actorRow?.role === "engineer" || !actor.agentId);
+            if (isEngineer) {
+              const reviewerRows = await routingStore.listReviewerAgents(
+                existing.companyId,
+                reviewRoutingSettings.reviewerRoles,
+              );
+              const selectedReviewerIds = selectHandoffReviewerIds({
+                reviewers: reviewerRows,
+                groupKey: resolveAgentGroupKey(executorRow ?? undefined),
+                excludedAgentIds: [actor.agentId, existing.assigneeAgentId, existing.createdByAgentId].filter(
+                  (id): id is string => typeof id === "string" && id.length > 0,
+                ),
+              });
+              // Least loaded first (ties by id): the explicit pick does not depend
+              // on the transition's own load lookup.
+              const handoffLoads =
+                selectedReviewerIds.length > 1
+                  ? await routingStore.loadByAgent(existing.companyId)
+                  : new Map<string, number>();
+              const reviewerIds = [...selectedReviewerIds].sort(
+                (left, right) =>
+                  (handoffLoads.get(left) ?? 0) - (handoffLoads.get(right) ?? 0) || left.localeCompare(right),
+              );
+              const handoffPolicy = buildHandoffReviewPolicy(
+                currentPolicy as unknown as Record<string, unknown> | null,
+                reviewerIds,
+              );
+              if (handoffPolicy) {
+                updateFields.executionPolicy = normalizeIssueExecutionPolicy(handoffPolicy);
+                handoffPreferredReviewer = { type: "agent", agentId: reviewerIds[0]!, userId: null };
+              }
+            }
+          }
+        }
+      }
       const previousExecutionPolicy = safeNormalizeIssueExecutionPolicy(
         existing.executionPolicy ?? null,
       );
@@ -15064,6 +15716,7 @@ export function issueRoutes(
         monitorExplicitlyUpdated:
           req.body.executionPolicy !== undefined && monitorChanged,
         candidateLoads,
+        restartPreferredParticipant: handoffPreferredReviewer,
       });
       // myrmidon(MON-RESTORE): capture and strip transient notice before persistence.
       const monitorClearNotice = transition.patch.monitorClearNotice as
@@ -16008,6 +16661,42 @@ export function issueRoutes(
           // Nothing was live to stop; the transaction fence still re-checks
           // for runs that start between this point and the commit.
           handoffStopConfirmed = true;
+        }
+
+        // myrmidon(OPE-13097): a queued / scheduled_retry run of the previous
+        // assignee that has not started still owns the execution lock and would
+        // park the new assignee's wake in `deferred_issue_execution`. Release it
+        // here, before the new wake is queued. Review-stage participants are
+        // kept (OPE-10582); the cancel is a no-op if the run already started.
+        if (existing.executionRunId && existing.executionRunId !== interruptedRunId) {
+          const notStartedHolder = await heartbeat.getRun(existing.executionRunId);
+          if (shouldCancelNotStartedHolderOnReassignment(existing, notStartedHolder)) {
+            // Deferred wakes of the previous assignee go first, so the promotion
+            // inside cancelRun cannot re-take the lock for them.
+            if (svc.cancelDeferredExecutionsForAgentOnReassignment) {
+              await svc.cancelDeferredExecutionsForAgentOnReassignment(
+                existing.assigneeAgentId,
+                existing.id,
+                existing.companyId,
+                db
+              );
+            }
+            const released = await heartbeat.cancelRun(
+              notStartedHolder!.id,
+              "Execution lock released after issue reassigned to a different agent",
+              {
+                errorCode: "lock_released_on_reassignment",
+                eventMessage: "not-started run cancelled on issue reassignment",
+                eventPayload: { issueId: existing.id },
+              },
+            );
+            if (released && released.status !== "cancelled") {
+              logger.warn(
+                { issueId: existing.id, runId: released.id, status: released.status },
+                "reassignment could not release the previous assignee's not-started run",
+              );
+            }
+          }
         }
       }
 
@@ -17917,6 +18606,54 @@ export function issueRoutes(
           ) === "quota_reached"
         ) {
           deferExecutionReviewWakeForCi = true;
+          // myrmidon(OPE-12886): re-arm the monitor as scheduled with a
+          // bounded next check (mirroring the transactional site above) so a
+          // deferred review wake never remains stuck with status="triggered"
+          // and no nextCheckAt.
+          const previousPolicy = normalizeIssueExecutionPolicy(
+            (issue.executionPolicy ?? existing.executionPolicy) as any,
+          );
+          const nextCheckAt = new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS);
+          const monitor = {
+            nextCheckAt: nextCheckAt.toISOString(),
+            notes: `Review admission waits for the next tick's reviewer-wake quota (${REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK} per tick); the reviewer is woken without loss once a slot frees.`,
+            scheduledBy: "assignee" as const,
+            kind: "external_service" as const,
+            serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+            externalRef: issue.id,
+            timeoutAt: null,
+            maxAttempts: null,
+            recoveryPolicy: "wake_owner" as const,
+          };
+          const nextPolicy = {
+            ...(previousPolicy ?? { mode: "normal", commentRequired: true, stages: [] }),
+            monitor,
+          } as any;
+          const quotaMonitorPatch = applyIssueMonitorPolicyTransition({
+            issue,
+            policy: nextPolicy,
+            previousPolicy,
+            requestedStatus: issue.status,
+            requestedAssigneePatch: {},
+            actor: {
+              agentId: actor.agentId ?? null,
+              userId: actor.actorType === "user" ? actor.actorId : null,
+            },
+            monitorExplicitlyUpdated: true,
+          });
+          const persistedQuotaMonitor = await svc.update(id, {
+            executionPolicy: nextPolicy,
+            monitorNextCheckAt: nextCheckAt,
+            monitorScheduledBy: monitor.scheduledBy,
+            monitorAttemptCount: 0,
+            monitorWakeRequestedAt: null,
+            monitorLastTriggeredAt: null,
+            ...quotaMonitorPatch.patch,
+          });
+          if (persistedQuotaMonitor) {
+            Object.assign(issue, persistedQuotaMonitor);
+            Object.assign(issueResponse, persistedQuotaMonitor);
+          }
           await logActivity(db, {
             companyId: issue.companyId,
             actorType: "system",
@@ -17930,6 +18667,7 @@ export function issueRoutes(
               idempotencyKey: `review-admission-quota-deferred:${issue.id}:${(reviewWakesQuotaTickStarted() ?? new Date(0)).toISOString()}`,
               quota: REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK,
               reviewerAgentId: executionStageWakeup?.agentId ?? null,
+              nextCheckAt: nextCheckAt.toISOString(),
             },
           });
         }
@@ -21168,6 +21906,28 @@ export function issueRoutes(
       );
       if (!commentAccessDecision) return;
       if (!(await assertBoardCommentNotPaused(req, res, issue))) return;
+
+      if (
+        req.actor.type === "agent" &&
+        req.actor.agentId &&
+        issue.status === "in_review"
+      ) {
+        const executionState = parseIssueExecutionState(issue.executionState);
+        if (
+          executionState?.status === "pending" &&
+          executionState.currentParticipant?.type === "agent" &&
+          executionState.currentParticipant.agentId === req.actor.agentId
+        ) {
+          const firstLine = (req.body.body ?? "").split(/\r?\n/)[0] ?? "";
+          if (/^(APPROVE|REQUEST CHANGES)\b/.test(firstLine)) {
+            res.status(422).json({
+              error: "Verdict must be a status change",
+              hint: "PATCH /api/issues/<id> with status (APPROVE → done, REQUEST CHANGES → in_progress) and this text as comment in the same request",
+            });
+            return;
+          }
+        }
+      }
       const commentAuthorizationReason = issueWriteAuthorizationReason(
         req,
         commentAccessDecision,
