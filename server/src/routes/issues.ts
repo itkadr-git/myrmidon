@@ -1641,6 +1641,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "process_lost_retry",
   "project.token_quota_exceeded",
   "provider_quota_recovery",
+  "release_focus",
   "resurrection_execution_reconciliation_required",
   "retry_failed_run",
   "run_guard_stop_needs_input",

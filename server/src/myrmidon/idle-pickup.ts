@@ -2,6 +2,9 @@ import { and, asc, eq, gte, inArray, isNotNull, isNull, or, sql, type SQL } from
 import { blockerOpenSql } from "./blocker-resolved.js";
 import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issueExecutionDecisions, issues, issueWorkProducts, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
+import { issueLabels, labels } from "@myrmidon/db";
+import { currentRunPrioritySettings } from "./run-priority/state.js";
+import { runMatchesCurrentRelease } from "./run-priority/scoring.js";
 import {
   readReviewAdmissionDecision,
   readReviewCommentWakeGateEnabled,
@@ -1223,7 +1226,26 @@ export async function findTopReadyIssueForAgent(
   const candidates = await idlePickupCandidateRows(db, agent.companyId, agent.id);
   if (candidates.length === 0) return null;
   const liveIssueIds = await loadAgentLiveIssueIds(db, agent);
-  for (const candidate of orderIdlePickupCandidates(candidates)) {
+  let ordered = orderIdlePickupCandidates(candidates);
+  const { currentRelease } = currentRunPrioritySettings();
+  if (currentRelease) {
+    const releaseRows = await db
+      .select({ issueId: issues.id, label: labels.name })
+      .from(issues)
+      .innerJoin(issueLabels, eq(issueLabels.issueId, issues.id))
+      .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+      .where(and(
+        eq(issues.companyId, agent.companyId),
+        eq(issues.assigneeAgentId, agent.id),
+        inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+      ));
+    const releaseIds = new Set(releaseRows
+      .filter((row) => runMatchesCurrentRelease(currentRelease, [row.label]))
+      .map((row) => row.issueId));
+    // An unavailable release task is not permission to run a later release.
+    if (releaseIds.size > 0) ordered = ordered.filter((candidate) => releaseIds.has(candidate.id));
+  }
+  for (const candidate of ordered) {
     if (liveIssueIds.has(candidate.id)) continue;
     if (await hasCoveringWake(db, agent, candidate.id)) continue;
     const prProduct = await db

@@ -26,6 +26,14 @@ has not triggered within the overdue threshold, the Attention feed raises an
 and wake history, then resume or reschedule the task; the item clears when the
 monitor is no longer overdue.
 
+## Release focus and wake diagnostics
+
+The effective instance `runPriority.currentRelease` comes from stored run-priority settings, falling back to `MYRMIDON_CURRENT_RELEASE` (unset means no focus). Labels are compared case-insensitively after trimming: exact matches work, as does containment in either direction when both strings have at least three characters. The wake gate uses labels, not workspace branches.
+
+For an agent with an assigned matching issue in `todo`, `in_progress`, `in_review`, or `blocked`, an automatic issue-bound wake for a nonmatching task is not queued. Its wake receipt is `skipped` with reason `release_focus`; its payload records `releaseFocus.currentRelease` and `open_current_release_issue`. Inspect the affected task's wake diagnostics and the agent's assigned open issues and labels to identify the holding task. A blocked current-release task still holds focus; resolve its blocker or close it as appropriate. If there is no matching open assignment, the wake passes this gate, as does a matching issue; other admission checks remain in force.
+
+An authenticated manual user wake bypasses this particular gate. Automatic task binding via `findTopReadyIssueForAgent` restricts candidates to the current release before ordinary readiness and ranking, and can return no task when none is ready. Existing queued runs are not cancelled retroactively. This behavior does not change swarm matching or the separate `idlePickupForAgent` selection algorithm; issue-bound wakes they generate still encounter wake admission. See [settings](../myrmidon/SETTINGS.md#release-focus-for-wake-admission).
+
 ## Role queues
 
 With the role-queue pilot, a free agent claims the top task of its role's
