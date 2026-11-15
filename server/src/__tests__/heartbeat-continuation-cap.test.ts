@@ -548,11 +548,11 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
       expect(issue?.blockerMetadata).toMatchObject({ blockReason: "human_decision" });
     });
 
-    it("caps automatic wakes when task runs without commit limit is reached (OPE-13080)", async () => {
+    it("caps automatic wakes for a lead after four runs without a commit", async () => {
       const companyId = randomUUID();
       await db.insert(companies).values({ id: companyId, name: "Cap Run No Commit Co", defaultResponsibleUserId: "responsible-user" });
 
-      const leadAgentId = await seedAgent(companyId, "team-lead");
+      const leadAgentId = await seedAgent(companyId, "team-lead", "lead");
       const agentId = await seedAgent(companyId, "engineer");
       const projectId = randomUUID();
       await db.insert(projects).values({
