@@ -75,6 +75,17 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(report['postgres']['data']['archive_failures'], 3)
         self.assertEqual(report['postgres']['data']['ssl_configured'], 'on')
 
+    def test_query_uses_read_only_transaction_and_scrubbed_environment(self):
+        response = subprocess.CompletedProcess([], 0, stdout='{}', stderr='')
+        with patch.object(collector.subprocess, 'run', return_value=response) as run:
+            collector.query_postgres('/socket', 'db', 'operator')
+        args, kwargs = run.call_args
+        self.assertEqual(kwargs['env']['PGOPTIONS'], '-c default_transaction_read_only=on')
+        self.assertNotIn('PGPASSWORD', kwargs['env'])
+        self.assertIn('-w', args[0])
+        self.assertIn('-X', args[0])
+        self.assertEqual(kwargs['env']['PGPASSFILE'], '/dev/null')
+
     def test_remote_socket_is_rejected(self):
         result = subprocess.run([sys.executable, str(Path(collector.__file__)), '--socket', 'example.com', '--database', 'db', '--user', 'operator'], capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)

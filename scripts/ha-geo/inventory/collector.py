@@ -56,7 +56,8 @@ def capability(name, label):
 def query_postgres(socket, database, user):
     # A clean environment prevents libpq from consuming credentials or connection overrides.
     env = {'PATH': '/usr/bin:/bin', 'HOME': '/nonexistent', 'PGPASSFILE': '/dev/null',
-           'PGCONNECT_TIMEOUT': '5', 'PGSSLMODE': 'disable'}
+           'PGCONNECT_TIMEOUT': '5', 'PGSSLMODE': 'disable',
+           'PGOPTIONS': '-c default_transaction_read_only=on'}
     command = ['psql', '-X', '-w', '-q', '-t', '-A', '-v', 'ON_ERROR_STOP=1',
                '-h', socket, '-d', database, '-U', user, '-c', SQL]
     result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10, check=True)
