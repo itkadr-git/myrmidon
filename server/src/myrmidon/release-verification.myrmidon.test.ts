@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   aggregateReleaseCandidates,
+  validatePersistedReleaseEvidence,
+  signPersistedReleaseEvidence,
   buildReleaseCandidateMembers,
   composeReleaseVerdict,
   signReleaseVerificationVerdict,
@@ -56,6 +58,34 @@ function member(id: string, sha: string | null, merged = true): ReleaseCandidate
 }
 
 const NOW = () => new Date("2026-11-13T12:00:00.000Z");
+
+describe("persisted release evidence", () => {
+  const key = "test-key";
+  const context = {
+    companyId: "company-1",
+    issueId: "issue-1",
+    releasePrefix: "1.6",
+    deployedVersion: SHA_A,
+    candidateDigest: "candidate-set-a",
+  };
+  const payload = { ...context, verdict: "confirmed", checkedAt: "2026-11-13T12:00:00.000Z" };
+  const evidence = signPersistedReleaseEvidence(payload, key);
+
+  it("accepts a signed confirmed verdict for the current deployment and candidates", () => {
+    expect(validatePersistedReleaseEvidence(evidence, context, key)).toBe(true);
+  });
+
+  it("rejects tampering, another scope, stale builds, changed candidates and failed verdicts", () => {
+    expect(validatePersistedReleaseEvidence({ ...evidence, verdict: "failed" }, context, key)).toBe(false);
+    expect(validatePersistedReleaseEvidence(evidence, { ...context, issueId: "other" }, key)).toBe(false);
+    expect(validatePersistedReleaseEvidence(evidence, { ...context, companyId: "other" }, key)).toBe(false);
+    expect(validatePersistedReleaseEvidence(evidence, { ...context, releasePrefix: "1.7" }, key)).toBe(false);
+    expect(validatePersistedReleaseEvidence(evidence, { ...context, deployedVersion: SHA_B }, key)).toBe(false);
+    expect(validatePersistedReleaseEvidence(evidence, { ...context, candidateDigest: "changed" }, key)).toBe(false);
+    expect(validatePersistedReleaseEvidence(signPersistedReleaseEvidence({ ...payload, verdict: "failed" }, key), context, key)).toBe(false);
+    expect(validatePersistedReleaseEvidence(evidence, context, "wrong-key")).toBe(false);
+  });
+});
 
 describe("composeReleaseVerdict", () => {
   it("treats an empty candidate set as a failure, never a success", () => {
