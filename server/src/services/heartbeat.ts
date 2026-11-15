@@ -1062,8 +1062,9 @@ import {
   readWakeBatchWindowMs,
   splitBatchedWakeRuns,
 } from "../myrmidon/wake-batch.js";
-const RELEASE_FOCUS_CONTEXT_KEY = "releaseFocusDeferral";
-const RELEASE_FOCUS_RECHECK_MS = 2 * 60_000;
+const RELEASE_FOCUS_CONTEXT_KEY = RELEASE_FOCUS_DEFERRAL_CONTEXT_KEY;
+// Recheck ladder of a deferred run, like the model channel pause: 2, 5, 10, then 30 minutes.
+const RELEASE_FOCUS_RECHECK_LADDER_MS = [2, 5, 10, 30].map((minutes) => minutes * 60_000);
 
 // myrmidon(OPE-12929): the optional not-before hold on deferred agent runs.
 import {
@@ -1079,6 +1080,7 @@ import { getIdleStopService } from "../myrmidon/idle-stop-startup.js";
 // weight with aging; the settings live-refresh per pass (runtime-limits pattern).
 import { currentRunPrioritySettings } from "../myrmidon/run-priority/state.js";
 import { runViolatesReleaseFocus } from "../myrmidon/release-focus.js";
+import { RELEASE_FOCUS_DEFERRAL_CONTEXT_KEY } from "../modules/run-dispatch/domain/wake-context.js";
 // myrmidon(1.6.5 RUN-PRIORITY-PICK): the per-agent pass starts the agent's most
 // important ready task before a less important standing run; a starvation lift
 // no longer crosses the next issue-priority step.
@@ -19936,9 +19938,14 @@ export function heartbeatService(
       : null;
     if (parseObject(wake?.payload).manualUserWake === true) return false;
     const now = new Date();
-    const dueAt = new Date(now.getTime() + RELEASE_FOCUS_RECHECK_MS);
     const previous = parseObject(context[RELEASE_FOCUS_CONTEXT_KEY]);
     const previousCount = Number(previous.count ?? 0);
+    const isFirstDeferral = !previous.firstDeferredAt;
+    const ladderStep = Math.min(
+      Math.max(Number.isFinite(previousCount) ? previousCount : 0, 0),
+      RELEASE_FOCUS_RECHECK_LADDER_MS.length - 1,
+    );
+    const dueAt = new Date(now.getTime() + RELEASE_FOCUS_RECHECK_LADDER_MS[ladderStep]!);
     const deferred = await db
       .update(heartbeatRuns)
       .set({
@@ -19966,13 +19973,15 @@ export function heartbeatService(
       .returning()
       .then((rows) => rows[0] ?? null);
     if (!deferred) return true;
+    // Everything below runs once per run, not once per recheck: the repeated
+    // re-park only moves the due time.
+    if (!isFirstDeferral) return true;
     publishLiveEvent({
       companyId: deferred.companyId,
       type: "heartbeat.run.status",
       payload: buildHeartbeatRunStatusLiveEventPayload(deferred),
     });
-    // One event per run, not one per recheck.
-    if (!previous.firstDeferredAt) {
+    {
       await appendRunEvent(deferred, {
         eventType: "lifecycle",
         stream: "system",

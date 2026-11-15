@@ -102,6 +102,8 @@ export type ScheduledRetryFacts = {
   issueHiddenAt?: Date | null;
 
   isNonAssigneeWorkspaceBusyRetry: boolean;
+  /** myrmidon(OPE-13231): the run is parked by strict release focus; ownership facts stay as they were. */
+  isReleaseFocusDeferral?: boolean;
   reviewParticipant: ReviewParticipantFacts;
   activePauseHold: PauseHoldFacts | null;
   dependenciesBlocked: DependencyBlockFacts | null;
@@ -208,6 +210,7 @@ type OwnershipFacts = {
   runAgentId: string;
   issueAssigneeAgentId: string | null;
   isNonAssigneeWorkspaceBusyRetry: boolean;
+  isReleaseFocusDeferral?: boolean;
   isInteractionWake?: boolean;
   // myrmidon(P2): pending interaction addressee wake bypass
   isPendingInteractionAddresseeWake?: boolean;
@@ -232,6 +235,7 @@ type OwnershipOutcome = "current_owner" | "reassigned";
 function decideIssueOwnership(facts: OwnershipFacts): OwnershipOutcome {
   if (facts.issueAssigneeAgentId === facts.runAgentId) return "current_owner";
   if (facts.isNonAssigneeWorkspaceBusyRetry) return "current_owner";
+  if (facts.isReleaseFocusDeferral) return "current_owner";
   if (facts.isInteractionWake) return "current_owner";
   // myrmidon(P2): the addressee of a pending interaction is often not the assignee
   if (facts.isPendingInteractionAddresseeWake) return "current_owner";
@@ -395,6 +399,7 @@ export function decideScheduledRetryGate(
     runAgentId: facts.runAgentId,
     issueAssigneeAgentId: facts.issueAssigneeAgentId,
     isNonAssigneeWorkspaceBusyRetry: facts.isNonAssigneeWorkspaceBusyRetry,
+    isReleaseFocusDeferral: facts.isReleaseFocusDeferral,
     isCurrentReviewParticipant:
       facts.reviewParticipant.isInReview &&
       facts.reviewParticipant.hasParticipant &&

@@ -654,6 +654,92 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
     expect(["running", "succeeded"]).toContain((await runRow(run.id))?.status);
   });
 
+  async function dueCycle(runId: string) {
+    await db.update(heartbeatRuns).set({ scheduledRetryAt: new Date(Date.now() - 1000) }).where(eq(heartbeatRuns.id, runId));
+    await heartbeat.promoteDueScheduledRetries();
+    await sweep();
+  }
+
+  async function runEventCount(runId: string) {
+    return (await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId))).length;
+  }
+
+  it("strict focus: repeated rechecks add no events, keep the retry attempt, free the lock and wake nobody", async () => {
+    const { agentId, otherIssueId } = await seedFocusScenario(true);
+    const run = await commentWake(agentId, otherIssueId);
+    await sweep();
+    const first = await runRow(run.id);
+    expect(first?.status).toBe("scheduled_retry");
+    const eventsAfterFirst = await runEventCount(run.id);
+    const wakesAfterFirst = (await db.select().from(agentWakeupRequests)).length;
+    const attempt = first?.scheduledRetryAttempt;
+    const dueAfterFirst = first!.scheduledRetryAt!.getTime() - Date.now();
+    for (let i = 0; i < 4; i += 1) await dueCycle(run.id);
+    const later = await runRow(run.id);
+    expect(later?.status).toBe("scheduled_retry");
+    expect(later?.scheduledRetryAttempt).toBe(attempt);
+    expect(await runEventCount(run.id)).toBe(eventsAfterFirst);
+    expect((await db.select().from(agentWakeupRequests)).length).toBe(wakesAfterFirst);
+    const issue = await db.select().from(issues).where(eq(issues.id, otherIssueId)).then((rows) => rows[0]!);
+    expect(issue.executionRunId).not.toBe(run.id);
+    // The recheck interval grows: 2 min first, 30 min after four rechecks.
+    expect(dueAfterFirst).toBeLessThanOrEqual(2 * MINUTE_MS);
+    expect(later!.scheduledRetryAt!.getTime() - Date.now()).toBeGreaterThan(20 * MINUTE_MS);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("strict focus: a deferred run of a non-assignee (comment or mention) survives rechecks and starts after focus is lifted", async () => {
+    const { companyId, otherIssueId } = await seedFocusScenario(true);
+    const mentioned = randomUUID();
+    await db.insert(agents).values({
+      id: mentioned, companyId, name: "Mentioned", role: "engineer", status: "active",
+      adapterType: "codex_local", adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {},
+    });
+    const run = await commentWake(mentioned, otherIssueId);
+    await sweep();
+    await dueCycle(run.id);
+    await dueCycle(run.id);
+    expect((await runRow(run.id))?.status).toBe("scheduled_retry");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    applyRunPrioritySettings({ ...defaultSettings(), currentRelease: "1.6.9", strictReleaseFocus: false });
+    await dueCycle(run.id);
+    expect(mockAdapterExecute).toHaveBeenCalled();
+    expect(["running", "succeeded"]).toContain((await runRow(run.id))?.status);
+  });
+
+  it("strict focus: a review the agent participates in runs without delay", async () => {
+    const { agentId, otherIssueId } = await seedFocusScenario(true);
+    await db.update(issues).set({
+      status: "in_review",
+      executionState: { currentParticipant: { type: "agent", agentId } },
+    }).where(eq(issues.id, otherIssueId));
+    const run = await commentWake(agentId, otherIssueId);
+    await sweep();
+    expect(["running", "succeeded"]).toContain((await runRow(run.id))?.status);
+  });
+
+  it("strict focus: an owner-assigned task and a manual user wake run without delay", async () => {
+    const { companyId, agentId, otherIssueId } = await seedFocusScenario(true);
+    await db.insert(activityLog).values({
+      companyId, entityType: "issue", entityId: otherIssueId, actorType: "user", actorId: "owner",
+      action: "issue.updated", details: { assigneeAgentId: agentId },
+    });
+    const owned = await commentWake(agentId, otherIssueId);
+    await sweep();
+    expect(["running", "succeeded"]).toContain((await runRow(owned.id))?.status);
+
+    const second = await seedFocusScenario(true);
+    const manual = await heartbeat.wakeup(second.agentId, {
+      source: "automation", triggerDetail: "manual", reason: "issue_commented", manualUserWake: true,
+      requestedByActorType: "user", requestedByActorId: "owner",
+      payload: { issueId: second.otherIssueId },
+      contextSnapshot: { issueId: second.otherIssueId, wakeReason: "issue_commented" },
+    });
+    expect(manual).not.toBeNull();
+    await sweep();
+    expect(["running", "succeeded"]).toContain((await runRow(manual!.id))?.status);
+  });
+
   it("a weights change through the settings service reorders the next sweep without a restart", async () => {
     pinAdmission({ maxConcurrentRuns: 0 });
     applyRunPrioritySettings(defaultSettings());

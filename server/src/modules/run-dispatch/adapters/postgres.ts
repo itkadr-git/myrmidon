@@ -72,6 +72,7 @@ import {
   allowsIssueInteractionWake,
   deriveCommentId,
   isNonAssigneeWorkspaceBusyRetry,
+  isReleaseFocusDeferral,
   isResolvedInteractionContinuationWakeContext,
 } from "../domain/wake-context.js";
 import type {
@@ -344,6 +345,7 @@ export function createPostgresRunDispatchAdapter(
       retryReasonKind,
       enforceIssueExecutionLock: retryReasonKind === "max_turn_continuation" || retryReasonKind === "ai_connection_wait",
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, input.contextSnapshot),
+      isReleaseFocusDeferral: isReleaseFocusDeferral(input.contextSnapshot),
       budgetBlock: null,
       agentInvokable: true,
       agentInvokabilityDetails: {},
@@ -774,7 +776,9 @@ export function createPostgresRunDispatchAdapter(
       .returning();
     if (!row) return { applied: false };
 
-    await runEventSink.commitRunEvent(
+    // A strict-release-focus deferral re-parks itself on every recheck: no
+    // "became due" event per cycle.
+    if (!isReleaseFocusDeferral(parseObject(row.contextSnapshot))) await runEventSink.commitRunEvent(
       tx as unknown as Db,
       scheduledRetryPromotedEventCommand({
         companyId: row.companyId,
