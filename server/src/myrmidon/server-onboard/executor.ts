@@ -184,10 +184,13 @@ export class FleetOnboardExecutor {
               pubKeyToInstall = gen.publicKey.trim();
             }
 
-            await activeSsh.execute(
+            const installResult = await activeSsh.execute(
               `mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo "${pubKeyToInstall}" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`,
               { sudo: false },
             );
+            if (installResult.exitCode !== 0) {
+              throw new Error("SSH key installation failed");
+            }
 
             // Verify Key Login via a fresh connection
             const keyConnOptions: SshConnectionOptions = {
