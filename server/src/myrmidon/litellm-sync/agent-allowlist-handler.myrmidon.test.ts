@@ -140,14 +140,12 @@ describe("updateAgentAllowlistsForCompany", () => {
     expect(result.updated).toBe(1);
     expect(gateway.calls[0]?.models).toEqual(expect.arrayContaining([
       "antigravity/gemini-3.8-flash-medium",
-      "openai/gpt-4o",
-      "anthropic/claude",
       "antigravity/gemini-3.5-flash-lite",
       "vendor/fallback",
       "vendor/vision",
       "vendor/omp-helper",
     ]));
-    expect(gateway.calls[0]?.models).toHaveLength(7);
+    expect(gateway.calls[0]?.models).toHaveLength(5);
   });
 
   it("does not grant plugin models that the agent card does not select", async () => {
