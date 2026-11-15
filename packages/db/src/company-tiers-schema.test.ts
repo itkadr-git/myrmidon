@@ -1,9 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import { getTableConfig } from "drizzle-orm/pg-core";
+import postgres from "postgres";
 import { describe, expect, it } from "vitest";
 import { companyTiers } from "./schema/company_tiers.js";
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
 
 // myrmidon(1.7 TIER-SCHEMA OPE-12091): the tier/quota table exists with the
 // free-plan defaults; the backfill migration gives every existing company the
@@ -57,13 +60,30 @@ describe("company tiers schema (OPE-12091)", () => {
     expect(indexes).toContain("company_tiers_company_id_uq");
   });
 
-  it("migration 0488 backfills every existing company with free/5", () => {
-    const sql = backfillSql();
-    expect(sql).toContain('INSERT INTO "company_tiers" ("company_id", "tier", "agent_quota")');
-    expect(sql.toUpperCase()).toContain("ON CONFLICT");
-    expect(sql).toContain("'free'");
-    expect(sql).toContain("5");
-    // Do not import companies without a row in `companies`.
-    expect(sql).toContain("FROM \"companies\"");
-  });
+  it("executes migration backfill for existing companies and applies defaults to new tier rows", async () => {
+    const database = await startEmbeddedPostgresTestDatabase("myrmidon-tier-migration-");
+    const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
+    try {
+      // Recreate the pre-migration state in this disposable database.
+      await sql`DROP TABLE company_tiers`;
+      const oldIds = [randomUUID(), randomUUID()];
+      for (const [index, id] of oldIds.entries()) {
+        await sql`INSERT INTO companies (id, name, issue_prefix) VALUES (${id}, ${`Legacy ${index}`}, ${`TQ${index}`})`;
+      }
+      for (const statement of backfillSql().split("--> statement-breakpoint")) {
+        if (statement.trim()) await sql.unsafe(statement);
+      }
+      const rows = await sql`SELECT company_id, tier, agent_quota FROM company_tiers WHERE company_id IN ${sql(oldIds)} ORDER BY company_id`;
+      expect(rows.map((row) => row.company_id).sort()).toEqual([...oldIds].sort());
+      expect(rows.map((row) => [row.tier, row.agent_quota])).toEqual([["free", 5], ["free", 5]]);
+
+      const newId = randomUUID();
+      await sql`INSERT INTO companies (id, name, issue_prefix) VALUES (${newId}, 'New company', 'TQN')`;
+      const inserted = await sql`INSERT INTO company_tiers (company_id) VALUES (${newId}) RETURNING tier, agent_quota`;
+      expect(inserted[0]).toMatchObject({ tier: "free", agent_quota: 5 });
+    } finally {
+      await sql.end();
+      await database.cleanup();
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 });
