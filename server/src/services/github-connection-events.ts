@@ -1114,9 +1114,9 @@ export function githubConnectionEventService(
     const headSha = commitSha(payload.headSha);
     const runId = identifier(payload.runId) ?? identifier(payload.checkSuiteId) ?? event.id;
     if (!repository || !pullRequestNumber || !headSha) return;
-    if (runId === null) return;
-    const resolvedRunId = runId;
     invalidateCiCacheForHead(companyId, repository.toLowerCase(), headSha);
+    // A rerequest carries no status: the cache is already dropped, nothing to deliver.
+    if (!status) return;
 
     const active = status === "queued" || status === "in_progress";
     if (!active && !conclusion) return;
@@ -1127,7 +1127,7 @@ export function githubConnectionEventService(
     const guardEnv = options.env ?? process.env;
     if (options.resolveCiReturnFacts && readCiFinalOnlyEnabled(guardEnv)) {
       await applyCiDeliveryByVerdict(database, companyId, event, {
-        status, conclusion, active, repository, pullRequestNumber, headSha, runId: resolvedRunId,
+        status, conclusion, active, repository, pullRequestNumber, headSha, runId,
       }, options.resolveCiReturnFacts, guardEnv, afterCommit);
       return;
     }
