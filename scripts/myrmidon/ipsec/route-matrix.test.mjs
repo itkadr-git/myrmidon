@@ -28,6 +28,12 @@ test('handles IPv6, default and duplicates without masking conflicts', () => {
   assert.equal(compareRoutes([{ prefix: 'default', table: 'main', via: null, dev: 'eth0' }], [{ dst: 'default', dev: 'eth0' }])[0].status, 'ok');
 });
 
+test('rejects a null snapshot destination instead of treating it as default', () => {
+  const expected = { prefix: 'default', table: 'main', via: null, dev: 'eth0' };
+  assert.throws(() => compareRoutes([expected], [{ dst: null, dev: 'eth0' }]));
+  assert.equal(compareRoutes([expected], [{ dev: 'eth0' }])[0].status, 'ok');
+});
+
 test('rejects empty and malformed expectations rather than passing unknown data', () => {
   assert.throws(() => compareRoutes([], []));
   assert.throws(() => compareRoutes([{ prefix: 'nonsense', table: 'main', via: null, dev: 'eth0' }], []));
