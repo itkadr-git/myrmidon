@@ -26,6 +26,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@myrmidon/shared";
 import { REVIEW_CI_WAIT_MONITOR_SERVICE_NAME } from "../myrmidon/review-stage-recovery/policy.ts";
 import { reviewWakesQuotaForCompany } from "../myrmidon/review-stage-recovery/review-wakes-quota.ts";
 import {
@@ -626,6 +627,27 @@ describeEmbeddedPostgres("issue monitors that cannot change anything", () => {
     const deferred = await activityOf(issueId, "issue.monitor_deferred");
     expect(deferred).toHaveLength(1);
     expect(deferred[0]?.details).toMatchObject({ reason: "review_wake_quota" });
+  });
+
+  it("leaves a provider-quota monitor kept only in execution_state alone on an in-review task: nobody is woken", async () => {
+    const { reviewerId, engineerId, issueId } = await seedReviewWait({ withReviewer: true, stateOnly: true });
+    await db
+      .update(issues)
+      .set({
+        executionState: executionState(
+          monitorState({ serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME, externalRef: null }),
+          { reviewerId, engineerId },
+        ),
+      })
+      .where(eq(issues.id, issueId));
+
+    const result = await heartbeatService(db).tickTimers(TICK_AT);
+
+    expect(result.enqueued).toBe(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.monitorNextCheckAt?.getTime()).toBe(DUE_AT.getTime());
+    expect(await activityOf(issueId, "issue.monitor_triggered")).toHaveLength(0);
   });
 
   it("reads CI access for a review wait kept only in execution_state", async () => {

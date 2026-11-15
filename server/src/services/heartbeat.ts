@@ -13893,7 +13893,7 @@ export function heartbeatService(
             ${issues.status} = 'in_review'
             and ${issues.executionState} ->> 'status' = 'pending'
             and ${issues.executionState} ->> 'currentStageType' = 'review'
-            and coalesce(${issues.executionPolicy} -> 'monitor' ->> 'serviceName', ${issues.executionState} -> 'monitor' ->> 'serviceName', '') not in (
+            and coalesce(${issues.executionPolicy} -> 'monitor' ->> 'serviceName', case when ${issues.executionState} -> 'monitor' ->> 'serviceName' = ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME} then ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME} end, '') not in (
               ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME},
               ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
             )
@@ -13930,7 +13930,7 @@ export function heartbeatService(
                 ${issues.status} = 'in_review'
                 and ${issues.executionState} ->> 'status' = 'pending'
                 and ${issues.executionState} ->> 'currentStageType' = 'review'
-                and coalesce(${issues.executionPolicy} -> 'monitor' ->> 'serviceName', ${issues.executionState} -> 'monitor' ->> 'serviceName', '') not in (
+                and coalesce(${issues.executionPolicy} -> 'monitor' ->> 'serviceName', case when ${issues.executionState} -> 'monitor' ->> 'serviceName' = ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME} then ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME} end, '') not in (
                   ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME},
                   ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
                 )
