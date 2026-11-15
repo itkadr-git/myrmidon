@@ -1,4 +1,8 @@
 import json
+import os
+import stat
+import importlib.util
+from unittest import mock
 import subprocess
 import sys
 import tempfile
@@ -36,6 +40,26 @@ class RenderTests(unittest.TestCase):
         self.assertNotIn('ports', out['services']['standby'])
         self.assertEqual(out['services']['cold-app']['profiles'], ['manual-cold-app'])
         self.assertNotIn('ports', out['services']['cold-app'])
+
+    def test_unreadable_secret_is_rejected(self):
+        spec = importlib.util.spec_from_file_location('render', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with mock.patch('pathlib.Path.open', side_effect=PermissionError):
+            with self.assertRaises(ValueError):
+                module.render(self.config)
+
+    def test_startup_guard_and_cold_app_isolation(self):
+        output = json.loads(self.run_config(self.config).stdout)
+        standby = output['services']['standby']
+        script = standby['command'][0]
+        self.assertIn('docker-entrypoint.sh', script)
+        cold = output['services']['cold-app']
+        self.assertEqual(cold['network_mode'], 'none')
+        self.assertNotIn('volumes', cold)
+        self.assertEqual(cold['environment']['HEARTBEAT_SCHEDULER_ENABLED'], 'false')
+        self.assertEqual(cold['environment']['MYRMIDON_DB_BACKUP_ENABLED'], 'false')
+        self.assertEqual(cold['environment']['MYRMIDON_PROCESS_ROLE'], 'api')
 
     def test_missing_parameters_fail(self):
         for key in self.config:
