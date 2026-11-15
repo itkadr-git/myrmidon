@@ -139,14 +139,13 @@ export class FleetOnboardExecutor {
             // 1. Disk check (threshold >= 90%)
             const dfRes = await activeSsh.execute("df -P /");
             const lines = dfRes.stdout.trim().split("\n");
-            if (lines.length > 1) {
-              const match = lines[1]?.match(/(\d+)%/);
-              if (match && match[1]) {
-                const usedPercent = Number.parseInt(match[1], 10);
-                if (usedPercent >= 90) {
-                  throw new Error(`Preflight check failed: root filesystem disk usage is ${usedPercent}% (threshold: 90%)`);
-                }
-              }
+            const match = lines[1]?.match(/(\d+)%/);
+            if (dfRes.exitCode !== 0 || !match?.[1]) {
+              throw new Error("Preflight check failed: unable to determine root filesystem disk usage");
+            }
+            const usedPercent = Number.parseInt(match[1], 10);
+            if (usedPercent >= 90) {
+              throw new Error(`Preflight check failed: root filesystem disk usage is ${usedPercent}% (threshold: 90%)`);
             }
 
             // 2. Memory check
