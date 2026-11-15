@@ -1213,6 +1213,12 @@ describe("company portability", () => {
     expect(preview.counts.issues).toBe(0);
     expect(preview.fileInventory.some((entry) => entry.path.startsWith("tasks/"))).toBe(false);
     expect(preview.fileInventory.some((entry) => entry.path === "images/org-chart.png")).toBe(false);
+    expect(companySvc.create).not.toHaveBeenCalled();
+    expect(agentSvc.create).not.toHaveBeenCalled();
+    expect(projectSvc.create).not.toHaveBeenCalled();
+    expect(issueSvc.create).not.toHaveBeenCalled();
+    expect(secretSvc.create).not.toHaveBeenCalled();
+    expect(companySkillSvc.importPackageFiles).not.toHaveBeenCalled();
 
     const downloaded = await portability.exportBundle("company-1", {
       include: {
