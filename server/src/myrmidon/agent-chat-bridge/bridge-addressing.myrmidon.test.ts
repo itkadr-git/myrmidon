@@ -607,6 +607,24 @@ describeEmbeddedPostgres("@<alias> addressing in the bridged Telegram chat (X9b)
     expect(await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id))).toHaveLength(1);
     expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(0);
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId))).toHaveLength(0);
+
+    const explicit = `agent://${fixture.gipAgentId} @foo hello`;
+    await send(explicit, 2);
+    const delivered = await db.select().from(issues).where(eq(issues.companyId, fixture.companyId));
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0].conversationAgentId).toBe(fixture.gipAgentId);
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId));
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0].agentId).toBe(fixture.gipAgentId);
+    await send(explicit, 2);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId))).toHaveLength(1);
+    const invalidIds = [randomUUID(), (await seedCompany()).gipAgentId];
+    for (const [index, id] of invalidIds.entries()) {
+      const rejected = await send(`agent://${id} @foo hello`, index + 3);
+      expect(JSON.stringify(rejected.post.mock.calls)).toContain("agent ID");
+    }
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId))).toHaveLength(1);
   });
 
   it("routes a DM '@гип …' to the GIP's own standing conversation, not the endpoint's assigned agent", async () => {
