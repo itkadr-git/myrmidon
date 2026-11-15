@@ -30,7 +30,7 @@ Use the released readiness interface with synthetic or approved read-only values
 myrmidon geo-check --json --config <approved-config>
 ```
 
-Check that the report passes OS, Docker, PostgreSQL client, PostgreSQL reachability, required-secret presence, and mirror configuration checks. `geo-check` is a readiness gate, not proof of replication or failover. Do not copy secret values into the report.
+Check that the report passes OS, Docker, PostgreSQL client, PostgreSQL and LiteLLM reachability, required-secret presence, and mirror configuration checks. `geo-check` is a readiness gate, not proof of replication or failover. Do not copy secret values into the report.
 
 The replication endpoint is pending contract verification; no command or response is specified. A missing or undocumented endpoint is a failed prerequisite for endpoint-dependent steps, not a reason to invent a substitute. Abort: stop and return the missing parameter or pending dependency to the change record.
 
@@ -56,7 +56,7 @@ Abort: if any preflight fails, do not use `--force`; correct the prerequisite. I
 
 ## 3. Backup and restore rehearsal
 
-Prerequisites: isolated lab paths and synthetic data; an approved backup destination; released backup/restore commands and image digest. The default wrapper uses host networking and production-named mounts: it is prohibited in the isolated lab. Use an independently verified host-mode isolated fixture with no production volumes; if unavailable, do not run this drill. Operator: database owner. Window: lab window; production backup or restore requires a separate approved window.
+Prerequisites: isolated lab paths and synthetic data; an approved backup destination; released backup/restore commands and image digest. The default wrapper uses host networking and production-named mounts: it is prohibited in the isolated lab. Use an independently verified host-mode isolated fixture with no production volumes; if unavailable, do not run this drill. Explicitly verify host, port, passfile, new drill directory and environment variables point only to that fixture. The tool defaults are not isolated. The all target runs one board cluster rehearsal which checks both databases, not two separate clusters. Operator: database owner. Window: lab window; production backup or restore requires a separate approved window.
 
 Create a dry-run plan first:
 
@@ -67,7 +67,7 @@ bash scripts/myrmidon/standby/standby-ctl.sh rehearse --target all --dry-run
 Run the isolated rehearsal only with synthetic data:
 
 ```bash
-bash scripts/myrmidon/standby/standby-ctl.sh rehearse --target all
+STANDBY_CTL_NO_DOCKER=1 bash scripts/myrmidon/standby/standby-ctl.sh rehearse --target all --pg-runner=host --primary-host=<isolated-primary-host> --primary-port=<isolated-primary-port> --drill-dir=<isolated-new-drill-dir> --drill-port=<isolated-drill-port> --credentials=<isolated-passfile>
 ```
 
 Verify: the isolated instance starts, promotes, answers smoke queries for each target, reports elapsed time, and removes its drill directory. Exit code `0` is required. Verify the directory is absent after cleanup. A retained drill requires an explicit cleanup action and must not share live data or production secrets.
@@ -96,7 +96,7 @@ Abort: if fencing cannot be proven, do not promote. If promotion succeeds but ap
 
 RTO starts at incident declaration and ends when board health, database write test, integrations, and single-active worker checks all pass. Record UTC timestamps and compute seconds offline: `python3 -c 'print(int("<end_epoch>") - int("<start_epoch>"))'`. Reject missing or negative values and durations over 1800 seconds.
 
-For RPO, before the incident run `bash scripts/myrmidon/standby/standby-ctl.sh check-lag --target all --rpo 300` and retain the exit code and both results. Exit 0 does not prove RPO at a later failure time. Record the last acknowledged primary write and latest recovered write in an approved test dataset. Subtract their UTC timestamps with the offline calculation above. Reject missing markers, clock uncertainty, negative values, or results over 300 seconds. A quiet primary's last replay timestamp alone is not a lag measurement.
+For RPO, before the incident run `bash scripts/myrmidon/standby/standby-ctl.sh check-lag --target all --rpo 300` and retain the exit code and both results. Exit 0 does not prove RPO at a later failure time. Record the last acknowledged primary write and latest recovered write in an approved test dataset. Use primary timestamp as end and recovered timestamp as start in the offline calculation above. Reject missing markers, clock uncertainty, negative values, or results over 300 seconds. A quiet primary's last replay timestamp alone is not a lag measurement.
 
 ## 5. Fencing and single-active controls
 
@@ -105,7 +105,7 @@ Fencing is a safety proof, not a command name. Accepted evidence is an infrastru
 Before enabling the application, verify:
 
 ```bash
-curl --fail --silent --show-error <ACTIVE_BOARD_URL>/healthz
+curl --fail --silent --show-error <ACTIVE_BOARD_URL>/api/health
 ```
 
 Verify integrations with the released, non-destructive health/probe interface. Do not send real customer traffic from a lab drill. Verify there is one active board writer, one scheduler owner, and zero cold-site workers until explicitly enabled. Record process/container identities and timestamps; do not rely on a process-name grep alone.
