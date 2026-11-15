@@ -4,6 +4,7 @@ import type { OnboardJob, OnboardJobKind, OnboardStepLogEntry } from "./domain.j
 import type { FleetOnboardStore, OnboardJobClaim } from "./store.js";
 import type { FleetOnboardSettings } from "./settings.js";
 import { appendOwnedFleetResource } from "@myrmidon/shared";
+import { sshPublicKey } from "./ssh-key.js";
 
 const mockSettings: FleetOnboardSettings = {
   enabled: true,
@@ -182,6 +183,20 @@ function createMocks() {
 }
 
 describe("SERVER-ONBOARD logic", () => {
+  it("persists a usable access key for password onboarding before the job is claimed", async () => {
+    const { mockStore, mockSecrets, mockGetServer, store } = createMocks();
+    const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
+    await service.addServer({ companyId: "company-1", slug: "password-key", name: "Server", hostname: "192.0.2.7", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password", password: "bootstrap" }, createdBy: null });
+    const name = store.servers[0].accessKeySecretKey;
+    expect(name).toBe("fleet/password-key/access-key");
+    const stored = await mockSecrets.readSecret("company-1", name);
+    expect(stored).toBeTruthy();
+    expect(sshPublicKey(stored!)).toMatch(/^ssh-ed25519 /);
+    const claim = await service.claim("company-1", "valid-executor-token");
+    expect(claim?.secretValues.accessKey).toBe(stored);
+    expect(claim?.secretValues.bootstrapPassword).toBe("bootstrap");
+  });
+
   it("retains the bootstrap password when an access report has no durable key", async () => {
     const { mockStore, mockSecrets, mockGetServer, secretsStore } = createMocks();
     const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
