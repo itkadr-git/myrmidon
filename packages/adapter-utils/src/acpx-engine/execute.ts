@@ -5063,6 +5063,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // Only an accepted terminal callback with completion evidence may mark
         // this external turn successful. Holds remain failed for reconciliation.
         const effectiveTurnSucceeded = turnSucceeded
+          && callbackStatus === "completed"
           && mappedTerminal.kind === "terminal"
           && mappedTerminal.boardState === "done";
         await emitAcpxLog(ctx, {
