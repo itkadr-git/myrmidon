@@ -15,6 +15,10 @@ SQL = """SELECT json_build_object(
  'archive_mode', current_setting('archive_mode'),
  'archive_timeout', current_setting('archive_timeout'),
  'wal_keep_size', current_setting('wal_keep_size', true),
+ 'max_wal_size', current_setting('max_wal_size', true),
+ 'min_wal_size', current_setting('min_wal_size', true),
+ 'checkpoint_timeout', current_setting('checkpoint_timeout', true),
+ 'full_page_writes', current_setting('full_page_writes', true),
  'max_wal_senders', current_setting('max_wal_senders')::int,
  'max_replication_slots', current_setting('max_replication_slots')::int,
  'streaming', CASE WHEN pg_is_in_recovery() THEN
@@ -30,7 +34,8 @@ SQL = """SELECT json_build_object(
  'archive_failures', (SELECT failed_count FROM pg_stat_archiver)
 )::text;"""
 FIELDS = ('server_version_num', 'db_bytes', 'in_recovery', 'wal_level', 'archive_mode',
-          'archive_timeout', 'wal_keep_size', 'max_wal_senders', 'max_replication_slots',
+          'archive_timeout', 'wal_keep_size', 'max_wal_size', 'min_wal_size',
+          'checkpoint_timeout', 'full_page_writes', 'max_wal_senders', 'max_replication_slots',
           'streaming', 'lag_bytes', 'lag_seconds', 'ssl', 'ssl_configured', 'archive_last_success', 'archive_failures')
 
 
