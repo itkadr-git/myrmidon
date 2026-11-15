@@ -55,11 +55,20 @@ def capability(name, label):
 
 def browser_profile():
     profile = capability('chromium', 'chromium_available')
+    for name in ('node', 'pnpm'):
+        profile[name + '_available'] = shutil.which(name, path='/usr/bin:/bin:/usr/sbin:/sbin') is not None
     try:
         shared = os.statvfs('/dev/shm')
         profile['shared_memory_bytes'] = shared.f_frsize * shared.f_blocks
     except OSError:
         profile['shared_memory_bytes'] = None
+    return profile
+
+
+def backup_profile():
+    profile = {'status': 'incomplete', 'reason': 'tool availability does not establish backup configuration or health'}
+    for name in ('pg_basebackup', 'pgbackrest', 'barman'):
+        profile[name + '_available'] = shutil.which(name, path='/usr/bin:/bin:/usr/sbin:/sbin') is not None
     return profile
 
 
@@ -99,7 +108,7 @@ def collect(socket=None, database=None, user=None):
             'time_sync': time_sync_status(),
             'tls': capability('openssl', 'openssl_available'),
             'login_method': capability('sshd', 'sshd_available'),
-            'backup': {'status': 'unknown', 'reason': 'backup configuration not inspected'}}
+            'backup': backup_profile()}
 
 
 def memory():

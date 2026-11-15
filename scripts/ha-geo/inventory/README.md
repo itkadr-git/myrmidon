@@ -26,7 +26,10 @@ this does not identify the CI profile, configured TLS, or allowed login methods.
 The CI/browser section also reports the total size of `/dev/shm` when available;
 this is the current mount's capacity, not proof of the CI job configuration.
 Time synchronization is reported when `timedatectl` exposes it. Backup configuration
-is unknown; archive mode, timeout, last successful archive time and failed archive
+is unknown; executable availability for pg_basebackup, pgbackrest and barman
+does not establish that backups are configured or healthy. The CI profile also
+reports node and pnpm executable availability, not CI configuration. Archive mode,
+timeout, last successful archive time and failed archive
 count are PostgreSQL facts, not proof of a backup. `ssl_configured` reports the
 server setting; a socket connection does not prove network TLS works.
 These limitations mean exit 2 remains expected even when PostgreSQL succeeds.

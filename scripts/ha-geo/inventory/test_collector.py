@@ -44,7 +44,18 @@ class CollectorTests(unittest.TestCase):
         self.assertTrue(report['login_method']['sshd_available'])
         self.assertTrue(report['ci_browser_profile']['chromium_available'])
         self.assertTrue(report['time_sync']['synchronized'])
-        self.assertEqual(report['backup']['status'], 'unknown')
+        self.assertEqual(report['backup']['status'], 'incomplete')
+
+    def test_backup_and_ci_tool_availability_are_reported_without_claiming_configuration(self):
+        tools = {'pg_basebackup', 'pgbackrest', 'node', 'chromium'}
+        with patch.object(collector.shutil, 'which', side_effect=lambda name, **kwargs: '/usr/bin/' + name if name in tools else None):
+            report = collector.collect()
+        self.assertTrue(report['backup']['pg_basebackup_available'])
+        self.assertTrue(report['backup']['pgbackrest_available'])
+        self.assertFalse(report['backup']['barman_available'])
+        self.assertEqual(report['backup']['status'], 'incomplete')
+        self.assertTrue(report['ci_browser_profile']['node_available'])
+        self.assertFalse(report['ci_browser_profile']['pnpm_available'])
 
     def test_ci_profile_includes_shared_memory_capacity(self):
         with patch.object(collector.os, 'statvfs') as statvfs:
