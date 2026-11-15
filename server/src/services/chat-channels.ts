@@ -16225,11 +16225,16 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           endpointAgentId: endpoint.assignedAgentId,
           text: message.text,
         });
-        if (x9Result.kind === "ambiguous") {
-          const candidateList = x9Result.candidates
-            .map((c) => `${c.name} (${c.agentId})`)
-            .join(", ");
-          const refusalText = `Ambiguous mention "@${x9Result.handle}": multiple agents match (${candidateList}). Please specify by agent ID.`;
+        if (x9Result.kind === "ambiguous" || x9Result.kind === "invalid_id") {
+          const candidateList = x9Result.kind === "ambiguous"
+            ? x9Result.candidates.map((c) => `${c.name} (${c.agentId})`).join(", ")
+            : "";
+          const refusalText = x9Result.kind === "ambiguous"
+            ? `Ambiguous mention "@${x9Result.handle}": multiple agents match (${candidateList}). Please specify by agent ID.`
+            : "Invalid or unavailable agent ID.";
+          const refusalError = x9Result.kind === "ambiguous"
+            ? `Ambiguous agent mention: @${x9Result.handle}`
+            : "Invalid or unavailable agent ID";
           const effectContext =
             runtimeContext ??
             runtimeContextForRecord(
@@ -16250,7 +16255,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 threadId: thread.id,
                 text: refusalText,
                 settleDelivery: true,
-                filteredDeliveryError: `Ambiguous agent mention: @${x9Result.handle}`,
+                filteredDeliveryError: refusalError,
                 resourceId: resource.id,
               },
               runtimeContext: effectContext,

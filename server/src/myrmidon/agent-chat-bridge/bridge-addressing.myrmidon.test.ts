@@ -45,6 +45,7 @@ import type {
 } from "../../services/chat-sdk-runtime.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { issueService } from "../../services/issues.js";
+import { agentService } from "../../services/agents.js";
 
 import {
   getEmbeddedPostgresTestSupport,
@@ -583,6 +584,15 @@ describeEmbeddedPostgres("@<alias> addressing in the bridged Telegram chat (X9b)
     const fixture = await seedCompany();
     await db.update(agents).set({ name: "Foo" }).where(eq(agents.id, fixture.assignedAgentId));
     await db.update(agents).set({ name: "foo", adapterConfig: {} }).where(eq(agents.id, fixture.gipAgentId));
+    const svc = agentService(db);
+    const beforeAgents = await db.select().from(agents).where(eq(agents.companyId, fixture.companyId));
+    await expect(svc.create(fixture.companyId, { name: "FOO" })).rejects.toMatchObject({ status: 409, details: { code: "agent_name_conflict" } });
+    const thirdId = randomUUID();
+    await db.insert(agents).values({ id: thirdId, companyId: fixture.companyId, name: "Other", role: "engineer", status: "idle", adapterType: "paperclip_runner", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    await expect(svc.update(thirdId, { name: "FOO" })).rejects.toMatchObject({ status: 409, details: { code: "agent_name_conflict" } });
+    const afterAgents = await db.select().from(agents).where(eq(agents.companyId, fixture.companyId));
+    expect(afterAgents.filter((agent) => agent.id !== thirdId)).toEqual(beforeAgents);
+    expect(afterAgents.find((agent) => agent.id === thirdId)?.name).toBe("Other");
     const { callbacks, endpoint } = await configuredTelegramEndpoint(fixture);
     await linkTelegramPrincipal({ companyId: fixture.companyId, endpointId: endpoint.id, userId: "700010", boardUserId: "owner-user" });
 
@@ -607,6 +617,54 @@ describeEmbeddedPostgres("@<alias> addressing in the bridged Telegram chat (X9b)
     expect(await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id))).toHaveLength(1);
     expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(0);
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId))).toHaveLength(0);
+
+    const explicit = `agent://${fixture.gipAgentId} @foo hello`;
+    await send(explicit, 2);
+    const delivered = await db.select().from(issues).where(eq(issues.companyId, fixture.companyId));
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0].conversationAgentId).toBe(fixture.gipAgentId);
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId));
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0].agentId).toBe(fixture.gipAgentId);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, delivered[0].id))).toHaveLength(1);
+    await send(explicit, 2);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, delivered[0].id))).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId))).toHaveLength(1);
+    const invalidIds = [randomUUID(), (await seedCompany()).gipAgentId];
+    for (const [index, id] of invalidIds.entries()) {
+      const rejected = await send(`agent://${id} @foo hello`, index + 3);
+      expect(JSON.stringify(rejected.post.mock.calls)).toContain("agent ID");
+    }
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId))).toHaveLength(1);
+
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, thirdId));
+    await db.update(agents).set({ adapterConfig: { telegramAliases: ["endpoint"] } }).where(eq(agents.id, fixture.assignedAgentId));
+    const rejectedTexts = [
+      "agent://not-a-uuid @endpoint hello",
+      `agent://${fixture.gipAgentId} agent://${fixture.assignedAgentId} @endpoint hello`,
+      `agent://${thirdId} @endpoint hello`,
+    ];
+    for (const [index, text] of rejectedTexts.entries()) {
+      const messageId = index + 5;
+      const beforeDeliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
+      const rejected = await send(text, messageId);
+      expect(rejected.post).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(rejected.post.mock.calls)).toContain("Invalid or unavailable agent ID");
+      const afterDeliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
+      expect(afterDeliveries).toHaveLength(beforeDeliveries.length + 1);
+      const refusalDelivery = afterDeliveries.find((row) => !beforeDeliveries.some((before) => before.id === row.id));
+      expect(refusalDelivery).toMatchObject({ state: "filtered", redactedError: "Invalid or unavailable agent ID" });
+      const refusalEffects = await db.select().from(chatActions).where(and(eq(chatActions.deliveryId, refusalDelivery!.id), eq(chatActions.kind, "provider_effect")));
+      expect(refusalEffects).toHaveLength(1);
+      expect(refusalEffects[0]).toMatchObject({ status: "processed", payload: { text: "Invalid or unavailable agent ID." } });
+      const replay = await send(text, messageId);
+      expect(replay.post).not.toHaveBeenCalled();
+      expect(await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id))).toHaveLength(afterDeliveries.length);
+      expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(1);
+      expect(await db.select().from(issueComments).where(eq(issueComments.issueId, delivered[0].id))).toHaveLength(1);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId))).toHaveLength(1);
+    }
   });
 
   it("routes a DM '@гип …' to the GIP's own standing conversation, not the endpoint's assigned agent", async () => {
