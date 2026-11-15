@@ -163,6 +163,7 @@ export interface ExecutionWorkspaceAgentRef {
   id: string | null;
   name: string;
   companyId: string;
+  adapterType?: string | null;
 }
 
 export interface RealizedExecutionWorkspace extends ExecutionWorkspaceInput {

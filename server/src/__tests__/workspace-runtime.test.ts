@@ -804,6 +804,20 @@ describe("ensureServerWorkspaceLinksCurrent", () => {
 });
 
 describe("realizeExecutionWorkspace", () => {
+  it.each(["hermes_gateway", "omp_local"])("does not create a board-side worktree for %s", async (adapterType) => {
+    const repoRoot = await createTempRepo();
+    const workspace = await realizeExecutionWorkspace({
+      base: { baseCwd: repoRoot, source: "project_primary", projectId: "project-1", workspaceId: "workspace-1", repoUrl: null, repoRef: "HEAD" },
+      config: { workspaceStrategy: { type: "git_worktree" } },
+      issue: { id: "issue-1", identifier: "OPE-13213", title: "Isolate bot workspace" },
+      agent: { id: "agent-1", name: "Engineer", companyId: "company-1", adapterType },
+    });
+
+    expect(workspace.cwd).toBe("/workspace/OPE-13213/repo");
+    expect(workspace.created).toBe(false);
+    await expect(fs.stat(path.join(repoRoot, ".paperclip", "worktrees"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("defaults new git worktrees to freshly fetched origin/master", async () => {
     const sourceRepo = await createTempRepo("master");
     const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-remote-"));
