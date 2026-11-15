@@ -55,6 +55,8 @@ Configuration variables can be provided in `/etc/myrmidon-host-gc.env`:
 ```bash
 # Scratch TTL in hours (default: 12)
 SCRATCH_TTL_HOURS=12
+# Company whose engN agent cards are matched to omp runner names
+MYRMIDON_COMPANY_ID=<company UUID>
 # SSH runner root for the run-copy pass (OPE-12722); unset = the pass is off
 HOST_GC_RUNNER_ROOTS=/srv/myrmidon-xfs/omp-runners
 ```

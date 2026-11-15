@@ -91,12 +91,14 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
       heartbeatRunsDays: 90,
       activityLogDays: 90,
       accessAuditDays: 180,
+      secretAccessDays: 30,
       litellmCostEventsDays: 30,
     });
     expect(res.body.sources).toEqual({
       heartbeatRunsDays: "default",
       activityLogDays: "default",
       accessAuditDays: "default",
+      secretAccessDays: "default",
       litellmCostEventsDays: "default",
     });
     expect(res.body.status).toEqual({
@@ -117,12 +119,13 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
     const companyId = await seedCompany();
     const res = await request(app(board(companyId, true)))
       .patch(URL)
-      .send({ heartbeatRunsDays: 30 });
+      .send({ heartbeatRunsDays: 30, secretAccessDays: 45 });
     expect(res.status).toBe(200);
     expect(res.body.settings).toEqual({
       heartbeatRunsDays: 30,
       activityLogDays: 90,
       accessAuditDays: 180,
+      secretAccessDays: 45,
       litellmCostEventsDays: 30,
     });
     expect(res.body.sources.heartbeatRunsDays).toBe("settings");
@@ -136,6 +139,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
       heartbeatRunsDays: 30,
       activityLogDays: 90,
       accessAuditDays: 180,
+      secretAccessDays: 45,
       litellmCostEventsDays: 30,
     });
     expect((stored as Record<string, any>).dataRetention).toBeUndefined();
@@ -190,12 +194,13 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
       heartbeatRunsDays: 30,
       activityLogDays: 365,
       accessAuditDays: 60,
+      secretAccessDays: 30,
       litellmCostEventsDays: 30,
     });
     expect(res.body.sources.heartbeatRunsDays).toBe("settings");
   });
 
-  it("externalMachineBackup (F14B): off by default, PATCH stores it without touching the windows", async () => {
+  it("sibling DBC-1 keys remain preserved", async () => {
     const companyId = await seedCompany();
     const scoped = app(board(companyId, true));
     const initial = await request(scoped).get(URL);
@@ -208,6 +213,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
       heartbeatRunsDays: 90,
       activityLogDays: 90,
       accessAuditDays: 180,
+      secretAccessDays: 30,
       litellmCostEventsDays: 30,
     });
     // another PATCH leaves the mode alone
