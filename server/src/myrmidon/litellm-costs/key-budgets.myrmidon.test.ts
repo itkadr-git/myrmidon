@@ -1,7 +1,7 @@
 // myrmidon(OPE-11776): the cap and spend of the bot keys, in the board.
 // Neutral ids only: company-a, example hosts, made-up key values.
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   readLitellmBudgetSignals,
   readLitellmKeyBudgetGauges,
@@ -10,11 +10,14 @@ import {
 import {
   evaluateKeyBudgets,
   keyCapStatus,
+  kickKeyUsageRefresh,
+  refreshKeyUsageReport,
   readKeyUsageReport,
   resetKeyUsageReports,
   type KeyBudgetDeps,
 } from "./key-budgets.js";
 import {
+  createLitellmGatewayClient,
   gatewayKeyHash,
   parseKeyListPage,
   type GatewayKeyBudgetRow,
@@ -251,6 +254,7 @@ describe("myrmidon(OPE-11776) gateway key list page", () => {
         { tokenHash: "hash-3", maxBudgetUsd: null, spendUsd: 0 },
       ],
       totalPages: 4,
+      totalCount: 3,
     });
   });
 
@@ -260,5 +264,109 @@ describe("myrmidon(OPE-11776) gateway key list page", () => {
     expect(parseKeyListPage({ detail: "Not Found" })).toBeNull();
     expect(parseKeyListPage(null)).toBeNull();
     expect(parseKeyListPage([])).toBeNull();
+  });
+});
+
+// myrmidon(1.6.9 KEY-BUDGETS-OOM): the report over a large, heavy /key/list answer.
+describe("myrmidon(1.6.9) key budget report over a large key list", () => {
+  beforeEach(() => {
+    resetEmptyCatalogSignals();
+    resetKeyUsageReports();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("builds the report from 1000 heavy key objects and keeps nothing but the three fields", async () => {
+    const heavy = "z".repeat(10_000);
+    const TOTAL = 1000;
+    vi.stubGlobal("fetch", async (input: string) => {
+      const url = new URL(input);
+      const page = Number(url.searchParams.get("page"));
+      const size = Number(url.searchParams.get("size"));
+      const keys = [];
+      for (let n = (page - 1) * size; n < Math.min(TOTAL, page * size); n += 1) {
+        keys.push({
+          token: gatewayKeyHash(`key-${n}`),
+          max_budget: 100,
+          spend: n % 2 === 0 ? 90 : 10,
+          metadata: { blob: heavy, deeper: { more: [heavy, heavy] } },
+          permissions: { p: heavy },
+        });
+      }
+      return new Response(JSON.stringify({ keys, total_pages: Math.ceil(TOTAL / size) }), { status: 200 });
+    });
+    const { deps } = makeDeps({
+      listBotKeys: async () => Array.from({ length: TOTAL }, (_, n) => ({ agentId: `agent-${n}`, keyValue: `key-${n}` })),
+      client: createLitellmGatewayClient,
+      readSpendWindows: async () => [],
+    });
+    const report = await evaluateKeyBudgets(deps, COMPANY);
+    expect(report.gatewayAvailable).toBe(true);
+    expect(report.rows).toHaveLength(TOTAL);
+    expect(report.rows[0]).toMatchObject({ capUsd: 100, gatewaySpendUsd: 90, status: "near_cap" });
+    expect(report.rows[1]).toMatchObject({ capUsd: 100, gatewaySpendUsd: 10, status: "ok" });
+    expect(report.rows.filter((row) => row.status === "near_cap")).toHaveLength(TOTAL / 2);
+    expect(JSON.stringify(report).length).toBeLessThan(TOTAL * 400);
+  });
+
+  it("a 403 from the gateway degrades the report (gatewayAvailable=false) and does not throw", async () => {
+    vi.stubGlobal("fetch", async () => new Response("forbidden", { status: 403 }));
+    const { deps } = makeDeps({ client: createLitellmGatewayClient, readSpendWindows: async () => [] });
+    const report = await evaluateKeyBudgets(deps, COMPANY);
+    expect(report.gatewayAvailable).toBe(false);
+    expect(report.rows.length).toBeGreaterThan(0);
+    expect(report.rows.every((row) => row.status === "unknown" && row.capUsd === null)).toBe(true);
+  });
+
+  it("a hung gateway: the page timeout fires, the refresh fails without being cached, a kick never blocks or throws", async () => {
+    vi.stubGlobal("fetch", (_input: string, init?: { signal?: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      }),
+    );
+    const warnings: string[] = [];
+    const { deps } = makeDeps({
+      client: (baseUrl, keyValue) =>
+        createLitellmGatewayClient(baseUrl, keyValue, { keyListPageTimeoutMs: 40, keyListTotalTimeoutMs: 100 }),
+      log: { warn: (_fields, message) => void warnings.push(message) },
+    });
+    const started = Date.now();
+    kickKeyUsageRefresh(deps, COMPANY); // returns at once; nothing to await
+    expect(Date.now() - started).toBeLessThan(30);
+    // The evaluation itself degrades (the gateway read failed on the timeout) instead of hanging.
+    const report = await refreshKeyUsageReport(deps, COMPANY);
+    expect(report.gatewayAvailable).toBe(false);
+    expect(warnings.some((message) => /key list read failed/.test(message))).toBe(true);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it("a rejected evaluation is not kept in the cache", async () => {
+    let calls = 0;
+    const { deps } = makeDeps({
+      listBotKeys: async () => {
+        calls += 1;
+        throw new Error("db gone");
+      },
+    });
+    await expect(refreshKeyUsageReport(deps, COMPANY)).rejects.toThrow(/db gone/);
+    await expect(refreshKeyUsageReport(deps, COMPANY)).rejects.toThrow(/db gone/);
+    expect(calls).toBe(2);
+  });
+
+  it("concurrent readers share one evaluation", async () => {
+    let gateway = 0;
+    const { deps } = makeDeps({
+      client: () => ({
+        ...clientOf([]),
+        listKeyBudgets: async () => {
+          gateway += 1;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          return [];
+        },
+      }),
+    });
+    await Promise.all([refreshKeyUsageReport(deps, COMPANY), refreshKeyUsageReport(deps, COMPANY), readKeyUsageReport(deps, COMPANY)]);
+    expect(gateway).toBe(1);
   });
 });
