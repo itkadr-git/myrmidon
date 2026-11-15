@@ -308,6 +308,28 @@ describeEmbeddedPostgres(
       expect(claimed.executionRunId).toBe(leadRunId);
     });
 
+    it("does not block an assigned executor when there is no heartbeat run yet", async () => {
+      const seeded = await seed({ attemptsInWindow: 2 });
+      const { service, wakes } = createService();
+      const activeWakeRunId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: activeWakeRunId,
+        companyId: seeded.companyId,
+        agentId: seeded.executorAgentId,
+        status: "queued",
+        contextSnapshot: { issueId: seeded.issueId, source: "issue.assignment" },
+      });
+
+      await expect(escalate(service, seeded)).resolves.toBeNull();
+
+      const untouched = await readIssue(seeded.issueId);
+      expect(untouched.status).toBe("in_progress");
+      expect(untouched.assigneeAgentId).toBe(seeded.executorAgentId);
+      expect(untouched.blockerMetadata).toBeNull();
+      expect(untouched.unblockDescriptor).toBeNull();
+      expect(wakes).toHaveLength(0);
+    });
+
     it("attempts remain: the executor gets one explicit continuation with fresh-directive context, no handoff", async () => {
       await underTwoAttempts();
     });

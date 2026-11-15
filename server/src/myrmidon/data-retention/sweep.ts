@@ -77,11 +77,11 @@
 //     except rows whose runId points at a run that survives — the audit
 //     trail of a kept run stays complete. The default is 90 days and can be
 //     changed by the instance administrator.
-//   - `access` (accessAuditDays): tool_access_audit_events and
-//     secret_access_events rows older than the cutoff (no dependencies).
+//   - `access` (accessAuditDays / secretAccessDays): tool_access_audit_events
+//     and secret_access_events rows older than their respective cutoffs.
 //
-// A retention of 0 means "keep forever": the group is skipped. Before the
-// first destructive statement of a pass the backup gate runs (a fresh
+// A retention of 0 means "keep forever" for that table. Before the first
+// destructive statement of a pass the backup gate runs (a fresh
 // `<prefix>-*.sql.gz` in the resolved backup dir); when it fails, the pass
 // deletes nothing, writes one throttled `data.retention_waiting_for_backup`
 // activity line and reports waitingForBackup in the persisted state.
@@ -417,35 +417,30 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
     return { deleted: batchRows.length, freedBytes };
   }
 
-  async function deleteAccessGroup(
+  async function deleteAccessTable(
     tx: Db,
+    table: "tool_access_audit_events" | "secret_access_events",
     cutoff: string,
     batchSize: number,
   ): Promise<{ deleted: number; freedBytes: number }> {
-    // one batch per table per call — the caller wraps each batch in its own
-    // transaction
-    let deleted = 0;
-    let freedBytes = 0;
-    for (const table of ["tool_access_audit_events", "secret_access_events"] as const) {
-      const tableSql = sql.raw(table);
-      {
-        const rows = await tx.execute(sql`
-          DELETE FROM ${tableSql} t
-          WHERE t.id IN (
-            SELECT t2.id FROM ${tableSql} t2
-            WHERE t2.created_at < ${cutoff}
-            ORDER BY t2.created_at
-            LIMIT ${batchSize}
-          )
-          RETURNING t.id, pg_column_size(t.id) AS size
-        `);
-        const batchRows = rows as unknown as DeletedRow[];
-        deleted += batchRows.length;
-        for (const row of batchRows) freedBytes += Number(row.size) || 0;
-      }
-    }
-    return { deleted, freedBytes };
+    const tableSql = sql.raw(table);
+    const rows = await tx.execute(sql`
+      DELETE FROM ${tableSql} t
+      WHERE t.id IN (
+        SELECT t2.id FROM ${tableSql} t2
+        WHERE t2.created_at < ${cutoff}
+        ORDER BY t2.created_at
+        LIMIT ${batchSize}
+      )
+      RETURNING t.id, pg_column_size(t.id) AS size
+    `);
+    const batchRows = rows as unknown as DeletedRow[];
+    return {
+      deleted: batchRows.length,
+      freedBytes: batchRows.reduce((total, row) => total + (Number(row.size) || 0), 0),
+    };
   }
+
 
   function mergeTableStatus(
     previous: DataRetentionTableStatus,
@@ -479,9 +474,25 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
     return { deleted: deletedRows.length, freedBytes: deletedRows.reduce((n, row) => n + (Number(row.size) || 0), 0) };
   }
 
+  async function runAccessGroup(toolCutoff: string | null, secretCutoff: string | null) {
+    let deleted = 0;
+    let freedBytes = 0;
+    for (const [table, cutoff] of [
+      ["tool_access_audit_events", toolCutoff],
+      ["secret_access_events", secretCutoff],
+    ] as const) {
+      if (!cutoff) continue;
+      const result = await runGroup({ key: "access", days: 1 }, cutoff, table);
+      deleted += result.deleted;
+      freedBytes += result.freedBytes;
+    }
+    return { deleted, freedBytes };
+  }
+
   async function runGroup(
     group: { key: GroupKey; days: number },
     cutoff: string,
+    accessTable?: "tool_access_audit_events" | "secret_access_events",
   ): Promise<{ deleted: number; freedBytes: number }> {
     const run =
       group.key === "runs"
@@ -489,7 +500,8 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
         : group.key === "activity"
           ? deleteActivityGroup
           : group.key === "access"
-            ? deleteAccessGroup
+            ? async (tx: Db, groupCutoff: string, batch: number) =>
+                deleteAccessTable(tx, accessTable ?? "tool_access_audit_events", groupCutoff, batch)
             : group.key === "litellmCostEvents" ? deleteLitellmCostEventsGroup : deleteExecutionWorkspacesGroup;
     let deleted = 0;
     let freedBytes = 0;
@@ -595,9 +607,15 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
     ];
 
     for (const group of groups) {
-      if (group.days === 0) continue; // 0 = keep forever
-      const cutoff = cutoffFor(startedAt, group.days);
-      results[group.key] = await runGroup(group, cutoff);
+      if (group.key === "access") {
+        if (settings.accessAuditDays === 0 && settings.secretAccessDays === 0) continue;
+        const toolCutoff = settings.accessAuditDays === 0 ? null : cutoffFor(startedAt, settings.accessAuditDays);
+        const secretCutoff = settings.secretAccessDays === 0 ? null : cutoffFor(startedAt, settings.secretAccessDays);
+        results.access = await runAccessGroup(toolCutoff, secretCutoff);
+      } else {
+        if (group.days === 0) continue;
+        results[group.key] = await runGroup(group, cutoffFor(startedAt, group.days));
+      }
     }
 
     const bundleCleanup = deps.gitBundleCleanup
