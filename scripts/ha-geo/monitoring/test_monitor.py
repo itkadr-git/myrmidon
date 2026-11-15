@@ -8,6 +8,7 @@ class MonitoringTest(unittest.TestCase):
     def setUp(self):
         self.sample = {
             'observed_at': 1000,
+            'source_observed_at': {'replication': 1000, 'receiver': 1000, 'wal': 1000, 'host': 1000},
             'replication': {'success': True, 'rpoOk': True, 'role': 'standby',
                             'inRecovery': True, 'timeLagSeconds': 10},
             'receiver_status': 'streaming',
@@ -33,6 +34,12 @@ class MonitoringTest(unittest.TestCase):
             replication = dict(self.sample['replication'], timeLagSeconds=lag)
             with self.subTest(lag=lag):
                 self.check(expected, replication=replication)
+
+    def test_stale_metric_source_is_not_hidden_by_fresh_envelope(self):
+        source_times = dict(self.sample['source_observed_at'], replication=939)
+        result = evaluate(dict(self.sample, source_observed_at=source_times), now=1000)
+        self.assertEqual(result['status'], 'critical', result)
+        self.assertEqual(next(check for check in result['checks'] if check['name'] == 'replication_freshness')['status'], 'critical')
 
     def test_missing_stale_future_and_disconnected(self):
         for changes in ({'observed_at': 939}, {'observed_at': 1001}, {'observed_at': None},
