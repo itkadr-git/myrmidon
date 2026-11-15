@@ -9,15 +9,15 @@
 //   - `heartbeatRunsDays` — how long finished heartbeat runs (and their run
 //     events) are kept (default 90);
 //   - `activityLogDays` — how long activity-log rows are kept (default 90);
-//   - `accessAuditDays` — how long tool-access audit events and secret access
-//     events are kept (default 180);
+//   - `accessAuditDays` — how long tool-access audit events are kept (default 180);
+//   - `secretAccessDays` — how long secret access audit events are kept (default 30);
 //   - `litellmCostEventsDays` — how long LiteLLM cost-event rows are kept
 //     (default 30, matching SpendLogs).
 //
 // Each value is a whole number of days >= 0; `0` means "keep forever". The
 // stored value is the single truth — there is no env fallback (retention is a
 // policy choice, not a deployment knob); an absent row reads as the defaults
-// (90/90/180/30). The sweep re-reads the settings at the top of every pass, so a
+// (90/90/180/30/30). The sweep re-reads the settings at the top of every pass, so a
 // PATCH applies on the next pass without a restart.
 //
 // The sweep state persists under the same key in a `lastRun` sub-object, so
@@ -41,9 +41,12 @@ export const DATA_RETENTION_DEFAULT_DAYS = 90;
 /** Approved configurable default for activity-log retention: 90 days. */
 export const DATA_RETENTION_DEFAULT_ACTIVITY_LOG_DAYS = 90;
 
-/** Built-in default for the tool/secret access audit: six months. */
+/** Built-in default for the tool-access audit: six months. */
 export const DATA_RETENTION_ACCESS_AUDIT_DEFAULT_DAYS = 180;
+export const DATA_RETENTION_SECRET_ACCESS_DEFAULT_DAYS = 30;
 export const DATA_RETENTION_LITELLM_COST_EVENTS_DEFAULT_DAYS = 30;
+/** Archived execution_workspaces rows are deleted this many days after they were closed. */
+export const DATA_RETENTION_EXECUTION_WORKSPACES_ARCHIVED_DAYS = 90;
 
 /** A retention value: whole days >= 0; 0 means "keep forever". */
 const retentionDaysSchema = z.number().int().min(0);
@@ -52,6 +55,7 @@ export const DATA_RETENTION_SETTING_KEYS = [
   "heartbeatRunsDays",
   "activityLogDays",
   "accessAuditDays",
+  "secretAccessDays",
   "litellmCostEventsDays",
 ] as const;
 
@@ -66,6 +70,7 @@ export const dataRetentionSettingsSchema = z
     heartbeatRunsDays: retentionDaysSchema,
     activityLogDays: z.number().int().min(0).default(DATA_RETENTION_DEFAULT_ACTIVITY_LOG_DAYS),
     accessAuditDays: retentionDaysSchema,
+    secretAccessDays: retentionDaysSchema.default(DATA_RETENTION_SECRET_ACCESS_DEFAULT_DAYS),
     litellmCostEventsDays: retentionDaysSchema.default(DATA_RETENTION_LITELLM_COST_EVENTS_DEFAULT_DAYS),
   })
   .strict();
@@ -74,7 +79,7 @@ export type DataRetentionSettings = z.infer<typeof dataRetentionSettingsSchema>;
 
 /**
  * Body of `PATCH /api/myrmidon/data-retention` — a partial update of the
- * four day values. `lastRun` is accepted as a passthrough so a full-GET echo
+ * five day values. `lastRun` is accepted as a passthrough so a full-GET echo
  * of the view does not drop the recorded sweep state on write.
  */
 export const patchDataRetentionSettingsSchema = z
@@ -82,6 +87,7 @@ export const patchDataRetentionSettingsSchema = z
     heartbeatRunsDays: retentionDaysSchema.optional(),
     activityLogDays: retentionDaysSchema.optional(),
     accessAuditDays: retentionDaysSchema.optional(),
+    secretAccessDays: retentionDaysSchema.optional(),
     litellmCostEventsDays: retentionDaysSchema.optional(),
     // myrmidon(1.6.5-F14B): "the machine is backed up outside" mode of the
     // backup gate (the same stored key the context compaction gate reads).
@@ -97,6 +103,7 @@ export const DATA_RETENTION_DEFAULT_SETTINGS: DataRetentionSettings = {
   heartbeatRunsDays: DATA_RETENTION_DEFAULT_DAYS,
   activityLogDays: DATA_RETENTION_DEFAULT_ACTIVITY_LOG_DAYS,
   accessAuditDays: DATA_RETENTION_ACCESS_AUDIT_DEFAULT_DAYS,
+  secretAccessDays: DATA_RETENTION_SECRET_ACCESS_DEFAULT_DAYS,
   litellmCostEventsDays: DATA_RETENTION_LITELLM_COST_EVENTS_DEFAULT_DAYS,
 };
 
@@ -129,6 +136,9 @@ export function normalizeDataRetentionSettings(raw: unknown): DataRetentionSetti
     accessAuditDays: parsed.success
       ? parsed.data.accessAuditDays
       : DATA_RETENTION_ACCESS_AUDIT_DEFAULT_DAYS,
+    secretAccessDays: parsed.success
+      ? parsed.data.secretAccessDays
+      : DATA_RETENTION_SECRET_ACCESS_DEFAULT_DAYS,
     litellmCostEventsDays: parsed.success
       ? parsed.data.litellmCostEventsDays
       : DATA_RETENTION_LITELLM_COST_EVENTS_DEFAULT_DAYS,
@@ -146,6 +156,7 @@ export function dataRetentionSources(
     heartbeatRunsDays: stored ? "settings" : "default",
     activityLogDays: stored ? "settings" : "default",
     accessAuditDays: stored ? "settings" : "default",
+    secretAccessDays: stored ? "settings" : "default",
     litellmCostEventsDays: stored ? "settings" : "default",
   };
 }
@@ -171,7 +182,7 @@ export interface DataRetentionLastRun {
   waitingForBackup: boolean;
   backupCheckedAt: string | null;
   freedBytesTotal: number;
-  perTable: Record<"runs" | "activity" | "access" | "litellmCostEvents", DataRetentionTableStatus>;
+  perTable: Record<"runs" | "activity" | "access" | "litellmCostEvents" | "executionWorkspaces", DataRetentionTableStatus>;
 }
 
 const tableStatusSchema = z.object({
@@ -190,6 +201,8 @@ const lastRunSchema = z.object({
     activity: tableStatusSchema,
     access: tableStatusSchema,
     litellmCostEvents: tableStatusSchema,
+    // Older stored state has no executionWorkspaces entry; keep the other counters.
+    executionWorkspaces: tableStatusSchema.default({ deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 }),
   }),
 });
 
@@ -205,6 +218,7 @@ export function emptyDataRetentionLastRun(): DataRetentionLastRun {
       activity: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
       access: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
       litellmCostEvents: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+      executionWorkspaces: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
     },
   };
 }

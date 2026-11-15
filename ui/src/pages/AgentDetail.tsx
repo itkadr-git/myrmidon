@@ -2041,7 +2041,11 @@ export function ConfigurationTab({
       companyId
         ? queryKeys.agents.adapterModels(companyId, agent.adapterType, null, catalogProvider)
         : ["agents", "none", "adapter-models", agent.adapterType],
-    queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType, { provider: catalogProvider }),
+    queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType, {
+      provider: catalogProvider,
+      refresh: ["hermes_gateway", "hermes_local", "omp_local"].includes(agent.adapterType),
+    }),
+    refetchInterval: ["hermes_gateway", "hermes_local", "omp_local"].includes(agent.adapterType) ? 10_000 : false,
     enabled: Boolean(companyId) && content === "runtime",
   });
 

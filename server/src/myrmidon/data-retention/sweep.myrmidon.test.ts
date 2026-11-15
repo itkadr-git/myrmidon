@@ -29,6 +29,7 @@ import {
   decisions,
   decisionTriage,
   decisionTriageEvents,
+  executionWorkspaces,
   financeEvents,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -38,6 +39,7 @@ import {
   issues,
   nativeRunFinalizations,
   nativeRunResults,
+  projects,
   secretAccessEvents,
   statusDecisionEffects,
   statusDecisions,
@@ -99,6 +101,8 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     await db.delete(toolAccessAuditEvents);
     await db.delete(heartbeatRunEvents);
     await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projects);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -727,7 +731,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     expect(result.perTable.activity.deleted).toBe(2);
     // the seeded access rows are 100 days old — inside the 180d default
     // access-audit retention, so nothing is deleted
-    expect(result.perTable.access.deleted).toBe(0);
+    expect(result.perTable.access.deleted).toBe(1);
     const remainingActivity = await db
       .select({ action: activityLog.action, runId: activityLog.runId })
       .from(activityLog);
@@ -737,7 +741,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     // retention window: it is removed rather than retained with a null run_id.
     expect(remainingActivity.some((row) => row.action === "test.old_gone_run")).toBe(false);
     expect(await db.select({ id: toolAccessAuditEvents.id }).from(toolAccessAuditEvents)).toHaveLength(2);
-    expect(await db.select({ id: secretAccessEvents.id }).from(secretAccessEvents)).toHaveLength(2);
+    expect(await db.select({ id: secretAccessEvents.id }).from(secretAccessEvents)).toHaveLength(1);
   });
 
   it("retention 0 keeps everything, and a settings change applies on the next pass without a restart", async () => {
@@ -766,8 +770,29 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
       heartbeatRunsDays: 90,
       activityLogDays: 90,
       accessAuditDays: 180,
+      secretAccessDays: 30,
       litellmCostEventsDays: 30,
     });
+  });
+
+  it("uses secretAccessDays independently from tool access audit retention", async () => {
+    const { companyId } = await seedCompany();
+    const settings = instanceSettingsService(db);
+    await writeDataRetentionSettings(settings, { accessAuditDays: 90, secretAccessDays: 30 });
+    const expired = new Date(Date.now() - 45 * DAY_MS);
+    await db.insert(secretAccessEvents).values({
+      companyId, provider: "local_encrypted", actorType: "agent", consumerType: "agent",
+      consumerId: "retention-test", outcome: "success", createdAt: expired,
+    });
+    await db.insert(toolAccessAuditEvents).values({
+      companyId, actorType: "system", action: "invoke", outcome: "ok", createdAt: expired,
+    });
+
+    const { sweep } = makeSweep({ freshBackup: true });
+    const result = await sweep.sweep();
+    expect(result.perTable.access.deleted).toBe(1);
+    expect(await db.select({ id: secretAccessEvents.id }).from(secretAccessEvents)).toHaveLength(0);
+    expect(await db.select({ id: toolAccessAuditEvents.id }).from(toolAccessAuditEvents)).toHaveLength(1);
   });
 
   it("the backup gate blocks deletes until a fresh backup appears, then lifts", async () => {
@@ -810,6 +835,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
         activity: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
         access: { deletedTotal: 2, lastDeleted: 2, lastFreedBytes: 234 },
         litellmCostEvents: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+        executionWorkspaces: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
       },
     });
 
@@ -829,6 +855,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
       heartbeatRunsDays: 90,
       activityLogDays: 30,
       accessAuditDays: 180,
+      secretAccessDays: 30,
       litellmCostEventsDays: 30,
     });
     const lastRun = await readDataRetentionLastRun(settings);
@@ -892,5 +919,79 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     const workedState = await readDataRetentionLastRun(settings);
     expect(workedState.lastRunAt).not.toBeNull();
     expect(workedState.perTable.runs.deletedTotal).toBe(1);
+  });
+
+  it("execution_workspaces: archives duplicate and terminal-task rows, then deletes old archived rows", async () => {
+    const { companyId } = await seedCompany();
+    const projectId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId, name: "project-a" });
+    const openIssueId = randomUUID();
+    const doneIssueId = randomUUID();
+    await db.insert(issues).values([
+      { id: openIssueId, companyId, projectId, title: "open task", status: "in_progress" },
+      { id: doneIssueId, companyId, projectId, title: "done task", status: "done" },
+    ]);
+
+    const hoursAgo = (hours: number) => new Date(Date.now() - hours * 60 * 60 * 1000);
+    const seedRow = async (input: {
+      sourceIssueId: string;
+      status?: string;
+      lastUsedAt: Date;
+      closedAt?: Date | null;
+    }) => {
+      const id = randomUUID();
+      await db.insert(executionWorkspaces).values({
+        id,
+        companyId,
+        projectId,
+        sourceIssueId: input.sourceIssueId,
+        mode: "shared_workspace",
+        strategyType: "project_primary",
+        name: "shared",
+        status: input.status ?? "active",
+        lastUsedAt: input.lastUsedAt,
+        closedAt: input.closedAt ?? null,
+      });
+      return id;
+    };
+
+    const boundOldest = await seedRow({ sourceIssueId: openIssueId, lastUsedAt: hoursAgo(72) });
+    const duplicateMiddle = await seedRow({ sourceIssueId: openIssueId, lastUsedAt: hoursAgo(48) });
+    const duplicateNewer = await seedRow({ sourceIssueId: openIssueId, lastUsedAt: hoursAgo(5) });
+    const justStarted = await seedRow({ sourceIssueId: openIssueId, lastUsedAt: new Date() });
+    const terminalTaskRow = await seedRow({ sourceIssueId: doneIssueId, lastUsedAt: hoursAgo(48) });
+    const expiredArchived = await seedRow({
+      sourceIssueId: doneIssueId,
+      status: "archived",
+      lastUsedAt: hoursAgo(24 * 100),
+      closedAt: new Date(Date.now() - 100 * DAY_MS),
+    });
+    const freshArchived = await seedRow({
+      sourceIssueId: doneIssueId,
+      status: "archived",
+      lastUsedAt: hoursAgo(24 * 10),
+      closedAt: new Date(Date.now() - 10 * DAY_MS),
+    });
+    // the open task is bound to its oldest row: the bound row is the one kept
+    await db.update(issues).set({ executionWorkspaceId: boundOldest }).where(eq(issues.id, openIssueId));
+
+    const { sweep } = makeSweep({ freshBackup: true });
+    const result = await sweep.sweep();
+
+    const statusOf = async (id: string) =>
+      (await db.select({ status: executionWorkspaces.status }).from(executionWorkspaces).where(eq(executionWorkspaces.id, id)))[0]
+        ?.status ?? null;
+    expect(await statusOf(boundOldest)).toBe("active");
+    expect(await statusOf(duplicateMiddle)).toBe("archived");
+    expect(await statusOf(duplicateNewer)).toBe("archived");
+    // a row used within the last hour is never touched
+    expect(await statusOf(justStarted)).toBe("active");
+    expect(await statusOf(terminalTaskRow)).toBe("archived");
+    // archived rows older than the term are deleted, younger ones stay
+    expect(await statusOf(expiredArchived)).toBeNull();
+    expect(await statusOf(freshArchived)).toBe("archived");
+    expect(result.perTable.executionWorkspaces.deleted).toBe(1);
+    const state = await readDataRetentionLastRun(instanceSettingsService(db));
+    expect(state.perTable.executionWorkspaces.deletedTotal).toBe(1);
   });
 });

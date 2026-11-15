@@ -162,7 +162,9 @@ export async function assertAgentModelsKnown(input: {
 
   let known: Array<{ id: string }>;
   try {
-    const baseKnown = await (input.listModels ?? listAdapterModels)(input.adapterType);
+    const baseKnown = input.listModels
+      ? await input.listModels(input.adapterType)
+      : await listAdapterModels(input.adapterType, input.companyId, input.db);
     known = input.companyId && input.db
       ? await enrichWithPoolModels(input.db, input.companyId, baseKnown as any)
       : baseKnown;

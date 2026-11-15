@@ -28,6 +28,16 @@ import {
   type PrWaitObservedChange,
 } from "../myrmidon/pr-wait-monitor/policy.js";
 import { readAgentLastLookAt } from "../myrmidon/pr-wait-monitor/store.js";
+import {
+  decideIdleMonitor,
+  MONITOR_UNCHANGED_CLEAR_REASON,
+  MONITOR_UNCHANGED_DEFER_REASON,
+} from "../myrmidon/issue-monitor-idle/policy.js"; // myrmidon(MONITOR-IDLE-LOOP, OPE-13141)
+import {
+  loadMonitorUnchangedWakeLimit,
+  readIssueMonitorSnapshotHash,
+  readLastMonitorObservation,
+} from "../myrmidon/issue-monitor-idle/store.js"; // myrmidon(MONITOR-IDLE-LOOP, OPE-13141)
 import { loadRunPullRequest } from "../myrmidon/run-pull-request.js";
 import {
   claimGatewayRemoteClose,
@@ -168,8 +178,11 @@ import {
   buildRunCapNoCommitBlockedPatch,
   buildRunCapNoCommitComment,
   resolveRunCapNoCommitWakeTargetId,
+  buildRunCapNoCommitWakeEvidence,
   loadTaskRunsWithoutCommitLimit,
   RUN_CAP_NO_COMMIT_REASON,
+  RUN_CAP_NO_COMMIT_BLOCK_REASON,
+  RUN_CAP_NO_COMMIT_UNBLOCK_ACTION,
   type RunCapNoCommitStop,
 } from "../myrmidon/run-cap-no-commit.js"; // myrmidon(OPE-13080)
 import { WakeStormGuard, wakeStormSourceKey } from "../myrmidon/wake-storm-guard.js";
@@ -4339,6 +4352,20 @@ export interface WakeupOptions {
   allowRunCoalescing?: boolean;
 }
 
+function shouldDeferWakeForReleaseFocus(input: {
+  currentRelease: string | null;
+  targetMatchesRelease: boolean;
+  hasOpenCurrentReleaseIssue: boolean;
+  manualUserWake?: boolean;
+}): boolean {
+  return (
+    !input.manualUserWake &&
+    Boolean(input.currentRelease) &&
+    input.hasOpenCurrentReleaseIssue &&
+    !input.targetMatchesRelease
+  );
+}
+
 type UsageTotals = {
   inputTokens: number;
   cachedInputTokens: number;
@@ -6312,6 +6339,33 @@ export function resolveNativeRecoveryExecutionWorkspaceBinding(input: {
 }): string | null {
   const bindingId = readNonEmptyString(input.bindingId);
   return bindingId && input.persistedWorkspaceFound ? bindingId : null;
+}
+
+export function isExecutionWorkspaceOwnedByIssue(input: {
+  companyId: string;
+  workspaceCompanyId: string | null;
+  projectId: string | null;
+  workspaceProjectId: string | null;
+  sourceIssueId: string | null;
+  issueId: string | null;
+}): boolean {
+  return input.issueId !== null &&
+    input.companyId === input.workspaceCompanyId &&
+    input.projectId !== null &&
+    input.projectId === input.workspaceProjectId &&
+    input.sourceIssueId === input.issueId;
+}
+
+export function shouldBindIssueToSharedExecutionWorkspace(input: {
+  mode: string;
+  strategyType: string;
+  sourceIssueId: string | null;
+  issueId: string | null;
+}): boolean {
+  return input.mode === "shared_workspace" &&
+    input.strategyType === "project_primary" &&
+    input.issueId !== null &&
+    input.sourceIssueId === input.issueId;
 }
 
 export function resolveExecutionWorkspaceReuseRequestForIssue(input: {
@@ -12693,6 +12747,9 @@ export function heartbeatService(
       });
     }
 
+    // myrmidon(MONITOR-IDLE-LOOP, OPE-13141): the snapshot this wake is based on.
+    let idleSnapshotHash: string | null = null;
+
     try {
       if (monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME) {
         // Normalized monitor projections redact externalRef. Read the claimed
@@ -12947,6 +13004,90 @@ export function heartbeatService(
           return { outcome: "skipped" as const, reason: "ci_in_progress" };
         }
 
+        // myrmidon(MONITOR-IDLE-LOOP, OPE-13141): a monitor of a task that waits for its
+        // subtasks does not wake a model while nothing it depends on has changed. The
+        // owner of a parent is woken by the board for the events that matter (a subtask is
+        // done, a subtask's pull request is merged), so polling by a model adds nothing.
+        if (!isReviewRecoveryMonitor && input.activitySource === "scheduled") {
+          idleSnapshotHash = await readIssueMonitorSnapshotHash(db, {
+            companyId: claimed.companyId,
+            issueId: claimed.id,
+            ownerAgentId: targetAgentId,
+          });
+          if (idleSnapshotHash) {
+            const idleDecision = decideIdleMonitor({
+              now: input.now,
+              snapshotHash: idleSnapshotHash,
+              previous: await readLastMonitorObservation(db, {
+                companyId: claimed.companyId,
+                issueId: claimed.id,
+              }),
+              limit: await loadMonitorUnchangedWakeLimit(db),
+            });
+            if (idleDecision.action === "defer") {
+              await db.update(issues).set({
+                monitorNextCheckAt: idleDecision.nextCheckAt,
+                monitorAttemptCount: nextAttemptCount,
+                monitorWakeRequestedAt: null,
+                updatedAt: input.now,
+              }).where(eq(issues.id, claimed.id));
+              await logActivity(db, {
+                companyId: claimed.companyId,
+                actorType: input.actorType,
+                actorId: input.actorId,
+                agentId: input.agentId,
+                runId: input.runId,
+                action: "issue.monitor_deferred",
+                entityType: "issue",
+                entityId: claimed.id,
+                details: {
+                  identifier: claimed.identifier,
+                  reason: MONITOR_UNCHANGED_DEFER_REASON,
+                  snapshotHash: idleSnapshotHash,
+                  unchangedCount: idleDecision.unchangedCount,
+                  nextCheckAt: idleDecision.nextCheckAt.toISOString(),
+                  attemptCount: nextAttemptCount,
+                  source: input.activitySource,
+                },
+              });
+              return { outcome: "skipped" as const, reason: MONITOR_UNCHANGED_DEFER_REASON };
+            }
+            if (idleDecision.action === "clear") {
+              await db.update(issues).set({
+                ...buildIssueMonitorClearedPatch({
+                  issue: claimed,
+                  policy,
+                  clearReason: "dispatch_skipped",
+                  clearedAt: input.now,
+                }),
+                updatedAt: input.now,
+              }).where(eq(issues.id, claimed.id));
+              await logActivity(db, {
+                companyId: claimed.companyId,
+                actorType: input.actorType,
+                actorId: input.actorId,
+                agentId: input.agentId,
+                runId: input.runId,
+                action: "issue.monitor_cleared",
+                entityType: "issue",
+                entityId: claimed.id,
+                details: {
+                  identifier: claimed.identifier,
+                  reason: MONITOR_UNCHANGED_CLEAR_REASON,
+                  warning:
+                    "The monitor was removed: the task and its subtasks did not change for several monitor terms in a row, so no run was started.",
+                  snapshotHash: idleSnapshotHash,
+                  unchangedCount: idleDecision.unchangedCount,
+                  attemptCount: nextAttemptCount,
+                  notes: claimed.monitorNotes ?? null,
+                  source: input.activitySource,
+                },
+              });
+              return { outcome: "skipped" as const, reason: MONITOR_UNCHANGED_CLEAR_REASON };
+            }
+          }
+        }
+
         await enqueueWakeup(targetAgentId, {
           source: input.source,
           triggerDetail: input.triggerDetail,
@@ -13009,6 +13150,7 @@ export function heartbeatService(
           attemptCount: nextAttemptCount,
           notes: claimed.monitorNotes ?? null,
           ...monitorMetadata,
+          ...(idleSnapshotHash ? { snapshotHash: idleSnapshotHash, unchangedCount: 0 } : {}),
           source: input.activitySource,
         },
       });
@@ -26586,10 +26728,26 @@ export function heartbeatService(
       const existingExecutionWorkspace = requestedExecutionWorkspaceId
         ? await executionWorkspacesSvc.getById(requestedExecutionWorkspaceId)
         : null;
+      const existingWorkspaceBelongsToIssue =
+        !existingExecutionWorkspace ||
+        (existingExecutionWorkspace.companyId === agent.companyId &&
+          (existingExecutionWorkspace.mode !== "shared_workspace" ||
+            existingExecutionWorkspace.strategyType !== "project_primary" ||
+            isExecutionWorkspaceOwnedByIssue({
+              companyId: agent.companyId,
+              workspaceCompanyId: existingExecutionWorkspace.companyId,
+              projectId: issueRef?.projectId ?? null,
+              workspaceProjectId: existingExecutionWorkspace.projectId,
+              sourceIssueId: existingExecutionWorkspace.sourceIssueId,
+              issueId: issueRef?.id ?? null,
+            })));
+      const safelyBoundExecutionWorkspace = existingWorkspaceBelongsToIssue
+        ? existingExecutionWorkspace
+        : null;
       const nativeRecoveryExecutionWorkspaceId =
         resolveNativeRecoveryExecutionWorkspaceBinding({
           bindingId: persistedNativeExecutionWorkspaceId,
-          persistedWorkspaceFound: existingExecutionWorkspace !== null,
+          persistedWorkspaceFound: safelyBoundExecutionWorkspace !== null,
         });
       const workspaceReuseRequest =
         resolveExecutionWorkspaceReuseRequestForIssue({
@@ -26598,13 +26756,13 @@ export function heartbeatService(
             ? "reuse_existing"
             : (issueRef?.executionWorkspacePreference ?? null),
           existingExecutionWorkspaceStatus:
-            existingExecutionWorkspace?.status ?? null,
+            safelyBoundExecutionWorkspace?.status ?? null,
         });
       const requestedShouldReuseExisting =
         workspaceReuseRequest.requestedShouldReuseExisting;
       const reusableExistingExecutionWorkspace =
         workspaceReuseRequest.existingExecutionWorkspaceAvailable
-          ? existingExecutionWorkspace
+          ? safelyBoundExecutionWorkspace
           : null;
       const requestedReusableExecutionWorkspaceConfig =
         reusableExistingExecutionWorkspace?.config ?? null;
@@ -26807,8 +26965,8 @@ export function heartbeatService(
           const holderIssueLabel =
             workspaceHolder.issueIdentifier ?? workspaceHolder.issueId;
           const concurrentWorkspaceNote =
-            `shared workspace is concurrently held by run ${workspaceHolder.runId} (issue ${holderIssueLabel}); ` +
-            "expect concurrent mutations, coordinate via commits";
+            `This run is sharing the project workspace with run ${workspaceHolder.runId} (issue ${holderIssueLabel}). ` +
+            "Do not treat it as a task-specific checkout; use the task's isolated workspace before editing code.";
           const appendConcurrentWorkspaceNote = (value: unknown) => {
             const existing = typeof value === "string" ? value.trimEnd() : "";
             return existing
@@ -27462,12 +27620,12 @@ export function heartbeatService(
                 companyId: agent.companyId,
               },
               recordedBranchOwnership:
-                existingExecutionWorkspace?.status !== "archived" &&
-                existingExecutionWorkspace?.branchName
+                safelyBoundExecutionWorkspace?.status !== "archived" &&
+                safelyBoundExecutionWorkspace?.branchName
                   ? {
-                      branchName: existingExecutionWorkspace.branchName,
+                      branchName: safelyBoundExecutionWorkspace.branchName,
                       createdByRuntime: isRuntimeOwnedGitBranch(
-                        existingExecutionWorkspace.metadata,
+                        safelyBoundExecutionWorkspace.metadata,
                       ),
                     }
                   : null,
@@ -27515,7 +27673,13 @@ export function heartbeatService(
           issueRef?.executionWorkspacePreference === "reuse_existing" ||
           requestedExecutionWorkspaceMode === "isolated_workspace" ||
           requestedExecutionWorkspaceMode === "operator_branch" ||
-          warmReusableExecutionWorkspace;
+          warmReusableExecutionWorkspace ||
+          shouldBindIssueToSharedExecutionWorkspace({
+            mode: workspace.mode,
+            strategyType: workspace.strategyType,
+            sourceIssueId: workspace.sourceIssueId,
+            issueId,
+          });
         const nextIssuePatch: Record<string, unknown> = {};
         if (issueExecutionWorkspaceIdForRun !== workspace.id) {
           nextIssuePatch.executionWorkspaceId = workspace.id;
@@ -32806,7 +32970,15 @@ export function heartbeatService(
           .where(and(eq(issues.id, stop.issueId), eq(issues.companyId, stop.companyId)))
           .for("update")
           .limit(1);
-        if (!current || !isContinuationActionable(current, stop.agentId)) return;
+        if (!current || current.assigneeAgentId !== stop.agentId) return;
+        const blockerMetadata = current.blockerMetadata as Record<string, unknown> | null;
+        const unblockDescriptor = current.unblockDescriptor as Record<string, unknown> | null;
+        if (
+          current.status === "blocked" &&
+          blockerMetadata?.blockReason === RUN_CAP_NO_COMMIT_BLOCK_REASON &&
+          blockerMetadata.externalRef === `run_cap_no_commit:${stop.headSha}:${stop.count}` &&
+          unblockDescriptor?.action === RUN_CAP_NO_COMMIT_UNBLOCK_ACTION
+        ) return;
         const patch = buildRunCapNoCommitBlockedPatch({
           agentId: stop.agentId,
           count: stop.count,
@@ -32868,6 +33040,7 @@ export function heartbeatService(
                   headSha: stop.headSha,
                   summary: parked.comment,
                 },
+                evidence: await buildRunCapNoCommitWakeEvidence(db, stop.companyId, stop.issueId),
               },
               requestedByActorType: "system",
               requestedByActorId: null,
@@ -32881,6 +33054,7 @@ export function heartbeatService(
                   limit: stop.limit,
                   headSha: stop.headSha,
                 },
+                evidence: await buildRunCapNoCommitWakeEvidence(db, stop.companyId, stop.issueId),
               },
             });
           } catch (err) {
@@ -33351,6 +33525,51 @@ export function heartbeatService(
         },
       });
     };
+
+    const releaseSettings = currentRunPrioritySettings();
+    if (issueId && releaseSettings.currentRelease) {
+      const targetLabels = await db
+        .select({ name: labels.name })
+        .from(issueLabels)
+        .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+        .innerJoin(issues, eq(issues.id, issueLabels.issueId))
+        .where(and(eq(issueLabels.issueId, issueId), eq(issues.companyId, agent.companyId)));
+      const targetMatchesRelease = runMatchesCurrentRelease(
+        releaseSettings.currentRelease,
+        targetLabels.map((row) => row.name),
+      );
+      const openReleaseRows = await db
+        .select({ issueId: issues.id, label: labels.name })
+        .from(issues)
+        .innerJoin(issueLabels, eq(issueLabels.issueId, issues.id))
+        .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+        .where(and(
+          eq(issues.companyId, agent.companyId),
+          eq(issues.assigneeAgentId, agentId),
+          inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+        ));
+      const hasOpenCurrentReleaseIssue = openReleaseRows.some((row) =>
+        runMatchesCurrentRelease(releaseSettings.currentRelease, [row.label]),
+      );
+      if (shouldDeferWakeForReleaseFocus({
+        currentRelease: releaseSettings.currentRelease,
+        targetMatchesRelease,
+        hasOpenCurrentReleaseIssue,
+        manualUserWake: opts.manualUserWake,
+      })) {
+        await writeSkippedRequest("release_focus", {
+          payload: {
+            ...(payload ?? {}),
+            issueId,
+            releaseFocus: {
+              currentRelease: releaseSettings.currentRelease,
+              reason: "open_current_release_issue",
+            },
+          },
+        });
+        return null;
+      }
+    }
 
     const schedulingSuppression = await getSchedulingSuppression();
     if (schedulingSuppression.suppressed) {

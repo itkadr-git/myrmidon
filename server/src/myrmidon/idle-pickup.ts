@@ -1,7 +1,10 @@
-import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import { blockerOpenSql } from "./blocker-resolved.js";
 import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issueExecutionDecisions, issues, issueWorkProducts, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
+import { issueLabels, labels } from "@myrmidon/db";
+import { currentRunPrioritySettings } from "./run-priority/state.js";
+import { runMatchesCurrentRelease } from "./run-priority/scoring.js";
 import {
   readReviewAdmissionDecision,
   readReviewCommentWakeGateEnabled,
@@ -17,6 +20,7 @@ import {
 // budget without restarting the server — a restart drops every run in flight.
 import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@myrmidon/shared";
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
+import { releaseFocusCondition } from "./release-focus.js";
 import { liveIdlePickupSettings, liveIdleWakeBudget } from "./runs-queue-settings/live.js";
 // myrmidon(1.6.5 F-26 T5): the cooling window of stale wake candidates (design §4.3).
 import { isIssueCoolingDown, readSwarmSettings } from "./wake-task-guard.js";
@@ -78,6 +82,8 @@ export const ORPHAN_WAKE_GRACE_SEC = 600;
 const idlePickupInFlight = new Map<string, Promise<IdlePickupResult>>();
 export const DEFAULT_IDLE_PICKUP_INTERVAL_SEC = 30;
 export const MIN_IDLE_PICKUP_INTERVAL_SEC = 5;
+/** Queue age default, also exported from shared for downstream liveness consumers. */
+export { DEFAULT_QUEUE_WITHOUT_RUN_THRESHOLD_SEC } from "@myrmidon/shared";
 /**
  * Default: an issue whose own run succeeded this recently — and which got no new
  * inbound activity since that run ended — is left to the handoff/recovery paths.
@@ -388,7 +394,7 @@ function issuePriorityRank(priority: string | null | undefined): number {
  * run in the loop in `idlePickupForAgent`.
  */
 export function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
-  // Keep idle-pickup candidate SQL prefilter aligned: review stages in_review where agent is currentParticipant
+  const focus = releaseFocusCondition(companyId);
   const isReviewParticipant =
     sql`${issues.status} = 'in_review' and ${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent' and ${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agentId}`;
   return db
@@ -404,12 +410,18 @@ export function idlePickupCandidateRows(db: Db, companyId: string, agentId: stri
     .where(
       and(
         eq(issues.companyId, companyId),
+        // Owner-assigned tasks and review participation preserve existing wake behavior.
         or(
           and(
             eq(issues.assigneeAgentId, agentId),
             isNull(issues.assigneeUserId),
             inArray(issues.status, [...WAKEABLE_ISSUE_STATUSES]),
           ),
+          isReviewParticipant,
+        ),
+        // Release focus applies only to automatic assigned-task pickup candidates.
+        or(
+          and(eq(issues.assigneeAgentId, agentId), focus),
           isReviewParticipant,
         ),
         isNull(issues.hiddenAt),
@@ -1220,7 +1232,26 @@ export async function findTopReadyIssueForAgent(
   const candidates = await idlePickupCandidateRows(db, agent.companyId, agent.id);
   if (candidates.length === 0) return null;
   const liveIssueIds = await loadAgentLiveIssueIds(db, agent);
-  for (const candidate of orderIdlePickupCandidates(candidates)) {
+  let ordered = orderIdlePickupCandidates(candidates);
+  const { currentRelease } = currentRunPrioritySettings();
+  if (currentRelease) {
+    const releaseRows = await db
+      .select({ issueId: issues.id, label: labels.name })
+      .from(issues)
+      .innerJoin(issueLabels, eq(issueLabels.issueId, issues.id))
+      .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+      .where(and(
+        eq(issues.companyId, agent.companyId),
+        eq(issues.assigneeAgentId, agent.id),
+        inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+      ));
+    const releaseIds = new Set(releaseRows
+      .filter((row) => runMatchesCurrentRelease(currentRelease, [row.label]))
+      .map((row) => row.issueId));
+    // An unavailable release task is not permission to run a later release.
+    if (releaseIds.size > 0) ordered = ordered.filter((candidate) => releaseIds.has(candidate.id));
+  }
+  for (const candidate of ordered) {
     if (liveIssueIds.has(candidate.id)) continue;
     if (await hasCoveringWake(db, agent, candidate.id)) continue;
     const prProduct = await db

@@ -21,7 +21,7 @@ function column(table: PgTable, columnName: string) {
   return match;
 }
 
-const MIGRATION_FILE = "0484_last_pepper_potts.sql";
+const MIGRATION_FILE = "0485_demonic_katie_power.sql";
 
 describe("company model group rules schema", () => {
   it("enforces uniqueness across company, caste, and step class with nullsNotDistinct", () => {

@@ -55,6 +55,8 @@ Configuration variables can be provided in `/etc/myrmidon-host-gc.env`:
 ```bash
 # Scratch TTL in hours (default: 12)
 SCRATCH_TTL_HOURS=12
+# Company whose engN agent cards are matched to omp runner names
+MYRMIDON_COMPANY_ID=<company UUID>
 # SSH runner root for the run-copy pass (OPE-12722); unset = the pass is off
 HOST_GC_RUNNER_ROOTS=/srv/myrmidon-xfs/omp-runners
 ```
@@ -143,6 +145,15 @@ section (fail-closed). After a removal the pass clears the bot's XFS quota proje
 ```bash
 node --test scripts/myrmidon/host-gc/host-clone-cache-gc.test.mjs
 ```
+
+- A directory that passes the board lookup as `omp_local` is preserved. A running
+  `myrmidon-omp-runner-<agent>` whose board card is missing or uses another adapter is stopped.
+  After it stops, the pass removes that runner's `workspace/`, `home/`, `tmp/` and `scratch/` trees.
+  These trees include task clones, `wt/` and credentials. The pass then removes its empty runner
+  directory. The agent's `.local/` state is deliberately left intact. A failed board lookup
+  keeps the runner. A failed stop keeps all of its data. `staleOmpRunnersStopped` and
+  `staleOmpRunnerDataRemoved` count successful actions in the apply report; per-path outcomes
+  are journalled as `stale-omp-runner-*` events.
 
 ## SSH runner run copies (OPE-12722)
 

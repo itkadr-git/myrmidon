@@ -3,11 +3,14 @@ import type { Db } from "@myrmidon/db";
 import {
   activityLog,
   agents,
+  agentCastes,
   heartbeatRuns,
   instanceSettings,
+  issueComments,
   issueWorkProducts,
   projects,
 } from "@myrmidon/db";
+import { isAgentStatusInvokable } from "@myrmidon/shared";
 
 export const RUN_CAP_NO_COMMIT_REASON = "runs_without_commit_limit_reached";
 export const RUN_CAP_NO_COMMIT_BLOCK_REASON = "human_decision";
@@ -17,10 +20,10 @@ export const TASK_RUNS_WITHOUT_COMMIT_LIMIT_KEY = "taskRunsWithoutCommitLimit";
 export const DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT = 4;
 const DEFAULT_SINGLETON_KEY = "default";
 
-/** The cap applies only to agents that write code: a lead or coordinator with a PR on the task is not capped. */
+/** Automatic no-commit protection applies to every agent role assigned to a task. */
 export const RUN_CAP_NO_COMMIT_ROLE = "engineer";
 export function isRunCapNoCommitRole(role: string | null | undefined): boolean {
-  return role === RUN_CAP_NO_COMMIT_ROLE;
+  return typeof role === "string" && role.trim().length > 0;
 }
 
 function readProcessesRecord(general: unknown): Record<string, unknown> | null {
@@ -324,19 +327,27 @@ export async function resolveRunCapNoCommitWakeTargetId(
     assigneeAgentId?: string | null;
   },
 ): Promise<string | null> {
-  // 1. If task belongs to a project with leadAgentId, wake project lead
   if (input.projectId) {
     const [project] = await db
-      .select({ leadAgentId: projects.leadAgentId })
+      .select({ leadAgentId: projects.leadAgentId, casteKey: projects.defaultCasteKey })
       .from(projects)
       .where(and(eq(projects.companyId, input.companyId), eq(projects.id, input.projectId)))
       .limit(1);
-    if (project?.leadAgentId) {
-      return project.leadAgentId;
+    const leadIds = project?.leadAgentId ? [project.leadAgentId] : [];
+    if (project?.casteKey) {
+      const casteLeads = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .innerJoin(agentCastes, and(eq(agentCastes.companyId, agents.companyId), eq(agentCastes.key, project.casteKey)))
+        .where(and(eq(agents.companyId, input.companyId), eq(agents.role, "lead")));
+      leadIds.push(...casteLeads.map((row) => row.id));
+    }
+    for (const leadId of [...new Set(leadIds)]) {
+      const [lead] = await db.select({ id: agents.id, status: agents.status }).from(agents)
+        .where(and(eq(agents.companyId, input.companyId), eq(agents.id, leadId))).limit(1);
+      if (lead && isAgentStatusInvokable(lead.status)) return lead.id ?? leadId;
     }
   }
-
-  // 2. If assignee has reportsTo, wake reportsTo
   if (input.assigneeAgentId) {
     const [assignee] = await db
       .select({ reportsTo: agents.reportsTo })
@@ -344,21 +355,40 @@ export async function resolveRunCapNoCommitWakeTargetId(
       .where(and(eq(agents.companyId, input.companyId), eq(agents.id, input.assigneeAgentId)))
       .limit(1);
     if (assignee?.reportsTo) {
-      return assignee.reportsTo;
+      const [manager] = await db.select({ id: agents.id, status: agents.status }).from(agents)
+        .where(and(eq(agents.companyId, input.companyId), eq(agents.id, assignee.reportsTo))).limit(1);
+      if (manager && isAgentStatusInvokable(manager.status)) return manager.id ?? assignee.reportsTo;
     }
   }
-
-  // 3. Fallback to adm agent
   const [admAgent] = await db
-    .select({ id: agents.id })
+    .select({ id: agents.id, status: agents.status })
     .from(agents)
-    .where(
-      and(
-        eq(agents.companyId, input.companyId),
-        sql`lower(${agents.name}) = 'adm' or lower(${agents.name}) like 'adm-%'`,
-      ),
-    )
+    .where(and(eq(agents.companyId, input.companyId), sql`lower(${agents.name}) = 'adm' or lower(${agents.name}) like 'adm-%'`))
     .limit(1);
+  return admAgent && isAgentStatusInvokable(admAgent.status) ? admAgent.id : null;
+}
 
-  return admAgent?.id ?? null;
+export async function buildRunCapNoCommitWakeEvidence(db: Db, companyId: string, issueId: string) {
+  const [pullRequests, comments] = await Promise.all([
+    db.select({ title: issueWorkProducts.title, url: issueWorkProducts.url, metadata: issueWorkProducts.metadata })
+      .from(issueWorkProducts)
+      .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.issueId, issueId), eq(issueWorkProducts.type, "pull_request"))),
+    db.select({ body: issueComments.body }).from(issueComments)
+      .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), sql`${issueComments.deletedAt} is null`))
+      .orderBy(desc(issueComments.createdAt)).limit(3),
+  ]);
+  return {
+    pullRequests: pullRequests.map((pr) => {
+      const metadata = pr.metadata as Record<string, any> | null;
+      const ci = metadata?.activeCi ?? metadata?.lastCompletedCi ?? null;
+      return {
+        title: pr.title,
+        url: pr.url,
+        headSha: metadata?.headSha ?? null,
+        ci: ci ? { status: ci.status ?? ci.conclusion ?? null, headSha: ci.headSha ?? null, failedJobs: ci.failedJobs ?? [] } : null,
+        mergeable: metadata?.mergeable ?? metadata?.mergeableState ?? null,
+      };
+    }),
+    recentComments: comments.map((comment) => (comment.body ?? "").slice(0, 1500)),
+  };
 }

@@ -41,6 +41,14 @@ case "$sub" in
       shift
     done
     case "$url" in
+      *"commits/"*)
+        if [[ "$jq_filter" == ".commit.committer.date" ]]; then
+          printf '%s\\n' "\${HEAD_DATE:-}"
+        else
+          printf '2\\tdev\\tweb-flow\\tMerge branch main into update\\n'
+        fi ;;
+      *"issues/"*"/events")
+        printf '%s\\n' "\${LABEL_DATE:-}" ;;
       *"pulls/"*"/files")
         jq -r "$jq_filter" "${dir}/files.json" ;;
       *"issues/"*"/labels/"*)
@@ -118,17 +126,28 @@ describe("hot-files-check", () => {
     assert.match(res.calls, /field: status=completed/);
   });
 
-  it("a re-run (attempt 2, stale synchronize payload) keeps review-approved and passes the hot files check", () => {
+  it("a rerun removes approval when the label predates the current head", () => {
     const res = runCheck(
-      { ACTION: "synchronize", GITHUB_RUN_ATTEMPT: "2" },
+      { ACTION: "synchronize", GITHUB_RUN_ATTEMPT: "2", HEAD_DATE: "2026-11-14T12:00:00Z", LABEL_DATE: "2026-11-14T11:00:00Z" },
+      ["server/src/services/heartbeat.ts"],
+      ["review-approved"],
+    );
+    assert.equal(res.status, 0);
+    assert.match(res.calls, /-X DELETE/);
+    assert.match(res.stdout, /Новый push после ревью/);
+    assert.match(res.calls, /field: state=pending/);
+  });
+
+  it("a rerun preserves approval when the label is newer than the current head", () => {
+    const res = runCheck(
+      { ACTION: "synchronize", GITHUB_RUN_ATTEMPT: "2", HEAD_DATE: "2026-11-14T11:00:00Z", LABEL_DATE: "2026-11-14T12:00:00Z" },
       ["server/src/services/heartbeat.ts"],
       ["review-approved"],
     );
     assert.equal(res.status, 0);
     assert.doesNotMatch(res.calls, /-X DELETE/);
-    assert.doesNotMatch(res.stdout, /Новый push после ревью/);
+    assert.match(res.stdout, /Метка review-approved есть/);
     assert.match(res.calls, /field: state=success/);
-    assert.match(res.calls, /field: description=review-approved/);
   });
 
   it("attempt 1 on synchronize still removes review-approved (a real push)", () => {
