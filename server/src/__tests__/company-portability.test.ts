@@ -4802,6 +4802,18 @@ describe("company portability", () => {
     const exported = await portability.exportBundle("company-1", {
       include: { company: true, agents: false, projects: false, issues: true },
     });
+    const request = {
+      source: { type: "inline" as const, rootPath: exported.rootPath, files: exported.files },
+      include: { company: true, agents: false, projects: false, issues: true },
+      target: { mode: "new_company" as const, newCompanyName: "Imported" },
+      agents: "all" as const,
+      collisionStrategy: "rename" as const,
+    };
+    const validPreview = await portability.previewImport(request);
+    expect(validPreview.errors).toEqual([]);
+    expect(companySvc.create).not.toHaveBeenCalled();
+    expect(storage.putFile).not.toHaveBeenCalled();
+
     exported.files[`blobs/${sha}`] = {
       encoding: "base64",
       data: Buffer.from("tampered-bytes").toString("base64"),
