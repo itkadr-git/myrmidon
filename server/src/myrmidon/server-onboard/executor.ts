@@ -330,9 +330,7 @@ export class FleetOnboardExecutor {
           }
 
           default: {
-            await reporter.reportStep(step, "ok", `Step ${step} executed`);
-            stepsCompleted.push(step);
-            break;
+            throw new Error(`Unknown onboarding step: ${step}`);
           }
         }
       }
