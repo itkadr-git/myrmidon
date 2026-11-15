@@ -3,6 +3,7 @@ import type { Db } from "@myrmidon/db";
 import {
   DEFAULT_AGENT_LIVENESS_SETTINGS,
   AGENT_LIVENESS_CACHE_TTL_MS,
+  agentLivenessPassEnabled,
   clearAgentLivenessSettingsCache,
   resolveAgentLivenessSettings,
 } from "./settings.js";
@@ -42,6 +43,7 @@ describe("server resolveAgentLivenessSettings", () => {
     const settings = await resolveAgentLivenessSettings("company-1");
     expect(settings).toEqual(DEFAULT_AGENT_LIVENESS_SETTINGS);
     expect(settings.enabled).toBe(false);
+    expect(agentLivenessPassEnabled(settings)).toBe(false);
   });
 
   it("returns stored settings from DB when db is provided", async () => {
@@ -57,6 +59,7 @@ describe("server resolveAgentLivenessSettings", () => {
     expect(settings.enabled).toBe(true);
     expect(settings.engineerQueueThreshold).toBe(12);
     expect(settings.probeIntervalSec).toBe(45);
+    expect(agentLivenessPassEnabled(settings)).toBe(true);
     // Keys omitted from stored patch keep defaults
     expect(settings.reviewerQueueThreshold).toBe(DEFAULT_AGENT_LIVENESS_SETTINGS.reviewerQueueThreshold);
     expect(settings.journalRetentionDays).toBe(DEFAULT_AGENT_LIVENESS_SETTINGS.journalRetentionDays);

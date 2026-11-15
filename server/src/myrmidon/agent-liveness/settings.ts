@@ -32,6 +32,11 @@ export interface ResolveAgentLivenessOptions {
   now?: number;
 }
 
+/** Guard used by the watchdog entry point; defaults must not start a pass. */
+export function agentLivenessPassEnabled(settings: AgentLivenessSettings): boolean {
+  return settings.enabled;
+}
+
 /**
  * Resolves effective agent-liveness settings for a company/instance.
  * Caches settings in memory with TTL and supports cache invalidation on applier events.
