@@ -14,7 +14,7 @@
 // - Password secret is consumed only after verified key login (reported in access step).
 // - Step failure rolls back hardening changes and leaves server in needs_attention.
 
-import { generateKeyPairSync } from "node:crypto";
+import { generateSshKeyPair, sshPublicKey } from "./ssh-key.js";
 import type {
   SshConnectionOptions,
   SshExecutionResult,
@@ -48,11 +48,7 @@ export interface ExecutorExecutionResult {
 }
 
 export function defaultGenerateKeyPair(): { publicKey: string; privateKey: string } {
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  return {
-    publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
-    privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
-  };
+  return generateSshKeyPair();
 }
 
 export class FleetOnboardExecutor {
@@ -177,7 +173,7 @@ export class FleetOnboardExecutor {
             // Key install
             let pubKeyToInstall = "";
             if (activePrivateKey) {
-              pubKeyToInstall = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExistingKey myrmidon-access";
+              pubKeyToInstall = sshPublicKey(activePrivateKey);
             } else {
               const gen = (this.deps.generateKeyPair ?? defaultGenerateKeyPair)();
               activePrivateKey = gen.privateKey;

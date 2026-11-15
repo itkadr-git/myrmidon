@@ -18,7 +18,7 @@
 // - one-time secret handoff: the claim response carries values exactly once
 //   and they never touch the step log (maskStepDetail re-masks detail).
 
-import { generateKeyPairSync } from "node:crypto";
+import { generateSshKeyPair } from "./ssh-key.js";
 import { parseOwnedFleetResource } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
@@ -405,11 +405,7 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
 }
 
 function defaultGenerateKeyPair(): { publicKey: string; privateKey: string } {
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  return {
-    publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
-    privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
-  };
+  return generateSshKeyPair();
 }
 
 export type OnboardService = ReturnType<typeof onboardService>;
