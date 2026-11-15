@@ -23,6 +23,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.ts";
+import { updateAgentAllowlistsForCompany } from "../myrmidon/litellm-sync/agent-allowlist-handler.js";
+import { agentKeySecretName } from "@myrmidon/shared";
 import {
   assertClaudeOAuthBindingInvariant,
   CLAUDE_OAUTH_CLAIM_REJECTED,
@@ -212,6 +214,10 @@ describe("assertClaudeOAuthBindingInvariant", () => {
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
+it("has PostgreSQL available for card reconciliation integration tests in CI", () => {
+  if (process.env.CI) expect(embeddedPostgresSupport.supported, embeddedPostgresSupport.reason).toBe(true);
+});
+
 if (!embeddedPostgresSupport.supported) {
   console.warn(
     `Skipping Claude OAuth binding claim tests on this host: ${
@@ -355,6 +361,36 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
       .where(eq(userSecretDeclarations.targetId, agentId));
     return rows.length;
   }
+
+  it("updates the gateway allowlist immediately when a card model changes", async () => {
+    const scope = await seedScope();
+    const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
+    const created = await agentService(db).create(scope.companyId, createInput(scope), {
+      claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
+    });
+    const alias = agentKeySecretName({ agentId: created.id, agentSlug: created.name });
+    let models = ["vendor/old"];
+    const service = agentService(db, {
+      syncAgentModelAllowlist: async ({ companyId, agentId, db: txDb }) => {
+        const result = await updateAgentAllowlistsForCompany(txDb, {
+          db: txDb,
+          env: { MYRMIDON_LITELLM_BASE_URL: "http://gateway.internal:4000", MYRMIDON_LITELLM_ADMIN_KEY_SECRET: "admin" },
+          readSecretValue: async () => "admin-value",
+          findSecretId: async (_companyId, name) => name === alias ? "key-id" : null,
+          createSecret: async () => ({ id: "unused" }),
+          rotateSecret: async () => {},
+          gateway: () => ({
+            createKey: async () => {}, rotateKey: async () => true, deleteKey: async () => {},
+            getKeyInfo: async () => ({ models }),
+            setKeyAllowedModels: async (input) => { models = input.models; return true; },
+          }),
+        }, companyId, [], [], false, { cardModelsOnly: true, agentId, apply: true });
+        expect(result.skipped).toEqual([]);
+      },
+    });
+    await service.update(created.id, { adapterConfig: { ...created.adapterConfig, model: "litellm/vendor/new", models: { fallbacks: ["vendor/fallback"] } } });
+    expect(models).toEqual(expect.arrayContaining(["vendor/old", "vendor/new", "vendor/fallback"]));
+  });
 
   it("rolls back the card when gateway reconciliation fails", async () => {
     const scope = await seedScope();
