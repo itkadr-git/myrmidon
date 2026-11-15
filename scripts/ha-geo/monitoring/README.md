@@ -5,7 +5,11 @@ PostgreSQL, or an alerting system. A caller supplies one JSON sample on stdin.
 
 ## Input contract
 
-- `observed_at`: Unix seconds when the sample was collected.
+- `observed_at`: Unix seconds when the sample was assembled.
+- `source_observed_at`: object containing Unix seconds for each independently
+  collected `replication`, `receiver`, `wal`, and `host` source. Each must be
+  present and no older than 60 seconds; refreshing the envelope alone is not
+  evidence that any source is fresh.
 - `replication`: a `checkLag` result or the complete JSON output of
   `standby-ctl.mjs check-lag`. The evaluator uses each returned database result;
   callers must request all intended targets. Aggregate results fail closed if

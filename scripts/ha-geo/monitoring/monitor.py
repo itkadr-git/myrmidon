@@ -22,6 +22,14 @@ def evaluate(sample, now=None):
     observed = sample.get('observed_at')
     fresh = number(observed) and 0 <= now - observed <= 60
     add('freshness', 'ok' if fresh else 'critical', 'sample age must be between 0 and 60 seconds')
+    source_times = sample.get('source_observed_at')
+    source_times = source_times if isinstance(source_times, dict) else {}
+    source_fresh = {}
+    for source in ('replication', 'receiver', 'wal', 'host'):
+        timestamp = source_times.get(source)
+        source_fresh[source] = number(timestamp) and 0 <= now - timestamp <= 60
+        add(f'{source}_freshness', 'ok' if source_fresh[source] else 'critical',
+            'source sample age must be between 0 and 60 seconds')
     replication = sample.get('replication')
     replication = replication if isinstance(replication, dict) else {}
     if replication.get('command') == 'check-lag':
