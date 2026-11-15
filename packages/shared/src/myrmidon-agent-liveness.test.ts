@@ -11,7 +11,6 @@ import {
 } from "./myrmidon-agent-liveness.js";
 import { DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD } from "./myrmidon-review-routing.js";
 import { DEFAULT_TEAM_LIVENESS_SETTINGS } from "./myrmidon-team-liveness.js";
-import { REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_STALE_AFTER_MS } from "../../../../server/src/myrmidon/review-routing/sweep-constants.js";
 import { instanceGeneralSettingsSchema } from "./validators/instance.js";
 import type { InstanceGeneralSettings } from "./types/instance.js";
 
@@ -27,8 +26,8 @@ describe("agent liveness defaults", () => {
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.leadQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.probeIntervalSec).toBe(DEFAULT_TEAM_LIVENESS_SETTINGS.idlePickupIntervalSec);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.enabled).toBe(false);
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.escalationSteps).toBe(REVIEW_WAKE_MAX_ATTEMPTS);
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.escalationStepTimeoutSec * 1_000).toBe(REVIEW_WAKE_STALE_AFTER_MS);
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.escalationSteps).toBe(6);
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.escalationStepTimeoutSec).toBe(30 * 60);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.probeTimeoutSec).toBe(5);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.journalDedupWindowSec).toBe(900);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.journalRetentionDays).toBe(30);
