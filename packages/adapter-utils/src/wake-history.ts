@@ -43,8 +43,9 @@ function asRecord(value: unknown): Record<string, unknown> {
 /**
  * The history mode of one agent card. An explicit `wakeHistory` wins; otherwise
  * the session strategy decides: a card whose session is new on every run
- * (`run`, `none`) has no earlier session to lean on, and by owner decision its
- * agent does not load previous runs, so it gets the summary only. Every other
+ * (`run`, `none`) has no earlier session to lean on, so it gets the summary
+ * only. (Developers get no Hindsight memory, but their task session continues
+ * between runs, so they take the `issue` branch below by default.) Every other
  * card keeps a short, bounded tail of the thread.
  */
 export function resolvePaperclipWakeHistoryMode(config: unknown): PaperclipWakeHistoryMode {

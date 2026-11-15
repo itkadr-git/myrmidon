@@ -46,7 +46,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-monitor-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   async function waitForHeartbeatIdle(timeoutMs = 3_000) {
     const deadline = Date.now() + timeoutMs;
@@ -257,6 +257,31 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .then((rows) => rows[0] ?? null);
     expect(wakeup?.reason).toBe("issue_monitor_due");
     expect(wakeup?.payload).toMatchObject({ issueId, nextCheckAt: nextCheckAt.toISOString() });
+  });
+
+  it("does not wake the assignee for a due monitor while an issue is in an active review stage", async () => {
+    const { issueId, agentId, nextCheckAt } = await seedFixture({ issueStatus: "in_review" });
+    await db.update(issues).set({
+      executionState: {
+        status: "pending",
+        currentStageId: randomUUID(),
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: randomUUID() },
+        returnAssignee: { type: "agent", agentId },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: null,
+      },
+    }).where(eq(issues.id, issueId));
+
+    const result = await heartbeatService(db).tickTimers(new Date(nextCheckAt.getTime() + 60_000));
+
+    expect(result.enqueued).toBe(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.monitorNextCheckAt?.getTime()).toBe(nextCheckAt.getTime());
   });
 
   it("triggers due issue monitors once and clears the one-shot schedule", async () => {

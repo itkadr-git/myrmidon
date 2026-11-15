@@ -158,6 +158,7 @@
   "api.use(myrmidonMonitoringLinkRoutes(db))",
   "api.use(myrmidonPromptBudgetRoutes(db))",
   "api.use(myrmidonAutonomyRoutes(db))",
+  "api.use(myrmidonReleaseStageRoutes(db))",
   "api.use(myrmidonKnowledgeRoutes(db))",
   "api.use(myrmidonKnowledgeSettingsRoutes(db))",
   "api.use(myrmidonKnowledgeMcpRoutes(db))",

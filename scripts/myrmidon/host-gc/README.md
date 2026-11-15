@@ -11,6 +11,7 @@ Host-side garbage collector for bot task clones and build caches on `vm-core` an
 | vm-core | `<runner root>/<runner>/workspace/.paperclip-runtime/runs/<runId>` | SSH runner run copies (OPE-12722); only when a runner root is configured, see below |
 | vm-core | `<runner root>/<runner>/{workspace,home}/OPE-*`, `wt-ope*` | SSH runner task folders (OPE-12855); only when a runner root is configured, see below |
 | vm-core | `<runner root>/<runner>/home/.npm/{_cacache,_npx}` | SSH runner agent npm/npx caches (OPE-12855); only when a runner root is configured, see below |
+| vm-core | `<runner root>/<runner>/tmp/*` | SSH runner `/tmp` entries (OPE-12966); only when a runner root is configured, see below |
 | myr-dev-build | `/srv/devbuild/*` | Build copies per agent/task |
 | myr-dev-build | `/srv/devcache/*` | Build caches (git-wt, pnpm, etc.) |
 
@@ -18,14 +19,14 @@ Host-side garbage collector for bot task clones and build caches on `vm-core` an
 
 | Item | TTL | Condition |
 |------|-----|-----------|
-| Task clone (done/cancelled) | > 24 h | `git status` clean **and** all commits pushed **and** no stash **and** no alternates |
-| Task clone (unsafe) | > 24 h | Archive to `.gc-archive/` first, then remove |
+| Task clone (done/cancelled) | > 3 h | `git status` clean **and** all commits pushed **and** no stash **and** no alternates |
+| Task clone (unsafe) | > 3 h | Archive to `.gc-archive/` first, then remove |
 | Active checkout/worktree | — | Never touched |
 | Bot data directory (`/srv/myrmidon-bots/<bot-uuid>`, OPE-12654) | > 24 h | No `myrmidon-bot-<key>` container of any state **and** the board lists no `hermes_gateway` card for the agent (moved away, terminated or deleted) **and** no heartbeat run of the agent is `running` **and** no git worktree under `workspace/` holds unpushed work (uncommitted edits, stash, an operation in progress, commits on no remote). The quota project entries (`/etc/projid`, `/etc/projects`) are cleared after the removal |
 | Build cache | > 72 h | LRU eviction by mtime |
 | SSH runner run copy (`<runner root>/<runner>/workspace/.paperclip-runtime/runs/<runId>`, OPE-12722) | > 4 h (`--run-copy-ttl`, at least 3) | Counted from the run directory's own mtime (set when the run starts). Runs **only when a runner root is configured** (`--runner-root` / `HOST_GC_RUNNER_ROOTS`); a path through a symlink is skipped |
 | SSH runner npm/npx cache (`<runner root>/<runner>/home/.npm/{_cacache,_npx}`, OPE-12855) | > 4 h (`--npm-cache-ttl`, at least 1) | Counted from the **newest mtime in the cache tree**, so a cache an npm/npx call is still writing stays fresh; npm refills everything on demand. A symlinked `.npm` or cache dir is skipped. Runs **only when a runner root is configured** (`--runner-root` / `HOST_GC_RUNNER_ROOTS`), the same gate as the run-copy pass |
-| SSH runner task folder (`<runner root>/<runner>/{workspace,home}/OPE-<n>[,-wt]`, `wt-ope<n>`, OPE-12855) | > 24 h (clone TTL) | Issue `done`/`cancelled` on the board **and** every git repo inside is clean, pushed, stash-free and alternates-free → remove; dirty/unpushed or a git state that cannot be read (a worktree with a dead gitdir) → archive to `<runner root>/.gc-archive/` first, then remove; any other issue status or an unreachable board → keep. Runs **only when a runner root is configured** (`--runner-root` / `HOST_GC_RUNNER_ROOTS`), the same gate as the run-copy pass |
+| SSH runner task folder (`<runner root>/<runner>/{workspace,home}/OPE-<n>[,-wt]`, `wt-ope<n>`, OPE-12855) | > 3 h (clone TTL) | Issue `done`/`cancelled` on the board **and** every git repo inside is clean, pushed, stash-free and alternates-free → remove; dirty/unpushed or a git state that cannot be read (a worktree with a dead gitdir) → archive to `<runner root>/.gc-archive/` first, then remove; any other issue status or an unreachable board → keep. Runs **only when a runner root is configured** (`--runner-root` / `HOST_GC_RUNNER_ROOTS`), the same gate as the run-copy pass |
 | Bot scratch item | > 12 h (env configurable) | All tree mtimes > threshold; ignore `gh-cli-cache`; skip if open by running process |
 | `state.db`, `session`, `auth`, `credential`, `.git` | — | Never deleted |
 
@@ -90,7 +91,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now myrmidon-host-gc.timer
 ```
 
-The timer runs every 2 hours. The service is `Type=oneshot` and exits after one pass.
+The timer runs every 30 minutes (`OnCalendar=*-*-* *:10/30:00`). The service is `Type=oneshot` and exits after one pass.
 
 This is the repo unit. A host that does not install it as is (vm-core runs a wrapper,
 `/usr/local/sbin/myrmidon-host-gc`, from its own unit) does not inherit its `Environment=` lines:
@@ -142,6 +143,15 @@ section (fail-closed). After a removal the pass clears the bot's XFS quota proje
 ```bash
 node --test scripts/myrmidon/host-gc/host-clone-cache-gc.test.mjs
 ```
+
+- A directory that passes the board lookup as `omp_local` is preserved. A running
+  `myrmidon-omp-runner-<agent>` whose board card is missing or uses another adapter is stopped.
+  After it stops, the pass removes that runner's `workspace/`, `home/`, `tmp/` and `scratch/` trees.
+  These trees include task clones, `wt/` and credentials. The pass then removes its empty runner
+  directory. The agent's `.local/` state is deliberately left intact. A failed board lookup
+  keeps the runner. A failed stop keeps all of its data. `staleOmpRunnersStopped` and
+  `staleOmpRunnerDataRemoved` count successful actions in the apply report; per-path outcomes
+  are journalled as `stale-omp-runner-*` events.
 
 ## SSH runner run copies (OPE-12722)
 
@@ -200,7 +210,7 @@ held 41.5 GB of folders of long-closed issues and the bots volume stood at 91%.
 The pass shares the gate of the run-copy pass above: it runs only when a runner root is
 configured (`--runner-root` / `HOST_GC_RUNNER_ROOTS`), per the same host matrix. What it does:
 
-- A folder is a candidate when it is older than the clone TTL (24 h, `--clone-ttl`, by the
+- A folder is a candidate when it is older than the clone TTL (3 h, `--clone-ttl`, by the
   folder's own mtime) and its name parses an issue identifier (`OPE-<n>`, `OPE-<n>-wt`,
   `wt-ope<n>`). The board is asked for the issue status (`GET /api/issues/{identifier}`, the
   same board guard as the task clones). A folder of an issue in any other status is kept
@@ -212,7 +222,7 @@ configured (`--runner-root` / `HOST_GC_RUNNER_ROOTS`), per the same host matrix.
   is removed outright (`no-git-repos`).
 - Unpushed work, or a git state that cannot be proven from the host (a worktree whose gitdir
   is gone fails every git command) → the folder is archived to `<runner root>/.gc-archive/`
-  first (zstd/tar.gz + verification) and removed only after the archive verifies — the archive
+  first (zstd/tar.gz + verification; `node_modules`, `.pnpm-store`, `.turbo`, `dist`, `.next` and `coverage` are excluded, `.git` and working files are kept; the 600 s limit failure is the pipeline runs under `timeout` (kill-after 10 s, so `tar`/`zstd` die with it) with `pipefail`; a timeout is journaled as `timed out after 600 s`) and removed only after the archive verifies — the archive
   is the safety net for work the host could not inspect.
 - Every removal is guarded against the runner root (`runner-task-folder-remove-failed` on a
   containment violation); a missing root is journaled as `runner-folder-root-missing`, an
@@ -240,3 +250,30 @@ nothing else — but an aggressive rm under a live `npm install` breaks the inst
   `runnerNpmCachesRemoved` in `apply-complete` and the stdout JSON counts the caches actually
   removed; the dry-run event carries `runnerNpmCaches` and the plan lists each cache with its
   action.
+
+## SSH runner /tmp (OPE-12966)
+
+The omp SSH runner's `/tmp` is a bind volume on the data disk, `<runner>/tmp`
+(`docker/agent-runtime/omp-ssh/compose.yml`), instead of the container's write layer on the
+host's root disk. Tests and task tooling write gigabytes there (15.8 GB in two days on 13.11,
+a host disk alarm) and nothing removed them.
+
+The pass shares the gate of the run-copy pass: it runs only when a runner root is configured
+(`--runner-root` / `HOST_GC_RUNNER_ROOTS`; the repo unit `systemd/myrmidon-host-gc.service`
+sets it, so a host that installs the unit gets the pass on `--apply` without further
+configuration). What it does:
+
+- The candidates are the top-level entries (files and directories) of `<runner>/tmp`. An
+  entry is removed when nothing inside it has changed for `--runner-tmp-ttl` hours (default
+  24; a finite number of at least 3): the age is the newest mtime of the entry and everything
+  under it, so a directory in which something was written within the TTL stays whole.
+- `<runner>` and `tmp` must be real directories (a symlink is skipped). A symlink is never
+  followed: a top-level symlink is kept (`runner-tmp-skipped`, reason `symlink`), one inside an
+  entry is removed as a link, never through. An entry that is, or contains, a mount of another
+  filesystem is kept (`other-filesystem`). `tmp` itself is never removed. Each removal is
+  guarded against the runner root, as for the run copies (`runner-tmp-remove-failed`).
+- `--dry-run` lists the entries to remove in `plan.runnerTmp` and removes nothing.
+  `runner-tmp-removed` carries `runner`, `ageHours` and `sizeBytes` (apparent size);
+  `runnerTmpRemoved` in `apply-complete` and in the printed JSON counts the entries removed.
+- A missing root is journaled as `runner-tmp-root-missing`, an unreadable root, runner or
+  entry as `runner-tmp-scan-failed` (the entry is kept). Neither stops the rest of the pass.

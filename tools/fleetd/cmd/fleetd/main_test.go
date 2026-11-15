@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Everything here is placeholder data: fake bot keys, example.com images.
@@ -1013,9 +1015,13 @@ func TestHealthReportsRealResourcesAndDockerState(t *testing.T) {
 	if h.Status != "degraded" || h.EgressCheck.Ok || len(h.EgressCheck.FailedTargets) != 1 {
 		t.Fatalf("egress failure not reported: %+v", h)
 	}
-	// Docker down: the socket path no longer answers.
+	// Docker down: the shared transport no longer dials a live socket.
 	s.cfg.BoardAddress = ""
 	s.docker.socket = filepath.Join(t.TempDir(), "gone.sock")
+	s.docker.transport = &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return net.DialTimeout("unix", s.docker.socket, 5*time.Second)
+	}, DisableKeepAlives: true}
+	s.docker.client = &http.Client{Transport: s.docker.transport}
 	rec = routeRequest(s, http.MethodGet, "/v1/health", s.cfg.Token, "")
 	if err := json.Unmarshal(rec.Body.Bytes(), &h); err != nil {
 		t.Fatal(err)

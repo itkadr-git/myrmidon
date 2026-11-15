@@ -248,6 +248,12 @@ export const wakeAgentSchema = z.object({
   }).strict().optional(),
   payload: z.record(z.string(), z.unknown()).optional().nullable(),
   idempotencyKey: z.string().optional().nullable(),
+  /**
+   * myrmidon(OPE-12929): optional ISO-8601 instant; the queued run stays
+   * pending until the instant is reached (UTC instant comparison at start
+   * time). A missing or unparsable value keeps the pre-feature behavior.
+   */
+  notBefore: z.string().optional().nullable(),
   forceFreshSession: z.preprocess(
     (value) => (value === null ? undefined : value),
     z.boolean().optional().default(false),

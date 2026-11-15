@@ -1583,3 +1583,33 @@ describe("myrmidon(PERF-DIET-G) createBotProfileCompile — one read per pass", 
     expect(board.count("pnpmSettings")).toBe(1);
   });
 });
+
+describe("myrmidon(BOT-PROFILE-NO-RUN-INTERRUPT) card fields that never reach the container", () => {
+  it("a runtimeConfig.heartbeat edit other than maxConcurrentRuns changes neither hash nor the limit", async () => {
+    const board = fakeBoard();
+    const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV });
+    board.agent.current!.runtimeConfig = {
+      heartbeat: { maxConcurrentRuns: 2, maxTurnContinuation: { maxAttempts: 6 }, dailyRunLimit: 40 },
+    };
+    const before = await compile("agent-a", "agent-a");
+    board.agent.current!.runtimeConfig = {
+      heartbeat: { maxConcurrentRuns: 2, maxTurnContinuation: { maxAttempts: 2 }, dailyRunLimit: 10, intervalSec: 900 },
+    };
+    const after = await compile("agent-a", "agent-a");
+    expect(after.restartHash).toBe(before.restartHash);
+    expect(after.filesHash).toBe(before.filesHash);
+    expect(after.maxConcurrentRuns).toBe(before.maxConcurrentRuns);
+    const applied = { restartHash: before.restartHash, filesHash: before.filesHash, maxConcurrentRuns: before.maxConcurrentRuns };
+    expect(classifyProfileChange(applied, after)).toBe("none");
+  });
+
+  it("heartbeat.maxConcurrentRuns is the one heartbeat field the gateway reads: it is a restart-class change", async () => {
+    const board = fakeBoard();
+    const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV });
+    const before = await compile("agent-a", "agent-a");
+    board.agent.current!.runtimeConfig = { heartbeat: { maxConcurrentRuns: 5 } };
+    const after = await compile("agent-a", "agent-a");
+    const applied = { restartHash: before.restartHash, filesHash: before.filesHash, maxConcurrentRuns: before.maxConcurrentRuns };
+    expect(classifyProfileChange(applied, after)).toBe("restart");
+  });
+});

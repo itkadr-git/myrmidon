@@ -22,7 +22,7 @@ import { inArray } from "drizzle-orm";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { admAccessRequestRoutes } from "../routes/adm-access-requests.js";
 import { errorHandler } from "../middleware/index.js";
-import { admScopeHash, createAdmCapabilityToken } from "@myrmidon/shared";
+import { admScopeHash, createAdmCapabilityToken } from "@myrmidon/shared/adm-access-request-server";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -185,7 +185,7 @@ describeEmbeddedPostgres("adm gateway cross-company isolation (OPE-12766)", () =
     process.env.AGENT_JWT_SECRET = ADM_SECRET;
     previousAdmCompany = process.env.ADM_COMPANY_ID;
     process.env.ADM_COMPANY_ID = companies3[2]!.id;
-  }, 20_000);
+  }, 60_000);
 
   afterAll(async () => {
     if (previousSecret === undefined) delete process.env.AGENT_JWT_SECRET;

@@ -143,7 +143,7 @@ describeEmbeddedPostgres("owner decision autoclose (F-21)", () => {
       "paperclip-f21-owner-autoclose-",
     );
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();

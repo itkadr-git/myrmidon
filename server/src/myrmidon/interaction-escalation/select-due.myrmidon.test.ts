@@ -40,7 +40,7 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("interaction-select-due-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();

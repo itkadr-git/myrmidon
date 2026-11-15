@@ -8,11 +8,13 @@
 //                    run copies, OPE-12722; only when a runner root is configured)
 //   - vm-core:       <runner root>/<runner>/home/.npm/{_cacache,_npx} (runner agent npm/npx
 //                    caches, OPE-12855; only when a runner root is configured)
+//   - vm-core:       <runner root>/<runner>/tmp/* (the runner's /tmp bind-mounted from the data
+//                    disk, OPE-12966; only when a runner root is configured)
 //   - myr-dev-build: /srv/devbuild/* (build copies), /srv/devcache/* (build caches)
 //
 // Policy:
-//   - Task clones (done/cancelled >24h, clean+pushed): remove
-//   - Task clones (done/cancelled >24h, dirty/unpushed): archive first, then remove
+//   - Task clones (done/cancelled >3h, clean+pushed): remove
+//   - Task clones (done/cancelled >3h, dirty/unpushed): archive first, then remove
 //   - Active checkouts/worktrees: never touch
 //   - Build caches >72h: LRU eviction by mtime
 //   - SSH runner run copies >4h (by the run directory's mtime, set when the run starts): remove;
@@ -20,7 +22,10 @@
 //   - SSH runner npm/npx caches >4h (by the newest mtime in the cache tree, so a cache an
 //     npm/npx call is still writing stays fresh): remove; runs only with
 //     --runner-root / HOST_GC_RUNNER_ROOTS
-//   - SSH runner task folders for done/cancelled issues >24h: clean+pushed remove; unsafe
+//   - SSH runner /tmp entries (top level of <runner>/tmp) whose newest mtime inside is >24h
+//     old: remove; symlinks and other filesystems are never entered; runs only with
+//     --runner-root / HOST_GC_RUNNER_ROOTS
+//   - SSH runner task folders for done/cancelled issues >3h: clean+pushed remove; unsafe
 //     git state archive first, then remove; active/board-unavailable folders stay
 //   - Atomic guards: lockfile, symlink checks, TOCTOU-safe deletion
 //   - JSONL journal at /var/log/myrmidon-host-gc.jsonl
@@ -31,12 +36,13 @@
 //   --root <path>         Override root directory (for testing)
 //   --journal <path>      Override journal path (for testing)
 //   --lock <path>         Override lockfile path (for testing)
-//   --clone-ttl <hours>   Override clone TTL (default 24)
+//   --clone-ttl <hours>   Override clone TTL (default 3)
 //   --cache-ttl <hours>   Override cache TTL (default 72)
 //   --runner-root <path>  SSH runner root to prune run copies under (repeatable; also
 //                         HOST_GC_RUNNER_ROOTS, colon-separated). No root, no pass.
 //   --run-copy-ttl <hours> Override the run-copy TTL (default 4; finite, at least 3 = longest run timeout)
 //   --npm-cache-ttl <hours> Override the npm cache TTL (default 4; finite, at least 1)
+//   --runner-tmp-ttl <hours> Override the runner /tmp TTL (default 24; finite, at least 3)
 
 import fs from "node:fs";
 import path from "node:path";
@@ -45,8 +51,12 @@ import { spawnSync } from "node:child_process";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
-const CLONE_TTL_HOURS = 24;
+const CLONE_TTL_HOURS = 3;
 const CACHE_TTL_HOURS = 72;
+// Names of build and dependency dirs left out of safety-net archives (restored by an install or a
+// build, OPE-13104), but only where git confirms the path is ignored: see archiveExcludes().
+// A file git does not ignore (user or uncommitted work) is always archived, even inside `dist/`.
+const ARCHIVE_EXCLUDES = ["node_modules", ".pnpm-store", ".turbo", "dist", ".next", "coverage"];
 const SCRATCH_TTL_HOURS = 12;
 // myrmidon(1.6.8 OPE-12722 / OPE-12759): an SSH runner (the omp container) keeps one copy of
 // the workspace per run under `<runner>/workspace/.paperclip-runtime/runs/<runId>`. A run that
@@ -71,6 +81,14 @@ const DEFAULT_ENV_PATH = "/etc/myrmidon-host-gc.env";
 const NPM_CACHE_TTL_HOURS = 4;
 const NPM_CACHE_MIN_TTL_HOURS = 1;
 
+// myrmidon(OPE-12966): the omp SSH runner's /tmp lives on the data volume
+// (`<runner>/tmp`, docker/agent-runtime/omp-ssh/compose.yml) instead of the container's write
+// layer on the root disk, and nothing removed what tests and task tooling leave there (15.8 GB
+// in two days on 13.11). The pass removes top-level entries of `<runner>/tmp` not changed
+// anywhere inside for the TTL; the same gate as the run-copy pass (a runner root is configured).
+const RUNNER_TMP_TTL_HOURS = 24;
+const RUNNER_TMP_MIN_TTL_HOURS = 3;
+
 // myrmidon(1.6.8-BOT-CONTAINER-ORPHAN / OPE-12654): the data directory of a decommissioned
 // bot (the gate A22 removed its container, the board logs `bot_data_left_for_host_gc`) is
 // removed by this host pass, not by the gate: the gate is uid 65532 and holds the volume root
@@ -92,6 +110,7 @@ const NPM_CACHE_MIN_TTL_HOURS = 1;
 const BOT_DATA_TTL_HOURS = 24;
 const BOT_KEY_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const DOCKER_TIMEOUT_MS = 30_000;
+const OMP_AGENT_KEY_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const GIT_TIMEOUT_MS = 30_000;
 const HERMES_GATEWAY_ADAPTER_TYPE = "hermes_gateway";
 
@@ -165,6 +184,17 @@ export function npmCacheTtlError(hours) {
   return null;
 }
 
+/** `null` when `hours` is a usable runner /tmp TTL, otherwise the reason it is refused. */
+export function runnerTmpTtlError(hours) {
+  if (typeof hours !== "number" || !Number.isFinite(hours)) {
+    return `--runner-tmp-ttl must be a finite number of hours (got ${String(hours)})`;
+  }
+  if (hours < RUNNER_TMP_MIN_TTL_HOURS) {
+    return `--runner-tmp-ttl must be at least ${RUNNER_TMP_MIN_TTL_HOURS} hours, the longest run timeout (got ${hours})`;
+  }
+  return null;
+}
+
 export function parseArgs(argv) {
   let envPath = DEFAULT_ENV_PATH;
   for (let i = 2; i < argv.length; i++) {
@@ -194,7 +224,10 @@ export function parseArgs(argv) {
     scratchTtlHours: defaultScratchTtl,
     procDir: process.env.PROC_DIR || "/proc",
     runnerRoots: (process.env.HOST_GC_RUNNER_ROOTS || "").split(":").map((r) => r.trim()).filter(Boolean),
+    runnerContainerPrefix: process.env.MYRMIDON_HOST_GC_OMP_RUNNER_CONTAINER_PREFIX || "myrmidon-omp-runner-",
+    docker: process.env.MYRMIDON_HOST_GC_DOCKER || "docker",
     runCopyTtlHours: RUN_COPY_TTL_HOURS,
+    runnerTmpTtlHours: RUNNER_TMP_TTL_HOURS,
     npmCacheTtlHours: (() => {
       const envTtl = process.env.MYRMIDON_HOST_GC_NPM_CACHE_TTL_HOURS;
       return envTtl !== undefined && !isNaN(Number(envTtl)) ? Number(envTtl) : NPM_CACHE_TTL_HOURS;
@@ -215,9 +248,10 @@ export function parseArgs(argv) {
     else if (a === "--runner-root") args.runnerRoots.push(argv[++i]);
     else if (a === "--run-copy-ttl") args.runCopyTtlHours = Number(argv[++i]);
     else if (a === "--npm-cache-ttl") args.npmCacheTtlHours = Number(argv[++i]);
+    else if (a === "--runner-tmp-ttl") args.runnerTmpTtlHours = Number(argv[++i]);
     else if (a === "--env") i++;
     else if (a === "--help") {
-      console.log("Usage: host-clone-cache-gc.mjs [--apply|--dry-run] [--root path] [--scratch-root path] [--journal path] [--lock path] [--clone-ttl h] [--cache-ttl h] [--scratch-ttl h] [--proc-dir path] [--runner-root path] [--run-copy-ttl h (>= 3)] [--env path]");
+      console.log("Usage: host-clone-cache-gc.mjs [--apply|--dry-run] [--root path] [--scratch-root path] [--journal path] [--lock path] [--clone-ttl h] [--cache-ttl h] [--scratch-ttl h] [--proc-dir path] [--runner-root path] [--run-copy-ttl h (>= 3)] [--runner-tmp-ttl h (>= 3)] [--env path]");
       process.exit(0);
     }
   }
@@ -225,6 +259,8 @@ export function parseArgs(argv) {
   if (ttlError) throw new UsageError(ttlError);
   const npmTtlError = npmCacheTtlError(args.npmCacheTtlHours);
   if (npmTtlError) throw new UsageError(npmTtlError);
+  const tmpTtlError = runnerTmpTtlError(args.runnerTmpTtlHours);
+  if (tmpTtlError) throw new UsageError(tmpTtlError);
   return args;
 }
 
@@ -638,6 +674,93 @@ export async function scanRunnerTaskFolders(runnersRoot, now, ttlHours, { onEven
   return results;
 }
 
+// --- Runner unrecognized workspace folders (OPE-13018) --------------------------
+
+// Names the runner workspace legitimately holds besides the task folders: the
+// runtime state directory the board spares from every cleanup. Everything else
+// the OMP agent created with a name that is not a task-folder pattern is
+// "unrecognized": the GC reports it, never removes it.
+const RUNNER_WORKSPACE_KNOWN_NAMES = new Set([".paperclip-runtime"]);
+
+/**
+ * Directories in `<runnersRoot>/<runner>/workspace` whose names do not match
+ * `RUNNER_TASK_FOLDER_NAME` and are not known runtime directories. A folder
+ * younger than `ttlHours` (by its own mtime) is fresh — the agent may still be
+ * working in it; an older one is reported so a typo'd task folder (e.g.
+ * `OPR-12962` for `OPE-12962`, myrmidon OPE-13018) does not sit on the disk
+ * forever without a trace. Report-only: nothing here is ever deleted, the
+ * entry is journaled as `runner-unrecognized-workspace-folder` and returned
+ * with `action: "report"`. Every path component must be a real directory; a
+ * symlink anywhere skips the entry. Failures go to `onEvent`
+ * (`runner-unrecognized-scan-failed`) and the scan continues.
+ */
+export function scanRunnerUnrecognizedWorkspaceFolders(runnersRoot, now, ttlHours, { onEvent = () => {} } = {}) {
+  const results = [];
+  const ttlMs = ttlHours * HOUR_MS;
+  const fail = (extra, err) => {
+    onEvent({ event: "runner-unrecognized-scan-failed", root: runnersRoot, ...extra, error: err?.message || String(err) });
+  };
+  const rootStat = lstatSafe(runnersRoot);
+  if (rootStat.err) {
+    if (isAbsent(rootStat.err)) onEvent({ event: "runner-folder-root-missing", root: runnersRoot });
+    else fail({}, rootStat.err);
+    return results;
+  }
+  if (!rootStat.st.isDirectory()) {
+    fail({}, new Error("runner root is not a directory (a symlink is not followed)"));
+    return results;
+  }
+  let runners;
+  try {
+    runners = fs.readdirSync(runnersRoot, { withFileTypes: true });
+  } catch (err) {
+    fail({}, err);
+    return results;
+  }
+  for (const runner of runners) {
+    if (!runner.isDirectory()) continue;
+    const workspaceDir = path.join(runnersRoot, runner.name, "workspace");
+    const { st: baseSt, err: baseErr } = lstatSafe(workspaceDir);
+    if (baseErr && !isAbsent(baseErr)) {
+      fail({ runner: runner.name }, baseErr);
+      continue;
+    }
+    if (!baseSt || !baseSt.isDirectory()) continue;
+    let entries;
+    try {
+      entries = fs.readdirSync(workspaceDir, { withFileTypes: true });
+    } catch (err) {
+      fail({ runner: runner.name }, err);
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (RUNNER_TASK_FOLDER_NAME.test(entry.name)) continue;
+      if (entry.name.startsWith(".")) continue;
+      if (RUNNER_WORKSPACE_KNOWN_NAMES.has(entry.name)) continue;
+      const folder = path.join(workspaceDir, entry.name);
+      const { st, err } = lstatSafe(folder);
+      if (err && !isAbsent(err)) {
+        fail({ runner: runner.name, path: folder }, err);
+        continue;
+      }
+      if (!st || !st.isDirectory()) continue;
+      const ageMs = now - st.mtimeMs;
+      results.push({
+        runner: runner.name,
+        name: entry.name,
+        path: folder,
+        runnersRoot,
+        ageMs,
+        mtimeMs: st.mtimeMs,
+        action: "report",
+        reason: ageMs >= ttlMs ? "unrecognized-ttl" : "unrecognized-fresh",
+      });
+    }
+  }
+  return results;
+}
+
 export function collectOpenProcInfo(procDir = "/proc") {
   const openPaths = new Set();
   const openInodes = new Set();
@@ -802,6 +925,77 @@ export function listBotContainers({ docker = "docker", timeoutMs = DOCKER_TIMEOU
   return { ok: true, keys };
 }
 
+export function listOmpRunnerContainers({ docker = "docker", timeoutMs = DOCKER_TIMEOUT_MS, namePrefix = "myrmidon-omp-runner-" } = {}) {
+  const res = spawnSync(docker, ["ps", "-a", "--format", "{{.Names}}"], { encoding: "utf8", timeout: timeoutMs });
+  if (res.error || res.status !== 0) return { ok: false, reason: res.error?.code === "ENOENT" ? "docker-unavailable" : "docker-failed" };
+  const names = [];
+  for (const line of (res.stdout || "").split("\n")) {
+    const name = line.trim();
+    if (name.startsWith(namePrefix) && OMP_AGENT_KEY_PATTERN.test(name.slice(namePrefix.length))) names.push(name);
+  }
+  return { ok: true, names };
+}
+
+export async function fetchAgentAdapter(agentId, {
+  baseUrl = process.env.BOARD_API_URL || process.env.PAPERCLIP_API_URL || process.env.MYRMIDON_API_URL || "http://127.0.0.1:3100",
+  apiKey = process.env.PAPERCLIP_API_KEY,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  if (!OMP_AGENT_KEY_PATTERN.test(agentId)) return { ok: false, reason: "bad-agent-id" };
+  let base = (baseUrl || "").replace(/\/$/, "");
+  if (!base) base = "http://127.0.0.1:3100";
+  if (!base.endsWith("/api")) base += "/api";
+  if (typeof fetchImpl !== "function") return { ok: false, reason: "board-unavailable" };
+  const headers = { Accept: "application/json" };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  try {
+    const response = await fetchImpl(`${base}/agents/${encodeURIComponent(agentId)}`, { headers });
+    if (response.status === 404) return { ok: true, adapterType: null };
+    if (!response.ok) return { ok: false, reason: "board-unavailable", statusCode: response.status };
+    const body = await response.json();
+    if (!body || typeof body !== "object" || typeof body.adapterType !== "string") return { ok: false, reason: "board-unavailable" };
+    return { ok: true, adapterType: body.adapterType };
+  } catch {
+    return { ok: false, reason: "board-unavailable" };
+  }
+}
+
+export async function planStaleOmpRunners(runnersRoot, {
+  docker = "docker",
+  namePrefix = "myrmidon-omp-runner-",
+  fetchAdapter = fetchAgentAdapter,
+} = {}) {
+  const containers = listOmpRunnerContainers({ docker, namePrefix });
+  if (!containers.ok) return { ok: false, reason: containers.reason, plan: [] };
+  const plan = [];
+  const activeKeys = new Set();
+  for (const name of containers.names) {
+    const agentKey = name.slice(namePrefix.length);
+    activeKeys.add(agentKey);
+    const runnerPath = path.join(runnersRoot, agentKey);
+    const adapter = await fetchAdapter(agentKey);
+    if (!adapter.ok) plan.push({ name, agentKey, path: runnerPath, action: "keep", reason: adapter.reason });
+    else if (adapter.adapterType === "omp_local") plan.push({ name, agentKey, path: runnerPath, action: "keep", reason: "omp-local" });
+    else plan.push({ name, agentKey, path: runnerPath, runnersRoot, action: "stop-remove", reason: adapter.adapterType ? "adapter-changed" : "agent-deleted" });
+  }
+  try {
+    for (const agentKey of fs.readdirSync(runnersRoot)) {
+      if (activeKeys.has(agentKey) || !OMP_AGENT_KEY_PATTERN.test(agentKey)) continue;
+      const adapter = await fetchAdapter(agentKey);
+      if (adapter.ok && adapter.adapterType !== "omp_local") plan.push({ name: `${namePrefix}${agentKey}`, agentKey, path: path.join(runnersRoot, agentKey), runnersRoot, action: "remove-stale-home", reason: adapter.adapterType ? "adapter-changed" : "agent-deleted" });
+      else plan.push({ agentKey, path: path.join(runnersRoot, agentKey), action: "keep", reason: adapter.ok ? "omp-local" : adapter.reason });
+    }
+  } catch (err) {
+    return { ok: false, reason: err.code === "ENOENT" ? "runner-root-missing" : "runner-root-unreadable", plan };
+  }
+  return { ok: true, plan };
+}
+
+export function stopOmpRunner(name, { docker = "docker", timeoutMs = DOCKER_TIMEOUT_MS } = {}) {
+  const res = spawnSync(docker, ["rm", "-f", name], { encoding: "utf8", timeout: timeoutMs });
+  return !res.error && res.status === 0;
+}
+
 // One `GET /api/agents/{id}` against the board (real route, server/src/routes/agents.ts).
 // The lookup happens per candidate directory, only after the container and retention
 // guards passed, so a pass makes a handful of calls at most. The verdict decides the
@@ -821,7 +1015,7 @@ export async function fetchAgentDecommissionState(agentId, {
   apiKey = process.env.PAPERCLIP_API_KEY,
   fetchImpl = globalThis.fetch,
 } = {}) {
-  if (!BOT_KEY_PATTERN.test(agentId)) return { ok: false, reason: "bad-agent-id" };
+  if (!OMP_AGENT_KEY_PATTERN.test(agentId)) return { ok: false, reason: "bad-agent-id" };
   let base = (baseUrl || "").replace(/\/$/, "");
   if (!base) base = "http://127.0.0.1:3100";
   if (!base.endsWith("/api")) base += "/api";
@@ -1274,7 +1468,196 @@ export function pruneRunnerNpmCaches(items, journalPath) {
   return removed;
 }
 
+// --- Runner /tmp (OPE-12966) ---------------------------------------------------
+
+/**
+ * Newest mtime (lstat, no symlink followed) of a tree and its apparent size. Stops early when
+ * something younger than `freshAfterMs` is found (the entry is fresh, the rest does not
+ * matter). A directory on another filesystem than `dev` (a mount inside the entry) makes the
+ * entry `crossesFs`: the removal would descend into it. `error` is set when something cannot be
+ * read; the caller keeps the entry then.
+ */
+function newestMtimeInTree(entryPath, dev, freshAfterMs) {
+  let maxMtimeMs = 0;
+  let sizeBytes = 0;
+  const stack = [entryPath];
+  while (stack.length) {
+    const current = stack.pop();
+    const { st, err } = lstatSafe(current);
+    if (err) {
+      if (isAbsent(err)) continue; // vanished between two calls
+      return { maxMtimeMs, sizeBytes, crossesFs: false, error: err };
+    }
+    if (st.dev !== dev) return { maxMtimeMs, sizeBytes, crossesFs: true, error: null };
+    if (st.mtimeMs > maxMtimeMs) maxMtimeMs = st.mtimeMs;
+    sizeBytes += st.size || 0;
+    if (maxMtimeMs >= freshAfterMs) return { maxMtimeMs, sizeBytes, crossesFs: false, error: null };
+    if (st.isDirectory()) {
+      let names;
+      try {
+        names = fs.readdirSync(current);
+      } catch (e) {
+        if (isAbsent(e)) continue;
+        return { maxMtimeMs, sizeBytes, crossesFs: false, error: e };
+      }
+      for (const n of names) stack.push(path.join(current, n));
+    }
+  }
+  return { maxMtimeMs, sizeBytes, crossesFs: false, error: null };
+}
+
+/**
+ * Top-level entries (files and directories) of `<runnersRoot>/<runner>/tmp`, the runner's
+ * /tmp bind-mounted from the data disk. An entry's age is the newest mtime anywhere inside it
+ * (a symlink is never followed, a directory on another filesystem keeps the entry), so an
+ * entry something wrote to within `ttlHours` is `fresh`; an older one is `ttl`. A top-level
+ * symlink is never listed for removal (`symlink`), `tmp` itself is never removed. Every path
+ * component (`<runner>`, `tmp`) must be a real directory. Failures go to `onEvent`
+ * (`runner-tmp-root-missing`, `runner-tmp-scan-failed`) and the scan goes on with the next
+ * runner or entry. Each item carries `runnersRoot`, the root the removal is guarded against.
+ */
+export function scanRunnerTmp(runnersRoot, now, ttlHours, { onEvent = () => {} } = {}) {
+  const results = [];
+  const ttlMs = ttlHours * HOUR_MS;
+  const fail = (extra, err) => {
+    onEvent({ event: "runner-tmp-scan-failed", root: runnersRoot, ...extra, error: err?.message || String(err) });
+  };
+  const rootStat = lstatSafe(runnersRoot);
+  if (rootStat.err) {
+    if (isAbsent(rootStat.err)) onEvent({ event: "runner-tmp-root-missing", root: runnersRoot });
+    else fail({}, rootStat.err);
+    return results;
+  }
+  if (!rootStat.st.isDirectory()) {
+    fail({}, new Error("runner root is not a directory (a symlink is not followed)"));
+    return results;
+  }
+  let runners;
+  try {
+    runners = fs.readdirSync(runnersRoot, { withFileTypes: true });
+  } catch (err) {
+    fail({}, err);
+    return results;
+  }
+  for (const runner of runners) {
+    if (!runner.isDirectory()) continue;
+    const tmpDirPath = path.join(runnersRoot, runner.name, "tmp");
+    try {
+      const { st: tmpSt, err: tmpErr } = lstatSafe(tmpDirPath);
+      if (tmpErr && !isAbsent(tmpErr)) throw tmpErr;
+      if (!tmpSt || !tmpSt.isDirectory()) continue;
+      for (const entry of fs.readdirSync(tmpDirPath, { withFileTypes: true })) {
+        const entryPath = path.join(tmpDirPath, entry.name);
+        try {
+          const { st, err } = lstatSafe(entryPath);
+          if (err) {
+            if (!isAbsent(err)) fail({ runner: runner.name, path: entryPath }, err);
+            continue;
+          }
+          const base = { runner: runner.name, name: entry.name, path: entryPath, runnersRoot, mtimeMs: st.mtimeMs, ageMs: now - st.mtimeMs, sizeBytes: null };
+          if (st.isSymbolicLink()) {
+            results.push({ ...base, reason: "symlink" });
+            continue;
+          }
+          if (st.dev !== tmpSt.dev) {
+            results.push({ ...base, reason: "other-filesystem" });
+            continue;
+          }
+          const tree = newestMtimeInTree(entryPath, tmpSt.dev, now - ttlMs);
+          if (tree.error) {
+            fail({ runner: runner.name, path: entryPath }, tree.error);
+            results.push({ ...base, reason: "scan-failed" });
+            continue;
+          }
+          if (tree.crossesFs) {
+            results.push({ ...base, reason: "other-filesystem" });
+            continue;
+          }
+          const ageMs = now - Math.max(tree.maxMtimeMs, st.mtimeMs);
+          results.push({
+            ...base,
+            mtimeMs: Math.max(tree.maxMtimeMs, st.mtimeMs),
+            ageMs,
+            sizeBytes: tree.sizeBytes,
+            reason: ageMs >= ttlMs ? "ttl" : "fresh",
+          });
+        } catch (err) {
+          if (!isAbsent(err)) fail({ runner: runner.name, path: entryPath }, err);
+        }
+      }
+    } catch (err) {
+      if (!isAbsent(err)) fail({ runner: runner.name }, err);
+    }
+  }
+  return results;
+}
+
+/**
+ * Removes the planned runner /tmp entries (items of `scanRunnerTmp`, reason `ttl`), guarded
+ * against the configured runner root like the run copies. Returns the paths actually removed.
+ */
+export function pruneRunnerTmp(items, journalPath) {
+  const removed = [];
+  for (const r of items) {
+    try {
+      atomicDrop(r.path, r.runnersRoot);
+    } catch (err) {
+      journalRecord(journalPath, { event: "runner-tmp-remove-failed", path: r.path, runner: r.runner, error: err.message });
+      continue;
+    }
+    removed.push(r.path);
+    journalRecord(journalPath, { event: "runner-tmp-removed", path: r.path, runner: r.runner, ageHours: Math.round(r.ageMs / HOUR_MS), sizeBytes: r.sizeBytes });
+  }
+  return removed;
+}
+
 // --- Archive ----------------------------------------------------------------
+
+// Git repos inside a clone: the clone itself and nested ones (`.git` dir or file) a few levels down.
+function archiveRepos(clonePath) {
+  const repos = [];
+  const visit = (dir, depth) => {
+    if (fs.existsSync(path.join(dir, ".git"))) repos.push(dir);
+    if (depth === 0) return;
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
+      if (entry.name === ".git" || ARCHIVE_EXCLUDES.includes(entry.name) || BOT_SCAN_SKIP_NAMES.has(entry.name)) continue;
+      visit(path.join(dir, entry.name), depth - 1);
+    }
+  };
+  visit(clonePath, 3);
+  return repos;
+}
+
+// tar `--exclude` arguments: exact member paths (`<clone name>/<path>`) that git reports as ignored
+// and whose last segment is in ARCHIVE_EXCLUDES. A git failure or a non-repo gives no excludes:
+// the archive is whole, the safe default.
+function archiveExcludes(clonePath) {
+  const name = path.basename(clonePath);
+  const out = new Set();
+  for (const repo of archiveRepos(clonePath)) {
+    let r;
+    try {
+      r = git(["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], repo);
+    } catch {
+      continue;
+    }
+    if (r.status !== 0 || typeof r.stdout !== "string") continue;
+    const repoRel = path.relative(clonePath, repo);
+    for (const entry of r.stdout.split("\0")) {
+      const rel = entry.replace(/\/+$/, "");
+      if (!rel || !ARCHIVE_EXCLUDES.includes(rel.split("/").pop())) continue;
+      out.add(`--exclude=${[name, repoRel, rel].filter(Boolean).join("/")}`);
+    }
+  }
+  return [...out];
+}
 
 function archiveClone(clonePath, archiveRoot) {
   if (!fs.existsSync(archiveRoot)) fs.mkdirSync(archiveRoot, { recursive: true });
@@ -1283,19 +1666,46 @@ function archiveClone(clonePath, archiveRoot) {
   const hasZstd = spawnSync("zstd", ["--version"], { stdio: "ignore" }).status === 0;
   const extension = hasZstd ? "tar.zst" : "tar.gz";
   const archivePath = path.join(archiveRoot, `${name}-${ts}.${extension}`);
+  // What an install or a build recreates is not worth archiving: a 13 GB task folder (three
+  // repo copies with node_modules) never fit the timeout, an archive without it is ~0.5 GB.
+  // Only build and dependency dirs that git reports as ignored are left out, as exact paths
+  // (--anchored, --no-wildcards: a name with `*` or `[` matches literally, nowhere else).
+  // Unpushed commits (.git), working files and anything git does not ignore stay in.
+  const excludes = ["--no-wildcards", "--anchored", ...archiveExcludes(clonePath)];
+  // Per-archive limit, 10 min by default. The test hook is the env var (finite, > 0).
+  const envTimeoutS = Number(process.env.HOST_GC_ARCHIVE_TIMEOUT_SECONDS);
+  const timeoutS = Number.isFinite(envTimeoutS) && envTimeoutS > 0 ? envTimeoutS : 600;
+  // `timeout` kills the whole pipeline (tar and zstd included) when the time is up, so no orphan keeps
+  // writing into a file we delete; spawnSync's own limit is only a backstop for `timeout` itself.
+  const limit = ["--kill-after=10s", `${timeoutS}s`];
+  const spawnOpts = { timeout: (timeoutS + 30) * 1000 };
   let result;
   let verify;
   if (hasZstd) {
     // Prefer zstd, but do not make archival depend on an optional host binary.
-    result = spawnSync("bash", ["-c", `tar -cf - -C "${path.dirname(clonePath)}" "${name}" | zstd -q -o "${archivePath}"`], { timeout: 120000 });
+    // pipefail: a failing tar must not be masked by zstd's exit code. Paths go in as arguments, not into the script text.
+    result = spawnSync("timeout", [...limit, "bash", "-c", `set -o pipefail; tar -cf - "\${@:4}" -C "$1" "$2" | zstd -q -o "$3"`, "archive", path.dirname(clonePath), name, archivePath, ...excludes], spawnOpts);
     verify = ["bash", ["-c", `zstd -q -d -c "${archivePath}" | tar -tf - > /dev/null`]];
   } else {
-    result = spawnSync("tar", ["-czf", archivePath, "-C", path.dirname(clonePath), name], { timeout: 120000 });
+    result = spawnSync("timeout", [...limit, "tar", "-czf", archivePath, ...excludes, "-C", path.dirname(clonePath), name], spawnOpts);
     verify = ["tar", ["-tzf", archivePath]];
   }
-  if (result.status !== 0) throw new Error(`archive failed for ${clonePath}: ${result.stderr}`);
+  if (result.status !== 0) {
+    // A failed run leaves a partial archive of 1-2 GB behind on every pass; remove exactly this file.
+    fs.rmSync(archivePath, { force: true });
+    // stderr is often empty (a killed or timed-out child), so say why in words.
+    // 124 = `timeout` fired; 137 = it had to KILL the pipeline after --kill-after.
+    const timedOut = result.error?.code === "ETIMEDOUT" || result.status === 124 || result.status === 137;
+    const reason = timedOut
+      ? `timed out after ${timeoutS} s`
+      : `exit code ${result.status}, signal ${result.signal}${result.error ? `, error ${result.error.message}` : ""}`;
+    throw new Error(`archive failed for ${clonePath}: ${reason}: ${String(result.stderr ?? "").trim()}`);
+  }
   const verification = spawnSync(verify[0], verify[1], { timeout: 60000, stdio: "ignore" });
-  if (verification.status !== 0) throw new Error(`archive verification failed for ${archivePath}`);
+  if (verification.status !== 0) {
+    fs.rmSync(archivePath, { force: true });
+    throw new Error(`archive verification failed for ${archivePath}`);
+  }
   return archivePath;
 }
 
@@ -1316,7 +1726,7 @@ async function main() {
     const cloneTtlMs = args.cloneTtlHours * HOUR_MS;
     const cacheTtlMs = args.cacheTtlHours * HOUR_MS;
 
-    const plan = { clones: [], caches: [], scratch: [], botData: [], runCopies: [], runnerTaskFolders: [], runnerNpmCaches: [], kept: [], removed: [], archived: [] };
+    const plan = { clones: [], caches: [], scratch: [], botData: [], runCopies: [], staleOmpRunners: [], runnerTaskFolders: [], runnerNpmCaches: [], runnerTmp: [], runnerUnrecognized: [], kept: [], removed: [], archived: [] };
 
     // 1. Scan task clones
     const clones = scanTaskClones(root, now, args.cloneTtlHours);
@@ -1400,6 +1810,28 @@ async function main() {
       console.error(JSON.stringify({ ok: false, reason: `bot-data-gc-unavailable: ${botData.reason}` }));
     }
 
+    if (args.runnerRoots.length > 0) {
+      for (const runnersRoot of args.runnerRoots) {
+        const stale = await planStaleOmpRunners(runnersRoot, {
+          docker: args.docker,
+          namePrefix: args.runnerContainerPrefix,
+          fetchAdapter: (agentId) => fetchAgentAdapter(agentId),
+        });
+        if (!stale.ok) {
+          journalRecord(args.journal, { event: "stale-omp-runner-scan-unavailable", reason: stale.reason, root: runnersRoot });
+          continue;
+        }
+        for (const item of stale.plan) {
+          if (item.action === "keep") {
+            plan.kept.push(item);
+            journalRecord(args.journal, { event: "stale-omp-runner-kept", name: item.name, reason: item.reason });
+          } else {
+            plan.staleOmpRunners.push(item);
+          }
+        }
+      }
+    }
+
     // 3c. SSH runner run copies (OPE-12722): only when a runner root is configured.
     // A failure of one root or runner is journaled and skipped, never thrown: it must not
     // abort the clones, caches, scratch and bot-data passes of the same --apply.
@@ -1451,6 +1883,46 @@ async function main() {
       }
     }
 
+    // 3f. Runner /tmp (OPE-12966): the same gate as 3c. Entries whose newest mtime is inside
+    // the TTL, symlinks and other filesystems stay; only the journal says why for the odd ones.
+    for (const runnersRoot of args.runnerRoots) {
+      const items = scanRunnerTmp(runnersRoot, now, args.runnerTmpTtlHours, {
+        onEvent: (event) => journalRecord(args.journal, event),
+      });
+      for (const item of items) {
+        if (item.reason === "ttl") plan.runnerTmp.push({ ...item, action: "remove" });
+        else {
+          if (item.reason !== "fresh") {
+            journalRecord(args.journal, { event: "runner-tmp-skipped", path: item.path, runner: item.runner, reason: item.reason });
+          }
+          plan.kept.push({ ...item, action: "keep" });
+        }
+      }
+    }
+
+    // 3g. Unrecognized workspace folders of runner agents (OPE-13018): the same
+    // gate as 3c. A task folder the agent named with a typo (OPR-12962 for
+    // OPE-12962) never matches RUNNER_TASK_FOLDER_NAME, so 3d never sees it and
+    // it would sit on the disk forever. Report-only: the entry is journaled, the
+    // folder is never removed here.
+    for (const runnersRoot of args.runnerRoots) {
+      const items = scanRunnerUnrecognizedWorkspaceFolders(runnersRoot, now, args.cloneTtlHours, {
+        onEvent: (event) => journalRecord(args.journal, event),
+      });
+      for (const item of items) {
+        plan.runnerUnrecognized.push(item);
+        if (item.reason === "unrecognized-ttl") {
+          journalRecord(args.journal, {
+            event: "runner-unrecognized-workspace-folder",
+            path: item.path,
+            runner: item.runner,
+            name: item.name,
+            ageHours: Math.round(item.ageMs / HOUR_MS),
+          });
+        }
+      }
+    }
+
     // 4. Execute or report
     if (args.dryRun) {
       journalRecord(args.journal, {
@@ -1458,13 +1930,17 @@ async function main() {
         clones: plan.clones.length,
         caches: plan.caches.length,
         scratch: plan.scratch.length,
+        staleOmpRunners: plan.staleOmpRunners.length,
         runCopies: plan.runCopies.length,
         runnerTaskFolders: plan.runnerTaskFolders.length,
         runnerNpmCaches: plan.runnerNpmCaches.length,
+        runnerTmp: plan.runnerTmp.length,
+        runnerUnrecognized: plan.runnerUnrecognized.length,
         kept: plan.kept.length,
       });
       console.log(JSON.stringify({ ok: true, dryRun: true, plan }, null, 2));
     } else {
+      let staleOmpRunnersStopped = 0;
       // Apply: process archives first, then removals
       const archiveRoot = path.join(root, ".gc-archive");
       for (const c of plan.clones.filter((x) => x.action === "archive-remove")) {
@@ -1527,10 +2003,43 @@ async function main() {
           journalRecord(args.journal, { event: "bot-data-remove-failed", path: b.path, error: err.message });
         }
       }
+      staleOmpRunnersStopped = 0;
+      let staleOmpRunnerDataRemoved = 0;
+      for (const runner of plan.staleOmpRunners) {
+        if (runner.action === "stop-remove") {
+          if (!stopOmpRunner(runner.name, { docker: args.docker })) {
+            journalRecord(args.journal, { event: "stale-omp-runner-stop-failed", name: runner.name, reason: runner.reason });
+            continue;
+          }
+          staleOmpRunnersStopped++;
+          journalRecord(args.journal, { event: "stale-omp-runner-stopped", name: runner.name, reason: runner.reason });
+        }
+        for (const child of ["workspace", "home", "tmp", "scratch"]) {
+          const target = path.join(runner.path, child);
+          try {
+            if (!fs.existsSync(target)) continue;
+            atomicDrop(target, runner.runnersRoot);
+            staleOmpRunnerDataRemoved++;
+            journalRecord(args.journal, { event: "stale-omp-runner-data-removed", name: runner.name, path: target });
+          } catch (err) {
+            journalRecord(args.journal, { event: "stale-omp-runner-data-remove-failed", name: runner.name, path: target, error: err.message });
+          }
+        }
+        if (!["workspace", "home", "tmp", "scratch"].some((child) => fs.existsSync(path.join(runner.path, child)))) {
+          try {
+            atomicDrop(runner.path, runner.runnersRoot);
+            journalRecord(args.journal, { event: "stale-omp-runner-root-removed", name: runner.name, path: runner.path });
+          } catch (err) {
+            journalRecord(args.journal, { event: "stale-omp-runner-root-remove-failed", name: runner.name, path: runner.path, error: err.message });
+          }
+        }
+      }
       const runCopiesGone = pruneSshRunCopies(plan.runCopies.filter((x) => x.action === "remove"), args.journal);
       for (const gone of runCopiesGone) plan.removed.push({ path: gone });
       const npmCachesGone = pruneRunnerNpmCaches(plan.runnerNpmCaches.filter((x) => x.action === "remove"), args.journal);
       for (const gone of npmCachesGone) plan.removed.push({ path: gone });
+      const runnerTmpGone = pruneRunnerTmp(plan.runnerTmp, args.journal);
+      for (const gone of runnerTmpGone) plan.removed.push({ path: gone });
       let runnerTaskFoldersRemoved = 0;
       // myrmidon(1.6.8 OPE-12855): archive-then-remove for folders whose git state could not
       // be proven, plain removal for clean closed ones; both guarded against the runner root.
@@ -1562,9 +2071,13 @@ async function main() {
         archived: plan.archived.length,
         scratchPruned: plan.scratch.length,
         botDataRemoved: plan.botData.length,
+        staleOmpRunnersStopped,
+        staleOmpRunnerDataRemoved,
         runCopiesRemoved: runCopiesGone.length,
         runnerTaskFoldersRemoved,
         runnerNpmCachesRemoved: npmCachesGone.length,
+        runnerTmpRemoved: runnerTmpGone.length,
+        runnerUnrecognized: plan.runnerUnrecognized.length,
         kept: plan.kept.length,
       });
       console.log(JSON.stringify({
@@ -1574,9 +2087,13 @@ async function main() {
         archived: plan.archived.length,
         scratchPruned: plan.scratch.length,
         botDataRemoved: plan.botData.length,
+        staleOmpRunnersStopped,
+        staleOmpRunnerDataRemoved,
         runCopiesRemoved: runCopiesGone.length,
         runnerTaskFoldersRemoved,
         runnerNpmCachesRemoved: npmCachesGone.length,
+        runnerTmpRemoved: runnerTmpGone.length,
+        runnerUnrecognized: plan.runnerUnrecognized.length,
         kept: plan.kept.length,
       }, null, 2));
     }

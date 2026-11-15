@@ -55,7 +55,7 @@ const ENABLED_CARD = { enabled: true, image: "bot-image:1.1.0", memoryMb: 2048, 
 
 function fakeDriver(overrides: Partial<BotContainerDriver> = {}): BotContainerDriver {
   return {
-    status: async (botKey): Promise<BotContainerStatus> => ({ botKey, state: "running", image: "bot-image:1.1.0", restartHash: "r", filesHash: "f" }),
+    status: async (botKey): Promise<BotContainerStatus> => ({ botKey, state: "running", image: "bot-image:1.1.0", restartHash: "r", filesHash: "f", inspect: { State: { StartedAt: "2026-10-20T02:01:35.500Z", FinishedAt: "2026-10-20T02:00:00.000Z" } } }),
     list: async () => [],
     templateDrift: async () => ({ drifted: false, fields: [] }),
     create: async () => {},
@@ -262,7 +262,7 @@ describe("myrmidon(W2b) bot container routes: status", () => {
       gatewayConcurrencyNote: APPLIED_LIMIT_PENDING_NOTE,
       gatewayConcurrencyWarning: null,
       idleStopMode: "on_demand",
-      idleStopRuntime: { idleStopped: false, lastStoppedAt: null, lastStartedAt: null },
+      idleStopRuntime: { idleStopped: false, lastStoppedAt: "2026-10-20T02:00:00.000Z", lastStartedAt: "2026-10-20T02:01:35.500Z", coldStartDurationMs: 95_500 },
       profileUpdatePendingSince: null,
       limits: {
         requested: { memoryMb: 2048, cpus: 1, pidsLimit: 512 },

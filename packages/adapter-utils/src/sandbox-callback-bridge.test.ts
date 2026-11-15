@@ -1428,6 +1428,9 @@ describe("sandbox callback bridge", () => {
       { method: "POST", path: "/api/issues/issue-1/approvals" },
       { method: "GET", path: "/api/projects/proj-1" },
       { method: "GET", path: "/api/goals/goal-1" },
+      { method: "GET", path: "/api/companies/co-1/heartbeat-runs" },
+      { method: "GET", path: "/api/heartbeat-runs/run-1" },
+      { method: "GET", path: "/api/heartbeat-runs/run-1/log" },
       { method: "GET", path: "/api/issues/issue-1" },
       { method: "GET", path: "/api/issues/issue-1/heartbeat-context" },
       { method: "GET", path: "/api/issues/issue-1/comments" },
@@ -1509,6 +1512,12 @@ describe("sandbox callback bridge", () => {
       { method: "POST", path: "/api/companies/co-1/logo" },
       { method: "GET", path: "/api/companies/co-1/secrets" },
       { method: "PATCH", path: "/api/secrets/secret-1" },
+      // Run telemetry is GET-only and single-purpose: no cancel through the
+      // bridge, no extra segments, no scraper-scoped /metrics.
+      { method: "POST", path: "/api/heartbeat-runs/run-1/cancel" },
+      { method: "GET", path: "/api/heartbeat-runs/run-1/extra" },
+      { method: "GET", path: "/api/heartbeat-runs/run-1/log/extra" },
+      { method: "GET", path: "/metrics" },
     ];
     for (const request of denied) {
       expect(authorizeSandboxCallbackBridgeRequestWithRoutes(request)).toBe(

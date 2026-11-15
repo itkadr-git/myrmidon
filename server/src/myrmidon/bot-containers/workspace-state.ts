@@ -67,3 +67,72 @@ export function workspaceStateOf(
   if (prState === "merged") return { state: "closing", prState, reason: "pr_merged" };
   return { state: "active", prState };
 }
+
+/**
+ * myrmidon(OPE-13107): the copy of a REVIEW PARTICIPANT is released when its review is over.
+ * The row is a `lost` one (the bot is not the assignee) of a task that is not terminal. During
+ * a review the board makes the reviewer the assignee and keeps the executor in
+ * `executionState.returnAssignee`, so the executor's row looks the same as a finished
+ * reviewer's. The bot is released only when it is a participant of a review stage of the
+ * task's execution policy AND it is not the current participant, not the return assignee
+ * (executor) and not the assignee. A bot outside the review stages never matches, so an
+ * executor's copy is kept until the task returns to it.
+ */
+export function reviewParticipationEndedFor(input: {
+  botAgentId: string;
+  status: string;
+  assigneeAgentId: string | null;
+  executionState?: Record<string, unknown> | null;
+  executionPolicy?: Record<string, unknown> | null;
+}): boolean {
+  if (input.status === "done" || input.status === "cancelled") return false;
+  if (input.assigneeAgentId === input.botAgentId) return false;
+  const agentOf = (p: unknown): string | null => {
+    const v = p as { type?: string; agentId?: string | null } | null | undefined;
+    return v && v.type === "agent" && v.agentId ? v.agentId : null;
+  };
+  const stages = input.executionPolicy?.stages;
+  if (!Array.isArray(stages)) return false;
+  const wasReviewer = stages.some(
+    (stage) =>
+      stage && (stage as { type?: string }).type === "review" &&
+      Array.isArray((stage as { participants?: unknown }).participants) &&
+      ((stage as { participants: unknown[] }).participants).some((p) => agentOf(p) === input.botAgentId),
+  );
+  if (!wasReviewer) return false;
+  const state = input.executionState;
+  if (agentOf(state?.currentParticipant) === input.botAgentId) return false;
+  if (agentOf(state?.returnAssignee) === input.botAgentId) return false;
+  return true;
+}
+
+/**
+ * myrmidon(OPE-13107): a reviewer whose review stage is COMPLETED (approval waits for the merge)
+ * can still be the assignee of the task. Its copy is released all the same, unless the bot is
+ * the return assignee (the executor) or still the current participant (`pending` stage). The
+ * assignee rule of `reviewParticipationEndedFor` does not apply here: the stage state decides.
+ */
+export function reviewerStageCompletedFor(input: {
+  botAgentId: string;
+  status: string;
+  executionState?: Record<string, unknown> | null;
+  executionPolicy?: Record<string, unknown> | null;
+}): boolean {
+  if (input.status === "done" || input.status === "cancelled") return false;
+  const state = input.executionState;
+  if (!state || state.status !== "completed") return false;
+  const agentOf = (p: unknown): string | null => {
+    const v = p as { type?: string; agentId?: string | null } | null | undefined;
+    return v && v.type === "agent" && v.agentId ? v.agentId : null;
+  };
+  if (agentOf(state.returnAssignee) === input.botAgentId) return false;
+  if (agentOf(state.currentParticipant) === input.botAgentId) return false;
+  const stages = input.executionPolicy?.stages;
+  if (!Array.isArray(stages)) return false;
+  return stages.some(
+    (stage) =>
+      stage && (stage as { type?: string }).type === "review" &&
+      Array.isArray((stage as { participants?: unknown }).participants) &&
+      ((stage as { participants: unknown[] }).participants).some((p) => agentOf(p) === input.botAgentId),
+  );
+}

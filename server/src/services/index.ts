@@ -40,6 +40,7 @@ export {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   buildContinuationSummaryMarkdown,
   getIssueContinuationSummaryDocument,
+  getIssueStarterPackDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
 export { projectService } from "./projects.js";

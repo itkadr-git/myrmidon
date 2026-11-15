@@ -497,6 +497,7 @@ run("production corpus adapters", () => {
         datasets: [],
         topK: 5,
         minScore: null,
+        contextTokenBudget: 2000,
       });
 
       expect(result.hits.length).toBeGreaterThan(0);

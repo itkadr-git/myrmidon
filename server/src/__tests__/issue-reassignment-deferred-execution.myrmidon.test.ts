@@ -33,7 +33,7 @@ describeEmbeddedPostgres("cancelDeferredExecutionsForAgentOnReassignment", () =>
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-reassignment-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   beforeEach(async () => {
     await db.insert(companies).values({

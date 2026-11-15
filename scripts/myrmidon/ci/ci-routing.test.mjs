@@ -120,7 +120,7 @@ test('computeConcurrencyGroup assigns isolated release- prefix to release PRs', 
   });
   assert.equal(mainPush, 'myrmidon-ci-refs/heads/main');
 
-  // Irrelevant label goes to label-noop
+  // No label-noop group any more: the main workflow has no `labeled` trigger
   const noopLabel = computeConcurrencyGroup({
     eventName: 'pull_request',
     action: 'labeled',
@@ -128,7 +128,7 @@ test('computeConcurrencyGroup assigns isolated release- prefix to release PRs', 
     prNumber: 2063,
     prTitle: 'update docs',
   });
-  assert.equal(noopLabel, 'myrmidon-ci-2063-label-noop');
+  assert.equal(noopLabel, 'myrmidon-ci-2063');
 });
 
 test('computeCancelInProgress lets main runs complete; the concurrency group bounds the queue (OPE-12103, 10.11)', () => {
@@ -176,17 +176,6 @@ test('computeCancelInProgress lets main runs complete; the concurrency group bou
       eventName: 'pull_request',
       action: 'synchronize',
       runAttempt: 3,
-    }),
-    false,
-  );
-
-  // Non-triggering labels do not cancel
-  assert.equal(
-    computeCancelInProgress({
-      eventName: 'pull_request',
-      action: 'labeled',
-      labelName: 'question',
-      runAttempt: 1,
     }),
     false,
   );

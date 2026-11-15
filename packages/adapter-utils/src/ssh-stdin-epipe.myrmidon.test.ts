@@ -152,7 +152,7 @@ describe.skipIf(process.platform === "win32")("ssh stdin EPIPE and stderr tail (
     // without reading it. The promise must settle with the ssh failure and tar
     // must be stopped — a hang or an unhandled stdin error would fail the test.
     await expect(syncDirectoryToSsh({ spec, localDir: sourceDir, remoteDir: "/workspace" })).rejects.toThrow(
-      /ssh stdin|remote host closed connection|exited with code 255|exited before tar finished/,
+      /ssh stdin|remote host closed connection|exited with code 255|tar did not finish/,
     );
 
     // Managed rejection is not proof by itself: check the process table so a
@@ -176,26 +176,28 @@ describe.skipIf(process.platform === "win32")("ssh stdin EPIPE and stderr tail (
   it("caps stderr above the tail limit with the truncation marker, keeping the end", async () => {
     setEnv("FAKE_SSH_MODE", "large-stderr");
 
-    // The download direction reports ssh's stderr through the tail buffer when
-    // ssh closes: every 'data' chunk is delivered before 'close', so the cap
-    // and the marker are deterministic here.
-    let caughtError: unknown = null;
-    try {
-      await syncDirectoryFromSsh({ spec, remoteDir: "/workspace", localDir: sourceDir });
-    } catch (error) {
-      caughtError = error;
+    // OPE-13128: ssh's stderr tail is reported first, with the truncation marker;
+    // a tar error, if tar also fails on the empty stream, follows on its own line
+    // and its text is not asserted. Repeated so the ssh/tar exit race is caught.
+    for (let run = 0; run < 50; run++) {
+      let caughtError: unknown = null;
+      try {
+        await syncDirectoryFromSsh({ spec, remoteDir: "/workspace", localDir: sourceDir });
+      } catch (error) {
+        caughtError = error;
+      }
+
+      expect(caughtError, `run ${run + 1} must reject`).toBeInstanceOf(Error);
+      const message = (caughtError as Error).message;
+      // Marker with the dropped byte count first, the kept tail reaches the final
+      // diagnostic line, and the dropped head is gone.
+      expect(message, `run ${run + 1}`).toMatch(/^…обрезано \d+ байт/);
+      expect(message, `run ${run + 1}`).toContain("stderr-line-2000");
+      expect(message, `run ${run + 1}`).toContain("transfer closed with 1 error");
+      expect(message, `run ${run + 1}`).not.toContain("stderr-line-0001");
+
+      // The failed restore still removed its staging directory.
+      expect(await leftoverStagingDirs(), `run ${run + 1}`).toEqual([]);
     }
-
-    expect(caughtError).toBeInstanceOf(Error);
-    const message = (caughtError as Error).message;
-    // Marker with the dropped byte count, and the kept tail reaches the final
-    // diagnostic line while the dropped head is gone.
-    expect(message).toMatch(/…обрезано \d+ байт/);
-    expect(message).toContain("stderr-line-2000");
-    expect(message).toContain("transfer closed with 1 error");
-    expect(message).not.toContain("stderr-line-0001");
-
-    // The failed restore still removed its staging directory.
-    expect(await leftoverStagingDirs()).toEqual([]);
   }, 20_000);
 });

@@ -59,7 +59,11 @@ import {
 } from "./locales/index.js";
 // myrmidon(X9b): @<alias> addressing — alias resolution plus the reply prefix
 // and the first-contact context quote for an addressed agent's turn.
-import { resolveBridgeAddressee, type TelegramAddressee } from "./addressing.js";
+import {
+  resolveBridgeAddressee,
+  type TelegramAddressee,
+  type BridgeAddresseeResult,
+} from "./addressing.js";
 import { buildMentionedChatContext } from "./cross-channel.js";
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -796,7 +800,7 @@ export async function resolveBridgedAddressee(
     endpointAgentId: string;
     text: string;
   },
-): Promise<TelegramAddressee | null> {
+): Promise<BridgeAddresseeResult> {
   return resolveBridgeAddressee(db, input);
 }
 

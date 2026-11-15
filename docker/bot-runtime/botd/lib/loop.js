@@ -62,6 +62,41 @@ const REPORT_ACTION = Object.freeze({
   "delete-archive": "remove",
 });
 
+// myrmidon(OPE-13107): the board answers {quotaPercent: null, partitionPercent: 0, level: "none"}
+// when it has no partition measurement (dockergate down or its sample stale). That is "no data",
+// not "the disk is empty". botd then measures the bot data volume itself (statfs of /workspace,
+// which lives on the bot XFS volume) and derives the level with the default partition thresholds
+// (85 warn, 90 refuse-open). When even that fails, the state says so in `warning`.
+const LOCAL_SOFT_PERCENT = 85;
+const LOCAL_HARD_PERCENT = 90;
+
+export function pressureIsUnmeasured(pressure) {
+  if (!pressure || typeof pressure !== "object") return true;
+  if (pressure.partitionMeasured === false) return true;
+  if (pressure.partitionMeasured === true) return false;
+  // an older board has no flag: its "no data" answer is exactly this triple
+  return pressure.partitionPercent === 0 && pressure.level === "none" && (pressure.quotaPercent ?? null) === null;
+}
+
+/** @returns {{ pressure: object, warning: string|null }} */
+export function resolvePressure(pressure, volume) {
+  if (!pressureIsUnmeasured(pressure)) return { pressure, warning: null };
+  const total = Number(volume?.totalBytes);
+  const used = Number(volume?.usedBytes);
+  if (!(total > 0) || !Number.isFinite(used) || used < 0) {
+    return { pressure, warning: "disk pressure unknown: the board has no partition measurement and the local statfs failed" };
+  }
+  const percent = Math.min(100, Math.max(0, Math.round((used / total) * 1000) / 10));
+  if (percent === 0 && used > 0) {
+    return { pressure, warning: "disk pressure unknown: the local statfs reports 0% with used bytes" };
+  }
+  const level = percent >= LOCAL_HARD_PERCENT ? "hard" : percent >= LOCAL_SOFT_PERCENT ? "soft" : "none";
+  return {
+    pressure: { ...pressure, quotaPercent: pressure.quotaPercent ?? percent, partitionPercent: percent, level },
+    warning: `the board has no partition measurement; pressure derived from the local volume (${percent}%)`,
+  };
+}
+
 const errMessage = (err) => String(err && err.message ? err.message : err).replace(/\s+/g, " ").slice(0, 400);
 
 /**
@@ -93,6 +128,7 @@ export function createLoop(deps) {
   // the board's nextReportSec after the first accepted report; null until then
   let nextReportSec = null;
   let lastPressure = "none";
+  let lastPressureWarning = null;
   let lastPressurePassAt = 0;
   let lastDelayMs = clamp(intervalMs);
 
@@ -201,7 +237,21 @@ export function createLoop(deps) {
     } catch (err) {
       desired = { ok: false, reason: `unexpected error: ${errMessage(err)}` };
     }
-    const desiredOk = desired?.ok === true && desired.state != null;
+    let desiredOk = desired?.ok === true && desired.state != null;
+    let pressureWarning = null;
+    if (desiredOk) {
+      let volume = null;
+      try {
+        volume = typeof deps.measureVolume === "function" ? await deps.measureVolume() : null;
+      } catch (err) {
+        log(`botd loop: volume measurement failed: ${errMessage(err)}`);
+      }
+      const resolved = resolvePressure(desired.state.pressure, volume);
+      pressureWarning = resolved.warning;
+      if (resolved.pressure !== desired.state.pressure) desired = { ...desired, state: { ...desired.state, pressure: resolved.pressure } };
+      if (pressureWarning && pressureWarning !== lastPressureWarning) log(`botd loop: ${pressureWarning}`);
+      lastPressureWarning = pressureWarning;
+    }
 
     let g = await gatherSafe(desiredOk ? desired.state : null);
 
@@ -303,6 +353,7 @@ export function createLoop(deps) {
           quotaPercent: p.quotaPercent ?? null,
           partitionPercent: p.partitionPercent,
           pressure: p.level,
+          ...(pressureWarning ? { warning: pressureWarning } : {}),
           updatedAt: now().toISOString().replace(/\.\d{3}Z$/, "Z"),
         });
       } catch (err) {

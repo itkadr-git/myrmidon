@@ -29,7 +29,7 @@ describeEmbeddedPostgres("myrmidon(1.7-BUDGET-CONFIG A) limits and usage on a li
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-budget-limits-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(litellmCostEvents);

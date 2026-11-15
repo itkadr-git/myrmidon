@@ -25,6 +25,7 @@ export const EVENT_PRIORITY_BY_TYPE: Record<string, EventPriority> = {
   review_completed: "P1",
   execution_review_requested: "P1",
   execution_approval_requested: "P1",
+  execution_verify_requested: "P1",
   issue_unblock_requested: "P1",
   issue_blockers_resolved: "P1",
   approval_approved: "P1",

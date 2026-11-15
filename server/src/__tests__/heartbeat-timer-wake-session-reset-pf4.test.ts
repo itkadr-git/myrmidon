@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   describeSessionResetReason,
+  shouldResetTaskSessionForRun,
   shouldResetTaskSessionForWake,
 } from "../services/heartbeat.ts";
 
@@ -146,5 +147,25 @@ describe("PF-4 describeSessionResetReason", () => {
       const reason = describeSessionResetReason(ctx);
       expect(Boolean(reason)).toBe(shouldReset);
     }
+  });
+});
+
+describe("OPE-13087 shouldResetTaskSessionForRun", () => {
+  it("keeps the saved task session when nothing asks for a reset (developer role is not an input)", () => {
+    expect(
+      shouldResetTaskSessionForRun({ wakeReset: false, configReset: false, longTaskPlanReset: false }),
+    ).toBe(false);
+    expect(shouldResetTaskSessionForRun({ wakeReset: false, configReset: false })).toBe(false);
+    expect(
+      shouldResetTaskSessionForRun({ wakeReset: false, configReset: false, longTaskPlanReset: null }),
+    ).toBe(false);
+  });
+
+  it("still resets for a wake, a stale configuration or a long-task plan", () => {
+    expect(shouldResetTaskSessionForRun({ wakeReset: true, configReset: false })).toBe(true);
+    expect(shouldResetTaskSessionForRun({ wakeReset: false, configReset: true })).toBe(true);
+    expect(
+      shouldResetTaskSessionForRun({ wakeReset: false, configReset: false, longTaskPlanReset: true }),
+    ).toBe(true);
   });
 });

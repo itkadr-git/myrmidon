@@ -40,7 +40,24 @@ import { AGENT_SPEND_WINDOW_MS, readAgentSpendWindows, type AgentSpendWindow } f
  * The gateway is called over the REST API M2-A already reads: `/key/generate`
  * and `/key/update` take the value to install, and the gateway stores its
  * sha256 — the same `hash_token` M2-A matches against the spend ledger.
+ *
+ * myrmidon(OPE-12930 KEY-TTL): every managed key is issued with a lifetime, at
+ * most 24 hours (a run is expected to be shorter). The same deadline is
+ * written to BOTH halves: the gateway key metadata (`expires` on
+ * `/key/generate`, `/key/update`) and the board secret's metadata row
+ * (secretService.create/rotate `expiresAt`), so the store's own resolution and
+ * the gateway's enforcement refuse the same expired value. A rotation that
+ * the gateway did not apply (404) still refreshes the secret's deadline, a
+ * failed gateway write never leaves a fresh secret behind, and a failed board
+ * write after a gateway accept compensates the half that moved: create removes
+ * the fresh gateway key, rotation restores the stored old value — or removes
+ * the gateway key when that value is unreadable.
  */
+
+/** Upper bound for a managed gateway key's lifetime (OPE-12930 KEY-TTL). */
+export const MAX_AGENT_GATEWAY_KEY_TTL_MS = 24 * 60 * 60 * 1000;
+/** Default lifetime of a managed gateway key: the full 24-hour bound. */
+export const DEFAULT_AGENT_GATEWAY_KEY_TTL_MS = MAX_AGENT_GATEWAY_KEY_TTL_MS;
 
 export interface AgentGatewayKeyDeps {
   db: Db;
@@ -61,9 +78,13 @@ export interface AgentGatewayKeyDeps {
     name: string;
     value: string;
     description: string;
+    /** Board-side expiry metadata for the key secret (OPE-12930 KEY-TTL). */
+    expiresAt?: Date;
   }): Promise<{ id: string }>;
-  /** Rotates a company secret to a new value. */
-  rotateSecret(secretId: string, value: string): Promise<void>;
+  /** Rotates a company secret to a new value, moving its expiry with the value. */
+  rotateSecret(secretId: string, value: string, expiresAt?: Date): Promise<void>;
+  /** Reads a managed key secret's stored expiry; null when absent or unexpired-unknown. */
+  readSecretExpiresAt?(companyId: string, secretName: string): Promise<Date | null>;
   /** Deletes a company secret by id. */
   deleteSecret?(secretId: string): Promise<void>;
   /** The key-management port of the gateway, built from the admin key. */
@@ -79,10 +100,10 @@ export interface AgentGatewayKeyDeps {
 
 /** The key-management surface of the gateway this module uses. */
 export interface GatewayKeyAdminPort {
-  /** Installs a key under an alias with optional allowed models. The gateway stores its sha256. */
-  createKey(input: { alias: string; value: string; models?: string[] }): Promise<void>;
-  /** Replaces the value behind an alias. Returns false when the alias is unknown. */
-  rotateKey(input: { alias: string; value: string }): Promise<boolean>;
+  /** Installs a key under an alias with optional allowed models and gateway-side expiry. */
+  createKey(input: { alias: string; value: string; models?: string[]; expiresAt?: Date }): Promise<void>;
+  /** Replaces the value behind an alias, moving its gateway-side expiry. Returns false when the alias is unknown. */
+  rotateKey(input: { alias: string; value: string; expiresAt?: Date }): Promise<boolean>;
   /** Removes a key by alias. */
   deleteKey(input: { alias: string }): Promise<void>;
   /**
@@ -131,12 +152,20 @@ export interface AgentGatewayKeyView {
   gatewaySpendUsd?: number | null;
   /** Spend facts from the board ledger (OPE-11776). */
   usage?: KeyBudgetUsageView | null;
+  /**
+   * The key's deadline (OPE-12930 KEY-TTL): when the value stops being
+   * accepted — the gateway's own expiry, mirrored on the board secret.
+   * ISO 8601 string; null when unknown.
+   */
+  expiresAt?: string | null;
 }
 
 export interface AgentGatewayKeyInput {
   companyId: string;
   agentId: string;
   models?: string[];
+  /** Requested lifetime in milliseconds; at most 24 h (OPE-12930 KEY-TTL). Default: 24 h. */
+  ttlMs?: number;
 }
 
 /**
@@ -149,12 +178,37 @@ export interface AgentGatewayKeyInput {
  * persisted by the board; the caller (a board member) hands it to nobody — the
  * bot reads it from the store through its profile. An already-present key is a
  * conflict, not an overwrite: a silent overwrite would cut a working bot off.
+ *
+ * myrmidon(OPE-12930 KEY-TTL): the key is born with a deadline — the gateway
+ * gets `expires`, the board secret gets `expiresAt` — both derived from ONE
+ * computed instant, so neither half can outlive the other.
  */
+/**
+ * One deadline for BOTH halves of a managed key (OPE-12930 KEY-TTL): the
+ * gateway's `expires` and the board secret's `expiresAt` are derived here, so
+ * neither can drift from the other. `ttlMs` is optional (default: 24 h) and
+ * bounded: zero, negative, non-finite, or beyond 24 h is a 400, not a silent
+ * clamp — a caller asking for a year of key life should hear "no".
+ */
+export function keyExpiry(ttlMs?: number, now: Date = new Date()): Date {
+  const ttl = ttlMs ?? DEFAULT_AGENT_GATEWAY_KEY_TTL_MS;
+  if (!Number.isFinite(ttl) || ttl <= 0 || ttl > MAX_AGENT_GATEWAY_KEY_TTL_MS) {
+    throw badRequest("gateway key TTL must be greater than zero and at most 24 hours", {
+      code: "gateway_key_ttl_invalid",
+      maxTtlMs: MAX_AGENT_GATEWAY_KEY_TTL_MS,
+    });
+  }
+  return new Date(now.getTime() + ttl);
+}
+
 export async function createAgentGatewayKey(
   deps: AgentGatewayKeyDeps,
   input: AgentGatewayKeyInput,
 ): Promise<{ view: AgentGatewayKeyView; value: string }> {
   const settings = requireKeyManagement(deps.env ?? process.env);
+  // Validate the requested lifetime FIRST: a bad ttlMs is a 400 even when the
+  // agent already holds a key, not a masked 409 conflict.
+  const expiresAt = keyExpiry(input.ttlMs);
   const agent = await loadAgent(deps.db, input);
   const secretName = agentKeySecretName({ agentId: agent.id, agentSlug: agent.name });
 
@@ -168,17 +222,36 @@ export async function createAgentGatewayKey(
 
   const adminKey = await requireAdminKey(deps, input.companyId, settings);
   const value = generateGatewayKeyValue();
-  await deps.gateway({ baseUrl: settings.baseUrl!, adminKey }).createKey({
+  const port = deps.gateway({ baseUrl: settings.baseUrl!, adminKey });
+  await port.createKey({
     alias: secretName,
     value,
     models: input.models,
+    expiresAt,
   });
-  await deps.createSecret({
-    companyId: input.companyId,
-    name: secretName,
-    value,
-    description: `LLM gateway key of agent "${agent.name}"; the board rotates it for this agent only`,
-  });
+  try {
+    await deps.createSecret({
+      companyId: input.companyId,
+      name: secretName,
+      value,
+      description: `LLM gateway key of agent "${agent.name}"; the board rotates it for this agent only`,
+      expiresAt,
+    });
+  } catch (error) {
+    // myrmidon(OPE-12930 KEY-TTL): the gateway accepted a value the board can
+    // never store — nobody could resolve it, so it is an active orphan. The
+    // compensating delete runs before the store error surfaces; a failed
+    // compensation is logged, never masked.
+    try {
+      await port.deleteKey({ alias: secretName });
+    } catch (deleteError) {
+      log(deps).warn(
+        { companyId: input.companyId, agentId: agent.id, secretName, error: String(deleteError) },
+        "agent gateway key orphan delete failed after a failed secret create",
+      );
+    }
+    throw error;
+  }
   log(deps).info({ companyId: input.companyId, agentId: agent.id }, "agent gateway key created");
   return {
     view: {
@@ -188,9 +261,63 @@ export async function createAgentGatewayKey(
       valueHash: gatewayKeyValueHash(value),
       canManageKeys: true,
       models: input.models ?? [],
+      expiresAt: expiresAt.toISOString(),
     },
     value,
   };
+}
+/**
+ * Undoes a rotation whose board-side half failed (OPE-12930 KEY-TTL): the
+ * gateway already holds the new value, the store still holds the old. The
+ * gateway is moved BACK to the stored old value with its stored old deadline,
+ * so the agent keeps authenticating with the value the store can resolve and
+ * the two halves agree again. When the old value cannot be read (or the read
+ * fails), the key is removed from the gateway instead: a missing key fails
+ * closed on every request, a live gateway key the store cannot resolve does
+ * not. Compensation errors are logged and swallowed so the store error — the
+ * cause the caller must see — is never masked.
+ */
+async function compensateFailedRotation(
+  deps: AgentGatewayKeyDeps,
+  port: GatewayKeyAdminPort,
+  companyId: string,
+  secretName: string,
+): Promise<void> {
+  let oldValue: string | null = null;
+  let oldExpiresAt: Date | null = null;
+  try {
+    oldValue = await deps.readSecretValue(companyId, secretName);
+    if (oldValue && deps.readSecretExpiresAt) {
+      oldExpiresAt = await deps.readSecretExpiresAt(companyId, secretName);
+    }
+  } catch (readError) {
+    log(deps).warn(
+      { companyId, secretName, error: String(readError) },
+      "agent gateway key rotation compensation could not read the stored value",
+    );
+    oldValue = null;
+  }
+  if (oldValue) {
+    try {
+      await port.rotateKey({ alias: secretName, value: oldValue, expiresAt: oldExpiresAt ?? undefined });
+    } catch (restoreError) {
+      log(deps).warn(
+        { companyId, secretName, error: String(restoreError) },
+        "agent gateway key rotation compensation restore failed; removing the key",
+      );
+      oldValue = null;
+    }
+  }
+  if (!oldValue) {
+    try {
+      await port.deleteKey({ alias: secretName });
+    } catch (deleteError) {
+      log(deps).warn(
+        { companyId, secretName, error: String(deleteError) },
+        "agent gateway key rotation compensation delete failed",
+      );
+    }
+  }
 }
 
 /**
@@ -203,7 +330,14 @@ export async function createAgentGatewayKey(
  * the gateway did not apply is not written to the store, so the two can differ
  * only in the direction that keeps the agent authenticating with a value the
  * gateway knows.
+ *
+ * myrmidon(OPE-12930 KEY-TTL): a rotation moves BOTH deadlines — `expires` on
+ * the gateway key and `expiresAt` on the board secret — from ONE computed
+ * instant, so neither half can outlive the other. A failed board-side half is
+ * compensated: the gateway is moved back to the stored old value — or the key
+ * is removed when that value is unreadable.
  */
+
 export async function rotateAgentGatewayKey(
   deps: AgentGatewayKeyDeps,
   input: AgentGatewayKeyInput,
@@ -222,16 +356,25 @@ export async function rotateAgentGatewayKey(
 
   const adminKey = await requireAdminKey(deps, input.companyId, settings);
   const value = generateGatewayKeyValue();
-  const applied = await deps
-    .gateway({ baseUrl: settings.baseUrl!, adminKey })
-    .rotateKey({ alias: secretName, value });
+  const expiresAt = keyExpiry(input.ttlMs);
+  const port = deps.gateway({ baseUrl: settings.baseUrl!, adminKey });
+  const applied = await port.rotateKey({ alias: secretName, value, expiresAt });
   if (!applied) {
     throw unprocessable(
       `the gateway does not hold a key named "${secretName}"; the store was left unchanged`,
       { code: "gateway_key_unknown", secretName },
     );
   }
-  await deps.rotateSecret(secretId, value);
+  try {
+    await deps.rotateSecret(secretId, value, expiresAt);
+  } catch (error) {
+    // myrmidon(OPE-12930 KEY-TTL): the gateway now holds the NEW value while
+    // the store still holds the old one — the halves split in the direction
+    // that locks the agent out. Restore the gateway to the stored old value
+    // and deadline, or remove the key when that is impossible.
+    await compensateFailedRotation(deps, port, input.companyId, secretName);
+    throw error;
+  }
   log(deps).info({ companyId: input.companyId, agentId: agent.id }, "agent gateway key rotated");
   return {
     agentId: agent.id,
@@ -239,6 +382,7 @@ export async function rotateAgentGatewayKey(
     present: true,
     valueHash: gatewayKeyValueHash(value),
     canManageKeys: true,
+    expiresAt: expiresAt.toISOString(),
   };
 }
 
@@ -278,6 +422,7 @@ export async function revokeAgentGatewayKey(
     valueHash: null,
     canManageKeys: true,
     models: [],
+    expiresAt: null,
   };
 }
 
@@ -323,6 +468,7 @@ export async function updateAgentGatewayKeyAllowlist(
     valueHash: value ? gatewayKeyValueHash(value) : null,
     canManageKeys: true,
     models: input.models,
+    expiresAt: (await storedExpiry(deps, input.companyId, secretName))?.toISOString() ?? null,
   };
 }
 
@@ -360,6 +506,7 @@ export async function readAgentGatewayKey(
     valueHash: value ? gatewayKeyValueHash(value) : null,
     canManageKeys: settings.canManageKeys,
     ...(models !== undefined ? { models } : {}),
+    expiresAt: (await storedExpiry(deps, input.companyId, secretName))?.toISOString() ?? null,
   };
 }
 
@@ -465,9 +612,24 @@ export async function listAgentGatewayKeys(
       maxBudgetUsd,
       gatewaySpendUsd,
       usage,
+      expiresAt: (await storedExpiry(deps, companyId, secretName))?.toISOString() ?? null,
     });
   }
   return views;
+}
+
+/**
+ * The board secret's stored deadline (OPE-12930 KEY-TTL), tolerated to fail:
+ * expiry is metadata, so a metadata read error must neither expose the value
+ * nor take the key-status endpoints down. Null when the deps cannot read it.
+ */
+async function storedExpiry(deps: AgentGatewayKeyDeps, companyId: string, secretName: string): Promise<Date | null> {
+  if (!deps.readSecretExpiresAt) return null;
+  try {
+    return await deps.readSecretExpiresAt(companyId, secretName);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -567,6 +729,8 @@ export function defaultAgentGatewayKeyDeps(
         .then((row) => (row ? secrets.resolveSecretValue(companyId, row.id, "latest") : null)),
     findSecretId: (companyId, secretName) =>
       secrets.getByName(companyId, secretName).then((row) => row?.id ?? null),
+    readSecretExpiresAt: async (companyId, secretName) =>
+      (await secrets.getByName(companyId, secretName))?.expiresAt ?? null,
     readSecretValueById: async (companyId, secretId, version = "latest") => {
       // A binding whose secret was deleted or whose pinned version is gone is
       // "no key", not a failure of the whole pass.
@@ -584,13 +748,14 @@ export function defaultAgentGatewayKeyDeps(
           key: input.name,
           value: input.value,
           description: input.description,
+          expiresAt: input.expiresAt,
         } as never,
         { userId: null, agentId: null },
       )) as { id: string };
       return { id: created.id };
     },
-    rotateSecret: async (secretId, value) => {
-      await secrets.rotate(secretId, { value }, { userId: null, agentId: null });
+    rotateSecret: async (secretId, value, expiresAt) => {
+      await secrets.rotate(secretId, { value, expiresAt }, { userId: null, agentId: null });
     },
     deleteSecret: async (secretId) => {
       await secrets.remove(secretId);
@@ -663,15 +828,23 @@ export function createGatewayKeyAdminPort(baseUrl: string, adminKey: string): Ga
   }
 
   return {
-    async createKey({ alias, value, models }) {
+    async createKey({ alias, value, models, expiresAt }) {
       await post("/key/generate", {
         key_alias: alias,
         key: value,
         ...(models !== undefined ? { models } : {}),
+        // myrmidon(OPE-12930 KEY-TTL): LiteLLM takes `expires` as seconds or
+        // an ISO 8601 instant; the ISO form is unambiguous about the board's
+        // intended deadline and survives timezone math on the gateway.
+        ...(expiresAt ? { expires: expiresAt.toISOString() } : {}),
       });
     },
-    async rotateKey({ alias, value }) {
-      const response = await post("/key/update", { key_alias: alias, key: value });
+    async rotateKey({ alias, value, expiresAt }) {
+      const response = await post("/key/update", {
+        key_alias: alias,
+        key: value,
+        ...(expiresAt ? { expires: expiresAt.toISOString() } : {}),
+      });
       // A missing alias answers 404; anything else that reached here is applied.
       return response.status < 400;
     },

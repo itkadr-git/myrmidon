@@ -88,6 +88,7 @@
 - [Общий кэш пакетов и git-объектов](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/bot-disk-cache.md)
 - [Сигнал заполнения диска хоста](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/host-disk.md)
 - [Очистка рабочих областей после слияния](Workspace-cleanup.ru)
+- [Чекпоинты turn'ов рабочих областей](Workspace-turn-checkpoints.ru)
 - [Реестр стека](Stack-registry.ru)
 - [Данные дашборда флота: подключения VictoriaMetrics + Zabbix, API снимка, самопроверка](Fleet-dashboard-monitoring.ru)
 - [Баннер обслуживания](Maintenance-banner.ru)

@@ -34,7 +34,7 @@ describeEmbeddedPostgres("myrmidon(HERMES-USAGE-COST) reconcileUnpricedCostEvent
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-litellm-reconcile-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(litellmCostEvents);

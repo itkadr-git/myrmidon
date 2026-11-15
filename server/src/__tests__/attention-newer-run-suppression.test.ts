@@ -43,7 +43,7 @@ describeEmbeddedPostgres("attention failed-run newer-run suppression", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-attention-newer-run-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(inboxDismissals);

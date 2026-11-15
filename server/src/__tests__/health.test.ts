@@ -9,6 +9,11 @@ import { healthRoutes, livenessRoutes } from "../routes/health.js";
 import * as devServerStatus from "../dev-server-status.js";
 import { serverVersion } from "../version.js";
 
+// OPE-12919: a local test checkout carries no release stamp, so the release
+// version of the health response resolves to null here unless a test injects
+// one explicitly via runtimeEnv.
+const testReleaseVersion = null;
+
 const mockReadPersistedDevServerStatus = vi.hoisted(() => vi.fn());
 const testServerInfo = {
   processStartedAt: "2026-06-26T00:00:00.000Z",
@@ -120,7 +125,7 @@ describe("GET /health", () => {
     const app = createApp();
     const res = await request(app).get("/health");
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: "ok", version: serverVersion, serverVersion: serverVersion, commit: testServerInfo.git.fullSha, serverInfo: testServerInfo });
+    expect(res.body).toEqual({ status: "ok", version: testReleaseVersion, serverVersion: serverVersion, commit: testServerInfo.git.fullSha, serverInfo: testServerInfo });
   }, 15_000);
 
   it("keeps the self-hosted health response byte-identical and omits cloud", async () => {
@@ -130,7 +135,7 @@ describe("GET /health", () => {
 
     const baseline = {
       status: "ok",
-      version: serverVersion,
+      version: testReleaseVersion,
       serverVersion,
       commit: testServerInfo.git.fullSha,
       serverInfo: testServerInfo,
@@ -192,7 +197,7 @@ describe("GET /health", () => {
     expect(db.execute).toHaveBeenCalledTimes(1);
     expect(res.body).toMatchObject({
       status: "ok",
-      version: serverVersion,
+      version: testReleaseVersion,
       serverInfo: testServerInfo,
     });
   });
@@ -208,7 +213,7 @@ describe("GET /health", () => {
     expect(res.status).toBe(503);
     expect(res.body).toEqual({
       status: "unhealthy",
-      version: serverVersion,
+      version: testReleaseVersion,
       serverVersion,
       commit: testServerInfo.git.fullSha,
       error: "database_unreachable",
@@ -385,6 +390,7 @@ describe("GET /health", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       status: "ok",
+      version: testReleaseVersion,
       deploymentMode: "authenticated",
       deploymentExposure: "public",
       localAiLoginSupported: false,
@@ -443,6 +449,7 @@ describe("GET /health", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       status: "ok",
+      version: testReleaseVersion,
       deploymentMode: "authenticated",
       deploymentExposure: "public",
       localAiLoginSupported: false,
@@ -482,6 +489,7 @@ describe("GET /health", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       status: "ok",
+      version: testReleaseVersion,
       deploymentMode: "authenticated",
       deploymentExposure: "public",
       localAiLoginSupported: false,
@@ -525,7 +533,7 @@ describe("GET /health", () => {
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
       status: "ok",
-      version: serverVersion,
+      version: testReleaseVersion,
       serverVersion,
       deploymentMode: "authenticated",
       deploymentExposure: "public",
@@ -610,5 +618,77 @@ describe("GET /health", () => {
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });
+  });
+
+  // OPE-12919: `version` carries the release version — the same string CI
+  // writes to the image's `org.opencontainers.image.version` label — so a
+  // deploy check can compare the health answer with the image label. Without a
+  // release stamp (local development) the field is null, not absent.
+  it("returns the release version when the build carries a release stamp", async () => {
+    const app = createApp(undefined, testServerInfo, undefined, {
+      MYRMIDON_BUILD_VERSION: "1.6.7-rc.27",
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.version).toBe("1.6.7-rc.27");
+    expect(res.body.serverVersion).toBe(serverVersion);
+  });
+
+  it("accepts the legacy PAPERCLIP_BUILD_VERSION alias for the release version", async () => {
+    const app = createApp(undefined, testServerInfo, undefined, {
+      PAPERCLIP_BUILD_VERSION: "1.6.7-rc.27",
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.version).toBe("1.6.7-rc.27");
+  });
+
+  it("returns version null when the build carries no release stamp", async () => {
+    const app = createApp(undefined, testServerInfo, undefined, {});
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(Object.prototype.hasOwnProperty.call(res.body, "version")).toBe(true);
+    expect(res.body.version).toBeNull();
+  });
+
+  it("carries the release version on the redacted anonymous response in authenticated mode", async () => {
+    const devServerStatus = await import("../dev-server-status.js");
+    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);
+    const { healthRoutes } = await import("../routes/health.js");
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([{ count: 1 }]),
+        })),
+      })),
+    } as unknown as Db;
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as any).actor = { type: "none", source: "none" };
+      next();
+    });
+    app.use(
+      "/health",
+      healthRoutes(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+        authReady: true,
+        companyDeletionEnabled: false,
+        serverInfo: testServerInfo,
+        runtimeEnv: { MYRMIDON_BUILD_VERSION: "1.6.7-rc.27" },
+      }),
+    );
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.version).toBe("1.6.7-rc.27");
   });
 });

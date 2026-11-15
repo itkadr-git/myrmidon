@@ -12,6 +12,8 @@ on:
       - "docker/agent-runtime/**"
       - "tools/agent-shim/**"
       - "scripts/myrmidon/omp-image.test.mjs"
+      - "scripts/myrmidon/omp-prompt-patch.test.mjs"
+      - "scripts/myrmidon/patch-omp-cli.mjs"
       - ".github/workflows/agent-runtime-images.yml"
   workflow_dispatch:
     inputs:

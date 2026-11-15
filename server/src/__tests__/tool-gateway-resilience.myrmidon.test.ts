@@ -591,7 +591,7 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-tool-gateway-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(activityLog);

@@ -15,13 +15,43 @@
 // The SQL twin of this rule is `queuedRunWaitedAtLeastSql`
 // (../adapters/queued-run-age.ts); keep the two in step.
 
+//
+// myrmidon(RESUME-QUEUE-AGE): a run that stood in the queue while its agent was
+// paused did not wait for a start during the pause: the agent could not start
+// anything. The resume stamps the agent's queued runs with
+// `contextSnapshot.queueWaitResumedAtMs` (epoch milliseconds, an integer;
+// myrmidon/pause-drain.ts), and the wait counts from that moment when it is
+// later than the rule above. A value that does not fit is IGNORED, never an
+// error: absent, null, a string, negative, fractional, shorter than 12 or
+// longer than 14 digits (outside 1973..5138), or later than `now`. SQL twin:
+// ../adapters/queued-run-age.ts (same accepted set; keep the two in step).
+export const QUEUE_WAIT_RESUMED_AT_KEY = "queueWaitResumedAtMs";
+export const QUEUE_WAIT_RESUMED_AT_MIN_MS = 100_000_000_000;
+export const QUEUE_WAIT_RESUMED_AT_MAX_MS = 99_999_999_999_999;
+
 export function queuedRunWaitingSince(
-  run: { createdAt: Date; scheduledRetryAt?: Date | string | null },
+  run: { createdAt: Date; scheduledRetryAt?: Date | string | null; contextSnapshot?: unknown },
   now: Date,
 ): Date {
+  let since = run.createdAt;
   if (run.scheduledRetryAt != null) {
     const dueAt = new Date(run.scheduledRetryAt);
-    if (Number.isFinite(dueAt.getTime()) && dueAt.getTime() <= now.getTime()) return dueAt;
+    if (Number.isFinite(dueAt.getTime()) && dueAt.getTime() <= now.getTime()) since = dueAt;
   }
-  return run.createdAt;
+  const snapshot = run.contextSnapshot;
+  const stamp =
+    snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)
+      ? (snapshot as Record<string, unknown>)[QUEUE_WAIT_RESUMED_AT_KEY]
+      : null;
+  if (
+    typeof stamp === "number" &&
+    Number.isSafeInteger(stamp) &&
+    stamp >= QUEUE_WAIT_RESUMED_AT_MIN_MS &&
+    stamp <= QUEUE_WAIT_RESUMED_AT_MAX_MS &&
+    stamp <= now.getTime() &&
+    stamp > since.getTime()
+  ) {
+    since = new Date(stamp);
+  }
+  return since;
 }

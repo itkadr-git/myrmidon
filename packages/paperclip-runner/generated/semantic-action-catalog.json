@@ -1766,7 +1766,7 @@
       "additionalProperties": false,
       "properties": {
         "assigneeActorId": {
-          "description": "Optional actor assignee.",
+          "description": "Optional agent assignee ID. Omit to assign the current agent.",
           "maxLength": 200,
           "type": [
             "string",

@@ -66,7 +66,10 @@ describe("corpus tool surface", () => {
       CORPUS_TOOL_NAMES.search,
       { query: "передать товар" },
       { settings: ENABLED, port: memory.port },
-    )) as { hits: Array<{ score: number; text: string; document: { id: string; name: string; url: string | null } }> };
+    )) as {
+      hits: Array<{ score: number; text: string; document: { id: string; name: string; url: string | null } }>;
+      context: { text: string; tokenCount: number; fragments: Array<{ citation: string; chunkId: string }> };
+    };
 
     expect(result.hits.length).toBeGreaterThan(0);
     expect(result.hits[0].score).toBeGreaterThan(0);
@@ -76,6 +79,10 @@ describe("corpus tool surface", () => {
     expect(result.hits[0].document.url).toContain("/corpus/documents/");
     // The module's default top-k, not the fixture's.
     expect(memory.calls.search[0].topK).toBe(3);
+    expect(result.context.fragments.length).toBeGreaterThan(0);
+    expect(result.context.fragments[0].citation).toContain("[Source: Договор поставки №12.pdf");
+    expect(result.context.text).toContain("[Source: Договор поставки №12.pdf");
+    expect(result.context.tokenCount).toBeGreaterThan(0);
   });
 
   it("accepts the RAGFlow spelling of the arguments beside its own", async () => {

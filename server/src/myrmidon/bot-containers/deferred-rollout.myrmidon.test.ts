@@ -289,6 +289,85 @@ describeEmbeddedPostgres("myrmidon(BOT-ROLLOUT) deferred bot rollout", () => {
     expect(activity.some((e) => e.level === "error" && e.message.includes("exceeded its configured wait"))).toBe(true);
   });
 
+  // myrmidon(BOT-PROFILE-NO-RUN-INTERRUPT): the watcher reads the LIVE run count
+  // (not the window view), waits while a run is in flight, and asks for the drain
+  // only past the soft timeout.
+  async function seedRecord(ageSec: number) {
+    const record = makeRecord({ firstDeferredAt: new Date(Date.now() - ageSec * 1000).toISOString() });
+    const doc = upsertBotRolloutDeferredRecord(
+      emptyBotRolloutDeferredDocument(),
+      { botKey: record.botKey, agentId: record.agentId, targetImage: record.targetImage, reason: record.lastReason, attempts: record.attempts },
+      new Date(record.firstDeferredAt),
+    );
+    await db.insert(instanceSettings).values({ singletonKey: "default", general: { [BOT_ROLLOUT_DEFERRED_GENERAL_KEY]: doc }, experimental: {} });
+  }
+
+  it("a run in flight keeps the record waiting; a free bot is applied without drain", async () => {
+    await seedRecord(60);
+    let active = 1;
+    const maintenance: BotMaintenancePort = {
+      enter: async () => ({ state: "on" as const, runningRuns: 0, owned: true }),
+      // the window view says 0 (no window): it must not be what the gate reads
+      status: async () => ({ state: "off" as const, runningRuns: 0 }),
+      exit: async () => {},
+      activeRuns: async () => active,
+    };
+    const applyCalls: Array<{ force: boolean; drainBusy?: boolean }> = [];
+    const run = () =>
+      runDeferredRolloutWatcher(db, {
+        maintenance,
+        applyNow: async (_a, opts) => {
+          applyCalls.push({ force: opts.force, drainBusy: opts.drainBusy });
+          return { kind: "applied_restart" };
+        },
+        readAgent: async () => agent(),
+        env: { ...ENABLED, [BOT_ROLLOUT_DEFERRED_MAX_WAIT_ENV]: "3600" },
+      });
+    await run();
+    expect(applyCalls).toEqual([]);
+    expect((await readBotRolloutDeferredDocument(db)).records).toHaveLength(1);
+    active = 0;
+    await run();
+    expect(applyCalls).toEqual([{ force: true, drainBusy: false }]);
+    expect((await readBotRolloutDeferredDocument(db)).records).toHaveLength(0);
+  });
+
+  it("past the soft timeout the retry asks for the drain (drainBusy) and ignores the busy signal", async () => {
+    await seedRecord(3700);
+    const applyCalls: Array<{ drainBusy?: boolean }> = [];
+    await runDeferredRolloutWatcher(db, {
+      maintenance: {
+        enter: async () => ({ state: "on" as const, runningRuns: 0, owned: true }),
+        status: async () => ({ state: "off" as const, runningRuns: 0 }),
+        exit: async () => {},
+        activeRuns: async () => 1,
+      },
+      applyNow: async (_a, opts) => {
+        applyCalls.push({ drainBusy: opts.drainBusy });
+        return { kind: "applied_restart" };
+      },
+      readAgent: async () => agent(),
+      env: { ...ENABLED, [BOT_ROLLOUT_DEFERRED_MAX_WAIT_ENV]: "3600" },
+    });
+    expect(applyCalls).toEqual([{ drainBusy: true }]);
+  });
+
+  it("a changed target image keeps the record's clock", () => {
+    const first = upsertBotRolloutDeferredRecord(
+      emptyBotRolloutDeferredDocument(),
+      { botKey: "agent-a", agentId: "agent-a", targetImage: "img-1", reason: "busy" },
+      new Date("2026-11-13T00:00:00Z"),
+    );
+    const second = upsertBotRolloutDeferredRecord(
+      first,
+      { botKey: "agent-a", agentId: "agent-a", targetImage: "img-2", reason: "busy" },
+      new Date("2026-11-13T05:00:00Z"),
+    );
+    expect(second.records).toHaveLength(1);
+    expect(second.records[0].targetImage).toBe("img-2");
+    expect(second.records[0].firstDeferredAt).toBe("2026-11-13T00:00:00.000Z");
+  });
+
   // (c2) Under the max wait the busy gate holds: a busy bot is NOT retried.
   it("does not retry a busy bot before the max wait", async () => {
     const record = makeRecord({ firstDeferredAt: new Date(Date.now() - 60_000).toISOString() });
