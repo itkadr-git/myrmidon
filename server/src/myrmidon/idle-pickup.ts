@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import { blockerOpenSql } from "./blocker-resolved.js";
 import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issueExecutionDecisions, issues, issueWorkProducts, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
@@ -17,6 +17,7 @@ import {
 // budget without restarting the server — a restart drops every run in flight.
 import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@myrmidon/shared";
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
+import { releaseFocusCondition } from "./release-focus.js";
 import { liveIdlePickupSettings, liveIdleWakeBudget } from "./runs-queue-settings/live.js";
 // myrmidon(1.6.5 F-26 T5): the cooling window of stale wake candidates (design §4.3).
 import { isIssueCoolingDown, readSwarmSettings } from "./wake-task-guard.js";
@@ -388,7 +389,7 @@ function issuePriorityRank(priority: string | null | undefined): number {
  * run in the loop in `idlePickupForAgent`.
  */
 export function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
-  // Keep idle-pickup candidate SQL prefilter aligned: review stages in_review where agent is currentParticipant
+  const focus = releaseFocusCondition(companyId);
   const isReviewParticipant =
     sql`${issues.status} = 'in_review' and ${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent' and ${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agentId}`;
   return db
@@ -404,12 +405,18 @@ export function idlePickupCandidateRows(db: Db, companyId: string, agentId: stri
     .where(
       and(
         eq(issues.companyId, companyId),
+        // Owner-assigned tasks and review participation preserve existing wake behavior.
         or(
           and(
             eq(issues.assigneeAgentId, agentId),
             isNull(issues.assigneeUserId),
             inArray(issues.status, [...WAKEABLE_ISSUE_STATUSES]),
           ),
+          isReviewParticipant,
+        ),
+        // Release focus applies only to automatic assigned-task pickup candidates.
+        or(
+          and(eq(issues.assigneeAgentId, agentId), focus),
           isReviewParticipant,
         ),
         isNull(issues.hiddenAt),
