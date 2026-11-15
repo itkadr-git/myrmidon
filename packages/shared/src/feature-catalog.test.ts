@@ -34,6 +34,12 @@ describe("INSTANCE_FEATURE_CATALOG", () => {
     expect([...INSTANCE_FEATURE_KEYS]).toEqual(schemaBooleanFlagKeys());
   });
 
+  it("enables isolated task workspaces in the runtime defaults", () => {
+    const defaults = instanceExperimentalSettingsSchema.parse({});
+    expect(defaults.enableIsolatedWorkspaces).toBe(true);
+    expect(defaults.enableIsolatedWorkspacesByDefault).toBe(true);
+  });
+
   it("keeps selfHostedDefault in sync with the schema defaults", () => {
     const schemaDefaults = instanceExperimentalSettingsSchema.parse({});
     for (const key of INSTANCE_FEATURE_KEYS) {
