@@ -17,9 +17,11 @@ test('CLI reports eager graph, lazy edges, unknowns, and never executes input', 
       // import './fake1.js';
       const text = "require('./fake2.js')";
       const pattern = /require('.\/fake-regex.js')/;
+      const template = \`text \${require('./template-child.mjs')}\`;
       export const marker = 1
       const from = './fake3.js';
       require('node:fs').writeFileSync(${JSON.stringify(join(dir, 'executed'))}, 'bad');`);
+    put('template-child.mjs', 'export default 1;');
     put('a.mjs', "import './entry.mjs'; export const x = 1;");
     put('b.mjs', 'export const x = 2;');
     put('lazy.mjs', "import './lazy-child.mjs';");
@@ -30,14 +32,15 @@ test('CLI reports eager graph, lazy edges, unknowns, and never executes input', 
     assert.equal(first.stdout, run().stdout);
     const report = JSON.parse(first.stdout);
     assert.equal(existsSync(join(dir, 'executed')), false);
-    assert.deepEqual(report.modules.filter(m => m.eager).map(m => m.path), ['a.mjs', 'b.mjs', 'entry.mjs']);
+    assert.ok(report.edges.some(e => e.specifier === './template-child.mjs' && e.kind === 'eager'));
+    assert.deepEqual(report.modules.filter(m => m.eager).map(m => m.path), ['a.mjs', 'b.mjs', 'entry.mjs', 'template-child.mjs']);
     assert.deepEqual(report.modules.filter(m => !m.eager).map(m => m.path), ['lazy-child.mjs', 'lazy.mjs']);
     assert.equal(report.edges.filter(e => e.from === 'entry.mjs' && e.specifier === './a.mjs').length, 1);
     assert.equal(report.edges.find(e => e.specifier === './lazy.mjs').kind, 'lazy');
     assert.deepEqual(report.unknown.map(e => e.specifier), ['./missing.js', 'lazy-package', 'uninstalled-package']);
-    assert.equal(report.counts.eagerModules, 3);
+    assert.equal(report.counts.eagerModules, 4);
     assert.equal(report.bytes.eager, report.modules.filter(m => m.eager).reduce((n, m) => n + m.bytes, 0));
-    assert.equal(report.heaviestEager.length, 3);
+    assert.equal(report.heaviestEager.length, 4);
     assert.ok(!first.stdout.includes('fake1.js') && !first.stdout.includes('fake2.js'));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
