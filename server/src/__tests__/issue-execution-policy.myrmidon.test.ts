@@ -2509,6 +2509,26 @@ describe("verify execution stages", () => {
     expect(result.patch).toMatchObject({ status: "in_review", assigneeAgentId: qaAgentId });
   });
 
+  it("does not let the final review complete a release without verification", () => {
+    const policy = reviewOnlyPolicy();
+    const issue = {
+      ...pendingIssue(policy),
+      title: "1.6.6 Release change",
+      executionState: {
+        ...pendingIssue(policy).executionState,
+        currentStageType: "review" as const,
+      },
+    };
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue,
+      policy,
+      requestedStatus: "done",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Review approved",
+    })).toThrow(/verify/i);
+  });
+
   it("rejects marking a release task done without a verify stage", () => {
       const reviewPolicy = makePolicy([{
         type: "review",
