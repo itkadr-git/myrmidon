@@ -46,6 +46,17 @@ class CollectorTests(unittest.TestCase):
         self.assertTrue(report['time_sync']['synchronized'])
         self.assertEqual(report['backup']['status'], 'unknown')
 
+    def test_standby_time_lag_is_reported_and_required(self):
+        fixture = dict.fromkeys(collector.FIELDS, 1)
+        fixture.update(server_version_num=160002, in_recovery=True, lag_seconds=12.5)
+        with patch.object(collector, 'query_postgres', return_value=fixture):
+            report = collector.collect('/socket', 'db', 'operator')
+        self.assertEqual(report['postgres']['data']['lag_seconds'], 12.5)
+        fixture['lag_seconds'] = None
+        with patch.object(collector, 'query_postgres', return_value=fixture):
+            report = collector.collect('/socket', 'db', 'operator')
+        self.assertEqual(report['postgres']['status'], 'incomplete')
+
     def test_postgres_incomplete_when_standby_lag_unavailable(self):
         fixture = dict.fromkeys(collector.FIELDS, 1)
         fixture.update(server_version_num=160002, in_recovery=True, lag_bytes=None)

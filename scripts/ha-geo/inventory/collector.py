@@ -22,6 +22,8 @@ SQL = """SELECT json_build_object(
    ELSE (SELECT count(*) FROM pg_stat_replication WHERE state = 'streaming') END,
  'lag_bytes', CASE WHEN pg_is_in_recovery() THEN
    pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn()) ELSE NULL END,
+ 'lag_seconds', CASE WHEN pg_is_in_recovery() THEN
+   extract(epoch from (clock_timestamp() - pg_last_xact_replay_timestamp())) ELSE NULL END,
  'ssl', (SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()),
  'ssl_configured', current_setting('ssl', true),
  'archive_last_success', (SELECT last_archived FROM pg_stat_archiver),
@@ -29,7 +31,7 @@ SQL = """SELECT json_build_object(
 )::text;"""
 FIELDS = ('server_version_num', 'db_bytes', 'in_recovery', 'wal_level', 'archive_mode',
           'archive_timeout', 'wal_keep_size', 'max_wal_senders', 'max_replication_slots',
-          'streaming', 'lag_bytes', 'ssl', 'ssl_configured', 'archive_last_success', 'archive_failures')
+          'streaming', 'lag_bytes', 'lag_seconds', 'ssl', 'ssl_configured', 'archive_last_success', 'archive_failures')
 
 
 def time_sync_status():
@@ -71,7 +73,7 @@ def collect(socket=None, database=None, user=None):
             raw = query_postgres(socket, database, user)
             data = {key: raw.get(key) for key in FIELDS}
             data['major'] = raw['server_version_num'] // 10000
-            required = [k for k in FIELDS if k != 'lag_bytes' or data['in_recovery']]
+            required = [k for k in FIELDS if k not in ('lag_bytes', 'lag_seconds') or data['in_recovery']]
             postgres = {'status': 'ok' if all(data[k] is not None for k in required) else 'incomplete', 'data': data}
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
             postgres = {'status': 'error', 'reason': 'query failed or access denied; details suppressed'}

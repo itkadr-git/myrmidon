@@ -28,7 +28,8 @@ is unknown; archive mode, timeout, last successful archive time and failed archi
 count are PostgreSQL facts, not proof of a backup. `ssl_configured` reports the
 server setting; a socket connection does not prove network TLS works.
 These limitations mean exit 2 remains expected even when PostgreSQL succeeds.
-`lag_bytes` is replay byte lag on a standby, not time-based RPO.
+`lag_bytes` is replay byte lag on a standby. `lag_seconds` is the age of the last
+replayed transaction, not a reliable RPO: it also increases on an idle primary.
 Do not treat a null lag as zero or this output as proof of a working standby.
 
 Run isolated fixture checks with `python3 -m unittest discover -s scripts/ha-geo/inventory -v`.
