@@ -1073,7 +1073,7 @@ import {
   runMatchesCurrentRelease,
   type PriorityScoredRun,
 } from "../myrmidon/run-priority/scoring.js";
-import { normalizeRunPrioritySettings, runPriorityWeight, type RunPrioritySettings } from "@myrmidon/shared";
+import { runPriorityWeight, type RunPrioritySettings } from "@myrmidon/shared";
 import { effectivePheromone } from "@myrmidon/shared";
 // myrmidon(S2-hostcred): a run never inherits the host's GitHub credentials
 import {
@@ -33379,11 +33379,7 @@ export function heartbeatService(
       });
     };
 
-    const runPriorityGeneral = await instanceSettings.getGeneral().catch(() => ({} as Record<string, unknown>));
-    const releaseSettings = normalizeRunPrioritySettings(
-      runPriorityGeneral.runPriority,
-      currentRunPrioritySettings(),
-    );
+    const releaseSettings = currentRunPrioritySettings();
     if (issueId && releaseSettings.currentRelease) {
       const targetLabels = await db
         .select({ name: labels.name })
@@ -33403,7 +33399,7 @@ export function heartbeatService(
         .where(and(
           eq(issues.companyId, agent.companyId),
           eq(issues.assigneeAgentId, agentId),
-          inArray(issues.status, ["todo", "in_progress", "in_review"]),
+          inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
         ));
       const hasOpenCurrentReleaseIssue = openReleaseRows.some((row) =>
         runMatchesCurrentRelease(releaseSettings.currentRelease, [row.label]),

@@ -63,6 +63,25 @@ describeDb("release-focused production wake and task selection", () => {
     expect(rows.every((row) => row.reason === "heartbeat.disabled")).toBe(true);
   });
 
+  it("keeps other releases suppressed while current-release work is blocked", async () => {
+    const { companyId, agentId, currentId, otherId } = await seed();
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, currentId));
+    expect(await findTopReadyIssueForAgent(db, { id: agentId, companyId })).toBeNull();
+    await heartbeatService(db).wakeup(agentId, { source: "timer", payload: { issueId: otherId } });
+    const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(rows).toEqual([expect.objectContaining({ reason: "release_focus" })]);
+  });
+
+  it("preserves authenticated manual user overrides", async () => {
+    const { agentId, otherId } = await seed();
+    await heartbeatService(db).wakeup(agentId, {
+      source: "timer", payload: { issueId: otherId }, manualUserWake: true,
+      requestedByActorType: "user", requestedByActorId: "release-focus-test-user",
+    });
+    const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(rows).toEqual([expect.objectContaining({ reason: "heartbeat.disabled" })]);
+  });
+
   it("selects current-release work ahead of a higher priority other-release task", async () => {
     const { companyId, agentId, currentId, otherId } = await seed();
     expect((await findTopReadyIssueForAgent(db, { id: agentId, companyId }))?.id).toBe(currentId);
