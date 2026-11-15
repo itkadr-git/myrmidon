@@ -134,7 +134,10 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
   type ParsedExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
-import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
+import {
+  archiveSharedExecutionWorkspacesForTerminalIssue,
+  mergeExecutionWorkspaceConfig,
+} from "./execution-workspaces.js";
 import { hasChatRunOwnedProviderInteraction } from "./chat-interaction-arbitration.js";
 import { readChatControlChronology } from "./chat-control-chronology.js";
 import { authorizeChatConversationForBoundRun } from "./native-runtime/chat-attachment-reuse.js";
@@ -11853,6 +11856,7 @@ export function issueService(db: Db) {
             }
           }
           if (updated.status === "done" || updated.status === "cancelled") {
+            await archiveSharedExecutionWorkspacesForTerminalIssue(tx, updated);
             await finalizeSummarySlotsForTerminalIssue(tx, updated);
             // myrmidon(DEFERRED-WAKE-LEAK): cancel all deferred executions for terminal issue
             await cancelDeferredExecutionsForTerminalIssue(

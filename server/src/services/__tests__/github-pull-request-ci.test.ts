@@ -7,6 +7,7 @@ import {
   createPullRequestCiResolver,
   withCiResolveDeadline,
   clearCiCacheForTests,
+  invalidateCiCacheForHead,
   summarizeHeadLaneEvidence,
   resolveCiFailureTails,
   fetchJobLog,
@@ -1025,6 +1026,7 @@ describe("createPullRequestCiResolver", () => {
     });
 
     const resolver = createPullRequestCiResolver(mockDb as never, {
+      source: "ui-refresh",
       fetch: mockFetch as never,
       tokenProvider: async () => "token-123",
     });
@@ -1670,6 +1672,7 @@ describe("createPullRequestCiResolver", () => {
     });
 
     const resolver = createPullRequestCiResolver(mockDb as never, {
+      source: "ui-refresh",
       fetch: mockFetch as never,
       tokenProvider: async () => "token-123",
     });
@@ -1897,6 +1900,76 @@ describe("createPullRequestCiResolver", () => {
       expect(markdown).not.toContain("Do not poll CI");
       expect(markdown).toContain("Job lint (eslint) (id: 54321) log unavailable: token lacks actions:read permission or access denied (403)");
     });
+  });
+  it("invalidates a failed completed result when the retried check_run webhook arrives", async () => {
+    const mockDb = { select: vi.fn() };
+    let conclusion = "failure";
+    const mockFetch = vi.fn(async (url: string) => {
+      if (url.includes("/commits/retry-head/check-runs")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: async () => ({ total_count: 1, check_runs: [{ id: conclusion === "failure" ? 1 : 2, name: "CI result", status: "completed", conclusion, html_url: "https://github.com/acme/app/runs/1", started_at: "2026-11-14T08:00:00Z", completed_at: conclusion === "failure" ? "2026-11-14T08:01:00Z" : "2026-11-14T08:45:00Z" }] }),
+        };
+      }
+      return { ok: false, status: 404, headers: new Headers() };
+    });
+    const resolver = createPullRequestCiResolver(mockDb as never, {
+      source: "ui-refresh",
+      fetch: mockFetch as never,
+      tokenProvider: async () => "token-123",
+      prResolver: async () => ({ headSha: "retry-head", headRef: "bot/OPE-13123" }),
+    });
+    const reference = { owner: "acme", repo: "app", number: 7 };
+
+    expect((await resolver.resolveForPullRequest("company-1", reference)).conclusion).toBe("failure");
+    conclusion = "success";
+    invalidateCiCacheForHead("company-1", "acme/app", "retry-head");
+    expect((await resolver.resolveForPullRequest("company-1", reference)).conclusion).toBe("success");
+  });
+
+  it("retains the completed result cache when no invalidation event arrives", async () => {
+    const mockDb = { select: vi.fn() };
+    const mockFetch = vi.fn(async (url: string) => {
+      if (url.includes("/commits/ttl-head/check-runs")) {
+        return { ok: true, status: 200, headers: new Headers(), json: async () => ({ total_count: 1, check_runs: [{ id: 1, name: "CI result", status: "completed", conclusion: "failure", html_url: "https://github.com/acme/app/runs/1", started_at: "2026-11-14T08:00:00Z", completed_at: "2026-11-14T08:01:00Z" }] }) };
+      }
+      return { ok: false, status: 404, headers: new Headers() };
+    });
+    const resolver = createPullRequestCiResolver(mockDb as never, {
+      source: "ui-refresh",
+      fetch: mockFetch as never,
+      tokenProvider: async () => "token-123",
+      prResolver: async () => ({ headSha: "ttl-head", headRef: "bot/OPE-13123" }),
+    });
+    const reference = { owner: "acme", repo: "app", number: 8 };
+
+    const first = await resolver.resolveForPullRequest("company-1", reference);
+    const second = await resolver.resolveForPullRequest("company-1", reference);
+    expect(second).toBe(first);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes a completed run-context result to observe a newer rerun", async () => {
+    const mockDb = { select: vi.fn() };
+    let conclusion = "failure";
+    const mockFetch = vi.fn(async (url: string) => {
+      if (url.includes("/commits/context-head/check-runs")) {
+        return { ok: true, status: 200, headers: new Headers(), json: async () => ({ total_count: 1, check_runs: [{ id: conclusion === "failure" ? 1 : 2, name: "CI result", status: "completed", conclusion, html_url: "https://github.com/acme/app/runs/1", started_at: "2026-11-14T08:00:00Z", completed_at: conclusion === "failure" ? "2026-11-14T08:01:00Z" : "2026-11-14T08:45:00Z" }] }) };
+      }
+      return { ok: false, status: 404, headers: new Headers() };
+    });
+    const resolver = createPullRequestCiResolver(mockDb as never, {
+      fetch: mockFetch as never,
+      tokenProvider: async () => "token-123",
+      prResolver: async () => ({ headSha: "context-head", headRef: "bot/OPE-13123" }),
+    });
+    const reference = { owner: "acme", repo: "app", number: 9 };
+    expect((await resolver.resolveForPullRequest("company-1", reference)).conclusion).toBe("failure");
+    conclusion = "success";
+    expect((await resolver.resolveForPullRequest("company-1", reference)).conclusion).toBe("success");
+    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 });
 

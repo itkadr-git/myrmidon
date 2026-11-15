@@ -78,6 +78,8 @@ export const ORPHAN_WAKE_GRACE_SEC = 600;
 const idlePickupInFlight = new Map<string, Promise<IdlePickupResult>>();
 export const DEFAULT_IDLE_PICKUP_INTERVAL_SEC = 30;
 export const MIN_IDLE_PICKUP_INTERVAL_SEC = 5;
+/** Queue age default, also exported from shared for downstream liveness consumers. */
+export { DEFAULT_QUEUE_WITHOUT_RUN_THRESHOLD_SEC } from "@myrmidon/shared";
 /**
  * Default: an issue whose own run succeeded this recently — and which got no new
  * inbound activity since that run ended — is left to the handoff/recovery paths.

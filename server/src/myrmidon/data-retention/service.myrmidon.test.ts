@@ -111,6 +111,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
         activity: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
         access: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
         litellmCostEvents: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+        executionWorkspaces: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
       },
     });
   });

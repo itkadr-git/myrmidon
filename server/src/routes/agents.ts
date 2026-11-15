@@ -3514,8 +3514,8 @@ export function agentRoutes(
       return;
     }
     const rawModels = refresh
-      ? await refreshAdapterModels(modelAdapterType)
-      : await listAdapterModels(modelAdapterType, companyId);
+      ? await refreshAdapterModels(modelAdapterType, companyId, db)
+      : await listAdapterModels(modelAdapterType, companyId, db);
     let models = await enrichWithPoolModels(db, companyId, rawModels);
     if (modelAdapterType === "hermes_gateway") {
       const catalogRows = await db
