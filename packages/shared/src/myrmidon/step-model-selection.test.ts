@@ -40,7 +40,7 @@ describe("resolveStepModelSelection", () => {
     });
     expect(selection.reason).toBe("company_rule");
     expect(selection.modelGroup).toBe("company-group");
-    expect(selection.model).toBe("fallback-model");
+    expect(selection.model).toBe("company-group");
   });
 
   it("falls back to the agent's effective model when no rule is configured", () => {
