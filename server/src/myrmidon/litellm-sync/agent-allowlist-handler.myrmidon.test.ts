@@ -107,6 +107,19 @@ const MODELS = [
 ];
 
 describe("updateAgentAllowlistsForCompany", () => {
+  it("repairs a selected card model when the registry has no enabled models", async () => {
+    const alias = agentKeySecretName({ agentId: "agent-card", agentSlug: "Card Model" });
+    const gateway = recordingGateway(undefined, { [alias]: ["vendor/private"] });
+    const db = scriptedDb([
+      [],
+      [{ id: "agent-card", name: "Card Model", adapterConfig: { model: "vendor/selected" } }],
+    ]);
+    await updateAgentAllowlistsForCompany(
+      db, deps({ db, gateway: () => gateway, findSecretId: async () => "id-key" }), "company-a",
+    );
+    expect(gateway.calls).toEqual([{ alias, models: ["vendor/private", "vendor/selected"] }]);
+  });
+
   it("does not grant unrelated enabled registry models in a normal reconciliation", async () => {
     const alias = agentKeySecretName({ agentId: "agent-card", agentSlug: "Card Model" });
     const gateway = recordingGateway(undefined, { [alias]: ["vendor/private"] });
