@@ -53,6 +53,13 @@ export const agentWakeupRequests = pgTable(
     companyRequestedIdx: index(
       "agent_wakeup_requests_company_requested_idx",
     ).on(table.companyId, table.requestedAt),
+    // myrmidon(1.7 data-retention): the wakeup-request prune walks terminal rows
+    // by finished_at; the partial index keeps that walk off the live queue.
+    terminalFinishedIdx: index("agent_wakeup_requests_terminal_finished_idx")
+      .on(table.finishedAt)
+      .where(
+        sql`${table.status} in ('skipped', 'failed', 'cancelled', 'completed', 'coalesced')`,
+      ),
     agentRequestedIdx: index("agent_wakeup_requests_agent_requested_idx").on(
       table.agentId,
       table.requestedAt,

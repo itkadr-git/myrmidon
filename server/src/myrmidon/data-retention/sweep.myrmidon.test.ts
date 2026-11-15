@@ -310,6 +310,47 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     ]);
   });
 
+  it("prune batches use the retention indexes (no seq scan of heartbeat_runs, nested-loop anti join)", async () => {
+    const { companyId, agentId } = await seedCompany();
+    await db.execute(sql`
+      INSERT INTO agent_wakeup_requests (id, company_id, agent_id, source, status, requested_at, finished_at)
+      SELECT gen_random_uuid(), ${companyId}, ${agentId}, 'test',
+        CASE WHEN g % 10 = 0 THEN 'queued' ELSE 'completed' END,
+        now() - (g || ' minutes')::interval - interval '40 days',
+        CASE WHEN g % 10 = 0 THEN NULL ELSE now() - (g || ' minutes')::interval - interval '40 days' END
+      FROM generate_series(1, 60000) g`);
+    await db.execute(sql`
+      INSERT INTO heartbeat_runs (id, company_id, agent_id, invocation_source, status, wakeup_request_id, created_at, updated_at)
+      SELECT gen_random_uuid(), ${companyId}, ${agentId}, 'assignment', 'succeeded', w.id, now(), now()
+      FROM (SELECT id FROM agent_wakeup_requests ORDER BY random() LIMIT 30000) w`);
+    await db.execute(sql`
+      INSERT INTO environment_leases (id, company_id, status, acquired_at, last_used_at, released_at)
+      SELECT gen_random_uuid(), ${companyId}, CASE WHEN g % 10 = 0 THEN 'active' ELSE 'released' END, now(), now(),
+        CASE WHEN g % 10 = 0 THEN NULL ELSE now() - (g || ' minutes')::interval - interval '40 days' END
+      FROM generate_series(1, 60000) g`);
+    await db.execute(sql`ANALYZE agent_wakeup_requests`);
+    await db.execute(sql`ANALYZE heartbeat_runs`);
+    await db.execute(sql`ANALYZE environment_leases`);
+    const cutoff = new Date(Date.now() - 30 * DAY_MS).toISOString();
+    const explain = async (query: string) => {
+      const rows = (await db.execute(sql.raw(`EXPLAIN ${query}`))) as unknown as Array<Record<string, string>>;
+      return rows.map((row) => row["QUERY PLAN"]).join("\n");
+    };
+    const wakePlan = await explain(`SELECT id FROM agent_wakeup_requests
+      WHERE status IN ('skipped','failed','cancelled','completed','coalesced') AND finished_at < '${cutoff}'::timestamptz
+        AND NOT EXISTS (SELECT 1 FROM heartbeat_runs r WHERE r.wakeup_request_id = agent_wakeup_requests.id)
+      ORDER BY finished_at LIMIT 500`);
+    expect(wakePlan).toContain("Nested Loop Anti Join");
+    expect(wakePlan).toContain("agent_wakeup_requests_terminal_finished_idx");
+    expect(wakePlan).toContain("heartbeat_runs_wakeup_request_id_idx");
+    expect(wakePlan).not.toContain("Seq Scan");
+    expect(wakePlan).not.toContain("Hash");
+    const leasePlan = await explain(`SELECT id FROM environment_leases
+      WHERE status = 'released' AND released_at < '${cutoff}'::timestamptz ORDER BY released_at LIMIT 500`);
+    expect(leasePlan).toContain("environment_leases_released_prune_idx");
+    expect(leasePlan).not.toContain("Seq Scan");
+  });
+
   it("applies newest-N when revision age retention is disabled", async () => {
     const { companyId } = await seedCompany();
     const documentId = randomUUID();

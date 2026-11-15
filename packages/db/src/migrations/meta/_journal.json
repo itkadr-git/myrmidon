@@ -2816,6 +2816,13 @@
       "when": 1794728549398,
       "tag": "0486_agent_liveness_probe",
       "breakpoints": true
+    },
+    {
+      "idx": 487,
+      "version": "7",
+      "when": 1794741426070,
+      "tag": "0487_data_retention_prune_indexes",
+      "breakpoints": true
     }
   ]
 }
