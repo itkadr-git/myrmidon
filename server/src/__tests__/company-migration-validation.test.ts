@@ -74,6 +74,20 @@ describe("migration manifest validation", () => {
     ]));
   });
 
+  it("rejects cycles in imported task parent relationships", () => {
+    const issue = { slug: "first", projectSlug: null, assigneeAgentSlug: null,
+      parentSlug: "second", blockedBy: [] };
+    const result = validateMigrationManifest({
+      agents: [], skills: [], envInputs: [],
+      issues: [issue, { ...issue, slug: "second", parentSlug: "first" }],
+    });
+    expect(result.errors).toEqual(expect.arrayContaining([expect.stringContaining("parent cycle")]));
+    const selfParent = validateMigrationManifest({
+      agents: [], skills: [], envInputs: [], issues: [{ ...issue, parentSlug: "first" }],
+    });
+    expect(selfParent.errors).toEqual(expect.arrayContaining([expect.stringContaining("parent cycle")]));
+  });
+
   it("accepts references inside the package and rejects cross-company references", () => {
     const agent = { slug: "worker", reportsToSlug: "boss", reportsToExistingAgentId: null,
       reportsToExistingAgentSlug: null, skills: ["skill-key"], permissionGrants: [] };
