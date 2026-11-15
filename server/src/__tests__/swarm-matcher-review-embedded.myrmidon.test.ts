@@ -146,6 +146,7 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
     expect(slices[0].assigneeAgentId).toBe(leadId);
     expect(slices[0].description).toContain("3");
     expect(slices[0].description).toContain("EPIC-1");
+    expect(slices[0].description).toContain("\n\nОткрытые эпики:\n- [EPIC-1]");
     expect(wakes.filter((wake) => wake.agentId === leadId)).toHaveLength(1);
   });
 
