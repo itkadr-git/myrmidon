@@ -34,6 +34,15 @@ These filters combine with AND after access filtering; unsupported query
 parameters still return HTTP 400. See the
 [fleet guide](Ui2-agents-fleet).
 
+## Agent names
+
+Agent names must be unique within a company without regard to letter case,
+including names of terminated agents. Create and rename requests that conflict
+return HTTP 409 with code `agent_name_conflict`; creation no longer adds a
+suffix automatically. Choose a different name and retry. An agent can keep its
+own name or change its case if no other agent has that name. The same name can
+be used in another company. Existing duplicate names are not renamed.
+
 ## Company agent quota
 
 Creating an agent is limited by the company's subscription tier: when the

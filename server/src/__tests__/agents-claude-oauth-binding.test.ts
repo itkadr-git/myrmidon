@@ -440,7 +440,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
 
     // A replay of the same claim inserts no second agent.
     await expect(
-      agentService(db).create(scope.companyId, createInput(scope), {
+      agentService(db).create(scope.companyId, { ...createInput(scope), name: "Claude Login Agent 2" }, {
         claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
       }),
     ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
@@ -544,7 +544,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     });
     messages.push(
       await agentService(db)
-        .create(consumedScope.companyId, createInput(consumedScope), {
+        .create(consumedScope.companyId, { ...createInput(consumedScope), name: "Claude Login Agent 2" }, {
           claudeLogin: { storedSessionId: consumedSession, ownerUserId: consumedScope.ownerUserId },
         })
         .then(() => "no-error")
@@ -559,10 +559,10 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
 
     const results = await Promise.allSettled([
-      agentService(db).create(scope.companyId, createInput(scope), {
+      agentService(db).create(scope.companyId, { ...createInput(scope), name: "Claude Login Agent 1" }, {
         claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
       }),
-      agentService(db).create(scope.companyId, createInput(scope), {
+      agentService(db).create(scope.companyId, { ...createInput(scope), name: "Claude Login Agent 2" }, {
         claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
       }),
     ]);
