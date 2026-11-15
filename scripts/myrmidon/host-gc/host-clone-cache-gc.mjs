@@ -1555,6 +1555,21 @@ function newestMtimeInTree(entryPath, dev, freshAfterMs) {
  * (`runner-tmp-root-missing`, `runner-tmp-scan-failed`) and the scan goes on with the next
  * runner or entry. Each item carries `runnersRoot`, the root the removal is guarded against.
  */
+// Treat unreadable trees as unsafe; symlinks are not followed by the removal path.
+function runnerTmpContainsGit(root) {
+  const stack = [root];
+  while (stack.length) {
+    const current = stack.pop();
+    let entries;
+    try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { return true; }
+    for (const entry of entries) {
+      if (entry.name === ".git") return true;
+      if (entry.isDirectory()) stack.push(path.join(current, entry.name));
+    }
+  }
+  return false;
+}
+
 export function scanRunnerTmp(runnersRoot, now, ttlHours, { onEvent = () => {} } = {}) {
   const results = [];
   const ttlMs = ttlHours * HOUR_MS;
@@ -1613,6 +1628,10 @@ export function scanRunnerTmp(runnersRoot, now, ttlHours, { onEvent = () => {} }
             continue;
           }
           const ageMs = now - Math.max(tree.maxMtimeMs, st.mtimeMs);
+          if (ageMs >= ttlMs && st.isDirectory() && runnerTmpContainsGit(entryPath)) {
+            results.push({ ...base, ageMs, sizeBytes: tree.sizeBytes, reason: "unsafe-git-tree" });
+            continue;
+          }
           results.push({
             ...base,
             mtimeMs: Math.max(tree.maxMtimeMs, st.mtimeMs),
