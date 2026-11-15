@@ -189,7 +189,7 @@ describe("updateAgentAllowlistsForCompany", () => {
     expect(result.updated).toBe(2);
     expect(gateway.calls).toEqual([
       { alias, models: ["vendor/enabled", "vendor/private"] },
-      { alias: otherAlias, models: ["vendor/enabled", "vendor/private"] },
+      { alias: otherAlias, models: ["vendor/enabled", "vendor/private", "vendor/unlisted"] },
     ]);
   });
 

@@ -167,6 +167,7 @@ export interface AllowlistSyncOptions {
   includeRegistryModels?: boolean;
   /** Registry events reconcile only affected card models, never the full registry. */
   cardModelsOnly?: boolean;
+
 }
 
 function cardModelNames(adapterConfig: unknown): string[] {
@@ -334,9 +335,7 @@ export async function updateAgentAllowlistsForCompany(
       // Keep registry-owned models only when this agent's card selects them;
       // registry models are never broadcast to every agent key.
       const enabledForCard = options.cardModelsOnly
-        ? cardModels.filter((name) =>
-          companyModels.some((model) => model.name === name && model.enabled) || additionalModelNames.includes(name),
-        )
+        ? cardModels.filter((name) => !disabledRegistryNames.includes(name))
         : [...enabledNames, ...cardModels];
       const cardRetirements = current.filter((name) =>
         (disabledRegistryNames.includes(name) && cardModels.includes(name)) ||
