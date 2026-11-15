@@ -135,7 +135,10 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
     const deps = matcherDeps(wakes);
     deps.isAgentAvailable = async () => true;
     await matchCompany(deps, companyId);
-    await matchCompany({ ...deps, now: new Date(NOW.getTime() + 10 * MIN) }, companyId);
+    await Promise.all([
+      matchCompany({ ...deps, now: new Date(NOW.getTime() + 10 * MIN) }, companyId),
+      matchCompany({ ...deps, now: new Date(NOW.getTime() + 10 * MIN) }, companyId),
+    ]);
     await matchCompany({ ...deps, now: new Date(NOW.getTime() + 11 * MIN) }, companyId);
     const slices = await db.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.title, "[AUTO-SLICE] Пополнить очередь инженеров")));
     expect(slices).toHaveLength(1);
@@ -303,6 +306,8 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
       engineerId,
       openEpics: [],
     });
+    expect(wakeups[0].options.contextSnapshot.message).toContain("нарежьте следующую часть");
+    expect(wakeups[0].options.contextSnapshot.message).toContain("Открытые эпики выпуска");
   });
 
   async function seedCompany() {
