@@ -31,13 +31,16 @@ SQL = """SELECT json_build_object(
    extract(epoch from (clock_timestamp() - pg_last_xact_replay_timestamp())) ELSE NULL END,
  'ssl', (SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()),
  'ssl_configured', current_setting('ssl', true),
- 'archive_last_success', (SELECT last_archived FROM pg_stat_archiver),
+ 'archive_last_success', (SELECT last_archived_time FROM pg_stat_archiver),
+ 'archive_successes', (SELECT archived_count FROM pg_stat_archiver),
+ 'archive_last_failure', (SELECT last_failed_time FROM pg_stat_archiver),
  'archive_failures', (SELECT failed_count FROM pg_stat_archiver)
 )::text;"""
 FIELDS = ('server_version_num', 'db_bytes', 'in_recovery', 'wal_level', 'archive_mode',
           'archive_timeout', 'wal_keep_size', 'max_wal_size', 'min_wal_size',
           'checkpoint_timeout', 'full_page_writes', 'max_wal_senders', 'max_replication_slots',
-          'streaming', 'lag_bytes', 'lag_seconds', 'ssl', 'ssl_configured', 'archive_last_success', 'archive_failures')
+          'streaming', 'lag_bytes', 'lag_seconds', 'ssl', 'ssl_configured', 'archive_last_success',
+          'archive_successes', 'archive_last_failure', 'archive_failures')
 
 
 def time_sync_status():
