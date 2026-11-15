@@ -1727,53 +1727,9 @@ function archiveClone(clonePath, archiveRoot) {
       fs.rmSync(stage, { recursive: true, force: true });
     }
   }
-  if (!fs.existsSync(archiveRoot)) fs.mkdirSync(archiveRoot, { recursive: true });
-  const name = path.basename(clonePath);
-  const ts = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-").slice(0, 15);
-  const hasZstd = spawnSync("zstd", ["--version"], { stdio: "ignore" }).status === 0;
-  const extension = hasZstd ? "tar.zst" : "tar.gz";
-  const archivePath = path.join(archiveRoot, `${name}-${ts}.${extension}`);
-  // What an install or a build recreates is not worth archiving: a 13 GB task folder (three
-  // repo copies with node_modules) never fit the timeout, an archive without it is ~0.5 GB.
-  // Only build and dependency dirs that git reports as ignored are left out, as exact paths
-  // (--anchored, --no-wildcards: a name with `*` or `[` matches literally, nowhere else).
-  // Unpushed commits (.git), working files and anything git does not ignore stay in.
-  const excludes = ["--no-wildcards", "--anchored", ...archiveExcludes(clonePath)];
-  // Per-archive limit, 10 min by default. The test hook is the env var (finite, > 0).
-  const envTimeoutS = Number(process.env.HOST_GC_ARCHIVE_TIMEOUT_SECONDS);
-  const timeoutS = Number.isFinite(envTimeoutS) && envTimeoutS > 0 ? envTimeoutS : 600;
-  // `timeout` kills the whole pipeline (tar and zstd included) when the time is up, so no orphan keeps
-  // writing into a file we delete; spawnSync's own limit is only a backstop for `timeout` itself.
-  const limit = ["--kill-after=10s", `${timeoutS}s`];
-  const spawnOpts = { timeout: (timeoutS + 30) * 1000 };
-  let result;
-  let verify;
-  if (hasZstd) {
-    // Prefer zstd, but do not make archival depend on an optional host binary.
-    // pipefail: a failing tar must not be masked by zstd's exit code. Paths go in as arguments, not into the script text.
-    result = spawnSync("timeout", [...limit, "bash", "-c", `set -o pipefail; tar -cf - "\${@:4}" -C "$1" "$2" | zstd -q -o "$3"`, "archive", path.dirname(clonePath), name, archivePath, ...excludes], spawnOpts);
-    verify = ["bash", ["-c", `zstd -q -d -c "${archivePath}" | tar -tf - > /dev/null`]];
-  } else {
-    result = spawnSync("timeout", [...limit, "tar", "-czf", archivePath, ...excludes, "-C", path.dirname(clonePath), name], spawnOpts);
-    verify = ["tar", ["-tzf", archivePath]];
-  }
-  if (result.status !== 0) {
-    // A failed run leaves a partial archive of 1-2 GB behind on every pass; remove exactly this file.
-    fs.rmSync(archivePath, { force: true });
-    // stderr is often empty (a killed or timed-out child), so say why in words.
-    // 124 = `timeout` fired; 137 = it had to KILL the pipeline after --kill-after.
-    const timedOut = result.error?.code === "ETIMEDOUT" || result.status === 124 || result.status === 137;
-    const reason = timedOut
-      ? `timed out after ${timeoutS} s`
-      : `exit code ${result.status}, signal ${result.signal}${result.error ? `, error ${result.error.message}` : ""}`;
-    throw new Error(`archive failed for ${clonePath}: ${reason}: ${String(result.stderr ?? "").trim()}`);
-  }
-  const verification = spawnSync(verify[0], verify[1], { timeout: 60000, stdio: "ignore" });
-  if (verification.status !== 0) {
-    fs.rmSync(archivePath, { force: true });
-    throw new Error(`archive verification failed for ${archivePath}`);
-  }
-  return archivePath;
+  // Never fall back to a full checkout archive: an unsafe checkout must remain
+  // in place until its Git state can be recovered safely.
+  throw new Error(`cannot safely create compact archive for ${clonePath}; keeping checkout`);
 }
 
 // --- Main -------------------------------------------------------------------
