@@ -303,8 +303,8 @@ describe("SERVER-ONBOARD logic", () => {
 
     expect(jobAfterReport?.stepLog).toContainEqual(stepEntry);
     expect(store.servers[0].onboardState).toBe("onboarding");
-    // Password deleted because keepPassword was false and access key verified
-    expect(secretsStore["fleet/srv-1/bootstrap-password"]).toBeUndefined();
+    // The report alone does not establish that a durable key exists.
+    expect(secretsStore["fleet/srv-1/bootstrap-password"]).toBe("pwd-1");
 
     // 4. Report final success
     const finalJob = await service.report("valid-executor-token", {

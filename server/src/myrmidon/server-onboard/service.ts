@@ -368,11 +368,8 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
         await deps.store.updateServerOnboard(job.companyId, job.serverId, { onboardState: "needs_attention" });
       } else if (input.entry?.step === "access" && input.entry.result === "ok") {
         await deps.store.updateServerOnboard(job.companyId, job.serverId, { onboardState: "onboarding" });
-        const server = await deps.getServer(job.companyId, job.serverId);
-        if (server?.passwordSecretKey && !server.accessKeySecretKey && !server.keepPassword) {
-          // key login verified — the bootstrap password has done its job
-          await deps.secrets.deleteSecret(job.companyId, server.passwordSecretKey);
-        }
+        // An access report alone is not proof that the executor's key is durable.
+        // Keep the bootstrap credential until the key lifecycle verifies that proof.
       }
       const actionName = input.status ? `job_${input.status}` : isFailed ? "job_failed" : "step_reported";
       await writeAudit(job.companyId, actionName, job.serverId, {
