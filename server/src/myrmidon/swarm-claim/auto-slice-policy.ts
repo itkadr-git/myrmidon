@@ -5,6 +5,21 @@ export interface QueueShortage {
   free: number;
 }
 
+/** Count only free engineers belonging to each project and its own ready queue. */
+export function projectQueueShortages(
+  companyId: string,
+  projects: readonly { projectId: string; memberIds: ReadonlySet<string> }[],
+  freeAgentIds: readonly string[],
+  readyTasks: readonly { projectId: string | null }[],
+): QueueShortage[] {
+  return projects.map(({ projectId, memberIds }) => ({
+    companyId,
+    projectId,
+    ready: readyTasks.filter((task) => task.projectId === projectId).length,
+    free: new Set(freeAgentIds.filter((agentId) => memberIds.has(agentId))).size,
+  }));
+}
+
 /** Track uninterrupted shortages separately for each company and project. */
 export function createAutoSlicePolicy(delayMs = 10 * 60_000) {
   const since = new Map<string, number>();

@@ -1,6 +1,17 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { createAutoSlicePolicy } from "./auto-slice-policy.ts";
+import { createAutoSlicePolicy, projectQueueShortages } from "./auto-slice-policy.ts";
+
+test("counts project members with empty queues and ignores outsiders", () => {
+  const result = projectQueueShortages("company", [
+    { projectId: "a", memberIds: new Set(["one", "two", "three"]) },
+    { projectId: "b", memberIds: new Set(["outsider"]) },
+  ], ["one", "two", "three", "outsider"], [{ projectId: "b" }]);
+  assert.deepEqual(result, [
+    { companyId: "company", projectId: "a", ready: 0, free: 3 },
+    { companyId: "company", projectId: "b", ready: 1, free: 1 },
+  ]);
+});
 
 test("requests the shortage only after it persists for ten minutes", () => {
   const policy = createAutoSlicePolicy();
