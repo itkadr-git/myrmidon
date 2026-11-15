@@ -1,5 +1,5 @@
 {
-  "id": "3ce91a86-84fc-4274-8315-6a6d6456160a",
+  "id": "c8cac541-bfbd-4c1c-9378-3c555a4fa548",
   "prevId": "3c81414f-2f64-46a7-834c-d5704c000484",
   "version": "7",
   "dialect": "postgresql",
@@ -2087,24 +2087,6 @@
         },
         "last_error": {
           "name": "last_error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_response_at": {
-          "name": "last_response_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_probe_at": {
-          "name": "last_probe_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_probe_outcome": {
-          "name": "last_probe_outcome",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -10982,6 +10964,104 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.company_model_group_rules": {
+      "name": "company_model_group_rules",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "step_class": {
+          "name": "step_class",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model_group": {
+          "name": "model_group",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "caste_key": {
+          "name": "caste_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "company_model_group_rules_company_idx": {
+          "name": "company_model_group_rules_company_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "company_model_group_rules_company_id_companies_id_fk": {
+          "name": "company_model_group_rules_company_id_companies_id_fk",
+          "tableFrom": "company_model_group_rules",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "company_model_group_rules_scope_step_uq": {
+          "name": "company_model_group_rules_scope_step_uq",
+          "nullsNotDistinct": true,
+          "columns": [
+            "company_id",
+            "caste_key",
+            "step_class"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

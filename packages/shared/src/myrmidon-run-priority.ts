@@ -45,6 +45,7 @@ export const RUN_PRIORITY_ENV_KEYS = {
   agingMaxBonus: "MYRMIDON_RUN_AGING_MAX_BONUS",
   starvationLimitMinutes: "MYRMIDON_RUN_STARVATION_LIMIT_MIN",
   starvationTopWeight: "MYRMIDON_RUN_STARVATION_TOP_WEIGHT",
+  inProgressIdleWakeMinutes: "MYRMIDON_IN_PROGRESS_IDLE_WAKE_MIN",
 } as const;
 
 /**
@@ -104,6 +105,14 @@ export const DEFAULT_RUN_PRIORITY_STARVATION_LIMIT_MINUTES = 90;
 export const QUEUED_RUN_EXPIRY_MINUTES = 240;
 export const DEFAULT_RUN_PRIORITY_STARVATION_TOP_WEIGHT = 10_000;
 
+/**
+ * OPE-13202: an in_progress task whose executor has no run and no queued wake
+ * for this long is woken by the board itself (reason `in_progress_no_run`).
+ * 0 switches the safety wake off.
+ */
+export const DEFAULT_IN_PROGRESS_IDLE_WAKE_MINUTES = 20;
+export const MAX_IN_PROGRESS_IDLE_WAKE_MINUTES = 24 * 60;
+
 export function assertRunPriorityQueueInvariant(settings: Pick<RunPrioritySettings, "starvationLimitMinutes">): void {
   if (settings.starvationLimitMinutes >= QUEUED_RUN_EXPIRY_MINUTES) {
     throw new RangeError(
@@ -138,6 +147,12 @@ export interface RunPrioritySettings {
    * that task inside the run queue's role band.
    */
   pheromoneWeight: number;
+  /**
+   * OPE-13202: minutes an in_progress task may stand with its executor idle (no
+   * run, no wake in the queue) before the board wakes the executor; also the
+   * minimum gap between two such wakes of one task. 0 = off.
+   */
+  inProgressIdleWakeMinutes: number;
 }
 
 export const runPrioritySettingsSchema = z
@@ -155,6 +170,7 @@ export const runPrioritySettingsSchema = z
     starvationTopWeight: z.number().int().min(0).max(1_000_000),
     // 1.6.5 (F-27 rework 09.10): the pheromone term (design §4); 0 disables it.
     pheromoneWeight: z.number().int().min(0).max(1000),
+    inProgressIdleWakeMinutes: z.number().int().min(0).max(MAX_IN_PROGRESS_IDLE_WAKE_MINUTES),
   })
   .strict();
 
@@ -177,6 +193,7 @@ export const storedRunPrioritySchema = z
     starvationLimitMinutes: z.number().int().min(0).max(7 * 24 * 60).optional(),
     starvationTopWeight: z.number().int().min(0).max(1_000_000).optional(),
     pheromoneWeight: z.number().int().min(0).max(1000).optional(),
+    inProgressIdleWakeMinutes: z.number().int().min(0).max(MAX_IN_PROGRESS_IDLE_WAKE_MINUTES).optional(),
   })
   .strict();
 
@@ -250,6 +267,10 @@ export function readRunPriorityFromEnv(
     starvationTopWeight:
       parseEnvNumber(env[RUN_PRIORITY_ENV_KEYS.starvationTopWeight]) ?? DEFAULT_RUN_PRIORITY_STARVATION_TOP_WEIGHT,
     pheromoneWeight: DEFAULT_RUN_PRIORITY_PHEROMONE_WEIGHT,
+    inProgressIdleWakeMinutes: Math.min(
+      MAX_IN_PROGRESS_IDLE_WAKE_MINUTES,
+      parseEnvNumber(env[RUN_PRIORITY_ENV_KEYS.inProgressIdleWakeMinutes]) ?? DEFAULT_IN_PROGRESS_IDLE_WAKE_MINUTES,
+    ),
   };
 }
 
@@ -280,6 +301,7 @@ export function normalizeRunPrioritySettings(
     starvationLimitMinutes: row.starvationLimitMinutes ?? fallback.starvationLimitMinutes,
     starvationTopWeight: row.starvationTopWeight ?? fallback.starvationTopWeight,
     pheromoneWeight: row.pheromoneWeight ?? fallback.pheromoneWeight,
+    inProgressIdleWakeMinutes: row.inProgressIdleWakeMinutes ?? fallback.inProgressIdleWakeMinutes,
   };
 }
 
@@ -308,6 +330,7 @@ export function mergeRunPrioritySettings(
   if (patch.starvationLimitMinutes !== undefined) next.starvationLimitMinutes = patch.starvationLimitMinutes;
   if (patch.starvationTopWeight !== undefined) next.starvationTopWeight = patch.starvationTopWeight;
   if (patch.pheromoneWeight !== undefined) next.pheromoneWeight = patch.pheromoneWeight;
+  if (patch.inProgressIdleWakeMinutes !== undefined) next.inProgressIdleWakeMinutes = patch.inProgressIdleWakeMinutes;
   return next;
 }
 

@@ -3081,6 +3081,14 @@ async function startServerWithDatabaseTeardown(
                 );
               }
             })
+            // myrmidon(OPE-13202): the safety wake of an in_progress task whose
+            // executor has had no run and no wake for runPriority.inProgressIdleWakeMinutes.
+            .then(async () => {
+              const woken = await heartbeat.sweepInProgressIdleWake(new Date());
+              if (woken.woken > 0) {
+                logger.warn({ ...woken }, "periodic in-progress idle wake woke idle executors");
+              }
+            })
             // myrmidon(T1.6, design BOARD-PROCESSES §4.3): the periodic
             // orphan-reattach pass. When an executor process dies, its gateway
             // runs keep a frozen controller lease until expiry; once expired,

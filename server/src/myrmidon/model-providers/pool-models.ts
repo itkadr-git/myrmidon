@@ -17,6 +17,21 @@ import { isAccountEligibleForRotation, selectActivePoolAccount } from "./pool-ro
 
 export { isAccountEligibleForRotation, selectActivePoolAccount };
 
+/** Include LiteLLM's discovered ChatGPT model groups in the agent picker. */
+export function mergeLitellmChatGptPoolModels(
+  baseModels: AdapterModel[],
+  catalogModelNames: string[],
+): AdapterModel[] {
+  const result = [...baseModels];
+  const seen = new Set(baseModels.map((model) => model.id));
+  for (const modelName of catalogModelNames) {
+    if (!modelName.startsWith("chatgpt-pool/") || seen.has(modelName)) continue;
+    result.push({ id: modelName, label: modelName.slice("chatgpt-pool/".length) });
+    seen.add(modelName);
+  }
+  return result;
+}
+
 export interface PoolAccountChannelProvider {
   listChannels(
     companyId: string,

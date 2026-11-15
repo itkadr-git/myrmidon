@@ -93,6 +93,10 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
       accessAuditDays: 180,
       secretAccessDays: 30,
       litellmCostEventsDays: 30,
+      agentWakeupRequestsDays: 30,
+      environmentLeasesDays: 30,
+      documentRevisionKeepPerDocument: 20,
+      documentRevisionDays: 90,
     });
     expect(res.body.sources).toEqual({
       heartbeatRunsDays: "default",
@@ -100,6 +104,10 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
       accessAuditDays: "default",
       secretAccessDays: "default",
       litellmCostEventsDays: "default",
+      agentWakeupRequestsDays: "default",
+      environmentLeasesDays: "default",
+      documentRevisionKeepPerDocument: "default",
+      documentRevisionDays: "default",
     });
     expect(res.body.status).toEqual({
       lastRunAt: null,
@@ -111,6 +119,10 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
         activity: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
         access: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
         litellmCostEvents: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+        documentRevisions: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+        agentWakeupRequests: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+        environmentLeases: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+        executionWorkspaces: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
       },
     });
   });
@@ -127,6 +139,10 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
       accessAuditDays: 180,
       secretAccessDays: 45,
       litellmCostEventsDays: 30,
+      agentWakeupRequestsDays: 30,
+      environmentLeasesDays: 30,
+      documentRevisionKeepPerDocument: 20,
+      documentRevisionDays: 90,
     });
     expect(res.body.sources.heartbeatRunsDays).toBe("settings");
 
@@ -196,6 +212,10 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
       accessAuditDays: 60,
       secretAccessDays: 30,
       litellmCostEventsDays: 30,
+      agentWakeupRequestsDays: 30,
+      environmentLeasesDays: 30,
+      documentRevisionKeepPerDocument: 20,
+      documentRevisionDays: 90,
     });
     expect(res.body.sources.heartbeatRunsDays).toBe("settings");
   });
@@ -215,6 +235,10 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
       accessAuditDays: 180,
       secretAccessDays: 30,
       litellmCostEventsDays: 30,
+      agentWakeupRequestsDays: 30,
+      environmentLeasesDays: 30,
+      documentRevisionKeepPerDocument: 20,
+      documentRevisionDays: 90,
     });
     // another PATCH leaves the mode alone
     const next = await request(scoped).patch(URL).send({ accessAuditDays: 30 });
