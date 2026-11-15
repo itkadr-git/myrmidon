@@ -2603,6 +2603,23 @@ describe("verify execution stages", () => {
     })).toThrow(/evidence/i);
   });
 
+  it("rejects auto-skipping verification for merged release code without signed evidence", () => {
+    const policy = makePolicy([{
+      type: "verify", participants: [{ type: "agent", agentId: coderAgentId }],
+      requirements: { skip: true },
+    }]);
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue: {
+        title: "Release candidate", labels: ["1.6"],
+        workProducts: [{ type: "pull_request", status: "merged" }],
+        status: "in_progress", assigneeAgentId: coderAgentId, assigneeUserId: null,
+        executionPolicy: policy, executionState: null,
+      },
+      policy, requestedStatus: "done", requestedAssigneePatch: {},
+      actor: { agentId: coderAgentId }, commentBody: "done",
+    })).toThrow(/evidence/i);
+  });
+
   it("rejects final review approval when the release has no verify stage", () => {
     const policy = reviewOnlyPolicy();
     const issue = {
