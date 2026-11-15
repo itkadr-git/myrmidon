@@ -444,6 +444,19 @@ describe("runner /tmp (OPE-12966)", () => {
     assert.equal(fs.existsSync(path.join(outside, "young.txt")), true, "the link target must survive");
   });
 
+  it("retains an old runner tmp checkout with unpublished work", () => {
+    const runners = path.join(tmpDir, "runners");
+    const checkout = makeTmpEntry(runners, "eng17", "checkout", { ageHours: 48, dir: true });
+    fs.mkdirSync(path.join(checkout, ".git"));
+    fs.writeFileSync(path.join(checkout, ".git", "HEAD"), "unpublished");
+    setAge(path.join(checkout, ".git", "HEAD"), 48);
+    setAge(path.join(checkout, ".git"), 48);
+    setAge(checkout, 48);
+    const { res } = runGc(["--apply", "--runner-root", runners]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.readFileSync(path.join(checkout, ".git", "HEAD"), "utf8"), "unpublished");
+  });
+
   it("a runner whose tmp is a symlink is skipped", () => {
     const runners = path.join(tmpDir, "runners");
     const outside = path.join(tmpDir, "outside");
