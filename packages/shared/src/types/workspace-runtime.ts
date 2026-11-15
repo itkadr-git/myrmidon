@@ -7,6 +7,11 @@ export type ExecutionWorkspaceStrategyType =
   | "adapter_managed"
   | "cloud_sandbox";
 
+// myrmidon(1.6.9, OPE-13213): what an execution_workspaces row records. Besides
+// the configurable strategies, "bot_container" is the task directory of a bot
+// container (no files on the board); it is never a configurable strategy.
+export type ExecutionWorkspaceRecordedStrategyType = ExecutionWorkspaceStrategyType | "bot_container";
+
 export type ProjectExecutionWorkspaceDefaultMode =
   | "shared_workspace"
   | "isolated_workspace"
@@ -233,7 +238,7 @@ export interface WorkspaceOverviewItem {
   projectUrlKey: string;
   projectName: string;
   mode: ExecutionWorkspaceSummary["mode"];
-  strategyType: ExecutionWorkspaceStrategyType;
+  strategyType: ExecutionWorkspaceRecordedStrategyType;
   cwd: string | null;
   branchName: string | null;
   lastUpdatedAt: Date;
@@ -266,7 +271,7 @@ export interface ExecutionWorkspace {
   projectWorkspaceId: string | null;
   sourceIssueId: string | null;
   mode: Exclude<ExecutionWorkspaceMode, "inherit" | "reuse_existing" | "agent_default"> | "adapter_managed" | "cloud_sandbox";
-  strategyType: ExecutionWorkspaceStrategyType;
+  strategyType: ExecutionWorkspaceRecordedStrategyType;
   name: string;
   status: ExecutionWorkspaceStatus;
   deliveryState: ExecutionWorkspaceDeliveryState;
@@ -349,7 +354,7 @@ export interface WorkspaceRealizationRequest {
     projectWorkspaceId: string | null;
     repoUrl: string | null;
     repoRef: string | null;
-    strategy: "project_primary" | "git_worktree";
+    strategy: "project_primary" | "git_worktree" | "bot_container";
     branchName: string | null;
     worktreePath: string | null;
   };
