@@ -42,6 +42,7 @@ function imports(source) {
       if (value(i + 1) === '(') { if (literal(i + 2) && [')', ','].includes(value(i + 3))) add(i + 2, 'lazy'); continue; }
       if (literal(i + 1)) { add(i + 1, 'eager'); continue; }
     }
+    if (value(i) === 'export' && !['{', '*'].includes(value(i + 1))) continue;
     if (value(i) === 'import' || value(i) === 'export') {
       for (let j = i + 1; j < t.length && value(j) !== ';'; j++) {
         if (value(j) === 'from' && literal(j + 1)) { add(j + 1, 'eager'); break; }
