@@ -16,8 +16,8 @@ export function strictReleaseFocusRelease(): string | null {
 
 /** Shared by swarm queue reads and assigned-task idle pickup; reviews bypass it. */
 export function releaseFocusCondition(companyId: string): SQL {
-  const release = currentRunPrioritySettings().currentRelease;
-  if (!release?.trim()) return sql`true`;
+  const release = strictReleaseFocusRelease();
+  if (!release) return sql`true`;
   const normalized = release.trim().toLowerCase();
   const matches = (name: SQL) => sql`lower(trim(${name})) = ${normalized}`;
   // Assignment alone is not provenance. Unknown/legacy assignments fail closed.

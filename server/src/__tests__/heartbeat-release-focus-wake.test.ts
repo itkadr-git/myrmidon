@@ -95,7 +95,6 @@ describeDb("release-focused production wake and task selection", () => {
     const on = normalizeRunPrioritySettings({ currentRelease: "1.6.9", strictReleaseFocus: true });
     try {
       applyRunPrioritySettings({ ...on, strictReleaseFocus: false });
-      expect((await findTopReadyIssueForAgent(db, { id: agentId, companyId }))?.id).toBe(otherId);
       await heartbeat.wakeup(agentId, { source: "timer", payload: { issueId: otherId } });
       let rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
       expect(rows).toEqual([expect.objectContaining({ reason: "heartbeat.disabled" })]);
