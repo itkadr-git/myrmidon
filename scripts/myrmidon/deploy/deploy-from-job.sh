@@ -138,6 +138,7 @@ run_deploy() { # run_deploy <jobId> <digest>
         report "$job" error "deploy result could not be recorded"
         return 1
       fi
+      return 1
     fi
     sleep "${POLL_INTERVAL_SEC:-5}"
     waited=$((waited + POLL_INTERVAL_SEC + 1))
