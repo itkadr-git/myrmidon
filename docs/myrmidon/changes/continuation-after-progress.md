@@ -32,12 +32,6 @@
   left the task `in_progress` with its agent assigned while the in-progress wake is on
   (`inProgressIdleWakeMinutes` > 0): that is a valid disposition, the board continues the task. With
   the wake off, a run that is not `advanced`, or another assignee, the check works as before.
-- Work products: a `pull_request` product that an agent registers by GitHub URL now gets
-  `externalId` (`owner/repo#pull/N`) and `metadata.repo` / `repository` / `number` derived from the
-  URL, on create and on update, so the webhook finds it: the head change, the CI result and the
-  merge reach the task. If the webhook has already linked the same PR to the task, the existing row
-  is updated and no second row is made (the webhook's values win). The webhook's lookup of the row
-  is case-insensitive now.
 - No migration, no new setting. `docs/myrmidon/SETTINGS.md` is unchanged: the 2-minute pause is a
   constant, `inProgressIdleWakeMinutes = 0` still switches the whole wake off.
 - Operator note: the `AGENTS.md` of agents created earlier is a copy of the old template and does
@@ -77,11 +71,6 @@
   оставившего задачу `in_progress` у своего агента, пока включена побудка задачи в работе
   (`inProgressIdleWakeMinutes` > 0): это допустимый итог, доска продолжит задачу. При выключенной
   побудке, прогоне не `advanced` или другом исполнителе проверка работает как раньше.
-- Рабочие продукты: `pull_request`, который агент регистрирует по GitHub-URL, теперь получает
-  `externalId` (`owner/repo#pull/N`) и `metadata.repo` / `repository` / `number` из URL, при
-  создании и при обновлении, и вебхук его находит: смена головы, результат CI и слияние доходят до
-  задачи. Если вебхук уже привязал этот PR к задаче, обновляется существующая запись, второй не
-  создаётся (значения вебхука главнее). Поиск записи вебхуком теперь без учёта регистра.
 - Без миграций и без новой настройки. `docs/myrmidon/SETTINGS.md` не меняется: пауза в 2 минуты
   зашита константой, `inProgressIdleWakeMinutes = 0` по-прежнему выключает всю побудку.
 - Примечание оператору: `AGENTS.md` у ранее созданных агентов — копия старого шаблона и сама не
