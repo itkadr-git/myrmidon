@@ -83,6 +83,9 @@ export function TeamLivenessHealthCardView({
   error,
 }: TeamLivenessHealthCardViewProps) {
   const { t } = useTranslation();
+  const emptyRunsByAgent = metrics?.emptyRunsByAgent
+    .filter((row) => row.count > 0)
+    .sort((a, b) => b.count - a.count || (a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0)) ?? [];
   return (
     <div
       className="rounded-lg border border-border bg-background"
@@ -123,6 +126,20 @@ export function TeamLivenessHealthCardView({
                 </div>
               ))}
             </dl>
+            <section data-testid="myrmidon-team-liveness-agents" aria-label={t("area.settings-models-runtime-2.team-liveness-health-card.emptyRunsByAgent")}>
+              <h3 className="text-sm font-medium">{t("area.settings-models-runtime-2.team-liveness-health-card.emptyRunsByAgent")}</h3>
+              {emptyRunsByAgent.length > 0 ? (
+                <ul className="space-y-1">
+                  {emptyRunsByAgent.map((row) => (
+                    <li key={row.agentId} className="flex justify-between gap-3 text-sm" data-testid="myrmidon-team-liveness-agent-row">
+                      <span className="break-all">{row.agentId}</span><span>{row.count}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-muted-foreground">{t("area.settings-models-runtime-2.team-liveness-health-card.noEmptyRuns")}</p>
+              )}
+            </section>
             <p className="text-xs text-muted-foreground/70">
               {t("area.settings-models-runtime-2.team-liveness-health-card.footnote")}
             </p>
