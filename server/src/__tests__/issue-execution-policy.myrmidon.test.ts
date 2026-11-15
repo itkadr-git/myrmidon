@@ -2544,6 +2544,22 @@ describe("verify execution stages", () => {
     })).toThrow(/verify/i);
   });
 
+  it("rejects orphaned final review approval for a release without verify evidence", () => {
+    const originalPolicy = reviewOnlyPolicy();
+    const replacementPolicy = verifyPolicy();
+    const issue = {
+      ...pendingIssue(originalPolicy),
+      title: "Release candidate",
+      labels: ["1.6"],
+      workProducts: [{ type: "pull_request", status: "merged" }],
+      executionPolicy: replacementPolicy,
+    };
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue, policy: replacementPolicy, requestedStatus: "done", requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId }, commentBody: "review approved",
+    })).toThrow(/verify/i);
+  });
+
   it("rejects final review approval when the release has no verify stage", () => {
     const policy = reviewOnlyPolicy();
     const issue = {
