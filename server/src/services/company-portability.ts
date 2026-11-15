@@ -759,6 +759,7 @@ type ImportBehaviorOptions = {
   mode?: ImportMode;
   sourceCompanyId?: string | null;
   pauseAutomations?: boolean;
+  transferRunId?: string;
 };
 
 type AgentLike = {
@@ -5336,7 +5337,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         feedbackDataSharingTermsVersion: include.company
           ? (sourceManifest.company?.feedbackDataSharingTermsVersion ?? null)
           : null,
-      });
+      }, { transferRunId: options?.transferRunId });
       if (mode === "agent_safe" && options?.sourceCompanyId) {
         await access.copyActiveUserMemberships(options.sourceCompanyId, created.id);
       } else {
