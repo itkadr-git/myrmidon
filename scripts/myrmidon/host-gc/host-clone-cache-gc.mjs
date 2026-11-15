@@ -1956,6 +1956,7 @@ async function main() {
 
     // Expire only regular archive files under the configured GC roots; never follow links.
     plan.expiredArchives = [];
+    plan.archiveBytes = 0;
     for (const archiveRoot of new Set([root, ...args.runnerRoots].map((r) => path.join(r, ".gc-archive")))) {
       let entries;
       try {
@@ -1970,7 +1971,10 @@ async function main() {
         const archive = path.join(archiveRoot, entry.name);
         try {
           const st = fs.lstatSync(archive);
-          if (st.isFile() && now - st.mtimeMs >= DAY_MS) plan.expiredArchives.push({ path: archive, root: archiveRoot });
+          if (st.isFile()) {
+            plan.archiveBytes += st.size;
+            if (now - st.mtimeMs >= DAY_MS) plan.expiredArchives.push({ path: archive, root: archiveRoot });
+          }
         } catch (err) {
           if (!isAbsent(err)) journalRecord(args.journal, { event: "archive-scan-failed", path: archive, error: err.message });
         }
@@ -1981,6 +1985,7 @@ async function main() {
     if (args.dryRun) {
       journalRecord(args.journal, {
         event: "dry-run",
+        archiveBytes: plan.archiveBytes,
         clones: plan.clones.length,
         caches: plan.caches.length,
         scratch: plan.scratch.length,
@@ -2131,6 +2136,7 @@ async function main() {
       }
       journalRecord(args.journal, {
         event: "apply-complete",
+        archiveBytesBeforeCleanup: plan.archiveBytes,
         removed: plan.removed.length,
         archived: plan.archived.length,
         scratchPruned: plan.scratch.length,
@@ -2147,6 +2153,7 @@ async function main() {
       console.log(JSON.stringify({
         ok: true,
         dryRun: false,
+        archiveBytesBeforeCleanup: plan.archiveBytes,
         removed: plan.removed.length,
         archived: plan.archived.length,
         scratchPruned: plan.scratch.length,
