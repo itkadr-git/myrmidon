@@ -202,6 +202,25 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockReporter.completion?.status).toBe("failed");
   });
 
+  it("rejects a forged key verification marker before changing password authentication", async () => {
+    const mockSsh = new MockSshExecutor();
+    mockSsh.mockResponse('echo "myrmidon-key-verify"', { stdout: "not-myrmidon-key-verify\n", exitCode: 0 });
+    const executor = new FleetOnboardExecutor({
+      createSshExecutor: () => mockSsh,
+      generateKeyPair: () => ({ publicKey: "ssh-ed25519 test", privateKey: "private-key" }),
+    });
+    const mockReporter = createMockReporter();
+    const claim: any = {
+      job: { id: "job-key-marker", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["access"], options: { keepPassword: false },
+      secretValues: { bootstrapPassword: "pass" },
+    };
+    const result = await executor.execute(claim, mockReporter.reporter);
+    expect(result.status).toBe("failed");
+    expect(mockSsh.hasExecuted(/50-myrmidon-hardening\.conf/)).toBe(false);
+  });
+
   it("fails and restores password configuration when sshd reload fails", async () => {
     const mockSsh = new MockSshExecutor();
     mockSsh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
