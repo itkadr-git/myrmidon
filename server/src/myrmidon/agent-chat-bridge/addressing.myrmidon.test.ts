@@ -372,6 +372,19 @@ describe("myrmidon(X9a) resolveTelegramAddressee", () => {
   });
 
   describe("myrmidon(OPE-13033) resolveBridgeAddressee ambiguity and resolution", () => {
+    it("requires a complete name token, including hyphenated names", async () => {
+      const nameDb = fakeDb({ [COMPANY_A]: [
+        { ...AGENT_A, name: "Foo", title: null, metadata: null, adapterConfig: null },
+        { ...AGENT_B, name: "Foo-Bar", title: null, metadata: null, adapterConfig: null },
+      ] }).db;
+      const resolve = (text: string) => resolveBridgeAddressee(nameDb, {
+        companyId: COMPANY_A, endpointAgentId: AGENT_C.id, text,
+      });
+      expect(await resolve("@FooExtra hello")).toEqual({ kind: "none" });
+      expect(await resolve("@Foo-BarExtra hello")).toEqual({ kind: "none" });
+      expect(await resolve("@Foo hello")).toMatchObject({ kind: "resolved", addressee: { agentId: AGENT_A.id } });
+      expect(await resolve("@Foo-Bar hello")).toMatchObject({ kind: "resolved", addressee: { agentId: AGENT_B.id } });
+    });
     it("returns ambiguous with candidate names and IDs when multiple agents share the exact name or alias", async () => {
       const dbDuplicates = fakeDb({
         [COMPANY_A]: [
