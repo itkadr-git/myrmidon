@@ -3,14 +3,15 @@ import { validateMigrationManifest } from "../services/company-migration-validat
 
 describe("migration manifest validation", () => {
   it("reports missing references and invalid permission keys without exposing secret defaults", () => {
-    const result = validateMigrationManifest({
+    const manifest = {
       agents: [{ slug: "worker", reportsToSlug: "missing", reportsToExistingAgentId: null,
         reportsToExistingAgentSlug: null, skills: ["missing-skill"],
         permissionGrants: [{ permissionKey: "invalid:permission" }] }],
       skills: [],
       envInputs: [{ key: "API_KEY", agentSlug: "worker", projectSlug: null,
-        kind: "secret", requirement: "required", defaultValue: "never-print-this" }],
-    });
+        kind: "secret" as const, requirement: "required" as const, defaultValue: "never-print-this" }],
+    };
+    const result = validateMigrationManifest(manifest);
     expect(result.errors).toEqual(expect.arrayContaining([
       expect.stringContaining("missing"),
       expect.stringContaining("missing-skill"),
