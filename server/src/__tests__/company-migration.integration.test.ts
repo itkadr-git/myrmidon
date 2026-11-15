@@ -99,6 +99,42 @@ describe("company migration dry run", () => {
     }
   });
 
+  it("requires confirmation for rollback and removes only the migrated company", async () => {
+    const [source] = await db.insert(companies).values({ name: "Rollback fixture", issuePrefix: "MRB" }).returning();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+
+    const applied = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+      target: { mode: "new_company", newCompanyName: "Rollback destination" },
+      dryRun: false,
+      apply: true,
+      confirm: "approved pilot",
+    });
+    expect(applied.status).toBe(200);
+    expect(applied.body.runId).toEqual(expect.any(String));
+    const beforeRollback = await db.select().from(companies);
+    expect(beforeRollback.some((company) => company.name === "Rollback destination")).toBe(true);
+
+    const endpoint = `/api/companies/${source!.id}/migrations/${applied.body.runId}/rollback`;
+    const unconfirmed = await request(app).post(endpoint).send({});
+    expect(unconfirmed.status).toBeGreaterThanOrEqual(400);
+    expect(await db.select().from(companies)).toEqual(beforeRollback);
+
+    const rolledBack = await request(app).post(endpoint).send({ confirm: "rollback pilot" });
+    expect(rolledBack.status).toBe(200);
+    const afterRollback = await db.select().from(companies);
+    expect(afterRollback.find((company) => company.id === source!.id)).toEqual(
+      beforeRollback.find((company) => company.id === source!.id),
+    );
+    expect(afterRollback.filter((company) => company.name === "Rollback destination" && company.status !== "archived")).toHaveLength(0);
+  });
+
   it("applies a confirmed migration once and reuses the completed run", async () => {
     const [source] = await db.insert(companies).values({ name: "Apply fixture", issuePrefix: "MAP" }).returning();
     const app = express();
