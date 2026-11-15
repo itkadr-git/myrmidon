@@ -351,6 +351,20 @@ esac
     ]);
   });
 
+  it("does not replay an interrupted switch or rollback without reconciliation", () => {
+    for (const phase of ["switching", "rolling-back"]) {
+      const sb = sandbox({ job: { id: JOB_ID, status: "running", digest: NEW } });
+      const state = path.join(sb.dir, "state");
+      fs.mkdirSync(state, { recursive: true });
+      fs.writeFileSync(path.join(state, `job-${JOB_ID}.json`), JSON.stringify({ jobId: JOB_ID, phase }));
+      const { out } = run(sb, ["--once"]);
+      assert.equal(report(sb).phase, "error", out);
+      assert.match(report(sb).detail, /reconcil/i);
+      assert.doesNotMatch(calls(sb), /docker pull/);
+      assert.match(read(sb.override), new RegExp(`image: ${CI_IMAGE}@${OLD}`));
+    }
+  });
+
   it("waits until the maintenance window is on before switching", () => {
     // Window starts "entering"; the fake board turns it "on" only after the
     // first maintenance poll — simulated by a curl that flips the file.
