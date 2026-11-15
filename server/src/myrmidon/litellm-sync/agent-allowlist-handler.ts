@@ -323,10 +323,16 @@ export async function updateAgentAllowlistsForCompany(
       // replaced by the sentinel so we never send models:[] (which LiteLLM
       // treats as "remove restrictions"). The enable path adds enabled and
       // additional names on top of surviving non-board models.
+      const adapterConfig = isRecord(agent.adapterConfig) ? agent.adapterConfig : {};
+      const cardModels = [adapterConfig.model].filter(
+        (model): model is string => typeof model === "string" && model.trim().length > 0,
+      );
+      const agentModels = [...new Set([...models, ...cardModels])];
+      const agentPayloadModels = agentModels.length > 0 ? agentModels : payloadModels;
       const ownedNames = new Set(companyModels.map((model) => model.name));
       const survivors = current.filter((name) => !ownedNames.has(name) && !removedModelNames.includes(name));
-      const next = models.length > 0
-        ? [...survivors, ...payloadModels]
+      const next = agentModels.length > 0
+        ? [...new Set([...survivors, ...agentPayloadModels])]
         : survivors.length > 0
           ? survivors
           : [DISABLED_MODEL_SENTINEL];

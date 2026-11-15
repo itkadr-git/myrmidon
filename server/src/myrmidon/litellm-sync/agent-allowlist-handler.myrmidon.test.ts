@@ -107,6 +107,30 @@ const MODELS = [
 ];
 
 describe("updateAgentAllowlistsForCompany", () => {
+  it("adds the card primary model and fallbacks to the agent key", async () => {
+    const alias = agentKeySecretName({ agentId: "agent-card", agentSlug: "Card Model" });
+    const gateway = recordingGateway(undefined, { [alias]: ["antigravity/gemini-3.8-flash-medium"] });
+    const db = scriptedDb([
+      MODELS[0],
+      [{ id: "agent-card", name: "Card Model", adapterConfig: { model: "antigravity/gemini-3.5-flash-lite" } }],
+    ]);
+
+    const result = await updateAgentAllowlistsForCompany(
+      db,
+      deps({ db, gateway: () => gateway, findSecretId: async () => "id-key" }),
+      "company-a",
+    );
+
+    expect(result.updated).toBe(1);
+    expect(gateway.calls[0]?.models).toEqual(expect.arrayContaining([
+      "antigravity/gemini-3.8-flash-medium",
+      "openai/gpt-4o",
+      "anthropic/claude",
+      "antigravity/gemini-3.5-flash-lite",
+    ]));
+    expect(gateway.calls[0]?.models).toHaveLength(4);
+  });
+
   it("sends each agent's key alias the enabled model list", async () => {
     const alias = agentKeySecretName({ agentId: "agent-1", agentSlug: "Engineer One" });
     const gateway = recordingGateway(undefined, {
