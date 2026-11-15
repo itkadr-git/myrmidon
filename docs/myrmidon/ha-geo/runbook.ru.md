@@ -36,11 +36,11 @@ bash scripts/myrmidon/standby/standby-ctl.sh setup --target all --credentials <a
 
 ## Backup и restore
 
-Предпосылки: только изолированная лабораторная копия с синтетическими данными, разрешенные пути и образ, без production volumes и секретов. Обертка по умолчанию использует host network и production-пути: в лаборатории она запрещена. Нужна отдельно проверенная изолированная конфигурация host-mode без production volumes; если ее нет, учение не выполнять. Проверить, что host, port, passfile, новый каталог и переменные среды относятся только к fixture: значения по умолчанию не изолированы. Для all выполняется одно учение кластера board с проверкой обеих баз, а не два отдельных кластера. Оператор БД, лабораторное окно. Сначала план, затем выполнение после разрешения:
+Предпосылки: только изолированная лабораторная копия с синтетическими данными, разрешенные пути и образ, без production volumes и секретов. Обертка по умолчанию использует host network и production-пути: в лаборатории она запрещена. Нужна отдельно проверенная изолированная конфигурация host-mode без production volumes; если ее нет, учение не выполнять. Проверить, что host, port, passfile, новый каталог и переменные среды относятся только к fixture: значения по умолчанию не изолированы. Источник snapshot — 127.0.0.1 на указанном standby-port, а не primary host/port: до запуска независимо убедиться, что этот порт ведет к изолированному standby и не может попасть на боевые данные. Для all выполняется одно учение кластера board с проверкой обеих баз, а не два отдельных кластера. Оператор БД, лабораторное окно. Сначала план, затем выполнение после разрешения:
 
 ```bash
 bash scripts/myrmidon/standby/standby-ctl.sh rehearse --target all --dry-run
-STANDBY_CTL_NO_DOCKER=1 bash scripts/myrmidon/standby/standby-ctl.sh rehearse --target all --pg-runner=host --primary-host=<isolated-primary-host> --primary-port=<isolated-primary-port> --drill-dir=<isolated-new-drill-dir> --drill-port=<isolated-drill-port> --credentials=<isolated-passfile>
+STANDBY_CTL_NO_DOCKER=1 bash scripts/myrmidon/standby/standby-ctl.sh rehearse --target all --pg-runner=host --primary-host=<isolated-primary-host> --primary-port=<isolated-primary-port> --standby-port=<isolated-standby-port> --drill-dir=<isolated-new-drill-dir> --drill-port=<isolated-drill-port> --credentials=<isolated-passfile>
 ```
 
 Проверить код 0, запуск, promotion, smoke обеих баз, время и удаление каталога учения. При отказе остановить только изолированный экземпляр, сохранить обезличенные журналы и проверить очистку. Любое боевое резервное копирование или восстановление требует отдельного окна и утвержденной процедуры.

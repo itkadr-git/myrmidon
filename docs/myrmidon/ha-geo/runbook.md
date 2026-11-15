@@ -64,10 +64,10 @@ Create a dry-run plan first:
 bash scripts/myrmidon/standby/standby-ctl.sh rehearse --target all --dry-run
 ```
 
-Run the isolated rehearsal only with synthetic data:
+Run the isolated rehearsal only with synthetic data. Its snapshot source is 127.0.0.1 at the specified standby port, not the primary host/port: independently verify that this port is the isolated standby and cannot reach live data before running.
 
 ```bash
-STANDBY_CTL_NO_DOCKER=1 bash scripts/myrmidon/standby/standby-ctl.sh rehearse --target all --pg-runner=host --primary-host=<isolated-primary-host> --primary-port=<isolated-primary-port> --drill-dir=<isolated-new-drill-dir> --drill-port=<isolated-drill-port> --credentials=<isolated-passfile>
+STANDBY_CTL_NO_DOCKER=1 bash scripts/myrmidon/standby/standby-ctl.sh rehearse --target all --pg-runner=host --primary-host=<isolated-primary-host> --primary-port=<isolated-primary-port> --standby-port=<isolated-standby-port> --drill-dir=<isolated-new-drill-dir> --drill-port=<isolated-drill-port> --credentials=<isolated-passfile>
 ```
 
 Verify: the isolated instance starts, promotes, answers smoke queries for each target, reports elapsed time, and removes its drill directory. Exit code `0` is required. Verify the directory is absent after cleanup. A retained drill requires an explicit cleanup action and must not share live data or production secrets.
@@ -135,8 +135,8 @@ Rollback is a controlled return to the last verified writer. It is not an unplan
 |---|---|---|
 | Inventory | `geo-check --json` pass; parameters are complete | Same report plus approved read-only site evidence |
 | Standby | isolated setup and both targets in recovery; dry-run is not setup evidence | Released setup output, confirmed streaming, slot and timeline evidence |
-| RPO <= 300s | Synthetic write timestamp versus replay timestamp; `check-lag` with `--rpo 300` | Operator records `check-lag --target all --rpo 300` output and timestamps |
-| RTO <= 1800s | Rehearsal elapsed time, exit `0`, cleanup verified | Failover start/end timestamps; health, write, integrations, and worker checks pass |
+| RPO <= 300s | Last acknowledged synthetic primary write and latest recovered write markers with UTC timestamps; calculate the difference and retain `check-lag --target all --rpo 300` output | Last acknowledged primary and latest recovered write markers with UTC timestamps, calculated difference and `check-lag` output; reject missing markers or uncertain clocks |
+| RTO <= 1800s | Full failover from incident declaration to passing health, write, integration and single-active worker checks; record start/end UTC and elapsed seconds; restore rehearsal alone is insufficient | Full failover start/end UTC and elapsed seconds; health, write, integrations and single-active worker checks pass |
 | Fencing | Simulated old writer cannot write; evidence is synthetic | Infrastructure stop/isolation evidence plus independent write rejection |
 | Single-active | One isolated board and no background workers outside the drill | One active writer/scheduler/worker set; cold site has zero workers before cutover |
 | Backup/restore | Rehearsal smoke queries and drill cleanup | Approved backup identifier, restore evidence, and operator sign-off |
