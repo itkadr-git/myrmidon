@@ -1,13 +1,17 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   agentWakeupRequests,
   agents,
   companies,
   createDb,
   heartbeatRuns,
+  issueLabels,
   issues,
   issueWorkProducts,
+  labels,
 } from "@myrmidon/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -27,6 +31,12 @@ vi.mock("../middleware/logger.js", () => ({
 }));
 
 import {
+  applyRunPrioritySettings,
+  currentRunPrioritySettings,
+  resetRunPriorityForTests,
+} from "../myrmidon/run-priority/state.js";
+import {
+  CONTINUATION_AFTER_PROGRESS_MINUTES,
   createInProgressIdleWakeSweeper,
   IN_PROGRESS_NO_RUN_ACTIVITY_ACTION,
   IN_PROGRESS_NO_RUN_REASON,
@@ -87,6 +97,10 @@ describeEmbeddedPostgres("in-progress idle wake sweep (OPE-13202)", () => {
   }, 60_000);
 
   afterEach(async () => {
+    resetRunPriorityForTests();
+    await db.delete(activityLog);
+    await db.delete(issueLabels);
+    await db.delete(labels);
     await db.update(issues).set({ executionRunId: null, checkoutRunId: null });
     await db.delete(issueWorkProducts);
     await db.delete(agentWakeupRequests);
@@ -451,6 +465,230 @@ describeEmbeddedPostgres("in-progress idle wake sweep (OPE-13202)", () => {
 
     expect((await sweeper.sweep(new Date())).woken).toBe(0);
     expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  // Continuation after progress: a run that pushed work is followed up after
+  // CONTINUATION_AFTER_PROGRESS_MINUTES, not after the full idle window.
+  async function seedFinishedRun(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    finishedMinutesAgo: number;
+    livenessState?: string | null;
+  }) {
+    const runId = randomUUID();
+    const finishedAt = new Date(Date.now() - input.finishedMinutesAgo * MIN);
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      status: "succeeded",
+      livenessState: input.livenessState === undefined ? "advanced" : input.livenessState,
+      invocationSource: "automation",
+      contextSnapshot: { issueId: input.issueId },
+      createdAt: new Date(finishedAt.getTime() - 2 * MIN),
+      startedAt: new Date(finishedAt.getTime() - 2 * MIN),
+      finishedAt,
+    });
+    return { runId, finishedAt };
+  }
+
+  async function seedActivity(input: {
+    companyId: string;
+    issueId: string;
+    action: string;
+    at: Date;
+    runId?: string | null;
+    agentId?: string | null;
+    details?: Record<string, unknown>;
+  }) {
+    await db.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType: input.runId ? "agent" : "system",
+      actorId: input.agentId ?? "board",
+      agentId: input.agentId ?? null,
+      runId: input.runId ?? null,
+      action: input.action,
+      entityType: "issue",
+      entityId: input.issueId,
+      details: input.details ?? {},
+      createdAt: input.at,
+    });
+  }
+
+  it("continues after 2 minutes a run that pushed to the PR (head change inside the run window)", async () => {
+    expect(CONTINUATION_AFTER_PROGRESS_MINUTES).toBe(2);
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, idleMinutes: 3 });
+    const { finishedAt } = await seedFinishedRun({ companyId, agentId, issueId, finishedMinutesAgo: 3 });
+    await seedActivity({
+      companyId,
+      issueId,
+      action: "issue.work_product_head_changed",
+      at: new Date(finishedAt.getTime() - 30_000),
+      details: { headShaChanged: true },
+    });
+    const { sweeper, enqueueWakeup, logActivity } = makeSweeper();
+
+    const result = await sweeper.sweep(new Date());
+
+    expect(result.issueIds).toEqual([issueId]);
+    expect(enqueueWakeup).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({
+        reason: IN_PROGRESS_NO_RUN_REASON,
+        payload: expect.objectContaining({ issueId, afterProgress: true, thresholdMinutes: 2 }),
+      }),
+    );
+    expect(logActivity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        details: expect.objectContaining({ afterProgress: true, thresholdMinutes: 2 }),
+      }),
+    );
+  });
+
+  it("continues after 2 minutes a run that left a work product or a document under its run id", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueA = await seedIssue({ companyId, agentId, idleMinutes: 3 });
+    const runA = await seedFinishedRun({ companyId, agentId, issueId: issueA, finishedMinutesAgo: 3 });
+    await seedActivity({
+      companyId,
+      issueId: issueA,
+      action: "issue.work_product_updated",
+      at: new Date(runA.finishedAt.getTime() - 30_000),
+      runId: runA.runId,
+      agentId,
+    });
+    const { sweeper, enqueueWakeup } = makeSweeper();
+    expect((await sweeper.sweep(new Date())).issueIds).toEqual([issueA]);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+
+    const second = await seedAgent();
+    const issueB = await seedIssue({ companyId: second.companyId, agentId: second.agentId, idleMinutes: 3 });
+    const runB = await seedFinishedRun({
+      companyId: second.companyId,
+      agentId: second.agentId,
+      issueId: issueB,
+      finishedMinutesAgo: 3,
+    });
+    await seedActivity({
+      companyId: second.companyId,
+      issueId: issueB,
+      action: "issue.document_upserted",
+      at: new Date(runB.finishedAt.getTime() - 30_000),
+      runId: runB.runId,
+      agentId: second.agentId,
+    });
+    const next = makeSweeper();
+    expect((await next.sweeper.sweep(new Date())).issueIds).toEqual([issueB]);
+  });
+
+  it("does not continue before the 2 minutes are over", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, idleMinutes: 1 });
+    const { finishedAt } = await seedFinishedRun({ companyId, agentId, issueId, finishedMinutesAgo: 1 });
+    await seedActivity({
+      companyId,
+      issueId,
+      action: "issue.work_product_head_changed",
+      at: new Date(finishedAt.getTime() - 30_000),
+      details: { headShaChanged: true },
+    });
+    const { sweeper, enqueueWakeup } = makeSweeper();
+
+    expect((await sweeper.sweep(new Date())).woken).toBe(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("keeps the full window after an advanced run without progress (a comment alone is not progress)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, idleMinutes: 3 });
+    const { runId, finishedAt } = await seedFinishedRun({ companyId, agentId, issueId, finishedMinutesAgo: 3 });
+    await seedActivity({
+      companyId,
+      issueId,
+      action: "issue.comment_added",
+      at: new Date(finishedAt.getTime() - 30_000),
+      runId,
+      agentId,
+    });
+    const { sweeper, enqueueWakeup } = makeSweeper();
+    const start = Date.now();
+
+    expect((await sweeper.sweep(new Date(start))).woken).toBe(0);
+    expect((await sweeper.sweep(new Date(start + 10 * MIN))).woken).toBe(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    // After the full 20 minutes it is woken as before.
+    expect((await sweeper.sweep(new Date(start + 21 * MIN))).woken).toBe(1);
+    expect(enqueueWakeup).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({ payload: expect.objectContaining({ thresholdMinutes: 20, afterProgress: false }) }),
+    );
+  });
+
+  it("keeps the full window when the run was not advanced even if the PR head moved", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, idleMinutes: 3 });
+    const { finishedAt } = await seedFinishedRun({
+      companyId,
+      agentId,
+      issueId,
+      finishedMinutesAgo: 3,
+      livenessState: "needs_followup",
+    });
+    await seedActivity({
+      companyId,
+      issueId,
+      action: "issue.work_product_head_changed",
+      at: new Date(finishedAt.getTime() - 30_000),
+      details: { headShaChanged: true },
+    });
+    const { sweeper, enqueueWakeup } = makeSweeper();
+
+    expect((await sweeper.sweep(new Date())).woken).toBe(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not wake a task outside the strict release focus, but wakes the one inside it", async () => {
+    applyRunPrioritySettings({ ...currentRunPrioritySettings({}), currentRelease: "1.6.9", strictReleaseFocus: true });
+    const { companyId, agentId } = await seedAgent();
+    const inFocus = await seedIssue({ companyId, agentId, idleMinutes: 3 });
+    const outOfFocus = await seedIssue({ companyId, agentId, idleMinutes: 3 });
+    const labelId = randomUUID();
+    await db.insert(labels).values({ id: labelId, companyId, name: "1.6.9", color: "#123456" });
+    await db.insert(issueLabels).values({ companyId, issueId: inFocus, labelId });
+    // Make the two tasks belong to two executors so that one wake per executor
+    // per pass does not hide the check.
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "agent-b",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(issues).set({ assigneeAgentId: otherAgentId }).where(eq(issues.id, outOfFocus));
+    for (const [id, owner] of [[inFocus, agentId], [outOfFocus, otherAgentId]] as const) {
+      const run = await seedFinishedRun({ companyId, agentId: owner, issueId: id, finishedMinutesAgo: 3 });
+      await seedActivity({
+        companyId,
+        issueId: id,
+        action: "issue.work_product_head_changed",
+        at: new Date(run.finishedAt.getTime() - 30_000),
+        details: { headShaChanged: true },
+      });
+    }
+    const { sweeper, enqueueWakeup } = makeSweeper();
+
+    const result = await sweeper.sweep(new Date());
+
+    expect(result.issueIds).toEqual([inFocus]);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(enqueueWakeup).toHaveBeenCalledWith(agentId, expect.anything());
   });
 
   it("ignores tasks that are not in_progress and does nothing when the setting is 0", async () => {

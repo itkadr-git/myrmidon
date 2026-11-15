@@ -1,6 +1,20 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import { agentWakeupRequests, agents, companies, heartbeatRuns, issues, issueWorkProducts, type Db } from "@myrmidon/db";
+import {
+  activityLog,
+  agentWakeupRequests,
+  agents,
+  companies,
+  heartbeatRuns,
+  issues,
+  issueWorkProducts,
+  type Db,
+} from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
+import {
+  collectRunIdsWithIssueProgress,
+  ISSUE_PROGRESS_ACTIVITY_ACTIONS,
+} from "../services/issue-rewake-throttle.js";
+import { readRunIdsWithPrHeadChange } from "../services/pr-head-change-progress.js";
 import { hasCoveringWake, idlePickupCandidateRows, type IdleWakeBudget } from "./idle-pickup.js";
 import {
   countRunsWithoutCommit,
@@ -26,6 +40,16 @@ import {
  * (OPE-13199, deferred in the wake admission, so it applies to this wake too)
  * and `runPriority.strictReleaseFocus` (OPE-13200).
  *
+ * Continuation after progress: an executor whose last run on the task ended
+ * `advanced` and left real progress (the PR head moved inside the run's window,
+ * or a work product / document row is bound to the run) is woken after
+ * `CONTINUATION_AFTER_PROGRESS_MINUTES` instead of the full window. A run that
+ * pushed a piece of work and stopped (engineers do this: one to two minutes of
+ * work, then 10-30 minutes of waiting) should not sit out the idle window; a run
+ * without progress keeps the full window, so the guards against empty runs
+ * (wake-task-guard, rewake throttle) are not loosened. Every other check below
+ * applies to this wake the same way, the release focus included.
+ *
  * Not woken: a task whose PR head has CI in progress (the CI result wakes it), a
  * task at the runs-without-commit cap (it is parked for a person), a task with a
  * blocker, a hold, a pending interaction or an open child (the same prefilter
@@ -44,6 +68,18 @@ const CANDIDATE_LIMIT = 200;
 /** Pages one pass reads at most (200 each): a bound, not a cut of the working set. */
 const MAX_PAGES = 50;
 const MINUTE_MS = 60_000;
+/**
+ * The pause before the executor is woken again after a run that left real
+ * progress (see "Continuation after progress" above). Short on purpose: the
+ * work is mid-way and the engineer knows the next step; the wait only gives the
+ * board time to record the push (the PR head-change row comes from GitHub).
+ * Never longer than the configured window.
+ */
+export const CONTINUATION_AFTER_PROGRESS_MINUTES = 2;
+/** Activity rows that count as progress for the continuation: work products and documents. */
+const CONTINUATION_PROGRESS_ACTIONS = ISSUE_PROGRESS_ACTIVITY_ACTIONS.filter(
+  (action) => action.startsWith("issue.work_product_") || action.startsWith("issue.document_"),
+);
 const ACTIVE_CI_STATUSES = new Set(["queued", "in_progress", "pending"]);
 
 export interface InProgressIdleWakeDeps {
@@ -172,6 +208,61 @@ async function readIdleSince(
   return new Date(Math.max(...times));
 }
 
+/**
+ * Did the executor's last run on the task leave real progress? True when that
+ * run succeeded with liveness `advanced` and either moved the head of the task's
+ * PR inside its window (`readRunIdsWithPrHeadChange`) or left a work product or
+ * document row under its run id (`collectRunIdsWithIssueProgress`). Comments and
+ * status moves alone are not progress here: the first is what an empty run also
+ * writes, the second is the hand-back itself.
+ */
+export async function lastRunLeftProgress(
+  db: Db,
+  companyId: string,
+  agentId: string,
+  issueId: string,
+): Promise<boolean> {
+  const [run] = await db
+    .select({
+      id: heartbeatRuns.id,
+      status: heartbeatRuns.status,
+      livenessState: heartbeatRuns.livenessState,
+      createdAt: heartbeatRuns.createdAt,
+      startedAt: heartbeatRuns.startedAt,
+      finishedAt: heartbeatRuns.finishedAt,
+    })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.agentId, agentId),
+        sql`(${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId} or ${heartbeatRuns.contextSnapshot}->'_paperclipWakeContext'->>'issueId' = ${issueId})`,
+      ),
+    )
+    .orderBy(desc(sql`greatest(${heartbeatRuns.createdAt}, coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}))`))
+    .limit(1);
+  if (!run || run.status !== "succeeded" || run.livenessState !== "advanced") return false;
+  if ((await readRunIdsWithPrHeadChange(db, companyId, issueId, [run])).has(run.id)) return true;
+  const rows = await db
+    .select({
+      runId: activityLog.runId,
+      action: activityLog.action,
+      changes: sql<unknown>`${activityLog.details} -> 'changes'`,
+      source: sql<string | null>`${activityLog.details} ->> 'source'`,
+    })
+    .from(activityLog)
+    .where(
+      and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, issueId),
+        eq(activityLog.runId, run.id),
+        inArray(activityLog.action, CONTINUATION_PROGRESS_ACTIONS),
+      ),
+    );
+  return collectRunIdsWithIssueProgress(rows, () => agentId).has(run.id);
+}
+
 /** True when the task sits at the runs-without-commit cap (it is for a person, not for a wake). */
 async function isAtRunCap(
   db: Db,
@@ -219,7 +310,10 @@ export function createInProgressIdleWakeSweeper(deps: InProgressIdleWakeDeps): I
       if (!(minutes > 0)) return result;
       if (lastPassAtMs !== 0 && now.getTime() - lastPassAtMs < IN_PROGRESS_IDLE_WAKE_PASS_INTERVAL_MS) return result;
       lastPassAtMs = now.getTime();
-      const cutoff = new Date(now.getTime() - minutes * MINUTE_MS);
+      // The prefilter reads with the shorter continuation window; a task that
+      // is idle for less than the full window is judged below by its last run.
+      const shortMinutes = Math.min(minutes, CONTINUATION_AFTER_PROGRESS_MINUTES);
+      const cutoff = new Date(now.getTime() - shortMinutes * MINUTE_MS);
 
       // Cheap prefilter: in_progress tasks of an agent whose row has not moved
       // for the window, read page by page in (updatedAt, id) order until the set
@@ -303,9 +397,24 @@ export function createInProgressIdleWakeSweeper(deps: InProgressIdleWakeDeps): I
             if (!gate.ok || !gate.ready.has(issue.id)) continue;
             result.considered += 1;
             const lastTry = lastAttemptMs.get(issue.id);
-            if (lastTry !== undefined && now.getTime() - lastTry < minutes * MINUTE_MS) continue;
+            if (lastTry !== undefined && now.getTime() - lastTry < shortMinutes * MINUTE_MS) continue;
             const idleSince = await readIdleSince(deps.db, agent.companyId, agentId, issue);
-            if (!isIdleLongEnough(idleSince, now, minutes)) continue;
+            if (!isIdleLongEnough(idleSince, now, shortMinutes)) continue;
+            // Idle past the short window only: wake now if the last run left progress,
+            // otherwise wait for the full window.
+            let windowMinutes = minutes;
+            let afterProgress = false;
+            if (!isIdleLongEnough(idleSince, now, minutes)) {
+              if (!(await lastRunLeftProgress(deps.db, agent.companyId, agentId, issue.id))) continue;
+              windowMinutes = shortMinutes;
+              afterProgress = true;
+            }
+            // The once-per-window memory. A short continuation wake is tried once per
+            // idle spell: when the last try is newer than the idle clock the wake
+            // moved nothing (refused or lost), and the task falls back to the full window.
+            if (lastTry !== undefined) {
+              if (afterProgress ? lastTry >= idleSince.getTime() : now.getTime() - lastTry < windowMinutes * MINUTE_MS) continue;
+            }
             if (await hasCoveringWake(deps.db, agent, issue.id)) continue;
             if (isHeadCiInProgress(await readLatestPullRequestMetadata(deps.db, agent.companyId, issue.id))) continue;
             let capLimit = capLimitByCompany.get(agent.companyId);
@@ -318,7 +427,7 @@ export function createInProgressIdleWakeSweeper(deps: InProgressIdleWakeDeps): I
 
             lastAttemptMs.set(issue.id, now.getTime());
             const idleMinutes = Math.floor((now.getTime() - idleSince.getTime()) / MINUTE_MS);
-            const idempotencyKey = `${IN_PROGRESS_NO_RUN_REASON}:${issue.id}:${Math.floor(now.getTime() / (minutes * MINUTE_MS))}`;
+            const idempotencyKey = `${IN_PROGRESS_NO_RUN_REASON}:${issue.id}:${afterProgress ? "p" : "w"}${Math.floor(now.getTime() / (windowMinutes * MINUTE_MS))}`;
             const wake = await deps.enqueueWakeup(agentId, {
               source: "automation",
               triggerDetail: "system",
@@ -326,7 +435,7 @@ export function createInProgressIdleWakeSweeper(deps: InProgressIdleWakeDeps): I
               idempotencyKey,
               requestedByActorType: "system",
               requestedByActorId: IN_PROGRESS_NO_RUN_ACTOR,
-              payload: { issueId: issue.id, idleMinutes, thresholdMinutes: minutes },
+              payload: { issueId: issue.id, idleMinutes, thresholdMinutes: windowMinutes, afterProgress },
               contextSnapshot: {
                 issueId: issue.id,
                 taskKey: issue.id,
@@ -351,7 +460,8 @@ export function createInProgressIdleWakeSweeper(deps: InProgressIdleWakeDeps): I
               details: {
                 reason: IN_PROGRESS_NO_RUN_REASON,
                 idleMinutes,
-                thresholdMinutes: minutes,
+                thresholdMinutes: windowMinutes,
+                afterProgress,
                 idempotencyKey,
               },
             });
