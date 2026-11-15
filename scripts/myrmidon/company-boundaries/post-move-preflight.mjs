@@ -9,7 +9,8 @@ export async function preflight(expected, source) {
   const containsAll = (actual, required) => required.every((item) => actual.includes(item));
   await check('identity', async () => {
     const value = await source.identity();
-    if (!value || typeof value.companyId !== 'string' || typeof value.agentId !== 'string') return 'UNKNOWN';
+    if (!value || ![value.companyId, value.agentId, expected?.companyId, expected?.agentId]
+      .every((id) => typeof id === 'string' && id.trim().length > 0)) return 'UNKNOWN';
     return value.companyId === expected.companyId && value.agentId === expected.agentId ? 'PASS' : 'FAIL';
   });
   await check('bindings', async () => {

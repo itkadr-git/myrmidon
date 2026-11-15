@@ -19,6 +19,12 @@ function source(overrides = {}) {
   };
 }
 
+test('missing expected identity never passes', async () => {
+  const malformed = { ...expected, companyId: '', agentId: '' };
+  const result = await preflight(malformed, source({ identity: async () => ({ companyId: '', agentId: '' }) }));
+  assert.equal(result.status, 'UNKNOWN');
+});
+
 test('valid target metadata passes', async () => {
   assert.equal((await preflight(expected, source())).status, 'PASS');
 });
