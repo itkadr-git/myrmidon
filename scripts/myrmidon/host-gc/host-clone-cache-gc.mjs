@@ -853,6 +853,24 @@ export function isTreeOpen(targetPath, inodes, openPaths, openInodes) {
   return false;
 }
 
+// Scratch can hold a task checkout, not just disposable temporary files. Never
+// reclaim a tree containing git metadata or one that cannot be inspected safely.
+function scratchTreeIsDisposable(target, device) {
+  const stack = [target];
+  while (stack.length) {
+    const current = stack.pop();
+    let st;
+    try { st = fs.lstatSync(current); } catch { return false; }
+    if (st.dev !== device || st.isSymbolicLink()) return false;
+    if (!st.isDirectory()) continue;
+    let entries;
+    try { entries = fs.readdirSync(current); } catch { return false; }
+    if (entries.includes(".git")) return false;
+    for (const entry of entries) stack.push(path.join(current, entry));
+  }
+  return true;
+}
+
 export function scanScratchDirectory(scratchDir, now, ttlHours, openInfo = { openPaths: new Set(), openInodes: new Set() }) {
   const ttlMs = ttlHours * HOUR_MS;
   const results = [];
@@ -880,6 +898,12 @@ export function scanScratchDirectory(scratchDir, now, ttlHours, openInfo = { ope
     }
 
     if (ageMs >= ttlMs) {
+      let device;
+      try { device = fs.lstatSync(scratchDir).dev; } catch { device = null; }
+      if (device === null || !scratchTreeIsDisposable(fullPath, device)) {
+        results.push({ name: entry.name, path: fullPath, reason: "unsafe-scratch-tree", sizeBytes: totalSizeBytes, ageMs });
+        continue;
+      }
       results.push({ name: entry.name, path: fullPath, reason: "ttl", sizeBytes: totalSizeBytes, ageMs, mtimeMs: maxMtimeMs });
     } else {
       results.push({ name: entry.name, path: fullPath, reason: "fresh", sizeBytes: totalSizeBytes, ageMs, mtimeMs: maxMtimeMs });
