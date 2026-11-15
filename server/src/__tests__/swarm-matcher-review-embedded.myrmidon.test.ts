@@ -126,6 +126,7 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
     await db.update(agents).set({ role: "lead" }).where(eq(agents.id, leadId));
     const projectId = randomUUID();
     await db.insert(projects).values({ id: projectId, companyId, name: "dev", status: "in_progress", leadAgentId: leadId });
+    await db.insert(projectMemberships).values({ companyId, projectId, userId: leadId, state: "joined" });
     for (let i = 0; i < 3; i++) {
       const id = await seedAgent(companyId, `engineer-${i}`);
       await db.insert(projectMemberships).values({ companyId, projectId, userId: id, state: "joined" });
