@@ -136,6 +136,14 @@ class CollectorTests(unittest.TestCase):
         self.assertIsNone(postgres['data']['archive_last_success'])
         self.assertIsNone(postgres['data']['archive_last_failure'])
 
+    def test_missing_host_resources_are_explicitly_incomplete(self):
+        with patch.object(collector.os, 'cpu_count', return_value=None), \
+             patch.object(collector, 'memory', return_value=None):
+            resources = collector.collect()['resources']
+        self.assertEqual(resources['status'], 'incomplete')
+        self.assertIsNone(resources['cpu_count'])
+        self.assertIsNone(resources['memory_bytes'])
+
     def test_backup_archive_counters_are_reported_without_archive_commands(self):
         fixture = dict.fromkeys(collector.FIELDS, 1)
         fixture.update(server_version_num=160002, in_recovery=False,
