@@ -182,6 +182,15 @@ function createMocks() {
 }
 
 describe("SERVER-ONBOARD logic", () => {
+  it("retains the bootstrap password when an access report has no durable key", async () => {
+    const { mockStore, mockSecrets, mockGetServer, secretsStore } = createMocks();
+    const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
+    await service.addServer({ companyId: "company-1", slug: "no-durable-key", name: "Server", hostname: "192.0.2.7", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password", password: "bootstrap" }, createdBy: null });
+    await service.claim("company-1", "valid-executor-token");
+    await service.report("valid-executor-token", { companyId: "company-1", jobId: "job-1", entry: { step: "access", result: "ok", detail: null, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString() } });
+    expect(secretsStore["fleet/no-durable-key/bootstrap-password"]).toBe("bootstrap");
+  });
+
   it("authenticates ownership reports and derives server scope from the active job", async () => {
     const { mockStore, mockSecrets, mockGetServer, store } = createMocks();
     const companyId = "11111111-1111-4111-8111-111111111111";
