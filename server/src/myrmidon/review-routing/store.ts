@@ -105,12 +105,12 @@ export interface ReviewRoutingStore {
   /**
    * myrmidon(REVIEW-REBALANCE-CI): did this reviewer already read the current
    * head? `headChangedAt` is the newest head-change row of the task; the two
-   * other times are the reviewer's newest finished (succeeded) run on the task
+   * other times are the reviewer's newest succeeded run (by its start, else creation) on the task
    * and newest comment on it. The caller compares them with the head change.
    */
   reviewerReadFacts(input: { companyId: string; issueId: string; reviewerAgentId: string }): Promise<{
     headChangedAt: Date | null;
-    lastRunFinishedAt: Date | null;
+    lastRunStartedAt: Date | null;
     lastCommentAt: Date | null;
   }>;
   recordReviewWake(input: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; at: Date; attempt: number }): Promise<void>;
@@ -701,7 +701,7 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         .orderBy(desc(activityLog.createdAt))
         .limit(1);
       const [lastRun] = await db
-        .select({ finishedAt: heartbeatRuns.finishedAt })
+        .select({ startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt })
         .from(heartbeatRuns)
         .where(and(
           eq(heartbeatRuns.companyId, companyId),
@@ -710,7 +710,7 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
           isNotNull(heartbeatRuns.finishedAt),
           sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextIssueId}, ${heartbeatRuns.contextSnapshot} ->> 'issueId', (${heartbeatRuns.contextSnapshot} -> 'paperclipIssue') ->> 'id', ${heartbeatRuns.contextTaskId}, ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId}`,
         ))
-        .orderBy(desc(heartbeatRuns.finishedAt))
+        .orderBy(desc(sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt})`))
         .limit(1);
       const [lastComment] = await db
         .select({ at: issueComments.createdAt })
@@ -724,7 +724,7 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         .limit(1);
       return {
         headChangedAt: headChange?.at ?? null,
-        lastRunFinishedAt: lastRun?.finishedAt ?? null,
+        lastRunStartedAt: lastRun ? (lastRun.startedAt ?? lastRun.createdAt) : null,
         lastCommentAt: lastComment?.at ?? null,
       };
     },

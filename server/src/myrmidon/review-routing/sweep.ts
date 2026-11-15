@@ -1308,7 +1308,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
   /**
    * myrmidon(REVIEW-REBALANCE-CI): true when the current reviewer already read the
    * current head and CI of that head has no verdict yet. "Read": a succeeded run
-   * of the reviewer finished, or the reviewer commented, after the last head
+   * of the reviewer started, or the reviewer commented, after the last head
    * change (without a head-change row: after the review was routed to them).
    * "Waits for CI": the board's CI reader (the one the liveness lane and the
    * verdict check use) says `pending` for the head. Reader failures answer false:
@@ -1322,12 +1322,13 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
   ): Promise<boolean> {
     if (!deps.resolveReviewCi) return false;
     try {
-      const facts = await deps.store.reviewerReadFacts({ companyId: row.companyId, issueId: row.id, reviewerAgentId });
-      const since = (facts.headChangedAt ?? routedAt).getTime();
-      const readAt = Math.max(facts.lastRunFinishedAt?.getTime() ?? 0, facts.lastCommentAt?.getTime() ?? 0);
-      if (readAt <= since) return false;
+      // The CI reader is cached (60 s); the run query is not: ask CI first.
       const ci = await deps.resolveReviewCi({ companyId: row.companyId, issueId: row.id });
       if (ci.state !== "pending") return false;
+      const facts = await deps.store.reviewerReadFacts({ companyId: row.companyId, issueId: row.id, reviewerAgentId });
+      const since = (facts.headChangedAt ?? routedAt).getTime();
+      const readAt = Math.max(facts.lastRunStartedAt?.getTime() ?? 0, facts.lastCommentAt?.getTime() ?? 0);
+      if (readAt <= since) return false;
       const headSha = typeof ci.headSha === "string" ? ci.headSha : "";
       const key = [row.id, reviewerAgentId, headSha].join("|");
       if (!rebalanceHeldByCi.has(key)) {

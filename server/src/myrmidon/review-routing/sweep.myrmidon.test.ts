@@ -76,7 +76,7 @@ interface Fixture {
   reviewerActiveRuns?: Map<string, number>;
   escalations: Array<Record<string, unknown>>;
   agentModels?: Map<string, string | null>;
-  readFacts?: Map<string, { headChangedAt: Date | null; lastRunFinishedAt: Date | null; lastCommentAt: Date | null }>;
+  readFacts?: Map<string, { headChangedAt: Date | null; lastRunStartedAt: Date | null; lastCommentAt: Date | null }>;
 }
 
 function makeStore(fx: Fixture) {
@@ -122,7 +122,7 @@ function makeStore(fx: Fixture) {
       if (wake) fx.wakeStates?.set(issueId, { ...wake, lastEscalationAt: entry.at as Date });
     },
     reviewerReadFacts: async ({ issueId }: { companyId: string; issueId: string; reviewerAgentId: string }) =>
-      fx.readFacts?.get(issueId) ?? { headChangedAt: null, lastRunFinishedAt: null, lastCommentAt: null },
+      fx.readFacts?.get(issueId) ?? { headChangedAt: null, lastRunStartedAt: null, lastCommentAt: null },
     recordReviewWake: async ({ issueId, at, attempt }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; at: Date; attempt: number }) => {
       const wake = fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
       fx.wakeStates?.set(issueId, { ...wake, activeRun: false, pendingWake: true, lastWakeAt: at, attempts: attempt });
@@ -1485,7 +1485,7 @@ describe("review rebalancing", () => {
     const minutesAgo = (m: number) => new Date(NOW.getTime() - m * 60_000);
 
     function ciSetup(
-      facts: { headChangedAt: Date | null; lastRunFinishedAt: Date | null; lastCommentAt: Date | null },
+      facts: { headChangedAt: Date | null; lastRunStartedAt: Date | null; lastCommentAt: Date | null },
       ci: () => Promise<{ state: string; headSha?: string | null }>,
     ) {
       const t = setup(
@@ -1517,9 +1517,9 @@ describe("review rebalancing", () => {
       return t;
     }
 
-    it("does not rebalance when the reviewer finished a run after the head change and CI is pending", async () => {
+    it("does not rebalance when the reviewer started a run after the head change and CI is pending", async () => {
       const t = ciSetup(
-        { headChangedAt: minutesAgo(60), lastRunFinishedAt: minutesAgo(20), lastCommentAt: null },
+        { headChangedAt: minutesAgo(60), lastRunStartedAt: minutesAgo(20), lastCommentAt: null },
         async () => ({ state: "pending", headSha: "abc" }),
       );
       const result = await t.sweep.sweep(NOW, { force: true });
@@ -1531,7 +1531,7 @@ describe("review rebalancing", () => {
 
     it("does not rebalance when the reviewer commented after the head change and CI is pending, on repeated passes", async () => {
       const t = ciSetup(
-        { headChangedAt: minutesAgo(60), lastRunFinishedAt: null, lastCommentAt: minutesAgo(10) },
+        { headChangedAt: minutesAgo(60), lastRunStartedAt: null, lastCommentAt: minutesAgo(10) },
         async () => ({ state: "pending", headSha: "abc" }),
       );
       await t.sweep.sweep(NOW, { force: true });
@@ -1543,7 +1543,7 @@ describe("review rebalancing", () => {
     it("rebalances as before when the reviewer has not started on the current head", async () => {
       // The only run and comment of the reviewer are older than the last head change.
       const t = ciSetup(
-        { headChangedAt: minutesAgo(30), lastRunFinishedAt: minutesAgo(50), lastCommentAt: minutesAgo(50) },
+        { headChangedAt: minutesAgo(30), lastRunStartedAt: minutesAgo(50), lastCommentAt: minutesAgo(50) },
         async () => ({ state: "pending", headSha: "abc" }),
       );
       const result = await t.sweep.sweep(NOW, { force: true });
@@ -1552,9 +1552,18 @@ describe("review rebalancing", () => {
       expect(t.comments[0].body).toContain("rebalanced to @" + LEAD2);
     });
 
+    it("rebalances as before when the only run started before the head change", async () => {
+      const t = ciSetup(
+        { headChangedAt: minutesAgo(30), lastRunStartedAt: minutesAgo(40), lastCommentAt: null },
+        async () => ({ state: "pending", headSha: "abc" }),
+      );
+      const result = await t.sweep.sweep(NOW, { force: true });
+      expect(result).toMatchObject({ reassigned: 1, failed: 0 });
+    });
+
     it("rebalances as before when the reviewer read the head but CI is no longer pending", async () => {
       const t = ciSetup(
-        { headChangedAt: minutesAgo(60), lastRunFinishedAt: minutesAgo(20), lastCommentAt: null },
+        { headChangedAt: minutesAgo(60), lastRunStartedAt: minutesAgo(20), lastCommentAt: null },
         async () => ({ state: "complete", headSha: "abc" }),
       );
       const result = await t.sweep.sweep(NOW, { force: true });
@@ -1564,7 +1573,7 @@ describe("review rebalancing", () => {
 
     it("rebalances as before when the CI reader fails", async () => {
       const t = ciSetup(
-        { headChangedAt: minutesAgo(60), lastRunFinishedAt: minutesAgo(20), lastCommentAt: null },
+        { headChangedAt: minutesAgo(60), lastRunStartedAt: minutesAgo(20), lastCommentAt: null },
         async () => {
           throw new Error("github down");
         },

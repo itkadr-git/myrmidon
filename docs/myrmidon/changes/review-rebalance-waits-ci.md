@@ -6,7 +6,7 @@
   reviewer had already read the current head of the pull request and the review was only waiting for CI. In one task
   (OPE-13182, PR #3270, CI cancelled on the head) this made 12 handoffs and 11 review runs in 6 hours: each reviewer wrote
   "no new blocking remarks" and could not approve without a green CI, then the review moved on.
-- The rebalance now skips such a review. "Already read" means the current reviewer finished a run on the task, or wrote a
+- The rebalance now skips such a review. "Already read" means a succeeded run of the current reviewer on the task started, or the reviewer wrote a
   comment, after the last change of the pull request head (when the head never changed on the board, after the review was
   routed to them). "Waits for CI" means the board's own CI reader (the one the review wake and the verdict check use) reports
   the `CI result` of the current head as not finished. One line per task, reviewer and head goes to the server log.
@@ -22,7 +22,7 @@
   ревьюер уже прочитал текущую голову pull request, а ревью ждало только CI. На одной задаче (OPE-13182, PR #3270, CI на
   голове отменён) за 6 часов вышло 12 перебросок и 11 прогонов ревью: каждый ревьюер писал «новых блокирующих замечаний
   нет», не мог одобрить без зелёного CI, и ревью уходило дальше.
-- Теперь перебалансировка такое ревью пропускает. «Уже прочитано» — текущий ревьюер завершил прогон по задаче или оставил
+- Теперь перебалансировка такое ревью пропускает. «Уже прочитано» — успешный прогон текущего ревьюера по задаче начался или ревьюер оставил
   комментарий после последней смены головы PR (если голова на доске не менялась — после того, как ревью передано ему).
   «Ждёт CI» — собственное чтение CI на доске (то же, что у будящего сигнала ревью и проверки вердикта) показывает, что
   `CI result` текущей головы не завершён. В журнал сервера пишется одна строка на задачу, ревьюера и голову.
