@@ -7,12 +7,7 @@ export function releaseFocusCondition(companyId: string): SQL {
   const release = currentRunPrioritySettings().currentRelease;
   if (!release?.trim()) return sql`true`;
   const normalized = release.trim().toLowerCase();
-  const matches = (name: SQL) => sql`(
-    lower(trim(${name})) = ${normalized}
-    or (length(${normalized}) >= 3 and length(lower(trim(${name}))) >= 3
-      and (position(${normalized} in lower(trim(${name}))) > 0
-        or position(lower(trim(${name})) in ${normalized}) > 0))
-  )`;
+  const matches = (name: SQL) => sql`lower(trim(${name})) = ${normalized}`;
   // Assignment alone is not provenance. Unknown/legacy assignments fail closed.
   const ownerAssigned = sql`(${issues.assigneeAgentId} is not null and exists (
     select 1 from activity_log assignment
