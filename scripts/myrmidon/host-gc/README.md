@@ -149,6 +149,10 @@ it in either of two ways:
   for several roots);
 - `--runner-root <path>` on the command line (repeatable).
 
+The stale-runner scan maps `engN` runner names to `adm-dev-eng-N` agents through the company agent
+list, so it also needs `MYRMIDON_COMPANY_ID=<company UUID>` (or `PAPERCLIP_COMPANY_ID`) in the
+environment; without it the scan reports `company-id-missing` and removes nothing.
+
 Which hosts get it:
 
 - A host that installs the repo unit `systemd/myrmidon-host-gc.service` as is: the unit sets

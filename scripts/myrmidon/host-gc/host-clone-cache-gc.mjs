@@ -379,12 +379,23 @@ export async function fetchAgentAdapter(agentId, {
   const headers = { Accept: "application/json" };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
   try {
-    const response = await fetchImpl(`${base}/agents/${encodeURIComponent(agentId)}`, { headers });
-    if (response.status === 404) return { ok: true, adapterType: null };
-    if (!response.ok) return { ok: false, reason: "board-unavailable", statusCode: response.status };
+    // Runner names use engN, while GET /agents/{id} accepts only UUIDs. Resolve
+    // the canonical company agent name through the company-scoped list route.
+    const companyId = process.env.MYRMIDON_COMPANY_ID || process.env.PAPERCLIP_COMPANY_ID;
+    if (!companyId) return { ok: false, reason: "company-id-missing" };
+    const number = /^eng(\d+)$/.exec(agentId)?.[1];
+    if (!number) return { ok: false, reason: "bad-agent-id" };
+    const response = await fetchImpl(`${base}/companies/${encodeURIComponent(companyId)}/agents?q=${encodeURIComponent(`adm-dev-eng-${number}`)}`, { headers });
+    if (!response.ok) return { ok: false, reason: `board-http-${response.status}`, statusCode: response.status };
     const body = await response.json();
-    if (!body || typeof body !== "object" || typeof body.adapterType !== "string") return { ok: false, reason: "board-unavailable" };
-    return { ok: true, adapterType: body.adapterType };
+    if (!Array.isArray(body)) return { ok: false, reason: "board-invalid-agent-list" };
+    const agent = body.find((entry) => entry?.name === `adm-dev-eng-${number}`);
+    if (!agent) return { ok: true, adapterType: null };
+    // adapterType is part of AgentListItem; do not make a second detail request.
+    if (typeof agent.id !== "string" || typeof agent.adapterType !== "string") {
+      return { ok: false, reason: "board-invalid-agent-list" };
+    }
+    return { ok: true, adapterType: agent.adapterType };
   } catch {
     return { ok: false, reason: "board-unavailable" };
   }
@@ -1391,6 +1402,7 @@ async function main() {
         });
         if (!stale.ok) {
           journalRecord(args.journal, { event: "stale-omp-runner-scan-unavailable", reason: stale.reason, root: runnersRoot });
+          console.error(JSON.stringify({ ok: false, event: "stale-omp-runner-scan-unavailable", reason: stale.reason, root: runnersRoot }));
           continue;
         }
         for (const item of stale.plan) {
