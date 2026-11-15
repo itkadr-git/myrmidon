@@ -377,8 +377,8 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     });
     const observed: Array<{ companyId: string; agentId: string; model: unknown }> = [];
     const service = agentService(db, {
-      syncAgentModelAllowlist: async ({ companyId, agentId }) => {
-        const persisted = await agentService(db).getById(agentId);
+      syncAgentModelAllowlist: async ({ companyId, agentId, db: txDb }) => {
+        const persisted = await agentService(txDb).getById(agentId);
         observed.push({ companyId, agentId, model: (persisted?.adapterConfig as Record<string, unknown>).model });
       },
     });
