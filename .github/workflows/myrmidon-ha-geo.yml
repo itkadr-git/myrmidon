@@ -1,0 +1,36 @@
+name: Myrmidon HA-GEO
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/ha-geo/**"
+  pull_request:
+    paths:
+      - "scripts/ha-geo/**"
+
+permissions: {}
+
+concurrency:
+  group: myrmidon-ha-geo-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+
+jobs:
+  test:
+    name: HA-GEO unit tests
+    if: ${{ github.repository == 'itkadr-git/myrmidon' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Run HA-GEO unit tests
+        run: python3 -m unittest discover -s scripts/ha-geo -p 'test_*.py'
