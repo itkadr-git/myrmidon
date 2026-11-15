@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { createAutoSlicePolicy, projectQueueShortages } from "./auto-slice-policy.ts";
+import { createAutoSlicePolicy, projectQueueShortages, runAutoSlicePass } from "./auto-slice-policy.ts";
 
 test("counts project members with empty queues and ignores outsiders", () => {
   const result = projectQueueShortages("company", [
@@ -35,4 +35,21 @@ test("company identifiers cannot collide with project identifiers", () => {
   const policy = createAutoSlicePolicy(10);
   assert.equal(policy.observe({ companyId: "a:b", projectId: "c", ready: 0, free: 1 }, 0), 0);
   assert.equal(policy.observe({ companyId: "a", projectId: "b:c", ready: 0, free: 1 }, 10), 0);
+});
+
+test("a sustained shortage creates one slicing task despite repeated passes", async () => {
+  const policy = createAutoSlicePolicy();
+  const shortage = { companyId: "company", projectId: "project", ready: 0, free: 3 };
+  const created = [];
+  const ports = {
+    createIfAbsent: async (input) => {
+      if (created.length) return false;
+      created.push(input);
+      return true;
+    },
+  };
+  await runAutoSlicePass(policy, [shortage], 0, ports);
+  await runAutoSlicePass(policy, [shortage], 600_000, ports);
+  await runAutoSlicePass(policy, [shortage], 630_000, ports);
+  assert.deepEqual(created, [{ companyId: "company", projectId: "project", needed: 3 }]);
 });
