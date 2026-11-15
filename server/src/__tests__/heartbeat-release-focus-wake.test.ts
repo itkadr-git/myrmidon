@@ -1,26 +1,72 @@
-import { describe, expect, it } from "vitest";
-import { runMatchesCurrentRelease } from "../myrmidon/run-priority/scoring.js";
+import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { agents, agentWakeupRequests, companies, createDb, issueLabels, issues, labels } from "@myrmidon/db";
+import { normalizeRunPrioritySettings } from "@myrmidon/shared";
+import { heartbeatService } from "../services/heartbeat.ts";
+import { findTopReadyIssueForAgent } from "../myrmidon/idle-pickup.js";
+import { applyRunPrioritySettings, resetRunPriorityForTests } from "../myrmidon/run-priority/state.js";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
-describe("release-focused wake decision", () => {
-  const currentRelease = "1.6.9";
-  const shouldDefer = (targetLabels: string[], openIssueLabels: string[], manualUserWake = false) => {
-    const targetMatchesRelease = runMatchesCurrentRelease(currentRelease, targetLabels);
-    const hasOpenCurrentReleaseIssue = openIssueLabels.some((label) =>
-      runMatchesCurrentRelease(currentRelease, [label]),
-    );
-    return !manualUserWake && Boolean(currentRelease) && hasOpenCurrentReleaseIssue && !targetMatchesRelease;
-  };
+const support = await getEmbeddedPostgresTestSupport();
+const describeDb = support.supported ? describe : describe.skip;
 
-  it("defers a non-release wake while release work is open", () => {
-    expect(shouldDefer(["1.8"], ["1.6.9"])).toBe(true);
+describeDb("release-focused production wake and task selection", () => {
+  let db: ReturnType<typeof createDb>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+
+  beforeAll(async () => {
+    database = await startEmbeddedPostgresTestDatabase("release-focus-wake-");
+    db = createDb(database.connectionString);
+    applyRunPrioritySettings(normalizeRunPrioritySettings({ currentRelease: "1.6.9" }));
+  }, 60_000);
+
+  afterAll(async () => {
+    resetRunPriorityForTests();
+    await database?.cleanup();
   });
 
-  it("allows the release wake and permits other work once release work is closed", () => {
-    expect(shouldDefer(["1.6.9"], ["1.6.9"])).toBe(false);
-    expect(shouldDefer(["1.8"], [])).toBe(false);
+  async function seed() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const currentId = randomUUID();
+    const otherId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Release focus", issuePrefix: `T${companyId.slice(0, 6)}` });
+    // Stop admitted timer wakes before invoking an adapter.
+    await db.insert(agents).values({ id: agentId, companyId, name: "Engineer", role: "engineer", status: "idle", adapterType: "codex_local", runtimeConfig: { heartbeat: { enabled: false } } });
+    await db.insert(issues).values([
+      { id: currentId, companyId, title: "Current", status: "in_progress", priority: "low", assigneeAgentId: agentId },
+      { id: otherId, companyId, title: "Other", status: "in_progress", priority: "critical", assigneeAgentId: agentId },
+    ]);
+    for (const [issueId, name] of [[currentId, "1.6.9"], [otherId, "1.8"]]) {
+      const [label] = await db.insert(labels).values({ companyId, name, color: "#123456" }).returning();
+      await db.insert(issueLabels).values({ companyId, issueId, labelId: label.id });
+    }
+    return { companyId, agentId, currentId, otherId };
+  }
+
+  it("records release_focus for an off-release timer wake before adapter admission", async () => {
+    const { agentId, otherId } = await seed();
+    expect(await heartbeatService(db).wakeup(agentId, { source: "timer", payload: { issueId: otherId } })).toBeNull();
+    const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(rows).toEqual([expect.objectContaining({ status: "skipped", reason: "release_focus" })]);
   });
 
-  it("preserves manual user overrides", () => {
-    expect(shouldDefer(["1.8"], ["1.6.9"], true)).toBe(false);
+  it("admits current-release work and other work after current-release work closes", async () => {
+    const { agentId, currentId, otherId } = await seed();
+    const heartbeat = heartbeatService(db);
+    await heartbeat.wakeup(agentId, { source: "timer", payload: { issueId: currentId } });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, currentId));
+    await heartbeat.wakeup(agentId, { source: "timer", payload: { issueId: otherId } });
+    const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.reason === "heartbeat.disabled")).toBe(true);
+  });
+
+  it("selects current-release work ahead of a higher priority other-release task", async () => {
+    const { companyId, agentId, currentId, otherId } = await seed();
+    expect((await findTopReadyIssueForAgent(db, { id: agentId, companyId }))?.id).toBe(currentId);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, currentId));
+    expect((await findTopReadyIssueForAgent(db, { id: agentId, companyId }))?.id).toBe(otherId);
   });
 });
