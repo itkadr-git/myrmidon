@@ -50,6 +50,7 @@ import {
   writeImportTransferPart,
 } from "../services/company-import-transfers.js";
 import { companyTransferRunService } from "../services/company-transfer-runs.js";
+import { companyMigrationService } from "../services/company-migration.js";
 import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
 import { resolvePortableExportAgentSelection } from "../services/company-portability-agent-selection.js";
 import {
@@ -1117,6 +1118,19 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       await companyTransferRunService.releaseApplyClaim(db, run.id, errorMessage(error));
       throw error;
     }
+  });
+
+  router.post("/:companyId/migrations", async (req, res) => {
+    assertBoard(req);
+    const body = z.object({
+      target: z.object({ mode: z.literal("new_company"), newCompanyName: z.string().trim().min(1) }).strict(),
+      export: companyPortabilityExportSchema.optional().default({}),
+      dryRun: z.literal(true).optional().default(true),
+    }).strict().parse(req.body);
+    const result = await companyMigrationService(portability).dryRun(
+      req.params.companyId as string, body.export, body.target.newCompanyName,
+    );
+    res.json(result);
   });
 
   router.post("/:companyId/exports/preview", async (req, res) => {
