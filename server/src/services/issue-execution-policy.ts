@@ -1678,6 +1678,11 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   // A workflow whose execution already completed is terminal for approve/done:
   // closing the issue must not restart the chain at the first stage (#7893).
   if (requestedStatus === "done" && existingState?.status === COMPLETED_STATUS) {
+    if (isRelease && !input.policy.stages.some((stage) =>
+      stage.type === "verify" && existingState.completedStageIds.includes(stage.id),
+    )) {
+      throw unprocessable("Cannot mark release task done without a completed verify execution stage.");
+    }
     return { patch };
   }
 
