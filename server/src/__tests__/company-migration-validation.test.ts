@@ -36,6 +36,18 @@ describe("migration manifest validation", () => {
     ]));
   });
 
+  it("rejects duplicate agent and project slugs before resolving references", () => {
+    const agent = { slug: "worker", reportsToSlug: null, reportsToExistingAgentId: null,
+      reportsToExistingAgentSlug: null, skills: [], permissionGrants: [] };
+    const result = validateMigrationManifest({
+      agents: [agent, agent], skills: [], projects: [{ slug: "project" }, { slug: "project" }], envInputs: [],
+    });
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("Duplicate agent slug: worker"),
+      expect.stringContaining("Duplicate project slug: project"),
+    ]));
+  });
+
   it("rejects cycles in the imported management hierarchy", () => {
     const agent = { slug: "worker", reportsToSlug: "boss", reportsToExistingAgentId: null,
       reportsToExistingAgentSlug: null, skills: [], permissionGrants: [] };
