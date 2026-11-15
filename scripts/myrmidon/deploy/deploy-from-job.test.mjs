@@ -321,6 +321,7 @@ esac
       .trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(events.map(({ event, status }) => [event, status]), [
       ["deploy.intent", "planned"],
+      ["deploy.result", "failed"],
       ["rollback.intent", "planned"],
       ["rollback.result", "succeeded"],
     ]);
@@ -344,6 +345,7 @@ esac
       .trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(events.map(({ event, status }) => [event, status]), [
       ["deploy.intent", "planned"],
+      ["deploy.result", "failed"],
       ["rollback.intent", "planned"],
       ["rollback.result", "failed"],
     ]);
