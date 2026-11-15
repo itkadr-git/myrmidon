@@ -625,6 +625,19 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
         .where(and(eq(agentWakeupRequests.agentId, leadAgentId), eq(agentWakeupRequests.companyId, companyId)));
       expect(leadWakes.length).toBeGreaterThan(0);
       expect(leadWakes[0]!.reason).toBe("runs_without_commit_limit_reached");
+
+      // A subsequent cap check on the same head must not re-comment or
+      // re-escalate while the run-cap block remains in place.
+      await continuationWake(agentId, issueId);
+      const repeatedSkips = skippedWith(await wakeRequests(agentId), "runs_without_commit_limit_reached");
+      expect(repeatedSkips).toHaveLength(1);
+      const commentsAfterRetry = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      expect(commentsAfterRetry.filter((comment) => comment.body?.includes("достигла потолка"))).toHaveLength(1);
+      const leadWakesAfterRetry = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(and(eq(agentWakeupRequests.agentId, leadAgentId), eq(agentWakeupRequests.companyId, companyId)));
+      expect(leadWakesAfterRetry).toHaveLength(leadWakes.length);
     });
 
     it("resets run cap without commit counter when user manually unblocks issue (OPE-13080)", async () => {

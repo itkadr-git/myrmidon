@@ -171,6 +171,8 @@ import {
   buildRunCapNoCommitWakeEvidence,
   loadTaskRunsWithoutCommitLimit,
   RUN_CAP_NO_COMMIT_REASON,
+  RUN_CAP_NO_COMMIT_BLOCK_REASON,
+  RUN_CAP_NO_COMMIT_UNBLOCK_ACTION,
   type RunCapNoCommitStop,
 } from "../myrmidon/run-cap-no-commit.js"; // myrmidon(OPE-13080)
 import { WakeStormGuard, wakeStormSourceKey } from "../myrmidon/wake-storm-guard.js";
@@ -32807,7 +32809,15 @@ export function heartbeatService(
           .where(and(eq(issues.id, stop.issueId), eq(issues.companyId, stop.companyId)))
           .for("update")
           .limit(1);
-        if (!current || !isContinuationActionable(current, stop.agentId)) return;
+        if (!current || current.assigneeAgentId !== stop.agentId) return;
+        const blockerMetadata = current.blockerMetadata as Record<string, unknown> | null;
+        const unblockDescriptor = current.unblockDescriptor as Record<string, unknown> | null;
+        if (
+          current.status === "blocked" &&
+          blockerMetadata?.blockReason === RUN_CAP_NO_COMMIT_BLOCK_REASON &&
+          blockerMetadata.externalRef === `run_cap_no_commit:${stop.headSha}:${stop.count}` &&
+          unblockDescriptor?.action === RUN_CAP_NO_COMMIT_UNBLOCK_ACTION
+        ) return;
         const patch = buildRunCapNoCommitBlockedPatch({
           agentId: stop.agentId,
           count: stop.count,
