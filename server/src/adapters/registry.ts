@@ -1093,7 +1093,12 @@ export async function listAdapterModels(type: string, companyId?: string, db?: D
   const gatewayCatalog = ["hermes_gateway", "hermes_local", "omp_local"].includes(type);
   if (gatewayCatalog) {
     try {
-      return await listGatewayModels({ companyId, db, forceRefresh });
+      const models = await listGatewayModels({ companyId, db, forceRefresh });
+      if (type !== "omp_local") return models;
+      return models.map((model) => ({
+        ...model,
+        id: model.id.startsWith("litellm/") ? model.id : `litellm/${model.id}`,
+      }));
     } catch {
       // Do not log upstream errors: secret providers can include credentials.
       logger.warn({ adapterType: type, companyId }, "Live LiteLLM catalog unavailable; falling back to declared adapter models");

@@ -263,8 +263,9 @@ describe("pool models behavior tests (1.6.6 OPE-9932)", () => {
       vi.stubEnv("MYRMIDON_LITELLM_KEY_SECRET", "catalog-key");
       for (const name of ["MYRMIDON_LITELLM_KEY", "MYRMIDON_LITELLM_API_KEY", "MYRMIDON_LITELLM_MASTER_KEY", "MYRMIDON_LITELLM_ADMIN_KEY", "LITELLM_MASTER_KEY", "LLM_GATEWAY_API_KEY", "OPENAI_API_KEY"]) vi.stubEnv(name, "");
       vi.stubEnv("PAPERCLIP_ADAPTER_MODELS", JSON.stringify({ [adapterType]: [{ id: "stale-env-model" }] }));
+      const liveModel = adapterType === "omp_local" ? "chatgpt-pool/gpt-6.1-terra" : "chatgpt-pool/gpt-6-astra";
       const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
-        data: [{ id: "chatgpt-pool/gpt-6-astra" }],
+        data: [{ id: liveModel }],
       })));
       const agentId = "22222222-2222-4222-8222-222222222222";
       mockAgentService.getById.mockResolvedValue({
@@ -279,7 +280,7 @@ describe("pool models behavior tests (1.6.6 OPE-9932)", () => {
       const app = await createApp({ select: () => ({ from: () => query }) });
       const catalog = await requestApp(app, (url) => request(url).get(`/api/companies/company-1/adapters/${adapterType}/models`));
       expect(catalog.status).toBe(200);
-      const expectedModel = adapterType === "omp_local" ? "litellm/chatgpt-pool/gpt-6-astra" : "chatgpt-pool/gpt-6-astra";
+      const expectedModel = adapterType === "omp_local" ? `litellm/${liveModel}` : liveModel;
       expect(catalog.body.map((model: any) => model.id)).toEqual([expectedModel]);
       const saved = await requestApp(app, (url) => request(url).patch(`/api/agents/${agentId}`).send({ adapterConfig: { model: expectedModel } }));
       expect(saved.status).toBe(200);
