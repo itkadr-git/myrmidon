@@ -233,6 +233,24 @@ describe.sequential("company route cross-company authorization", () => {
     expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
   });
 
+  it("reports invalid migration references before invoking the import planner", async () => {
+    const exported = exportResult();
+    mockCompanyPortabilityService.exportBundle.mockResolvedValue({
+      ...exported,
+      manifest: { ...exported.manifest, envInputs: [{ key: "TOKEN", agentSlug: "missing", projectSlug: null,
+        kind: "secret", requirement: "required" }] },
+    });
+    const app = await createApp(boardActor({ userId: "owner-a", companyIds: [companyAId] }));
+    const response = await request(app).post(`/api/companies/${companyAId}/migrations`).send({
+      target: { mode: "new_company", newCompanyName: "Destination" },
+    }).expect(200);
+    expect(response.body.validation.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("missing"),
+    ]));
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
+  });
+
   it.each(["session", "board_key", "cloud_tenant"])(
     "limits navigable companies to memberships for a %s instance admin",
     async (source) => {
