@@ -24,6 +24,8 @@ function withAgentDirectory<T>(rows: Array<Record<string, unknown>>, run: () => 
   });
 }
 
+const mockReleaseProducts = vi.hoisted(() => vi.fn(async (): Promise<Array<{ type: string; status: string }>> => []));
+
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getByIdForUpdate: vi.fn(),
@@ -231,7 +233,7 @@ function registerModuleMocks() {
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
-    workProductService: () => ({ listForIssue: vi.fn(async () => []) }),
+    workProductService: () => ({ listForIssue: mockReleaseProducts }),
   }));
 }
 
@@ -293,6 +295,7 @@ describe("issue execution policy routes", () => {
   beforeEach(async () => {
     clearReviewWakesQuotas(new Date());
     vi.clearAllMocks();
+    mockReleaseProducts.mockReset().mockResolvedValue([]);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
@@ -431,6 +434,36 @@ describe("issue execution policy routes", () => {
       status: "in_progress",
       assigneeAgentId: "new-executor",
     });
+  });
+
+  it("rejects completion if a merged PR appears before the issue update lock", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "1.7 Release",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getByIdForUpdate.mockImplementation(async () => {
+      mockReleaseProducts.mockResolvedValue([{ type: "pull_request", status: "merged" }]);
+      return issue;
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue, ...patch, updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("reauthorizes a terminal verdict against the review policy held under the update lock", async () => {
