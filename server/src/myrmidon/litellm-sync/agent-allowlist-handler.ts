@@ -173,9 +173,9 @@ function cardModelNames(adapterConfig: unknown): string[] {
   if (!isRecord(adapterConfig)) return [];
   const names: string[] = [];
   const add = (value: unknown) => {
-    if (typeof value === "string" && value.trim() && value !== "default" && value !== "auto" && !value.startsWith("litellm/")) {
-      names.push(value.trim());
-    }
+    if (typeof value !== "string") return;
+    const name = value.trim().replace(/^litellm\//, "");
+    if (name && name !== "default" && name !== "auto") names.push(name);
   };
   add(adapterConfig.model);
   const models = isRecord(adapterConfig.models) ? adapterConfig.models : {};
