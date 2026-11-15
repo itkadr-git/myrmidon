@@ -167,6 +167,15 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(report['postgres']['data']['archive_failures'], 3)
         self.assertEqual(report['postgres']['data']['ssl_configured'], 'on')
 
+    def test_wal_compression_is_reported_without_exposing_archive_command(self):
+        fixture = dict.fromkeys(collector.FIELDS, 1)
+        fixture.update(server_version_num=160002, in_recovery=False, wal_compression='lz4')
+        with patch.object(collector, 'query_postgres', return_value=fixture):
+            data = collector.collect('/socket', 'db', 'operator')['postgres']['data']
+        self.assertEqual(data['wal_compression'], 'lz4')
+        self.assertIn("current_setting('wal_compression'", collector.SQL)
+        self.assertNotIn('archive_command', collector.SQL)
+
     def test_wal_retention_and_checkpoint_settings_are_reported(self):
         fixture = dict.fromkeys(collector.FIELDS, 1)
         fixture.update(server_version_num=160002, in_recovery=False,
