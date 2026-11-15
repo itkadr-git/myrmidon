@@ -224,6 +224,15 @@ describe.sequential("company route cross-company authorization", () => {
     resetMockDefaults();
   });
 
+  it("denies migration previews for a company outside the board user's membership", async () => {
+    const app = await createApp(boardActor({ userId: "owner-a", companyIds: [companyAId] }));
+    await request(app).post(`/api/companies/${companyBId}/migrations`).send({
+      target: { mode: "new_company", newCompanyName: "Destination" },
+    }).expect(403);
+    expect(mockCompanyPortabilityService.exportBundle).not.toHaveBeenCalled();
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+  });
+
   it.each(["session", "board_key", "cloud_tenant"])(
     "limits navigable companies to memberships for a %s instance admin",
     async (source) => {
