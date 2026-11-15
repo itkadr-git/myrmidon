@@ -676,16 +676,16 @@ describe("persisted release evidence", () => {
   });
 
   it("rejects missing or forged records and records from other scopes", () => {
-    expect(validateReleaseVerificationEvidence(null, scope, "secret")).toBe(false);
-    expect(validateReleaseVerificationEvidence({ ...record, verdict: "failed" }, scope, "secret")).toBe(false);
-    expect(validateReleaseVerificationEvidence(record, { ...scope, companyId: "other" }, "secret")).toBe(false);
-    expect(validateReleaseVerificationEvidence(record, { ...scope, issueId: "other" }, "secret")).toBe(false);
-    expect(validateReleaseVerificationEvidence(record, { ...scope, releasePrefix: "1.7" }, "secret")).toBe(false);
-    expect(validateReleaseVerificationEvidence(record, { ...scope, deployedVersion: SHA_C }, "secret")).toBe(false);
-    expect(validateReleaseVerificationEvidence(record, { ...scope, members: [member("issue-b:PR#2", SHA_C)] }, "secret")).toBe(false);
-    expect(validateReleaseVerificationEvidence(record, scope, "wrong-secret")).toBe(false);
+    expect(validateReleaseVerificationEvidence(null, scope, "secret", NOW())).toBe(false);
+    expect(validateReleaseVerificationEvidence({ ...record, verdict: "failed" }, scope, "secret", NOW())).toBe(false);
+    expect(validateReleaseVerificationEvidence(record, { ...scope, companyId: "other" }, "secret", NOW())).toBe(false);
+    expect(validateReleaseVerificationEvidence(record, { ...scope, issueId: "other" }, "secret", NOW())).toBe(false);
+    expect(validateReleaseVerificationEvidence(record, { ...scope, releasePrefix: "1.7" }, "secret", NOW())).toBe(false);
+    expect(validateReleaseVerificationEvidence(record, { ...scope, deployedVersion: SHA_C }, "secret", NOW())).toBe(false);
+    expect(validateReleaseVerificationEvidence(record, { ...scope, members: [member("issue-b:PR#2", SHA_C)] }, "secret", NOW())).toBe(false);
+    expect(validateReleaseVerificationEvidence(record, scope, "wrong-secret", NOW())).toBe(false);
     const failed = createReleaseVerificationEvidence({ ...scope, verdict: "failed", checkedAt: "2026-11-13T12:00:00.000Z" }, "secret");
-    expect(validateReleaseVerificationEvidence(failed, scope, "secret")).toBe(false);
+    expect(validateReleaseVerificationEvidence(failed, scope, "secret", NOW())).toBe(false);
   });
 });
 
