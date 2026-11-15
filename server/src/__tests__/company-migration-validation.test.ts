@@ -21,6 +21,21 @@ describe("migration manifest validation", () => {
     expect(JSON.stringify(result)).not.toContain("never-print-this");
   });
 
+  it("rejects secret bindings whose agent or project is absent from the bundle", () => {
+    const manifest = {
+      agents: [], skills: [], projects: [{ slug: "present" }],
+      envInputs: [
+        { key: "AGENT_KEY", agentSlug: "missing-agent", projectSlug: null, kind: "secret" as const, requirement: "required" as const },
+        { key: "PROJECT_KEY", agentSlug: null, projectSlug: "missing-project", kind: "secret" as const, requirement: "required" as const },
+      ],
+    };
+    const result = validateMigrationManifest(manifest);
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("missing-agent"),
+      expect.stringContaining("missing-project"),
+    ]));
+  });
+
   it("rejects cycles in the imported management hierarchy", () => {
     const agent = { slug: "worker", reportsToSlug: "boss", reportsToExistingAgentId: null,
       reportsToExistingAgentSlug: null, skills: [], permissionGrants: [] };
