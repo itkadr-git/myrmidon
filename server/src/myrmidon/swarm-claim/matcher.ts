@@ -980,6 +980,22 @@ export async function matchAgent(
   );
   if (!self) return null;
 
+  // myrmidon(1.9 SWARM-SPREAD): an agent that already carries an open task (or
+  // is running) is not handed another queue task while a free agent of the same
+  // caste could take it: the freed-agent event must not pile a second task on
+  // one engineer while its colleagues stand idle. No free colleague - as before.
+  const selfBusy =
+    loadOfAgent(self) > 0 || (pair.agents.find((entry) => entry.id === agentId)?.hasLiveRun ?? false);
+  let idleColleagues: SwarmMatcherAgent[] | null = null;
+  const idleColleaguesOf = async (): Promise<SwarmMatcherAgent[]> => {
+    if (idleColleagues) return idleColleagues;
+    const pool = freeAgentsOfPair(pair, deps.settings, caste).filter(
+      (agent) => agent.agentId !== agentId && loadOfAgent(agent) === 0,
+    );
+    idleColleagues = await availableAgents(deps, agentRow.companyId!, pool);
+    return idleColleagues;
+  };
+
   // The pool read is already in the queue order (`swarmQueueOrderBy`).
   // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): project → membership of this agent,
   // read once per project for the loop.
@@ -996,6 +1012,15 @@ export async function matchAgent(
       if (!member) continue;
     }
     if (await isCooling(deps, agentRow.companyId, candidate.issueId)) continue;
+    if (selfBusy) {
+      let idle = await idleColleaguesOf();
+      if (candidate.projectId && idle.length > 0) {
+        const members = await projectMemberAgentIds(deps.db, agentRow.companyId, candidate.projectId);
+        idle = idle.filter((agent) => members.has(agent.agentId));
+      }
+      // A free colleague takes it (the pass or the task event pairs them).
+      if (idle.length > 0) continue;
+    }
     const task: SwarmMatcherTask = {
       issueId: candidate.issueId,
       identifier: candidate.identifier ?? null,

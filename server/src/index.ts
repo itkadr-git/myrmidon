@@ -157,7 +157,7 @@ import { startBotContainers, stopBotContainers } from "./myrmidon/bot-containers
 import { getBotContainerRuntime } from "./myrmidon/bot-containers/routes-wiring.js";
 import { registerSiteLostRunFinalizer } from "./myrmidon/bot-containers/site-health-startup.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { initializeIdleStopService, shutdownIdleStopService } from "./myrmidon/idle-stop-startup.js";
-import { startLitellmCostSweep, stopLitellmCostSweep } from "./myrmidon/litellm-costs/startup.js"; // myrmidon(M2-A)
+import { startLitellmCostSweep, startLitellmKeyBudgetReport, stopLitellmCostSweep } from "./myrmidon/litellm-costs/startup.js"; // myrmidon(M2-A)
 import {
   startBoardProcessRegistry,
   stopBoardProcessRegistry,
@@ -2580,7 +2580,13 @@ async function startServerWithDatabaseTeardown(
       await initializeIdleStopService(botContainerRuntime.driver, db as any);
     }
     runContextColumnsBackfill = startRunContextColumnsBackfill(db as any, logger); // OPE-5007 П2: batched, per-batch-commit fill of the thin run-context columns (the migration only adds them)
-    startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set
+    // myrmidon(1.6.9 KEY-BUDGETS-OOM): the spend sweep runs in the one process that owns background
+    // work, never in every api child. The attention feed is forwarded to that process
+    // (singleton-proxy/allowlist.ts), but GET /metrics is served by every api process from its own
+    // memory (monitoring/metrics/routes.ts), so an api process keeps only the key budget report:
+    // the bounded read, every 15 min, first pass delayed by a random time.
+    if (processRoleProfile.runsBackground) startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set
+    else startLitellmKeyBudgetReport(db as any);
     startLitellmBudgetSync(db as any); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection; a no-op unless the gateway contour is set and the document enables it
     startLitellmModelReconciliation(db as any); // myrmidon(1.6.1 MODEL-PROVIDERS B): reconcile LiteLLM models with DB state
     if (processRoleProfile.runsBackground) startAgentAllowlistWatchdog(() => reconcileAgentAllowlistDrift(db as any));

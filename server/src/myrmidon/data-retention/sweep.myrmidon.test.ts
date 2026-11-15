@@ -64,7 +64,7 @@ import {
   readDataRetentionLastRun,
   writeDataRetentionLastRun,
 } from "./settings.js";
-import { createDataRetentionSweep } from "./sweep.js";
+import { createDataRetentionSweep, DATA_RETENTION_DELETE_BATCH_SIZE } from "./sweep.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -98,7 +98,6 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     await db.delete(decisionRetention);
     await db.delete(decisionQueues);
     await db.delete(environmentLeases);
-    await db.delete(agentWakeupRequests);
     await db.delete(issuePlanDecompositions);
     await db.delete(documentRevisions);
     await db.delete(documents);
@@ -114,6 +113,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     await db.delete(executionWorkspaces);
     await db.delete(projects);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(agents);
     await db.delete(companies);
     await db.delete(instanceSettings);
@@ -259,6 +259,74 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     expect(result.perTable.environmentLeases.deleted).toBe(1);
     const leases = await db.select({ id: environmentLeases.id, status: environmentLeases.status }).from(environmentLeases);
     expect(leases).toEqual([{ id: activeLeaseId, status: "active" }]);
+  });
+
+  it("FK safety: a wakeup request still referenced by a run is kept without failing the pass; an unreferenced one is deleted", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const old = new Date(Date.now() - 100 * DAY_MS);
+    const referencedWakeId = randomUUID();
+    const freeWakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values([
+      { id: referencedWakeId, companyId, agentId, source: "test", status: "completed", requestedAt: old, finishedAt: old },
+      { id: freeWakeId, companyId, agentId, source: "test", status: "completed", requestedAt: old, finishedAt: old },
+    ]);
+    // A young run (inside the 90-day run retention) still names the old wake.
+    const runId = randomUUID();
+    const runAt = new Date(Date.now() - 5 * DAY_MS);
+    await db.insert(heartbeatRuns).values({
+      id: runId, companyId, agentId, invocationSource: "assignment", status: "succeeded",
+      wakeupRequestId: referencedWakeId, createdAt: runAt, updatedAt: runAt, finishedAt: runAt,
+    });
+
+    const { sweep } = makeSweep({ freshBackup: true });
+    const result = await sweep.sweep();
+
+    expect(result.perTable.agentWakeupRequests.deleted).toBe(1);
+    const wakes = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests);
+    expect(wakes).toEqual([{ id: referencedWakeId }]);
+    expect(await runCount(runId)).toBe(1);
+
+    // A second pass is a stable no-op (the referenced wake is skipped, not retried into an error).
+    const second = await sweep.sweep();
+    expect(second.perTable.agentWakeupRequests.deleted).toBe(0);
+  });
+
+  it("wakeup requests: at most one batch per pass; later passes continue and then settle", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const old = new Date(Date.now() - 100 * DAY_MS);
+    const extra = 200;
+    const total = DATA_RETENTION_DELETE_BATCH_SIZE + extra;
+    await db.insert(agentWakeupRequests).values(
+      Array.from({ length: total }, () => ({
+        companyId, agentId, source: "test", status: "completed", requestedAt: old, finishedAt: old,
+      })),
+    );
+    const { sweep } = makeSweep({ freshBackup: true });
+    expect((await sweep.sweep()).perTable.agentWakeupRequests.deleted).toBe(DATA_RETENTION_DELETE_BATCH_SIZE);
+    expect((await sweep.sweep()).perTable.agentWakeupRequests.deleted).toBe(extra);
+    expect((await sweep.sweep()).perTable.agentWakeupRequests.deleted).toBe(0);
+    expect(await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)).toHaveLength(0);
+  });
+
+  it("document revisions: at most one batch per pass; later passes continue and then settle", async () => {
+    const { companyId } = await seedCompany();
+    const documentId = randomUUID();
+    const old = new Date(Date.now() - 200 * DAY_MS);
+    const extra = 200;
+    const keep = 20;
+    const total = DATA_RETENTION_DELETE_BATCH_SIZE + extra + keep;
+    await db.insert(documents).values({ id: documentId, companyId, latestBody: "latest", latestRevisionNumber: total });
+    const revisions = Array.from({ length: total }, (_, index) => ({
+      id: randomUUID(), companyId, documentId, revisionNumber: index + 1,
+      body: `revision ${index + 1}`, format: "markdown", createdAt: old,
+    }));
+    await db.insert(documentRevisions).values(revisions);
+    await db.update(documents).set({ latestRevisionId: revisions[total - 1].id }).where(eq(documents.id, documentId));
+    const { sweep } = makeSweep({ freshBackup: true });
+    expect((await sweep.sweep()).perTable.documentRevisions.deleted).toBe(DATA_RETENTION_DELETE_BATCH_SIZE);
+    expect((await sweep.sweep()).perTable.documentRevisions.deleted).toBe(extra);
+    expect((await sweep.sweep()).perTable.documentRevisions.deleted).toBe(0);
+    expect(await db.select({ id: documentRevisions.id }).from(documentRevisions)).toHaveLength(keep);
   });
 
   it("applies newest-N when revision age retention is disabled", async () => {
