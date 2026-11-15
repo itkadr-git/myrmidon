@@ -103,6 +103,11 @@ Optional environment:
                       hands the key to a bot whose container has no
                       /opt/devbuild-ssh mount.
   DEVBUILD_WORKSPACE  local workspace to sync (default: /workspace)
+  DEVBUILD_NO_AUTO_INSTALL  set to 1 to skip the automatic
+                      `pnpm install --frozen-lockfile --prefer-offline` that runs
+                      when the remote copy has package.json and pnpm-lock.yaml
+                      but no node_modules (a command starting with `pnpm install`
+                      never gets a second install)
 
 See the devbuild skill (skills/devbuild/SKILL.md) for examples, caches and
 typical failures.
@@ -327,7 +332,26 @@ printf '%s/.git\n' "$dest_root" > "$base/worktrees/$name/gitdir"
 WTREWRITE
 fi
 
+# myrmidon(1.6.9 DEVBUILD-AUTO-INSTALL): the rsync above never ships
+# node_modules, so a fresh copy (first call for a task, or a copy removed by the
+# build host's disk guard) has no dependencies and `vitest`/`tsc` fail with
+# "command not found". Install them from the shared pnpm store before the
+# command, in the SAME ssh session (one connection). The decision about
+# DEVBUILD_NO_AUTO_INSTALL and a command that already starts with
+# `pnpm install` is made here; the remote shell checks the files. Only fixed
+# text and the already validated $dest_root are added to the remote string.
+auto_install="1"
+[ "${DEVBUILD_NO_AUTO_INSTALL:-}" = "1" ] && auto_install=""
+trimmed_cmd="${command_to_run#"${command_to_run%%[![:space:]]*}"}"
+case "$trimmed_cmd" in
+  "pnpm install"|"pnpm install "*|"pnpm i"|"pnpm i "*) auto_install="" ;;
+esac
+install_step=""
+if [ -n "$auto_install" ]; then
+  install_step="if [ -f package.json ] && [ -f pnpm-lock.yaml ] && [ ! -d node_modules ]; then echo 'devbuild: node_modules отсутствует в копии — pnpm install' >&2; pnpm install --frozen-lockfile --prefer-offline || { devbuild_rc=\$?; echo \"devbuild: pnpm install failed (exit \$devbuild_rc), the command was not run. Fix the install error, or run: devbuild 'pnpm install && ...'\" >&2; exit \$devbuild_rc; }; fi && "
+fi
+
 # Run the command remotely, with the shared caches exported and the cwd at
 # the repo root. ssh propagates the remote command's exit status as its own.
 ssh "${SSH_OPTS[@]}" "$DEVBUILD_USER@$DEVBUILD_HOST" \
-  "cd '$dest_root' && export npm_config_store_dir='$DEVBUILD_CACHES/pnpm' GOMODCACHE='$DEVBUILD_CACHES/go-mod' GOCACHE='$DEVBUILD_CACHES/go-build' GRADLE_USER_HOME='$DEVBUILD_CACHES/gradle' && $command_to_run"
+  "cd '$dest_root' && export npm_config_store_dir='$DEVBUILD_CACHES/pnpm' GOMODCACHE='$DEVBUILD_CACHES/go-mod' GOCACHE='$DEVBUILD_CACHES/go-build' GRADLE_USER_HOME='$DEVBUILD_CACHES/gradle' && ${install_step}$command_to_run"
