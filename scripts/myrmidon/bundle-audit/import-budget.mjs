@@ -1,0 +1,95 @@
+#!/usr/bin/env node
+import { readFileSync, statSync } from 'node:fs';
+import { builtinModules } from 'node:module';
+import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
+
+// Tokenize without evaluating source. Non-literal expressions are deliberately ignored.
+function tokens(source) {
+  const result = [];
+  let i = 0;
+  while (i < source.length) {
+    const c = source[i];
+    if (/\s/.test(c)) { i++; continue; }
+    if (source.startsWith('//', i)) { i = source.indexOf('\n', i + 2); if (i < 0) break; continue; }
+    if (source.startsWith('/*', i)) { const end = source.indexOf('*/', i + 2); i = end < 0 ? source.length : end + 2; continue; }
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c; let value = ''; let escaped = false; i++;
+      while (i < source.length && source[i] !== quote) {
+        if (source[i] === '\\') { escaped = true; i += 2; } else { value += source[i++]; }
+      }
+      i++;
+      result.push({ type: quote === '`' || escaped ? 'opaque' : 'string', value });
+      continue;
+    }
+    if (/[A-Za-z_$]/.test(c)) {
+      const start = i++; while (i < source.length && /[\w$]/.test(source[i])) i++;
+      result.push({ type: 'word', value: source.slice(start, i) }); continue;
+    }
+    result.push({ type: 'punct', value: c }); i++;
+  }
+  return result;
+}
+
+function imports(source) {
+  const t = tokens(source), found = [];
+  const value = i => t[i]?.value;
+  const literal = i => t[i]?.type === 'string';
+  const add = (i, kind) => { if (literal(i)) found.push({ specifier: value(i), kind }); };
+  for (let i = 0; i < t.length; i++) {
+    if (value(i - 1) === '.' || value(i - 1) === '?.') continue;
+    if (value(i) === 'require' && value(i + 1) === '(' && literal(i + 2) && value(i + 3) === ')') add(i + 2, 'eager');
+    if (value(i) === 'import') {
+      if (value(i + 1) === '(') { if (literal(i + 2) && [')', ','].includes(value(i + 3))) add(i + 2, 'lazy'); continue; }
+      if (literal(i + 1)) { add(i + 1, 'eager'); continue; }
+    }
+    if (value(i) === 'import' || value(i) === 'export') {
+      for (let j = i + 1; j < t.length && value(j) !== ';'; j++) {
+        if (value(j) === 'from' && literal(j + 1)) { add(j + 1, 'eager'); break; }
+        if (value(j) === 'import' || value(j) === 'export') break;
+      }
+    }
+  }
+  return found;
+}
+
+const builtins = new Set(builtinModules.flatMap(name => [name, `node:${name}`]));
+function fileFor(path) {
+  for (const candidate of [path, ...(!extname(path) ? ['.js', '.mjs', '.cjs', '/index.js', '/index.mjs', '/index.cjs'].map(x => path + x) : [])]) {
+    try { if (statSync(candidate).isFile()) return candidate; } catch (error) { if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error; }
+  }
+  return null;
+}
+const cmp = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+function audit(entry) {
+  const root = dirname(entry), display = path => relative(root, path).split(sep).join('/');
+  const modules = new Map(), edges = new Map(), queue = [entry];
+  while (queue.length) {
+    const file = queue.shift(); if (modules.has(file)) continue;
+    const buffer = readFileSync(file); modules.set(file, { path: display(file), bytes: buffer.length, eager: false });
+    for (const imp of imports(buffer.toString('utf8'))) {
+      if (builtins.has(imp.specifier)) continue;
+      const local = imp.specifier.startsWith('.') || isAbsolute(imp.specifier);
+      const target = local ? fileFor(resolve(dirname(file), imp.specifier)) : null;
+      const edge = { from: display(file), specifier: imp.specifier, kind: imp.kind, to: target ? display(target) : null };
+      edges.set(JSON.stringify(edge), edge);
+      if (target && !modules.has(target)) queue.push(target);
+    }
+  }
+  const list = [...edges.values()].sort((a, b) => cmp(a.from, b.from) || cmp(a.specifier, b.specifier) || cmp(a.kind, b.kind));
+  const byPath = new Map([...modules.values()].map(m => [m.path, m]));
+  const pending = [display(entry)];
+  while (pending.length) {
+    const name = pending.pop(), mod = byPath.get(name); if (!mod || mod.eager) continue; mod.eager = true;
+    for (const edge of list) if (edge.from === name && edge.kind === 'eager' && edge.to) pending.push(edge.to);
+  }
+  const all = [...byPath.values()].sort((a, b) => cmp(a.path, b.path));
+  const eager = all.filter(m => m.eager);
+  return { entry: display(entry), modules: all, edges: list, unknown: list.filter(e => !e.to).sort((a, b) => cmp(a.specifier, b.specifier) || cmp(a.from, b.from)), counts: { modules: all.length, eagerModules: eager.length, edges: list.length }, bytes: { total: all.reduce((n, m) => n + m.bytes, 0), eager: eager.reduce((n, m) => n + m.bytes, 0) }, heaviestEager: [...eager].sort((a, b) => b.bytes - a.bytes || cmp(a.path, b.path)).slice(0, 10) };
+}
+
+try {
+  if (process.argv.length !== 3) throw new Error('Usage: node import-budget.mjs <entry>');
+  const entry = fileFor(resolve(process.argv[2]));
+  if (!entry) throw new Error('Entry file not found');
+  process.stdout.write(`${JSON.stringify(audit(entry), null, 2)}\n`);
+} catch (error) { console.error(error.message); process.exitCode = 1; }
