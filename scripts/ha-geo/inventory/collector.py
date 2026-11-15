@@ -174,8 +174,11 @@ def collect(socket=None, database=None, user=None, disk_path='/'):
         disk_info = {'status': 'ok', 'total_bytes': disk.total, 'used_bytes': disk.used, 'free_bytes': disk.free}
     except OSError:
         disk_info = {'status': 'error', 'reason': 'disk usage unavailable'}
+    cpu_count, memory_bytes = os.cpu_count(), memory()
+    resources = {'status': 'ok' if cpu_count is not None and memory_bytes is not None else 'incomplete',
+                 'cpu_count': cpu_count, 'memory_bytes': memory_bytes}
     return {'schemaVersion': 1, 'postgres': postgres, 'disk': disk_info,
-            'resources': {'cpu_count': os.cpu_count(), 'memory_bytes': memory()},
+            'resources': resources,
             'ci_browser_profile': browser_profile(),
             'time_sync': time_sync_status(),
             'tls': tls_profile(),
@@ -202,7 +205,7 @@ def main():
             parser.error('provide an absolute local socket directory and simple database and user names')
     report = collect(args.socket, args.database, args.user, args.disk_path)
     print(json.dumps(report, sort_keys=True))
-    return 2 if any(report[name]['status'] != 'ok' for name in ('postgres', 'disk', 'ci_browser_profile', 'time_sync', 'tls', 'login_method', 'backup')) or not all(report['resources'].values()) else 0
+    return 2 if any(report[name]['status'] != 'ok' for name in ('postgres', 'disk', 'resources', 'ci_browser_profile', 'time_sync', 'tls', 'login_method', 'backup')) else 0
 
 
 if __name__ == '__main__':
