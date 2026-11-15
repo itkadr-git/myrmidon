@@ -126,6 +126,9 @@ export function createLeaderLeaseManager(
 
   type LeaseEntry = { handle: LeaderLease; controller: AbortController | null };
   const leases = new Map<BoardLeaseName, LeaseEntry>();
+  /** OPE-13146: the last holder we already surfaced — a repeated observation
+   * of the same owner is not a handover and must stay silent. */
+  const lastObservedHolder = new Map<string, string>();
 
   /** §5.4.4 — the «лидер сменился» attention signal on every handover. */
   const raiseLeaderChangedSignal = async (
@@ -220,6 +223,12 @@ export function createLeaderLeaseManager(
       },
       onLeaderChanged: (holder, epoch) => {
         if (holder !== bootId) entry.controller = null;
+        // OPE-13146: dedupe by holder — an unchanged owner (the usual case of
+        // a contender re-reading the same leader on every tick) is not a
+        // handover and must not surface a live event nor an activity row.
+        const prevHolder = lastObservedHolder.get(name);
+        if (prevHolder === holder) return;
+        lastObservedHolder.set(name, holder);
         publishGlobalLiveEvent({
           type: "board.leader_changed",
           payload: {
