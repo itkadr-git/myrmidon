@@ -3712,6 +3712,14 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   recorder?: WorkspaceOperationRecorder | null;
   resolveGitAuth?: GitRemoteAuthProvider | null;
 }): Promise<RealizedExecutionWorkspace | null> {
+  if (input.workspace.strategyType === "git_worktree" && (input.agent.adapterType === "hermes_gateway" || input.agent.adapterType === "omp_local")) {
+    return realizeExecutionWorkspace({
+      base: input.base,
+      config: { workspaceStrategy: { type: "git_worktree" } },
+      issue: input.issue,
+      agent: input.agent,
+    });
+  }
   const cwd = asString(input.workspace.cwd ?? input.workspace.providerRef, "").trim();
   if (!cwd) return null;
 
