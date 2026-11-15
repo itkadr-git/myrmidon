@@ -57,6 +57,14 @@ class CollectorTests(unittest.TestCase):
         self.assertTrue(report['ci_browser_profile']['node_available'])
         self.assertFalse(report['ci_browser_profile']['pnpm_available'])
 
+    def test_tls_profile_reports_local_runtime_capabilities_without_claiming_server_health(self):
+        profile = collector.tls_profile()
+        self.assertEqual(profile['status'], 'incomplete')
+        self.assertIsInstance(profile['openssl_version'], str)
+        self.assertIsInstance(profile['tls_1_2_available'], bool)
+        self.assertIsInstance(profile['tls_1_3_available'], bool)
+        self.assertIn('server', profile['reason'])
+
     def test_login_profile_reports_effective_sshd_auth_methods_without_secret_output(self):
         response = subprocess.CompletedProcess([], 0, stdout=(
             'passwordauthentication no\npubkeyauthentication yes\n'
