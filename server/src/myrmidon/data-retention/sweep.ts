@@ -116,6 +116,19 @@ export const DATA_RETENTION_MIN_BATCH_SIZE = 50;
 
 /** Batches per table per pass; the rest waits for the next tick. */
 export const DATA_RETENTION_MAX_BATCHES = 200;
+/**
+ * agent_wakeup_requests is pruned with a NOT EXISTS against heartbeat_runs
+ * (no index on heartbeat_runs.wakeup_request_id), a hash anti join that reads
+ * both tables per batch. One batch per pass keeps that cost to one read per
+ * pass instead of up to DATA_RETENTION_MAX_BATCHES.
+ */
+export const DATA_RETENTION_WAKEUP_MAX_BATCHES_PER_PASS = 1;
+/**
+ * Every document_revisions batch ranks the whole table (row_number() over all
+ * documents, sorted, often spilling to disk), so the group runs one batch per
+ * pass instead of up to DATA_RETENTION_MAX_BATCHES full rankings.
+ */
+export const DATA_RETENTION_REVISIONS_MAX_BATCHES_PER_PASS = 1;
 
 /** The statement timeout the sweep transactions run under. */
 export const DATA_RETENTION_STATEMENT_TIMEOUT_MS = 60_000;
@@ -450,6 +463,12 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
               SELECT id FROM agent_wakeup_requests
               WHERE status IN ('skipped', 'failed', 'cancelled', 'completed', 'coalesced')
                 AND finished_at < ${cutoff}::timestamptz
+                -- heartbeat_runs.wakeup_request_id is the only FK to this table
+                -- (no action): runs live 90 days by default, wakes 30, so a
+                -- wake still named by a run stays until the run is gone.
+                AND NOT EXISTS (
+                  SELECT 1 FROM heartbeat_runs r WHERE r.wakeup_request_id = agent_wakeup_requests.id
+                )
               ORDER BY finished_at LIMIT ${batchSize}
             ), deleted AS (
               DELETE FROM agent_wakeup_requests w USING doomed WHERE w.id = doomed.id
@@ -613,7 +632,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
   }
 
   async function runGroup(
-    group: { key: GroupKey; days: number; keepPerDocument?: number },
+    group: { key: GroupKey; days: number; keepPerDocument?: number; maxBatchesPerPass?: number },
     cutoff: string,
     accessTable?: "tool_access_audit_events" | "secret_access_events",
   ): Promise<{ deleted: number; freedBytes: number }> {
@@ -632,7 +651,16 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
     let deleted = 0;
     let freedBytes = 0;
     let batchSize = DATA_RETENTION_DELETE_BATCH_SIZE;
-    for (let batch = 0; batch < DATA_RETENTION_MAX_BATCHES; batch++) {
+    const maxBatches = group.maxBatchesPerPass ?? DATA_RETENTION_MAX_BATCHES;
+    // The per-pass limit counts only SUCCESSFUL batches (`completed`); a batch
+    // that times out is retried smaller and does not use up the limit, so a
+    // one-batch group still halves down to something that fits instead of
+    // restarting at the full size on every pass. Retries are bounded by the
+    // halving floor (DATA_RETENTION_MIN_BATCH_SIZE), after which the loop breaks.
+    let completed = 0;
+    let batch = -1;
+    while (completed < maxBatches) {
+      batch++;
       let batchResult: { deleted: number; freedBytes: number };
       try {
         // Every batch is its own transaction (operator review
@@ -671,6 +699,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
         }
         throw err;
       }
+      completed++;
       deleted += batchResult.deleted;
       freedBytes += batchResult.freedBytes;
       if (batchResult.deleted < batchSize) break;
@@ -730,13 +759,13 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
       executionWorkspaces: { deleted: 0, freedBytes: 0 },
     };
 
-    const groups: Array<{ key: GroupKey; days: number; keepPerDocument?: number }> = [
+    const groups: Array<{ key: GroupKey; days: number; keepPerDocument?: number; maxBatchesPerPass?: number }> = [
       { key: "runs", days: settings.heartbeatRunsDays },
       { key: "activity", days: settings.activityLogDays },
       { key: "access", days: settings.accessAuditDays },
       { key: "litellmCostEvents", days: settings.litellmCostEventsDays },
-      { key: "documentRevisions", days: settings.documentRevisionDays, keepPerDocument: settings.documentRevisionKeepPerDocument },
-      { key: "agentWakeupRequests", days: settings.agentWakeupRequestsDays },
+      { key: "documentRevisions", days: settings.documentRevisionDays, keepPerDocument: settings.documentRevisionKeepPerDocument, maxBatchesPerPass: DATA_RETENTION_REVISIONS_MAX_BATCHES_PER_PASS },
+      { key: "agentWakeupRequests", days: settings.agentWakeupRequestsDays, maxBatchesPerPass: DATA_RETENTION_WAKEUP_MAX_BATCHES_PER_PASS },
       { key: "environmentLeases", days: settings.environmentLeasesDays },
       { key: "executionWorkspaces", days: DATA_RETENTION_EXECUTION_WORKSPACES_ARCHIVED_DAYS },
     ];
