@@ -1696,11 +1696,16 @@ function archiveClone(clonePath, archiveRoot) {
         if (verified.status !== 0) throw new Error(`bundle verification failed: ${verified.stderr}`);
         members.push("unpublished.bundle");
       }
-      const diff = git(["diff", "--binary", "HEAD", "--"], clonePath);
-      if (diff.status !== 0) throw new Error(`diff failed: ${diff.stderr}`);
-      if (diff.stdout) {
-        fs.writeFileSync(path.join(stage, "changes.patch"), diff.stdout);
-        members.push("changes.patch");
+      for (const [name, diffArgs] of [
+        ["staged.patch", ["diff", "--cached", "--binary", "HEAD", "--"]],
+        ["changes.patch", ["diff", "--binary", "--"]],
+      ]) {
+        const diff = git(diffArgs, clonePath);
+        if (diff.status !== 0) throw new Error(`diff failed: ${diff.stderr}`);
+        if (diff.stdout) {
+          fs.writeFileSync(path.join(stage, name), diff.stdout);
+          members.push(name);
+        }
       }
       const untracked = git(["ls-files", "--others", "--exclude-standard", "-z"], clonePath);
       if (untracked.status !== 0) throw new Error(`untracked listing failed: ${untracked.stderr}`);
