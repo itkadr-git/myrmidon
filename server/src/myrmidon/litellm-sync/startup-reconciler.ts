@@ -111,7 +111,7 @@ export function startAgentAllowlistWatchdog(reconcile: () => Promise<void>, inte
     void reconcile().catch((err) => logger.warn({ err }, "litellm allowlist watchdog failed"))
       .finally(() => { running = false; });
   }, intervalMs);
-  timer.unref();
+  timer.unref?.();
   return () => clearInterval(timer);
 }
 

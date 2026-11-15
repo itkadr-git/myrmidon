@@ -302,7 +302,7 @@ describe("updateAgentAllowlistsForCompany", () => {
     const db = scriptedDb([[], []]);
     const result = await updateAgentAllowlistsForCompany(db, deps({ db, gateway: () => gateway }), "company-a");
     expect(gateway.calls).toHaveLength(0);
-    expect(result.skipped).toContain("no-enabled-models");
+    expect(result.attempted).toBe(0);
   });
 
   it("disable-to-zero sends the disabled sentinel, never an empty allowlist", async () => {
@@ -356,7 +356,7 @@ describe("updateAgentAllowlistsForCompany", () => {
       "company-a",
     );
     expect(gateway.calls).toEqual([
-      { alias: restrictedAlias, models: ["kimi/kimi-for-coding", "google/gemini-pro", "openai/gpt-4o", "anthropic/claude"] },
+      { alias: restrictedAlias, models: ["openai/gpt-4o", "kimi/kimi-for-coding", "google/gemini-pro"] },
     ]);
     expect(result).toMatchObject({ attempted: 2, updated: 1 });
     expect(result.skipped).toContain("key-all-models:agent-2");
@@ -523,7 +523,7 @@ describe("updateAgentAllowlistsForCompany: reading the registry join", () => {
           model_providers: { id: "p1", type: "openai" },
         },
       ],
-      [{ id: "agent-1", name: "Restricted" }],
+      [{ id: "agent-1", name: "Restricted", adapterConfig: { model: "openai/gpt-4o" } }],
     ]);
     const result = await updateAgentAllowlistsForCompany(db, deps({ db, gateway: () => gateway, ...KEY_DEPS }), "company-a");
     expect(gateway.calls).toEqual([{ alias, models: ["kimi/kimi-for-coding", "openai/gpt-4o"] }]);
@@ -542,7 +542,7 @@ describe("updateAgentAllowlistsForCompany: dry run", () => {
     { litellmModelName: "openai/old", enabled: false },
   ];
   const agentRows = [
-    { id: "agent-1", name: "Restricted" },
+    { id: "agent-1", name: "Restricted", adapterConfig: { model: "anthropic/claude" } },
     { id: "agent-2", name: "Settled" },
     { id: "agent-3", name: "All Models" },
   ];
@@ -618,7 +618,7 @@ describe("updateAgentAllowlistsForCompany: dry run", () => {
       { apply: false },
     );
     expect(gateway.calls).toEqual([]);
-    expect(result.skipped).toContain("no-enabled-models");
+    expect(result.attempted).toBe(0);
     expect(result.dryRun).toMatchObject({ wouldChange: 0, unchanged: 0, changes: [] });
   });
 
