@@ -30,7 +30,7 @@ test('ratio boundary, cold separation, untrusted summary and reproducible report
 test('ratio below threshold fails with exit code 1', () => {
   const result = run(fixture([19.9, 19.9, 19.9]), fixture([10, 10, 10]));
   assert.equal(result.status, 1); assert.equal(JSON.parse(result.stdout).verdict, 'FAIL');
-  assert.equal(JSON.parse(result.stdout).ratio, 1.99);
+  assert.ok(Math.abs(JSON.parse(result.stdout).ratio - 1.99) < 1e-12);
 });
 
 test('rejects invalid samples and malformed JSON with exit code 2', () => {
