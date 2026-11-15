@@ -125,6 +125,18 @@ class CollectorTests(unittest.TestCase):
             report = collector.collect('/socket', 'db', 'operator')
         self.assertEqual(report['postgres']['status'], 'incomplete')
 
+    def test_backup_archive_counters_are_reported_without_archive_commands(self):
+        fixture = dict.fromkeys(collector.FIELDS, 1)
+        fixture.update(server_version_num=160002, in_recovery=False,
+                       archive_successes=12, archive_last_failure='2026-01-02T00:00:00Z')
+        with patch.object(collector, 'query_postgres', return_value=fixture):
+            data = collector.collect('/socket', 'db', 'operator')['postgres']['data']
+        self.assertEqual(data['archive_successes'], 12)
+        self.assertEqual(data['archive_last_failure'], '2026-01-02T00:00:00Z')
+        self.assertIn('archived_count', collector.SQL)
+        self.assertIn('last_failed_time', collector.SQL)
+        self.assertNotIn('archive_command', collector.SQL)
+
     def test_database_backup_and_tls_facts_are_retained(self):
         fixture = dict.fromkeys(collector.FIELDS, 1)
         fixture.update(server_version_num=160002, in_recovery=False, lag_bytes=None,
