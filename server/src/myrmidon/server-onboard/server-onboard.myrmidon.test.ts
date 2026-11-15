@@ -3,6 +3,7 @@ import { onboardService, OnboardServiceError } from "./service.js";
 import type { OnboardJob, OnboardJobKind, OnboardStepLogEntry } from "./domain.js";
 import type { FleetOnboardStore, OnboardJobClaim } from "./store.js";
 import type { FleetOnboardSettings } from "./settings.js";
+import { appendOwnedFleetResource } from "@myrmidon/shared";
 
 const mockSettings: FleetOnboardSettings = {
   enabled: true,
@@ -58,6 +59,12 @@ function createMocks() {
       return job;
   };
   const mockStore: FleetOnboardStore = {
+    async recordOwnedResource(companyId, serverId, jobId, resource) {
+      const server = store.servers.find((s: any) => s.id === serverId && s.companyId === companyId);
+      if (!server) throw new Error("server not found");
+      server.ownershipInventory = appendOwnedFleetResource(server.ownershipInventory ?? null, companyId, serverId, jobId, resource);
+      return server.ownershipInventory;
+    },
     async createServer() { throw new Error("createServer should not be called"); },
     async createServerAndJob(companyId, input) {
       const server = await createServer(companyId, input);
@@ -175,6 +182,25 @@ function createMocks() {
 }
 
 describe("SERVER-ONBOARD logic", () => {
+  it("authenticates ownership reports and derives server scope from the active job", async () => {
+    const { mockStore, mockSecrets, mockGetServer, store } = createMocks();
+    const companyId = "11111111-1111-4111-8111-111111111111";
+    const serverId = "22222222-2222-4222-8222-222222222222";
+    const jobId = "33333333-3333-4333-8333-333333333333";
+    store.servers.push({ id: serverId, companyId });
+    store.jobs.push({ id: jobId, companyId, serverId, kind: "onboard", status: "claimed" });
+    const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets,
+      getServer: mockGetServer, logActivity: vi.fn().mockResolvedValue(undefined) });
+    const resource = { kind: "role_container", containerId: "a".repeat(64) };
+    await expect(service.recordOwnedResource("wrong", companyId, jobId, resource)).rejects.toMatchObject({ status: 401 });
+    await expect(service.recordOwnedResource("valid-executor-token", serverId, jobId, resource)).rejects.toMatchObject({ status: 404 });
+    const inventory = await service.recordOwnedResource("valid-executor-token", companyId, jobId, resource);
+    expect(inventory).toMatchObject({ companyId, serverId, resources: [{ jobId, resource }] });
+    expect(store.servers[0].ownershipInventory).toEqual(inventory);
+    store.jobs[0].status = "succeeded";
+    await expect(service.recordOwnedResource("valid-executor-token", companyId, jobId, resource)).rejects.toMatchObject({ status: 409 });
+  });
+
   it("enforces disabled message when disabled", async () => {
     const { mockStore, mockSecrets, mockGetServer } = createMocks();
     const service = onboardService(null as any, {
