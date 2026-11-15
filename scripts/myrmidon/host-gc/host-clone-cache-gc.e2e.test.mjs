@@ -85,6 +85,25 @@ function makeGitClone(dir, { clean = true, pushed = true, stash = false, alterna
 }
 
 describe("host-clone-cache-gc e2e", () => {
+  it("expires archives older than 24 hours without removing newer archives or symlinks", async () => {
+    const root = path.join(tmpDir, "root");
+    const archives = path.join(root, ".gc-archive");
+    fs.mkdirSync(archives, { recursive: true });
+    const oldArchive = path.join(archives, "OPE-1-20260101-000000.tar.gz");
+    const newArchive = path.join(archives, "OPE-2-20260101-000000.tar.gz");
+    const link = path.join(archives, "OPE-3-20260101-000000.tar.gz");
+    fs.writeFileSync(oldArchive, "old");
+    fs.writeFileSync(newArchive, "new");
+    fs.symlinkSync(newArchive, link);
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    fs.utimesSync(oldArchive, old, old);
+    const r = await runScript(["--root", root, "--lock", path.join(tmpDir, "gc.lock"), "--journal", path.join(tmpDir, "gc.jsonl"), "--apply"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(fs.existsSync(oldArchive), false);
+    assert.equal(fs.existsSync(newArchive), true);
+    assert.equal(fs.lstatSync(link).isSymbolicLink(), true);
+  });
+
   it("dry-run plans but does not delete", async () => {
     const root = path.join(tmpDir, "root");
     fs.mkdirSync(root);
