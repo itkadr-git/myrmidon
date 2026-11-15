@@ -171,7 +171,7 @@ export interface DataRetentionLastRun {
   waitingForBackup: boolean;
   backupCheckedAt: string | null;
   freedBytesTotal: number;
-  perTable: Record<"runs" | "activity" | "access" | "litellmCostEvents", DataRetentionTableStatus>;
+  perTable: Record<"runs" | "activity" | "access" | "litellmCostEvents" | "executionWorkspaces", DataRetentionTableStatus>;
 }
 
 const tableStatusSchema = z.object({
@@ -190,6 +190,7 @@ const lastRunSchema = z.object({
     activity: tableStatusSchema,
     access: tableStatusSchema,
     litellmCostEvents: tableStatusSchema,
+    executionWorkspaces: tableStatusSchema,
   }),
 });
 
@@ -205,6 +206,7 @@ export function emptyDataRetentionLastRun(): DataRetentionLastRun {
       activity: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
       access: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
       litellmCostEvents: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+      executionWorkspaces: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
     },
   };
 }

@@ -167,7 +167,7 @@ export interface DataRetentionSweepResult {
   startedAt: Date;
   finishedAt: Date;
   waitingForBackup: boolean;
-  perTable: Record<"runs" | "activity" | "access" | "litellmCostEvents", { deleted: number; freedBytes: number }>;
+  perTable: Record<"runs" | "activity" | "access" | "litellmCostEvents" | "executionWorkspaces", { deleted: number; freedBytes: number }>;
 }
 
 interface DeletedRow {
@@ -458,7 +458,26 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
     };
   }
 
-  type GroupKey = "runs" | "activity" | "access" | "litellmCostEvents";
+  type GroupKey = "runs" | "activity" | "access" | "litellmCostEvents" | "executionWorkspaces";
+
+  async function deleteExecutionWorkspacesGroup(
+    tx: Db,
+    cutoff: string,
+    batchSize: number,
+  ): Promise<{ deleted: number; freedBytes: number }> {
+    const rows = await tx.execute(sql`
+      DELETE FROM execution_workspaces w
+      WHERE w.id IN (
+        SELECT w2.id FROM execution_workspaces w2
+        WHERE w2.status = 'archived' AND w2.closed_at < ${cutoff}
+        ORDER BY w2.closed_at
+        LIMIT ${batchSize}
+      )
+      RETURNING w.id, pg_column_size(w.id) AS size
+    `);
+    const deletedRows = rows as unknown as DeletedRow[];
+    return { deleted: deletedRows.length, freedBytes: deletedRows.reduce((n, row) => n + (Number(row.size) || 0), 0) };
+  }
 
   async function runGroup(
     group: { key: GroupKey; days: number },
@@ -471,7 +490,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
           ? deleteActivityGroup
           : group.key === "access"
             ? deleteAccessGroup
-            : deleteLitellmCostEventsGroup;
+            : group.key === "litellmCostEvents" ? deleteLitellmCostEventsGroup : deleteExecutionWorkspacesGroup;
     let deleted = 0;
     let freedBytes = 0;
     let batchSize = DATA_RETENTION_DELETE_BATCH_SIZE;
@@ -554,6 +573,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
           activity: { deleted: 0, freedBytes: 0 },
           access: { deleted: 0, freedBytes: 0 },
           litellmCostEvents: { deleted: 0, freedBytes: 0 },
+          executionWorkspaces: { deleted: 0, freedBytes: 0 },
         },
       };
     }
@@ -563,6 +583,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
       activity: { deleted: 0, freedBytes: 0 },
       access: { deleted: 0, freedBytes: 0 },
       litellmCostEvents: { deleted: 0, freedBytes: 0 },
+      executionWorkspaces: { deleted: 0, freedBytes: 0 },
     };
 
     const groups: Array<{ key: GroupKey; days: number }> = [
@@ -570,6 +591,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
       { key: "activity", days: settings.activityLogDays },
       { key: "access", days: settings.accessAuditDays },
       { key: "litellmCostEvents", days: settings.litellmCostEventsDays },
+      { key: "executionWorkspaces", days: settings.heartbeatRunsDays },
     ];
 
     for (const group of groups) {
@@ -591,7 +613,8 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
       results.runs.deleted > 0 ||
       results.activity.deleted > 0 ||
       results.access.deleted > 0 ||
-      results.litellmCostEvents.deleted > 0;
+      results.litellmCostEvents.deleted > 0 ||
+      results.executionWorkspaces.deleted > 0;
     // The state is written only when the pass actually deleted something or
     // the backup-gate flag changes — not on every idle tick (operator review
     // dbcare-review-20261008).
@@ -606,12 +629,14 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
           results.runs.freedBytes +
           results.activity.freedBytes +
           results.access.freedBytes +
-          results.litellmCostEvents.freedBytes,
+          results.litellmCostEvents.freedBytes +
+          results.executionWorkspaces.freedBytes,
         perTable: {
           runs: mergeTableStatus(previous.perTable.runs, results.runs),
           activity: mergeTableStatus(previous.perTable.activity, results.activity),
           access: mergeTableStatus(previous.perTable.access, results.access),
           litellmCostEvents: mergeTableStatus(previous.perTable.litellmCostEvents, results.litellmCostEvents),
+          executionWorkspaces: mergeTableStatus(previous.perTable.executionWorkspaces, results.executionWorkspaces),
         },
       };
       await deps.writeLastRun(lastRun);
