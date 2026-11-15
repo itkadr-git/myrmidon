@@ -1671,16 +1671,15 @@ function archiveExcludes(clonePath) {
 }
 
 function archiveClone(clonePath, archiveRoot) {
-  // Stashes, alternates, nested repositories and unreadable trees still need the safety net.
+  // A bundle includes stashes as well as unpublished branches and tags.
   const repos = archiveRepos(clonePath);
-  if (repos.length === 1 && repos[0] === clonePath && isGitWorktree(clonePath) &&
-      !hasStash(clonePath) && !hasAlternates(clonePath)) {
+  if (repos.length === 1 && repos[0] === clonePath && isGitWorktree(clonePath) && !hasAlternates(clonePath)) {
     if (!fs.existsSync(archiveRoot)) fs.mkdirSync(archiveRoot, { recursive: true });
     const stage = fs.mkdtempSync(path.join(archiveRoot, ".bundle-"));
     const archivePath = path.join(archiveRoot, `${path.basename(clonePath)}-${crypto.randomUUID()}.tar.gz`);
     try {
       const members = [];
-      if (!isPushed(clonePath)) {
+      if (!isPushed(clonePath) || hasStash(clonePath)) {
         const bundle = path.join(stage, "unpublished.bundle");
         const created = git(["bundle", "create", bundle, "HEAD", "--all", "--not", "--remotes"], clonePath);
         if (created.status !== 0) throw new Error(`bundle failed: ${created.stderr}`);
