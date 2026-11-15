@@ -784,7 +784,9 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
     }
   });
 
-  it("never flips connection health on tools/call failures and pauses only the failing tool", async () => {
+  it.each(Array.from({ length: 50 }, (_, index) => index + 1))(
+    "never flips connection health on tools/call failures and pauses only the failing tool (run %i)",
+    async () => {
     // Failures of one tool keep the connection listed and healthy, tell the
     // caller which tool failed and why, and pause only that tool.
     const company = await createCompany(db);
