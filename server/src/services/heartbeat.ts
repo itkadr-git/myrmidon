@@ -21011,6 +21011,14 @@ export function heartbeatService(
           ),
         );
     }
+    const persistedModelRun = stepModelResolution.stepModelSnapshotJson
+      ? await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, claimed.id))
+          .limit(1)
+          .then((rows) => rows[0] ?? claimed)
+      : claimed;
 
     publishLiveEvent({
       companyId: claimed.companyId,
@@ -21157,7 +21165,7 @@ export function heartbeatService(
         );
     }
 
-    return claimed;
+    return persistedModelRun;
   }
 
   // startNextQueuedRunForAgent checks admission suppression once, then claims
@@ -27079,18 +27087,6 @@ export function heartbeatService(
       );
       let executionRunConfig =
         stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
-      const resolvedStepModel = readNonEmptyString(run.stepModel);
-      const resolvedStepModelGroup = readNonEmptyString(run.stepModelGroup);
-      if (resolvedStepModel) {
-        // The run-start snapshot is authoritative for the entire execution.
-        // Apply it before adapter configuration is resolved so every adapter
-        // receives the same model selected at claim time.
-        executionRunConfig = {
-          ...executionRunConfig,
-          model: resolvedStepModel,
-          ...(resolvedStepModelGroup ? { modelGroup: resolvedStepModelGroup } : {}),
-        };
-      }
       const runScopedMentionedSkillKeys =
         await resolveRunScopedMentionedSkillKeys({
           db,
@@ -27343,17 +27339,10 @@ export function heartbeatService(
         });
       const configuredModel =
         readConfiguredModelFromAdapterConfig(runtimeConfig);
-      // `run` is the pre-claim row loaded by the dispatcher and therefore does
-      // not include the snapshot written at the claim boundary. Use the local
-      // resolution result so the adapter receives the same model that was
-      // persisted for this run; the row value remains a compatibility fallback
-      // for historical/reconciled paths that did not resolve a new snapshot.
-      const resolvedStepModel =
-        readNonEmptyString(stepModelResolution.stepModel) ??
-        readNonEmptyString(run.stepModel);
-      const resolvedStepModelGroup =
-        readNonEmptyString(stepModelResolution.stepModelGroup) ??
-        readNonEmptyString(run.stepModelGroup);
+      // `executeRun` reloads the row after the claim boundary persisted its
+      // immutable model snapshot, so this run-scoped row is authoritative.
+      const resolvedStepModel = readNonEmptyString(run.stepModel);
+      const resolvedStepModelGroup = readNonEmptyString(run.stepModelGroup);
       if (resolvedStepModel) {
         // The run-start snapshot is authoritative for the entire execution.
         // Do not let mutable adapter/session configuration select a different
