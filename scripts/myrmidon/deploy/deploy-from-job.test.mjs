@@ -499,10 +499,8 @@ esac
 
   it("reports error and halts before switching when recording deploy intent fails", () => {
     const sb = sandbox({ job: { id: JOB_ID, status: "maintenance_on", digest: NEW } });
-    const auditFile = path.join(sb.dir, "state", "release-events.jsonl");
-    fs.mkdirSync(path.join(sb.dir, "state"), { recursive: true });
-    // Directory blocks writing to the audit file, failing record_release_event
-    fs.mkdirSync(auditFile);
+    // Fail the intent write itself, after the replay guard has inspected the journal.
+    fs.writeFileSync(path.join(sb.bin, "jq"), `#!/usr/bin/env bash\ncase " $* " in *" deploy.intent "*) exit 1 ;; esac\nexec /usr/bin/jq "$@"\n`, { mode: 0o755 });
     const { code, out } = run(sb, ["--once"]);
     assert.equal(code, 0, out);
     assert.match(out, /could not record deploy intent/);
