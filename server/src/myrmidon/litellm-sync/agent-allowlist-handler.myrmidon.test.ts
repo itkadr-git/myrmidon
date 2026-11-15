@@ -137,6 +137,24 @@ describe("updateAgentAllowlistsForCompany", () => {
     expect(gateway.calls[0]?.models).toHaveLength(7);
   });
 
+  it("repairs a missing card model and records the drift in activity", async () => {
+    const alias = agentKeySecretName({ agentId: "agent-card", agentSlug: "Card Model" });
+    const gateway = recordingGateway(undefined, { [alias]: ["vendor/private"] });
+    const db = scriptedDb([
+      [{ litellmModelName: "vendor/selected", enabled: true }],
+      [{ id: "agent-card", name: "Card Model", adapterConfig: { model: "vendor/selected" } }],
+    ]);
+    const activity: Array<{ companyId: string; agentId: string; add: string[]; remove: string[] }> = [];
+    const result = await updateAgentAllowlistsForCompany(
+      db,
+      deps({ db, gateway: () => gateway, findSecretId: async () => "id-key", recordAllowlistDrift: async (entry) => { activity.push(entry); } }),
+      "company-a", [], [], false, { cardModelsOnly: true },
+    );
+    expect(result.updated).toBe(1);
+    expect(gateway.calls).toEqual([{ alias, models: ["vendor/private", "vendor/selected"] }]);
+    expect(activity).toEqual([{ companyId: "company-a", agentId: "agent-card", add: ["vendor/selected"], remove: [] }]);
+  });
+
   it("limits a card-save reconciliation to the edited agent", async () => {
     const first = agentKeySecretName({ agentId: "agent-card", agentSlug: "Card Model" });
     const second = agentKeySecretName({ agentId: "agent-other", agentSlug: "Other" });
