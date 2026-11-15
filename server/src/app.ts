@@ -55,6 +55,8 @@ import { summarySlotRoutes } from "./routes/summary-slots.js";
 import { statusCardRoutes } from "./routes/status-cards.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
+import { defaultAgentGatewayKeyDeps } from "./myrmidon/litellm-keys/agent-keys.js";
+import { updateAgentAllowlistsForCompany } from "./myrmidon/litellm-sync/agent-allowlist-handler.js";
 import type { SetupTokenSessionService } from "./services/setup-token-session.js";
 import {
   buildSetupTokenLoginTransport,
@@ -1177,6 +1179,17 @@ export async function createApp(
   });
   api.use(
     agentRoutes(db, {
+      syncAgentModelAllowlist: async ({ companyId }) => {
+        await updateAgentAllowlistsForCompany(
+          db,
+          defaultAgentGatewayKeyDeps(db),
+          companyId,
+          [],
+          [],
+          false,
+          { includeRegistryModels: false, apply: true },
+        );
+      },
       chatRunRetries: chatChannels,
       pluginWorkerManager: workerManager,
       deploymentMode: opts.deploymentMode,

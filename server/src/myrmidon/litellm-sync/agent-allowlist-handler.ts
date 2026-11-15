@@ -2,10 +2,8 @@
 //
 // myrmidon(1.6.1 MODEL-PROVIDERS B): agent key allowlist management.
 //
-// Keeps each agent's gateway virtual key pointed at the company's enabled
-// model set: when models are enabled/disabled in the provider registry (or
-// reconciled at startup), every agent key that exists is updated through the
-// gateway's `/key/update` with `models` — the allowlist the key may call.
+// Keeps each agent's gateway virtual key aligned with its configured model
+// card and registry state through the gateway's `/key/update`.
 // `/key/update` is a merge patch, so an agent's stored secret never needs a
 // rotation to change its allowlist.
 //
@@ -26,19 +24,10 @@
 //  - The admin key is a company secret NAME in the env
 //    (MYRMIDON_LITELLM_ADMIN_KEY_SECRET); the gateway authenticates with the
 //    resolved VALUE, never the name (agent-keys.readSecretValue pattern).
-//  - A company whose registry has no enabled models leaves agent keys
-//    untouched: an empty allowlist would lock the whole fleet out of the
-//    gateway, and "nothing registered yet" is not the same as "everything is
-//    forbidden" — the operator opts in by enabling models.
-//  - One agent's failure never stops the company pass: results count every
-//    attempted key and name every skip; nothing here throws per agent.
-//  - The pass can run as a DRY RUN (`apply: false`): it reads every key and
-//    reports what would be added and removed, and sends nothing. The startup
-//    check and the provider-change hooks run this way; only an explicit admin
-//    action applies the pass to the agents' keys (the board's
-//    `POST .../litellm/keys/allowlist-sync?apply=true`). Applying adds every
-//    enabled registry model to every restricted key, which can widen a curated
-//    list, so it is never a side effect.
+  //  - A company whose registry has no enabled models leaves agent keys untouched.
+  //  - One agent's failure never stops the company pass.
+  //  - Startup and provider/card changes apply scoped reconciliation immediately;
+  //    the explicit admin endpoint remains available for full registry operations.
 
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -176,6 +165,25 @@ export interface AllowlistSyncOptions {
    * the caller passes (the plugin lifecycle does this). Default true.
    */
   includeRegistryModels?: boolean;
+  /** Registry events reconcile only affected card models, never the full registry. */
+  cardModelsOnly?: boolean;
+}
+
+function cardModelNames(adapterConfig: unknown): string[] {
+  if (!isRecord(adapterConfig)) return [];
+  const names: string[] = [];
+  const add = (value: unknown) => {
+    if (typeof value === "string" && value.trim() && value !== "default" && value !== "auto" && !value.startsWith("litellm/")) {
+      names.push(value.trim());
+    }
+  };
+  add(adapterConfig.model);
+  const models = isRecord(adapterConfig.models) ? adapterConfig.models : {};
+  for (const field of ["vision", "video", "stt", "tts", "image", "embedding"]) add(models[field]);
+  const omp = isRecord(models.omp) ? models.omp : {};
+  for (const value of Object.values(omp)) add(value);
+  if (Array.isArray(models.fallbacks)) for (const fallback of models.fallbacks) add(fallback);
+  return [...new Set(names)];
 }
 
 /** The company's model names and enabled state as registered in the gateway. */
@@ -243,10 +251,10 @@ export async function updateAgentAllowlistsForCompany(
     options.includeRegistryModels === false ? [] : await listCompanyModels(db, companyId);
   const enabledNames = companyModels.filter((model) => model.enabled).map((model) => model.name);
   const models = [...new Set([
-    ...enabledNames,
+    ...(options.cardModelsOnly ? [] : enabledNames),
     ...additionalModelNames,
   ])].filter((model) => !removedModelNames.includes(model));
-  if (models.length === 0 && !allowEmpty) {
+  if (models.length === 0 && !allowEmpty && !options.cardModelsOnly) {
     // Nothing enabled yet: leave keys at their current lists rather than
     // churning them on a pass with nothing to say.
     return skip("no-enabled-models");
@@ -259,7 +267,6 @@ export async function updateAgentAllowlistsForCompany(
   // company. A sentinel name that is never registered denies every model
   // instead (verified live: 403 for held and never-held models alike, and the
   // key recovers when a real list is applied later).
-  const payloadModels = models.length > 0 ? models : [DISABLED_MODEL_SENTINEL];
 
   // The env carries the secret NAME; the gateway needs the VALUE. Resolve it
   // before the empty-registry guard so a configured-but-broken deployment is
@@ -309,11 +316,9 @@ export async function updateAgentAllowlistsForCompany(
         continue;
       }
       const current = keyInfo.models ?? [];
-      if (current.length === 0 && !allowEmpty) {
-        // An empty gateway list means ALL models. Never turn that into a
-        // restrictive list merely because the board owns some models. On the
-        // disable path (allowEmpty) we still proceed: the operator asked to
-        // lock the fleet out, and the sentinel below denies every model.
+      if (current.length === 0 && !allowEmpty && !options.cardModelsOnly) {
+        // Empty means unrestricted in LiteLLM; scoped card reconciliation is
+        // safe to narrow only when it knows this agent's selected models.
         skipped.push(`key-all-models:${agent.id}`);
         continue;
       }
@@ -324,20 +329,35 @@ export async function updateAgentAllowlistsForCompany(
       // treats as "remove restrictions"). The enable path adds enabled and
       // additional names on top of surviving non-board models.
       const adapterConfig = isRecord(agent.adapterConfig) ? agent.adapterConfig : {};
-      const cardModels = [adapterConfig.model].filter(
-        (model): model is string => typeof model === "string" && model.trim().length > 0,
+      const cardModels = cardModelNames(adapterConfig);
+      const disabledRegistryNames = companyModels.filter((model) => !model.enabled).map((model) => model.name);
+      // Keep registry-owned models only when this agent's card selects them;
+      // registry models are never broadcast to every agent key.
+      const enabledForCard = options.cardModelsOnly
+        ? cardModels.filter((name) =>
+          companyModels.some((model) => model.name === name && model.enabled) || additionalModelNames.includes(name),
+        )
+        : cardModels;
+      const cardRetirements = current.filter((name) =>
+        (disabledRegistryNames.includes(name) && cardModels.includes(name)) ||
+        (options.cardModelsOnly && removedModelNames.includes(name)),
       );
-      const agentModels = [...new Set([...models, ...cardModels])];
-      const agentPayloadModels = agentModels.length > 0 ? agentModels : payloadModels;
-      const ownedNames = new Set(companyModels.map((model) => model.name));
-      const survivors = current.filter((name) => !ownedNames.has(name) && !removedModelNames.includes(name));
-      const next = agentModels.length > 0
-        ? [...new Set([...survivors, ...agentPayloadModels])]
-        : survivors.length > 0
-          ? survivors
-          : [DISABLED_MODEL_SENTINEL];
+      const registryRetirements = options.cardModelsOnly
+        ? disabledRegistryNames.filter((name) => cardModels.includes(name))
+        : disabledRegistryNames;
+      const survivors = current.filter((name) =>
+        !registryRetirements.includes(name) && !removedModelNames.includes(name) &&
+        (!companyModels.some((model) => model.name === name && model.enabled) || enabledForCard.includes(name)),
+      );
+      const agentModels = [...new Set([
+        ...enabledForCard,
+        ...additionalModelNames.filter((name) => !removedModelNames.includes(name)),
+      ])];
+      const additions = agentModels.filter((name) => !current.includes(name));
+      const finalModels = [...new Set([...survivors, ...agentModels])];
+      if (finalModels.length === 0) finalModels.push(DISABLED_MODEL_SENTINEL);
       if (dryRun) {
-        const nextSet = new Set(next);
+        const nextSet = new Set(finalModels);
         const currentSet = new Set(current);
         const add = [...nextSet].filter((name) => !currentSet.has(name));
         const remove = [...currentSet].filter((name) => !nextSet.has(name));
@@ -351,9 +371,12 @@ export async function updateAgentAllowlistsForCompany(
         }
         continue;
       }
-      const applied = await gateway.setKeyAllowedModels!({ ...keyAddress(ref), models: next });
+      const applied = await gateway.setKeyAllowedModels!({ ...keyAddress(ref), models: finalModels });
       if (applied) updated += 1;
       else skipped.push(`alias-unknown-to-gateway:${agent.id}`);
+      if (applied && (additions.length || cardRetirements.length)) {
+        await agentGatewayKeys.recordAllowlistDrift?.({ companyId, agentId: agent.id, add: additions, remove: cardRetirements });
+      }
     } catch {
       // One failed key never stops the pass; the next enable/disable or
       // startup pass re-applies. The value is never part of any error text.

@@ -81,14 +81,14 @@ const defaultPorts: LitellmReconcilePorts = {
       [],
       [],
       false,
-      { apply: false },
+      { apply: true },
     );
   },
   log: logger,
 };
 
 /**
- * Reconciles each company's enabled models with the gateway once, at startup.
+ * Reconciles each company's enabled models and card-key allowlists with the gateway once, at startup.
  * A no-op when the gateway settings are absent; one company's failure never
  * stops the others; nothing here rejects the caller's promise.
  */

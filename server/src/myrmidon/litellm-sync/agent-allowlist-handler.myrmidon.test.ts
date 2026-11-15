@@ -112,7 +112,10 @@ describe("updateAgentAllowlistsForCompany", () => {
     const gateway = recordingGateway(undefined, { [alias]: ["antigravity/gemini-3.8-flash-medium"] });
     const db = scriptedDb([
       MODELS[0],
-      [{ id: "agent-card", name: "Card Model", adapterConfig: { model: "antigravity/gemini-3.5-flash-lite" } }],
+      [{ id: "agent-card", name: "Card Model", adapterConfig: {
+        model: "antigravity/gemini-3.5-flash-lite",
+        models: { fallbacks: ["vendor/fallback"], vision: "vendor/vision", omp: { helper: "vendor/omp-helper" } },
+      } }],
     ]);
 
     const result = await updateAgentAllowlistsForCompany(
@@ -127,8 +130,37 @@ describe("updateAgentAllowlistsForCompany", () => {
       "openai/gpt-4o",
       "anthropic/claude",
       "antigravity/gemini-3.5-flash-lite",
+      "vendor/fallback",
+      "vendor/vision",
+      "vendor/omp-helper",
     ]));
-    expect(gateway.calls[0]?.models).toHaveLength(4);
+    expect(gateway.calls[0]?.models).toHaveLength(7);
+  });
+
+  it("applies registry changes only to agents whose card names that model", async () => {
+    const alias = agentKeySecretName({ agentId: "agent-card", agentSlug: "Card Model" });
+    const otherAlias = agentKeySecretName({ agentId: "agent-other", agentSlug: "Other" });
+    const gateway = recordingGateway(undefined, {
+      [alias]: ["vendor/enabled", "vendor/disabled", "vendor/private"],
+      [otherAlias]: ["vendor/enabled", "vendor/disabled", "vendor/private"],
+    });
+    const db = scriptedDb([
+      [{ litellmModelName: "vendor/enabled", enabled: true }, { litellmModelName: "vendor/disabled", enabled: false }],
+      [
+        { id: "agent-card", name: "Card Model", adapterConfig: { model: "vendor/enabled" } },
+        { id: "agent-other", name: "Other", adapterConfig: { model: "vendor/unlisted" } },
+      ],
+    ]);
+    const result = await updateAgentAllowlistsForCompany(
+      db,
+      deps({ db, gateway: () => gateway, findSecretId: async () => "id-key" }),
+      "company-a", [], [], false, { cardModelsOnly: true },
+    );
+    expect(result.updated).toBe(2);
+    expect(gateway.calls).toEqual([
+      { alias, models: ["vendor/enabled"] },
+      { alias: otherAlias, models: ["vendor/private"] },
+    ]);
   });
 
   it("sends each agent's key alias the enabled model list", async () => {
