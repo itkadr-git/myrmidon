@@ -5,6 +5,8 @@ import { HttpError } from "../errors.js";
 import { clearReviewWakesQuotas } from "../myrmidon/review-stage-recovery/review-wakes-quota.js";
 import { REVIEW_CI_WAIT_MONITOR_SERVICE_NAME } from "../myrmidon/review-stage-recovery/policy.js";
 
+const mockReleaseProducts = vi.hoisted(() => vi.fn(async (): Promise<Array<{ type: string; status: string }>> => []));
+
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getByIdForUpdate: vi.fn(),
@@ -223,7 +225,7 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
   projectService: () => ({}),
   routineService: () => mockRoutineService,
-  workProductService: () => ({ listForIssue: vi.fn(async () => []) }),
+  workProductService: () => ({ listForIssue: mockReleaseProducts }),
 }));
 
 vi.mock("../services/external-objects.js", () => ({
@@ -355,6 +357,8 @@ describe.sequential("issue comment reopen routes", () => {
   beforeEach(() => {
     clearReviewWakesQuotas(new Date());
     vi.clearAllMocks();
+    mockReleaseProducts.mockReset();
+    mockReleaseProducts.mockResolvedValue([]);
     mockIssueService.getById.mockReset();
     mockIssueService.getByIdForUpdate.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
@@ -3003,6 +3007,51 @@ describe.sequential("issue comment reopen routes", () => {
         body: "Approved for ship",
       }),
     );
+  });
+
+  it("rejects approval when merged release code appears before the auto-approval transaction", async () => {
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const policy = await normalizePolicy({
+      stages: [{
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        type: "review",
+        participants: [{ type: "agent", agentId: reviewerAgentId }],
+      }],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      title: "1.7 Release",
+      status: "in_review",
+      assigneeAgentId: reviewerAgentId,
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockDb.transaction.mockImplementation(async (fn: (tx: typeof mockTx) => Promise<unknown>) => {
+      mockReleaseProducts.mockResolvedValue([{ type: "pull_request", status: "merged" }]);
+      return fn(mockTx);
+    });
+
+    const res = await request(await installActor(createApp(), {
+      type: "agent", agentId: reviewerAgentId, companyId: "company-1",
+      source: "agent_key", runId: "run-review-race",
+    }))
+      .post(`/api/issues/${issue.id}/comments`)
+      .send({ body: "APPROVED" });
+
+    expect(res.status).toBe(422);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("auto-approves a reviewer comment with the APPROVED review marker", async () => {
