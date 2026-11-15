@@ -189,6 +189,14 @@ async function isAtRunCap(
   return countRunsWithoutCommit(history, headSha, { resetAfter }).count >= limit;
 }
 
+interface StaleRow {
+  id: string;
+  companyId: string;
+  agentId: string | null;
+  updatedAt: Date;
+  role: string;
+}
+
 export interface InProgressIdleWakeSweeper {
   sweep(now?: Date): Promise<InProgressIdleWakeResult>;
   resetForTest(): void;
@@ -222,7 +230,7 @@ export function createInProgressIdleWakeSweeper(deps: InProgressIdleWakeDeps): I
       const seen = new Set<string>();
       let cursor: { updatedAt: Date; id: string } | null = null;
       for (let page = 0; page < MAX_PAGES; page += 1) {
-        const stale = await deps.db
+        const stale: StaleRow[] = await deps.db
           .select({
             id: issues.id,
             companyId: issues.companyId,
