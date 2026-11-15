@@ -6,8 +6,8 @@ settings-section: Track 5 — operations
 
 ### Fleet executor SSH hardening flow (SERVER-ONBOARD B)
 
-- Add standalone fleet-onboard executor without host mounts to execute versioned SSH hardening and bootstrap.
-- Implement preflight checks, TOFU host key pinning, verified key access, optional password disable, allow-before-deny firewall with rollback timer, and decommission cleanup.
+- Add an ownership inventory contract for future fleet executor cleanup.
+- The executor and image are incomplete prototypes: production SSH transport, authenticated host-key verification, durable access keys, safe rollback, bootstrap, and owned cleanup are not yet available.
 
 ### Server onboarding registry and job lifecycle (SERVER-ONBOARD A)
 
@@ -18,8 +18,8 @@ settings-section: Track 5 — operations
 
 ### Исполнитель онбординга и SSH-харденинг парка (SERVER-ONBOARD B)
 
-- Добавлен отдельный исполнитель fleet-onboard без host mount для выполнения версионированного сценария SSH-харденинга и бутстрапа.
-- Реализованы preflight-проверки, TOFU фиксация отпечатка ключа хоста, верификация входа по ключу, опциональное отключение пароля, firewall allow-before-deny с таймером отката и очистка при выводе из эксплуатации.
+- Добавлен контракт инвентаря владения для будущей очистки fleet executor.
+- Исполнитель и образ остаются незавершёнными прототипами: production SSH transport, проверка ключа хоста до аутентификации, долговременные ключи доступа, безопасный откат, bootstrap и очистка принадлежащих ресурсов пока недоступны.
 
 ### Реестр серверов и жизненный цикл онбординга (SERVER-ONBOARD A)
 

@@ -149,7 +149,10 @@ export class FleetOnboardExecutor {
             }
 
             // 2. Memory check
-            await activeSsh.execute("free -m");
+            const memoryRes = await activeSsh.execute("free -m");
+            if (memoryRes.exitCode !== 0 || !/^Mem:\s+\d+/m.test(memoryRes.stdout)) {
+              throw new Error("Preflight check failed: unable to determine memory information");
+            }
 
             // 3. Passwordless sudo check
             const sudoRes = await activeSsh.execute("sudo -n true");
