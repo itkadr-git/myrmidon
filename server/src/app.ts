@@ -55,7 +55,7 @@ import { summarySlotRoutes } from "./routes/summary-slots.js";
 import { statusCardRoutes } from "./routes/status-cards.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
-import { unprocessable } from "./errors.js";
+
 import type { SetupTokenSessionService } from "./services/setup-token-session.js";
 import {
   buildSetupTokenLoginTransport,
@@ -1190,10 +1190,13 @@ export async function createApp(
           false,
           { cardModelsOnly: true, agentId, apply: true },
         );
-        const failures = result.skipped.filter((reason) => reason !== "gateway-key-management-not-configured" && reason !== `agent-without-key:${agentId}`);
+        const failures = result.skipped.filter((reason) => reason !== "gateway-key-management-not-configured" && reason !== `agent-without-key:${agentId}` && reason !== `key-all-models:${agentId}`);
         if (failures.length) {
-          throw unprocessable(`Agent card not saved: gateway allowlist reconciliation failed: ${failures.join(", ")}`);
+          logger.warn({ companyId, agentId, failures }, "agent card saved but gateway allowlist reconciliation failed");
         }
+      },
+      onAgentModelAllowlistSyncFailure: ({ companyId, agentId, error }) => {
+        logger.warn({ companyId, agentId, err: error }, "agent card saved but gateway allowlist reconciliation failed");
       },
       chatRunRetries: chatChannels,
       pluginWorkerManager: workerManager,

@@ -392,6 +392,8 @@ export function agentService(
     castes?: AgentCasteDirectoryPort;
     /** Reconciles the model card's gateway-key allowlist after a persisted config update. */
     syncAgentModelAllowlist?: (input: { companyId: string; agentId: string; db: Db }) => Promise<void>;
+    /** Records an asynchronous allowlist reconciliation failure without undoing the card save. */
+    onAgentModelAllowlistSyncFailure?: (input: { companyId: string; agentId: string; error: unknown }) => void;
     /** Cleans an enabled bot container before lifecycle state or row changes. */
     cleanupBotContainer?: (agent: { id: string; adapterType: string; adapterConfig: Record<string, unknown> }) => Promise<void>;
     agentsModule?: AgentsModule;
@@ -1114,17 +1116,23 @@ export function agentService(
         }
       }
 
-      if (Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig")) {
-        await ports?.syncAgentModelAllowlist?.({ companyId: updated.companyId, agentId: updated.id, db: txDb });
-      }
       return normalizedUpdated;
     };
 
     const transaction = (db as unknown as {
       transaction?: (callback: (tx: unknown) => Promise<AgentUpdateResult>) => Promise<AgentUpdateResult>;
     }).transaction;
-    if (typeof transaction !== "function") return applyUpdate(db);
-    return transaction.call(db, async (tx) => applyUpdate(tx as unknown as Db));
+    const result = typeof transaction !== "function"
+      ? await applyUpdate(db)
+      : await transaction.call(db, async (tx) => applyUpdate(tx as unknown as Db));
+    if (result && Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig")) {
+      try {
+        await ports?.syncAgentModelAllowlist?.({ companyId: result.companyId, agentId: result.id, db });
+      } catch (error) {
+        ports?.onAgentModelAllowlistSyncFailure?.({ companyId: result.companyId, agentId: result.id, error });
+      }
+    }
+    return result;
   }
 
   return {

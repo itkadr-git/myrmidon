@@ -560,6 +560,7 @@ export function agentRoutes(
      */
     casteDirectory?: AgentCasteDirectoryPort;
     syncAgentModelAllowlist?: (input: { companyId: string; agentId: string; db: Db }) => Promise<void>;
+    onAgentModelAllowlistSyncFailure?: (input: { companyId: string; agentId: string; error: unknown }) => void;
     agentsModule?: AgentsModule;
   } = {},
 ) {
@@ -632,6 +633,7 @@ export function agentRoutes(
       await (runtime.lock ?? botKeyLock).run(botKey, () => decommission.call(runtime.driver, botKey));
     },
     syncAgentModelAllowlist: options.syncAgentModelAllowlist,
+    onAgentModelAllowlistSyncFailure: options.onAgentModelAllowlistSyncFailure,
     agentsModule: agentsMod,
   });
   const access = accessService(db);

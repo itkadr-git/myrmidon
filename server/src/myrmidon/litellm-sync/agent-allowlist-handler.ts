@@ -225,7 +225,7 @@ export async function updateAgentAllowlistsForCompany(
   companyId: string,
   additionalModelNames: readonly string[] = [],
   removedModelNames: readonly string[] = [],
-  allowEmpty = false,
+  _allowEmpty = false,
   options: AllowlistSyncOptions = {},
 ): Promise<AllowlistSyncResult> {
   const dryRun = options.apply === false;
@@ -309,9 +309,8 @@ export async function updateAgentAllowlistsForCompany(
         continue;
       }
       const current = keyInfo.models ?? [];
-      if (current.length === 0 && !allowEmpty && !options.cardModelsOnly) {
-        // Empty means unrestricted in LiteLLM; scoped card reconciliation is
-        // safe to narrow only when it knows this agent's selected models.
+      if (current.length === 0) {
+        // Empty means unrestricted in LiteLLM, not an empty allowlist.
         skipped.push(`key-all-models:${agent.id}`);
         continue;
       }
@@ -323,6 +322,7 @@ export async function updateAgentAllowlistsForCompany(
       // additional names on top of surviving non-board models.
       const adapterConfig = isRecord(agent.adapterConfig) ? agent.adapterConfig : {};
       const cardModels = cardModelNames(adapterConfig);
+      if (options.cardModelsOnly && cardModels.length === 0 && removedModelNames.length === 0) continue;
       const disabledRegistryNames = companyModels.filter((model) => !model.enabled).map((model) => model.name);
       // Keep registry-owned models only when this agent's card selects them;
       // registry models are never broadcast to every agent key.
