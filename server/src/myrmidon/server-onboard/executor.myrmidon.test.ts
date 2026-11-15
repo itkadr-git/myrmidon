@@ -366,6 +366,21 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockReporter.completion?.status).toBe("failed");
   });
 
+  it("fails final verification if the fresh SSH command returns the wrong output", async () => {
+    const mockSsh = new MockSshExecutor();
+    mockSsh.mockResponse('echo "onboard-verified"', { stdout: "unexpected output", exitCode: 0 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => mockSsh });
+    const mockReporter = createMockReporter();
+    const claim: any = {
+      job: { id: "job-verify-output", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["verify"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, mockReporter.reporter);
+    expect(result.status).toBe("failed");
+    expect(mockReporter.completion?.status).toBe("failed");
+  });
+
   it("does not report key verification success when only password credentials are available", async () => {
     const mockSsh = new MockSshExecutor();
     mockSsh.mockResponse('echo "onboard-verified"', { stdout: "onboard-verified\n", exitCode: 0 });
