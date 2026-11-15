@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+import { promisify } from "node:util";
 import os from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
@@ -48,6 +50,7 @@ import { instanceSettingsService } from "../services/instance-settings.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const execFileAsync = promisify(execFile);
 const WORKSPACE_BUSY_TEST_ADAPTER = "workspace_busy_test";
 
 if (!embeddedPostgresSupport.supported) {
@@ -371,6 +374,32 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
       nonAssigneeAgentId,
     };
   }
+
+  it("creates separate task workspaces for concurrent issues on the same project checkout", async () => {
+    const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-isolation-"));
+    const gitDir = path.join(baseDir, "project");
+    const worktreeDir = path.join(baseDir, "worktrees");
+    await fs.mkdir(gitDir);
+    await fs.mkdir(worktreeDir);
+    try {
+      await execFileAsync("git", ["init", "--quiet", gitDir]);
+      await execFileAsync("git", ["-C", gitDir, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial"]);
+      const taskOne = path.join(worktreeDir, "task-one");
+      const taskTwo = path.join(worktreeDir, "task-two");
+      await execFileAsync("git", ["-C", gitDir, "worktree", "add", "--quiet", "-b", "task-one", taskOne]);
+      await execFileAsync("git", ["-C", gitDir, "worktree", "add", "--quiet", "-b", "task-two", taskTwo]);
+
+      expect(await fs.realpath(taskOne)).not.toBe(await fs.realpath(taskTwo));
+      expect(await execFileAsync("git", ["-C", taskOne, "rev-parse", "--show-toplevel"]).then(({ stdout }) => stdout.trim())).toBe(taskOne);
+      expect(await execFileAsync("git", ["-C", taskTwo, "rev-parse", "--show-toplevel"]).then(({ stdout }) => stdout.trim())).toBe(taskTwo);
+      await fs.writeFile(path.join(taskOne, "task-one.txt"), "one");
+      await fs.writeFile(path.join(taskTwo, "task-two.txt"), "two");
+      expect(await fs.readFile(path.join(taskOne, "task-two.txt")).catch(() => null)).toBeNull();
+      expect(await fs.readFile(path.join(taskTwo, "task-one.txt")).catch(() => null)).toBeNull();
+    } finally {
+      await fs.rm(baseDir, { recursive: true, force: true });
+    }
+  });
 
   it("auto dispatches alongside a local holder and adds coordination context", async () => {
     const fixture = await seedWorkspaceFixture({
