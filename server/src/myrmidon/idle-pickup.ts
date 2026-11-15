@@ -3,7 +3,6 @@ import { blockerOpenSql } from "./blocker-resolved.js";
 import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issueExecutionDecisions, issues, issueWorkProducts, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 import { issueLabels, labels } from "@myrmidon/db";
-import { currentRunPrioritySettings } from "./run-priority/state.js";
 import { runMatchesCurrentRelease } from "./run-priority/scoring.js";
 import {
   readReviewAdmissionDecision,
@@ -20,7 +19,7 @@ import {
 // budget without restarting the server — a restart drops every run in flight.
 import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@myrmidon/shared";
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
-import { releaseFocusCondition } from "./release-focus.js";
+import { releaseFocusCondition, strictReleaseFocusRelease } from "./release-focus.js";
 import { liveIdlePickupSettings, liveIdleWakeBudget } from "./runs-queue-settings/live.js";
 // myrmidon(1.6.5 F-26 T5): the cooling window of stale wake candidates (design §4.3).
 import { isIssueCoolingDown, readSwarmSettings } from "./wake-task-guard.js";
@@ -1233,7 +1232,7 @@ export async function findTopReadyIssueForAgent(
   if (candidates.length === 0) return null;
   const liveIssueIds = await loadAgentLiveIssueIds(db, agent);
   let ordered = orderIdlePickupCandidates(candidates);
-  const { currentRelease } = currentRunPrioritySettings();
+  const currentRelease = strictReleaseFocusRelease();
   if (currentRelease) {
     const releaseRows = await db
       .select({ issueId: issues.id, label: labels.name })

@@ -1075,6 +1075,7 @@ import { getIdleStopService } from "../myrmidon/idle-stop-startup.js";
 // myrmidon(1.6.5 RUN-PRIORITY A): queued runs start by role/issue/release
 // weight with aging; the settings live-refresh per pass (runtime-limits pattern).
 import { currentRunPrioritySettings } from "../myrmidon/run-priority/state.js";
+import { strictReleaseFocusRelease } from "../myrmidon/release-focus.js";
 // myrmidon(1.6.5 RUN-PRIORITY-PICK): the per-agent pass starts the agent's most
 // important ready task before a less important standing run; a starvation lift
 // no longer crosses the next issue-priority step.
@@ -33644,7 +33645,7 @@ export function heartbeatService(
       });
     };
 
-    const releaseSettings = currentRunPrioritySettings();
+    const releaseSettings = { currentRelease: strictReleaseFocusRelease() };
     if (issueId && releaseSettings.currentRelease) {
       const targetLabels = await db
         .select({ name: labels.name })

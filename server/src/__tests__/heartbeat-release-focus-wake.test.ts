@@ -88,4 +88,24 @@ describeDb("release-focused production wake and task selection", () => {
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, currentId));
     expect((await findTopReadyIssueForAgent(db, { id: agentId, companyId }))?.id).toBe(otherId);
   });
+
+  it("strictReleaseFocus=false lifts wake deferral and selection; true restores it, no restart", async () => {
+    const { companyId, agentId, currentId, otherId } = await seed();
+    const heartbeat = heartbeatService(db);
+    const on = normalizeRunPrioritySettings({ currentRelease: "1.6.9", strictReleaseFocus: true });
+    try {
+      applyRunPrioritySettings({ ...on, strictReleaseFocus: false });
+      expect((await findTopReadyIssueForAgent(db, { id: agentId, companyId }))?.id).toBe(otherId);
+      await heartbeat.wakeup(agentId, { source: "timer", payload: { issueId: otherId } });
+      let rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+      expect(rows).toEqual([expect.objectContaining({ reason: "heartbeat.disabled" })]);
+      applyRunPrioritySettings(on);
+      expect((await findTopReadyIssueForAgent(db, { id: agentId, companyId }))?.id).toBe(currentId);
+      await heartbeat.wakeup(agentId, { source: "timer", payload: { issueId: otherId } });
+      rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+      expect(rows.map((row) => row.reason).sort()).toEqual(["heartbeat.disabled", "release_focus"]);
+    } finally {
+      applyRunPrioritySettings(normalizeRunPrioritySettings({ currentRelease: "1.6.9" }));
+    }
+  });
 });

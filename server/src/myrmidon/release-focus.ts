@@ -2,6 +2,18 @@ import { sql, type SQL } from "drizzle-orm";
 import { issues } from "@myrmidon/db";
 import { currentRunPrioritySettings } from "./run-priority/state.js";
 
+/**
+ * The release the board is focused on, or null when focus is off: either no
+ * current release is set or the owner turned runPriority.strictReleaseFocus
+ * off. Read live from the in-force settings, so a settings change applies
+ * without a restart. Swarm matcher, idle pickup and wake deferral all gate on it.
+ */
+export function strictReleaseFocusRelease(): string | null {
+  const settings = currentRunPrioritySettings();
+  if (!settings.strictReleaseFocus) return null;
+  return settings.currentRelease?.trim() ? settings.currentRelease : null;
+}
+
 /** Shared by swarm queue reads and assigned-task idle pickup; reviews bypass it. */
 export function releaseFocusCondition(companyId: string): SQL {
   const release = currentRunPrioritySettings().currentRelease;
