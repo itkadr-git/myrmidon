@@ -6,6 +6,7 @@ import {
   composeReleaseVerdict,
   createReleaseVerificationEvidence,
   validateReleaseVerificationEvidence,
+  hasCurrentReleaseVerificationEvidence,
   signReleaseVerificationVerdict,
   verifyReleaseComposition,
   type ReleaseCandidateMember,
@@ -668,6 +669,14 @@ describe("persisted release evidence", () => {
 
   it("accepts an authentic record for the current issue, build and candidate set", () => {
     expect(validateReleaseVerificationEvidence(record, scope, "secret", NOW())).toBe(true);
+  });
+
+  it("accepts only a current signed record embedded in a system comment", () => {
+    const body = `VERIFY-ON-PROD\nrelease-evidence-v1: ${JSON.stringify(record)}`;
+    expect(hasCurrentReleaseVerificationEvidence([{ body, authorType: "system" }], scope, "secret", NOW())).toBe(true);
+    expect(hasCurrentReleaseVerificationEvidence([{ body, authorType: "user" }], scope, "secret", NOW())).toBe(false);
+    expect(hasCurrentReleaseVerificationEvidence([{ body: "release-evidence-v1: {bad", authorType: "system" }], scope, "secret", NOW())).toBe(false);
+    expect(hasCurrentReleaseVerificationEvidence([{ body, authorType: "system" }], { ...scope, deployedVersion: SHA_C }, "secret", NOW())).toBe(false);
   });
 
   it("rejects expired and future signed evidence", () => {
