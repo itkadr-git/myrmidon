@@ -109,6 +109,20 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(report['postgres']['data']['archive_failures'], 3)
         self.assertEqual(report['postgres']['data']['ssl_configured'], 'on')
 
+    def test_wal_retention_and_checkpoint_settings_are_reported(self):
+        fixture = dict.fromkeys(collector.FIELDS, 1)
+        fixture.update(server_version_num=160002, in_recovery=False,
+                       max_wal_size='1GB', min_wal_size='80MB',
+                       checkpoint_timeout='5min', full_page_writes='on')
+        with patch.object(collector, 'query_postgres', return_value=fixture):
+            data = collector.collect('/socket', 'db', 'operator')['postgres']['data']
+        self.assertEqual(data['max_wal_size'], '1GB')
+        self.assertEqual(data['min_wal_size'], '80MB')
+        self.assertEqual(data['checkpoint_timeout'], '5min')
+        self.assertEqual(data['full_page_writes'], 'on')
+        for key in ('max_wal_size', 'min_wal_size', 'checkpoint_timeout', 'full_page_writes'):
+            self.assertIn("current_setting('" + key + "'", collector.SQL)
+
     def test_postgres_access_reports_local_transport_without_guessing_authentication(self):
         fixture = dict.fromkeys(collector.FIELDS, 1)
         fixture.update(server_version_num=160002, in_recovery=False)
