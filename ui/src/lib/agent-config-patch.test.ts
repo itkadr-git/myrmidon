@@ -147,6 +147,18 @@ describe("buildAgentUpdatePatch", () => {
     });
   });
 
+  it("keeps unrelated Hermes settings when only the model changes", () => {
+    const agent = makeAgent();
+    agent.adapterType = "hermes_gateway";
+    agent.adapterConfig = {
+      model: "chatgpt-pool/old",
+      env: { API_KEY: { type: "secret_ref", secretId: "secret-id" }, TOKEN: { type: "plain", value: "[REDACTED]" } },
+      unknown: { nested: [1, { enabled: true }] },
+    };
+    const patch = buildAgentUpdatePatch(agent, makeOverlay({ adapterConfig: { model: "chatgpt-pool/new" } }));
+    expect(patch).toEqual({ adapterConfig: { model: "chatgpt-pool/new" } });
+  });
+
   it("preserves adapter-agnostic keys when changing adapter types", () => {
     const patch = buildAgentUpdatePatch(
       makeAgent(),
