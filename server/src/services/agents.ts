@@ -572,6 +572,7 @@ export function agentService(
       lastResponseAt: row.lastResponseAt,
       lastProbeAt: row.lastProbeAt,
       lastProbeOutcome: (row.lastProbeOutcome ?? null) as AgentListItem["lastProbeOutcome"],
+      probeOutcome: (row.lastProbeOutcome ?? null) as AgentListItem["probeOutcome"],
       derivedStatus: deriveAgentProbeStatus({
         lastProbeAt: row.lastProbeAt,
         lastProbeOutcome: row.lastProbeOutcome,

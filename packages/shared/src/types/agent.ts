@@ -118,6 +118,7 @@ export interface Agent {
   lastResponseAt?: Date | null;
   lastProbeAt?: Date | null;
   lastProbeOutcome?: AgentProbeOutcome | null;
+  probeOutcome?: AgentProbeOutcome | null;
   derivedStatus?: AgentDerivedStatus;
   metadata: Record<string, unknown> | null;
   orgChainHealth?: AgentOrgChainHealth;

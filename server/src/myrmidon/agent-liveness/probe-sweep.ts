@@ -32,7 +32,7 @@
 // Timestamps always advance (even on failure), so a flapping runtime shows
 // in `lastProbeOutcome`, not in a frozen `lastProbeAt`.
 
-import { and, inArray, isNotNull, ne } from "drizzle-orm";
+import { and, asc, gt, inArray, isNotNull, ne } from "drizzle-orm";
 import { agentRuntimeState, agents, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 
@@ -143,6 +143,10 @@ function firstNonEmptyString(...values: readonly unknown[]): string | null {
   return null;
 }
 
+// Resume after the last inspected row, including invalid URLs, so they cannot
+// monopolize a batch. A database instance owns its own sweep cursor.
+const sweepCursors = new WeakMap<Db, string>();
+
 /**
  * One probe pass. Reads probeable agents, probes each, stamps the outcome.
  * A probe failure never throws: a runtime being down is the datum, not an
@@ -154,7 +158,14 @@ export async function sweepAgentLivenessProbes(
   opts: { limit?: number; now?: Date; force?: boolean } = {},
 ): Promise<AgentLivenessProbeSweepResult> {
   const now = opts.now ?? port.now?.() ?? new Date();
-  const candidates = await db
+  const cursor = sweepCursors.get(db);
+  const conditions = [
+    isNotNull(agents.adapterConfig),
+    inArray(agents.adapterType, [...AGENT_LIVENESS_PROBEABLE_ADAPTERS]),
+    ne(agents.status, "terminated"),
+  ];
+  if (cursor) conditions.push(gt(agents.id, cursor));
+  let candidates = await db
     .select({
       agentId: agents.id,
       companyId: agents.companyId,
@@ -162,14 +173,30 @@ export async function sweepAgentLivenessProbes(
       adapterConfig: agents.adapterConfig,
     })
     .from(agents)
-    .where(
-      and(
+    .where(and(...conditions))
+    .orderBy(asc(agents.id))
+    .limit(opts.limit ?? AGENT_LIVENESS_PROBE_SWEEP_BATCH);
+  // Wrap at the end of the ordered set so a short final page does not stop
+  // future passes from visiting agents before the cursor.
+  if (candidates.length === 0 && cursor) {
+    sweepCursors.delete(db);
+    candidates = await db
+      .select({
+        agentId: agents.id,
+        companyId: agents.companyId,
+        adapterType: agents.adapterType,
+        adapterConfig: agents.adapterConfig,
+      })
+      .from(agents)
+      .where(and(
         isNotNull(agents.adapterConfig),
         inArray(agents.adapterType, [...AGENT_LIVENESS_PROBEABLE_ADAPTERS]),
         ne(agents.status, "terminated"),
-      ),
-    )
-    .limit(opts.limit ?? AGENT_LIVENESS_PROBE_SWEEP_BATCH);
+      ))
+      .orderBy(asc(agents.id))
+      .limit(opts.limit ?? AGENT_LIVENESS_PROBE_SWEEP_BATCH);
+  }
+  if (candidates.length > 0) sweepCursors.set(db, candidates[candidates.length - 1].agentId);
 
   const result: AgentLivenessProbeSweepResult = { scanned: candidates.length, probed: 0, ok: 0, unreachable: 0 };
   for (const candidate of candidates) {
