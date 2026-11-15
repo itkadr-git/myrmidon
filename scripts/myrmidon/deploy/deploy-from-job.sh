@@ -115,7 +115,18 @@ window_state() {
 }
 
 run_deploy() { # run_deploy <jobId> <digest>
-  local job="$1" digest="$2" rc=0
+  local job="$1" digest="$2" rc=0 previous_phase=""
+  if [[ "$DRY_RUN" != "1" && -e "$REPORT_DIR/job-$job.json" ]]; then
+    previous_phase="$(jq -r '.phase // "unknown"' "$REPORT_DIR/job-$job.json" 2>/dev/null)" || previous_phase="unknown"
+    case "$previous_phase" in
+      health-ok|health-failed|rolled-back|rollback-failed|error)
+        log "executor: job $job already has terminal report $previous_phase; waiting for board reconciliation"
+        return 1 ;;
+    esac
+    log "ERROR: job $job already has report phase $previous_phase; refusing automatic replay"
+    report "$job" error "Previous executor phase $previous_phase; reconcile deployment state before retrying"
+    return 1
+  fi
   # RELEASE-STAGE: persist intent before touching the maintenance window or
   # invoking deploy.sh. If the process dies afterwards, the host journal still
   # explains why a continuation is safe and what digest was intended.
