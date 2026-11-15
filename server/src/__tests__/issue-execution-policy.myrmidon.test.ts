@@ -2560,6 +2560,27 @@ describe("verify execution stages", () => {
     })).toThrow(/verify/i);
   });
 
+  it("rejects a completed release workflow that never completed a verify stage", () => {
+    const policy = reviewOnlyPolicy();
+    const issue = {
+      ...pendingIssue(policy),
+      title: "Release candidate",
+      labels: ["1.6"],
+      executionState: {
+        ...pendingIssue(policy).executionState,
+        status: "completed" as const,
+        currentStageId: null,
+        currentStageType: null,
+        currentParticipant: null,
+        completedStageIds: [policy.stages[0].id],
+      },
+    };
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue, policy, requestedStatus: "done", requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId }, commentBody: "review approved",
+    })).toThrow(/verify/i);
+  });
+
   it("rejects final review approval when the release has no verify stage", () => {
     const policy = reviewOnlyPolicy();
     const issue = {
