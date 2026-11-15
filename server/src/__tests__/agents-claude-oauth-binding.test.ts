@@ -356,6 +356,23 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     return rows.length;
   }
 
+  it("reconciles the persisted agent card when its model changes", async () => {
+    const scope = await seedScope();
+    const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
+    const created = await agentService(db).create(scope.companyId, createInput(scope), {
+      claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
+    });
+    const observed: Array<{ companyId: string; agentId: string; model: unknown }> = [];
+    const service = agentService(db, {
+      syncAgentModelAllowlist: async ({ companyId, agentId }) => {
+        const persisted = await agentService(db).getById(agentId);
+        observed.push({ companyId, agentId, model: (persisted?.adapterConfig as Record<string, unknown>).model });
+      },
+    });
+    await service.update(created.id, { adapterConfig: { ...created.adapterConfig, model: "litellm/vendor/changed" } });
+    expect(observed).toEqual([{ companyId: scope.companyId, agentId: created.id, model: "litellm/vendor/changed" }]);
+  });
+
   it("inserts the fixed binding and consumes a valid claim exactly once", async () => {
     const scope = await seedScope();
     const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
