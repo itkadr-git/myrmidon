@@ -51,13 +51,6 @@ describe("company migration dry run", () => {
     expect(response.body.dryRun).toBe(true);
     expect(response.body.validation.errors).toEqual([]);
 
-    const apply = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
-      target: { mode: "new_company", newCompanyName: "Destination" },
-      dryRun: false,
-      apply: true,
-      confirm: "approved",
-    });
-    expect(apply.status).toBe(400);
     const existingTarget = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
       target: { mode: "existing_company", companyId: source!.id },
     });
@@ -70,5 +63,34 @@ describe("company migration dry run", () => {
     expect(await db.select().from(activityLog)).toEqual(beforeAudit);
     expect(await readdir(root, { recursive: true })).toEqual(filesBefore);
     insert.mockRestore(); update.mockRestore(); remove.mockRestore();
+  });
+
+  it("applies a confirmed migration once and reuses the completed run", async () => {
+    const [source] = await db.insert(companies).values({ name: "Apply fixture", issuePrefix: "MAP" }).returning();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+
+    const payload = {
+      target: { mode: "new_company", newCompanyName: "Apply destination" },
+      dryRun: false,
+      apply: true,
+      confirm: "approved pilot",
+    };
+    const first = await request(app).post(`/api/companies/${source!.id}/migrations`).send(payload);
+    expect(first.status).toBe(200);
+    expect(first.body.dryRun).toBe(false);
+    const afterFirst = await db.select().from(companies);
+    expect(afterFirst.filter((company) => company.name === "Apply destination")).toHaveLength(1);
+
+    const second = await request(app).post(`/api/companies/${source!.id}/migrations`).send(payload);
+    expect(second.status).toBe(200);
+    expect(second.body.resume).toBe("already_completed");
+    expect(await db.select().from(companies)).toEqual(afterFirst);
   });
 });
