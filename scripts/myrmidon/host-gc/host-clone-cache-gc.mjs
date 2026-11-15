@@ -1717,63 +1717,200 @@ function archiveExcludes(clonePath) {
   return [...out];
 }
 
-function archiveClone(clonePath, archiveRoot) {
-  // A bundle includes stashes as well as unpublished branches and tags.
-  const repos = archiveRepos(clonePath);
-  if (repos.length === 1 && repos[0] === clonePath && isGitWorktree(clonePath) && !hasAlternates(clonePath)) {
-    if (!fs.existsSync(archiveRoot)) fs.mkdirSync(archiveRoot, { recursive: true });
-    const stage = fs.mkdtempSync(path.join(archiveRoot, ".bundle-"));
-    const archivePath = path.join(archiveRoot, `${path.basename(clonePath)}-${crypto.randomUUID()}.tar.gz`);
-    try {
-      const members = [];
-      const stashes = git(["stash", "list", "--format=%H"], clonePath);
-      if (stashes.status !== 0) throw new Error(`stash listing failed: ${stashes.stderr}`);
-      if (stashes.stdout.trim().split("\n").filter(Boolean).length > 1) {
-        throw new Error("multiple stash entries require reflog preservation; keeping checkout");
-      }
-      if (!isPushed(clonePath) || stashes.stdout.trim()) {
-        const bundle = path.join(stage, "unpublished.bundle");
-        const created = git(["bundle", "create", bundle, "HEAD", "--all", "--not", "--remotes"], clonePath);
-        if (created.status !== 0) throw new Error(`bundle failed: ${created.stderr}`);
-        const verified = git(["bundle", "verify", bundle], clonePath);
-        if (verified.status !== 0) throw new Error(`bundle verification failed: ${verified.stderr}`);
-        members.push("unpublished.bundle");
-      }
-      for (const [name, diffArgs] of [
-        ["staged.patch", ["diff", "--cached", "--binary", "HEAD", "--"]],
-        ["changes.patch", ["diff", "--binary", "--"]],
-      ]) {
-        const diff = git(diffArgs, clonePath);
-        if (diff.status !== 0) throw new Error(`diff failed: ${diff.stderr}`);
-        if (diff.stdout) {
-          fs.writeFileSync(path.join(stage, name), diff.stdout);
-          members.push(name);
-        }
-      }
-      const untracked = git(["ls-files", "--others", "--exclude-standard", "-z"], clonePath);
-      if (untracked.status !== 0) throw new Error(`untracked listing failed: ${untracked.stderr}`);
-      if (untracked.stdout) {
-        const packedUntracked = spawnSync("tar", ["-cf", path.join(stage, "untracked.tar"), "-C", clonePath, "--null", "-T", "-"], { input: untracked.stdout, timeout: 60000 });
-        if (packedUntracked.status !== 0) throw new Error(`untracked archive failed: ${packedUntracked.stderr}`);
-        members.push("untracked.tar");
-      }
-      if (!members.length) throw new Error("no recoverable changes found");
-      const packed = spawnSync("tar", ["-czf", archivePath, "-C", stage, ...members], { timeout: 60000 });
-      if (packed.status !== 0 || spawnSync("tar", ["-tzf", archivePath], { timeout: 60000, stdio: "ignore" }).status !== 0) {
-        throw new Error("bundle archive failed verification");
-      }
-      return archivePath;
-    } catch (err) {
-      fs.rmSync(archivePath, { force: true });
-      throw err;
-    } finally {
-      fs.rmSync(stage, { recursive: true, force: true });
+// Per-archive limit, 10 min by default. The test hook is the env var (finite, > 0).
+function archiveTimeoutSeconds() {
+  const envTimeoutS = Number(process.env.HOST_GC_ARCHIVE_TIMEOUT_SECONDS);
+  return Number.isFinite(envTimeoutS) && envTimeoutS > 0 ? envTimeoutS : 600;
+}
+
+// Runs one tool of the archive under `timeout`, so a hang kills the whole process tree and a
+// failure is reported in words (stderr is often empty for a killed child).
+// 124 = `timeout` fired; 137 = it had to KILL the child after --kill-after.
+function runArchiveTool(cmd, args, what, extra = {}) {
+  const timeoutS = archiveTimeoutSeconds();
+  const result = spawnSync("timeout", ["--kill-after=10s", `${timeoutS}s`, cmd, ...args], { timeout: (timeoutS + 30) * 1000, ...extra });
+  if (result.status !== 0) {
+    const timedOut = result.error?.code === "ETIMEDOUT" || result.status === 124 || result.status === 137;
+    const reason = timedOut
+      ? `timed out after ${timeoutS} s`
+      : `exit code ${result.status}, signal ${result.signal}${result.error ? `, error ${result.error.message}` : ""}`;
+    throw new Error(`${what} failed: ${reason}: ${String(result.stderr ?? "").trim()}`);
+  }
+  return result;
+}
+
+// Why a checkout cannot be archived compactly (bundle + patches). `{ keep: true }` means no
+// safe archive of any kind exists (a full copy would lack the borrowed objects): the checkout
+// stays. Otherwise the reason is journaled and the previous full archive is used.
+function compactBlocker(clonePath, repos) {
+  if (!repos.length) return { reason: "no-git-repository" };
+  for (const repo of repos) {
+    if (hasAlternates(repo)) return { keep: true, reason: `alternate-objects: ${repo}` };
+  }
+  for (const repo of repos) {
+    if (!isGitWorktree(repo)) return { reason: `unusable-repository: ${repo}` };
+  }
+  // Files outside every git root (bundle and patches cannot carry them).
+  const roots = new Set(repos);
+  const hasFiles = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return true; }
+    return entries.some((e) => (e.isDirectory() && !e.isSymbolicLink() ? hasFiles(path.join(dir, e.name)) : true));
+  };
+  const outside = (dir) => {
+    if (roots.has(dir)) return false;
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return true; }
+    const hasRepoBelow = repos.some((r) => r.startsWith(`${dir}${path.sep}`));
+    if (!hasRepoBelow) return hasFiles(dir);
+    return entries.some((e) => {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory() && !e.isSymbolicLink()) return outside(p);
+      return true;
+    });
+  };
+  if (outside(clonePath)) return { reason: "files-outside-git" };
+  return null;
+}
+
+// Compact recovery of one git root into `dest`: unpublished commits (git bundle), staged and
+// unstaged changes (patches), untracked files. Returns the member names written (empty when
+// everything is already on the remote).
+function compactRepo(repo, dest, nestedRepos) {
+  fs.mkdirSync(dest, { recursive: true });
+  const members = [];
+  const stashes = git(["stash", "list", "--format=%H"], repo);
+  if (stashes.status !== 0) throw new Error(`stash listing failed: ${stashes.stderr}`);
+  const stashCount = stashes.stdout.trim().split("\n").filter(Boolean).length;
+  if (stashCount > 1) throw new Error("multiple stash entries require reflog preservation; keeping checkout");
+  if (!isPushed(repo) || stashCount) {
+    const bundle = path.join(dest, "unpublished.bundle");
+    // A bundle includes stashes as well as unpublished branches and tags.
+    const created = git(["bundle", "create", bundle, "HEAD", "--all", "--not", "--remotes"], repo);
+    if (created.status !== 0) throw new Error(`bundle failed: ${created.stderr}`);
+    const verified = git(["bundle", "verify", bundle], repo);
+    if (verified.status !== 0) throw new Error(`bundle verification failed: ${verified.stderr}`);
+    members.push("unpublished.bundle");
+  }
+  for (const [name, diffArgs] of [
+    ["staged.patch", ["diff", "--cached", "--binary", "HEAD", "--"]],
+    ["changes.patch", ["diff", "--binary", "--"]],
+  ]) {
+    const diff = git(diffArgs, repo);
+    if (diff.status !== 0) throw new Error(`diff failed: ${diff.stderr}`);
+    if (diff.stdout) {
+      fs.writeFileSync(path.join(dest, name), diff.stdout);
+      members.push(name);
     }
   }
-  // Never fall back to a full checkout archive: an unsafe checkout must remain
-  // in place until its Git state can be recovered safely.
-  throw new Error(`cannot safely create compact archive for ${clonePath}; keeping checkout`);
+  const listed = git(["ls-files", "--others", "--exclude-standard", "-z"], repo);
+  if (listed.status !== 0) throw new Error(`untracked listing failed: ${listed.stderr}`);
+  // A nested repository is archived by its own pass; the parent lists it as one directory.
+  const nestedRel = nestedRepos.map((r) => path.relative(repo, r));
+  const untracked = listed.stdout.split("\0").filter((entry) => {
+    if (!entry) return false;
+    const clean = entry.replace(/\/+$/, "");
+    return !nestedRel.some((n) => clean === n || clean.startsWith(`${n}/`));
+  });
+  if (untracked.length) {
+    runArchiveTool("tar", ["-cf", path.join(dest, "untracked.tar"), "-C", repo, "--null", "-T", "-"], "untracked archive", { input: `${untracked.join("\0")}\0` });
+    members.push("untracked.tar");
+  }
+  return members;
 }
+
+// Archives only what could be lost: per git root (the checkout itself and repositories inside
+// it) unpublished commits, uncommitted changes and untracked files. Returns the archive path,
+// or null when everything is already pushed (nothing worth keeping). Where a compact archive is
+// impossible the previous full archive is made and the reason journaled; a checkout whose Git
+// state cannot be recovered by either way stays in place (throws).
+function archiveClone(clonePath, archiveRoot, journalPath) {
+  const repos = archiveRepos(clonePath);
+  const blocker = compactBlocker(clonePath, repos);
+  if (blocker?.keep) throw new Error(`cannot safely archive ${clonePath}: ${blocker.reason}; keeping checkout`);
+  if (blocker) {
+    if (journalPath) journalRecord(journalPath, { event: "archive-full-fallback", path: clonePath, reason: blocker.reason });
+    return archiveCloneFull(clonePath, archiveRoot);
+  }
+  const stage = fs.mkdtempSync(path.join(fs.existsSync(archiveRoot) ? archiveRoot : (fs.mkdirSync(archiveRoot, { recursive: true }), archiveRoot), ".bundle-"));
+  const archivePath = path.join(archiveRoot, `${path.basename(clonePath)}-${crypto.randomUUID()}.tar.gz`);
+  try {
+    const manifest = [];
+    for (const repo of repos) {
+      const rel = path.relative(clonePath, repo);
+      const nested = repos.filter((r) => r !== repo && r.startsWith(`${repo}${path.sep}`));
+      // The checkout's own repository keeps flat member names; inner ones go under repos/<path>.
+      const members = compactRepo(repo, rel ? path.join(stage, "repos", rel) : stage, nested);
+      if (members.length) manifest.push({ path: rel || ".", members });
+    }
+    if (!manifest.length) {
+      fs.rmSync(archivePath, { force: true });
+      return null;
+    }
+    fs.writeFileSync(path.join(stage, "manifest.json"), `${JSON.stringify({ clone: path.basename(clonePath), repos: manifest }, null, 2)}\n`);
+    runArchiveTool("tar", ["-czf", archivePath, "-C", stage, "."], `archive for ${clonePath}`);
+    runArchiveTool("tar", ["-tzf", archivePath], `archive verification for ${archivePath}`, { stdio: "ignore" });
+    return archivePath;
+  } catch (err) {
+    fs.rmSync(archivePath, { force: true });
+    throw err;
+  } finally {
+    fs.rmSync(stage, { recursive: true, force: true });
+  }
+}
+
+// Previous full archive (the whole checkout, minus git-ignored build output). Used only where the
+// compact archive is impossible; archiveClone journals why.
+function archiveCloneFull(clonePath, archiveRoot) {
+  if (!fs.existsSync(archiveRoot)) fs.mkdirSync(archiveRoot, { recursive: true });
+  const name = path.basename(clonePath);
+  const ts = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-").slice(0, 15);
+  const hasZstd = spawnSync("zstd", ["--version"], { stdio: "ignore" }).status === 0;
+  const extension = hasZstd ? "tar.zst" : "tar.gz";
+  const archivePath = path.join(archiveRoot, `${name}-${ts}.${extension}`);
+  // What an install or a build recreates is not worth archiving: a 13 GB task folder (three
+  // repo copies with node_modules) never fit the timeout, an archive without it is ~0.5 GB.
+  // Only build and dependency dirs that git reports as ignored are left out, as exact paths
+  // (--anchored, --no-wildcards: a name with `*` or `[` matches literally, nowhere else).
+  // Unpushed commits (.git), working files and anything git does not ignore stay in.
+  const excludes = ["--no-wildcards", "--anchored", ...archiveExcludes(clonePath)];
+  // Per-archive limit, 10 min by default. The test hook is the env var (finite, > 0).
+  const envTimeoutS = Number(process.env.HOST_GC_ARCHIVE_TIMEOUT_SECONDS);
+  const timeoutS = Number.isFinite(envTimeoutS) && envTimeoutS > 0 ? envTimeoutS : 600;
+  // `timeout` kills the whole pipeline (tar and zstd included) when the time is up, so no orphan keeps
+  // writing into a file we delete; spawnSync's own limit is only a backstop for `timeout` itself.
+  const limit = ["--kill-after=10s", `${timeoutS}s`];
+  const spawnOpts = { timeout: (timeoutS + 30) * 1000 };
+  let result;
+  let verify;
+  if (hasZstd) {
+    // Prefer zstd, but do not make archival depend on an optional host binary.
+    // pipefail: a failing tar must not be masked by zstd's exit code. Paths go in as arguments, not into the script text.
+    result = spawnSync("timeout", [...limit, "bash", "-c", `set -o pipefail; tar -cf - "\${@:4}" -C "$1" "$2" | zstd -q -o "$3"`, "archive", path.dirname(clonePath), name, archivePath, ...excludes], spawnOpts);
+    verify = ["bash", ["-c", `zstd -q -d -c "${archivePath}" | tar -tf - > /dev/null`]];
+  } else {
+    result = spawnSync("timeout", [...limit, "tar", "-czf", archivePath, ...excludes, "-C", path.dirname(clonePath), name], spawnOpts);
+    verify = ["tar", ["-tzf", archivePath]];
+  }
+  if (result.status !== 0) {
+    // A failed run leaves a partial archive of 1-2 GB behind on every pass; remove exactly this file.
+    fs.rmSync(archivePath, { force: true });
+    // stderr is often empty (a killed or timed-out child), so say why in words.
+    // 124 = `timeout` fired; 137 = it had to KILL the pipeline after --kill-after.
+    const timedOut = result.error?.code === "ETIMEDOUT" || result.status === 124 || result.status === 137;
+    const reason = timedOut
+      ? `timed out after ${timeoutS} s`
+      : `exit code ${result.status}, signal ${result.signal}${result.error ? `, error ${result.error.message}` : ""}`;
+    throw new Error(`archive failed for ${clonePath}: ${reason}: ${String(result.stderr ?? "").trim()}`);
+  }
+  const verification = spawnSync(verify[0], verify[1], { timeout: 60000, stdio: "ignore" });
+  if (verification.status !== 0) {
+    fs.rmSync(archivePath, { force: true });
+    throw new Error(`archive verification failed for ${archivePath}`);
+  }
+  return archivePath;
+}
+
 
 // --- Main -------------------------------------------------------------------
 
@@ -1807,11 +1944,9 @@ async function main() {
       });
     }
     for (const c of cloneStatuses.candidates) {
-      // A nested repository may be ignored by its parent and contain unpublished work.
-      if (archiveRepos(c.path).some((repo) => repo !== c.path)) {
-        plan.kept.push({ ...c, action: "keep", reason: "nested-repository" });
-        journalRecord(args.journal, { event: "clone-skipped", path: c.path, reason: "nested-repository" });
-      } else if (c.safeToRemove) {
+      // A nested repository may be ignored by its parent and contain unpublished work:
+      // archiveClone handles every git root of the clone on its own.
+      if (c.safeToRemove && !archiveRepos(c.path).some((repo) => repo !== c.path)) {
         plan.clones.push({ ...c, action: "remove" });
       } else {
         plan.clones.push({ ...c, action: "archive-remove" });
@@ -2057,7 +2192,14 @@ async function main() {
       const archiveRoot = path.join(root, ".gc-archive");
       for (const c of plan.clones.filter((x) => x.action === "archive-remove")) {
         try {
-          const archivePath = archiveClone(c.path, archiveRoot);
+          const archivePath = archiveClone(c.path, archiveRoot, args.journal);
+          if (!archivePath) {
+            // Everything is pushed (every git root): nothing to keep.
+            atomicDrop(c.path, root);
+            plan.removed.push({ path: c.path });
+            journalRecord(args.journal, { event: "clone-removed", path: c.path, reason: "all-pushed" });
+            continue;
+          }
           journalRecord(args.journal, { event: "clone-archived", path: c.path, archive: archivePath, sizeBytes: c.sizeBytes });
           atomicDrop(c.path, root);
           plan.archived.push({ path: c.path, archive: archivePath });
@@ -2157,7 +2299,14 @@ async function main() {
       // be proven, plain removal for clean closed ones; both guarded against the runner root.
       for (const f of plan.runnerTaskFolders.filter((x) => x.action === "archive-remove")) {
         try {
-          const archivePath = archiveClone(f.path, path.join(f.runnersRoot, ".gc-archive"));
+          const archivePath = archiveClone(f.path, path.join(f.runnersRoot, ".gc-archive"), args.journal);
+          if (!archivePath) {
+            atomicDrop(f.path, f.runnersRoot);
+            plan.removed.push({ path: f.path });
+            journalRecord(args.journal, { event: "runner-task-folder-removed", path: f.path, reason: "all-pushed", runner: f.runner, ageHours: Math.round(f.ageMs / HOUR_MS) });
+            runnerTaskFoldersRemoved++;
+            continue;
+          }
           journalRecord(args.journal, { event: "runner-task-folder-archived", path: f.path, archive: archivePath, reason: f.reason });
           atomicDrop(f.path, f.runnersRoot);
           plan.archived.push({ path: f.path, archive: archivePath });

@@ -159,26 +159,67 @@ describe("host-clone-cache-gc e2e", () => {
     assert.ok(!fs.existsSync(archiveRoot) || fs.readdirSync(archiveRoot).length === 0);
   });
 
-  it("keeps a closed clone when a nested repository has unpublished work", async () => {
+  // Gives a clone a bare remote and pushes HEAD, so "pushed" is real.
+  const pushToOwnRemote = (clone, name) => {
+    const remote = path.join(tmpDir, `${name}.git`);
+    assert.equal(spawnSync("git", ["init", "--bare", remote]).status, 0);
+    for (const args of [["remote", "add", "origin", remote], ["push", "-u", "origin", "HEAD"]]) {
+      const r = spawnSync("git", args, { cwd: clone, encoding: "utf8" });
+      assert.equal(r.status, 0, r.stderr);
+    }
+  };
+  const readJournal = (file) => fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+
+  it("archives the unpublished work of a nested repository next to the parent, then removes the clone", async () => {
     const root = path.join(tmpDir, "root");
     fs.mkdirSync(root);
     const clone = makeGitClone(path.join(root, "OPE-12345"));
-    const git = (...args) => {
-      const result = spawnSync("git", args, { cwd: clone, encoding: "utf8" });
-      assert.equal(result.status, 0, result.stderr);
-    };
-    const remote = path.join(tmpDir, "remote.git");
-    assert.equal(spawnSync("git", ["init", "--bare", remote]).status, 0);
-    git("remote", "add", "origin", remote);
-    git("push", "-u", "origin", "HEAD");
-    git("config", "core.excludesFile", path.join(tmpDir, "global-ignore"));
-    fs.writeFileSync(path.join(tmpDir, "global-ignore"), "nested/\n");
+    // The parent ignores the nested repo: only the nested pass can save its work.
+    fs.writeFileSync(path.join(clone, ".gitignore"), "nested/\n");
+    spawnSync("git", ["add", ".gitignore"], { cwd: clone });
+    spawnSync("git", ["commit", "-m", "ignore nested"], { cwd: clone });
+    pushToOwnRemote(clone, "parent-remote");
     const nested = makeGitClone(path.join(clone, "nested"));
+    fs.writeFileSync(path.join(nested, "wip.txt"), "uncommitted nested work");
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    fs.utimesSync(clone, old, old);
+    const journal = path.join(tmpDir, "gc.jsonl");
+    const r = await runScript(["--root", root, "--lock", path.join(tmpDir, "gc.lock"), "--journal", journal, "--apply"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(fs.existsSync(clone), false, "clone removed after its nested work was archived");
+    const archives = fs.readdirSync(path.join(root, ".gc-archive"));
+    assert.equal(archives.length, 1);
+    const extracted = path.join(tmpDir, "extracted-nested");
+    fs.mkdirSync(extracted);
+    assert.equal(spawnSync("tar", ["-xf", path.join(root, ".gc-archive", archives[0]), "-C", extracted]).status, 0);
+    const heads = spawnSync("git", ["bundle", "list-heads", path.join(extracted, "repos", "nested", "unpublished.bundle")], { encoding: "utf8" });
+    assert.equal(heads.status, 0, heads.stderr);
+    const untracked = spawnSync("tar", ["-tf", path.join(extracted, "repos", "nested", "untracked.tar")], { encoding: "utf8" });
+    assert.match(untracked.stdout, /wip\.txt/);
+    assert.ok(!fs.existsSync(path.join(extracted, "unpublished.bundle")), "the pushed parent adds no bundle");
+    const manifest = JSON.parse(fs.readFileSync(path.join(extracted, "manifest.json"), "utf8"));
+    assert.deepEqual(manifest.repos.map((x) => x.path), ["nested"]);
+    assert.ok(fs.statSync(path.join(root, ".gc-archive", archives[0])).size < 1_000_000, "compact archive");
+    assert.ok(!readJournal(journal).some((e) => e.event === "archive-full-fallback"));
+  });
+
+  it("makes no archive when the clone and its nested repository are fully pushed", async () => {
+    const root = path.join(tmpDir, "root");
+    fs.mkdirSync(root);
+    const clone = makeGitClone(path.join(root, "OPE-12347"));
+    fs.writeFileSync(path.join(clone, ".gitignore"), "nested/\n");
+    spawnSync("git", ["add", ".gitignore"], { cwd: clone });
+    spawnSync("git", ["commit", "-m", "ignore nested"], { cwd: clone });
+    pushToOwnRemote(clone, "all-parent");
+    const nested = makeGitClone(path.join(clone, "nested"));
+    pushToOwnRemote(nested, "all-nested");
     const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
     fs.utimesSync(clone, old, old);
     const r = await runScript(["--root", root, "--lock", path.join(tmpDir, "gc.lock"), "--journal", path.join(tmpDir, "gc.jsonl"), "--apply"]);
     assert.equal(r.status, 0, r.stderr);
-    assert.ok(fs.existsSync(nested), "unsafe nested repository must not be deleted");
+    assert.equal(fs.existsSync(clone), false, "pushed clone removed");
+    const archiveRoot = path.join(root, ".gc-archive");
+    assert.ok(!fs.existsSync(archiveRoot) || fs.readdirSync(archiveRoot).length === 0, "nothing worth archiving");
   });
 
   it("preserves unpublished commits on a non-current branch", async () => {

@@ -1801,6 +1801,8 @@ describe("runner task folders", () => {
     const aged = new Date(Date.now() - 30 * HOUR);
     fs.utimesSync(folder, aged, aged);
     const listing = await archiveListing(runners, "OPE-9303");
+    const gcJournal = fs.readFileSync(path.join(tmpDir, "gc-task.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.ok(gcJournal.some((e) => e.event === "archive-full-fallback" && e.path === folder), "the compact-archive blocker is journaled");
     for (const sub of ["plain", "broken"]) {
       assert.ok(listing.includes(`OPE-9303/${sub}/node_modules/x/y.js`), `${sub}: node_modules archived`);
       assert.ok(listing.includes(`OPE-9303/${sub}/dist/out.js`), `${sub}: dist archived`);
