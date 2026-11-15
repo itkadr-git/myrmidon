@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { issues, projects, type Db } from "@myrmidon/db";
+import { issues, issueRelations, projects, type Db } from "@myrmidon/db";
 
 // Opt-in per project: other board processes retain their existing release path.
 export function devProcessProjectIds(env: NodeJS.ProcessEnv = process.env): Set<string> {
@@ -105,6 +105,14 @@ export interface DevReviewReleaseContext {
   enabledProjects?: ReadonlySet<string>;
 }
 
+async function openReleaseEpics(db: Db, companyId: string, projectId: string): Promise<Array<{ id: string; identifier: string; title: string }>> {
+  const rows = await db.select({ id: issues.id, identifier: issues.identifier, title: issues.title })
+    .from(issues)
+    .innerJoin(projects, and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
+    .where(and(eq(issues.companyId, companyId), eq(issues.projectId, projectId), eq(issues.status, "todo")));
+  return rows.filter((row) => row.identifier && /epic/i.test(row.title));
+}
+
 export async function tryDevReviewContinuationOnRelease(ctx: DevReviewReleaseContext): Promise<boolean> {
   const enabledProjects = ctx.enabledProjects ?? devProcessProjectIds();
   if (enabledProjects.size === 0) return false;
@@ -125,6 +133,7 @@ export async function tryDevReviewContinuationOnRelease(ctx: DevReviewReleaseCon
     signalLead: async (source, engineerId) => {
       const [project] = await ctx.db.select({ leadAgentId: projects.leadAgentId }).from(projects)
         .where(and(eq(projects.id, source.projectId!), eq(projects.companyId, source.companyId))).limit(1);
+      const epics = await openReleaseEpics(ctx.db, source.companyId, source.projectId!);
       if (ctx.logActivity) {
         await ctx.logActivity(ctx.db, {
           companyId: source.companyId, actorType: "system", actorId: "dev_review_continuation",
@@ -137,11 +146,11 @@ export async function tryDevReviewContinuationOnRelease(ctx: DevReviewReleaseCon
       await ctx.enqueueWakeup(project.leadAgentId, {
         source: "automation", triggerDetail: "system", reason: "dev_project_queue_empty",
         idempotencyKey: `dev-review-empty:${ctx.currentRunId}`,
-        payload: { issueId: source.id, projectId: source.projectId, engineerId },
+        payload: { issueId: source.id, projectId: source.projectId, engineerId, openEpics: epics },
         contextSnapshot: {
           issueId: source.id, projectId: source.projectId, engineerId,
           wakeReason: "dev_project_queue_empty",
-          message: "Инженер сдал задачу на ревью; нарежьте следующую часть открытой эпики проекта и назначьте готовые задачи в очередь. Проверьте очередь и ограничения допуска.",
+          message: `Инженер сдал задачу на ревью; нарежьте следующую часть открытой эпики проекта и добавьте задачи в очередь. Открытые эпики выпуска: ${epics.map((epic) => `${epic.identifier}: ${epic.title}`).join("; ") || "не найдены"}.`,
         },
       });
     },
