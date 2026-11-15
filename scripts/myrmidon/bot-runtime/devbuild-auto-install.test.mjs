@@ -15,13 +15,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, rmSync, symlinkSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 const DEVBUILD = path.resolve("docker/bot-runtime/devbuild/devbuild");
 
-function makeHarness({ nodeModules = false, marker = true, packageJson = true, lockfile = true } = {}) {
+function makeHarness({ nodeModules = false, marker = true, packageJson = true, lockfile = true, noFlock = false, destMissing = false } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "devbuild-auto-install-"));
   const bin = path.join(root, "bin");
   const ws = path.join(root, "workspace");
@@ -67,8 +67,17 @@ function makeHarness({ nodeModules = false, marker = true, packageJson = true, l
       { mode: 0o755 },
     );
   }
+  // noFlock: a PATH with only the stubs and the tools the script needs, no
+  // `flock`, so the remote function takes the mkdir-lock fallback.
+  if (noFlock) {
+    for (const t of ["mkdir", "rmdir", "rm", "sleep", "touch", "find", "id", "tr", "cut", "sha256sum", "grep", "dirname", "basename", "chmod", "cat", "bash", "sh"]) {
+      const src = ["/usr/bin/", "/bin/"].map((d) => d + t).find((f) => existsSync(f));
+      if (src) symlinkSync(src, path.join(bin, t));
+    }
+  }
+  if (destMissing) rmSync(dest, { recursive: true, force: true });
   const env = {
-    PATH: `${bin}:/usr/bin:/bin`,
+    PATH: noFlock ? bin : `${bin}:/usr/bin:/bin`,
     HOME: root,
     TMPDIR: root,
     DEVBUILD_HOST: "build.example.invalid",
@@ -82,12 +91,12 @@ function makeHarness({ nodeModules = false, marker = true, packageJson = true, l
 }
 
 function run(h, command, extraEnv = {}) {
-  return spawnSync("bash", [DEVBUILD, command], { env: { ...h.env, ...extraEnv }, encoding: "utf8" });
+  return spawnSync("/bin/bash", [DEVBUILD, command], { env: { ...h.env, ...extraEnv }, encoding: "utf8" });
 }
 
 function runAsync(h, command) {
   return new Promise((resolve) => {
-    const child = spawn("bash", [DEVBUILD, command], { env: h.env });
+    const child = spawn("/bin/bash", [DEVBUILD, command], { env: h.env });
     let stderr = "";
     child.stderr.on("data", (c) => (stderr += c));
     child.on("close", (status) => resolve({ status, stderr }));
@@ -200,6 +209,40 @@ test("two parallel calls on one copy: one install, both commands run after it", 
   const lines = callLines(h);
   assert.equal(lines.filter((l) => l.startsWith("pnpm install")).length, 1, lines.join("\n"));
   assert.deepEqual(lines.filter((l) => l.startsWith("vitest")).sort(), ["vitest run a nm=yes", "vitest run b nm=yes"]);
+});
+
+test("a missing copy directory: the command does not run in the login directory, the exit code is not 0", () => {
+  for (const cmd of ["vitest run", "go test ./..."]) {
+    const h = makeHarness({ destMissing: true });
+    const r = run(h, cmd);
+    assert.notEqual(r.status, 0, r.stderr);
+    assert.deepEqual(callLines(h), []);
+  }
+});
+
+test("mkdir-lock fallback (no flock): installs once and releases the lock, also after a failed install", () => {
+  const h = makeHarness({ noFlock: true });
+  const r = run(h, "vitest run");
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(callLines(h), [INSTALL, "vitest run nm=yes"]);
+  assert.ok(!existsSync(path.join(h.dest, ".devbuild-install.lock.d")), "lock directory released");
+  const f = makeHarness({ noFlock: true });
+  const rf = run(f, "vitest run", { PNPM_FAIL_RC: "7" });
+  assert.equal(rf.status, 7, rf.stderr);
+  assert.ok(!existsSync(path.join(f.dest, ".devbuild-install.lock.d")), "lock directory released after a failure");
+});
+
+test("mkdir-lock fallback: a stale lock (older than 30 min) is removed with a note, the install proceeds", () => {
+  const h = makeHarness({ noFlock: true });
+  const lock = path.join(h.dest, ".devbuild-install.lock.d");
+  mkdirSync(lock);
+  const old = new Date(Date.now() - 60 * 60 * 1000);
+  utimesSync(lock, old, old);
+  const r = run(h, "vitest run");
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /removing a stale install lock/);
+  assert.deepEqual(callLines(h), [INSTALL, "vitest run nm=yes"]);
+  assert.ok(!existsSync(lock));
 });
 
 test("help documents DEVBUILD_NO_AUTO_INSTALL", () => {

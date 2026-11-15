@@ -386,12 +386,19 @@ devbuild_ensure_install() {
   fi
   devbuild_n=0
   until mkdir "$devbuild_lock.d" 2>/dev/null; do
+    if [ -n "$(find "$devbuild_lock.d" -maxdepth 0 -mmin +30 2>/dev/null)" ]; then
+      echo "devbuild: removing a stale install lock (older than 30 min): $devbuild_lock.d" >&2
+      rmdir "$devbuild_lock.d" 2>/dev/null
+      continue
+    fi
     devbuild_n=$((devbuild_n + 1))
-    if [ "$devbuild_n" -gt 600 ]; then echo "devbuild: waited 10 min for another install in this copy (remove $devbuild_lock.d if no install runs)" >&2; return 1; fi
+    if [ "$devbuild_n" -gt 600 ]; then echo "devbuild: waited 10 min for another install in this copy" >&2; return 1; fi
     sleep 1
   done
+  trap 'rmdir "$devbuild_lock.d" 2>/dev/null' EXIT
   devbuild_install_run; devbuild_rc=$?
-  rmdir "$devbuild_lock.d"
+  trap - EXIT
+  rmdir "$devbuild_lock.d" 2>/dev/null
   return $devbuild_rc
 }
 INSTALLFN
@@ -402,5 +409,10 @@ fi
 
 # Run the command remotely, with the shared caches exported and the cwd at
 # the repo root. ssh propagates the remote command's exit status as its own.
+# The remote text is several lines (the install functions): `cd` is its own
+# first line with an explicit exit, so a missing copy never runs the command in
+# the login directory.
 ssh "${SSH_OPTS[@]}" "$DEVBUILD_USER@$DEVBUILD_HOST" \
-  "cd '$dest_root' && export npm_config_store_dir='$DEVBUILD_CACHES/pnpm' GOMODCACHE='$DEVBUILD_CACHES/go-mod' GOCACHE='$DEVBUILD_CACHES/go-build' GRADLE_USER_HOME='$DEVBUILD_CACHES/gradle' && ${install_step}$command_to_run"
+  "cd '$dest_root' || exit 1
+export npm_config_store_dir='$DEVBUILD_CACHES/pnpm' GOMODCACHE='$DEVBUILD_CACHES/go-mod' GOCACHE='$DEVBUILD_CACHES/go-build' GRADLE_USER_HOME='$DEVBUILD_CACHES/gradle' || exit 1
+${install_step}$command_to_run"
