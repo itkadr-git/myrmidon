@@ -262,6 +262,7 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
       issueId: submittedId,
       projectId,
       engineerId,
+      openEpics: [],
     });
   });
 

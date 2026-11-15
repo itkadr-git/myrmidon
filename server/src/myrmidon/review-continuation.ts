@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { issues, issueRelations, projects, type Db } from "@myrmidon/db";
+import { issues, projects, type Db } from "@myrmidon/db";
 
 // Opt-in per project: other board processes retain their existing release path.
 export function devProcessProjectIds(env: NodeJS.ProcessEnv = process.env): Set<string> {
@@ -110,7 +110,9 @@ async function openReleaseEpics(db: Db, companyId: string, projectId: string): P
     .from(issues)
     .innerJoin(projects, and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
     .where(and(eq(issues.companyId, companyId), eq(issues.projectId, projectId), eq(issues.status, "todo")));
-  return rows.filter((row) => row.identifier && /epic/i.test(row.title));
+  return rows.flatMap((row) => row.identifier && /epic/i.test(row.title)
+    ? [{ ...row, identifier: row.identifier }]
+    : []);
 }
 
 export async function tryDevReviewContinuationOnRelease(ctx: DevReviewReleaseContext): Promise<boolean> {

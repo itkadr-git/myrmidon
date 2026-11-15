@@ -145,6 +145,9 @@ describe("tryDevReviewContinuationOnRelease integration", () => {
     const mockDb = {
       select: vi.fn().mockImplementation((fields) => ({
         from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ id: "epic-a", identifier: "DEV-1", title: "Epic 1.6.9" }]),
+          }),
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockImplementation(() => {
               if (fields?.leadAgentId !== undefined) {
@@ -181,8 +184,8 @@ describe("tryDevReviewContinuationOnRelease integration", () => {
       "lead-agent-1",
       expect.objectContaining({
         reason: "dev_project_queue_empty",
-        payload: { issueId: "issue-a", projectId: "project-a", engineerId: "engineer-a" },
-        contextSnapshot: expect.objectContaining({ message: expect.stringContaining("нарежьте следующую часть") }),
+        payload: { issueId: "issue-a", projectId: "project-a", engineerId: "engineer-a", openEpics: [{ id: "epic-a", identifier: "DEV-1", title: "Epic 1.6.9" }] },
+        contextSnapshot: expect.objectContaining({ message: expect.stringMatching(/нарежьте следующую часть.*DEV-1: Epic 1\.6\.9/) }),
       }),
     );
     expect(logActivity).toHaveBeenCalledWith(
