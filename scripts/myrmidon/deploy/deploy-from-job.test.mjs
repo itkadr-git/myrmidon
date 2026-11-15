@@ -351,6 +351,19 @@ esac
     ]);
   });
 
+  it("does not replay a job whose intent was recorded before its report was written", () => {
+    const sb = sandbox({ job: { id: JOB_ID, status: "running", digest: NEW } });
+    const state = path.join(sb.dir, "state");
+    fs.mkdirSync(state, { recursive: true });
+    fs.writeFileSync(path.join(state, "release-events.jsonl"), `${JSON.stringify({ event: "deploy.intent", jobId: JOB_ID, digest: NEW, status: "planned" })}\n`);
+    const { out } = run(sb, ["--once"]);
+    assert.equal(report(sb).phase, "error", out);
+    assert.match(report(sb).detail, /reconcil/i);
+    assert.doesNotMatch(calls(sb), /docker pull/);
+    const events = read(path.join(state, "release-events.jsonl")).trim().split("\n");
+    assert.equal(events.length, 1);
+  });
+
   it("does not replay an interrupted switch or rollback without reconciliation", () => {
     for (const phase of ["switching", "rolling-back"]) {
       const sb = sandbox({ job: { id: JOB_ID, status: "running", digest: NEW } });
