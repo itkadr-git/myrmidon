@@ -243,6 +243,57 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockSsh.hasExecuted(/restore-myrmidon-password-config/)).toBe(true);
   });
 
+  it("reports a failed password configuration restoration instead of claiming rollback succeeded", async () => {
+    const mockSsh = new MockSshExecutor();
+    mockSsh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
+    mockSsh.mockResponse("sudo sshd -t", { exitCode: 1, stderr: "invalid configuration" });
+    mockSsh.mockResponse(/restore-myrmidon-password-config/, { exitCode: 1, stderr: "restore failed" });
+    const executor = new FleetOnboardExecutor({
+      createSshExecutor: () => mockSsh,
+      generateKeyPair: () => ({ publicKey: "ssh-ed25519 test", privateKey: "private-key" }),
+    });
+    const mockReporter = createMockReporter();
+    const claim: any = {
+      job: { id: "job-restore-failure", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["access"], options: { keepPassword: false },
+      secretValues: { bootstrapPassword: "pass" },
+    };
+    const result = await executor.execute(claim, mockReporter.reporter);
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("configuration restoration failed");
+    expect(mockReporter.completion?.status).toBe("failed");
+  });
+
+  it("restores the password configuration when the post-reload SSH check fails", async () => {
+    const initial = new MockSshExecutor();
+    const verified = new MockSshExecutor();
+    const fresh = new MockSshExecutor();
+    verified.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
+    fresh.mockResponse('echo "myrmidon-key-verify"', { stdout: "forged-myrmidon-key-verify\n", exitCode: 0 });
+    const connections = [initial, verified, fresh];
+    const executor = new FleetOnboardExecutor({
+      createSshExecutor: () => {
+        const connection = connections.shift();
+        if (!connection) throw new Error("Unexpected SSH connection");
+        return connection;
+      },
+      generateKeyPair: () => ({ publicKey: "ssh-ed25519 test", privateKey: "private-key" }),
+    });
+    const mockReporter = createMockReporter();
+    const claim: any = {
+      job: { id: "job-post-reload", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["access"], options: { keepPassword: false },
+      secretValues: { bootstrapPassword: "pass" },
+    };
+    const result = await executor.execute(claim, mockReporter.reporter);
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("SSH verification after password hardening failed");
+    expect(verified.hasExecuted(/restore-myrmidon-password-config/)).toBe(true);
+    expect(mockReporter.completion?.status).toBe("failed");
+  });
+
   it("rejects an invalid SSH port before issuing firewall commands", async () => {
     const mockSsh = new MockSshExecutor();
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => mockSsh });
