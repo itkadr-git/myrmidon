@@ -136,6 +136,46 @@ describe("host-clone-cache-gc e2e", () => {
     assert.equal(fs.existsSync(clone), false);
   });
 
+  it("preserves an unpushed commit in a small bundle without archiving the clone", async () => {
+    const root = path.join(tmpDir, "root");
+    fs.mkdirSync(root);
+    const clone = makeGitClone(path.join(root, "OPE-12346"), { ageHours: 25 });
+    const git = (...args) => {
+      const result = spawnSync("git", args, { cwd: clone, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      return result.stdout.trim();
+    };
+    const remote = path.join(tmpDir, "remote.git");
+    assert.equal(spawnSync("git", ["init", "--bare", remote]).status, 0);
+    git("remote", "add", "origin", remote);
+    git("push", "-u", "origin", "HEAD");
+    fs.writeFileSync(path.join(clone, "change.txt"), "unpublished work\n");
+    git("add", "change.txt");
+    git("commit", "-m", "unpushed");
+    const commit = git("rev-parse", "HEAD");
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    fs.utimesSync(clone, old, old);
+
+    const r = await runScript(["--root", root, "--lock", path.join(tmpDir, "gc.lock"), "--journal", path.join(tmpDir, "gc.jsonl"), "--apply"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(fs.existsSync(clone), false);
+    const archives = fs.readdirSync(path.join(root, ".gc-archive"));
+    assert.equal(archives.length, 1);
+    const archive = path.join(root, ".gc-archive", archives[0]);
+    assert.ok(fs.statSync(archive).size < 10 * 1024 * 1024);
+    const listing = spawnSync("tar", ["-tf", archive], { encoding: "utf8" });
+    assert.equal(listing.status, 0, listing.stderr);
+    assert.match(listing.stdout, /\.bundle$/m);
+    assert.doesNotMatch(listing.stdout, /(?:^|\/)\.git\//m);
+    const extracted = path.join(tmpDir, "extracted");
+    fs.mkdirSync(extracted);
+    assert.equal(spawnSync("tar", ["-xf", archive, "-C", extracted]).status, 0);
+    const bundleName = listing.stdout.split("\n").find((name) => name.endsWith(".bundle"));
+    const heads = spawnSync("git", ["bundle", "list-heads", path.join(extracted, bundleName)], { encoding: "utf8" });
+    assert.equal(heads.status, 0, heads.stderr);
+    assert.match(heads.stdout, new RegExp(commit));
+  });
+
   it("apply archives dirty clones before removal", async () => {
     const root = path.join(tmpDir, "root");
     fs.mkdirSync(root);
