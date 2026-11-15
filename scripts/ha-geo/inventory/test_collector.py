@@ -3,6 +3,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from shutil import _ntuple_diskusage as shutil_disk_usage
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -198,6 +199,13 @@ class CollectorTests(unittest.TestCase):
         self.assertNotIn('path', report['disk'])
         self.assertEqual(report['disk']['status'], 'ok')
         self.assertGreater(report['disk']['total_bytes'], 0)
+
+    def test_disk_reports_used_capacity(self):
+        with patch.object(collector.shutil, 'disk_usage', return_value=shutil_disk_usage(1000, 600, 400)):
+            disk = collector.collect()['disk']
+        self.assertEqual(disk['used_bytes'], 600)
+        self.assertEqual(disk['free_bytes'], 400)
+        self.assertEqual(disk['total_bytes'], 1000)
 
     def test_disk_path_does_not_leak_sensitive_input(self):
         from tempfile import TemporaryDirectory
