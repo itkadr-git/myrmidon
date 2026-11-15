@@ -45,6 +45,8 @@ export const DATA_RETENTION_DEFAULT_ACTIVITY_LOG_DAYS = 90;
 export const DATA_RETENTION_ACCESS_AUDIT_DEFAULT_DAYS = 180;
 export const DATA_RETENTION_SECRET_ACCESS_DEFAULT_DAYS = 30;
 export const DATA_RETENTION_LITELLM_COST_EVENTS_DEFAULT_DAYS = 30;
+/** Archived execution_workspaces rows are deleted this many days after they were closed. */
+export const DATA_RETENTION_EXECUTION_WORKSPACES_ARCHIVED_DAYS = 90;
 
 /** A retention value: whole days >= 0; 0 means "keep forever". */
 const retentionDaysSchema = z.number().int().min(0);
@@ -199,7 +201,8 @@ const lastRunSchema = z.object({
     activity: tableStatusSchema,
     access: tableStatusSchema,
     litellmCostEvents: tableStatusSchema,
-    executionWorkspaces: tableStatusSchema,
+    // Older stored state has no executionWorkspaces entry; keep the other counters.
+    executionWorkspaces: tableStatusSchema.default({ deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 }),
   }),
 });
 

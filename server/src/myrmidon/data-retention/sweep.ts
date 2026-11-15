@@ -95,6 +95,7 @@
 import { sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
+  DATA_RETENTION_EXECUTION_WORKSPACES_ARCHIVED_DAYS,
   HEARTBEAT_RUN_STATUSES,
   emptyDataRetentionLastRun,
   type DataRetentionLastRun,
@@ -489,6 +490,76 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
     return { deleted, freedBytes };
   }
 
+  // Shared project-primary rows point at the project checkout, so a task needs
+  // exactly one. Archive what the run path left behind before the delete group
+  // runs: (1) all but one open row per company, project and source task, keeping
+  // the row a task is bound to, then the most recently used one; (2) open rows
+  // whose source task is already done or cancelled. Rows touched within the last
+  // hour are left alone so a run that is starting now keeps its row. Batches run
+  // as their own short transactions, like the delete batches.
+  async function archiveSurplusExecutionWorkspaces(): Promise<void> {
+    const steps = [
+      (batch: number) => sql`
+        UPDATE execution_workspaces w
+        SET status = 'archived', closed_at = now(), cleanup_eligible_at = COALESCE(w.cleanup_eligible_at, now()),
+            cleanup_reason = 'duplicate_shared_workspace', updated_at = now()
+        WHERE w.id IN (
+          SELECT r.id FROM (
+            SELECT e.id, e.last_used_at,
+              row_number() OVER (
+                PARTITION BY e.company_id, e.project_id, e.source_issue_id
+                ORDER BY EXISTS (SELECT 1 FROM issues i WHERE i.execution_workspace_id = e.id) DESC,
+                         e.last_used_at DESC, e.id DESC
+              ) AS rn
+            FROM execution_workspaces e
+            WHERE e.mode = 'shared_workspace' AND e.strategy_type = 'project_primary'
+              AND e.status IN ('active', 'idle', 'in_review') AND e.closed_at IS NULL
+              AND e.source_issue_id IS NOT NULL
+          ) r
+          WHERE r.rn > 1 AND r.last_used_at < now() - interval '1 hour'
+          LIMIT ${batch}
+        )
+        RETURNING w.id`,
+      (batch: number) => sql`
+        UPDATE execution_workspaces w
+        SET status = 'archived', closed_at = now(), cleanup_eligible_at = COALESCE(w.cleanup_eligible_at, now()),
+            cleanup_reason = 'issue_terminal', updated_at = now()
+        WHERE w.id IN (
+          SELECT e.id FROM execution_workspaces e
+          WHERE e.mode = 'shared_workspace' AND e.strategy_type = 'project_primary'
+            AND e.status IN ('active', 'idle', 'in_review') AND e.closed_at IS NULL
+            AND e.last_used_at < now() - interval '1 hour'
+            AND EXISTS (
+              SELECT 1 FROM issues s
+              WHERE s.id = e.source_issue_id AND s.status IN ('done', 'cancelled')
+            )
+          LIMIT ${batch}
+        )
+        RETURNING w.id`,
+    ];
+    for (const step of steps) {
+      let batchSize = DATA_RETENTION_DELETE_BATCH_SIZE;
+      for (let batch = 0; batch < DATA_RETENTION_MAX_BATCHES; batch++) {
+        try {
+          const archived = await deps.db.transaction(async (tx) => {
+            await tx.execute(
+              sql.raw(`SET LOCAL statement_timeout = ${DATA_RETENTION_STATEMENT_TIMEOUT_MS}`),
+            );
+            return (await tx.execute(step(batchSize))) as unknown as unknown[];
+          });
+          if (archived.length < batchSize) break;
+        } catch (err) {
+          if (!isDeleteBlockedError(err)) throw err;
+          if (batchSize > DATA_RETENTION_MIN_BATCH_SIZE) {
+            batchSize = Math.max(DATA_RETENTION_MIN_BATCH_SIZE, Math.floor(batchSize / 2));
+            continue;
+          }
+          break;
+        }
+      }
+    }
+  }
+
   async function runGroup(
     group: { key: GroupKey; days: number },
     cutoff: string,
@@ -603,7 +674,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
       { key: "activity", days: settings.activityLogDays },
       { key: "access", days: settings.accessAuditDays },
       { key: "litellmCostEvents", days: settings.litellmCostEventsDays },
-      { key: "executionWorkspaces", days: 90 },
+      { key: "executionWorkspaces", days: DATA_RETENTION_EXECUTION_WORKSPACES_ARCHIVED_DAYS },
     ];
 
     for (const group of groups) {
@@ -614,6 +685,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
         results.access = await runAccessGroup(toolCutoff, secretCutoff);
       } else {
         if (group.days === 0) continue;
+        if (group.key === "executionWorkspaces") await archiveSurplusExecutionWorkspaces();
         results[group.key] = await runGroup(group, cutoffFor(startedAt, group.days));
       }
     }
