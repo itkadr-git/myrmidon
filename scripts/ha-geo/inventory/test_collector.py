@@ -57,6 +57,25 @@ class CollectorTests(unittest.TestCase):
         self.assertTrue(report['ci_browser_profile']['node_available'])
         self.assertFalse(report['ci_browser_profile']['pnpm_available'])
 
+    def test_login_profile_reports_effective_sshd_auth_methods_without_secret_output(self):
+        response = subprocess.CompletedProcess([], 0, stdout=(
+            'passwordauthentication no\npubkeyauthentication yes\n'
+            'kbdinteractiveauthentication yes\nhostkey /secret/path\n'), stderr='')
+        with patch.object(collector.shutil, 'which', return_value='/usr/sbin/sshd'), \
+             patch.object(collector.subprocess, 'run', return_value=response):
+            profile = collector.login_profile()
+        self.assertEqual(profile['status'], 'ok')
+        self.assertEqual(profile['sshd_authentication'], {
+            'password': False, 'public_key': True, 'keyboard_interactive': True})
+        self.assertNotIn('/secret/path', json.dumps(profile))
+
+    def test_login_profile_failed_sshd_does_not_expose_error(self):
+        with patch.object(collector.shutil, 'which', return_value='/usr/sbin/sshd'), \
+             patch.object(collector.subprocess, 'run', side_effect=OSError('secret')):
+            profile = collector.login_profile()
+        self.assertEqual(profile['status'], 'unknown')
+        self.assertNotIn('secret', json.dumps(profile))
+
     def test_ci_profile_includes_shared_memory_capacity(self):
         with patch.object(collector.os, 'statvfs') as statvfs:
             statvfs.return_value.f_frsize = 4096
