@@ -54,7 +54,11 @@ test('rejects unknown stamps, malformed manifests and malformed options', () => 
   }
 });
 
-test('accepts legacy build stamp aliases', () => {
-  const m = good(); m.env = { PAPERCLIP_BUILD_VERSION: '1.7', PAPERCLIP_BUILD_COMMIT: 'abc' };
-  assert.equal(audit(m).status, 0);
+test('requires both Myrmidon build stamps', () => {
+  for (const name of ['MYRMIDON_BUILD_VERSION', 'MYRMIDON_BUILD_COMMIT']) {
+    const m = good(); delete m.env[name];
+    const result = audit(m);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /missing or unknown build/);
+  }
 });

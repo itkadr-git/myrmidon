@@ -38,7 +38,7 @@ function audit(manifest) {
       if (typeof value !== 'string') errors.push(`env.${key} must be a string`);
     }
     for (const name of ['VERSION', 'COMMIT']) {
-      const value = env[`MYRMIDON_BUILD_${name}`] ?? env[`PAPERCLIP_BUILD_${name}`];
+      const value = env[`MYRMIDON_BUILD_${name}`];
       if (typeof value !== 'string' || !value.trim() || /^(unknown|null|undefined)$/i.test(value.trim())) errors.push(`missing or unknown build ${name.toLowerCase()} stamp`);
     }
     if (env.NODE_OPTIONS !== undefined && typeof env.NODE_OPTIONS === 'string') {
