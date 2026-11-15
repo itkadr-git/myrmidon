@@ -387,6 +387,12 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .where(and(eq(agentApiKeys.keyHash, tokenHash), isNull(agentApiKeys.revokedAt)))
       .then((rows) => rows[0] ?? null);
 
+    if (key && key.expiresAt && key.expiresAt.getTime() <= Date.now()) {
+      req.actorNoneReason = "agent_token_expired";
+      next(unauthorized("Agent API key has expired"));
+      return;
+    }
+
     if (!key) {
       const claims = verifyLocalAgentJwt(token);
       if (!claims) {
