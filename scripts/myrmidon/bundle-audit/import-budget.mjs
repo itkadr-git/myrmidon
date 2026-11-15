@@ -20,6 +20,15 @@ function tokens(source) {
           let depth = 1, start = i + 2; i += 2;
           while (i < source.length && depth) {
             if (source[i] === '\\') { i += 2; continue; }
+            if (source[i] === '"' || source[i] === "'") {
+              const innerQuote = source[i++];
+              while (i < source.length && source[i] !== innerQuote) {
+                if (source[i] === '\\') i++;
+                i++;
+              }
+              if (i < source.length) i++;
+              continue;
+            }
             if (source[i] === '{') depth++;
             if (source[i] === '}') depth--;
             i++;
