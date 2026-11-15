@@ -667,9 +667,12 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
   it("strict focus: repeated rechecks add no events, keep the retry attempt, free the lock and wake nobody", async () => {
     const { agentId, otherIssueId } = await seedFocusScenario(true);
     const run = await commentWake(agentId, otherIssueId);
+    const wakesBefore = (await db.select().from(agentWakeupRequests)).length;
     await sweep();
     const first = await runRow(run.id);
     expect(first?.status).toBe("scheduled_retry");
+    // The first deferral wakes nobody either.
+    expect((await db.select().from(agentWakeupRequests)).length).toBe(wakesBefore);
     const eventsAfterFirst = await runEventCount(run.id);
     const wakesAfterFirst = (await db.select().from(agentWakeupRequests)).length;
     const attempt = first?.scheduledRetryAttempt;

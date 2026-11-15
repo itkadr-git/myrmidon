@@ -19990,7 +19990,7 @@ export function heartbeatService(
         payload: { reason: "release_focus", scheduledRetryAt: dueAt.toISOString() },
       });
     }
-    // The wait is not execution: release the issue lock (taken again at claim)
+    // The wait is not execution: reset the issue lock (taken again at claim)
     // unless the retry kind is only valid while it owns the lock.
     const keepsIssueLock = [run.scheduledRetryReason, readNonEmptyString(context.retryReason)].some(
       (reason) =>
@@ -19998,7 +19998,36 @@ export function heartbeatService(
         reason === AI_CONNECTION_BUSY_RETRY_REASON,
     );
     if (!keepsIssueLock) {
-      await releaseIssueExecutionAndPromote(deferred, { suppressImmediateRecovery: true });
+      // A plain reset of this run's lock: no promotion of other deferred wakes
+      // (they pass the same gate on their own) and nothing that wakes an agent.
+      const issueId = readNonEmptyString(context.issueId);
+      if (issueId) {
+        await db
+          .update(issues)
+          .set({
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.companyId, deferred.companyId),
+              eq(issues.id, issueId),
+              eq(issues.executionRunId, deferred.id),
+            ),
+          );
+        await db
+          .update(issues)
+          .set({ checkoutRunId: null, updatedAt: now })
+          .where(
+            and(
+              eq(issues.companyId, deferred.companyId),
+              eq(issues.id, issueId),
+              eq(issues.checkoutRunId, deferred.id),
+            ),
+          );
+      }
     }
     return true;
   }
