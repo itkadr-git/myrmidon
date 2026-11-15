@@ -136,6 +136,14 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(report['disk']['status'], 'ok')
         self.assertGreater(report['disk']['total_bytes'], 0)
 
+    def test_disk_path_does_not_leak_sensitive_input(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory(prefix='password-fixture-secret-') as root:
+            result = subprocess.run([sys.executable, str(Path(collector.__file__)), '--disk-path', root], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(json.loads(result.stdout)['disk']['status'], 'ok')
+            self.assertNotIn('fixture-secret', result.stdout)
+
     def test_remote_socket_is_rejected(self):
         result = subprocess.run([sys.executable, str(Path(collector.__file__)), '--socket', 'example.com', '--database', 'db', '--user', 'operator'], capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
