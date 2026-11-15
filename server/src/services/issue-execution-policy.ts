@@ -1377,6 +1377,15 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         const nextStage = nextPendingStageAfter(input.policy, activeStage, approvedState);
 
         if (!nextStage) {
+          if (
+            activeStage.type !== "verify" &&
+            isReleaseTask(input.issue.title ?? null) &&
+            !input.policy.stages.some((stage) =>
+              stage.type === "verify" && approvedState.completedStageIds.includes(stage.id),
+            )
+          ) {
+            throw unprocessable("Cannot mark release task done without a completed verify execution stage.");
+          }
           patch.executionState = approvedState;
           return {
             patch,
