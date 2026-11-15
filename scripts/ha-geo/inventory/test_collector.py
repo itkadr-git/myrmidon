@@ -65,6 +65,15 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(report['ci_browser_profile']['shared_memory_bytes'], 409600)
         self.assertEqual(report['ci_browser_profile']['status'], 'incomplete')
 
+    def test_ci_profile_reports_cgroup_v2_limits_without_guessing(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as root:
+            Path(root, 'cpu.max').write_text('200000 100000\n')
+            Path(root, 'memory.max').write_text('1073741824\n')
+            profile = collector.browser_profile(root)
+        self.assertEqual(profile['cpu_quota_cores'], 2.0)
+        self.assertEqual(profile['memory_limit_bytes'], 1073741824)
+
     def test_shared_memory_unavailable_is_explicit(self):
         with patch.object(collector.os, 'statvfs', side_effect=OSError('secret detail')):
             report = collector.collect()

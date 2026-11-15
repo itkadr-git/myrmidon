@@ -53,8 +53,32 @@ def capability(name, label):
             'reason': 'binary availability does not establish configuration or service health'}
 
 
-def browser_profile():
+def browser_profile(cgroup_dir=None):
     profile = capability('chromium', 'chromium_available')
+    profile['cpu_quota_cores'] = None
+    profile['memory_limit_bytes'] = None
+    try:
+        if cgroup_dir is None:
+            with open('/proc/self/cgroup', encoding='ascii') as source:
+                entries = [line.strip().split(':', 2) for line in source]
+            relative = next(parts[2] for parts in entries if parts[:2] == ['0', ''])
+            if '..' in relative.split('/'):
+                raise ValueError('invalid cgroup path')
+            cgroup_dir = os.path.join('/sys/fs/cgroup', relative.lstrip('/'))
+        with open(os.path.join(cgroup_dir, 'cpu.max'), encoding='ascii') as source:
+            quota, period = source.read().split()
+        if quota != 'max' and int(period) > 0:
+            profile['cpu_quota_cores'] = int(quota) / int(period)
+    except (OSError, ValueError, StopIteration):
+        pass
+    try:
+        if cgroup_dir is not None:
+            with open(os.path.join(cgroup_dir, 'memory.max'), encoding='ascii') as source:
+                limit = source.read().strip()
+            if limit != 'max':
+                profile['memory_limit_bytes'] = int(limit)
+    except (OSError, ValueError):
+        pass
     for name in ('node', 'pnpm'):
         profile[name + '_available'] = shutil.which(name, path='/usr/bin:/bin:/usr/sbin:/sbin') is not None
     try:

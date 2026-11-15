@@ -27,6 +27,8 @@ checks only whether the `chromium`, `openssl` and `sshd` executables are present
 this does not identify the CI profile, configured TLS, or allowed login methods.
 The CI/browser section also reports the total size of `/dev/shm` when available;
 this is the current mount's capacity, not proof of the CI job configuration.
+When accessible, cgroup v2 CPU quota and memory limit describe this process's
+own cgroup only; null means unavailable or unlimited, not a CI job limit.
 Time synchronization is reported when `timedatectl` exposes it. Backup configuration
 is unknown; executable availability for pg_basebackup, pgbackrest and barman
 does not establish that backups are configured or healthy. The CI profile also
