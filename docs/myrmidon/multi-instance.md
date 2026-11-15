@@ -238,7 +238,7 @@ Crash handling: a dead api child is restarted on a backoff ladder (1 s,
 doubling up to 30 s). If no live api child remains for 15 seconds, the worker
 re-opens :3100 itself (*emergency return to single*) and raises the attention
 signal — the board stays up even if every child is broken. Each api child
-gets a 1 GiB heap ceiling (`--max-old-space-size`), so a runaway request
+gets a 2.5 GiB heap ceiling (`--max-old-space-size`, 2560 MB), so a runaway request
 handler cannot starve the worker.
 
 Container deploys: keep pointing the container health check at `/healthz`.
