@@ -65,12 +65,17 @@ export const SUPERVISOR_DRAIN_GRACE_MS = 30_000;
  */
 export const SUPERVISOR_READY_TIMEOUT_MS = 180_000;
 
-/** Memory ceilings per role (design §7.1; the real numbers land with П7). */
-export const SUPERVISOR_API_MAX_OLD_SPACE_MB = 1_024;
+/**
+ * Memory ceilings per role (design §7.1; the real numbers land with П7).
+ * 2560 MB: the api child's startup heap grew to about 1 GB by 2026-11-15, and a
+ * 1024 MB ceiling made production children die with OOM 10-25 s after ready;
+ * 2560 keeps a 2.5x margin over that startup size.
+ */
+export const SUPERVISOR_API_MAX_OLD_SPACE_MB = 2_560;
 /** myrmidon(OPE-10011): env override of the api child's old-space ceiling, MB. */
 export const SUPERVISOR_API_MAX_OLD_SPACE_ENV = "MYRMIDON_API_MAX_OLD_SPACE_MB";
 
-/** The api child's `--max-old-space-size`: the env override when it is 256..8192, else 1024. */
+/** The api child's `--max-old-space-size`: the env override when it is 256..8192, else 2560. */
 export function apiChildMaxOldSpaceMb(env: NodeJS.ProcessEnv = process.env): number {
   const raw = Number((env[SUPERVISOR_API_MAX_OLD_SPACE_ENV] ?? "").trim());
   return Number.isInteger(raw) && raw >= 256 && raw <= 8_192 ? raw : SUPERVISOR_API_MAX_OLD_SPACE_MB;
