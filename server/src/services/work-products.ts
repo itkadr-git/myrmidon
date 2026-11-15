@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import { heartbeatRunEvents, issueWorkProducts, workspaceRuntimeServices } from "@myrmidon/db";
 import type { IssueWorkProduct } from "@myrmidon/shared";
@@ -98,6 +98,43 @@ export async function refreshPullRequestWorkProductMetadata(
       return product;
     }
   }));
+}
+
+/**
+ * What the GitHub webhook needs to find a pull_request work product: `externalId`
+ * as `<owner>/<repo>#pull/<number>` and `metadata.repo` / `repository` / `number`
+ * (the shape `linkPullRequestToIssue` writes). An agent that registers its PR by
+ * URL only leaves these empty, so the webhook never finds the row: no head
+ * change, no CI result, a second row for the same PR. Derive them from the URL
+ * (or `metadata.url`). Values the caller gave are kept. Returns null when the
+ * product is not a GitHub pull request or no PR reference can be read.
+ */
+export function deriveGithubPullRequestIdentity(input: {
+  type?: string | null;
+  provider?: string | null;
+  url?: string | null;
+  externalId?: string | null;
+  metadata?: Record<string, unknown> | null;
+}): { provider: "github"; externalId: string; metadata: Record<string, unknown> } | null {
+  if (input.type !== "pull_request" || (input.provider ?? "").toLowerCase() !== "github") return null;
+  const metadata = input.metadata ?? {};
+  const reference = extractGitHubPullRequestReferences([
+    input.url,
+    typeof metadata.url === "string" ? metadata.url : null,
+    input.externalId,
+  ])[0];
+  if (!reference) return null;
+  const repository = `${reference.owner}/${reference.repo}`;
+  return {
+    provider: "github",
+    externalId: input.externalId && input.externalId.trim() !== "" ? input.externalId : `${repository}#pull/${reference.number}`,
+    metadata: {
+      ...metadata,
+      repo: typeof metadata.repo === "string" && metadata.repo ? metadata.repo : repository,
+      repository: typeof metadata.repository === "string" && metadata.repository ? metadata.repository : repository,
+      number: typeof metadata.number === "number" && metadata.number > 0 ? metadata.number : reference.number,
+    },
+  };
 }
 
 function toIssueWorkProduct(row: IssueWorkProductRow): IssueWorkProduct {
@@ -278,7 +315,41 @@ export function workProductService(
           data = { ...data, externalId: `${repo}#pull/${number}` };
         }
       }
+      // The webhook finds a PR product by `externalId` and `metadata`; fill them from the URL.
+      const identity = deriveGithubPullRequestIdentity(data as Parameters<typeof deriveGithubPullRequestIdentity>[0]);
+      if (identity) {
+        data = { ...data, provider: identity.provider, externalId: identity.externalId, metadata: identity.metadata };
+      }
       const row = await db.transaction(async (tx) => {
+        if (identity) {
+          // The webhook may already have linked this PR to the task: update that row, no second one.
+          const existing = await tx
+            .select()
+            .from(issueWorkProducts)
+            .where(and(
+              eq(issueWorkProducts.companyId, companyId),
+              eq(issueWorkProducts.issueId, issueId),
+              eq(issueWorkProducts.type, "pull_request"),
+              eq(issueWorkProducts.provider, "github"),
+              sql`lower(${issueWorkProducts.externalId}) = lower(${identity.externalId})`,
+            ))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (existing) {
+            return await tx
+              .update(issueWorkProducts)
+              .set({
+                // What the webhook recorded (head, branch, state) wins over the agent's guess.
+                metadata: { ...identity.metadata, ...((existing.metadata as Record<string, unknown> | null) ?? {}) },
+                url: existing.url ?? data.url ?? null,
+                ...(data.createdByRunId ? { createdByRunId: data.createdByRunId } : {}),
+                updatedAt: new Date(),
+              })
+              .where(eq(issueWorkProducts.id, existing.id))
+              .returning()
+              .then((rows) => rows[0] ?? null);
+          }
+        }
         if (data.isPrimary) {
           await tx
             .update(issueWorkProducts)
@@ -324,6 +395,18 @@ export function workProductService(
                 eq(issueWorkProducts.type, existing.type),
               ),
             );
+        }
+
+        // Same as on create: an agent-registered PR gets the identity the webhook looks up.
+        const identity = deriveGithubPullRequestIdentity({
+          type: existing.type,
+          provider: patch.provider ?? existing.provider,
+          url: patch.url !== undefined ? patch.url : existing.url,
+          externalId: patch.externalId !== undefined ? patch.externalId : existing.externalId,
+          metadata: (patch.metadata !== undefined ? patch.metadata : existing.metadata) as Record<string, unknown> | null,
+        });
+        if (identity) {
+          patch = { ...patch, provider: identity.provider, externalId: identity.externalId, metadata: identity.metadata };
         }
 
         return await tx
