@@ -233,6 +233,38 @@ describe("host-clone-cache-gc e2e", () => {
     assert.match(heads.stdout, new RegExp(commit));
   });
 
+  it("preserves a stash in a compact bundle without archiving the checkout", async () => {
+    const root = path.join(tmpDir, "root");
+    fs.mkdirSync(root);
+    const clone = makeGitClone(path.join(root, "OPE-12346"));
+    const git = (...args) => {
+      const result = spawnSync("git", args, { cwd: clone, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      return result.stdout.trim();
+    };
+    const remote = path.join(tmpDir, "remote.git");
+    assert.equal(spawnSync("git", ["init", "--bare", remote]).status, 0);
+    git("remote", "add", "origin", remote);
+    git("push", "-u", "origin", "HEAD");
+    fs.writeFileSync(path.join(clone, "README.md"), "stashed work\n");
+    git("stash", "push", "-m", "save work");
+    const stash = git("rev-parse", "refs/stash");
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    fs.utimesSync(clone, old, old);
+    const r = await runScript(["--root", root, "--lock", path.join(tmpDir, "gc.lock"), "--journal", path.join(tmpDir, "gc.jsonl"), "--apply"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(fs.existsSync(clone), false);
+    const archive = path.join(root, ".gc-archive", fs.readdirSync(path.join(root, ".gc-archive"))[0]);
+    assert.ok(fs.statSync(archive).size < 10 * 1024 * 1024);
+    const extracted = path.join(tmpDir, "stash-extracted");
+    fs.mkdirSync(extracted);
+    assert.equal(spawnSync("tar", ["-xf", archive, "-C", extracted]).status, 0);
+    const heads = spawnSync("git", ["bundle", "list-heads", path.join(extracted, "unpublished.bundle")], { encoding: "utf8" });
+    assert.equal(heads.status, 0, heads.stderr);
+    assert.match(heads.stdout, new RegExp(stash));
+    assert.match(heads.stdout, /refs\/stash/);
+  });
+
   it("preserves tracked and untracked changes without archiving the checkout", async () => {
     const root = path.join(tmpDir, "root");
     fs.mkdirSync(root);
