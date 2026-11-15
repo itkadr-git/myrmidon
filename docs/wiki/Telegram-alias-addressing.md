@@ -63,12 +63,12 @@ the agent card JSON — the `telegramAliases` string array in
 { "telegramAliases": ["gip", "estimator"] }
 ```
 
-Matching when resolving a mention, in priority order:
+Matching when resolving a mention:
 
-1. exact alias (case-insensitive; the longest alias wins when one alias is
-   a prefix of another, so `@gip2` does not resolve as `@gip`),
-2. the agent's name,
-3. the agent's title.
+Names, titles, and explicit or computed aliases match case-insensitively against
+the complete token (letters, digits, underscore and hyphen). A prefix is not a
+match: `@gip2` does not resolve as `@gip` unless `gip2` is itself an alias or
+name. If multiple eligible agents match, the bridge refuses the ambiguous address.
 
 Only agents of the **same company** as the endpoint are addressable — an
 alias of another company's agent never resolves.
