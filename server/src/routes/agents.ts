@@ -557,6 +557,8 @@ export function agentRoutes(
      * then a no-op, which keeps the pre-directory behavior exactly.
      */
     casteDirectory?: AgentCasteDirectoryPort;
+    syncAgentModelAllowlist?: (input: { companyId: string; agentId: string; db: Db }) => Promise<void>;
+    onAgentModelAllowlistSyncFailure?: (input: { companyId: string; agentId: string; error: unknown }) => void;
   } = {},
 ) {
   // Legacy hardcoded maps — used as fallback when adapter module does not
@@ -624,6 +626,8 @@ export function agentRoutes(
       if (!decommission) throw new Error(DECOMMISSION_UNSUPPORTED_MESSAGE);
       await (runtime.lock ?? botKeyLock).run(botKey, () => decommission.call(runtime.driver, botKey));
     },
+    syncAgentModelAllowlist: options.syncAgentModelAllowlist,
+    onAgentModelAllowlistSyncFailure: options.onAgentModelAllowlistSyncFailure,
   });
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
