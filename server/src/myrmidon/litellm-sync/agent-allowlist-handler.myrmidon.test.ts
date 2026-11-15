@@ -107,6 +107,18 @@ const MODELS = [
 ];
 
 describe("updateAgentAllowlistsForCompany", () => {
+  it.each(["vendor/selected", "default"])("leaves unrestricted keys untouched for card model %s", async (model) => {
+    const alias = agentKeySecretName({ agentId: "agent-card", agentSlug: "Card Model" });
+    const gateway = recordingGateway(undefined, { [alias]: [] });
+    const db = scriptedDb([[], [{ id: "agent-card", name: "Card Model", adapterConfig: { model } }]]);
+    const result = await updateAgentAllowlistsForCompany(
+      db, deps({ db, gateway: () => gateway, findSecretId: async () => "id-key" }),
+      "company-a", [], [], false, { cardModelsOnly: true, apply: true },
+    );
+    expect(result.skipped).toContain("key-all-models:agent-card");
+    expect(gateway.calls).toEqual([]);
+  });
+
   it("repairs a selected card model when the registry has no enabled models", async () => {
     const alias = agentKeySecretName({ agentId: "agent-card", agentSlug: "Card Model" });
     const gateway = recordingGateway(undefined, { [alias]: ["vendor/private"] });

@@ -392,7 +392,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     expect(models).toEqual(expect.arrayContaining(["vendor/old", "vendor/new", "vendor/fallback"]));
   });
 
-  it("rolls back the card when gateway reconciliation fails", async () => {
+  it("saves the card even when gateway reconciliation fails", async () => {
     const scope = await seedScope();
     const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
     const created = await agentService(db).create(scope.companyId, createInput(scope), {
@@ -401,8 +401,8 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     const service = agentService(db, {
       syncAgentModelAllowlist: async () => { throw new Error("gateway unavailable"); },
     });
-    await expect(service.update(created.id, { adapterConfig: { ...created.adapterConfig, model: "litellm/vendor/changed" } })).rejects.toThrow("gateway unavailable");
-    expect((await agentService(db).getById(created.id))?.adapterConfig).toEqual(created.adapterConfig);
+    await expect(service.update(created.id, { adapterConfig: { ...created.adapterConfig, model: "litellm/vendor/changed" } })).resolves.toBeTruthy();
+    expect((await agentService(db).getById(created.id))?.adapterConfig).toMatchObject({ model: "litellm/vendor/changed" });
   });
 
   it("reconciles the persisted agent card when its model changes", async () => {
