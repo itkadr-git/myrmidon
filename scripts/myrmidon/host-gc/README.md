@@ -123,12 +123,15 @@ see "SSH runner run copies" below for the one that matters, `HOST_GC_RUNNER_ROOT
    directories. "Pushed" is judged against the server, not against local `refs/remotes/*`: the
    host runs `git ls-remote` (bounded by the archive timeout, at most 60 s) and leaves out of the
    bundle only commits the server advertises and the clone has. If the remote cannot be asked
-   (no remote, no access, timeout), nothing counts as pushed: the bundle holds the whole history
-   (`remote-unverified` in the journal) and the clone is never removed without an archive. The
+   (no remote, a remote that is a local path or `file://`, no access, timeout), nothing counts as pushed: the bundle holds the whole history
+   (`remote-unverified` in the journal) and the clone is never removed without an archive. One
+   `ls-remote` per remote URL serves a whole pass, and only clones the board reports closed are
+   checked. The
    host needs read access to the clones' remotes for compact archives to stay small. A `.git`
    (directory or file) is looked for at any depth, inside `node_modules`, `dist` and the like
    too, and every repository found is archived on its own; a broken one in such a directory keeps
-   the copy on disk. Patches and the untracked list are written as raw bytes (non-UTF-8 content
+   the copy on disk; so does a full-archive fallback when a repository sits in an ignored
+   build or dependency directory the full archive would leave out. Patches and the untracked list are written as raw bytes (non-UTF-8 content
    and names survive).
    Disk pressure: at `--pressure-percent` (default 85, env `HOST_GC_PRESSURE_PERCENT`) the scratch
    TTL drops to 1 h and `disk-pressure` is journaled; at `--critical-percent` (95) `disk-critical`

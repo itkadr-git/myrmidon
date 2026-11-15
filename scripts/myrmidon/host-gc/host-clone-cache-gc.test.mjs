@@ -7,6 +7,8 @@ import path from "node:path";
 import subprocess from "node:child_process";
 import { describe, it, beforeEach, afterEach } from "node:test";
 
+// Fixtures use bare repositories on disk as "servers"; production treats a local-path remote as no server.
+process.env.HOST_GC_TEST_ALLOW_LOCAL_REMOTES = "1";
 const ROOT = path.resolve(new URL("../../..", import.meta.url).pathname);
 // A bot container exports empty GIT_AUTHOR_*/GIT_COMMITTER_* variables; git honors an
 // empty env var over config, which breaks commit fixtures. Strip them everywhere.

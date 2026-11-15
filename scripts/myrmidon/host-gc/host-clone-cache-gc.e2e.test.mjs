@@ -46,7 +46,7 @@ function runScript(args = [], env = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn("node", [SCRIPT, ...args], {
       encoding: "utf8",
-      env: { ...process.env, BOARD_API_URL: boardUrl, ...env },
+      env: { ...process.env, BOARD_API_URL: boardUrl, HOST_GC_TEST_ALLOW_LOCAL_REMOTES: "1", ...env },
     });
     let stdout = "";
     let stderr = "";
@@ -973,6 +973,61 @@ describe("host-clone-cache-gc compact archive recovery (OPE-13218)", () => {
     assert.ok(fs.existsSync(clone), "copy stays");
     assert.ok(journal().some((e) => e.event === "clone-archive-failed" && /diff failed/.test(e.error)));
     assert.ok(!journal().some((e) => e.event === "clone-removed"));
+  });
+
+  it("keeps the copy when the full archive would leave out a repository with unpushed work in node_modules", async () => {
+    const root = path.join(tmpDir, "root");
+    const { clone } = makeTask(root, "OPE-20013");
+    // A broken repository outside skipped directories forces the full archive ...
+    fs.mkdirSync(path.join(clone, "vendor", "x", ".git"), { recursive: true });
+    // ... which leaves node_modules out, and a healthy repository with an unpushed commit lives there.
+    const pkg = path.join(clone, "node_modules", "pkg");
+    fs.mkdirSync(pkg, { recursive: true });
+    gitIn(pkg, "init", "-q", "-b", "main");
+    gitIn(pkg, "config", "user.email", "t@t");
+    gitIn(pkg, "config", "user.name", "t");
+    fs.writeFileSync(path.join(pkg, "work.txt"), "only here\n");
+    gitIn(pkg, "add", "-A");
+    gitIn(pkg, "commit", "-q", "-m", "unpushed in node_modules");
+    age(clone);
+
+    const r = await gc(root);
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(fs.existsSync(path.join(pkg, "work.txt")), "copy and its work stay");
+    assert.ok(journal().some((e) => e.event === "clone-archive-failed" && /skipped directory/.test(e.error)));
+    assert.ok(!journal().some((e) => e.event === "clone-removed" || e.event === "clone-removed-after-archive"));
+  });
+
+  it("does not treat a local-path remote as a server: the history is bundled", async () => {
+    const root = path.join(tmpDir, "root");
+    const { clone } = makeTask(root, "OPE-20014");
+    const sha = gitIn(clone, "rev-parse", "HEAD");
+    age(clone);
+
+    const r = await gc(root, { HOST_GC_TEST_ALLOW_LOCAL_REMOTES: "" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(fs.existsSync(clone), false);
+    const extracted = path.join(tmpDir, "ex");
+    fs.mkdirSync(extracted);
+    assert.equal(spawnSync("tar", ["-xf", onlyArchive(root), "-C", extracted]).status, 0);
+    assert.match(gitIn(extracted, "bundle", "list-heads", path.join(extracted, "unpublished.bundle")), new RegExp(sha));
+    assert.ok(journal().some((e) => e.event === "remote-unverified" && /local path/.test(e.reason)));
+  });
+
+  it("asks the server once for many copies of one origin", async () => {
+    const root = path.join(tmpDir, "root");
+    const first = makeTask(root, "OPE-20015");
+    age(first.clone);
+    for (const name of ["OPE-20016", "OPE-20017", "OPE-20018"]) {
+      const dir = path.join(root, name);
+      assert.equal(spawnSync("git", ["clone", "-q", first.remote, dir]).status, 0);
+      age(dir);
+    }
+    const log = path.join(tmpDir, "lsremote.log");
+    const r = await gc(root, gitShim("ls-remote", `echo hit >> ${log}`));
+    assert.equal(r.status, 0, r.stderr);
+    for (const name of ["OPE-20015", "OPE-20016", "OPE-20017", "OPE-20018"]) assert.equal(fs.existsSync(path.join(root, name)), false, `${name} removed`);
+    assert.equal(fs.readFileSync(log, "utf8").trim().split("\n").length, 1, "one ls-remote for four copies");
   });
 
   it("checks alternates in the real gitdir when .git is a file", async () => {

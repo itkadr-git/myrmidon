@@ -338,45 +338,69 @@ function git(args, cwd) {
 // Local refs/remotes/* only say what the last fetch saw: a branch deleted or rewritten on the
 // server since then still looks pushed. A commit counts as pushed only when a tip the server
 // itself advertises (`git ls-remote`) is present locally and reaches it.
-const REMOTE_FAILURES = new Map();
+// One `ls-remote` per remote URL per pass: ~100 copies of one origin ask the server once. The
+// entry is what the server advertised ({ ok, shas } or { ok: false, reason }), kept in memory
+// for the process only (one GC pass), so a later pass always asks again.
+const REMOTE_ANSWERS = new Map();
 
-export function resetRemoteFailureCache() {
-  REMOTE_FAILURES.clear();
+export function resetRemoteCache() {
+  REMOTE_ANSWERS.clear();
 }
 
 function remoteTimeoutSeconds() {
   return Math.min(archiveTimeoutSeconds(), 60);
 }
 
+// A remote given as a path or `file://` is a directory on this host, not a server: it can vanish
+// with the copy or be a stale mirror, so it never proves anything is pushed. (Test hook:
+// HOST_GC_TEST_ALLOW_LOCAL_REMOTES=1 lets fixtures use bare repositories as servers.)
+function isLocalRemote(url) {
+  if (process.env.HOST_GC_TEST_ALLOW_LOCAL_REMOTES === "1") return false;
+  return /^file:/i.test(url) || /^(\/|\.{1,2}\/|~)/.test(url) || (!url.includes("://") && !url.includes(":"));
+}
+
+function askRemote(repo, name, url) {
+  const cached = REMOTE_ANSWERS.get(url);
+  if (cached) return cached;
+  const timeoutS = remoteTimeoutSeconds();
+  const r = spawnSync("timeout", ["--kill-after=5s", `${timeoutS}s`, "git", "ls-remote", "--heads", "--tags", name], {
+    cwd: repo,
+    encoding: "utf8",
+    timeout: (timeoutS + 20) * 1000,
+    maxBuffer: GIT_MAX_BUFFER,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || "ssh -o BatchMode=yes" },
+  });
+  let answer;
+  if (r.status !== 0) {
+    const why = r.status === 124 || r.status === 137 || r.error?.code === "ETIMEDOUT" ? `timed out after ${timeoutS} s` : `exit ${r.status}: ${String(r.stderr ?? "").trim().slice(0, 200)}`;
+    answer = { ok: false, reason: `ls-remote ${name}: ${why}` };
+  } else {
+    const shas = new Set();
+    for (const line of r.stdout.split("\n")) {
+      const sha = line.split("\t")[0].trim();
+      if (/^[0-9a-f]{40,64}$/.test(sha)) shas.add(sha);
+    }
+    answer = { ok: true, shas };
+  }
+  REMOTE_ANSWERS.set(url, answer);
+  return answer;
+}
+
 // { verified, tips, reason }: `tips` are server tips (commits and tags) that exist locally.
-// `verified` is false when there is no remote or any remote did not answer: nothing is then
-// known to be on the server.
+// `verified` is false when there is no remote, a remote is a local path, or any remote did not
+// answer: nothing is then known to be on the server.
 function serverTips(repo) {
   const listed = git(["remote"], repo);
   if (listed.status !== 0) return { verified: false, tips: [], reason: "remote listing failed" };
   const names = listed.stdout.split("\n").map((n) => n.trim()).filter(Boolean);
   if (!names.length) return { verified: false, tips: [], reason: "no remote" };
   const advertised = new Set();
-  const timeoutS = remoteTimeoutSeconds();
   for (const name of names) {
     const url = git(["remote", "get-url", name], repo).stdout.trim() || name;
-    if (REMOTE_FAILURES.has(url)) return { verified: false, tips: [], reason: `ls-remote ${name}: ${REMOTE_FAILURES.get(url)}` };
-    const r = spawnSync("timeout", ["--kill-after=5s", `${timeoutS}s`, "git", "ls-remote", "--heads", "--tags", name], {
-      cwd: repo,
-      encoding: "utf8",
-      timeout: (timeoutS + 20) * 1000,
-      maxBuffer: GIT_MAX_BUFFER,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || "ssh -o BatchMode=yes" },
-    });
-    if (r.status !== 0) {
-      const why = r.status === 124 || r.status === 137 || r.error?.code === "ETIMEDOUT" ? `timed out after ${timeoutS} s` : `exit ${r.status}: ${String(r.stderr ?? "").trim().slice(0, 200)}`;
-      REMOTE_FAILURES.set(url, why);
-      return { verified: false, tips: [], reason: `ls-remote ${name}: ${why}` };
-    }
-    for (const line of r.stdout.split("\n")) {
-      const sha = line.split("\t")[0].trim();
-      if (/^[0-9a-f]{40,64}$/.test(sha)) advertised.add(sha);
-    }
+    if (isLocalRemote(url)) return { verified: false, tips: [], reason: `remote ${name} is a local path, not a server` };
+    const answer = askRemote(repo, name, url);
+    if (!answer.ok) return { verified: false, tips: [], reason: answer.reason };
+    for (const sha of answer.shas) advertised.add(sha);
   }
   if (!advertised.size) return { verified: true, tips: [] };
   const checked = spawnSync("git", ["cat-file", "--batch-check=%(objecttype) %(objectname)"], {
@@ -516,7 +540,8 @@ function scanTaskClones(root, now, ttlHours) {
     if (!isGit) continue; // not a git clone, skip
 
     const clean = isClean(fullPath);
-    const pushed = isPushed(fullPath);
+    // `pushed` asks the server (ls-remote): left to assessClone, which main runs only for clones the
+    // board reports closed. Open tasks are never touched and need no network round trip.
     const stash = hasStash(fullPath);
     const alternates = hasAlternates(fullPath);
 
@@ -527,14 +552,22 @@ function scanTaskClones(root, now, ttlHours) {
       mtimeMs: st.mtimeMs,
       isGit: true,
       clean,
-      pushed,
+      pushed: null,
       stash,
       alternates,
-      safeToRemove: clean && pushed && !stash && !alternates,
-      reason: clean && pushed && !stash && !alternates ? "clean-pushed" : "unsafe-archive",
+      safeToRemove: false,
+      reason: "unassessed",
     });
   }
   return results;
+}
+
+// Fills in `pushed` (checked against the server) and the removal verdict of a scanned clone.
+function assessClone(c) {
+  c.pushed = c.clean && !c.stash && !c.alternates ? isPushed(c.path) : false;
+  c.safeToRemove = c.clean && c.pushed && !c.stash && !c.alternates;
+  c.reason = c.safeToRemove ? "clean-pushed" : "unsafe-archive";
+  return c;
 }
 
 function scanBuildCaches(root, now, ttlHours) {
@@ -1831,7 +1864,8 @@ function archiveRepos(clonePath) {
 function archiveExcludes(clonePath) {
   const name = path.basename(clonePath);
   const out = new Set();
-  for (const repo of archiveRepos(clonePath)) {
+  const allRepos = archiveRepos(clonePath);
+  for (const repo of allRepos) {
     let r;
     try {
       r = git(["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], repo);
@@ -1843,6 +1877,9 @@ function archiveExcludes(clonePath) {
     for (const entry of r.stdout.split("\0")) {
       const rel = entry.replace(/\/+$/, "");
       if (!rel || !ARCHIVE_EXCLUDES.includes(rel.split("/").pop())) continue;
+      // Never leave out a directory that holds a repository: its work is only safe inside the archive.
+      const abs = path.join(repo, rel);
+      if (allRepos.some((other) => other === abs || other.startsWith(`${abs}${path.sep}`))) continue;
       out.add(`--exclude=${[name, repoRel, rel].filter(Boolean).join("/")}`);
     }
   }
@@ -1978,6 +2015,10 @@ function archiveClone(clonePath, archiveRoot, journalPath) {
   const blocker = compactBlocker(clonePath, repos);
   if (blocker?.keep) throw new Error(`cannot safely archive ${clonePath}: ${blocker.reason}; keeping checkout`);
   if (blocker) {
+    // The full archive leaves out git-ignored build and dependency directories. A repository inside
+    // one is not archived on its own here, so its unpushed work would go with the copy: keep it.
+    const hidden = repos.find((r) => r !== clonePath && path.relative(clonePath, r).split(path.sep).some((seg) => ARCHIVE_EXCLUDES.includes(seg) || BOT_SCAN_SKIP_NAMES.has(seg)));
+    if (hidden) throw new Error(`cannot safely archive ${clonePath}: repository in a skipped directory (${hidden}) cannot go into the full archive; keeping checkout`);
     if (journalPath) journalRecord(journalPath, { event: "archive-full-fallback", path: clonePath, reason: blocker.reason });
     return archiveCloneFull(clonePath, archiveRoot);
   }
@@ -2101,6 +2142,7 @@ async function main() {
       });
     }
     for (const c of cloneStatuses.candidates) {
+      assessClone(c);
       // A nested repository may be ignored by its parent and contain unpublished work:
       // archiveClone handles every git root of the clone on its own.
       // The walk covers every depth and every skipped directory: an unseen `.git` means no plain removal.
