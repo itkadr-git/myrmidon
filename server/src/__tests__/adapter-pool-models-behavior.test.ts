@@ -279,10 +279,11 @@ describe("pool models behavior tests (1.6.6 OPE-9932)", () => {
       const app = await createApp({ select: () => ({ from: () => query }) });
       const catalog = await requestApp(app, (url) => request(url).get(`/api/companies/company-1/adapters/${adapterType}/models`));
       expect(catalog.status).toBe(200);
-      expect(catalog.body.map((model: any) => model.id)).toEqual(["chatgpt-pool/gpt-6-astra"]);
-      const saved = await requestApp(app, (url) => request(url).patch(`/api/agents/${agentId}`).send({ adapterConfig: { model: "chatgpt-pool/gpt-6-astra" } }));
+      const expectedModel = adapterType === "omp_local" ? "litellm/chatgpt-pool/gpt-6-astra" : "chatgpt-pool/gpt-6-astra";
+      expect(catalog.body.map((model: any) => model.id)).toEqual([expectedModel]);
+      const saved = await requestApp(app, (url) => request(url).patch(`/api/agents/${agentId}`).send({ adapterConfig: { model: expectedModel } }));
       expect(saved.status).toBe(200);
-      expect(saved.body.adapterConfig.model).toBe("chatgpt-pool/gpt-6-astra");
+      expect(saved.body.adapterConfig.model).toBe(expectedModel);
       expect(mockSecretService.getByName).toHaveBeenCalledWith("company-1", "catalog-key");
       expect(fetchSpy).toHaveBeenCalledWith("http://gateway.local/v1/models", expect.objectContaining({
         headers: expect.objectContaining({ Authorization: "Bearer mock-pool-api-key" }),
