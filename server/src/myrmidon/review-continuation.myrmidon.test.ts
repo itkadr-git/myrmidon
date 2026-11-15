@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as runPriorityState from "./run-priority/state.js";
 import {
   continueDevReview,
   devProcessProjectIds,
@@ -103,6 +104,7 @@ describe("dev review continuation", () => {
 });
 
 describe("tryDevReviewContinuationOnRelease integration", () => {
+  afterEach(() => vi.restoreAllMocks());
   it("handles release with next task in dev project", async () => {
     const mockDb = {
       select: vi.fn().mockReturnValue({
@@ -142,11 +144,13 @@ describe("tryDevReviewContinuationOnRelease integration", () => {
   });
 
   it("signals project lead when queue is empty on release", async () => {
+    const settings = runPriorityState.currentRunPrioritySettings();
+    vi.spyOn(runPriorityState, "currentRunPrioritySettings").mockReturnValue({ ...settings, currentRelease: "1.6.9" });
     const mockDb = {
       select: vi.fn().mockImplementation((fields) => ({
         from: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ id: "epic-a", identifier: "DEV-1", title: "Epic 1.6.9" }]),
+            where: vi.fn().mockResolvedValue([{ id: "epic-a", identifier: "DEV-1", title: "Epic 1.6.9", status: "in_progress" }]),
           }),
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockImplementation(() => {
@@ -192,6 +196,7 @@ describe("tryDevReviewContinuationOnRelease integration", () => {
       mockDb,
       expect.objectContaining({ action: "dev_project.queue_unavailable", agentId: "engineer-a" }),
     );
+
   });
 
   it("does not trigger continuation when released agent is the reviewer, not author", async () => {
