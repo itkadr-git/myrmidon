@@ -60,7 +60,7 @@ export function resolveStepModelSelection(input: StepModelResolverInput): StepMo
   const selectedRule = casteRule ?? companyRule ?? null;
   const reason = casteRule ? "caste_rule" : companyRule ? "company_rule" : "agent_fallback";
   const group = ruleGroup(selectedRule);
-  const model = ruleModel(selectedRule) ?? (group ? nonEmpty(input.modelGroups?.[group]) : null) ?? agentModel;
+  const model = ruleModel(selectedRule) ?? (group ? nonEmpty(input.modelGroups?.[group]) ?? group : null) ?? agentModel;
 
   return stepModelSelectionSchema.parse({
     stepClass: input.stepClass,

@@ -385,7 +385,7 @@ import {
   type StepModelSelection,
 } from "@myrmidon/shared";
 import {
-  agentCastes,
+  companyModelGroupRules,
   instanceSettings,
   agents,
   agentConfigRevisions,
@@ -7313,91 +7313,32 @@ interface StepModelRuleDoc {
   [key: string]: unknown;
 }
 
-function readStepModelRuleDoc(value: unknown): StepModelRuleDoc | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  return value as StepModelRuleDoc;
-}
-
-/**
- * Reads a class → rule document without failing the run: an unusable document
- * reads as "no rule". Accepts both documented key spellings (`byClass`,
- * `classes`) so the OPE-12997 storage shape can land without touching this.
- */
 function readClassRules(doc: StepModelRuleDoc | null): Record<string, unknown> {
-  for (const key of ["byClass", "classes"] as const) {
-    const value = doc?.[key];
-    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-      return value as Record<string, unknown>;
-    }
-  }
-  return {};
+  return doc?.byClass ?? {};
 }
 
 function readStepModelRule(value: unknown): { modelGroup: string | null; model: string | null } | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  const modelGroup = readNonEmptyString(record.modelGroup) ?? readNonEmptyString(record.group);
+  const modelGroup = readNonEmptyString(record.modelGroup);
   const model = readNonEmptyString(record.model);
-  if (!modelGroup && !model) return null;
-  return { modelGroup, model };
+  return modelGroup || model ? { modelGroup, model } : null;
 }
 
-/**
- * Reads the company-wide class rules from instance_settings.general
- * (`general.myrmidonStepModelRules`) — the same document OPE-12997's settings
- * screen writes. Absent/unusable reads as "no company rule".
- */
-export async function readCompanyStepModelRules(
-  db: Pick<Db, "select">,
-  companyId: string,
-): Promise<StepModelRuleDoc | null> {
-  try {
-    const row = await db
-      .select({ general: instanceSettings.general })
-      .from(instanceSettings)
-      .where(eq(instanceSettings.singletonKey, "default"))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-    const general = row?.general;
-    if (typeof general !== "object" || general === null) return null;
-    const store = (general as Record<string, unknown>).myrmidonStepModelRules;
-    if (typeof store !== "object" || store === null || Array.isArray(store)) return null;
-    return readStepModelRuleDoc((store as Record<string, unknown>)[companyId]);
-  } catch {
-    return null;
+/** Read both scopes in one company-scoped query so a run sees one rule version. */
+export async function readRunStepModelRules(db: Pick<Db, "select">, companyId: string, casteKey: string | null) {
+  const rows = await db.select({
+    casteKey: companyModelGroupRules.casteKey,
+    stepClass: companyModelGroupRules.stepClass,
+    modelGroup: companyModelGroupRules.modelGroup,
+  }).from(companyModelGroupRules).where(eq(companyModelGroupRules.companyId, companyId));
+  const company: StepModelRuleDoc = { byClass: {} };
+  const caste: StepModelRuleDoc = { byClass: {} };
+  for (const row of rows) {
+    if (row.casteKey === null) company.byClass![row.stepClass] = { modelGroup: row.modelGroup };
+    else if (casteKey && row.casteKey === casteKey) caste.byClass![row.stepClass] = { modelGroup: row.modelGroup };
   }
-}
-
-/**
- * Reads the caste override for this agent's caste (`agent_castes` row of the
- * agent's role). The per-caste column OPE-12997 lands may be a JSON document
- * (`stepModelRules`) or a plain mapping; both read permissively.
- */
-export async function readCasteStepModelRules(
-  db: Pick<Db, "select">,
-  companyId: string,
-  casteKey: string | null,
-): Promise<StepModelRuleDoc | null> {
-  if (!casteKey) return null;
-  try {
-    const row = await db
-      .select({ rules: agentCastes.stepModelRules })
-      .from(agentCastes)
-      .where(and(eq(agentCastes.companyId, companyId), eq(agentCastes.key, casteKey)))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-    if (!row) return null;
-    if (typeof row.rules === "string") {
-      try {
-        return readStepModelRuleDoc(JSON.parse(row.rules));
-      } catch {
-        return null;
-      }
-    }
-    return readStepModelRuleDoc(row.rules);
-  } catch {
-    return null;
-  }
+  return { company, caste };
 }
 
 export const RUN_STEP_MODEL_RESOLVER_VERSION = "step-model-v1";
@@ -21616,6 +21557,7 @@ export function heartbeatService(
     // boundary, before any adapter dispatch. The guarded update makes parallel
     // claim/retry paths converge on the first snapshot and prevents later
     // lifecycle writes from changing the historical decision.
+    const stepRules = await readRunStepModelRules(db, claimed.companyId, agent.role);
     const stepModelResolution = resolveRunStepModel(
       {
         companyId: claimed.companyId,
@@ -21624,8 +21566,8 @@ export function heartbeatService(
         context: parseObject(claimed.contextSnapshot),
         agentModel: readConfiguredModelFromAdapterConfig(agent.adapterConfig),
       },
-      await readCompanyStepModelRules(db, claimed.companyId),
-      await readCasteStepModelRules(db, claimed.companyId, agent.role),
+      stepRules.company,
+      stepRules.caste,
     );
     if (stepModelResolution.stepModelSnapshotJson) {
       // The `IS NULL` guard makes the write idempotent under concurrent
