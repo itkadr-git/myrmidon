@@ -5045,10 +5045,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ? channelLostMessage
             : resultErrorMessage(terminal);
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
+        // An operator abort interrupts this invocation; it is not the external
+        // job's terminal cancellation verdict. Preserve the session so it can resume.
+        const callbackStatus = ctx.signal?.aborted === true && preserveInterruptedSession
+          ? "in_progress"
+          : terminal.status;
         const recordedCallback = terminalCallbackRegistry.apply({
           provider: prepared.acpxAgent,
           providerJobId: sessionHandle.backendSessionId ?? sessionHandle.agentSessionId ?? sessionHandle.runtimeSessionName,
-          status: terminal.status,
+          status: callbackStatus,
           completionEvidence: {
             output: outputSegments.join("").trim() || null,
             result: terminalStopReason || null,
