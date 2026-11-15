@@ -2470,6 +2470,15 @@ describe("verify execution stages", () => {
     expect(result.patch.executionState).toMatchObject({ status: "completed", completedStageIds: [policy.stages[0].id] });
   });
 
+  it("rejects arbitrary release verification text without a persisted runtime verdict", () => {
+    const policy = verifyPolicy();
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue: { ...pendingIssue(policy), title: "Release without numeric title", releaseLabels: ["1.7"], hasMergedCode: true },
+      policy, requestedStatus: "done", requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId }, commentBody: "deploy version: fabricated\ncheck method: fabricated",
+    })).toThrow(/persisted|runtime|verification/i);
+  });
+
   it("returns a rejected verification to the executor", () => {
     const policy = verifyPolicy();
     const result = applyIssueExecutionPolicyTransition({

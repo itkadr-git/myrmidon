@@ -15631,12 +15631,23 @@ export function issueRoutes(
       );
 
       const transitionIssue: IssueRouteSnapshot & {
+        releaseLabels?: string[];
+        hasMergedCode?: boolean;
         assigneeAgentRole?: string | null;
         terminatedReturnAssigneeAgentId?: string | null;
         fallbackReturnAssigneeAgentId?: string | null;
         executionReviewParticipantAgentIds?: string[];
         defaultEscalationAgentIds?: string[];
       } = { ...existing };
+      if (updateFields.status === "done") {
+        const releaseLabelRows = await db.select({ name: labels.name })
+          .from(issueLabels)
+          .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+          .where(eq(issueLabels.issueId, existing.id));
+        transitionIssue.releaseLabels = releaseLabelRows.map((row) => row.name);
+        const products = await workProductsSvc.listForIssue(existing.id);
+        transitionIssue.hasMergedCode = products.some((product) => product.type === "pull_request" && product.status === "merged");
+      }
       Object.assign(
         transitionIssue,
         await withDefaultEscalationChain(db, existing, nextExecutionPolicy),
@@ -17013,6 +17024,8 @@ export function issueRoutes(
             const lockedTransitionIssue: typeof transitionIssue = {
               ...existing,
               ...lockedExisting,
+              releaseLabels: transitionIssue.releaseLabels,
+              hasMergedCode: transitionIssue.hasMergedCode,
               assigneeAgentRole: undefined,
               executionReviewParticipantAgentIds: lockedReviewParticipants,
             };

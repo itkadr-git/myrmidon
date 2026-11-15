@@ -23,6 +23,8 @@ type IssueLike = AssigneeLike & {
   id?: string;
   status: string;
   title?: string | null;
+  releaseLabels?: string[];
+  hasMergedCode?: boolean;
   projectId?: string | null;
   casteKey?: string | null;
   reviewEscalationPolicy?: ReviewEscalationPolicyLike | null;
@@ -1176,6 +1178,9 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     : input.reviewRequest;
 
   if (!input.policy) {
+    if (requestedStatus === "done" && input.issue.hasMergedCode && isReleaseTask(input.issue.title, input.issue.releaseLabels)) {
+      throw unprocessable("Cannot mark release task with merged code done without a verify execution stage.");
+    }
     if (existingState) {
       const orphanApproval = approveOrphanedPendingReviewStage(input, existingState, actor);
       if (orphanApproval) return orphanApproval;
@@ -1365,7 +1370,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
           assertVerifyEvidence({
             stage: activeStage,
             commentBody: input.commentBody.trim(),
-            isRelease: isReleaseTask(input.issue.title ?? null),
+            isRelease: isReleaseTask(input.issue.title, input.issue.releaseLabels),
           });
         }
         const approvedState = buildCompletedState(existingState, activeStage);
@@ -1379,7 +1384,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         if (!nextStage) {
           if (
             activeStage.type !== "verify" &&
-            isReleaseTask(input.issue.title ?? null) &&
+            isReleaseTask(input.issue.title, input.issue.releaseLabels) &&
             !input.policy.stages.some((stage) =>
               stage.type === "verify" && approvedState.completedStageIds.includes(stage.id),
             )
@@ -1676,7 +1681,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   // unless explicitly configured with skip: true in its verify stage requirements.
   const hasVerifyStage = input.policy.stages.some((stage) => stage.type === "verify");
   const isVerifySkipped = input.policy.stages.some((stage) => stage.type === "verify" && stage.requirements?.skip === true);
-  const isRelease = isReleaseTask(input.issue.title ?? null);
+  const isRelease = isReleaseTask(input.issue.title, input.issue.releaseLabels);
   if (requestedStatus === "done" && isRelease && !hasVerifyStage && !isVerifySkipped) {
     throw unprocessable(
       "Cannot mark release task done without a verify execution stage. A release task requires an independent verification stage with deploy version and check method, or an explicit skip configuration.",

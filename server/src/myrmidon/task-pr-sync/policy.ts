@@ -17,6 +17,7 @@
 // the PR state, then packs both into `TaskPrSyncFacts`.
 
 import type { IssueWorkProduct, PullRequestWorkProductMetadata } from "@myrmidon/shared";
+import { normaliseReleasePrefix } from "../release-membership.js";
 
 /** Effective state of one delivering PR, after the stored row and the resolved facts are merged. */
 export type TaskPrSyncPrState =
@@ -127,9 +128,9 @@ export function extractReleasePrefix(title: string): string | null {
   return match ? match[1] : null;
 }
 
-export function isReleaseTask(title?: string | null): boolean {
-  if (!title) return false;
-  return Boolean(extractReleasePrefix(title) || title.includes("rel/"));
+export function isReleaseTask(title?: string | null, labels: readonly string[] = []): boolean {
+  return labels.some((label) => normaliseReleasePrefix(label) !== null) ||
+    Boolean(title && (extractReleasePrefix(title) || title.includes("rel/")));
 }
 
 export function isDeliveringBaseRef(input: {
