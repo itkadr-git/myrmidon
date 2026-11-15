@@ -18,6 +18,20 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(report['schemaVersion'], 1)
         self.assertEqual(report['postgres']['status'], 'unknown')
 
+    def test_complete_report_returns_zero_and_json(self):
+        import contextlib
+        import io
+
+        areas = ('postgres', 'disk', 'resources', 'ci_browser_profile',
+                 'time_sync', 'tls', 'login_method', 'backup')
+        report = {'schemaVersion': 1, **{area: {'status': 'ok'} for area in areas}}
+        stdout = io.StringIO()
+        with patch.object(collector, 'collect', return_value=report), \
+             patch.object(sys, 'argv', ['collector.py']), contextlib.redirect_stdout(stdout):
+            result = collector.main()
+        self.assertEqual(result, 0)
+        self.assertEqual(json.loads(stdout.getvalue()), report)
+
     def test_primary_and_standby_fixtures(self):
         for recovery in (False, True):
             with self.subTest(recovery=recovery):
