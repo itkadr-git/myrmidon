@@ -137,6 +137,18 @@ describe("updateAgentAllowlistsForCompany", () => {
     expect(gateway.calls[0]?.models).toHaveLength(7);
   });
 
+  it("does not grant plugin models that the agent card does not select", async () => {
+    const alias = agentKeySecretName({ agentId: "agent-card", agentSlug: "Card Model" });
+    const gateway = recordingGateway(undefined, { [alias]: ["vendor/private"] });
+    const db = scriptedDb([[{ id: "agent-card", name: "Card Model", adapterConfig: { model: "plugin/selected" } }]]);
+    await updateAgentAllowlistsForCompany(
+      db, deps({ db, gateway: () => gateway, findSecretId: async () => "id-key" }),
+      "company-a", ["plugin/selected", "plugin/unrelated"], [], false,
+      { includeRegistryModels: false, cardModelsOnly: true },
+    );
+    expect(gateway.calls).toEqual([{ alias, models: ["vendor/private", "plugin/selected"] }]);
+  });
+
   it("repairs a missing card model and records the drift in activity", async () => {
     const alias = agentKeySecretName({ agentId: "agent-card", agentSlug: "Card Model" });
     const gateway = recordingGateway(undefined, { [alias]: ["vendor/private"] });
