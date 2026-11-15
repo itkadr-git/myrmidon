@@ -505,6 +505,7 @@ export function validateReleaseVerificationEvidence(
   value: unknown,
   scope: ReleaseEvidenceScope,
   key: string,
+  now: Date = new Date(),
 ): boolean {
   if (!value || typeof value !== "object" || !key || !scope.deployedVersion || !scope.members.length) return false;
   const record = value as Record<string, unknown>;
@@ -513,6 +514,8 @@ export function validateReleaseVerificationEvidence(
       record.candidateDigest !== candidateDigest(scope.members) || record.verdict !== "confirmed" ||
       typeof record.checkedAt !== "string" || !Number.isFinite(Date.parse(record.checkedAt)) ||
       typeof record.signature !== "string" || !/^[a-f0-9]{64}$/.test(record.signature)) return false;
+  const ageMs = now.getTime() - Date.parse(record.checkedAt);
+  if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > 24 * 60 * 60 * 1000) return false;
   const payload: ReleaseEvidencePayload = {
     companyId: scope.companyId, issueId: scope.issueId, releasePrefix: scope.releasePrefix,
     deployedVersion: scope.deployedVersion, candidateDigest: candidateDigest(scope.members),
