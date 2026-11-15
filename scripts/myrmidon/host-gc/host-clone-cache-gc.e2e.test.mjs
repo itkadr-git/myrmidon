@@ -374,6 +374,27 @@ describe("host-clone-cache-gc e2e", () => {
   });
 
   describe("scratch-gc e2e (BOT-DISK-SCRATCH)", () => {
+    it("prunes stale bot tmp entries without following a symlinked tmp directory", async () => {
+      const root = path.join(tmpDir, "bots");
+      const botTmp = path.join(root, "bot-1/hermes/tmp");
+      const outside = path.join(tmpDir, "outside");
+      fs.mkdirSync(botTmp, { recursive: true });
+      fs.mkdirSync(outside);
+      fs.mkdirSync(path.join(root, "bot-2/hermes"), { recursive: true });
+      fs.symlinkSync(outside, path.join(root, "bot-2/hermes/tmp"));
+      const stale = path.join(botTmp, "stale");
+      const protectedFile = path.join(outside, "protected");
+      fs.writeFileSync(stale, "stale");
+      fs.writeFileSync(protectedFile, "protected");
+      const old = new Date(Date.now() - 7 * 3600 * 1000);
+      fs.utimesSync(stale, old, old);
+      fs.utimesSync(protectedFile, old, old);
+      const r = await runScript(["--root", root, "--lock", path.join(tmpDir, "gc.lock"), "--journal", path.join(tmpDir, "gc.jsonl"), "--apply"]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(fs.existsSync(stale), false);
+      assert.equal(fs.existsSync(protectedFile), true);
+    });
+
     it("prunes scratch older than six hours by default", async () => {
       const root = path.join(tmpDir, "bots");
       const scratch = path.join(root, "bot-1/hermes/cache/scratch");
