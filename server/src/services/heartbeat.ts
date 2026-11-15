@@ -1045,6 +1045,10 @@ import {
   readWakeBatchWindowMs,
   splitBatchedWakeRuns,
 } from "../myrmidon/wake-batch.js";
+const RELEASE_FOCUS_CONTEXT_KEY = RELEASE_FOCUS_DEFERRAL_CONTEXT_KEY;
+// Recheck ladder of a deferred run, like the model channel pause: 2, 5, 10, then 30 minutes.
+const RELEASE_FOCUS_RECHECK_LADDER_MS = [2, 5, 10, 30].map((minutes) => minutes * 60_000);
+
 // myrmidon(PERF-DIET-K): issue-scoped session generations for the container
 // Hermes gateway — one task's session key gains a `:g<N>` once it passes its
 // age/activity threshold, so the task's Hermes state stays bounded
@@ -1053,6 +1057,8 @@ import { getIdleStopService } from "../myrmidon/idle-stop-startup.js";
 // myrmidon(1.6.5 RUN-PRIORITY A): queued runs start by role/issue/release
 // weight with aging; the settings live-refresh per pass (runtime-limits pattern).
 import { currentRunPrioritySettings } from "../myrmidon/run-priority/state.js";
+import { runViolatesReleaseFocus } from "../myrmidon/release-focus.js";
+import { RELEASE_FOCUS_DEFERRAL_CONTEXT_KEY } from "../modules/run-dispatch/domain/wake-context.js";
 // myrmidon(1.6.5 RUN-PRIORITY-PICK): the per-agent pass starts the agent's most
 // important ready task before a less important standing run; a starvation lift
 // no longer crosses the next issue-priority step.
@@ -4315,20 +4321,6 @@ export interface WakeupOptions {
   };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;
-}
-
-function shouldDeferWakeForReleaseFocus(input: {
-  currentRelease: string | null;
-  targetMatchesRelease: boolean;
-  hasOpenCurrentReleaseIssue: boolean;
-  manualUserWake?: boolean;
-}): boolean {
-  return (
-    !input.manualUserWake &&
-    Boolean(input.currentRelease) &&
-    input.hasOpenCurrentReleaseIssue &&
-    !input.targetMatchesRelease
-  );
 }
 
 type UsageTotals = {
@@ -19810,6 +19802,127 @@ export function heartbeatService(
     return true;
   }
 
+  // myrmidon(OPE-13231): strict release focus at the one run-start gate. A queued
+  // run whose task is outside the current release (and not assigned by the
+  // owner) is not started and not cancelled: the same row waits in
+  // `scheduled_retry` and the due-retry sweep brings it back here, so it starts
+  // once the flag is off or no current-release work is left. Every path that
+  // creates a run (wake, continuation, retry) ends in claimQueuedRun, so none
+  // can bypass it. A wake made by a user is not held.
+  async function deferQueuedRunForReleaseFocus(
+    run: typeof heartbeatRuns.$inferSelect,
+  ): Promise<boolean> {
+    const context = parseObject(run.contextSnapshot);
+    const violates = await runViolatesReleaseFocus(db, {
+      companyId: run.companyId,
+      agentId: run.agentId,
+      issueId: readNonEmptyString(context.issueId),
+    });
+    if (!violates) return false;
+    const wake = run.wakeupRequestId
+      ? await db
+          .select({ payload: agentWakeupRequests.payload })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+      : null;
+    if (parseObject(wake?.payload).manualUserWake === true) return false;
+    const now = new Date();
+    const previous = parseObject(context[RELEASE_FOCUS_CONTEXT_KEY]);
+    const previousCount = Number(previous.count ?? 0);
+    const isFirstDeferral = !previous.firstDeferredAt;
+    const ladderStep = Math.min(
+      Math.max(Number.isFinite(previousCount) ? previousCount : 0, 0),
+      RELEASE_FOCUS_RECHECK_LADDER_MS.length - 1,
+    );
+    const dueAt = new Date(now.getTime() + RELEASE_FOCUS_RECHECK_LADDER_MS[ladderStep]!);
+    const deferred = await db
+      .update(heartbeatRuns)
+      .set({
+        status: "scheduled_retry",
+        scheduledRetryAt: dueAt,
+        ...runContextPersistenceFields({
+          ...context,
+          [RELEASE_FOCUS_CONTEXT_KEY]: {
+            count: (Number.isFinite(previousCount) ? previousCount : 0) + 1,
+            firstDeferredAt: previous.firstDeferredAt ?? now.toISOString(),
+            deferredAt: now.toISOString(),
+            dueAt: dueAt.toISOString(),
+          },
+        }),
+        executionStatusDeliveryId: randomUUID(),
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.id, run.id),
+          eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.status, "queued"),
+        ),
+      )
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!deferred) return true;
+    // Everything below runs once per run, not once per recheck: the repeated
+    // re-park only moves the due time.
+    if (!isFirstDeferral) return true;
+    publishLiveEvent({
+      companyId: deferred.companyId,
+      type: "heartbeat.run.status",
+      payload: buildHeartbeatRunStatusLiveEventPayload(deferred),
+    });
+    {
+      await appendRunEvent(deferred, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "Strict release focus: the task is outside the current release; the run waits until focus is lifted",
+        payload: { reason: "release_focus", scheduledRetryAt: dueAt.toISOString() },
+      });
+    }
+    // The wait is not execution: reset the issue lock (taken again at claim)
+    // unless the retry kind is only valid while it owns the lock.
+    const keepsIssueLock = [run.scheduledRetryReason, readNonEmptyString(context.retryReason)].some(
+      (reason) =>
+        reason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+        reason === AI_CONNECTION_BUSY_RETRY_REASON,
+    );
+    if (!keepsIssueLock) {
+      // A plain reset of this run's lock: no promotion of other deferred wakes
+      // (they pass the same gate on their own) and nothing that wakes an agent.
+      const issueId = readNonEmptyString(context.issueId);
+      if (issueId) {
+        await db
+          .update(issues)
+          .set({
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.companyId, deferred.companyId),
+              eq(issues.id, issueId),
+              eq(issues.executionRunId, deferred.id),
+            ),
+          );
+        await db
+          .update(issues)
+          .set({ checkoutRunId: null, updatedAt: now })
+          .where(
+            and(
+              eq(issues.companyId, deferred.companyId),
+              eq(issues.id, issueId),
+              eq(issues.checkoutRunId, deferred.id),
+            ),
+          );
+      }
+    }
+    return true;
+  }
+
   async function cancelQueuedRunForHeartbeatDailyCap(
     run: typeof heartbeatRuns.$inferSelect,
     dailyCapBlock: NonNullable<
@@ -20340,6 +20453,9 @@ export function heartbeatService(
     // the agent starts, whatever woke it (a retry, an assignment, a comment of
     // another agent): the run waits for the end of the pause.
     if (await deferQueuedRunForModelChannelPause(run, agent)) return null;
+
+    // myrmidon(OPE-13231): strict release focus.
+    if (await deferQueuedRunForReleaseFocus(run)) return null;
 
     const issueId = readNonEmptyString(context.issueId);
     if (issueId) {
@@ -33466,51 +33582,6 @@ export function heartbeatService(
         },
       });
     };
-
-    const releaseSettings = currentRunPrioritySettings();
-    if (issueId && releaseSettings.currentRelease) {
-      const targetLabels = await db
-        .select({ name: labels.name })
-        .from(issueLabels)
-        .innerJoin(labels, eq(labels.id, issueLabels.labelId))
-        .innerJoin(issues, eq(issues.id, issueLabels.issueId))
-        .where(and(eq(issueLabels.issueId, issueId), eq(issues.companyId, agent.companyId)));
-      const targetMatchesRelease = runMatchesCurrentRelease(
-        releaseSettings.currentRelease,
-        targetLabels.map((row) => row.name),
-      );
-      const openReleaseRows = await db
-        .select({ issueId: issues.id, label: labels.name })
-        .from(issues)
-        .innerJoin(issueLabels, eq(issueLabels.issueId, issues.id))
-        .innerJoin(labels, eq(labels.id, issueLabels.labelId))
-        .where(and(
-          eq(issues.companyId, agent.companyId),
-          eq(issues.assigneeAgentId, agentId),
-          inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
-        ));
-      const hasOpenCurrentReleaseIssue = openReleaseRows.some((row) =>
-        runMatchesCurrentRelease(releaseSettings.currentRelease, [row.label]),
-      );
-      if (shouldDeferWakeForReleaseFocus({
-        currentRelease: releaseSettings.currentRelease,
-        targetMatchesRelease,
-        hasOpenCurrentReleaseIssue,
-        manualUserWake: opts.manualUserWake,
-      })) {
-        await writeSkippedRequest("release_focus", {
-          payload: {
-            ...(payload ?? {}),
-            issueId,
-            releaseFocus: {
-              currentRelease: releaseSettings.currentRelease,
-              reason: "open_current_release_issue",
-            },
-          },
-        });
-        return null;
-      }
-    }
 
     const schedulingSuppression = await getSchedulingSuppression();
     if (schedulingSuppression.suppressed) {

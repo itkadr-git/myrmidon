@@ -124,6 +124,8 @@ export function assertRunPriorityQueueInvariant(settings: Pick<RunPrioritySettin
 /** The full settings shape. */
 export interface RunPrioritySettings {
   enabled: boolean;
+  /** Strictly restrict task assignment to current-release work when active. */
+  strictReleaseFocus: boolean;
   /** Role key (lowercase) -> weight. */
   roleWeights: Record<string, number>;
   defaultRoleWeight: number;
@@ -158,6 +160,7 @@ export interface RunPrioritySettings {
 export const runPrioritySettingsSchema = z
   .object({
     enabled: z.boolean(),
+    strictReleaseFocus: z.boolean(),
     roleWeights: z.record(z.string(), z.number().finite()),
     defaultRoleWeight: z.number().int().min(0).max(1000),
     issuePriorityWeights: z.record(z.string(), z.number().finite()),
@@ -182,6 +185,7 @@ export const runPrioritySettingsSchema = z
 export const storedRunPrioritySchema = z
   .object({
     enabled: z.boolean().optional(),
+    strictReleaseFocus: z.boolean().optional(),
     roleWeights: z.record(z.string(), z.number().finite()).optional(),
     defaultRoleWeight: z.number().int().min(0).max(1000).optional(),
     issuePriorityWeights: z.record(z.string(), z.number().finite()).optional(),
@@ -252,6 +256,7 @@ export function readRunPriorityFromEnv(
       enabledRaw === undefined || enabledRaw === ""
         ? true
         : !(enabledRaw === "0" || enabledRaw.toLowerCase() === "off" || enabledRaw.toLowerCase() === "false"),
+    strictReleaseFocus: true,
     roleWeights:
       parseEnvWeightMap(env[RUN_PRIORITY_ENV_KEYS.roleWeights]) ?? { ...DEFAULT_RUN_PRIORITY_ROLE_WEIGHTS },
     defaultRoleWeight: parseEnvNumber(env[RUN_PRIORITY_ENV_KEYS.defaultRoleWeight]) ?? DEFAULT_RUN_PRIORITY_ROLE_WEIGHT,
@@ -287,6 +292,7 @@ export function normalizeRunPrioritySettings(
   const row = parsed.success ? parsed.data : {};
   return {
     enabled: row.enabled ?? fallback.enabled,
+    strictReleaseFocus: row.strictReleaseFocus ?? true,
     roleWeights: row.roleWeights ? normalizeWeightMap(row.roleWeights, fallback.roleWeights) : { ...fallback.roleWeights },
     defaultRoleWeight: row.defaultRoleWeight ?? fallback.defaultRoleWeight,
     issuePriorityWeights: row.issuePriorityWeights
@@ -318,6 +324,7 @@ export function mergeRunPrioritySettings(
 ): RunPrioritySettings {
   const next: RunPrioritySettings = { ...base, roleWeights: { ...base.roleWeights }, issuePriorityWeights: { ...base.issuePriorityWeights } };
   if (patch.enabled !== undefined) next.enabled = patch.enabled;
+  if (patch.strictReleaseFocus !== undefined) next.strictReleaseFocus = patch.strictReleaseFocus;
   if (patch.roleWeights !== undefined) next.roleWeights = normalizeWeightMap(patch.roleWeights, base.roleWeights);
   if (patch.defaultRoleWeight !== undefined) next.defaultRoleWeight = patch.defaultRoleWeight;
   if (patch.issuePriorityWeights !== undefined)

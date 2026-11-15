@@ -1,11 +1,25 @@
-import { sql, type SQL } from "drizzle-orm";
-import { issues } from "@myrmidon/db";
+import { and, eq, sql, type SQL } from "drizzle-orm";
+import { issues, type Db } from "@myrmidon/db";
 import { currentRunPrioritySettings } from "./run-priority/state.js";
+
+/**
+ * The release the board is focused on, or null when focus is off: either no
+ * current release is set or the owner turned runPriority.strictReleaseFocus
+ * off. Read live from the in-force settings, so a settings change applies
+ * without a restart. Swarm matcher, idle pickup and the run-start gate all
+ * gate on it. When every current-release task is blocked or in review, focus
+ * stays active on purpose: the operator lifts it with the setting.
+ */
+export function strictReleaseFocusRelease(): string | null {
+  const settings = currentRunPrioritySettings();
+  if (!settings.strictReleaseFocus) return null;
+  return settings.currentRelease?.trim() ? settings.currentRelease : null;
+}
 
 /** Shared by swarm queue reads and assigned-task idle pickup; reviews bypass it. */
 export function releaseFocusCondition(companyId: string): SQL {
-  const release = currentRunPrioritySettings().currentRelease;
-  if (!release?.trim()) return sql`true`;
+  const release = strictReleaseFocusRelease();
+  if (!release) return sql`true`;
   const normalized = release.trim().toLowerCase();
   const matches = (name: SQL) => sql`lower(trim(${name})) = ${normalized}`;
   // Assignment alone is not provenance. Unknown/legacy assignments fail closed.
@@ -48,4 +62,28 @@ export function releaseFocusCondition(companyId: string): SQL {
     where candidate_link.company_id = ${companyId} and candidate_link.issue_id = ${issues.id}
       and ${matches(sql`candidate_label.name`)}
   ))`;
+}
+
+/**
+ * The run-start gate (called from `claimQueuedRun`, the one place every queued
+ * run passes). True when strict focus is active, the run's task is not part of
+ * the current release (same predicate as `releaseFocusCondition`, company
+ * scoped) and the owner did not assign it by hand. A review the agent is the
+ * current participant of passes, as in idle pickup. Runs without a task and
+ * tasks that no longer exist pass.
+ */
+export async function runViolatesReleaseFocus(
+  db: Db,
+  input: { companyId: string; agentId: string; issueId: string | null },
+): Promise<boolean> {
+  if (!input.issueId || !strictReleaseFocusRelease()) return false;
+  const reviewParticipant = sql`(${issues.status} = 'in_review'
+    and ${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent'
+    and ${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${input.agentId})`;
+  const [row] = await db
+    .select({ allowed: sql<boolean>`(${releaseFocusCondition(input.companyId)}) or ${reviewParticipant}` })
+    .from(issues)
+    .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+    .limit(1);
+  return row !== undefined && row.allowed !== true;
 }

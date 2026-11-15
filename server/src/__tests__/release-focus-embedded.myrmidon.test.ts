@@ -97,4 +97,41 @@ suite("release focus candidate queries", () => {
     expect((await candidates()).map((row) => row.id).sort()).toEqual([automatic, manual, review].sort());
     expect((await readSwarmQueueCounters(db, { companyIds: [companyId], now: new Date() })).queuedUnassigned).toBe(1);
   });
+
+  it("strictReleaseFocus=false hands out other-release tasks in both queries; true restricts again", async () => {
+    const focused = { ...currentRunPrioritySettings({}), currentRelease: "1.6.9", strictReleaseFocus: true };
+    applyRunPrioritySettings(focused);
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "company-flag", issuePrefix: "RG" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "engineer-flag", role: "engineer", adapterType: "process" });
+    const current = randomUUID();
+    const assigned18 = randomUUID();
+    const queued18 = randomUUID();
+    await db.insert(issues).values([
+      { id: current, companyId, title: "current", status: "todo" },
+      { id: assigned18, companyId, title: "assigned 1.8", status: "todo", assigneeAgentId: agentId },
+      { id: queued18, companyId, title: "queued 1.8", status: "todo" },
+    ]);
+    const label169 = randomUUID();
+    const label18 = randomUUID();
+    await db.insert(labels).values([
+      { id: label169, companyId, name: "1.6.9", color: "#123456" },
+      { id: label18, companyId, name: "1.8", color: "#123456" },
+    ]);
+    await db.insert(issueLabels).values([
+      { companyId, issueId: current, labelId: label169 },
+      { companyId, issueId: assigned18, labelId: label18 },
+      { companyId, issueId: queued18, labelId: label18 },
+    ]);
+    const queued = async () => (await readSwarmQueueCounters(db, { companyIds: [companyId], now: new Date() })).queuedUnassigned;
+    expect(await idlePickupCandidateRows(db, companyId, agentId)).toHaveLength(0);
+    expect(await queued()).toBe(1);
+    applyRunPrioritySettings({ ...focused, strictReleaseFocus: false });
+    expect((await idlePickupCandidateRows(db, companyId, agentId)).map((row) => row.id)).toEqual([assigned18]);
+    expect(await queued()).toBe(2);
+    applyRunPrioritySettings(focused);
+    expect(await idlePickupCandidateRows(db, companyId, agentId)).toHaveLength(0);
+    expect(await queued()).toBe(1);
+  });
 });

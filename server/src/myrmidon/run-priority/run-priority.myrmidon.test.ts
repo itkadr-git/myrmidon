@@ -25,12 +25,7 @@ import {
   sortByRunPriority,
   type PriorityScoredRun,
 } from "./scoring.js";
-import {
-  applyRunPrioritySettings,
-  currentRunPrioritySettings,
-  resetRunPriorityForTests,
-  resolveRunPriority,
-} from "./state.js";
+import { applyRunPrioritySettings, currentRunPrioritySettings, resetRunPriorityForTests, resolveRunPriority } from "./state.js";
 
 const NOW = 1_700_000_000_000;
 const MIN = 60_000;
