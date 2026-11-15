@@ -132,7 +132,7 @@ class CollectorTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(Path(collector.__file__)), '--disk-path', '/dev/shm'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 2)
         report = json.loads(result.stdout)
-        self.assertEqual(report['disk']['path'], '/dev/shm')
+        self.assertNotIn('path', report['disk'])
         self.assertEqual(report['disk']['status'], 'ok')
         self.assertGreater(report['disk']['total_bytes'], 0)
 
