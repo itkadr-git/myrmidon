@@ -5319,7 +5319,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               manifestCompanyName,
               (await companies.list()).map((company) => company.name),
             ));
-      const created = await companies.create({
+      const companyInput = {
         name: companyName,
         description: include.company ? (sourceManifest.company?.description ?? null) : null,
         requireBoardApprovalForNewAgents: include.company
@@ -5337,7 +5337,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         feedbackDataSharingTermsVersion: include.company
           ? (sourceManifest.company?.feedbackDataSharingTermsVersion ?? null)
           : null,
-      }, { transferRunId: options?.transferRunId });
+      };
+      const created = options?.transferRunId
+        ? await companies.create(companyInput, { transferRunId: options.transferRunId })
+        : await companies.create(companyInput);
       if (mode === "agent_safe" && options?.sourceCompanyId) {
         await access.copyActiveUserMemberships(options.sourceCompanyId, created.id);
       } else {

@@ -2115,6 +2115,22 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/companies/{companyId}/migrations",
+  tags: ["companies"],
+  summary: "Preview a company migration without writing",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(z.object({
+      target: z.object({ mode: z.literal("new_company"), newCompanyName: z.string().trim().min(1) }).strict(),
+      export: companyPortabilityExportSchema.optional().default({}),
+      dryRun: z.literal(true).optional().default(true),
+    }).strict()),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/companies/{companyId}/exports",
   tags: ["companies"],
   summary: "Export company data",
