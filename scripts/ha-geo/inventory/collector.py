@@ -86,7 +86,7 @@ def query_postgres(socket, database, user):
     return data
 
 
-def collect(socket=None, database=None, user=None):
+def collect(socket=None, database=None, user=None, disk_path='/'):
     postgres = {'status': 'unknown', 'reason': 'local PostgreSQL connection not requested'}
     if socket:
         try:
@@ -98,8 +98,8 @@ def collect(socket=None, database=None, user=None):
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
             postgres = {'status': 'error', 'reason': 'query failed or access denied; details suppressed'}
     try:
-        disk = shutil.disk_usage('/')
-        disk_info = {'status': 'ok', 'path': '/', 'total_bytes': disk.total, 'free_bytes': disk.free}
+        disk = shutil.disk_usage(disk_path)
+        disk_info = {'status': 'ok', 'path': disk_path, 'total_bytes': disk.total, 'free_bytes': disk.free}
     except OSError:
         disk_info = {'status': 'error', 'reason': 'disk usage unavailable'}
     return {'schemaVersion': 1, 'postgres': postgres, 'disk': disk_info,
@@ -123,11 +123,12 @@ def main():
     parser.add_argument('--socket', help='explicit absolute local Unix socket directory')
     parser.add_argument('--database', help='database name, without connection options')
     parser.add_argument('--user', help='database user name, without connection options')
+    parser.add_argument('--disk-path', default='/', help='local filesystem path to measure (default: /)')
     args = parser.parse_args()
     if any((args.socket, args.database, args.user)):
         if not all((args.socket, args.database, args.user)) or not args.socket.startswith('/') or any(c in args.socket for c in ',=') or any(c in value for value in (args.database, args.user) for c in '=:/'):
             parser.error('provide an absolute local socket directory and simple database and user names')
-    report = collect(args.socket, args.database, args.user)
+    report = collect(args.socket, args.database, args.user, args.disk_path)
     print(json.dumps(report, sort_keys=True))
     return 2 if any(report[name]['status'] != 'ok' for name in ('postgres', 'disk', 'ci_browser_profile', 'time_sync', 'tls', 'login_method', 'backup')) or not all(report['resources'].values()) else 0
 

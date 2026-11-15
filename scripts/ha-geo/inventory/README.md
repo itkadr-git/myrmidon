@@ -20,7 +20,9 @@ Replace the socket directory, database and user with the approved values. The
 account must be permitted to connect without a password prompt and to read the
 listed statistics. No credentials are passed through the environment. The
 collector does not enable TLS for a Unix socket; it does not assess remote TLS.
-The disk measurement is for `/`, not necessarily the database volume. The collector
+The disk measurement defaults to `/`, not necessarily the database volume. Pass
+`--disk-path /APPROVED/DATABASE/VOLUME` to measure an approved local volume;
+only supply a path without secrets because it is included in the JSON. The collector
 checks only whether the `chromium`, `openssl` and `sshd` executables are present;
 this does not identify the CI profile, configured TLS, or allowed login methods.
 The CI/browser section also reports the total size of `/dev/shm` when available;
