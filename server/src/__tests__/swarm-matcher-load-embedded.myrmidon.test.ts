@@ -328,16 +328,18 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
       expect(claims).toHaveLength(0);
     });
 
-    it("frees an in-progress issue with a recently updated PR in review", async () => {
+    it("frees an in-progress issue with an open PR in review for over 15 minutes", async () => {
       const companyId = await seedCompany();
       const agent = await seedAgent(companyId, "agent-reviewing");
       const issueId = await seedTask(companyId, { assigneeAgentId: agent, status: "in_progress" });
       await db.insert(issueWorkProducts).values({
         id: randomUUID(), companyId, issueId, type: "pull_request", provider: "github",
         title: "PR awaiting review", status: "open", reviewState: "ready_for_review",
+        metadata: { repository: "example/repo", number: 42 },
         updatedAt: new Date(Date.now() - 20 * 60_000),
       });
-      expect((await openLoadByAgent(db, companyId)).get(agent)).toBe(1);
+      expect((await openLoadByAgent(db, companyId)).get(agent) ?? 0).toBe(0);
+      await seedTask(companyId, { assigneeAgentId: agent, status: "in_progress" });
 
       const task = await seedTask(companyId);
       const wakes: string[] = [];
