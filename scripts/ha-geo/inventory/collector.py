@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import shutil
+import ssl
 import subprocess
 
 
@@ -56,6 +57,15 @@ def capability(name, label):
     available = shutil.which(name, path='/usr/bin:/bin:/usr/sbin:/sbin') is not None
     return {'status': 'incomplete', label: available,
             'reason': 'binary availability does not establish configuration or service health'}
+
+
+def tls_profile():
+    profile = capability('openssl', 'openssl_available')
+    profile.update(openssl_version=ssl.OPENSSL_VERSION,
+                   tls_1_2_available=ssl.HAS_TLSv1_2,
+                   tls_1_3_available=ssl.HAS_TLSv1_3,
+                   reason='local Python TLS capabilities do not establish server configuration or health')
+    return profile
 
 
 def login_profile():
@@ -162,7 +172,7 @@ def collect(socket=None, database=None, user=None, disk_path='/'):
             'resources': {'cpu_count': os.cpu_count(), 'memory_bytes': memory()},
             'ci_browser_profile': browser_profile(),
             'time_sync': time_sync_status(),
-            'tls': capability('openssl', 'openssl_available'),
+            'tls': tls_profile(),
             'login_method': login_profile(),
             'backup': backup_profile()}
 

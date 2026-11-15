@@ -24,7 +24,9 @@ The disk measurement defaults to `/`, not necessarily the database volume. Pass
 `--disk-path /APPROVED/DATABASE/VOLUME` to measure an approved local volume;
 the supplied path is not included in the JSON. The collector
 checks whether the `chromium`, `openssl` and `sshd` executables are present;
-this does not identify the CI profile or configured TLS. If sshd is available,
+this does not identify the CI profile or configured TLS. Python's linked OpenSSL
+version and TLS 1.2/1.3 feature flags describe local client-library capabilities,
+not the server's network TLS configuration. If sshd is available,
 `sshd -T` reports default password, public-key and keyboard-interactive settings.
 Only those booleans are retained; other output and errors are suppressed. This
 does not evaluate Match rules, confirm service health, or establish access for a
