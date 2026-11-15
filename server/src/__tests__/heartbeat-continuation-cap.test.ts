@@ -928,13 +928,11 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
         expect(await statusOf(issueId)).toBe("blocked");
       });
 
-      it("caps an agent of any other role (cto, architect, operator)", async () => {
-        for (const role of ["cto", "architect", "operator"]) {
-          const { agentId, issueId } = await seedScene({ role });
-          expect(await wakeWith(agentId, issueId)).toBeNull();
-          expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(1);
-          expect(await statusOf(issueId)).toBe("blocked");
-        }
+      it.each(["cto", "architect", "operator"])("caps an agent of role %s", async (role) => {
+        const { agentId, issueId } = await seedScene({ role });
+        expect(await wakeWith(agentId, issueId)).toBeNull();
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(1);
+        expect(await statusOf(issueId)).toBe("blocked");
       });
     });
   });
