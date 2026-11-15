@@ -194,6 +194,8 @@ interface StaleRow {
   companyId: string;
   agentId: string | null;
   updatedAt: Date;
+  /** The same instant as text, at the column's own precision: the keyset cursor. */
+  updatedAtText: string;
   role: string;
 }
 
@@ -228,7 +230,7 @@ export function createInProgressIdleWakeSweeper(deps: InProgressIdleWakeDeps): I
       const agentGate = new Map<string, { ok: boolean; ready: Set<string> }>();
       const wokenAgents = new Set<string>();
       const seen = new Set<string>();
-      let cursor: { updatedAt: Date; id: string } | null = null;
+      let cursor: { updatedAtText: string; id: string } | null = null;
       for (let page = 0; page < MAX_PAGES; page += 1) {
         const stale: StaleRow[] = await deps.db
           .select({
@@ -236,6 +238,7 @@ export function createInProgressIdleWakeSweeper(deps: InProgressIdleWakeDeps): I
             companyId: issues.companyId,
             agentId: issues.assigneeAgentId,
             updatedAt: issues.updatedAt,
+            updatedAtText: sql<string>`${issues.updatedAt}::text`,
             role: agents.role,
           })
           .from(issues)
@@ -248,7 +251,7 @@ export function createInProgressIdleWakeSweeper(deps: InProgressIdleWakeDeps): I
               sql`${issues.assigneeUserId} is null`,
               sql`${issues.updatedAt} <= ${cutoff.toISOString()}::timestamptz`,
               cursor
-                ? sql`(${issues.updatedAt}, ${issues.id}) > (${new Date(cursor.updatedAt.getTime() - 1).toISOString()}::timestamptz, ${cursor.id}::uuid)`
+                ? sql`(${issues.updatedAt}, ${issues.id}) > (${cursor.updatedAtText}::timestamptz, ${cursor.id}::uuid)`
                 : undefined,
             ),
           )
@@ -256,7 +259,7 @@ export function createInProgressIdleWakeSweeper(deps: InProgressIdleWakeDeps): I
           .limit(CANDIDATE_LIMIT);
         if (stale.length === 0) break;
         const lastRow = stale[stale.length - 1]!;
-        cursor = { updatedAt: new Date(lastRow.updatedAt), id: lastRow.id };
+        cursor = { updatedAtText: lastRow.updatedAtText, id: lastRow.id };
 
         for (const issue of stale) {
           if (seen.has(issue.id)) continue;

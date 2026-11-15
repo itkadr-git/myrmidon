@@ -324,6 +324,64 @@ describeEmbeddedPostgres("in-progress idle wake sweep (OPE-13202)", () => {
     expect(enqueueWakeup).toHaveBeenCalledWith(freeAgentId, expect.anything());
   }, 60_000);
 
+  it("keyset paging does not stall when more than a page of tasks share one updatedAt", async () => {
+    const { companyId, agentId: busyAgentId } = await seedAgent();
+    const freeAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: freeAgentId,
+      companyId,
+      name: "agent-free",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: busyAgentId,
+      status: "running",
+      invocationSource: "automation",
+      contextSnapshot: {},
+    });
+    // One instant with sub-millisecond digits, shared by all 201 tasks; the ids
+    // order the eligible task last, so it is the 201st row of the walk.
+    const sameAt = new Date(Date.now() - 600 * MIN);
+    const pad = (n: number) => n.toString(16).padStart(12, "0");
+    await db.insert(issues).values(
+      Array.from({ length: 200 }, (_, i) => ({
+        id: `00000000-0000-4000-8000-${pad(i)}`,
+        companyId,
+        title: `Excluded ${i}`,
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: busyAgentId,
+        createdAt: sameAt,
+        updatedAt: sameAt,
+      })),
+    );
+    const eligibleId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    await db.insert(issues).values({
+      id: eligibleId,
+      companyId,
+      title: "Eligible",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: freeAgentId,
+      createdAt: sameAt,
+      updatedAt: sameAt,
+    });
+    const { sweeper, enqueueWakeup } = makeSweeper();
+
+    const result = await sweeper.sweep(new Date());
+
+    expect(result.issueIds).toEqual([eligibleId]);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(enqueueWakeup).toHaveBeenCalledWith(freeAgentId, expect.anything());
+  }, 60_000);
+
   it("wakes once the head CI has finished", async () => {
     const { companyId, agentId } = await seedAgent();
     const issueId = await seedIssue({ companyId, agentId, idleMinutes: 21 });
