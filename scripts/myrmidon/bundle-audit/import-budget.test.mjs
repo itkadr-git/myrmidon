@@ -7,6 +7,17 @@ import { spawnSync } from 'node:child_process';
 
 const cli = new URL('./import-budget.mjs', import.meta.url).pathname;
 
+test('CLI scans nested template expressions without treating strings as syntax', () => {
+  const dir = mkdtempSync(join(process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || tmpdir(), 'import-budget-'));
+  try {
+    writeFileSync(join(dir, 'entry.mjs'), "const x = `outer ${ { text: '}', value: `inner ${require('./child.mjs')}` } }`;\n");
+    writeFileSync(join(dir, 'child.mjs'), 'export default 1;');
+    const run = spawnSync(process.execPath, [cli, join(dir, 'entry.mjs')], { encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr);
+    assert.ok(JSON.parse(run.stdout).edges.some(e => e.specifier === './child.mjs' && e.kind === 'eager'));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('CLI resolves escaped literal specifiers', () => {
   const dir = mkdtempSync(join(process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || tmpdir(), 'import-budget-'));
   try {
