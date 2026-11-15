@@ -1136,7 +1136,7 @@ async function issueHasInboundActivitySince(
  * to lift the hold — so counting it as cover kept the issue out of every pass
  * for good once the hold was gone (the parked wake outlives the hold).
  */
-async function hasCoveringWake(
+export async function hasCoveringWake(
   db: Db,
   agent: { id: string; companyId: string },
   issueId: string,
