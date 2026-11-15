@@ -13,6 +13,7 @@ SQL = """SELECT json_build_object(
  'db_bytes', pg_database_size(current_database()),
  'in_recovery', pg_is_in_recovery(),
  'wal_level', current_setting('wal_level'),
+ 'wal_compression', current_setting('wal_compression', true),
  'archive_mode', current_setting('archive_mode'),
  'archive_timeout', current_setting('archive_timeout'),
  'wal_keep_size', current_setting('wal_keep_size', true),
@@ -36,7 +37,7 @@ SQL = """SELECT json_build_object(
  'archive_last_failure', (SELECT last_failed_time FROM pg_stat_archiver),
  'archive_failures', (SELECT failed_count FROM pg_stat_archiver)
 )::text;"""
-FIELDS = ('server_version_num', 'db_bytes', 'in_recovery', 'wal_level', 'archive_mode',
+FIELDS = ('server_version_num', 'db_bytes', 'in_recovery', 'wal_level', 'wal_compression', 'archive_mode',
           'archive_timeout', 'wal_keep_size', 'max_wal_size', 'min_wal_size',
           'checkpoint_timeout', 'full_page_writes', 'max_wal_senders', 'max_replication_slots',
           'streaming', 'lag_bytes', 'lag_seconds', 'ssl', 'ssl_configured', 'archive_last_success',
