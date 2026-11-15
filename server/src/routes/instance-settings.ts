@@ -114,6 +114,8 @@ function withTaskDrainTransition<T>(run: () => Promise<T>): Promise<T> {
   return turn;
 }
 
+import { syncRunPriorityFromStore } from "../myrmidon/run-priority/sync.js";
+
 export function instanceSettingsRoutes(
   db: Db,
   options: { processBus?: { publish(channel: "settings_changed", payload: unknown): Promise<void> } } = {},
@@ -239,6 +241,13 @@ export function instanceSettingsRoutes(
         } else {
           heartbeat.applyTaskDrain(null);
         }
+      }
+      // The run priority lives in process memory: this process applies it now,
+      // the bus notice below makes the others re-read the row.
+      if (Object.prototype.hasOwnProperty.call(patch, "runPriority")) {
+        await syncRunPriorityFromStore(db).catch((err: unknown) => {
+          logger.warn({ err }, "run priority saved but not applied in this process");
+        });
       }
       const changedKeys = Object.keys(req.body).sort();
       // Failure is non-fatal because periodic settings readers are the fallback.
