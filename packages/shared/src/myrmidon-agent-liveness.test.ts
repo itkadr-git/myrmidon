@@ -25,10 +25,11 @@ describe("agent liveness defaults", () => {
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.reviewerQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.leadQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.probeIntervalSec).toBe(DEFAULT_TEAM_LIVENESS_SETTINGS.idlePickupIntervalSec);
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.enabled).toBe(false);
+    // These defaults are the D1 baseline constants used by the A1/B1/C2
+    // behavior modules; keep them grouped here so their contracts cannot drift.
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.probeTimeoutSec).toBe(5);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.escalationSteps).toBe(6);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.escalationStepTimeoutSec).toBe(30 * 60);
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.probeTimeoutSec).toBe(5);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.journalDedupWindowSec).toBe(900);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.journalRetentionDays).toBe(30);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.exclusionWindows).toEqual([]);

@@ -37027,9 +37027,8 @@ export function heartbeatService(
         ),
       });
     },
-    // myrmidon(AGENT-LIVENESS-D1): thresholds are re-read per pass through
-    // readAgentLivenessSettings; nothing to apply live until D2 wires a
-    // consumer, so the hook stays a no-op for now.
+    // myrmidon(AGENT-LIVENESS-D1): no consumer is added in D1, so settings
+    // writes must preserve the existing heartbeat behavior exactly.
     applyAgentLiveness: async () => {},
     enqueueWakeup,
     insertReviewAdmissionWakeup,
