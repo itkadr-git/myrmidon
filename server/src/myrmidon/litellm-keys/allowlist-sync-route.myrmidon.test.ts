@@ -98,6 +98,11 @@ describe("POST …/litellm/keys/allowlist-sync", () => {
     expect(mocks.record).not.toHaveBeenCalled();
   });
 
+  it("scopes an applied synchronization to card models rather than the entire registry", async () => {
+    await request(app(admin)).post(`${url}?apply=true`).expect(200);
+    expect(mocks.pass).toHaveBeenCalledWith(db, keyDeps, COMPANY_ID, [], [], false, { apply: true, cardModelsOnly: true });
+  });
+
   it("applies only with ?apply=true (or 1), and writes an audit row", async () => {
     mocks.pass.mockResolvedValueOnce({ attempted: 2, updated: 2, skipped: [] } as never);
 
