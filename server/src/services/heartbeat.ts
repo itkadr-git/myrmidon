@@ -27441,6 +27441,7 @@ export function heartbeatService(
                     id: agent.id,
                     name: agent.name,
                     companyId: agent.companyId,
+                    adapterType: agent.adapterType,
                   },
                   heartbeatRunId: run.id,
                   enableWorkspaceBranchReconcileForward:
