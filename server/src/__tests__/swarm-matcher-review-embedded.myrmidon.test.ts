@@ -38,7 +38,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { createCasteDirectoryReader } from "../myrmidon/castes/directory.js";
 import { matchFreedAgent } from "../myrmidon/swarm-claim/index.js";
-import { matchAgent, matchCompany, type SwarmMatcherDeps } from "../myrmidon/swarm-claim/matcher.js";
+import { listIdleRolePairs, matchAgent, matchCompany, type SwarmMatcherDeps } from "../myrmidon/swarm-claim/matcher.js";
 import { tryDevReviewContinuationOnRelease } from "../myrmidon/review-continuation.js";
 import { createSwarmClaimSweeper, type SwarmClaimSweeperDeps } from "../myrmidon/swarm-claim/sweep.js";
 import type { HostCpuGate, HostMemoryGate } from "../myrmidon/run-admission.js";
@@ -104,6 +104,17 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("reports idle engineers even when their ready queue is empty", async () => {
+    const companyId = await seedCompany();
+    const engineerId = await seedAgent(companyId);
+
+    const pairs = await listIdleRolePairs(db, companyId, { roles: ["engineer"] });
+
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0].queue).toEqual([]);
+    expect(pairs[0].agents.map((agent) => agent.id)).toContain(engineerId);
   });
 
   it("dev handoff scopes both own and unassigned queues before the SQL limit", async () => {
