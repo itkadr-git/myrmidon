@@ -4,10 +4,11 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, rmSyn
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
 
 const cli = fileURLToPath(new URL('./artifact-audit.mjs', import.meta.url));
 function fixture(t, manifest, files = {}) {
-  const root = mkdtempSync(join(process.env.TMPDIR, 'artifact-audit-'));
+  const root = mkdtempSync(join(tmpdir(), 'artifact-audit-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   function write(rel, text) { const p = join(root, rel); mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, text); }
   write('pnpm-workspace.yaml', 'packages:\n  - packages/*\n');
