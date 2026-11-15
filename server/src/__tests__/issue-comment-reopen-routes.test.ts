@@ -4327,19 +4327,16 @@ describe.sequential("issue comment reopen routes", () => {
     it("does not wake the executor for a repeated return on the same head", async () => {
       const { options } = routeOptions({ headSha: HEAD_A });
       const issue = await pendingReviewIssue(HEAD_A);
-      issue.executionState.lastDecisionId = "previous-decision";
       const res = await returnTask(issue, "Exact-head CI is still failing, do not resubmit", options);
 
       expect(res.status).toBe(200);
-      await waitForWakeup(() =>
-        expect(mockIssueService.addComment).toHaveBeenCalledWith(
-          ISSUE_ID,
-          expect.stringContaining("Повторный возврат на той же голове"),
-          { runId: null },
-          { authorType: "system" },
-        ),
-      );
       await settleDetachedWork();
+      expect(mockIssueService.addComment).not.toHaveBeenCalledWith(
+        ISSUE_ID,
+        expect.stringContaining("Повторный возврат на той же голове"),
+        { runId: null },
+        { authorType: "system" },
+      );
       expect(executorWoken()).toBe(false);
     });
 
@@ -4361,7 +4358,7 @@ describe.sequential("issue comment reopen routes", () => {
       expect(resolveReviewHeadFailedChecks).not.toHaveBeenCalled();
     });
 
-    it("does not wake the executor for a code comment when the new return has the same head", async () => {
+    it("wakes the executor for a new code review decision when the head is unchanged", async () => {
       const { options } = routeOptions({ headSha: HEAD_A });
       const res = await returnTask(
         await pendingReviewIssue(HEAD_A),
@@ -4370,16 +4367,7 @@ describe.sequential("issue comment reopen routes", () => {
       );
 
       expect(res.status).toBe(200);
-      await waitForWakeup(() =>
-        expect(mockIssueService.addComment).toHaveBeenCalledWith(
-          ISSUE_ID,
-          expect.stringContaining("Повторный возврат на той же голове"),
-          { runId: null },
-          { authorType: "system" },
-        ),
-      );
-      await settleDetachedWork();
-      expect(executorWoken()).toBe(false);
+      await waitForWakeup(() => expect(executorWoken()).toBe(true));
     });
 
     it("does not wake the executor when only infrastructure checks failed and the comment reports only CI", async () => {

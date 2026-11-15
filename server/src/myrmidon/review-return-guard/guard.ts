@@ -17,6 +17,7 @@ import {
 
 type StateWithHead = {
   status?: string | null;
+  lastDecisionId?: string | null;
   lastChangesRequestedHeadSha?: string | null;
 } | null | undefined;
 
