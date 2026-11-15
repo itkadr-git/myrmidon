@@ -216,6 +216,22 @@ describe("host-clone-cache-gc e2e", () => {
   });
 
   describe("scratch-gc e2e (BOT-DISK-SCRATCH)", () => {
+    it("prunes scratch older than six hours by default", async () => {
+      const root = path.join(tmpDir, "bots");
+      const scratch = path.join(root, "bot-1/hermes/cache/scratch");
+      fs.mkdirSync(scratch, { recursive: true });
+      const stale = path.join(scratch, "stale");
+      const fresh = path.join(scratch, "fresh");
+      fs.writeFileSync(stale, "stale");
+      fs.writeFileSync(fresh, "fresh");
+      const old = new Date(Date.now() - 7 * 3600 * 1000);
+      fs.utimesSync(stale, old, old);
+      const r = await runScript(["--root", root, "--lock", path.join(tmpDir, "gc.lock"), "--journal", path.join(tmpDir, "gc.jsonl"), "--apply"]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(fs.existsSync(stale), false);
+      assert.equal(fs.existsSync(fresh), true);
+    });
+
     it("apply prunes stale scratch directories and writes scratch-pruned to journal", async () => {
       const botsRoot = path.join(tmpDir, "bots");
       const bot1Scratch = path.join(botsRoot, "bot-1/hermes/cache/scratch");
