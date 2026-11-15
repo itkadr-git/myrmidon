@@ -48,3 +48,18 @@ storage/database boundaries for no-write dry-run, confirmation, duplicate apply,
 partial failure and recovery, collision handling, company isolation, secret
 redaction and rollback. A green CI run for an earlier incomplete implementation is
 not evidence that these scenarios pass.
+
+The existing import path is not a recovery mechanism: it creates the destination
+company before importing its entities, and its error handler only attempts to
+remove secrets created during import. Its result does not enumerate imported
+issues. The transfer-run service also states that apply is not itself idempotent.
+A migration implementation must therefore record ownership of each created
+resource durably at the same boundary as creation, cover non-database resources,
+serialize competing applies, and prove recovery after interruption. A completed
+transfer ledger entry or a list assembled only after import returns is not enough
+for retry or rollback after a partial failure.
+
+The current export-preview unit test uses mocked services. It is not proof that a
+migration dry-run leaves database rows, storage and audit unchanged. Verify those
+boundaries against the actual migration entry point in integration tests before
+claiming the read-only gate is satisfied.
