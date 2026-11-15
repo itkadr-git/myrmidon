@@ -324,13 +324,9 @@ export class FleetOnboardExecutor {
               await activeSsh.connect(connOptions);
             }
 
-            await activeSsh.execute("docker stop $(docker ps -q) 2>/dev/null || true");
-            await activeSsh.execute("sed -i '/myrmidon-access/d' ~/.ssh/authorized_keys 2>/dev/null || true");
-            await activeSsh.execute(`sudo ufw delete allow ${claim.server.port}/tcp 2>/dev/null || true`);
-
-            await reporter.reportStep("cleanup", "ok", "Decommission cleanup completed: services, keys, and firewall rules removed");
-            stepsCompleted.push("cleanup");
-            break;
+            // No ownership inventory is available yet; fail closed rather than deleting
+            // unrelated workloads, SSH keys, or firewall rules.
+            throw new Error("Decommission cleanup requires an ownership inventory");
           }
 
           default: {
