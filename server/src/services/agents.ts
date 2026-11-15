@@ -391,7 +391,7 @@ export function agentService(
   ports?: {
     castes?: AgentCasteDirectoryPort;
     /** Reconciles the model card's gateway-key allowlist after a persisted config update. */
-    syncAgentModelAllowlist?: (input: { companyId: string; agentId: string }) => Promise<void>;
+    syncAgentModelAllowlist?: (input: { companyId: string; agentId: string; db: Db }) => Promise<void>;
     /** Cleans an enabled bot container before lifecycle state or row changes. */
     cleanupBotContainer?: (agent: { id: string; adapterType: string; adapterConfig: Record<string, unknown> }) => Promise<void>;
     agentsModule?: AgentsModule;
@@ -1114,6 +1114,9 @@ export function agentService(
         }
       }
 
+      if (Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig")) {
+        await ports?.syncAgentModelAllowlist?.({ companyId: updated.companyId, agentId: updated.id, db: txDb });
+      }
       return normalizedUpdated;
     };
 
@@ -1239,11 +1242,7 @@ export function agentService(
     },
 
     update: async (id: string, data: Partial<typeof agents.$inferInsert>, options?: UpdateAgentOptions) => {
-      const updated = await updateAgent(id, data, options);
-      if (updated && Object.prototype.hasOwnProperty.call(data, "adapterConfig")) {
-        await ports?.syncAgentModelAllowlist?.({ companyId: updated.companyId, agentId: updated.id });
-      }
-      return updated;
+      return updateAgent(id, data, options);
     },
 
     pause: async (id: string, reason: "manual" | "budget" | "system" = "manual") => {

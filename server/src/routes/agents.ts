@@ -559,7 +559,7 @@ export function agentRoutes(
      * then a no-op, which keeps the pre-directory behavior exactly.
      */
     casteDirectory?: AgentCasteDirectoryPort;
-    syncAgentModelAllowlist?: (input: { companyId: string; agentId: string }) => Promise<void>;
+    syncAgentModelAllowlist?: (input: { companyId: string; agentId: string; db: Db }) => Promise<void>;
     agentsModule?: AgentsModule;
   } = {},
 ) {
