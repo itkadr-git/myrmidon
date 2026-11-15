@@ -2529,6 +2529,25 @@ describe("verify execution stages", () => {
     })).toThrow(/verify/i);
   });
 
+  it("does not let an orphaned review complete a labelled release with merged code", () => {
+    const policy = reviewOnlyPolicy();
+    const issue = {
+      ...pendingIssue(policy),
+      title: "Release change",
+      releaseLabels: ["1.7"],
+      hasMergedCode: true,
+      executionState: {
+        ...pendingIssue(policy).executionState,
+        currentStageId: "removed-review-stage",
+        currentStageType: "review" as const,
+      },
+    };
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue, policy, requestedStatus: "done", requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId }, commentBody: "Review approved",
+    })).toThrow(/verify/i);
+  });
+
   it("does not let the final review complete a release without verification", () => {
     const policy = reviewOnlyPolicy();
     const issue = {
