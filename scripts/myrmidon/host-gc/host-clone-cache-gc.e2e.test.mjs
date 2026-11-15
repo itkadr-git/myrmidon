@@ -425,6 +425,26 @@ describe("host-clone-cache-gc e2e", () => {
   });
 
   describe("scratch-gc e2e (BOT-DISK-SCRATCH)", () => {
+    it("retains an old scratch checkout with unpublished work", async () => {
+      const root = path.join(tmpDir, "bots");
+      const scratch = path.join(root, "bot-1/hermes/cache/scratch");
+      fs.mkdirSync(scratch, { recursive: true });
+      const clone = makeGitClone(path.join(scratch, "repo"));
+      const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+      const ageTree = (dir) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const child = path.join(dir, entry.name);
+          if (entry.isDirectory()) ageTree(child);
+          else if (!entry.isSymbolicLink()) fs.utimesSync(child, old, old);
+        }
+        fs.utimesSync(dir, old, old);
+      };
+      ageTree(clone);
+      const r = await runScript(["--root", root, "--lock", path.join(tmpDir, "gc.lock"), "--journal", path.join(tmpDir, "gc.jsonl"), "--apply"]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.ok(fs.existsSync(path.join(clone, ".git")), "scratch checkout must not be deleted as disposable data");
+    });
+
     it("discovers bot scratch when invoked with the bot workspace root", async () => {
       const bot = path.join(tmpDir, "bot");
       const workspace = path.join(bot, "workspace");
