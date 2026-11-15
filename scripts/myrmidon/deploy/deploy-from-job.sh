@@ -127,6 +127,19 @@ run_deploy() { # run_deploy <jobId> <digest>
     report "$job" error "Previous executor phase $previous_phase; reconcile deployment state before retrying"
     return 1
   fi
+  # A crash after appending intent but before creating the report must not
+  # start the same job again. An unreadable or malformed journal fails closed.
+  if [[ "$DRY_RUN" != "1" && -e "${RELEASE_AUDIT_FILE:-$STATE_DIR/release-events.jsonl}" ]]; then
+    local audit_file="${RELEASE_AUDIT_FILE:-$STATE_DIR/release-events.jsonl}" prior_intent
+    if ! prior_intent="$(jq -s -r --arg job "$job" 'any(.[]; .jobId == $job and .event == "deploy.intent")' "$audit_file")"; then
+      report "$job" error "release audit unreadable; reconcile deployment state before retrying"
+      return 1
+    fi
+    if [[ "$prior_intent" == "true" ]]; then
+      report "$job" error "previous deployment intent exists without a report; reconcile deployment state before retrying"
+      return 1
+    fi
+  fi
   # RELEASE-STAGE: persist intent before touching the maintenance window or
   # invoking deploy.sh. If the process dies afterwards, the host journal still
   # explains why a continuation is safe and what digest was intended.
