@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MockSshExecutor } from "../../services/fleet/mock-ssh-executor.js";
-import { FleetOnboardExecutor, type ExecutorReporter } from "./executor.js";
+import { defaultGenerateKeyPair, FleetOnboardExecutor, type ExecutorReporter } from "./executor.js";
 import type { OnboardJobClaim } from "./store.js";
 
 function createMockReporter(): {
@@ -28,6 +28,18 @@ function createMockReporter(): {
 }
 
 describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
+  it("generates an OpenSSH public key matching its private key", async () => {
+    const { createPublicKey } = await import("node:crypto");
+    const pair = defaultGenerateKeyPair();
+    const derived = createPublicKey(pair.privateKey).export({ format: "jwk" });
+    const [algorithm, encoded] = pair.publicKey.split(" ");
+    expect(algorithm).toBe("ssh-ed25519");
+    const wire = Buffer.from(encoded, "base64");
+    const typeLength = wire.readUInt32BE(0);
+    const keyLength = wire.readUInt32BE(4 + typeLength);
+    expect(derived.x).toBeDefined();
+    expect(wire.subarray(8 + typeLength, 8 + typeLength + keyLength)).toEqual(Buffer.from(derived.x ?? "", "base64url"));
+  });
   it("executes standard onboarding workflow and disables password when keepPassword=false", async () => {
     const mockSsh = new MockSshExecutor();
     // mock responses
