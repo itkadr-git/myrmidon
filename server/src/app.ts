@@ -55,6 +55,7 @@ import { summarySlotRoutes } from "./routes/summary-slots.js";
 import { statusCardRoutes } from "./routes/status-cards.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
+import { unprocessable } from "./errors.js";
 import { updateAgentAllowlistsForCompany, defaultAgentGatewayKeyDeps } from "./myrmidon/app-plugin.js";
 import type { SetupTokenSessionService } from "./services/setup-token-session.js";
 import {
@@ -1178,16 +1179,20 @@ export async function createApp(
   });
   api.use(
     agentRoutes(db, {
-      syncAgentModelAllowlist: async ({ companyId }) => {
-        await updateAgentAllowlistsForCompany(
+      syncAgentModelAllowlist: async ({ companyId, agentId }) => {
+        const result = await updateAgentAllowlistsForCompany(
           db,
           defaultAgentGatewayKeyDeps(db),
           companyId,
           [],
           [],
           false,
-          { includeRegistryModels: false, apply: true },
+          { cardModelsOnly: true, agentId, apply: true },
         );
+        const failures = result.skipped.filter((reason) => reason !== "gateway-key-management-not-configured" && reason !== `agent-without-key:${agentId}`);
+        if (failures.length) {
+          throw unprocessable(`Agent card saved, but gateway allowlist reconciliation failed: ${failures.join(", ")}`);
+        }
       },
       chatRunRetries: chatChannels,
       pluginWorkerManager: workerManager,

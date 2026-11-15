@@ -167,7 +167,8 @@ export interface AllowlistSyncOptions {
   includeRegistryModels?: boolean;
   /** Registry events reconcile only affected card models, never the full registry. */
   cardModelsOnly?: boolean;
-
+  /** Restrict a card-save pass to the agent being edited. */
+  agentId?: string;
 }
 
 function cardModelNames(adapterConfig: unknown): string[] {
@@ -291,6 +292,7 @@ export async function updateAgentAllowlistsForCompany(
   const skipped: string[] = [];
   const report = emptyReport();
   for (const agent of companyAgents) {
+    if (options.agentId && agent.id !== options.agentId) continue;
     let found: Awaited<ReturnType<typeof resolveAgentKeyRef>>;
     try {
       found = await resolveAgentKeyRef(agentGatewayKeys, companyId, agent, settings.agentKeyEnv);
