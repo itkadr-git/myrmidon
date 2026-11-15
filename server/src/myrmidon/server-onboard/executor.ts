@@ -265,11 +265,17 @@ export class FleetOnboardExecutor {
             }
 
             // 2. Start rollback timer (5 minutes / 300s)
+            const timerResult = await activeSsh.execute("nohup sh -c 'sleep 300 && sudo ufw disable' >/dev/null 2>&1 &");
+            if (timerResult.exitCode !== 0) {
+              throw new Error("Firewall rollback timer failed to start; refusing to enable deny policy");
+            }
             firewallRollbackArmed = true;
-            await activeSsh.execute("nohup sh -c 'sleep 300 && sudo ufw disable' >/dev/null 2>&1 &");
 
             // 3. Set default deny incoming & enable
-            await activeSsh.execute("sudo ufw default deny incoming && sudo ufw default allow outgoing && sudo ufw --force enable");
+            const policyResult = await activeSsh.execute("sudo ufw default deny incoming && sudo ufw default allow outgoing && sudo ufw --force enable");
+            if (policyResult.exitCode !== 0) {
+              throw new Error("Firewall deny policy failed; firewall hardening was not enabled");
+            }
 
             // 4. Verify connectivity using fresh connection
             try {
