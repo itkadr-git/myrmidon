@@ -667,7 +667,12 @@ describe("persisted release evidence", () => {
   }, "secret");
 
   it("accepts an authentic record for the current issue, build and candidate set", () => {
-    expect(validateReleaseVerificationEvidence(record, scope, "secret")).toBe(true);
+    expect(validateReleaseVerificationEvidence(record, scope, "secret", NOW())).toBe(true);
+  });
+
+  it("rejects expired and future signed evidence", () => {
+    expect(validateReleaseVerificationEvidence(record, scope, "secret", new Date("2026-11-14T12:00:00.001Z"))).toBe(false);
+    expect(validateReleaseVerificationEvidence(record, scope, "secret", new Date("2026-11-13T11:59:59.999Z"))).toBe(false);
   });
 
   it("rejects missing or forged records and records from other scopes", () => {
