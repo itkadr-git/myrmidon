@@ -225,7 +225,8 @@
           "agingMaxBonus": "Предел надбавки за старение",
           "starvationLimitMinutes": "Предел ожидания (минуты)",
           "starvationTopWeight": "Вес при долгом ожидании",
-          "pheromoneWeight": "Вес феромона"
+          "pheromoneWeight": "Вес феромона",
+          "inProgressIdleWakeMinutes": "Побудка простаивающей задачи в работе (минут, 0 = выкл.)"
         },
         "currentRelease": "Текущий релиз",
         "save": "Сохранить приоритет очереди"

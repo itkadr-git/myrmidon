@@ -1627,6 +1627,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "heartbeat.worktree_execution_cutoff",
   "heartbeat_timer",
   "idle_pickup",
+  "in_progress_no_run",
   "interaction_pending",
   "issue_assigned",
   "issue_blockers_resolved",

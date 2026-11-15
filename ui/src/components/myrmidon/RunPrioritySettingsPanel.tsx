@@ -12,7 +12,7 @@ import type { RunPrioritySettings, RunPriorityPatch } from "@myrmidon/shared";
 const KEY = ["myrmidon", "run-priority"] as const;
 const ISSUE_PRIORITIES = ["critical", "high", "medium", "low", "none"] as const;
 const ROLES = ["review", "release", "lead", "engineer", "docs"] as const;
-const NUMERIC_FIELDS = ["defaultRoleWeight", "releaseBonus", "agingStepMinutes", "agingStepWeight", "agingMaxBonus", "starvationLimitMinutes", "starvationTopWeight", "pheromoneWeight"] as const;
+const NUMERIC_FIELDS = ["defaultRoleWeight", "releaseBonus", "agingStepMinutes", "agingStepWeight", "agingMaxBonus", "starvationLimitMinutes", "starvationTopWeight", "pheromoneWeight", "inProgressIdleWakeMinutes"] as const;
 const LABELS = "area.settings-models-runtime-2.run-priority-settings-panel";
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 type View = { settings: RunPrioritySettings; source: "settings" | "env" };
@@ -58,7 +58,7 @@ export function RunPrioritySettingsPanel() {
       if (key === "enabled") { patch.enabled = raw === "true"; continue; }
       const max = key === "starvationTopWeight" ? 1_000_000 :
         key === "starvationLimitMinutes" ? 239 : key === "agingMaxBonus" ? 10_000 :
-          key === "agingStepMinutes" ? 1440 : 1000;
+          key === "agingStepMinutes" || key === "inProgressIdleWakeMinutes" ? 1440 : 1000;
       const numeric = parseRunPriorityNumber(raw, max);
       if (numeric === null) { setError(t(`${LABELS}.invalidNumber`, { field: fieldLabel(key), max })); return; }
       if (key.startsWith("issue:")) patch.issuePriorityWeights = { ...patch.issuePriorityWeights, [key.slice(6)]: numeric };
