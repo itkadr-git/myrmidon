@@ -221,7 +221,7 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
     const applyParam = String(req.query.apply ?? "").trim().toLowerCase();
     const apply = applyParam === "true" || applyParam === "1";
     const result = await withCompanySyncGuard(companyId, () =>
-      updateAgentAllowlistsForCompany(db, input.deps, companyId, [], [], false, { apply }),
+      updateAgentAllowlistsForCompany(db, input.deps, companyId, [], [], false, { apply, cardModelsOnly: true }),
     );
     if (apply) {
       const actor = getActorInfo(req);
