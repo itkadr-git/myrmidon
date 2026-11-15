@@ -341,10 +341,14 @@ export class FleetOnboardExecutor {
 
             // Verify key login
             const testKeySsh = await this.getSsh(connOptions);
-            await testKeySsh.connect(connOptions);
-            const echoRes = await testKeySsh.execute('echo "onboard-verified"');
-            if (echoRes.exitCode !== 0) {
-              throw new Error("Final verification failed: unable to run commands via SSH key");
+            try {
+              await testKeySsh.connect(connOptions);
+              const echoRes = await testKeySsh.execute('echo "onboard-verified"');
+              if (echoRes.exitCode !== 0 || echoRes.stdout.trim() !== "onboard-verified") {
+                throw new Error("Final verification failed: unable to run commands via SSH key");
+              }
+            } finally {
+              await testKeySsh.disconnect().catch(() => {});
             }
 
             await reporter.reportStep("verify", "ok", "All end-to-end verification checks passed");
