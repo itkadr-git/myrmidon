@@ -37,7 +37,7 @@ class CollectorTests(unittest.TestCase):
         self.assertNotIn('fixture-secret', json.dumps(report))
 
     def test_local_capabilities_report_actual_results_without_secrets(self):
-        with patch.object(collector.shutil, 'which', side_effect=lambda name: '/usr/bin/' + name if name in ('openssl', 'sshd', 'chromium') else None), \
+        with patch.object(collector.shutil, 'which', side_effect=lambda name, **kwargs: '/usr/bin/' + name if name in ('openssl', 'sshd', 'chromium') else None), \
              patch.object(collector, 'time_sync_status', return_value={'status': 'ok', 'synchronized': True}):
             report = collector.collect()
         self.assertTrue(report['tls']['openssl_available'])

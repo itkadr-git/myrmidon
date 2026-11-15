@@ -13,6 +13,8 @@ SQL = """SELECT json_build_object(
  'in_recovery', pg_is_in_recovery(),
  'wal_level', current_setting('wal_level'),
  'archive_mode', current_setting('archive_mode'),
+ 'archive_timeout', current_setting('archive_timeout'),
+ 'wal_keep_size', current_setting('wal_keep_size', true),
  'max_wal_senders', current_setting('max_wal_senders')::int,
  'max_replication_slots', current_setting('max_replication_slots')::int,
  'streaming', CASE WHEN pg_is_in_recovery() THEN
@@ -23,7 +25,26 @@ SQL = """SELECT json_build_object(
  'ssl', (SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid())
 )::text;"""
 FIELDS = ('server_version_num', 'db_bytes', 'in_recovery', 'wal_level', 'archive_mode',
-          'max_wal_senders', 'max_replication_slots', 'streaming', 'lag_bytes', 'ssl')
+          'archive_timeout', 'wal_keep_size', 'max_wal_senders', 'max_replication_slots', 'streaming', 'lag_bytes', 'ssl')
+
+
+def time_sync_status():
+    try:
+        result = subprocess.run(['/usr/bin/timedatectl', 'show', '--property=NTPSynchronized', '--value'],
+                                env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'},
+                                capture_output=True, text=True, timeout=3, check=True)
+        value = result.stdout.strip()
+        if value in ('yes', 'no'):
+            return {'status': 'ok', 'synchronized': value == 'yes'}
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return {'status': 'unknown', 'reason': 'time synchronization status unavailable'}
+
+
+def capability(name, label):
+    available = shutil.which(name, path='/usr/bin:/bin:/usr/sbin:/sbin') is not None
+    return {'status': 'incomplete', label: available,
+            'reason': 'binary availability does not establish configuration or service health'}
 
 
 def query_postgres(socket, database, user):
@@ -46,7 +67,8 @@ def collect(socket=None, database=None, user=None):
             raw = query_postgres(socket, database, user)
             data = {key: raw.get(key) for key in FIELDS}
             data['major'] = raw['server_version_num'] // 10000
-            postgres = {'status': 'ok' if all(data[k] is not None for k in FIELDS if k != 'lag_bytes') else 'incomplete', 'data': data}
+            required = [k for k in FIELDS if k != 'lag_bytes' or data['in_recovery']]
+            postgres = {'status': 'ok' if all(data[k] is not None for k in required) else 'incomplete', 'data': data}
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
             postgres = {'status': 'error', 'reason': 'query failed or access denied; details suppressed'}
     try:
@@ -56,10 +78,10 @@ def collect(socket=None, database=None, user=None):
         disk_info = {'status': 'error', 'reason': 'disk usage unavailable'}
     return {'schemaVersion': 1, 'postgres': postgres, 'disk': disk_info,
             'resources': {'cpu_count': os.cpu_count(), 'memory_bytes': memory()},
-            'ci_browser_profile': {'status': 'unknown', 'reason': 'not inspected'},
-            'time_sync': {'status': 'unknown', 'reason': 'not inspected'},
-            'tls': {'status': 'unknown', 'reason': 'remote TLS not inspected'},
-            'login_method': {'status': 'unknown', 'reason': 'not inspected'},
+            'ci_browser_profile': capability('chromium', 'chromium_available'),
+            'time_sync': time_sync_status(),
+            'tls': capability('openssl', 'openssl_available'),
+            'login_method': capability('sshd', 'sshd_available'),
             'backup': {'status': 'unknown', 'reason': 'backup configuration not inspected'}}
 
 
