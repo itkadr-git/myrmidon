@@ -159,7 +159,10 @@ def collect(socket=None, database=None, user=None, disk_path='/'):
             raw = query_postgres(socket, database, user)
             data = {key: raw.get(key) for key in FIELDS}
             data['major'] = raw['server_version_num'] // 10000
-            required = [k for k in FIELDS if k not in ('lag_bytes', 'lag_seconds') or data['in_recovery']]
+            optional = {'archive_last_success', 'archive_last_failure'}
+            if not data['in_recovery']:
+                optional.update(('lag_bytes', 'lag_seconds'))
+            required = [key for key in FIELDS if key not in optional]
             postgres = {'status': 'ok' if all(data[k] is not None for k in required) else 'incomplete',
                         'data': data,
                         'access': {'transport': 'unix_socket',
