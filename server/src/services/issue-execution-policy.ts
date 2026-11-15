@@ -1754,6 +1754,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       }),
     );
     if (!pendingStage) {
+      assertReleaseEvidence();
       patch.executionState = buildSkippedStageCompletedState({
         previous: existingState,
         completedStageIds: skippedStageIds,
