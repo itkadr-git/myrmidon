@@ -236,6 +236,26 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockReporter.completion?.status).toBe("failed");
   });
 
+  it("fails rather than reporting an unknown step as executed", async () => {
+    const mockSsh = new MockSshExecutor();
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => mockSsh });
+    const mockReporter = createMockReporter();
+    const claim: any = {
+      job: { id: "job-unknown", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["unexpected-step"],
+      options: { keepPassword: true },
+      secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, mockReporter.reporter);
+    expect(result.status).toBe("failed");
+    expect(mockReporter.steps).toContainEqual({
+      step: "unexpected-step", result: "failed", detail: expect.stringContaining("Unknown"),
+    });
+    expect(mockReporter.completion?.status).toBe("failed");
+  });
+
   it("handles decommission job cleanup step", async () => {
     const mockSsh = new MockSshExecutor();
     mockSsh.mockResponse(/docker stop/, { stdout: "", exitCode: 0 });
