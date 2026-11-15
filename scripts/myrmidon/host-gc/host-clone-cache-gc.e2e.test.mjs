@@ -265,6 +265,34 @@ describe("host-clone-cache-gc e2e", () => {
     assert.match(heads.stdout, /refs\/stash/);
   });
 
+  it("preserves staged changes even when the working tree reverses them", async () => {
+    const root = path.join(tmpDir, "root");
+    fs.mkdirSync(root);
+    const clone = makeGitClone(path.join(root, "OPE-12346"));
+    const git = (...args) => {
+      const result = spawnSync("git", args, { cwd: clone, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+    };
+    const remote = path.join(tmpDir, "remote.git");
+    assert.equal(spawnSync("git", ["init", "--bare", remote]).status, 0);
+    git("remote", "add", "origin", remote);
+    git("push", "-u", "origin", "HEAD");
+    fs.writeFileSync(path.join(clone, "README.md"), "staged work\n");
+    git("add", "README.md");
+    fs.writeFileSync(path.join(clone, "README.md"), "test");
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    fs.utimesSync(clone, old, old);
+    const r = await runScript(["--root", root, "--lock", path.join(tmpDir, "gc.lock"), "--journal", path.join(tmpDir, "gc.jsonl"), "--apply"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(fs.existsSync(clone), false);
+    const archive = path.join(root, ".gc-archive", fs.readdirSync(path.join(root, ".gc-archive"))[0]);
+    const extracted = path.join(tmpDir, "index-extracted");
+    fs.mkdirSync(extracted);
+    assert.equal(spawnSync("tar", ["-xf", archive, "-C", extracted]).status, 0);
+    assert.match(fs.readFileSync(path.join(extracted, "staged.patch"), "utf8"), /staged work/);
+    assert.match(fs.readFileSync(path.join(extracted, "changes.patch"), "utf8"), /staged work/);
+  });
+
   it("preserves tracked and untracked changes without archiving the checkout", async () => {
     const root = path.join(tmpDir, "root");
     fs.mkdirSync(root);
