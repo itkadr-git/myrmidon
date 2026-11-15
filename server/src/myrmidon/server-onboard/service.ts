@@ -192,15 +192,17 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
       let passwordSecretName: string | null = null;
       let accessKeySecretName: string | null = null;
 
-      if (input.auth.type === "password") {
-        passwordSecretName = await deps.secrets.putSecret(
-          input.companyId,
-          secretName(input.slug, "bootstrap-password"),
-          `fleet-${input.slug}-bootstrap-password`,
-          input.auth.password,
-          "SERVER-ONBOARD: one-time bootstrap password",
-        );
-      } else {
+      let created: Awaited<ReturnType<FleetOnboardStore["createServerAndJob"]>>;
+      try {
+        if (input.auth.type === "password") {
+          passwordSecretName = await deps.secrets.putSecret(
+            input.companyId,
+            secretName(input.slug, "bootstrap-password"),
+            `fleet-${input.slug}-bootstrap-password`,
+            input.auth.password,
+            "SERVER-ONBOARD: one-time bootstrap password",
+          );
+        }
         const pair = (deps.generateKeyPair ?? defaultGenerateKeyPair)();
         accessKeySecretName = await deps.secrets.putSecret(
           input.companyId,
@@ -209,12 +211,9 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
           pair.privateKey,
           "SERVER-ONBOARD: board access key (private)",
         );
-        generatedPublicKey = pair.publicKey;
-      }
+        if (input.auth.type === "generate-key") generatedPublicKey = pair.publicKey;
 
-      // Registry row (secret names in, values never), then the pending job.
-      let created: Awaited<ReturnType<FleetOnboardStore["createServerAndJob"]>>;
-      try {
+        // Registry row (secret names in, values never), then the pending job.
         created = await deps.store.createServerAndJob(input.companyId, {
           slug: input.slug,
           name: input.name,

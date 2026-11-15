@@ -80,10 +80,10 @@ export class FleetOnboardExecutor {
         host: claim.server.hostname,
         port: claim.server.port,
         username: claim.server.username,
-        ...(activePrivateKey
-          ? { privateKey: activePrivateKey }
-          : claim.secretValues.bootstrapPassword
-            ? { password: claim.secretValues.bootstrapPassword }
+        ...(claim.secretValues.bootstrapPassword
+          ? { password: claim.secretValues.bootstrapPassword }
+          : activePrivateKey
+            ? { privateKey: activePrivateKey }
             : {}),
       };
 

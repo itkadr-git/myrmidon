@@ -285,7 +285,7 @@ describe("SERVER-ONBOARD logic", () => {
       username: "deploy",
       role: "build-runner",
       passwordSecretKey: "fleet/srv-1/bootstrap-password",
-      accessKeySecretKey: null,
+      accessKeySecretKey: "fleet/srv-1/access-key",
       onboardState: "new",
     });
 
@@ -425,6 +425,19 @@ describe("SERVER-ONBOARD logic", () => {
       }),
     ).rejects.toThrow("DB error");
     expect(secretsStore["fleet/orphan-test/bootstrap-password"]).toBeUndefined();
+    expect(secretsStore["fleet/orphan-test/access-key"]).toBeUndefined();
+  });
+
+  it("removes the bootstrap secret if access-key persistence fails", async () => {
+    const { mockStore, mockSecrets, mockGetServer, secretsStore } = createMocks();
+    const put = mockSecrets.putSecret;
+    mockSecrets.putSecret = async (companyId, name, key, value) => {
+      if (name.endsWith("/access-key")) throw new Error("secret store unavailable");
+      return put(companyId, name, key, value);
+    };
+    const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
+    await expect(service.addServer({ companyId: "company-1", slug: "failed-key", name: "Server", hostname: "192.0.2.7", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password", password: "bootstrap" }, createdBy: null })).rejects.toThrow("secret store unavailable");
+    expect(secretsStore["fleet/failed-key/bootstrap-password"]).toBeUndefined();
   });
 
   it("blocks concurrent active jobs for the same server", async () => {
