@@ -28,6 +28,31 @@ function createMockReporter(): {
 }
 
 describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
+  it("rejects a changed host key during handshake before authenticating", async () => {
+    const events: string[] = [];
+    class HandshakeSsh extends MockSshExecutor {
+      override async connect(options?: Parameters<MockSshExecutor["connect"]>[0]) {
+        const verify = options && Reflect.get(options, "hostVerifier");
+        if (typeof verify !== "function") throw new Error("Host verifier missing");
+        events.push("host-key");
+        if (!(await verify("SHA256:changed"))) throw new Error("Host key rejected");
+        events.push("authentication");
+      }
+    }
+    const ssh = new HandshakeSsh();
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-host", companyId: "c1", serverId: "s1" },
+      server: { hostname: "example.com", port: 22, username: "root", hostKeyFingerprint: "SHA256:original" },
+      steps: ["connect"],
+      options: { keepPassword: false },
+      secretValues: { bootstrapPassword: "sensitive" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(events).toEqual(["host-key"]);
+  });
+
   it("generates an OpenSSH public key matching its private key", async () => {
     const { createPublicKey } = await import("node:crypto");
     const pair = defaultGenerateKeyPair();
