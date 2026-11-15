@@ -103,6 +103,12 @@ Optional environment:
                       hands the key to a bot whose container has no
                       /opt/devbuild-ssh mount.
   DEVBUILD_WORKSPACE  local workspace to sync (default: /workspace)
+  DEVBUILD_NO_AUTO_INSTALL  set to 1 to skip the automatic
+                      `pnpm install --frozen-lockfile --prefer-offline` that runs
+                      for node-tool commands when the remote copy has
+                      package.json and pnpm-lock.yaml but no completed install
+                      (node_modules/.modules.yaml); a command starting with
+                      `pnpm install` never gets a second install
 
 See the devbuild skill (skills/devbuild/SKILL.md) for examples, caches and
 typical failures.
@@ -232,6 +238,7 @@ rsync -a --delete --info=stats1 \
   --exclude '.cache/' \
   --exclude 'target/' \
   --exclude '.tmp/' \
+  --exclude '.devbuild-install.lock*' \
   -e "ssh ${SSH_OPTS[*]}" \
   "$WORKSPACE_SRC/" "$DEVBUILD_USER@$DEVBUILD_HOST:$dest_root/"
 
@@ -327,7 +334,85 @@ printf '%s/.git\n' "$dest_root" > "$base/worktrees/$name/gitdir"
 WTREWRITE
 fi
 
+# myrmidon(1.6.9 DEVBUILD-AUTO-INSTALL): the rsync above never ships
+# node_modules, so a fresh copy (first call for a task, or a copy removed by the
+# build host's disk guard) has no dependencies and `vitest`/`tsc` fail with
+# "command not found". Install them from the shared pnpm store before the
+# command, in the SAME ssh session (one connection).
+#   - "installed" means pnpm's completion marker node_modules/.modules.yaml, not
+#     just the directory: an interrupted install leaves a partial node_modules
+#     that rsync never touches, and a directory test would skip it forever. A
+#     failed install removes the partial directory.
+#   - only for commands that use node tooling; `go test`, `git status`, `ls`
+#     and pnpm subcommands that need no dependencies (install, import, info...)
+#     get none.
+#   - the check and the install run under a lock in the copy (flock, or a
+#     mkdir lock when flock is missing), and the check is repeated inside it, so
+#     two parallel calls on one copy install once.
+# The local side decides on DEVBUILD_NO_AUTO_INSTALL and on the command text;
+# the remote function is fixed text (no user data), the command is appended
+# after it exactly as before.
+trimmed_cmd="${command_to_run#"${command_to_run%%[![:space:]]*}"}"
+auto_install=""
+if [ "${DEVBUILD_NO_AUTO_INSTALL:-}" != "1" ] \
+  && [[ "$trimmed_cmd" =~ (^|[^[:alnum:]_.-])(pnpm|npm|npx|node|yarn|vitest|tsc|turbo)([^[:alnum:]_-]|$) ]]; then
+  auto_install="1"
+  case "$trimmed_cmd" in
+    "pnpm install"|"pnpm install "*|"pnpm i"|"pnpm i "*|"pnpm add"|"pnpm add "*|\
+    "pnpm import"|"pnpm import "*|"pnpm info"|"pnpm info "*|"pnpm view"|"pnpm view "*|\
+    "pnpm config"|"pnpm config "*|"pnpm store"|"pnpm store "*|"pnpm setup"|"pnpm setup "*|\
+    "npm install"|"npm install "*|"npm ci"|"npm ci "*|"yarn install"|"yarn install "*) auto_install="" ;;
+  esac
+fi
+install_step=""
+if [ -n "$auto_install" ]; then
+  read -r -d '' install_fn <<'INSTALLFN' || true
+devbuild_install_run() {
+  [ -f node_modules/.modules.yaml ] && return 0
+  echo 'devbuild: node_modules отсутствует в копии — pnpm install' >&2
+  pnpm install --frozen-lockfile --prefer-offline && return 0
+  devbuild_rc=$?
+  rm -rf node_modules
+  echo "devbuild: pnpm install failed (exit $devbuild_rc), the command was not run; the partial node_modules was removed. Set DEVBUILD_NO_AUTO_INSTALL=1 to skip the automatic install, or run: devbuild 'pnpm install && ...'" >&2
+  return $devbuild_rc
+}
+devbuild_ensure_install() {
+  [ -f package.json ] && [ -f pnpm-lock.yaml ] || return 0
+  [ -f node_modules/.modules.yaml ] && return 0
+  devbuild_lock="$PWD/.devbuild-install.lock"
+  if command -v flock >/dev/null 2>&1; then
+    ( flock -w 600 9 || { echo 'devbuild: waited 10 min for another install in this copy' >&2; exit 1; }; devbuild_install_run ) 9>"$devbuild_lock"
+    return $?
+  fi
+  devbuild_n=0
+  until mkdir "$devbuild_lock.d" 2>/dev/null; do
+    if [ -n "$(find "$devbuild_lock.d" -maxdepth 0 -mmin +30 2>/dev/null)" ]; then
+      echo "devbuild: removing a stale install lock (older than 30 min): $devbuild_lock.d" >&2
+      rmdir "$devbuild_lock.d" 2>/dev/null
+      continue
+    fi
+    devbuild_n=$((devbuild_n + 1))
+    if [ "$devbuild_n" -gt 600 ]; then echo "devbuild: waited 10 min for another install in this copy" >&2; return 1; fi
+    sleep 1
+  done
+  trap 'rmdir "$devbuild_lock.d" 2>/dev/null' EXIT
+  devbuild_install_run; devbuild_rc=$?
+  trap - EXIT
+  rmdir "$devbuild_lock.d" 2>/dev/null
+  return $devbuild_rc
+}
+INSTALLFN
+  install_step="${install_fn}
+devbuild_ensure_install || exit \$?
+"
+fi
+
 # Run the command remotely, with the shared caches exported and the cwd at
 # the repo root. ssh propagates the remote command's exit status as its own.
+# The remote text is several lines (the install functions): `cd` is its own
+# first line with an explicit exit, so a missing copy never runs the command in
+# the login directory.
 ssh "${SSH_OPTS[@]}" "$DEVBUILD_USER@$DEVBUILD_HOST" \
-  "cd '$dest_root' && export npm_config_store_dir='$DEVBUILD_CACHES/pnpm' GOMODCACHE='$DEVBUILD_CACHES/go-mod' GOCACHE='$DEVBUILD_CACHES/go-build' GRADLE_USER_HOME='$DEVBUILD_CACHES/gradle' && $command_to_run"
+  "cd '$dest_root' || exit 1
+export npm_config_store_dir='$DEVBUILD_CACHES/pnpm' GOMODCACHE='$DEVBUILD_CACHES/go-mod' GOCACHE='$DEVBUILD_CACHES/go-build' GRADLE_USER_HOME='$DEVBUILD_CACHES/gradle' || exit 1
+${install_step}$command_to_run"
