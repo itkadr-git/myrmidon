@@ -151,10 +151,12 @@ async function readIdleSince(
       )
       .then((rows) => rows[0]?.at ?? null),
   ]);
-  const times = [issue.updatedAt, lastRun, lastWake]
-    .filter((value): value is Date | string => value !== null && value !== undefined)
-    .map((value) => new Date(value).getTime())
-    .filter((ms) => Number.isFinite(ms));
+  const times: number[] = [issue.updatedAt.getTime()];
+  for (const value of [lastRun, lastWake]) {
+    if (value === null || value === undefined) continue;
+    const ms = new Date(value as Date | string).getTime();
+    if (Number.isFinite(ms)) times.push(ms);
+  }
   return new Date(Math.max(...times));
 }
 
