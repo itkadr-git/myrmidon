@@ -637,6 +637,34 @@ describeEmbeddedPostgres("@<alias> addressing in the bridged Telegram chat (X9b)
     }
     expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(1);
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId))).toHaveLength(1);
+
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, thirdId));
+    await db.update(agents).set({ adapterConfig: { telegramAliases: ["endpoint"] } }).where(eq(agents.id, fixture.assignedAgentId));
+    const rejectedTexts = [
+      "agent://not-a-uuid @endpoint hello",
+      `agent://${fixture.gipAgentId} agent://${fixture.assignedAgentId} @endpoint hello`,
+      `agent://${thirdId} @endpoint hello`,
+    ];
+    for (const [index, text] of rejectedTexts.entries()) {
+      const messageId = index + 5;
+      const beforeDeliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
+      const rejected = await send(text, messageId);
+      expect(rejected.post).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(rejected.post.mock.calls)).toContain("Invalid or unavailable agent ID");
+      const afterDeliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
+      expect(afterDeliveries).toHaveLength(beforeDeliveries.length + 1);
+      const refusalDelivery = afterDeliveries.find((row) => !beforeDeliveries.some((before) => before.id === row.id));
+      expect(refusalDelivery).toMatchObject({ state: "filtered", redactedError: "Invalid or unavailable agent ID" });
+      const refusalEffects = await db.select().from(chatActions).where(and(eq(chatActions.deliveryId, refusalDelivery!.id), eq(chatActions.kind, "provider_effect")));
+      expect(refusalEffects).toHaveLength(1);
+      expect(refusalEffects[0]).toMatchObject({ status: "processed", payload: { text: "Invalid or unavailable agent ID." } });
+      const replay = await send(text, messageId);
+      expect(replay.post).not.toHaveBeenCalled();
+      expect(await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id))).toHaveLength(afterDeliveries.length);
+      expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(1);
+      expect(await db.select().from(issueComments).where(eq(issueComments.issueId, delivered[0].id))).toHaveLength(1);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId))).toHaveLength(1);
+    }
   });
 
   it("routes a DM '@гип …' to the GIP's own standing conversation, not the endpoint's assigned agent", async () => {
