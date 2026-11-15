@@ -7,8 +7,8 @@ import { join } from 'node:path';
 
 const cli = new URL('./config-check.mjs', import.meta.url).pathname;
 const valid = () => ({ sides: [
-  { endpoint: '192.0.2.1', localCidr: '10.0.0.0/24', remoteCidr: '10.1.0.0/24', proposal: 'aes256-sha256-modp2048', id: 'left.example', secretFile: '/secrets/left' },
-  { endpoint: '192.0.2.2', localCidr: '10.1.0.0/24', remoteCidr: '10.0.0.0/24', proposal: 'aes256-sha256-modp2048', id: 'right.example', secretFile: '/secrets/right' },
+  { endpoint: '192.0.2.1', localCidr: '192.0.2.0/24', remoteCidr: '198.51.100.0/24', proposal: 'aes256-sha256-modp2048', id: 'left.example', secretFile: '/secrets/left' },
+  { endpoint: '192.0.2.2', localCidr: '198.51.100.0/24', remoteCidr: '192.0.2.0/24', proposal: 'aes256-sha256-modp2048', id: 'right.example', secretFile: '/secrets/right' },
 ] });
 function run(manifest) {
   const dir = mkdtempSync(join(process.env.PAPERCLIP_SCRATCH_DIR || tmpdir(), 'ipsec-test-'));
@@ -32,8 +32,8 @@ test('rejects invalid values and never emits PASS', () => {
   for (const mutate of [
     m => { m.sides[0].endpoint = ''; },
     m => { m.sides[0].endpoint = 'example.com'; },
-    m => { m.sides[0].localCidr = '10.0.0.0/33'; },
-    m => { m.sides[0].remoteCidr = '10.0.0.128/25'; },
+    m => { m.sides[0].localCidr = '192.0.2.0/33'; },
+    m => { m.sides[0].remoteCidr = '192.0.2.128/25'; },
     m => { m.sides[1].endpoint = m.sides[0].endpoint; },
     m => { m.sides[0].proposal = ''; },
     m => { m.sides[0].secretFile = ''; },

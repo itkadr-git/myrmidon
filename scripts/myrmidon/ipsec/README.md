@@ -55,8 +55,8 @@ Run `node scripts/myrmidon/ipsec/config-check.mjs manifest.json`. The command re
 ```json
 {
   "sides": [
-    { "endpoint": "192.0.2.1", "localCidr": "10.0.0.0/24", "remoteCidr": "10.1.0.0/24", "proposal": "aes256-sha256-modp2048", "id": "left.example", "secretFile": "/secrets/left" },
-    { "endpoint": "192.0.2.2", "localCidr": "10.1.0.0/24", "remoteCidr": "10.0.0.0/24", "proposal": "aes256-sha256-modp2048", "id": "right.example", "secretFile": "/secrets/right" }
+    { "endpoint": "192.0.2.1", "localCidr": "192.0.2.0/24", "remoteCidr": "198.51.100.0/24", "proposal": "aes256-sha256-modp2048", "id": "left.example", "secretFile": "/secrets/left" },
+    { "endpoint": "192.0.2.2", "localCidr": "198.51.100.0/24", "remoteCidr": "192.0.2.0/24", "proposal": "aes256-sha256-modp2048", "id": "right.example", "secretFile": "/secrets/right" }
   ]
 }
 ```
