@@ -18,6 +18,7 @@ import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import { applyRunPrioritySettings, resolveRunPriority, type RunPriorityView } from "./state.js";
 import type { RunPrioritySettings } from "@myrmidon/shared";
+import { releaseFocusChanged } from "./sync.js";
 
 /** Who changed the settings, for the activity log. */
 export interface RunPriorityActor {
@@ -48,6 +49,10 @@ export interface RunPriorityServiceDeps {
   apply(settings: RunPrioritySettings): void;
   /** Ask the queued-run sweep to run shortly, so held runs reorder at once. */
   scheduleResweep(): void;
+  /** Make runs parked by strict release focus due now (focus changed). */
+  advanceDeferredRuns?(): Promise<unknown>;
+  /** Tell the other board processes to re-read the stored settings. */
+  publishChanged?(): Promise<void>;
   env?: Record<string, string | undefined>;
 }
 
@@ -122,6 +127,16 @@ export function runPriorityService(
         // Only after the row and the audit records are committed: the
         // settings in force must never run ahead of what the log says.
         deps.apply(next);
+        if (releaseFocusChanged(before, next)) {
+          await deps.advanceDeferredRuns?.().catch((err: unknown) => {
+            logger.warn({ err }, "release focus changed but deferred runs were not advanced");
+          });
+        }
+        // The in-force settings are process memory: the other board processes
+        // re-read the stored row on this notice (settings-appliers).
+        await deps.publishChanged?.().catch((err: unknown) => {
+          logger.warn({ err }, "run priority saved but process notification failed");
+        });
         deps.scheduleResweep();
         logger.info(
           { settings: next, actorType: actor.actorType },
