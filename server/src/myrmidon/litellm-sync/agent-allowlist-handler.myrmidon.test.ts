@@ -552,6 +552,18 @@ describe("updateAgentAllowlistsForCompany: dry run", () => {
 });
 
 describe("updateAgentAllowlistsForCompany: includeRegistryModels false", () => {
+  it("reconciles card models without registry models on card save", async () => {
+    const alias = agentKeySecretName({ agentId: "agent-1", agentSlug: "Restricted" });
+    const gateway = recordingGateway(undefined, { [alias]: ["vendor/old"] });
+    const db = scriptedDb([[{ id: "agent-1", name: "Restricted", adapterConfig: { model: "vendor/new" } }]]);
+    const result = await updateAgentAllowlistsForCompany(
+      db, deps({ db, gateway: () => gateway, ...KEY_DEPS }), "company-a", [], [], false,
+      { includeRegistryModels: false },
+    );
+    expect(result.updated).toBe(1);
+    expect(gateway.calls).toEqual([{ alias, models: ["vendor/old", "vendor/new"] }]);
+  });
+
   it("handles only the names the caller passes and keeps every registry name a key holds", async () => {
     const alias = agentKeySecretName({ agentId: "agent-1", agentSlug: "Restricted" });
     const gateway = recordingGateway(undefined, { [alias]: ["openai/gpt-4o", "kimi/kimi-for-coding"] });
