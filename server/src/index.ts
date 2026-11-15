@@ -2580,7 +2580,9 @@ async function startServerWithDatabaseTeardown(
       await initializeIdleStopService(botContainerRuntime.driver, db as any);
     }
     runContextColumnsBackfill = startRunContextColumnsBackfill(db as any, logger); // OPE-5007 П2: batched, per-batch-commit fill of the thin run-context columns (the migration only adds them)
-    startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set
+    // myrmidon(1.6.9 KEY-BUDGETS-OOM): the spend sweep, its first pass and the key budget report run
+    // in the one process that owns background work, never in every api child.
+    if (processRoleProfile.runsBackground) startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set
     startLitellmBudgetSync(db as any); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection; a no-op unless the gateway contour is set and the document enables it
     startLitellmModelReconciliation(db as any); // myrmidon(1.6.1 MODEL-PROVIDERS B): reconcile LiteLLM models with DB state
     if (processRoleProfile.runsBackground) startAgentAllowlistWatchdog(() => reconcileAgentAllowlistDrift(db as any));

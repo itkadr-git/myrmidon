@@ -1,7 +1,7 @@
 // myrmidon(OPE-11776): the cap and spend of the bot keys, in the board.
 // Neutral ids only: company-a, example hosts, made-up key values.
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   readLitellmBudgetSignals,
   readLitellmKeyBudgetGauges,
@@ -15,6 +15,7 @@ import {
   type KeyBudgetDeps,
 } from "./key-budgets.js";
 import {
+  createLitellmGatewayClient,
   gatewayKeyHash,
   parseKeyListPage,
   type GatewayKeyBudgetRow,
@@ -260,5 +261,49 @@ describe("myrmidon(OPE-11776) gateway key list page", () => {
     expect(parseKeyListPage({ detail: "Not Found" })).toBeNull();
     expect(parseKeyListPage(null)).toBeNull();
     expect(parseKeyListPage([])).toBeNull();
+  });
+});
+
+// myrmidon(1.6.9 KEY-BUDGETS-OOM): the report over a large, heavy /key/list answer.
+describe("myrmidon(1.6.9) key budget report over a large key list", () => {
+  beforeEach(() => {
+    resetEmptyCatalogSignals();
+    resetKeyUsageReports();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("builds the report from 1000 heavy key objects and keeps nothing but the three fields", async () => {
+    const heavy = "z".repeat(10_000);
+    const TOTAL = 1000;
+    vi.stubGlobal("fetch", async (input: string) => {
+      const url = new URL(input);
+      const page = Number(url.searchParams.get("page"));
+      const size = Number(url.searchParams.get("size"));
+      const keys = [];
+      for (let n = (page - 1) * size; n < Math.min(TOTAL, page * size); n += 1) {
+        keys.push({
+          token: gatewayKeyHash(`key-${n}`),
+          max_budget: 100,
+          spend: n % 2 === 0 ? 90 : 10,
+          metadata: { blob: heavy, deeper: { more: [heavy, heavy] } },
+          permissions: { p: heavy },
+        });
+      }
+      return new Response(JSON.stringify({ keys, total_pages: Math.ceil(TOTAL / size) }), { status: 200 });
+    });
+    const { deps } = makeDeps({
+      listBotKeys: async () => Array.from({ length: TOTAL }, (_, n) => ({ agentId: `agent-${n}`, keyValue: `key-${n}` })),
+      client: createLitellmGatewayClient,
+      readSpendWindows: async () => [],
+    });
+    const report = await evaluateKeyBudgets(deps, COMPANY);
+    expect(report.gatewayAvailable).toBe(true);
+    expect(report.rows).toHaveLength(TOTAL);
+    expect(report.rows[0]).toMatchObject({ capUsd: 100, gatewaySpendUsd: 90, status: "near_cap" });
+    expect(report.rows[1]).toMatchObject({ capUsd: 100, gatewaySpendUsd: 10, status: "ok" });
+    expect(report.rows.filter((row) => row.status === "near_cap")).toHaveLength(TOTAL / 2);
+    expect(JSON.stringify(report).length).toBeLessThan(TOTAL * 400);
   });
 });
