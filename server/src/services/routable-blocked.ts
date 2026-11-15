@@ -8,6 +8,7 @@ type RoutableBlockedIssue = {
   unblockDescriptor?: IssueUnblockDescriptor | null;
   blockedTransitionAt?: Date | null;
   blockedOwnerNotifiedAt?: Date | null;
+  assigneeAgentId?: string | null;
 };
 
 type ProspectiveBlockedIssue = RoutableBlockedIssue & {
@@ -58,7 +59,7 @@ export type UnblockNotificationOutcome =
   | "throttled";
 
 export async function deliverAgentUnblockNotification(input: {
-  issue: RoutableBlockedIssue & { assigneeAgentId?: string | null };
+  issue: RoutableBlockedIssue;
   wakeup: (agentId: string, options: {
     source: "automation";
     triggerDetail: "system";
