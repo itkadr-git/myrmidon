@@ -176,6 +176,35 @@ describe("host-clone-cache-gc e2e", () => {
     assert.match(heads.stdout, new RegExp(commit));
   });
 
+  it("preserves tracked and untracked changes without archiving the checkout", async () => {
+    const root = path.join(tmpDir, "root");
+    fs.mkdirSync(root);
+    const clone = makeGitClone(path.join(root, "OPE-12346"));
+    const git = (...args) => {
+      const result = spawnSync("git", args, { cwd: clone, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+    };
+    const remote = path.join(tmpDir, "remote.git");
+    assert.equal(spawnSync("git", ["init", "--bare", remote]).status, 0);
+    git("remote", "add", "origin", remote);
+    git("push", "-u", "origin", "HEAD");
+    fs.writeFileSync(path.join(clone, "README.md"), "tracked change\n");
+    fs.writeFileSync(path.join(clone, "untracked.txt"), "untracked change\n");
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    fs.utimesSync(clone, old, old);
+    const r = await runScript(["--root", root, "--lock", path.join(tmpDir, "gc.lock"), "--journal", path.join(tmpDir, "gc.jsonl"), "--apply"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(fs.existsSync(clone), false);
+    const archives = fs.readdirSync(path.join(root, ".gc-archive"));
+    assert.equal(archives.length, 1);
+    const archive = path.join(root, ".gc-archive", archives[0]);
+    const listing = spawnSync("tar", ["-tzf", archive], { encoding: "utf8" });
+    assert.equal(listing.status, 0, listing.stderr);
+    assert.match(listing.stdout, /changes\.patch/);
+    assert.match(listing.stdout, /untracked\.tar/);
+    assert.doesNotMatch(listing.stdout, /\.git\//);
+  });
+
   it("apply archives dirty clones before removal", async () => {
     const root = path.join(tmpDir, "root");
     fs.mkdirSync(root);
