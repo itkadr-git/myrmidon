@@ -4,6 +4,8 @@ import {
   aggregateReleaseCandidates,
   buildReleaseCandidateMembers,
   composeReleaseVerdict,
+  createReleaseVerificationEvidence,
+  validateReleaseVerificationEvidence,
   signReleaseVerificationVerdict,
   verifyReleaseComposition,
   type ReleaseCandidateMember,
@@ -651,6 +653,34 @@ describe("aggregateReleaseCandidates", () => {
     expect(result.verdict).toBe("failed");
     expect(result.failureReason).toBe("member_metadata_incomplete");
     expect(result.reason).toContain("OPE-2:PR#3");
+  });
+});
+
+describe("persisted release evidence", () => {
+  const members = [member("issue-a:PR#1", SHA_A)];
+  const scope = {
+    companyId: "company-a", issueId: "issue-a", releasePrefix: "1.6",
+    deployedVersion: SHA_B, members,
+  };
+  const record = createReleaseVerificationEvidence({
+    ...scope, verdict: "confirmed", checkedAt: "2026-11-13T12:00:00.000Z",
+  }, "secret");
+
+  it("accepts an authentic record for the current issue, build and candidate set", () => {
+    expect(validateReleaseVerificationEvidence(record, scope, "secret")).toBe(true);
+  });
+
+  it("rejects missing or forged records and records from other scopes", () => {
+    expect(validateReleaseVerificationEvidence(null, scope, "secret")).toBe(false);
+    expect(validateReleaseVerificationEvidence({ ...record, verdict: "failed" }, scope, "secret")).toBe(false);
+    expect(validateReleaseVerificationEvidence(record, { ...scope, companyId: "other" }, "secret")).toBe(false);
+    expect(validateReleaseVerificationEvidence(record, { ...scope, issueId: "other" }, "secret")).toBe(false);
+    expect(validateReleaseVerificationEvidence(record, { ...scope, releasePrefix: "1.7" }, "secret")).toBe(false);
+    expect(validateReleaseVerificationEvidence(record, { ...scope, deployedVersion: SHA_C }, "secret")).toBe(false);
+    expect(validateReleaseVerificationEvidence(record, { ...scope, members: [member("issue-b:PR#2", SHA_C)] }, "secret")).toBe(false);
+    expect(validateReleaseVerificationEvidence(record, scope, "wrong-secret")).toBe(false);
+    const failed = createReleaseVerificationEvidence({ ...scope, verdict: "failed", checkedAt: "2026-11-13T12:00:00.000Z" }, "secret");
+    expect(validateReleaseVerificationEvidence(failed, scope, "secret")).toBe(false);
   });
 });
 
