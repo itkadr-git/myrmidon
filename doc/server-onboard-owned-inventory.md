@@ -7,7 +7,10 @@ until resource producers and safe deletion are integrated in that PR.
 ## Reporting contract
 
 Authenticated executor: POST /api/myrmidon/fleet/onboard-jobs/:id/owned-resources
-with the existing executor bearer token and JSON `{ companyId, resource }`.
+with the executor credential in the `x-onboard-token` HTTP header (not in
+`Authorization`) and JSON `{ companyId, resource }`. The board/agent
+`Authorization` credential is a separate authentication mechanism and is not
+accepted as the executor credential.
 Only active claimed/running onboard jobs may report. The server derives serverId
 from the company-scoped job, never from caller input. Successful reports append
 under a fleet-server row lock and persist in ownership_inventory JSONB. The job
@@ -56,3 +59,12 @@ The existing Vitest service suite additionally covers authentication, company
 isolation, server-scope derivation and refusal of completed-job reports.
 The Vitest suite, typecheck and real PostgreSQL concurrency/migration checks must
 run in PR CI; they were not executed locally under BUILD-OFFLOAD.
+
+`server/src/__tests__/fleet-owned-inventory-postgres.test.ts` adds real-store
+HTTP coverage for the documented header, absent/wrong/bearer-only credentials,
+persisted inventory delivered by a decommission claim, concurrent distinct
+appends, duplicate reports across jobs, foreign scopes, corrupt-inventory
+rollback, and a terminal job transaction competing with a report. A migration
+test executes the actual SQL against a temporary preexisting registry row and
+asserts its inventory remains null. These are pending CI evidence, not a claim
+that PostgreSQL concurrency or route behavior has already passed verification.
