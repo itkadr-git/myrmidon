@@ -68,6 +68,7 @@ export * from "../myrmidon-litellm-sync.js";
 export * from "../myrmidon-litellm-workers.js";
 export * from "../myrmidon-long-task-context.js";
 export * from "../myrmidon-model-api-pricing.js";
+export * from "../myrmidon-model-group-rules.js";
 export * from "../myrmidon-model-menu.js";
 export * from "../myrmidon-model-providers.js";
 export * from "../myrmidon-owner-active-channel.js";

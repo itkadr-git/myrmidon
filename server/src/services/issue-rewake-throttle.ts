@@ -66,6 +66,7 @@ export const THROTTLED_ISSUE_REWAKE_REASONS: ReadonlySet<string> = new Set([
   // холостые петли «агент будится по своей же задаче без прогресса».
   "swarm_matched",
   "idle_pickup",
+  "in_progress_no_run",
   "issue_disposition_repair",
   "queued_run_stale_timeout",
 ]);
