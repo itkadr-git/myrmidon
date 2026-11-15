@@ -123,14 +123,24 @@ describeEmbeddedPostgres("agent name uniqueness (case-insensitive, per company)"
     expect(other?.name).toBe("SHARED-NAME");
   });
 
-  it("allows reusing the name of a terminated agent", async () => {
+  it("reserves terminated agent names against create and rename", async () => {
     const companyId = await seedCompany();
     const svc = agentService(db);
     const first = await svc.create(companyId, { ...baseAgent, name: "agent-term" });
+    const second = await svc.create(companyId, { ...baseAgent, name: "other" });
     await svc.terminate(first!.id);
 
-    const second = await svc.create(companyId, { ...baseAgent, name: "AGENT-TERM" });
-    expect(second?.name).toBe("AGENT-TERM");
+    await expect(svc.create(companyId, { ...baseAgent, name: "AGENT-TERM" })).rejects.toMatchObject({
+      status: 409,
+      details: { code: "agent_name_conflict" },
+    });
+    await expect(svc.update(second!.id, { name: "AGENT-TERM" })).rejects.toMatchObject({
+      status: 409,
+      details: { code: "agent_name_conflict" },
+    });
+    const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(rows).toHaveLength(2);
+    expect((await svc.getById(second!.id))?.name).toBe("other");
   });
 
   it("concurrent create operations with conflicting case-insensitive names: only one succeeds", async () => {
