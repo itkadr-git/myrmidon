@@ -374,6 +374,21 @@ describe("host-clone-cache-gc e2e", () => {
   });
 
   describe("scratch-gc e2e (BOT-DISK-SCRATCH)", () => {
+    it("discovers bot scratch when invoked with the bot workspace root", async () => {
+      const bot = path.join(tmpDir, "bot");
+      const workspace = path.join(bot, "workspace");
+      const scratch = path.join(bot, "hermes/cache/scratch");
+      fs.mkdirSync(workspace, { recursive: true });
+      fs.mkdirSync(scratch, { recursive: true });
+      const stale = path.join(scratch, "stale");
+      fs.writeFileSync(stale, "stale");
+      const old = new Date(Date.now() - 7 * 3600 * 1000);
+      fs.utimesSync(stale, old, old);
+      const r = await runScript(["--root", workspace, "--lock", path.join(tmpDir, "gc.lock"), "--journal", path.join(tmpDir, "gc.jsonl"), "--apply"]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(fs.existsSync(stale), false);
+    });
+
     it("prunes stale scratch without following a symlinked hermes directory", async () => {
       const root = path.join(tmpDir, "bots");
       const scratch = path.join(root, "bot-1/hermes/cache/scratch");
