@@ -22,7 +22,7 @@ import {
   type ReleaseMembershipVerdict,
   type ReleaseRef,
 } from "./release-membership.js";
-import { createHmac } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 export type ReleaseVerificationVerdict = "confirmed" | "failed";
 
@@ -468,6 +468,41 @@ export async function verifyReleaseComposition(
  * RELEASE_VERIFICATION_KEY via readProductEnv).  The publisher verifies the
  * same signature; a verdict without it is forged and refuses the publish.
  */
+export type PersistedReleaseEvidencePayload = {
+  companyId: string;
+  issueId: string;
+  releasePrefix: string;
+  deployedVersion: string;
+  candidateDigest: string;
+  verdict: string;
+  checkedAt: string;
+};
+
+export function signPersistedReleaseEvidence(payload: PersistedReleaseEvidencePayload, key: string) {
+  const canonical = JSON.stringify([
+    "release-evidence-v1", payload.companyId, payload.issueId, payload.releasePrefix,
+    payload.deployedVersion, payload.candidateDigest, payload.verdict, payload.checkedAt,
+  ]);
+  return { ...payload, signature: createHmac("sha256", key).update(canonical).digest("hex") };
+}
+
+export function validatePersistedReleaseEvidence(
+  evidence: unknown,
+  expected: Pick<PersistedReleaseEvidencePayload, "companyId" | "issueId" | "releasePrefix" | "deployedVersion" | "candidateDigest">,
+  key: string,
+): boolean {
+  if (!key || !evidence || typeof evidence !== "object") return false;
+  const value = evidence as Record<string, unknown>;
+  if (value.verdict !== "confirmed" || typeof value.checkedAt !== "string" ||
+      !Number.isFinite(Date.parse(value.checkedAt)) ||
+      !/^[0-9a-f]{40}$/i.test(expected.deployedVersion) ||
+      Object.entries(expected).some(([name, item]) => value[name] !== item) ||
+      typeof value.signature !== "string" || !/^[0-9a-f]{64}$/.test(value.signature)) return false;
+  const payload = { ...expected, verdict: "confirmed", checkedAt: value.checkedAt };
+  const expectedSignature = signPersistedReleaseEvidence(payload, key).signature;
+  return timingSafeEqual(Buffer.from(value.signature, "hex"), Buffer.from(expectedSignature, "hex"));
+}
+
 export function signReleaseVerificationVerdict(
   input: { verdict: string; deployedVersion: string | null; checkedAt: string; issueId: string },
   key: string,
