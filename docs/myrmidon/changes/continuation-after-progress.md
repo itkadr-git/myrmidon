@@ -14,7 +14,10 @@
   task `in_progress` (the board resumes it by itself, and this is the live continuation path), that
   `todo` returns the task to the queue and is set only when the agent stops working on it, and that
   the agent does not end the turn after the first piece of work if it can continue in the same turn, and that an agent with no next step of its own (waiting for a
-  person, access or a decision) sets `blocked` with an unblock owner, not `in_progress`.
+  person, access or a decision) sets `blocked` with an unblock owner, not `in_progress`. The first push on a task is followed at once by a draft PR
+  (the board's GitHub App is not subscribed to `push`: a branch without a PR is invisible to the
+  board and the task is frozen as an empty run); later pushes go into that PR; a finished task gets
+  `gh pr ready` and `in_review` with a reviewer.
 - Board: for a task in `in_progress` whose executor's last run ended `advanced` and left real
   progress (the PR head moved inside the run's window, or a `pull_request` / `commit` work product
   was created under the run) the in-progress wake fires after 2 minutes (`CONTINUATION_AFTER_PROGRESS_MINUTES`)
@@ -45,7 +48,10 @@
   `in_progress` (доска продолжит её сама, это и есть живой путь продолжения), что `todo` возвращает
   задачу в очередь и ставится, только когда агент перестаёт ею заниматься, и что не нужно
   заканчивать ход после первого куска, если можно продолжать в этом же ходе, а агент без собственного следующего шага (ждёт человека,
-  доступ, решение) ставит `blocked` с владельцем снятия, а не `in_progress`.
+  доступ, решение) ставит `blocked` с владельцем снятия, а не `in_progress`. После первого
+  пуша по задаче сразу открывается draft-PR (GitHub-приложение доски не подписано на `push`: ветка
+  без PR для доски невидима, и задача замораживается как пустой прогон), дальше пуши идут в этот PR,
+  по завершении — `gh pr ready` и `in_review` с ревьюером.
 - Доска: для задачи в `in_progress`, у которой последний прогон исполнителя закончился `advanced` и
   дал реальный прогресс (голова PR сменилась в окне прогона либо под прогоном создан work product
   `pull_request` / `commit`), побудка задачи в работе срабатывает через 2 минуты

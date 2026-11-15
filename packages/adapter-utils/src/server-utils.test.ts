@@ -968,6 +968,8 @@ describe("renderPaperclipWakePrompt", () => {
     expect(ordinary).toContain("the board resumes a task in progress by itself");
     expect(ordinary).toContain("set it only when you stop working on it");
     expect(ordinary).toContain("set `blocked` with a named unblock owner/action, not `in_progress`");
+    expect(ordinary).toContain("Open the pull request at your first push on the task, at once: a draft while the work is not finished");
+    expect(ordinary).toContain("run `gh pr ready` and move the task to `in_review` with a reviewer");
     expect(ordinary).not.toContain("only when a live continuation path exists");
     expect(ordinary).toContain("Create child issues from the approved plan");
     for (const resumedSession of [false, true]) {
