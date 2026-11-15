@@ -10,9 +10,8 @@ import type { Db } from "@myrmidon/db";
 const handler = vi.hoisted(() => ({
   updateAgentAllowlistsForCompany: vi.fn(async (..._args: unknown[]) => ({
     attempted: 3,
-    updated: 0,
+    updated: 3,
     skipped: [] as string[],
-    dryRun: { wouldChange: 3, unchanged: 0, added: { "chatgpt-pool/gpt-6.1-sol": 3 }, removed: {}, changes: [] },
   })),
 }));
 

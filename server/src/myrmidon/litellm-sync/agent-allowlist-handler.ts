@@ -342,17 +342,15 @@ export async function updateAgentAllowlistsForCompany(
         (disabledRegistryNames.includes(name) && cardModels.includes(name)) ||
         (options.cardModelsOnly && removedModelNames.includes(name)),
       );
-      const registryRetirements = options.cardModelsOnly
-        ? disabledRegistryNames.filter((name) => cardModels.includes(name))
-        : disabledRegistryNames;
+      const registryRetirements = disabledRegistryNames;
       const survivors = current.filter((name) =>
         !registryRetirements.includes(name) && !removedModelNames.includes(name) &&
-        (!companyModels.some((model) => model.name === name && model.enabled) || enabledForCard.includes(name)),
+        (options.cardModelsOnly || !enabledNames.includes(name)),
       );
       const agentModels = [...new Set([
         ...enabledForCard,
-        ...additionalModelNames.filter((name) => !removedModelNames.includes(name)),
-      ])];
+        ...additionalModelNames,
+      ])].filter((name) => !removedModelNames.includes(name) && !disabledRegistryNames.includes(name));
       const additions = agentModels.filter((name) => !current.includes(name));
       const finalModels = [...new Set([...survivors, ...agentModels])];
       if (finalModels.length === 0) finalModels.push(DISABLED_MODEL_SENTINEL);

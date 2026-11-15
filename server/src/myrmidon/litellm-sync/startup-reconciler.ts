@@ -145,9 +145,12 @@ export async function startLitellmModelReconciliation(
           resolveCredential: (ownerCompanyId, secretName) => ports.resolveCredential(db, ownerCompanyId, secretName),
         }).reconcileWithLitellm(companyId);
         const allowlists = await ports.reportAgentAllowlists(db, companyId, env);
+        const summary = summarizeAllowlistResult(allowlists as Parameters<typeof summarizeAllowlistResult>[0]);
         ports.log.info(
-          { companyId, ...summarizeAllowlistResult(allowlists as Parameters<typeof summarizeAllowlistResult>[0]) },
-          "litellm agent key allowlists checked at startup (dry run, nothing applied)",
+          { companyId, ...summary },
+          summary.mode === "dry-run"
+            ? "litellm agent key allowlists checked at startup (dry run, nothing applied)"
+            : "litellm agent key allowlists reconciled at startup",
         );
       });
     } catch (err) {
