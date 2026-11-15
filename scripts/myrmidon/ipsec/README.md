@@ -47,3 +47,22 @@ commands, URLs, or credentials in the manifest. References are printed verbatim;
 no generic filter can detect all secrets. Extra fields and references with
 unsupported characters or common secret labels are rejected. Errors never echo
 input. A rejected manifest produces no plan.
+
+# Offline IPsec manifest check
+
+Run `node scripts/myrmidon/ipsec/config-check.mjs manifest.json`. The command reads only the JSON manifest; it does not resolve names, connect to hosts, or read referenced secret files. Use synthetic data for tests.
+
+```json
+{
+  "sides": [
+    { "endpoint": "192.0.2.1", "localCidr": "10.0.0.0/24", "remoteCidr": "10.1.0.0/24", "proposal": "aes256-sha256-modp2048", "id": "left.example", "secretFile": "/secrets/left" },
+    { "endpoint": "192.0.2.2", "localCidr": "10.1.0.0/24", "remoteCidr": "10.0.0.0/24", "proposal": "aes256-sha256-modp2048", "id": "right.example", "secretFile": "/secrets/right" }
+  ]
+}
+```
+
+Each side requires an IP literal endpoint, local and remote CIDRs, IKEv2 proposal, identity, and secret-file path. CIDR networks on each side must not overlap; endpoints must differ. Unknown properties are rejected, including plaintext PSK fields. Proposal syntax, peer compatibility, secret existence and secret content are not checked.
+
+Output is JSON with `status` and an `errors` array of `{path, message}`. Exit 0 means `PASS`; exit 1 means manifest validation `FAIL`; exit 2 means usage, read or JSON parse `ERROR`. No validation result applies configuration.
+
+Run tests with `node --test scripts/myrmidon/ipsec/config-check.test.mjs`.
