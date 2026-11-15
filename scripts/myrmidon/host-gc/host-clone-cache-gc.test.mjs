@@ -630,6 +630,20 @@ describe("stale OMP runner collection", () => {
     assert.deepEqual(unavailable, { ok: false, reason: "board-unavailable" });
   });
 
+  it("does not query agents when the host GC company id is unset", async () => {
+    const previousCompanyId = process.env.MYRMIDON_COMPANY_ID;
+    delete process.env.MYRMIDON_COMPANY_ID;
+    try {
+      const result = await fetchAgentAdapter("eng8", {
+        baseUrl: "http://board",
+        fetchImpl: async () => { throw new Error("must not call board without company id"); },
+      });
+      assert.deepEqual(result, { ok: false, reason: "company-id-missing" });
+    } finally {
+      if (previousCompanyId !== undefined) process.env.MYRMIDON_COMPANY_ID = previousCompanyId;
+    }
+  });
+
   it("rejects unsafe agent ids without a board call", async () => {
     const result = await fetchAgentAdapter("../etc", { baseUrl: "http://board", fetchImpl: async () => { throw new Error("must not be called"); } });
     assert.deepEqual(result, { ok: false, reason: "bad-agent-id" });
@@ -679,13 +693,31 @@ describe("stale OMP runner collection", () => {
     assert.equal(complete.staleOmpRunnersStopped, 1);
   });
 
-  it("fetches the adapter from the agent endpoint and stops by exact container name", async () => {
-    let requestUrl;
-    const result = await fetchAgentAdapter("eng8", {
-      baseUrl: "http://board",
-      fetchImpl: async (url) => { requestUrl = url; return { ok: true, status: 200, json: async () => ({ adapterType: "hermes_gateway" }) }; },
-    });
-    assert.equal(requestUrl, "http://board/api/agents/eng8");
+  it("resolves engN to a UUID before the agent detail lookup", async () => {
+    const requests = [];
+    const previousCompanyId = process.env.MYRMIDON_COMPANY_ID;
+    process.env.MYRMIDON_COMPANY_ID = "company-uuid";
+    let result;
+    try {
+      result = await fetchAgentAdapter("eng8", {
+        baseUrl: "http://board",
+        apiKey: "test-key",
+        fetchImpl: async (url, options) => {
+          requests.push({ url, options });
+          if (url.includes("/companies/")) {
+            assert.match(url, /\/agents\?q=adm-dev-eng-8$/);
+            return { ok: true, status: 200, json: async () => [{ id: "agent-uuid-8", name: "adm-dev-eng-8" }] };
+          }
+          assert.equal(url, "http://board/api/agents/agent-uuid-8");
+          return { ok: true, status: 200, json: async () => ({ adapterType: "hermes_gateway" }) };
+        },
+      });
+    } finally {
+      if (previousCompanyId === undefined) delete process.env.MYRMIDON_COMPANY_ID;
+      else process.env.MYRMIDON_COMPANY_ID = previousCompanyId;
+    }
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].options.headers.Authorization, "Bearer test-key");
     assert.deepEqual(result, { ok: true, adapterType: "hermes_gateway" });
     const dir = path.join(tmpDir, "docker-mock");
     fs.mkdirSync(dir);
