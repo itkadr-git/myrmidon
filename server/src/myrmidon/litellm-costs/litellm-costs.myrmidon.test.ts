@@ -259,7 +259,7 @@ describe("myrmidon(M2-A) gateway client (/spend/logs/v2)", () => {
   });
 
   // myrmidon(OPE-11776): the cap and spend of every key — one /key/list read per 100 keys.
-  it("reads the key caps with GET /key/list, a page per 100 keys, authorized by the accounting key", async () => {
+  it("reads the key caps with GET /key/list, a small page per call, authorized by the accounting key", async () => {
     const seen: Array<{ url: string; method: string; authorization: string }> = [];
     vi.stubGlobal("fetch", async (input: string, init?: { method?: string; headers?: Record<string, string> }) => {
       seen.push({ url: input, method: init?.method ?? "GET", authorization: init?.headers?.Authorization ?? "" });
@@ -280,16 +280,94 @@ describe("myrmidon(M2-A) gateway client (/spend/logs/v2)", () => {
       { tokenHash: "hash-2", maxBudgetUsd: null, spendUsd: 5 },
     ]);
     expect(seen).toHaveLength(2);
-    expect(seen[0]!.url).toBe("http://gateway.test/key/list?return_full_object=true&size=100&page=1");
+    expect(seen[0]!.url).toBe("http://gateway.test/key/list?return_full_object=true&size=25&page=1");
     expect(seen[0]!.authorization).toBe("Bearer sk-test");
   });
 
   it("fails loudly on a key list that is not a key list, or that is too large", async () => {
     vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ detail: "Not Found" }), { status: 200 }));
     await expect(createLitellmGatewayClient("http://gateway.test", "sk-test").listKeyBudgets!()).rejects.toThrow(/unexpected shape/);
-    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ keys: [], total_pages: 500 }), { status: 200 }));
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ keys: [], total_pages: 5000 }), { status: 200 }));
     await expect(createLitellmGatewayClient("http://gateway.test", "sk-test").listKeyBudgets!()).rejects.toThrow(/too large/);
     vi.stubGlobal("fetch", async () => new Response("denied", { status: 401 }));
     await expect(createLitellmGatewayClient("http://gateway.test", "sk-test").listKeyBudgets!()).rejects.toThrow(/answered 401/);
+  });
+
+  // myrmidon(1.6.9 KEY-BUDGETS-OOM): heavy key objects never accumulate.
+  it("keeps only hash, cap and spend of a large /key/list answer (heavy nested fields are dropped page by page)", async () => {
+    const heavy = "x".repeat(20_000);
+    const KEYS = 300;
+    const pages = Math.ceil(KEYS / 25);
+    let served = 0;
+    vi.stubGlobal("fetch", async (input: string) => {
+      const page = Number(new URL(input).searchParams.get("page"));
+      const keys = Array.from({ length: 25 }, (_, i) => {
+        const n = (page - 1) * 25 + i;
+        return {
+          token: `hash-${n}`,
+          max_budget: 10,
+          spend: n / 10,
+          key_alias: `alias-${n}`,
+          metadata: { blob: heavy, nested: { deeper: [heavy, heavy] } },
+          permissions: { big: heavy },
+          models: Array.from({ length: 50 }, (_, m) => `model-${m}-${heavy.slice(0, 100)}`),
+        };
+      });
+      served += 1;
+      return new Response(JSON.stringify({ keys, total_pages: pages }), { status: 200 });
+    });
+    const rows = await createLitellmGatewayClient("http://gateway.test", "sk-test").listKeyBudgets!();
+    expect(served).toBe(pages);
+    expect(rows).toHaveLength(KEYS);
+    expect(rows[7]).toEqual({ tokenHash: "hash-7", maxBudgetUsd: 10, spendUsd: 0.7 });
+    for (const row of rows) expect(Object.keys(row).sort()).toEqual(["maxBudgetUsd", "spendUsd", "tokenHash"]);
+    // What is kept is a few dozen bytes per key, not the ~100 KB the gateway sent per key.
+    expect(JSON.stringify(rows).length).toBeLessThan(KEYS * 120);
+  });
+
+  it("refuses a /key/list page above the byte cap without reading it whole", async () => {
+    const chunk = new TextEncoder().encode("y".repeat(1024 * 1024));
+    let pulled = 0;
+    vi.stubGlobal("fetch", async () => {
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulled += 1;
+          controller.enqueue(chunk);
+          if (pulled >= 200) controller.close();
+        },
+      });
+      return new Response(body, { status: 200 });
+    });
+    await expect(createLitellmGatewayClient("http://gateway.test", "sk-test").listKeyBudgets!()).rejects.toThrow(/over \d+ bytes/);
+    expect(pulled).toBeLessThan(20);
+  });
+
+  it("times out a silent gateway: no answer at all, and a body that never ends", async () => {
+    const quick = { keyListPageTimeoutMs: 40, keyListTotalTimeoutMs: 100 };
+    vi.stubGlobal("fetch", () => new Promise(() => undefined)); // ignores the signal on purpose
+    await expect(createLitellmGatewayClient("http://gateway.test", "sk-test", quick).listKeyBudgets!()).rejects.toThrow(/timed out/);
+    vi.stubGlobal("fetch", async () =>
+      new Response(new ReadableStream<Uint8Array>({ pull: () => new Promise(() => undefined) }), { status: 200 }),
+    );
+    await expect(createLitellmGatewayClient("http://gateway.test", "sk-test", quick).listKeyBudgets!()).rejects.toThrow(/timed out/);
+  });
+
+  it("answers a body that is not JSON with a fixed message, without a piece of the body", async () => {
+    vi.stubGlobal("fetch", async () => new Response("<html>secret-looking-token-abc</html>", { status: 200 }));
+    const err = await createLitellmGatewayClient("http://gateway.test", "sk-test").listKeyBudgets!().catch((e: Error) => e);
+    expect((err as Error).message).toMatch(/not JSON/);
+    expect((err as Error).message).not.toMatch(/secret-looking/);
+  });
+
+  it("counts keys once when the gateway ignores `page`, and stops at the first page with nothing new", async () => {
+    let served = 0;
+    vi.stubGlobal("fetch", async () => {
+      served += 1;
+      const keys = Array.from({ length: 25 }, (_, i) => ({ token: `hash-${i}`, max_budget: 10, spend: i }));
+      return new Response(JSON.stringify({ keys, total_pages: 60, total_count: 1500 }), { status: 200 });
+    });
+    const rows = await createLitellmGatewayClient("http://gateway.test", "sk-test").listKeyBudgets!();
+    expect(rows).toHaveLength(25);
+    expect(served).toBe(2);
   });
 });
