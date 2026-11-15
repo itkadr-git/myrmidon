@@ -7,6 +7,7 @@ type MigrationManifest = {
       permissionGrants: Array<{ permissionKey: string }>;
     }>;
   skills: Array<Pick<CompanyPortabilityManifest["skills"][number], "key" | "slug">>;
+  projects?: Array<Pick<CompanyPortabilityManifest["projects"][number], "slug">>;
   envInputs: Array<Pick<CompanyPortabilityManifest["envInputs"][number],
     "key" | "agentSlug" | "projectSlug" | "kind" | "requirement">>;
 };
@@ -46,6 +47,16 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
       if (!validPermissions.has(grant.permissionKey)) {
         errors.push(`Agent ${agent.slug} has invalid permission ${grant.permissionKey}.`);
       }
+    }
+  }
+  const projectSlugs = new Set((manifest.projects ?? []).map((project) => project.slug));
+  for (const input of manifest.envInputs) {
+    if (input.kind !== "secret") continue;
+    if (input.agentSlug && !agentSlugs.has(input.agentSlug)) {
+      errors.push(`Secret binding ${input.key} references missing agent ${input.agentSlug}.`);
+    }
+    if (input.projectSlug && !projectSlugs.has(input.projectSlug)) {
+      errors.push(`Secret binding ${input.key} references missing project ${input.projectSlug}.`);
     }
   }
   const secretBindings = manifest.envInputs.filter((input) => input.kind === "secret").map((input) => ({
