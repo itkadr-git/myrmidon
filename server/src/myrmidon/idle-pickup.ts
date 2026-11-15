@@ -18,6 +18,7 @@ import {
 import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@myrmidon/shared";
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
 import { releaseFocusCondition } from "./release-focus.js";
+import { liveIdlePickupSettings, liveIdleWakeBudget } from "./runs-queue-settings/live.js";
 // myrmidon(1.6.5 F-26 T5): the cooling window of stale wake candidates (design §4.3).
 import { isIssueCoolingDown, readSwarmSettings } from "./wake-task-guard.js";
 
