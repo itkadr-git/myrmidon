@@ -24,10 +24,13 @@
 //  - The admin key is a company secret NAME in the env
 //    (MYRMIDON_LITELLM_ADMIN_KEY_SECRET); the gateway authenticates with the
 //    resolved VALUE, never the name (agent-keys.readSecretValue pattern).
-  //  - A company whose registry has no enabled models leaves agent keys untouched.
-  //  - One agent's failure never stops the company pass.
-  //  - Startup and provider/card changes apply scoped reconciliation immediately;
-  //    the explicit admin endpoint remains available for full registry operations.
+//  - A company whose registry has no enabled models leaves agent keys untouched.
+//  - One agent's failure never stops the company pass.
+//  - Automatic paths (the watchdog, startup, provider and card changes) run with
+//    `cardModelsOnly`: they take a disabled registry model off a key only when
+//    that agent's card names it, and never touch a model the card does not name.
+//  - Only the explicit admin endpoint (`allowlist-sync?apply=true`, without
+//    `cardModelsOnly`) removes every disabled registry model from every key.
 
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -165,7 +168,12 @@ export interface AllowlistSyncOptions {
    * the caller passes (the plugin lifecycle does this). Default true.
    */
   includeRegistryModels?: boolean;
-  /** Registry events reconcile only affected card models, never the full registry. */
+  /**
+   * Scoped mode for the automatic paths: a disabled registry model is removed
+   * from a key only when the agent's card names it; other models on the key
+   * stay. Without it (the admin endpoint) every disabled registry model is
+   * removed from every key.
+   */
   cardModelsOnly?: boolean;
   /** Restrict a card-save pass to the agent being edited. */
   agentId?: string;
@@ -225,7 +233,6 @@ export async function updateAgentAllowlistsForCompany(
   companyId: string,
   additionalModelNames: readonly string[] = [],
   removedModelNames: readonly string[] = [],
-  _allowEmpty = false,
   options: AllowlistSyncOptions = {},
 ): Promise<AllowlistSyncResult> {
   const dryRun = options.apply === false;
@@ -331,7 +338,11 @@ export async function updateAgentAllowlistsForCompany(
         (disabledRegistryNames.includes(name) && cardModels.includes(name)) ||
         (options.cardModelsOnly && removedModelNames.includes(name)),
       );
-      const registryRetirements = disabledRegistryNames;
+      // Scoped mode retires only disabled models this agent's card names; the
+      // full (admin) mode retires every disabled registry model.
+      const registryRetirements = options.cardModelsOnly
+        ? disabledRegistryNames.filter((name) => cardModels.includes(name))
+        : disabledRegistryNames;
       const survivors = current.filter((name) =>
         !registryRetirements.includes(name) && !removedModelNames.includes(name),
       );

@@ -384,7 +384,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
             getKeyInfo: async () => ({ models }),
             setKeyAllowedModels: async (input) => { models = input.models; return true; },
           }),
-        }, companyId, [], [], false, { cardModelsOnly: true, agentId, apply: true });
+        }, companyId, [], [], { cardModelsOnly: true, agentId, apply: true });
         expect(result.skipped).toEqual([]);
       },
     });

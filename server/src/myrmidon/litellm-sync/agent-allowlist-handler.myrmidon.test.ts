@@ -113,7 +113,7 @@ describe("updateAgentAllowlistsForCompany", () => {
     const db = scriptedDb([[], [{ id: "agent-card", name: "Card Model", adapterConfig: { model } }]]);
     const result = await updateAgentAllowlistsForCompany(
       db, deps({ db, gateway: () => gateway, findSecretId: async () => "id-key" }),
-      "company-a", [], [], false, { cardModelsOnly: true, apply: true },
+      "company-a", [], [], { cardModelsOnly: true, apply: true },
     );
     expect(result.skipped).toContain("key-all-models:agent-card");
     expect(gateway.calls).toEqual([]);
@@ -125,7 +125,7 @@ describe("updateAgentAllowlistsForCompany", () => {
     const db = scriptedDb([[], [{ id: "agent-card", name: "Card Model", adapterConfig: { model: "auto" } }]]);
     await updateAgentAllowlistsForCompany(
       db, deps({ db, gateway: () => gateway, findSecretId: async () => "id-key" }),
-      "company-a", [], [], false, { cardModelsOnly: true, apply: true },
+      "company-a", [], [], { cardModelsOnly: true, apply: true },
     );
     expect(gateway.calls).toEqual([]);
   });
@@ -190,7 +190,7 @@ describe("updateAgentAllowlistsForCompany", () => {
     const db = scriptedDb([[{ id: "agent-card", name: "Card Model", adapterConfig: { model: "plugin/selected" } }]]);
     await updateAgentAllowlistsForCompany(
       db, deps({ db, gateway: () => gateway, findSecretId: async () => "id-key" }),
-      "company-a", ["plugin/selected", "plugin/unrelated"], [], false,
+      "company-a", ["plugin/selected", "plugin/unrelated"], [],
       { includeRegistryModels: false, cardModelsOnly: true },
     );
     expect(gateway.calls).toEqual([{ alias, models: ["vendor/private", "plugin/selected"] }]);
@@ -207,7 +207,7 @@ describe("updateAgentAllowlistsForCompany", () => {
     const result = await updateAgentAllowlistsForCompany(
       db,
       deps({ db, gateway: () => gateway, findSecretId: async () => "id-key", recordAllowlistDrift: async (entry) => { activity.push(entry); } }),
-      "company-a", [], [], false, { cardModelsOnly: true },
+      "company-a", [], [], { cardModelsOnly: true },
     );
     expect(result.updated).toBe(1);
     expect(gateway.calls).toEqual([{ alias, models: ["vendor/private", "vendor/selected"] }]);
@@ -227,7 +227,7 @@ describe("updateAgentAllowlistsForCompany", () => {
     ]);
     await updateAgentAllowlistsForCompany(
       db, deps({ db, gateway: () => gateway, findSecretId: async () => "id-key" }),
-      "company-a", [], [], false, { cardModelsOnly: true, agentId: "agent-card" },
+      "company-a", [], [], { cardModelsOnly: true, agentId: "agent-card" },
     );
     expect(gateway.calls).toEqual([{ alias: first, models: ["vendor/old", "vendor/new"] }]);
   });
@@ -241,7 +241,7 @@ describe("updateAgentAllowlistsForCompany", () => {
     ]);
     await updateAgentAllowlistsForCompany(
       db, deps({ db, gateway: () => gateway, findSecretId: async () => "id-key" }),
-      "company-a", [], [], false, { cardModelsOnly: true },
+      "company-a", [], [], { cardModelsOnly: true },
     );
     expect(gateway.calls[0]?.models).toEqual(["vendor/private", "vendor/selected"]);
   });
@@ -257,12 +257,12 @@ describe("updateAgentAllowlistsForCompany", () => {
     ]);
     await updateAgentAllowlistsForCompany(
       db, deps({ db, gateway: () => gateway, findSecretId: async () => "id-key" }),
-      "company-a", [], [], false, { cardModelsOnly: true },
+      "company-a", [], [], { cardModelsOnly: true },
     );
     expect(gateway.calls[0]?.models).toEqual(["vendor/old", "vendor/primary", "vendor/fallback"]);
   });
 
-  it("applies registry changes only to agents whose card names that model", async () => {
+  it("removes a disabled registry model only from keys whose card names it", async () => {
     const alias = agentKeySecretName({ agentId: "agent-card", agentSlug: "Card Model" });
     const otherAlias = agentKeySecretName({ agentId: "agent-other", agentSlug: "Other" });
     const gateway = recordingGateway(undefined, {
@@ -272,20 +272,55 @@ describe("updateAgentAllowlistsForCompany", () => {
     const db = scriptedDb([
       [{ litellmModelName: "vendor/enabled", enabled: true }, { litellmModelName: "vendor/disabled", enabled: false }],
       [
-        { id: "agent-card", name: "Card Model", adapterConfig: { model: "vendor/enabled" } },
+        { id: "agent-card", name: "Card Model", adapterConfig: { model: "vendor/enabled", models: { fallbacks: ["vendor/disabled"] } } },
         { id: "agent-other", name: "Other", adapterConfig: { model: "vendor/unlisted" } },
       ],
     ]);
     const result = await updateAgentAllowlistsForCompany(
       db,
       deps({ db, gateway: () => gateway, findSecretId: async () => "id-key" }),
-      "company-a", [], [], false, { cardModelsOnly: true },
+      "company-a", [], [], { cardModelsOnly: true },
     );
     expect(result.updated).toBe(2);
     expect(gateway.calls).toEqual([
       { alias, models: ["vendor/enabled", "vendor/private"] },
-      { alias: otherAlias, models: ["vendor/enabled", "vendor/private", "vendor/unlisted"] },
+      { alias: otherAlias, models: ["vendor/enabled", "vendor/disabled", "vendor/private", "vendor/unlisted"] },
     ]);
+  });
+
+  it("scoped pass does not block a key whose only model is a disabled one the card does not name", async () => {
+    const alias = agentKeySecretName({ agentId: "agent-card", agentSlug: "Card Model" });
+    const gateway = recordingGateway(undefined, { [alias]: ["vendor/disabled"] });
+    const registry = [{ litellmModelName: "vendor/disabled", enabled: false }];
+    // A card that names no model: the key is not rewritten at all.
+    let db = scriptedDb([registry, [{ id: "agent-card", name: "Card Model", adapterConfig: { model: "auto" } }]]);
+    await updateAgentAllowlistsForCompany(
+      db, deps({ db, gateway: () => gateway, findSecretId: async () => "id-key" }),
+      "company-a", [], [], { cardModelsOnly: true, apply: true },
+    );
+    expect(gateway.calls).toEqual([]);
+    // A card that names another model: the disabled one stays, no sentinel.
+    db = scriptedDb([registry, [{ id: "agent-card", name: "Card Model", adapterConfig: { model: "vendor/selected" } }]]);
+    await updateAgentAllowlistsForCompany(
+      db, deps({ db, gateway: () => gateway, findSecretId: async () => "id-key" }),
+      "company-a", [], [], { cardModelsOnly: true, apply: true },
+    );
+    expect(gateway.calls).toEqual([{ alias, models: ["vendor/disabled", "vendor/selected"] }]);
+    expect(gateway.calls.flatMap((call) => call.models)).not.toContain(DISABLED_MODEL_SENTINEL);
+  });
+
+  it("full (admin) pass removes every disabled registry model, even one the card does not name", async () => {
+    const alias = agentKeySecretName({ agentId: "agent-card", agentSlug: "Card Model" });
+    const gateway = recordingGateway(undefined, { [alias]: ["vendor/disabled"] });
+    const db = scriptedDb([
+      [{ litellmModelName: "vendor/disabled", enabled: false }],
+      [{ id: "agent-card", name: "Card Model", adapterConfig: { model: "auto" } }],
+    ]);
+    await updateAgentAllowlistsForCompany(
+      db, deps({ db, gateway: () => gateway, findSecretId: async () => "id-key" }),
+      "company-a", [], [], { apply: true },
+    );
+    expect(gateway.calls).toEqual([{ alias, models: [DISABLED_MODEL_SENTINEL] }]);
   });
 
   it("sends each agent's key alias the enabled model list", async () => {
@@ -315,7 +350,6 @@ describe("updateAgentAllowlistsForCompany", () => {
       "company-a",
       ["plugin/model"],
       ["anthropic/claude"],
-      true,
     );
     expect(gateway.calls).toEqual([{ alias, models: ["openai/gpt-4o", "plugin/model"] }]);
     expect(result).toMatchObject({ attempted: 1, updated: 1 });
@@ -346,7 +380,6 @@ describe("updateAgentAllowlistsForCompany", () => {
       "company-a",
       [],
       ["openai/gpt-4o", "anthropic/claude"],
-      true,
     );
     expect(gateway.calls).toEqual([{ alias, models: [DISABLED_MODEL_SENTINEL] }]);
     expect(result).toMatchObject({ attempted: 1, updated: 1 });
@@ -584,7 +617,6 @@ describe("updateAgentAllowlistsForCompany: dry run", () => {
       "company-a",
       [],
       [],
-      false,
       { apply: false },
     );
 
@@ -621,7 +653,6 @@ describe("updateAgentAllowlistsForCompany: dry run", () => {
       "company-a",
       [],
       [],
-      false,
       { apply: false },
     );
     expect(result.skipped).not.toContain("gateway-port-without-allowlist-support");
@@ -637,7 +668,6 @@ describe("updateAgentAllowlistsForCompany: dry run", () => {
       "company-a",
       [],
       [],
-      false,
       { apply: false },
     );
     expect(gateway.calls).toEqual([]);
@@ -653,7 +683,6 @@ describe("updateAgentAllowlistsForCompany: dry run", () => {
       "company-a",
       [],
       [],
-      false,
       { apply: false },
     );
     expect(result.skipped).toContain("gateway-key-management-not-configured");
@@ -666,7 +695,7 @@ describe("updateAgentAllowlistsForCompany: includeRegistryModels false", () => {
     const gateway = recordingGateway(undefined, { [alias]: ["vendor/old"] });
     const db = scriptedDb([[{ id: "agent-1", name: "Restricted", adapterConfig: { model: "vendor/new" } }]]);
     const result = await updateAgentAllowlistsForCompany(
-      db, deps({ db, gateway: () => gateway, ...KEY_DEPS }), "company-a", [], [], false,
+      db, deps({ db, gateway: () => gateway, ...KEY_DEPS }), "company-a", [], [],
       { includeRegistryModels: false },
     );
     expect(result.updated).toBe(1);
@@ -684,7 +713,6 @@ describe("updateAgentAllowlistsForCompany: includeRegistryModels false", () => {
       "company-a",
       ["plugin/model"],
       [],
-      false,
       { includeRegistryModels: false },
     );
     expect(gateway.calls).toEqual([

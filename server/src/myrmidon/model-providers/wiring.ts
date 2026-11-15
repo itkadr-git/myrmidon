@@ -150,7 +150,6 @@ export function myrmidonModelProviderRoutes(db: Db, env: NodeJS.ProcessEnv = pro
         companyId,
         [],
         [],
-        false,
         { cardModelsOnly: true, apply: true },
       );
       logger.info(
@@ -249,7 +248,6 @@ export function createPluginProviderModelSync(
         companyId,
         companyPluginModelNames,
         [],
-        false,
         { cardModelsOnly: true },
       );
     },
@@ -285,7 +283,6 @@ export function createPluginProviderModelSync(
         companyId,
         [...stillOwnedNames],
         removableModelNames,
-        true,
         { cardModelsOnly: true },
       );
     },

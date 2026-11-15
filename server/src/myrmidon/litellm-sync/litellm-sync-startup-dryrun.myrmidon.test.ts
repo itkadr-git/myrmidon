@@ -77,7 +77,7 @@ describe("the default startup allowlist port", () => {
     expect(handler.updateAgentAllowlistsForCompany).toHaveBeenCalledTimes(1);
     const args = handler.updateAgentAllowlistsForCompany.mock.calls[0]!;
     expect(args[2]).toBe("company-a");
-    expect(args[6]).toEqual({ apply: true, cardModelsOnly: true });
+    expect(args[5]).toEqual({ apply: true, cardModelsOnly: true });
     expect(lines.some((l) => l.message.includes("nothing applied"))).toBe(false);
   });
 });

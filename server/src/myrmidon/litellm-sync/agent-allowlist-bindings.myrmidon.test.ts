@@ -255,7 +255,6 @@ describe("updateAgentAllowlistsForCompany finds the key through the card's bindi
       "company-a",
       [],
       ["openai/gpt-4o", "anthropic/claude"],
-      true,
     );
 
     expect(result.updated).toBe(1);

@@ -1188,7 +1188,6 @@ export async function createApp(
           companyId,
           [],
           [],
-          false,
           { cardModelsOnly: true, agentId, apply: true },
         );
         const failures = result.skipped.filter((reason) => reason !== "gateway-key-management-not-configured" && reason !== `agent-without-key:${agentId}` && reason !== `key-all-models:${agentId}`);

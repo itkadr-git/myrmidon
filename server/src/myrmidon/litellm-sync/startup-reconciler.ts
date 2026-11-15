@@ -80,7 +80,6 @@ const defaultPorts: LitellmReconcilePorts = {
       companyId,
       [],
       [],
-      false,
       { apply: true, cardModelsOnly: true },
     );
   },
