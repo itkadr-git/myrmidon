@@ -24,7 +24,9 @@ The disk measurement is for `/`, not necessarily the database volume. The collec
 checks only whether the `chromium`, `openssl` and `sshd` executables are present;
 this does not identify the CI profile, configured TLS, or allowed login methods.
 Time synchronization is reported when `timedatectl` exposes it. Backup configuration
-is unknown; archive mode and timeout are PostgreSQL settings, not proof of a backup.
+is unknown; archive mode, timeout, last successful archive time and failed archive
+count are PostgreSQL facts, not proof of a backup. `ssl_configured` reports the
+server setting; a socket connection does not prove network TLS works.
 These limitations mean exit 2 remains expected even when PostgreSQL succeeds.
 `lag_bytes` is replay byte lag on a standby, not time-based RPO.
 Do not treat a null lag as zero or this output as proof of a working standby.

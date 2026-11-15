@@ -53,6 +53,17 @@ class CollectorTests(unittest.TestCase):
             report = collector.collect('/socket', 'db', 'operator')
         self.assertEqual(report['postgres']['status'], 'incomplete')
 
+    def test_database_backup_and_tls_facts_are_retained(self):
+        fixture = dict.fromkeys(collector.FIELDS, 1)
+        fixture.update(server_version_num=160002, in_recovery=False, lag_bytes=None,
+                       archive_last_success='2026-01-01T00:00:00Z', archive_failures=3,
+                       ssl_configured='on')
+        with patch.object(collector, 'query_postgres', return_value=fixture):
+            report = collector.collect('/socket', 'db', 'operator')
+        self.assertEqual(report['postgres']['data']['archive_last_success'], '2026-01-01T00:00:00Z')
+        self.assertEqual(report['postgres']['data']['archive_failures'], 3)
+        self.assertEqual(report['postgres']['data']['ssl_configured'], 'on')
+
     def test_remote_socket_is_rejected(self):
         result = subprocess.run([sys.executable, str(Path(collector.__file__)), '--socket', 'example.com', '--database', 'db', '--user', 'operator'], capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)

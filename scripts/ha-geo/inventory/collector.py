@@ -22,10 +22,14 @@ SQL = """SELECT json_build_object(
    ELSE (SELECT count(*) FROM pg_stat_replication WHERE state = 'streaming') END,
  'lag_bytes', CASE WHEN pg_is_in_recovery() THEN
    pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn()) ELSE NULL END,
- 'ssl', (SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid())
+ 'ssl', (SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()),
+ 'ssl_configured', current_setting('ssl', true),
+ 'archive_last_success', (SELECT last_archived FROM pg_stat_archiver),
+ 'archive_failures', (SELECT failed_count FROM pg_stat_archiver)
 )::text;"""
 FIELDS = ('server_version_num', 'db_bytes', 'in_recovery', 'wal_level', 'archive_mode',
-          'archive_timeout', 'wal_keep_size', 'max_wal_senders', 'max_replication_slots', 'streaming', 'lag_bytes', 'ssl')
+          'archive_timeout', 'wal_keep_size', 'max_wal_senders', 'max_replication_slots',
+          'streaming', 'lag_bytes', 'ssl', 'ssl_configured', 'archive_last_success', 'archive_failures')
 
 
 def time_sync_status():
