@@ -101,6 +101,7 @@ test("renders scoped planning wake authority before the Hermes default workflow"
   expect(prompt).toContain("clear final disposition");
   expect(prompt).toContain("leave the issue `in_progress`: the board resumes a task in progress by itself");
   expect(prompt).toContain("`todo` puts the issue back into the queue: set it only when you stop working on it");
+  expect(prompt).toContain("set `blocked` with a named unblock owner/action, not `in_progress`");
   expect(prompt).not.toContain("only when a live continuation path exists");
   expect(prompt).not.toContain("check for unassigned issues");
   expect(prompt).not.toContain("status=backlog");

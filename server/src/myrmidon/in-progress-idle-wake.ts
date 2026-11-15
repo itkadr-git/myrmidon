@@ -10,10 +10,6 @@ import {
   type Db,
 } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
-import {
-  collectRunIdsWithIssueProgress,
-  ISSUE_PROGRESS_ACTIVITY_ACTIONS,
-} from "../services/issue-rewake-throttle.js";
 import { readRunIdsWithPrHeadChange } from "../services/pr-head-change-progress.js";
 import { hasCoveringWake, idlePickupCandidateRows, type IdleWakeBudget } from "./idle-pickup.js";
 import {
@@ -42,7 +38,7 @@ import {
  *
  * Continuation after progress: an executor whose last run on the task ended
  * `advanced` and left real progress (the PR head moved inside the run's window,
- * or a work product / document row is bound to the run) is woken after
+ * or a pull request / commit work product is bound to the run) is woken after
  * `CONTINUATION_AFTER_PROGRESS_MINUTES` instead of the full window. A run that
  * pushed a piece of work and stopped (engineers do this: one to two minutes of
  * work, then 10-30 minutes of waiting) should not sit out the idle window; a run
@@ -76,10 +72,8 @@ const MINUTE_MS = 60_000;
  * Never longer than the configured window.
  */
 export const CONTINUATION_AFTER_PROGRESS_MINUTES = 2;
-/** Activity rows that count as progress for the continuation: work products and documents. */
-const CONTINUATION_PROGRESS_ACTIONS = ISSUE_PROGRESS_ACTIVITY_ACTIONS.filter(
-  (action) => action.startsWith("issue.work_product_") || action.startsWith("issue.document_"),
-);
+/** Work product types whose creation under a run counts as progress for the short wake. */
+const CONTINUATION_WORK_PRODUCT_TYPES = ["pull_request", "commit"];
 const ACTIVE_CI_STATUSES = new Set(["queued", "in_progress", "pending"]);
 
 export interface InProgressIdleWakeDeps {
@@ -209,19 +203,21 @@ async function readIdleSince(
 }
 
 /**
- * Did the executor's last run on the task leave real progress? True when that
- * run succeeded with liveness `advanced` and either moved the head of the task's
- * PR inside its window (`readRunIdsWithPrHeadChange`) or left a work product or
- * document row under its run id (`collectRunIdsWithIssueProgress`). Comments and
- * status moves alone are not progress here: the first is what an empty run also
- * writes, the second is the hand-back itself.
+ * Did the executor's last run on the task leave progress that justifies the
+ * short wake? True when that run succeeded with liveness `advanced` and either
+ * moved the head of the task's PR inside its window (`readRunIdsWithPrHeadChange`)
+ * or created a `pull_request` / `commit` work product under its run id. Only
+ * code progress counts: documents, other work products, comments and status
+ * moves do not. An agent that updates its worklog every run must not be woken
+ * every 2 minutes; it keeps the full window. `runId` is the run judged (null
+ * when the executor has no run on the task), the key of the "no progress" memory.
  */
 export async function lastRunLeftProgress(
   db: Db,
   companyId: string,
   agentId: string,
   issueId: string,
-): Promise<boolean> {
+): Promise<{ progress: boolean; runId: string | null }> {
   const [run] = await db
     .select({
       id: heartbeatRuns.id,
@@ -241,15 +237,13 @@ export async function lastRunLeftProgress(
     )
     .orderBy(desc(sql`greatest(${heartbeatRuns.createdAt}, coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}))`))
     .limit(1);
-  if (!run || run.status !== "succeeded" || run.livenessState !== "advanced") return false;
-  if ((await readRunIdsWithPrHeadChange(db, companyId, issueId, [run])).has(run.id)) return true;
-  const rows = await db
-    .select({
-      runId: activityLog.runId,
-      action: activityLog.action,
-      changes: sql<unknown>`${activityLog.details} -> 'changes'`,
-      source: sql<string | null>`${activityLog.details} ->> 'source'`,
-    })
+  if (!run) return { progress: false, runId: null };
+  if (run.status !== "succeeded" || run.livenessState !== "advanced") return { progress: false, runId: run.id };
+  if ((await readRunIdsWithPrHeadChange(db, companyId, issueId, [run])).has(run.id)) {
+    return { progress: true, runId: run.id };
+  }
+  const [row] = await db
+    .select({ id: activityLog.id })
     .from(activityLog)
     .where(
       and(
@@ -257,10 +251,12 @@ export async function lastRunLeftProgress(
         eq(activityLog.entityType, "issue"),
         eq(activityLog.entityId, issueId),
         eq(activityLog.runId, run.id),
-        inArray(activityLog.action, CONTINUATION_PROGRESS_ACTIONS),
+        eq(activityLog.action, "issue.work_product_created"),
+        inArray(sql<string>`${activityLog.details} ->> 'type'`, CONTINUATION_WORK_PRODUCT_TYPES),
       ),
-    );
-  return collectRunIdsWithIssueProgress(rows, () => agentId).has(run.id);
+    )
+    .limit(1);
+  return { progress: row !== undefined, runId: run.id };
 }
 
 /** True when the task sits at the runs-without-commit cap (it is for a person, not for a wake). */
@@ -299,10 +295,18 @@ export function createInProgressIdleWakeSweeper(deps: InProgressIdleWakeDeps): I
   let lastPassAtMs = 0;
   /** Issue id -> when this process last tried to wake it (also for a refused wake). */
   const lastAttemptMs = new Map<string, number>();
+  /**
+   * Issue id -> the short check found no progress for this last run: until the
+   * full window ends (absolute time) and while the task row is unchanged, the
+   * short check does not touch the task again (no queries). A new run or a
+   * change of the task row (updatedAt) drops the entry.
+   */
+  const noProgressUntil = new Map<string, { untilMs: number; runId: string | null; updatedAtMs: number }>();
   return {
     resetForTest() {
       lastPassAtMs = 0;
       lastAttemptMs.clear();
+      noProgressUntil.clear();
     },
     async sweep(now = new Date()) {
       const result: InProgressIdleWakeResult = { considered: 0, woken: 0, issueIds: [] };
@@ -310,6 +314,7 @@ export function createInProgressIdleWakeSweeper(deps: InProgressIdleWakeDeps): I
       if (!(minutes > 0)) return result;
       if (lastPassAtMs !== 0 && now.getTime() - lastPassAtMs < IN_PROGRESS_IDLE_WAKE_PASS_INTERVAL_MS) return result;
       lastPassAtMs = now.getTime();
+      for (const [key, entry] of noProgressUntil) if (entry.untilMs <= now.getTime()) noProgressUntil.delete(key);
       // The prefilter reads with the shorter continuation window; a task that
       // is idle for less than the full window is judged below by its last run.
       const shortMinutes = Math.min(minutes, CONTINUATION_AFTER_PROGRESS_MINUTES);
@@ -358,6 +363,8 @@ export function createInProgressIdleWakeSweeper(deps: InProgressIdleWakeDeps): I
         for (const issue of stale) {
           if (seen.has(issue.id)) continue;
           seen.add(issue.id);
+          const remembered = noProgressUntil.get(issue.id);
+          if (remembered && remembered.updatedAtMs === issue.updatedAt.getTime() && remembered.untilMs > now.getTime()) continue;
           const agentId = issue.agentId;
           if (!agentId || wokenAgents.has(agentId)) continue;
           const agent = { id: agentId, companyId: issue.companyId, role: issue.role };
@@ -405,7 +412,15 @@ export function createInProgressIdleWakeSweeper(deps: InProgressIdleWakeDeps): I
             let windowMinutes = minutes;
             let afterProgress = false;
             if (!isIdleLongEnough(idleSince, now, minutes)) {
-              if (!(await lastRunLeftProgress(deps.db, agent.companyId, agentId, issue.id))) continue;
+              const judged = await lastRunLeftProgress(deps.db, agent.companyId, agentId, issue.id);
+              if (!judged.progress) {
+                noProgressUntil.set(issue.id, {
+                  untilMs: idleSince.getTime() + minutes * MINUTE_MS,
+                  runId: judged.runId,
+                  updatedAtMs: issue.updatedAt.getTime(),
+                });
+                continue;
+              }
               windowMinutes = shortMinutes;
               afterProgress = true;
             }

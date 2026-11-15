@@ -13,12 +13,15 @@
 - Text: the contract and the template now say that an executor whose work is not finished leaves the
   task `in_progress` (the board resumes it by itself, and this is the live continuation path), that
   `todo` returns the task to the queue and is set only when the agent stops working on it, and that
-  the agent does not end the turn after the first piece of work if it can continue in the same turn.
+  the agent does not end the turn after the first piece of work if it can continue in the same turn, and that an agent with no next step of its own (waiting for a
+  person, access or a decision) sets `blocked` with an unblock owner, not `in_progress`.
 - Board: for a task in `in_progress` whose executor's last run ended `advanced` and left real
-  progress (the PR head moved inside the run's window, or a work product / document row is bound to
-  the run) the in-progress wake fires after 2 minutes (`CONTINUATION_AFTER_PROGRESS_MINUTES`)
+  progress (the PR head moved inside the run's window, or a `pull_request` / `commit` work product
+  was created under the run) the in-progress wake fires after 2 minutes (`CONTINUATION_AFTER_PROGRESS_MINUTES`)
   instead of `runPriority.inProgressIdleWakeMinutes` (20). Without progress the window is the
-  previous one. A comment or a status move alone is not progress. Every other guard stays: CI of the
+  previous one. A comment, a document, another work product or a status move alone is not progress,
+  so an agent that updates its worklog every run is not woken every 2 minutes. A task judged "no
+  progress" is not read again by the short check until the full window ends (in-memory, no queries). Every other guard stays: CI of the
   head in progress, the runs-without-commit cap, blockers and holds, the wake admission, the
   rewake throttle, and the strict release focus (a task outside it is not woken).
 - No migration, no new setting. `docs/myrmidon/SETTINGS.md` is unchanged: the 2-minute pause is a
@@ -41,12 +44,15 @@
 - Текст: контракт и шаблон теперь говорят, что исполнитель с недоделанной работой оставляет задачу
   `in_progress` (доска продолжит её сама, это и есть живой путь продолжения), что `todo` возвращает
   задачу в очередь и ставится, только когда агент перестаёт ею заниматься, и что не нужно
-  заканчивать ход после первого куска, если можно продолжать в этом же ходе.
+  заканчивать ход после первого куска, если можно продолжать в этом же ходе, а агент без собственного следующего шага (ждёт человека,
+  доступ, решение) ставит `blocked` с владельцем снятия, а не `in_progress`.
 - Доска: для задачи в `in_progress`, у которой последний прогон исполнителя закончился `advanced` и
-  дал реальный прогресс (голова PR сменилась в окне прогона либо к прогону привязана запись
-  work product / документа), побудка задачи в работе срабатывает через 2 минуты
+  дал реальный прогресс (голова PR сменилась в окне прогона либо под прогоном создан work product
+  `pull_request` / `commit`), побудка задачи в работе срабатывает через 2 минуты
   (`CONTINUATION_AFTER_PROGRESS_MINUTES`), а не через `runPriority.inProgressIdleWakeMinutes` (20).
-  Без прогресса окно прежнее. Один комментарий или смена статуса прогрессом не считаются. Все
+  Без прогресса окно прежнее. Комментарий, документ, прочий work product или смена статуса прогрессом не считаются, поэтому агент,
+  обновляющий worklog каждый прогон, не получает побудку раз в 2 минуты. Задача с решением «прогресса
+  нет» короткой проверкой до конца полного окна не читается (в памяти, без запросов). Все
   остальные защиты сохраняются: идущий CI головы, предел прогонов без коммита, блокеры и удержания,
   допуск побудок, тормоз повторных побудок и строгий фокус выпуска (задача вне фокуса не будится).
 - Без миграций и без новой настройки. `docs/myrmidon/SETTINGS.md` не меняется: пауза в 2 минуты

@@ -967,6 +967,7 @@ describe("renderPaperclipWakePrompt", () => {
     expect(ordinary).toContain("Execution contract:");
     expect(ordinary).toContain("the board resumes a task in progress by itself");
     expect(ordinary).toContain("set it only when you stop working on it");
+    expect(ordinary).toContain("set `blocked` with a named unblock owner/action, not `in_progress`");
     expect(ordinary).not.toContain("only when a live continuation path exists");
     expect(ordinary).toContain("Create child issues from the approved plan");
     for (const resumedSession of [false, true]) {

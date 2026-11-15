@@ -547,40 +547,61 @@ describeEmbeddedPostgres("in-progress idle wake sweep (OPE-13202)", () => {
     );
   });
 
-  it("continues after 2 minutes a run that left a work product or a document under its run id", async () => {
+  it("continues after 2 minutes a run that created a pull_request work product under its run id", async () => {
     const { companyId, agentId } = await seedAgent();
-    const issueA = await seedIssue({ companyId, agentId, idleMinutes: 3 });
-    const runA = await seedFinishedRun({ companyId, agentId, issueId: issueA, finishedMinutesAgo: 3 });
+    const issueId = await seedIssue({ companyId, agentId, idleMinutes: 3 });
+    const run = await seedFinishedRun({ companyId, agentId, issueId, finishedMinutesAgo: 3 });
     await seedActivity({
       companyId,
-      issueId: issueA,
-      action: "issue.work_product_updated",
-      at: new Date(runA.finishedAt.getTime() - 30_000),
-      runId: runA.runId,
+      issueId,
+      action: "issue.work_product_created",
+      at: new Date(run.finishedAt.getTime() - 30_000),
+      runId: run.runId,
       agentId,
+      details: { type: "pull_request" },
     });
     const { sweeper, enqueueWakeup } = makeSweeper();
-    expect((await sweeper.sweep(new Date())).issueIds).toEqual([issueA]);
+    expect((await sweeper.sweep(new Date())).issueIds).toEqual([issueId]);
     expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+  });
 
-    const second = await seedAgent();
-    const issueB = await seedIssue({ companyId: second.companyId, agentId: second.agentId, idleMinutes: 3 });
-    const runB = await seedFinishedRun({
-      companyId: second.companyId,
-      agentId: second.agentId,
-      issueId: issueB,
-      finishedMinutesAgo: 3,
-    });
+  it("a document or a non-code work product without a push keeps the full 20 minutes", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, idleMinutes: 3 });
+    const run = await seedFinishedRun({ companyId, agentId, issueId, finishedMinutesAgo: 3 });
+    const at = new Date(run.finishedAt.getTime() - 30_000);
+    await seedActivity({ companyId, issueId, action: "issue.document_upserted", at, runId: run.runId, agentId });
     await seedActivity({
-      companyId: second.companyId,
-      issueId: issueB,
-      action: "issue.document_upserted",
-      at: new Date(runB.finishedAt.getTime() - 30_000),
-      runId: runB.runId,
-      agentId: second.agentId,
+      companyId,
+      issueId,
+      action: "issue.work_product_created",
+      at,
+      runId: run.runId,
+      agentId,
+      details: { type: "preview_url" },
     });
-    const next = makeSweeper();
-    expect((await next.sweeper.sweep(new Date())).issueIds).toEqual([issueB]);
+    const { sweeper, enqueueWakeup } = makeSweeper();
+    const start = Date.now();
+    expect((await sweeper.sweep(new Date(start))).woken).toBe(0);
+    expect((await sweeper.sweep(new Date(start + 10 * MIN))).woken).toBe(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    expect((await sweeper.sweep(new Date(start + 21 * MIN))).woken).toBe(1);
+  });
+
+  it("remembers 'no progress': the short check reads the task once per window", async () => {
+    const { companyId, agentId } = await seedAgent();
+    await seedIssue({ companyId, agentId, idleMinutes: 3 });
+    const { sweeper } = makeSweeper();
+    const spy = vi.spyOn(db, "select");
+    const start = Date.now();
+    await sweeper.sweep(new Date(start));
+    const afterFirst = spy.mock.calls.length;
+    expect(afterFirst).toBeGreaterThan(1);
+    // Passes 30 s apart inside the window: only the prefilter page is read.
+    await sweeper.sweep(new Date(start + 40_000));
+    await sweeper.sweep(new Date(start + 80_000));
+    expect(spy.mock.calls.length - afterFirst).toBe(2);
+    spy.mockRestore();
   });
 
   it("does not continue before the 2 minutes are over", async () => {
