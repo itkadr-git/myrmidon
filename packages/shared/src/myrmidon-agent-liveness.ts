@@ -13,28 +13,9 @@
 
 import { z } from "zod";
 import { DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD } from "./myrmidon-review-routing.js";
-import { DEFAULT_TEAM_LIVENESS_SETTINGS } from "./myrmidon-team-liveness.js";
-import { DEFAULT_QUEUE_WITHOUT_RUN_THRESHOLD_SEC } from "./myrmidon-queue-without-run.js";
-import {
-  AGENT_RECOVERY_JOURNAL_DEDUP_WINDOW_MS,
-  AGENT_RECOVERY_JOURNAL_RETENTION_DAYS,
-} from "./myrmidon-agent-recovery-journal.js";
 
 /** The key of the block inside `instance_settings.general`. */
 export const AGENT_LIVENESS_SETTINGS_KEY = "agentLiveness" as const;
-
-// Canonical baselines for the A1/B1/C2 consumers. Keeping these named here
-// makes the D1 defaults auditable without importing server code into shared.
-export const AGENT_LIVENESS_BASELINE = {
-  queueThreshold: DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD,
-  probeIntervalSec: DEFAULT_TEAM_LIVENESS_SETTINGS.idlePickupIntervalSec,
-  probeTimeoutSec: 5,
-  escalationSteps: 6,
-  escalationStepTimeoutSec: 30 * 60,
-  queueWithoutRunThresholdSec: DEFAULT_QUEUE_WITHOUT_RUN_THRESHOLD_SEC,
-  journalDedupWindowSec: Math.floor(AGENT_RECOVERY_JOURNAL_DEDUP_WINDOW_MS / 1000),
-  journalRetentionDays: AGENT_RECOVERY_JOURNAL_RETENTION_DAYS,
-} as const;
 
 /**
  * The values in force when nothing is stored. Every threshold is the constant
@@ -44,15 +25,15 @@ export const AGENT_LIVENESS_BASELINE = {
 export const DEFAULT_AGENT_LIVENESS_SETTINGS: AgentLivenessSettings = {
   // Feature OFF: no watchdog pass runs until an operator switches it on.
   enabled: false,
-  engineerQueueThreshold: AGENT_LIVENESS_BASELINE.queueThreshold,
-  reviewerQueueThreshold: AGENT_LIVENESS_BASELINE.queueThreshold,
-  leadQueueThreshold: AGENT_LIVENESS_BASELINE.queueThreshold,
-  probeIntervalSec: AGENT_LIVENESS_BASELINE.probeIntervalSec,
-  probeTimeoutSec: AGENT_LIVENESS_BASELINE.probeTimeoutSec,
-  escalationSteps: AGENT_LIVENESS_BASELINE.escalationSteps,
-  escalationStepTimeoutSec: AGENT_LIVENESS_BASELINE.escalationStepTimeoutSec,
-  journalDedupWindowSec: AGENT_LIVENESS_BASELINE.journalDedupWindowSec,
-  journalRetentionDays: AGENT_LIVENESS_BASELINE.journalRetentionDays,
+  engineerQueueThreshold: DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD,
+  reviewerQueueThreshold: DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD,
+  leadQueueThreshold: DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD,
+  probeIntervalSec: 30,
+  probeTimeoutSec: 5,
+  escalationSteps: 6,
+  escalationStepTimeoutSec: 30 * 60,
+  journalDedupWindowSec: 900,
+  journalRetentionDays: 30,
   exclusionWindows: [],
 };
 

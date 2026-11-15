@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_AGENT_LIVENESS_SETTINGS,
-  AGENT_LIVENESS_BASELINE,
   agentLivenessSettingsSchema,
   patchAgentLivenessSettingsSchema,
   resolveAgentLivenessSettings,
@@ -10,6 +9,8 @@ import {
   type AgentLivenessSettings,
   type AgentLivenessSettingsPatch,
 } from "./myrmidon-agent-liveness.js";
+import { DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD } from "./myrmidon-review-routing.js";
+import { DEFAULT_TEAM_LIVENESS_SETTINGS } from "./myrmidon-team-liveness.js";
 import { instanceGeneralSettingsSchema } from "./validators/instance.js";
 import type { InstanceGeneralSettings } from "./types/instance.js";
 
@@ -20,16 +21,17 @@ describe("agent liveness defaults", () => {
     expect(resolveAgentLivenessSettings(null)).toEqual(DEFAULT_AGENT_LIVENESS_SETTINGS);
     expect(resolveAgentLivenessSettings({})).toEqual(DEFAULT_AGENT_LIVENESS_SETTINGS);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.enabled).toBe(false);
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.engineerQueueThreshold).toBe(AGENT_LIVENESS_BASELINE.queueThreshold);
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.reviewerQueueThreshold).toBe(AGENT_LIVENESS_BASELINE.queueThreshold);
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.leadQueueThreshold).toBe(AGENT_LIVENESS_BASELINE.queueThreshold);
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.probeIntervalSec).toBe(AGENT_LIVENESS_BASELINE.probeIntervalSec);
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.probeTimeoutSec).toBe(AGENT_LIVENESS_BASELINE.probeTimeoutSec);
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.escalationSteps).toBe(AGENT_LIVENESS_BASELINE.escalationSteps);
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.escalationStepTimeoutSec).toBe(AGENT_LIVENESS_BASELINE.escalationStepTimeoutSec);
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.journalDedupWindowSec).toBe(AGENT_LIVENESS_BASELINE.journalDedupWindowSec);
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.journalRetentionDays).toBe(AGENT_LIVENESS_BASELINE.journalRetentionDays);
-
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.engineerQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.reviewerQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.leadQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.probeIntervalSec).toBe(DEFAULT_TEAM_LIVENESS_SETTINGS.idlePickupIntervalSec);
+    // These defaults are the D1 baseline constants used by the A1/B1/C2
+    // behavior modules; keep them grouped here so their contracts cannot drift.
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.probeTimeoutSec).toBe(5);
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.escalationSteps).toBe(6);
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.escalationStepTimeoutSec).toBe(30 * 60);
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.journalDedupWindowSec).toBe(900);
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.journalRetentionDays).toBe(30);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.exclusionWindows).toEqual([]);
   });
 
@@ -77,10 +79,10 @@ describe("agent liveness defaults", () => {
       exclusionWindows: ["weekdays 09:00-18:00"],
     });
     // Keys the patch does not carry stay at the defaults.
-    expect(resolved.reviewerQueueThreshold).toBe(AGENT_LIVENESS_BASELINE.queueThreshold);
-    expect(resolved.journalRetentionDays).toBe(AGENT_LIVENESS_BASELINE.journalRetentionDays);
-    expect(resolved.probeTimeoutSec).toBe(AGENT_LIVENESS_BASELINE.probeTimeoutSec);
-    expect(resolved.journalDedupWindowSec).toBe(AGENT_LIVENESS_BASELINE.journalDedupWindowSec);
+    expect(resolved.reviewerQueueThreshold).toBe(8);
+    expect(resolved.journalRetentionDays).toBe(30);
+    expect(resolved.probeTimeoutSec).toBe(5);
+    expect(resolved.journalDedupWindowSec).toBe(900);
   });
 
   it("is a field of the instance general settings, in step with its interface", () => {
