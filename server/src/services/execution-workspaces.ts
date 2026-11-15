@@ -104,6 +104,37 @@ function issueTerminalTimestamp(issue: {
 const WORKSPACE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 export const ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON = "issue_terminal";
+
+// A shared project-primary row only references the project checkout, so there is
+// no per-task copy to inspect or delete. When its source task reaches done or
+// cancelled the row is archived in the same transaction as the status change;
+// the data-retention sweep later deletes it once the archive is old enough.
+// Rows of other modes keep the guarded terminal sweep (dirty/unmerged checks).
+export async function archiveSharedExecutionWorkspacesForTerminalIssue(
+  db: Pick<Db, "update">,
+  issue: { id: string; companyId: string },
+  at: Date = new Date(),
+): Promise<string[]> {
+  const rows = await db
+    .update(executionWorkspaces)
+    .set({
+      status: "archived",
+      closedAt: at,
+      cleanupEligibleAt: at,
+      cleanupReason: ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON,
+      updatedAt: at,
+    })
+    .where(and(
+      eq(executionWorkspaces.companyId, issue.companyId),
+      eq(executionWorkspaces.sourceIssueId, issue.id),
+      eq(executionWorkspaces.mode, "shared_workspace"),
+      eq(executionWorkspaces.strategyType, "project_primary"),
+      inArray(executionWorkspaces.status, ["active", "idle", "in_review"]),
+      isNull(executionWorkspaces.closedAt),
+    ))
+    .returning({ id: executionWorkspaces.id });
+  return rows.map((row: { id: string }) => row.id);
+}
 // myrmidon(OPE-13106): rows of the terminal sweep taken per pass for
 // shared_workspace, and the hard cap. Each row is archived by its own guarded
 // single-row UPDATE, so no statement touches more than one row.
