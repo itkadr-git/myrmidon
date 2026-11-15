@@ -45,18 +45,26 @@ export function parseGithubPullRequestRef(input: {
   metadata?: Record<string, unknown> | null;
 }): GithubPullRequestRef | null {
   const metadata = input.metadata ?? {};
-  const metadataUrl = typeof metadata.url === "string" ? metadata.url.trim() : "";
-  for (const candidate of [input.url?.trim(), metadataUrl]) {
-    const match = candidate ? GITHUB_PULL_REQUEST_URL_RE.exec(candidate) : null;
-    if (match) return { repository: `${match[1]}/${match[2]}`, number: Number(match[3]) };
-  }
   const idMatch = input.externalId ? GITHUB_PULL_REQUEST_EXTERNAL_ID_RE.exec(input.externalId.trim()) : null;
   if (idMatch) return { repository: idMatch[1]!, number: Number(idMatch[2]) };
   const repository = typeof metadata.repo === "string" ? metadata.repo
     : typeof metadata.repository === "string" ? metadata.repository
     : null;
   const number = positivePullNumber(metadata.number);
-  return repository && repository.includes("/") && number ? { repository, number } : null;
+  if (repository && repository.includes("/") && number) return { repository, number };
+  const metadataUrl = typeof metadata.url === "string" ? metadata.url.trim() : "";
+  for (const candidate of [input.url?.trim(), metadataUrl]) {
+    const match = candidate ? GITHUB_PULL_REQUEST_URL_RE.exec(candidate) : null;
+    if (match) return { repository: `${match[1]}/${match[2]}`, number: Number(match[3]) };
+  }
+  return null;
+}
+
+/** Drops the PR reference keys so a new url re-derives them instead of keeping the old PR's. */
+function withoutPullRequestRef(metadata: unknown): Record<string, unknown> | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const { repo: _repo, repository: _repository, number: _number, url: _url, ...rest } = metadata as Record<string, unknown>;
+  return rest;
 }
 
 /** Fills externalId and metadata repo/repository/number for a github pull_request; other rows pass through. */
@@ -428,7 +436,7 @@ export function workProductService(
           provider: patch.provider ?? existing.provider,
           url: patch.url ?? existing.url,
           externalId: patch.externalId ?? (urlChanged ? null : existing.externalId),
-          metadata: patch.metadata ?? existing.metadata,
+          metadata: patch.metadata ?? (urlChanged ? withoutPullRequestRef(existing.metadata) : existing.metadata),
         });
         if (merged.externalId && merged.externalId !== (patch.externalId ?? existing.externalId)) {
           patch = { ...patch, externalId: merged.externalId };

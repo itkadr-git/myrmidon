@@ -140,6 +140,7 @@ describe("workProductService", () => {
     const tx = {
       update: txUpdate,
       insert: txInsert,
+      select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => [] as unknown[] }) }) })),
     };
     const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => await callback(tx));
 
