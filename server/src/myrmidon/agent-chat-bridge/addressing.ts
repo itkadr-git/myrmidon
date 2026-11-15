@@ -40,6 +40,7 @@ export interface TelegramAddressee {
 export type BridgeAddresseeResult =
   | { kind: "resolved"; addressee: TelegramAddressee }
   | { kind: "ambiguous"; handle: string; candidates: Array<{ agentId: string; name: string }> }
+  | { kind: "invalid_id" }
   | { kind: "none" };
 
 /**
@@ -391,9 +392,21 @@ export async function resolveBridgeAddressee(
     endpointAgentId: string;
   },
 ): Promise<BridgeAddresseeResult> {
+  // Explicit IDs take precedence over every textual mention and fail closed.
+  const explicitIds = [...input.text.matchAll(/(?:^|\s)agent:\/\/([^\s]*)/gi)];
   const tokens = extractMentionTokens(input.text);
-  if (tokens.length === 0) return { kind: "none" };
+  if (explicitIds.length === 0 && tokens.length === 0) return { kind: "none" };
   const candidates = await loadCompanyAgents(db, input.companyId);
+  if (explicitIds.length > 0) {
+    const id = explicitIds[0]?.[1] ?? "";
+    if (explicitIds.length !== 1 || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      return { kind: "invalid_id" };
+    }
+    const agent = candidates.find((candidate) => candidate.id.toLowerCase() === id.toLowerCase());
+    return agent
+      ? { kind: "resolved", addressee: { agentId: agent.id, displayName: agent.name } }
+      : { kind: "invalid_id" };
+  }
   const candidateById = new Map(candidates.map((c) => [c.id, c]));
   const byToken = new Map<string, string[]>();
 

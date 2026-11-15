@@ -45,6 +45,7 @@ import type {
 } from "../../services/chat-sdk-runtime.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { issueService } from "../../services/issues.js";
+import { agentService } from "../../services/agents.js";
 
 import {
   getEmbeddedPostgresTestSupport,
@@ -583,6 +584,15 @@ describeEmbeddedPostgres("@<alias> addressing in the bridged Telegram chat (X9b)
     const fixture = await seedCompany();
     await db.update(agents).set({ name: "Foo" }).where(eq(agents.id, fixture.assignedAgentId));
     await db.update(agents).set({ name: "foo", adapterConfig: {} }).where(eq(agents.id, fixture.gipAgentId));
+    const svc = agentService(db);
+    const beforeAgents = await db.select().from(agents).where(eq(agents.companyId, fixture.companyId));
+    await expect(svc.create(fixture.companyId, { name: "FOO" })).rejects.toMatchObject({ status: 409, details: { code: "agent_name_conflict" } });
+    const thirdId = randomUUID();
+    await db.insert(agents).values({ id: thirdId, companyId: fixture.companyId, name: "Other", role: "engineer", status: "idle", adapterType: "paperclip_runner", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    await expect(svc.update(thirdId, { name: "FOO" })).rejects.toMatchObject({ status: 409, details: { code: "agent_name_conflict" } });
+    const afterAgents = await db.select().from(agents).where(eq(agents.companyId, fixture.companyId));
+    expect(afterAgents.filter((agent) => agent.id !== thirdId)).toEqual(beforeAgents);
+    expect(afterAgents.find((agent) => agent.id === thirdId)?.name).toBe("Other");
     const { callbacks, endpoint } = await configuredTelegramEndpoint(fixture);
     await linkTelegramPrincipal({ companyId: fixture.companyId, endpointId: endpoint.id, userId: "700010", boardUserId: "owner-user" });
 
@@ -616,7 +626,9 @@ describeEmbeddedPostgres("@<alias> addressing in the bridged Telegram chat (X9b)
     const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId));
     expect(wakes).toHaveLength(1);
     expect(wakes[0].agentId).toBe(fixture.gipAgentId);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, delivered[0].id))).toHaveLength(1);
     await send(explicit, 2);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, delivered[0].id))).toHaveLength(1);
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId))).toHaveLength(1);
     const invalidIds = [randomUUID(), (await seedCompany()).gipAgentId];
     for (const [index, id] of invalidIds.entries()) {
