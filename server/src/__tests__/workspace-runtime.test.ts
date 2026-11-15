@@ -804,6 +804,15 @@ describe("ensureServerWorkspaceLinksCurrent", () => {
 });
 
 describe("realizeExecutionWorkspace", () => {
+  it.each(["hermes_gateway", "omp_local"])("does not restore a board-side worktree for %s", async (adapterType) => {
+    const workspace = await ensurePersistedExecutionWorkspaceAvailable({
+      base: { baseCwd: "/nonexistent/board-repo", source: "project_primary", projectId: "project-1", workspaceId: "workspace-1", repoUrl: null, repoRef: null },
+      workspace: { mode: "isolated_workspace", strategyType: "git_worktree", cwd: "/nonexistent/board-worktree", providerRef: "/nonexistent/board-worktree", projectId: "project-1", projectWorkspaceId: "workspace-1", repoUrl: null, baseRef: null, branchName: "old-branch" },
+      issue: { id: "issue-1", identifier: "OPE-123", title: "Container workspace" },
+      agent: { id: "agent-1", name: "agent", companyId: "company-1", adapterType },
+    });
+    expect(workspace).toMatchObject({ cwd: "/workspace/OPE-123/repo", worktreePath: null, created: false });
+  });
   it.each(["hermes_gateway", "omp_local"])("does not create a board-side worktree for %s", async (adapterType) => {
     const repoRoot = await createTempRepo();
     const workspace = await realizeExecutionWorkspace({
