@@ -12,10 +12,10 @@ describe("hasAgentNameCollision", () => {
     ).toBe(true);
   });
 
-  it("ignores terminated agents", () => {
+  it("detects collisions with terminated agents", () => {
     expect(
       hasAgentNameCollision("ALPHA", [{ id: "a1", name: "alpha", status: "terminated" }]),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("allows the current agent to retain its own name", () => {
