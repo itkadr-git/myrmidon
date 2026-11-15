@@ -429,7 +429,10 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
             FROM document_revisions
           ), doomed AS (
             SELECT id FROM candidates
-            WHERE rank > ${keepPerDocument} AND created_at < ${cutoff}::timestamptz
+            WHERE rank > GREATEST(${keepPerDocument}, 1) AND created_at < ${cutoff}::timestamptz
+              AND NOT EXISTS (
+                SELECT 1 FROM issue_plan_decompositions p WHERE p.accepted_plan_revision_id = candidates.id
+              )
             ORDER BY created_at LIMIT ${batchSize}
           ), deleted AS (
             DELETE FROM document_revisions d USING doomed WHERE d.id = doomed.id
