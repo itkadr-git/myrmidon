@@ -25,6 +25,8 @@ type IssueLike = AssigneeLike & {
   status: string;
   title?: string | null;
   labels?: string[];
+  workProducts?: readonly { type: string; status: string }[];
+  hasCurrentReleaseEvidence?: boolean;
   projectId?: string | null;
   casteKey?: string | null;
   reviewEscalationPolicy?: ReviewEscalationPolicyLike | null;
@@ -1160,6 +1162,13 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   const patch: Record<string, unknown> = {};
   const isRelease = isReleaseTask(input.issue.title ?? null) ||
     (input.issue.labels ?? []).some((label) => normaliseReleasePrefix(label) !== null);
+  const assertReleaseEvidence = () => {
+    if (isRelease && input.issue.workProducts?.some((product) =>
+      product.type === "pull_request" && product.status === "merged",
+    ) && input.issue.hasCurrentReleaseEvidence !== true) {
+      throw unprocessable("Cannot mark release task done without current signed deployment evidence.");
+    }
+  };
   const existingState = parseIssueExecutionState(input.issue.executionState);
   const currentAssignee = assigneePrincipal(input.issue);
   const actor = actorPrincipal(input.actor);
@@ -1396,6 +1405,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
           ) {
             throw unprocessable("Cannot mark release task done without a verify execution stage.");
           }
+          assertReleaseEvidence();
           patch.executionState = approvedState;
           return {
             patch,
@@ -1683,6 +1693,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     )) {
       throw unprocessable("Cannot mark release task done without a completed verify execution stage.");
     }
+    assertReleaseEvidence();
     return { patch };
   }
 

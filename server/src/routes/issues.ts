@@ -145,7 +145,7 @@ import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/
 import { createPullRequestMergeDetailsResolver } from "../services/github-pull-request-merge.js";
 import { resolveGitHubRepositoryToken } from "../services/github-external-object-provider.js";
 import { checkCommitMembership, normaliseReleasePrefix, resolveReleaseRefs, routePullRequestVerdict } from "../myrmidon/release-membership.js";
-import { verifyReleaseComposition, aggregateReleaseCandidates, createReleaseVerificationEvidence, signReleaseVerificationVerdict } from "../myrmidon/release-verification.js";
+import { verifyReleaseComposition, aggregateReleaseCandidates, createReleaseVerificationEvidence, hasCurrentReleaseVerificationEvidence, signReleaseVerificationVerdict } from "../myrmidon/release-verification.js";
 import { readBuildCommit } from "../build-commit.js";
 import { readProductEnv } from "@myrmidon/shared/env-alias";
 import { readBuildVersion } from "../build-version.js";
@@ -10285,6 +10285,27 @@ export function issueRoutes(
     return { candidateIssueIds, members: aggregateReleaseCandidates(products) };
   }
 
+  async function releaseTransitionContext(issue: { id: string; companyId: string }) {
+    const labelRows = await db.select({ name: labels.name }).from(issueLabels)
+      .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+      .where(eq(issueLabels.issueId, issue.id));
+    const releaseLabels = labelRows.map((row) => row.name);
+    const products = await workProductsSvc.listForIssue(issue.id, { refreshPullRequests: false });
+    const releasePrefix = releaseLabels.map(normaliseReleasePrefix).find((prefix): prefix is string => prefix !== null);
+    const key = readProductEnv("RELEASE_VERIFICATION_KEY");
+    let hasCurrentReleaseEvidence = false;
+    if (releasePrefix && key) {
+      const { members } = await collectReleaseCandidates(issue.companyId, issue.id, releasePrefix, false);
+      const comments = await db.select({ body: issueComments.body, authorType: issueComments.authorType })
+        .from(issueComments).where(eq(issueComments.issueId, issue.id));
+      hasCurrentReleaseEvidence = hasCurrentReleaseVerificationEvidence(comments, {
+        companyId: issue.companyId, issueId: issue.id, releasePrefix,
+        deployedVersion: readBuildCommit(), members,
+      }, key);
+    }
+    return { labels: releaseLabels, workProducts: products, hasCurrentReleaseEvidence };
+  }
+
   // VERIFY-ON-PROD (OPE-13014): aggregate the full release candidate set from
   // the issue's pull_request work products, verify the composition against the
   // deployed version, and persist the verdict as a system comment. The release
@@ -11155,7 +11176,7 @@ export function issueRoutes(
             transitionIssue.executionReviewParticipantAgentIds = reviewParticipantAgentIds;
             const transition = applyIssueExecutionPolicyTransition({
               // myrmidon(OPE-9031): senior escalation chain for the round limit.
-              issue: transitionIssue,
+              issue: sourceIssueStatus === "done" ? { ...transitionIssue, ...await releaseTransitionContext(lockedIssue) } : transitionIssue,
               policy: executionPolicy,
               previousPolicy: executionPolicy,
               requestedStatus: sourceIssueStatus,
@@ -15641,6 +15662,8 @@ export function issueRoutes(
 
       const transitionIssue: IssueRouteSnapshot & {
         labels?: string[];
+        workProducts?: Awaited<ReturnType<typeof workProductsSvc.listForIssue>>;
+        hasCurrentReleaseEvidence?: boolean;
         assigneeAgentRole?: string | null;
         terminatedReturnAssigneeAgentId?: string | null;
         fallbackReturnAssigneeAgentId?: string | null;
@@ -15648,10 +15671,7 @@ export function issueRoutes(
         defaultEscalationAgentIds?: string[];
       } = { ...existing };
       if (updateFields.status === "done") {
-        const releaseLabels = await db.select({ name: labels.name }).from(issueLabels)
-          .innerJoin(labels, eq(labels.id, issueLabels.labelId))
-          .where(eq(issueLabels.issueId, existing.id));
-        transitionIssue.labels = releaseLabels.map((label) => label.name);
+        Object.assign(transitionIssue, await releaseTransitionContext(existing));
       }
       Object.assign(
         transitionIssue,
@@ -17029,6 +17049,9 @@ export function issueRoutes(
             const lockedTransitionIssue: typeof transitionIssue = {
               ...existing,
               ...lockedExisting,
+              labels: transitionIssue.labels,
+              workProducts: transitionIssue.workProducts,
+              hasCurrentReleaseEvidence: transitionIssue.hasCurrentReleaseEvidence,
               assigneeAgentRole: undefined,
               executionReviewParticipantAgentIds: lockedReviewParticipants,
             };
@@ -22249,7 +22272,7 @@ export function issueRoutes(
       let goalCommentSteered = false;
       if (shouldAutoApproveReviewComment) {
         const transition = applyIssueExecutionPolicyTransition({
-          issue: currentIssue,
+          issue: { ...currentIssue, ...await releaseTransitionContext(currentIssue) },
           policy: currentExecutionPolicy,
           requestedStatus: "done",
           requestedAssigneePatch: {},
