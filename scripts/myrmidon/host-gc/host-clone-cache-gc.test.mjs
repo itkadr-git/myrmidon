@@ -569,7 +569,7 @@ describe("stale OMP runner collection", () => {
       "const http = require('node:http');",
       "const server = http.createServer((_req, res) => {",
       "  res.writeHead(200, { 'Content-Type': 'application/json' });",
-      "  res.end(JSON.stringify({ adapterType: 'hermes_gateway' }));",
+      "  res.end(JSON.stringify([{ id: 'agent-uuid-8', name: 'adm-dev-eng-8', adapterType: 'hermes_gateway' }]));",
       "});",
       "server.listen(0, '127.0.0.1', () => console.log(server.address().port));",
     ].join("\n");
@@ -585,6 +585,7 @@ describe("stale OMP runner collection", () => {
         PATH: `${dir}:${process.env.PATH}`,
         MYRMIDON_HOST_GC_DOCKER: docker,
         MYRMIDON_HOST_GC_DOCKER_BOT: docker,
+        MYRMIDON_COMPANY_ID: "company-uuid",
         BOARD_API_URL: `http://127.0.0.1:${port}`,
       });
     } finally {
@@ -626,7 +627,15 @@ describe("stale OMP runner collection", () => {
   });
 
   it("fails closed on board errors", async () => {
-    const unavailable = await fetchAgentAdapter("eng8", { baseUrl: "http://board", fetchImpl: async () => { throw new Error("offline"); } });
+    const previousCompanyId = process.env.MYRMIDON_COMPANY_ID;
+    process.env.MYRMIDON_COMPANY_ID = "company-uuid";
+    let unavailable;
+    try {
+      unavailable = await fetchAgentAdapter("eng8", { baseUrl: "http://board", fetchImpl: async () => { throw new Error("offline"); } });
+    } finally {
+      if (previousCompanyId === undefined) delete process.env.MYRMIDON_COMPANY_ID;
+      else process.env.MYRMIDON_COMPANY_ID = previousCompanyId;
+    }
     assert.deepEqual(unavailable, { ok: false, reason: "board-unavailable" });
   });
 
@@ -665,9 +674,9 @@ describe("stale OMP runner collection", () => {
     const boardScript = [
       "const http = require('node:http');",
       "const server = http.createServer((req, res) => {",
-      "  const adapterType = req.url.endsWith('/eng10') ? 'omp_local' : 'hermes_gateway';",
+      "  const agents = [{ id: 'agent-uuid-8', name: 'adm-dev-eng-8', adapterType: 'hermes_gateway' }, { id: 'agent-uuid-10', name: 'adm-dev-eng-10', adapterType: 'omp_local' }];",
       "  res.writeHead(200, { 'Content-Type': 'application/json' });",
-      "  res.end(JSON.stringify({ adapterType }));",
+      "  res.end(JSON.stringify(agents.filter((agent) => req.url.includes(agent.name))));",
       "});",
       "server.listen(0, '127.0.0.1', () => console.log(server.address().port));",
     ].join("\n");
@@ -677,7 +686,7 @@ describe("stale OMP runner collection", () => {
       board.once("error", reject);
       board.once("exit", (code) => reject(new Error(`board fixture exited: ${code}`)));
     });
-    const envOverrides = { PATH: `${dir}:${process.env.PATH}`, MYRMIDON_HOST_GC_DOCKER: docker, BOARD_API_URL: `http://127.0.0.1:${port}`, MYRMIDON_HOST_GC_DOCKER_BOT: docker };
+    const envOverrides = { PATH: `${dir}:${process.env.PATH}`, MYRMIDON_HOST_GC_DOCKER: docker, BOARD_API_URL: `http://127.0.0.1:${port}`, MYRMIDON_HOST_GC_DOCKER_BOT: docker, MYRMIDON_COMPANY_ID: "company-uuid" };
     let result;
     try {
       result = runGc(["--apply", "--runner-root", root], envOverrides);
@@ -1803,6 +1812,7 @@ describe("runner task folders", () => {
       const out = await runGcTask(["--apply", "--runner-root", runners], {
         PAPERCLIP_API_URL: `http://127.0.0.1:${fake.address().port}`,
         PATH: `${fakeBin}:/usr/bin:/bin`,
+        MYRMIDON_COMPANY_ID: "company-uuid",
         ...envExtra,
       });
       const archiveDir = path.join(runners, ".gc-archive");
