@@ -2687,6 +2687,24 @@ describe("verify execution stages", () => {
       });
     });
 
+    it("rejects arbitrary version and method without persisted deployment evidence for merged release code", () => {
+      const policy = makePolicy([{
+        type: "verify",
+        participants: [{ type: "agent", agentId: qaAgentId }],
+      }]);
+      const issue = {
+        ...pendingIssue(policy),
+        title: "Release without numeric prefix",
+        labels: ["1.6.6"],
+        workProducts: [{ type: "pull_request", status: "merged" }],
+      };
+      expect(() => applyIssueExecutionPolicyTransition({
+        issue, policy, requestedStatus: "done", requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "deploy version: invented\ncheck method: invented",
+      })).toThrow(/evidence/i);
+    });
+
     it("requires deploy version and check method on release tasks even when stage requirements explicitly disable them", () => {
       const disabledRequirementsPolicy = makePolicy([{
         type: "verify",
