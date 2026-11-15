@@ -912,20 +912,20 @@ describe("issue update comment wakeups", () => {
       id: "comment-plain-agent-name",
       issueId: existing.id,
       companyId: existing.companyId,
-      body: "QA please take the screenshot",
+      body: "QA please take the screenshot; this name matches two agents",
     });
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
 
     const res = await request(await createApp())
       .post(`/api/issues/${existing.id}/comments`)
       .send({
-        body: "QA please take the screenshot",
+        body: "QA please take the screenshot; this name matches two agents",
       });
 
     expect(res.status).toBe(201);
     await vi.waitFor(() => expect(mockIssueService.findMentionedAgents).toHaveBeenCalledWith(
       existing.companyId,
-      "QA please take the screenshot",
+      "QA please take the screenshot; this name matches two agents",
     ));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
@@ -941,14 +941,14 @@ describe("issue update comment wakeups", () => {
       id: "comment-structured-mention",
       issueId: existing.id,
       companyId: existing.companyId,
-      body: "[@QA](/agents/33333333-3333-4333-8333-333333333333) please inspect this",
+      body: `[@QA](agent://${MENTIONED_AGENT_ID}) please inspect this`,
     });
     mockIssueService.findMentionedAgents.mockResolvedValue([MENTIONED_AGENT_ID]);
 
     const res = await request(await createApp())
       .post(`/api/issues/${existing.id}/comments`)
       .send({
-        body: "[@QA](/agents/33333333-3333-4333-8333-333333333333) please inspect this",
+        body: `[@QA](agent://${MENTIONED_AGENT_ID}) please inspect this`,
       });
 
     expect(res.status).toBe(201);
