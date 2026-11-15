@@ -134,6 +134,8 @@ describe("hot-files-check", () => {
     );
     assert.equal(res.status, 0);
     assert.match(res.calls, /-X DELETE/);
+    assert.match(res.stdout, /Новый push после ревью/);
+    assert.match(res.calls, /field: state=pending/);
   });
 
   it("a rerun preserves approval when the label is newer than the current head", () => {
@@ -144,6 +146,8 @@ describe("hot-files-check", () => {
     );
     assert.equal(res.status, 0);
     assert.doesNotMatch(res.calls, /-X DELETE/);
+    assert.match(res.stdout, /Метка review-approved есть/);
+    assert.match(res.calls, /field: state=success/);
   });
 
   it("attempt 1 on synchronize still removes review-approved (a real push)", () => {

@@ -17,7 +17,9 @@ LABELS="${LABELS:-}"
 
 if [[ "$ACTION" == "synchronize" && -n "$SHA" ]]; then
   head_date="$(gh api "repos/$REPO/commits/$SHA" --jq '.commit.committer.date' 2>/dev/null || true)"
-  label_date="$(gh api "repos/$REPO/issues/$PR/events" --paginate --jq '[.[] | select(.event == "labeled" and .label.name == "review-approved") | .created_at] | max // empty' 2>/dev/null || true)"
+  # Slurp paginated responses before taking max. Without --slurp, gh applies
+  # the jq filter once per page and command substitution can produce dates.
+  label_date="$(gh api "repos/$REPO/issues/$PR/events" --paginate --slurp --jq 'add | [.[] | select(.event == "labeled" and .label.name == "review-approved") | .created_at] | max // empty' 2>/dev/null || true)"
   if [[ -n "$head_date" && -n "$label_date" && "$label_date" > "$head_date" ]]; then
     echo "Метка review-approved поставлена после коммита головы — сохраняем её."
     ACTION=""
