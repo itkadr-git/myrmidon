@@ -17,7 +17,7 @@ import {
 // budget without restarting the server — a restart drops every run in flight.
 import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@myrmidon/shared";
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
-import { currentRunPrioritySettings } from "./run-priority/state.js";
+import { releaseFocusCondition } from "./release-focus.js";
 // myrmidon(1.6.5 F-26 T5): the cooling window of stale wake candidates (design §4.3).
 import { isIssueCoolingDown, readSwarmSettings } from "./wake-task-guard.js";
 
@@ -387,40 +387,8 @@ function issuePriorityRank(priority: string | null | undefined): number {
  * no execution hold (HOLD-READY). The remaining checks (live run, queued wake) need per-issue lookups and
  * run in the loop in `idlePickupForAgent`.
  */
-function idleReleaseFocusCondition(companyId: string): SQL {
-  const release = currentRunPrioritySettings().currentRelease;
-  if (!release?.trim()) return sql`true`;
-  const normalized = release.trim().toLowerCase();
-  const labelMatch = (name: SQL) => sql`(
-    lower(trim(${name})) = ${normalized}
-    or (length(${normalized}) >= 3 and length(lower(trim(${name}))) >= 3
-      and (lower(trim(${name})) like ${`%${normalized}%`}
-        or ${normalized} like ('%' || lower(trim(${name})) || '%')))
-  )`;
-  const currentReleaseExists = sql`exists (
-    select 1 from issues current_issue
-    join issue_labels current_issue_label on current_issue_label.issue_id = current_issue.id
-      and current_issue_label.company_id = ${companyId}
-    join labels current_label on current_label.id = current_issue_label.label_id
-      and current_label.company_id = ${companyId}
-    where current_issue.company_id = ${companyId}
-      and current_issue.hidden_at is null
-      and current_issue.status not in ('done', 'cancelled')
-      and ${labelMatch(sql`current_label.name`)}
-  )`;
-  const candidateMatches = sql`exists (
-    select 1 from issue_labels candidate_issue_label
-    join labels candidate_label on candidate_label.id = candidate_issue_label.label_id
-      and candidate_label.company_id = ${companyId}
-    where candidate_issue_label.issue_id = ${issues.id}
-      and candidate_issue_label.company_id = ${companyId}
-      and ${labelMatch(sql`candidate_label.name`)}
-  )`;
-  return or(isNotNull(issues.assigneeAgentId), sql`not (${currentReleaseExists}) or ${candidateMatches}`)!;
-}
-
 export function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
-  const focus = idleReleaseFocusCondition(companyId);
+  const focus = releaseFocusCondition(companyId);
   const isReviewParticipant =
     sql`${issues.status} = 'in_review' and ${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent' and ${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agentId}`;
   return db
@@ -448,7 +416,7 @@ export function idlePickupCandidateRows(db: Db, companyId: string, agentId: stri
         // Release focus applies only to automatic assigned-task pickup candidates.
         or(
           and(eq(issues.assigneeAgentId, agentId), focus),
-          and(isNull(issues.assigneeAgentId), isReviewParticipant),
+          isReviewParticipant,
         ),
         isNull(issues.hiddenAt),
         isNull(issues.conversationAgentId),

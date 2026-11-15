@@ -52,7 +52,7 @@ import {
   issueWorkProducts,
   type Db,
 } from "@myrmidon/db";
-import { currentRunPrioritySettings } from "../run-priority/state.js";
+import { releaseFocusCondition } from "../release-focus.js";
 import {
   DEFAULT_SWARM_MAX_ACTIVE_TASKS,
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
@@ -1642,52 +1642,6 @@ export async function liveClaimCountsByAgent(
  * flight that is not parked on a hold). One list, used by the pool read and by
  * the panel counters, so "ready" means one thing in both.
  */
-function currentReleaseLabelMatchSql(labelName: SQL): SQL {
-  const release = currentRunPrioritySettings().currentRelease;
-  if (!release?.trim()) return sql`false`;
-  const normalized = release.trim().toLowerCase();
-  return sql`(
-    lower(trim(${labelName})) = ${normalized}
-    or (
-      length(${normalized}) >= 3
-      and length(lower(trim(${labelName}))) >= 3
-      and (
-        lower(trim(${labelName})) like ${`%${normalized}%`}
-        or ${normalized} like ('%' || lower(trim(${labelName})) || '%')
-      )
-    )
-  )`;
-}
-
-function releaseFocusCondition(companyId: string): SQL {
-  const release = currentRunPrioritySettings().currentRelease;
-  if (!release?.trim()) return sql`true`;
-  const matchingLabel = currentReleaseLabelMatchSql(sql`release_label.name`);
-  const currentReleaseExists = sql`exists (
-    select 1
-    from issues release_issue
-    join issue_labels release_issue_label on release_issue_label.issue_id = release_issue.id
-      and release_issue_label.company_id = ${companyId}
-    join labels release_label on release_label.id = release_issue_label.label_id
-      and release_label.company_id = ${companyId}
-    where release_issue.company_id = ${companyId}
-      and release_issue.hidden_at is null
-      and release_issue.status not in ('done', 'cancelled')
-      and ${matchingLabel}
-  )`;
-  const candidateMatches = sql`exists (
-    select 1
-    from issue_labels candidate_issue_label
-    join labels candidate_label on candidate_label.id = candidate_issue_label.label_id
-      and candidate_label.company_id = ${companyId}
-    where candidate_issue_label.issue_id = ${issues.id}
-      and candidate_issue_label.company_id = ${companyId}
-      and ${currentReleaseLabelMatchSql(sql`candidate_label.name`)}
-  )`;
-  // Explicit owner assignments remain eligible; only automatic queue work is focused.
-  return or(isNotNull(issues.assigneeAgentId), sql`not (${currentReleaseExists}) or ${candidateMatches}`)!;
-}
-
 function readyQueueConditions(db: Db, companyId: string): SQL[] {
   return [
     eq(issues.companyId, companyId),
