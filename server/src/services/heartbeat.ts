@@ -28,6 +28,16 @@ import {
   type PrWaitObservedChange,
 } from "../myrmidon/pr-wait-monitor/policy.js";
 import { readAgentLastLookAt } from "../myrmidon/pr-wait-monitor/store.js";
+import {
+  decideIdleMonitor,
+  MONITOR_UNCHANGED_CLEAR_REASON,
+  MONITOR_UNCHANGED_DEFER_REASON,
+} from "../myrmidon/issue-monitor-idle/policy.js"; // myrmidon(MONITOR-IDLE-LOOP, OPE-13141)
+import {
+  loadMonitorUnchangedWakeLimit,
+  readIssueMonitorSnapshotHash,
+  readLastMonitorObservation,
+} from "../myrmidon/issue-monitor-idle/store.js"; // myrmidon(MONITOR-IDLE-LOOP, OPE-13141)
 import { loadRunPullRequest } from "../myrmidon/run-pull-request.js";
 import {
   claimGatewayRemoteClose,
@@ -298,6 +308,7 @@ import { agentService } from "./agents.js";
 import { normalizeLegacyRunnerProvider } from "@myrmidon/adapter-utils";
 import fs from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
@@ -891,6 +902,12 @@ import {
 import { extractSkillMentionIds, isUuidLike } from "@myrmidon/shared";
 // myrmidon(1.6.5-BOT-DISK-H4b): general.botDisk.defaultRepo rides the run context.
 import { normalizeStoredBotDiskSettings } from "@myrmidon/shared";
+// myrmidon(1.6.9, OPE-13213): isolated workspace of a task = the task directory of the bot container.
+import {
+  BOT_CONTAINER_WORKSPACE_STRATEGY,
+  realizeBotContainerWorkspace,
+  resolveBotContainerWorkspace,
+} from "./bot-container-workspace.js";
 // myrmidon(1.6.6 NOTIF-PREFS): notification-class filter applied at wake generation.
 import {
   classifyNotificationWakeReason,
@@ -982,6 +999,8 @@ import {
   findTopReadyIssueForAgent,
   idlePickupForAgent,
 } from "../myrmidon/idle-pickup.js";
+// myrmidon(OPE-13202): the safety wake of an in_progress task whose executor stands idle
+import { createInProgressIdleWakeSweeper } from "../myrmidon/in-progress-idle-wake.js";
 // myrmidon(AUTO-RESUME): the board resumes an agent left in `error` with backoff
 import { createAutoResumeSweeper } from "../myrmidon/auto-resume.js";
 import { pickupNextReview } from "../myrmidon/review-routing/pickup.js";
@@ -2822,7 +2841,7 @@ export function mergeExecutionWorkspaceMetadataForPersistence(input: {
   existingMetadata: Record<string, unknown> | null | undefined;
   source: string;
   createdByRuntime: boolean;
-  strategyType: "project_primary" | "git_worktree";
+  strategyType: "project_primary" | "git_worktree" | "bot_container";
   configSnapshot: Record<string, unknown> | null;
   shouldReuseExisting: boolean;
   shouldRefreshConfigSnapshot?: boolean;
@@ -3768,6 +3787,8 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
   leaseMetadata?: unknown;
 }) {
   if (!GIT_SENSITIVE_LOCAL_ADAPTER_TYPES.has(input.adapterType)) return;
+  // The workspace lives in the bot container; there is no board-side git checkout to validate.
+  if (input.executionWorkspace.strategy === BOT_CONTAINER_WORKSPACE_STRATEGY) return;
 
   const executionTargetKind =
     readNonEmptyString(
@@ -4340,6 +4361,20 @@ export interface WakeupOptions {
   };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;
+}
+
+function shouldDeferWakeForReleaseFocus(input: {
+  currentRelease: string | null;
+  targetMatchesRelease: boolean;
+  hasOpenCurrentReleaseIssue: boolean;
+  manualUserWake?: boolean;
+}): boolean {
+  return (
+    !input.manualUserWake &&
+    Boolean(input.currentRelease) &&
+    input.hasOpenCurrentReleaseIssue &&
+    !input.targetMatchesRelease
+  );
 }
 
 type UsageTotals = {
@@ -6315,6 +6350,33 @@ export function resolveNativeRecoveryExecutionWorkspaceBinding(input: {
 }): string | null {
   const bindingId = readNonEmptyString(input.bindingId);
   return bindingId && input.persistedWorkspaceFound ? bindingId : null;
+}
+
+export function isExecutionWorkspaceOwnedByIssue(input: {
+  companyId: string;
+  workspaceCompanyId: string | null;
+  projectId: string | null;
+  workspaceProjectId: string | null;
+  sourceIssueId: string | null;
+  issueId: string | null;
+}): boolean {
+  return input.issueId !== null &&
+    input.companyId === input.workspaceCompanyId &&
+    input.projectId !== null &&
+    input.projectId === input.workspaceProjectId &&
+    input.sourceIssueId === input.issueId;
+}
+
+export function shouldBindIssueToSharedExecutionWorkspace(input: {
+  mode: string;
+  strategyType: string;
+  sourceIssueId: string | null;
+  issueId: string | null;
+}): boolean {
+  return input.mode === "shared_workspace" &&
+    input.strategyType === "project_primary" &&
+    input.issueId !== null &&
+    input.sourceIssueId === input.issueId;
 }
 
 export function resolveExecutionWorkspaceReuseRequestForIssue(input: {
@@ -12696,6 +12758,9 @@ export function heartbeatService(
       });
     }
 
+    // myrmidon(MONITOR-IDLE-LOOP, OPE-13141): the snapshot this wake is based on.
+    let idleSnapshotHash: string | null = null;
+
     try {
       if (monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME) {
         // Normalized monitor projections redact externalRef. Read the claimed
@@ -12950,6 +13015,90 @@ export function heartbeatService(
           return { outcome: "skipped" as const, reason: "ci_in_progress" };
         }
 
+        // myrmidon(MONITOR-IDLE-LOOP, OPE-13141): a monitor of a task that waits for its
+        // subtasks does not wake a model while nothing it depends on has changed. The
+        // owner of a parent is woken by the board for the events that matter (a subtask is
+        // done, a subtask's pull request is merged), so polling by a model adds nothing.
+        if (!isReviewRecoveryMonitor && input.activitySource === "scheduled") {
+          idleSnapshotHash = await readIssueMonitorSnapshotHash(db, {
+            companyId: claimed.companyId,
+            issueId: claimed.id,
+            ownerAgentId: targetAgentId,
+          });
+          if (idleSnapshotHash) {
+            const idleDecision = decideIdleMonitor({
+              now: input.now,
+              snapshotHash: idleSnapshotHash,
+              previous: await readLastMonitorObservation(db, {
+                companyId: claimed.companyId,
+                issueId: claimed.id,
+              }),
+              limit: await loadMonitorUnchangedWakeLimit(db),
+            });
+            if (idleDecision.action === "defer") {
+              await db.update(issues).set({
+                monitorNextCheckAt: idleDecision.nextCheckAt,
+                monitorAttemptCount: nextAttemptCount,
+                monitorWakeRequestedAt: null,
+                updatedAt: input.now,
+              }).where(eq(issues.id, claimed.id));
+              await logActivity(db, {
+                companyId: claimed.companyId,
+                actorType: input.actorType,
+                actorId: input.actorId,
+                agentId: input.agentId,
+                runId: input.runId,
+                action: "issue.monitor_deferred",
+                entityType: "issue",
+                entityId: claimed.id,
+                details: {
+                  identifier: claimed.identifier,
+                  reason: MONITOR_UNCHANGED_DEFER_REASON,
+                  snapshotHash: idleSnapshotHash,
+                  unchangedCount: idleDecision.unchangedCount,
+                  nextCheckAt: idleDecision.nextCheckAt.toISOString(),
+                  attemptCount: nextAttemptCount,
+                  source: input.activitySource,
+                },
+              });
+              return { outcome: "skipped" as const, reason: MONITOR_UNCHANGED_DEFER_REASON };
+            }
+            if (idleDecision.action === "clear") {
+              await db.update(issues).set({
+                ...buildIssueMonitorClearedPatch({
+                  issue: claimed,
+                  policy,
+                  clearReason: "dispatch_skipped",
+                  clearedAt: input.now,
+                }),
+                updatedAt: input.now,
+              }).where(eq(issues.id, claimed.id));
+              await logActivity(db, {
+                companyId: claimed.companyId,
+                actorType: input.actorType,
+                actorId: input.actorId,
+                agentId: input.agentId,
+                runId: input.runId,
+                action: "issue.monitor_cleared",
+                entityType: "issue",
+                entityId: claimed.id,
+                details: {
+                  identifier: claimed.identifier,
+                  reason: MONITOR_UNCHANGED_CLEAR_REASON,
+                  warning:
+                    "The monitor was removed: the task and its subtasks did not change for several monitor terms in a row, so no run was started.",
+                  snapshotHash: idleSnapshotHash,
+                  unchangedCount: idleDecision.unchangedCount,
+                  attemptCount: nextAttemptCount,
+                  notes: claimed.monitorNotes ?? null,
+                  source: input.activitySource,
+                },
+              });
+              return { outcome: "skipped" as const, reason: MONITOR_UNCHANGED_CLEAR_REASON };
+            }
+          }
+        }
+
         await enqueueWakeup(targetAgentId, {
           source: input.source,
           triggerDetail: input.triggerDetail,
@@ -13012,6 +13161,7 @@ export function heartbeatService(
           attemptCount: nextAttemptCount,
           notes: claimed.monitorNotes ?? null,
           ...monitorMetadata,
+          ...(idleSnapshotHash ? { snapshotHash: idleSnapshotHash, unchangedCount: 0 } : {}),
           source: input.activitySource,
         },
       });
@@ -14101,6 +14251,79 @@ export function heartbeatService(
       warnings,
       baseCwdFallback: false,
       materializationFailures: [],
+    };
+  }
+
+  /**
+   * myrmidon(1.6.9, OPE-13213): the run workspace of an agent that works in its
+   * own container, from project metadata only. Nothing is cloned, materialized
+   * or created on the board's disk: no managed checkout, no clone temp
+   * directory, no agent-home fallback, no referenced projects. `cwd` is the
+   * task directory of the bot; repoUrl and repoRef come from the project
+   * workspace row (the preferred one, else the first by creation order).
+   */
+  async function resolveBotContainerRunWorkspace(
+    agent: typeof agents.$inferSelect,
+    context: Record<string, unknown>,
+    cwd: string,
+  ): Promise<ResolvedWorkspaceForRun> {
+    const issueId =
+      readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    const issueProjectRef = issueId
+      ? await db
+          .select({
+            projectId: issues.projectId,
+            projectWorkspaceId: issues.projectWorkspaceId,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+          .then((rows) => rows[0] ?? null)
+      : null;
+    const projectId =
+      issueProjectRef?.projectId ?? readNonEmptyString(context.projectId);
+    const preferredProjectWorkspaceId =
+      issueProjectRef?.projectWorkspaceId ??
+      readNonEmptyString(context.projectWorkspaceId) ??
+      null;
+    const rows = projectId
+      ? prioritizeProjectWorkspaceCandidatesForRun(
+          await db
+            .select()
+            .from(projectWorkspaces)
+            .where(
+              and(
+                eq(projectWorkspaces.companyId, agent.companyId),
+                eq(projectWorkspaces.projectId, projectId),
+              ),
+            )
+            .orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id)),
+          preferredProjectWorkspaceId,
+        )
+      : [];
+    const selected =
+      (preferredProjectWorkspaceId
+        ? rows.find((row) => row.id === preferredProjectWorkspaceId)
+        : null) ??
+      rows[0] ??
+      null;
+    return {
+      cwd,
+      source: "project_primary" as const,
+      projectId,
+      workspaceId: selected?.id ?? null,
+      repoUrl: readNonEmptyString(selected?.repoUrl),
+      repoRef: readNonEmptyString(selected?.repoRef),
+      workspaceHints: rows.map((row) => ({
+        workspaceId: row.id,
+        cwd: readNonEmptyString(row.cwd),
+        repoUrl: readNonEmptyString(row.repoUrl),
+        repoRef: readNonEmptyString(row.repoRef),
+      })),
+      warnings: [],
+      baseCwdFallback: false,
+      materializationFailures: [],
+      additionalWorkspaces: [],
+      referencedProjectFailures: [],
     };
   }
 
@@ -21743,6 +21966,32 @@ export function heartbeatService(
     isAgentUnderMaintenance: (agentId) => isAgentUnderMaintenance(db, agentId),
   });
 
+  const inProgressIdleWakeSweeper = createInProgressIdleWakeSweeper({
+    db,
+    budget: idleWakeBudget,
+    readIdleMinutes: () => currentRunPrioritySettings().inProgressIdleWakeMinutes,
+    enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
+    logActivity: async (input) => {
+      await logActivity(db, {
+        companyId: input.companyId,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        agentId: input.agentId,
+        runId: input.runId,
+        action: input.action,
+        entityType: input.entityType,
+        entityId: input.entityId,
+        details: input.details,
+      });
+    },
+    isAgentInvokable: async (agent) => {
+      const full = await getAgent(agent.id);
+      if (!full || full.companyId !== agent.companyId) return false;
+      return (await getAgentInvokability(full)).invokable;
+    },
+    isAgentUnderMaintenance: (agentId) => isAgentUnderMaintenance(db, agentId),
+  });
+
   // myrmidon(AUTO-RESUME): the periodic pass that brings an agent left in
   // `error` back, with a 1/5/15 min backoff and a give-up card to the operator
   // after the attempt cap. It reuses the L3 resume wake chain, so a resumed
@@ -26090,6 +26339,14 @@ export function heartbeatService(
               issueContext.executionWorkspacePreference,
           }
         : null;
+      // myrmidon(1.6.9, OPE-13213): an agent that works in its own container
+      // gets the task directory of the bot as its isolated workspace; the board
+      // makes no worktree and hands out no shared checkout for it.
+      const botContainerWorkspace = resolveBotContainerWorkspace({
+        adapterType: agent.adapterType,
+        mode: requestedExecutionWorkspaceMode,
+        issueIdentifier: issueRef?.identifier ?? null,
+      });
       // Owner 05.11: a developer reviewer gets an isolated input (task text and
       // a pull request reference); the engineer's continuation summary,
       // continuation messages and session messages are not delivered to it.
@@ -26589,10 +26846,26 @@ export function heartbeatService(
       const existingExecutionWorkspace = requestedExecutionWorkspaceId
         ? await executionWorkspacesSvc.getById(requestedExecutionWorkspaceId)
         : null;
+      const existingWorkspaceBelongsToIssue =
+        !existingExecutionWorkspace ||
+        (existingExecutionWorkspace.companyId === agent.companyId &&
+          (existingExecutionWorkspace.mode !== "shared_workspace" ||
+            existingExecutionWorkspace.strategyType !== "project_primary" ||
+            isExecutionWorkspaceOwnedByIssue({
+              companyId: agent.companyId,
+              workspaceCompanyId: existingExecutionWorkspace.companyId,
+              projectId: issueRef?.projectId ?? null,
+              workspaceProjectId: existingExecutionWorkspace.projectId,
+              sourceIssueId: existingExecutionWorkspace.sourceIssueId,
+              issueId: issueRef?.id ?? null,
+            })));
+      const safelyBoundExecutionWorkspace = existingWorkspaceBelongsToIssue
+        ? existingExecutionWorkspace
+        : null;
       const nativeRecoveryExecutionWorkspaceId =
         resolveNativeRecoveryExecutionWorkspaceBinding({
           bindingId: persistedNativeExecutionWorkspaceId,
-          persistedWorkspaceFound: existingExecutionWorkspace !== null,
+          persistedWorkspaceFound: safelyBoundExecutionWorkspace !== null,
         });
       const workspaceReuseRequest =
         resolveExecutionWorkspaceReuseRequestForIssue({
@@ -26601,13 +26874,21 @@ export function heartbeatService(
             ? "reuse_existing"
             : (issueRef?.executionWorkspacePreference ?? null),
           existingExecutionWorkspaceStatus:
-            existingExecutionWorkspace?.status ?? null,
+            safelyBoundExecutionWorkspace?.status ?? null,
         });
+      // A row left by an earlier board-side copy (git_worktree, project_primary)
+      // is never restored for a bot-container task: a new bot_container row takes over.
+      const supersededBoardSideWorkspace =
+        botContainerWorkspace !== null &&
+        safelyBoundExecutionWorkspace !== null &&
+        safelyBoundExecutionWorkspace.strategyType !== BOT_CONTAINER_WORKSPACE_STRATEGY;
       const requestedShouldReuseExisting =
-        workspaceReuseRequest.requestedShouldReuseExisting;
+        workspaceReuseRequest.requestedShouldReuseExisting &&
+        !supersededBoardSideWorkspace;
       const reusableExistingExecutionWorkspace =
-        workspaceReuseRequest.existingExecutionWorkspaceAvailable
-          ? existingExecutionWorkspace
+        workspaceReuseRequest.existingExecutionWorkspaceAvailable &&
+        !supersededBoardSideWorkspace
+          ? safelyBoundExecutionWorkspace
           : null;
       const requestedReusableExecutionWorkspaceConfig =
         reusableExistingExecutionWorkspace?.config ?? null;
@@ -26810,8 +27091,8 @@ export function heartbeatService(
           const holderIssueLabel =
             workspaceHolder.issueIdentifier ?? workspaceHolder.issueId;
           const concurrentWorkspaceNote =
-            `shared workspace is concurrently held by run ${workspaceHolder.runId} (issue ${holderIssueLabel}); ` +
-            "expect concurrent mutations, coordinate via commits";
+            `This run is sharing the project workspace with run ${workspaceHolder.runId} (issue ${holderIssueLabel}). ` +
+            "Do not treat it as a task-specific checkout; use the task's isolated workspace before editing code.";
           const appendConcurrentWorkspaceNote = (value: unknown) => {
             const existing = typeof value === "string" ? value.trimEnd() : "";
             return existing
@@ -27214,6 +27495,13 @@ export function heartbeatService(
               referencedProjectFailures: [],
             };
           }
+          if (botContainerWorkspace) {
+            return await resolveBotContainerRunWorkspace(
+              agent,
+              context,
+              botContainerWorkspace.cwd,
+            );
+          }
           const workspace = await resolveWorkspaceForRun(
             agent,
             context,
@@ -27255,7 +27543,7 @@ export function heartbeatService(
         repoRef: resolvedWorkspace.repoRef,
         additionalWorkspaces: resolvedWorkspace.additionalWorkspaces,
       } satisfies ExecutionWorkspaceInput;
-      await assertGitWorktreeBaseWorkspaceReady({
+      if (!botContainerWorkspace) await assertGitWorktreeBaseWorkspaceReady({
         requestedExecutionWorkspaceMode,
         config: hostExecutionWorkspaceConfig,
         issue: issueRef,
@@ -27272,10 +27560,12 @@ export function heartbeatService(
         Object.keys(workspaceStrategyForFingerprint).length > 0
           ? workspaceStrategyForFingerprint
           : null;
-      const latestWorkspaceStrategyType = resolveEffectiveWorkspaceStrategyType(
-        requestedExecutionWorkspaceMode,
-        hostExecutionWorkspaceConfig,
-      );
+      const latestWorkspaceStrategyType: ExecutionWorkspace["strategyType"] = botContainerWorkspace
+        ? BOT_CONTAINER_WORKSPACE_STRATEGY
+        : resolveEffectiveWorkspaceStrategyType(
+            requestedExecutionWorkspaceMode,
+            hostExecutionWorkspaceConfig,
+          );
       const selectedEnvironmentConfigForFingerprint = parseObject(
         selectedEnvironmentForConfig?.config,
       );
@@ -27396,7 +27686,10 @@ export function heartbeatService(
           issueRef,
           runId: run.id,
           workspaceConfigFreshness,
-          restoreExistingWorkspace: reusableExistingExecutionWorkspace
+          restoreExistingWorkspace: reusableExistingExecutionWorkspace && botContainerWorkspace
+            ? async () =>
+                realizeBotContainerWorkspace(executionWorkspaceBase, botContainerWorkspace)
+            : reusableExistingExecutionWorkspace
             ? () =>
                 ensurePersistedExecutionWorkspaceAvailable({
                   db,
@@ -27454,7 +27747,9 @@ export function heartbeatService(
                 })
             : null,
           realizeWorkspace: () =>
-            realizeExecutionWorkspace({
+            botContainerWorkspace
+            ? Promise.resolve(realizeBotContainerWorkspace(executionWorkspaceBase, botContainerWorkspace))
+            : realizeExecutionWorkspace({
               db,
               base: executionWorkspaceBase,
               config: hostExecutionWorkspaceConfig,
@@ -27465,12 +27760,12 @@ export function heartbeatService(
                 companyId: agent.companyId,
               },
               recordedBranchOwnership:
-                existingExecutionWorkspace?.status !== "archived" &&
-                existingExecutionWorkspace?.branchName
+                safelyBoundExecutionWorkspace?.status !== "archived" &&
+                safelyBoundExecutionWorkspace?.branchName
                   ? {
-                      branchName: existingExecutionWorkspace.branchName,
+                      branchName: safelyBoundExecutionWorkspace.branchName,
                       createdByRuntime: isRuntimeOwnedGitBranch(
-                        existingExecutionWorkspace.metadata,
+                        safelyBoundExecutionWorkspace.metadata,
                       ),
                     }
                   : null,
@@ -27518,7 +27813,13 @@ export function heartbeatService(
           issueRef?.executionWorkspacePreference === "reuse_existing" ||
           requestedExecutionWorkspaceMode === "isolated_workspace" ||
           requestedExecutionWorkspaceMode === "operator_branch" ||
-          warmReusableExecutionWorkspace;
+          warmReusableExecutionWorkspace ||
+          shouldBindIssueToSharedExecutionWorkspace({
+            mode: workspace.mode,
+            strategyType: workspace.strategyType,
+            sourceIssueId: workspace.sourceIssueId,
+            issueId,
+          });
         const nextIssuePatch: Record<string, unknown> = {};
         if (issueExecutionWorkspaceIdForRun !== workspace.id) {
           nextIssuePatch.executionWorkspaceId = workspace.id;
@@ -27615,6 +27916,14 @@ export function heartbeatService(
           );
         }
       }
+      // A bot-container workspace is a task directory in the bot's container:
+      // the board keeps no files for it, so the provider owns nothing to clean.
+      const persistedProviderType: "git_worktree" | "adapter_managed" | "local_fs" =
+        executionWorkspace.strategy === "git_worktree"
+          ? "git_worktree"
+          : executionWorkspace.strategy === BOT_CONTAINER_WORKSPACE_STRATEGY
+            ? "adapter_managed"
+            : "local_fs";
       const nextExecutionWorkspaceMetadata = {
         ...baseExecutionWorkspaceMetadata,
         ...(persistedWorktreeInstanceRoot
@@ -27641,9 +27950,7 @@ export function heartbeatService(
                   baseRef: executionWorkspace.repoRef,
                   branchName: branchNameForInitialPersistence,
                   providerType:
-                    executionWorkspace.strategy === "git_worktree"
-                      ? "git_worktree"
-                      : "local_fs",
+                    persistedProviderType,
                   providerRef: executionWorkspace.worktreePath,
                   status: "active",
                   lastUsedAt: new Date(),
@@ -27672,7 +27979,9 @@ export function heartbeatService(
                   strategyType:
                     executionWorkspace.strategy === "git_worktree"
                       ? "git_worktree"
-                      : "project_primary",
+                      : executionWorkspace.strategy === BOT_CONTAINER_WORKSPACE_STRATEGY
+                        ? BOT_CONTAINER_WORKSPACE_STRATEGY
+                        : "project_primary",
                   name:
                     branchNameForInitialPersistence ??
                     issueRef?.identifier ??
@@ -27683,9 +27992,7 @@ export function heartbeatService(
                   baseRef: executionWorkspace.repoRef,
                   branchName: branchNameForInitialPersistence,
                   providerType:
-                    executionWorkspace.strategy === "git_worktree"
-                      ? "git_worktree"
-                      : "local_fs",
+                    persistedProviderType,
                   providerRef: executionWorkspace.worktreePath,
                   lastUsedAt: new Date(),
                   openedAt: new Date(),
@@ -27703,9 +28010,7 @@ export function heartbeatService(
                   `transient-${run.id}`,
                 cwd: executionWorkspace.cwd,
                 providerType:
-                  executionWorkspace.strategy === "git_worktree"
-                    ? "git_worktree"
-                    : "local_fs",
+                  persistedProviderType,
                 providerRef: executionWorkspace.worktreePath,
                 branchName: executionWorkspace.branchName,
                 repoUrl: executionWorkspace.repoUrl,
@@ -27777,7 +28082,7 @@ export function heartbeatService(
       }
       await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
       const projectRepositoryPaths: string[] = [];
-      if (executionWorkspace.projectId && resolvedWorkspace.source === "project_primary" && !resolvedWorkspace.baseCwdFallback) {
+      if (executionWorkspace.projectId && resolvedWorkspace.source === "project_primary" && !resolvedWorkspace.baseCwdFallback && !botContainerWorkspace) {
         const repositoryRows = await db.select().from(projectWorkspaces).where(and(
           eq(projectWorkspaces.companyId, agent.companyId),
           eq(projectWorkspaces.projectId, executionWorkspace.projectId),
@@ -28063,7 +28368,9 @@ export function heartbeatService(
       }
       const gitExecutionEnv = await prepareGitHubExecutionEnvironment({
         target: executionTarget,
-        cwd: executionWorkspace.cwd,
+        // The probe runs on the board; a bot-container path does not exist here
+        // and the board holds no checkout for it, so it runs in the temp root.
+        cwd: botContainerWorkspace ? os.tmpdir() : executionWorkspace.cwd,
         env: Object.fromEntries(
           Object.entries(parseObject(runtimeConfig.env)).filter(
             (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -33365,6 +33672,51 @@ export function heartbeatService(
       });
     };
 
+    const releaseSettings = currentRunPrioritySettings();
+    if (issueId && releaseSettings.currentRelease) {
+      const targetLabels = await db
+        .select({ name: labels.name })
+        .from(issueLabels)
+        .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+        .innerJoin(issues, eq(issues.id, issueLabels.issueId))
+        .where(and(eq(issueLabels.issueId, issueId), eq(issues.companyId, agent.companyId)));
+      const targetMatchesRelease = runMatchesCurrentRelease(
+        releaseSettings.currentRelease,
+        targetLabels.map((row) => row.name),
+      );
+      const openReleaseRows = await db
+        .select({ issueId: issues.id, label: labels.name })
+        .from(issues)
+        .innerJoin(issueLabels, eq(issueLabels.issueId, issues.id))
+        .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+        .where(and(
+          eq(issues.companyId, agent.companyId),
+          eq(issues.assigneeAgentId, agentId),
+          inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+        ));
+      const hasOpenCurrentReleaseIssue = openReleaseRows.some((row) =>
+        runMatchesCurrentRelease(releaseSettings.currentRelease, [row.label]),
+      );
+      if (shouldDeferWakeForReleaseFocus({
+        currentRelease: releaseSettings.currentRelease,
+        targetMatchesRelease,
+        hasOpenCurrentReleaseIssue,
+        manualUserWake: opts.manualUserWake,
+      })) {
+        await writeSkippedRequest("release_focus", {
+          payload: {
+            ...(payload ?? {}),
+            issueId,
+            releaseFocus: {
+              currentRelease: releaseSettings.currentRelease,
+              reason: "open_current_release_issue",
+            },
+          },
+        });
+        return null;
+      }
+    }
+
     const schedulingSuppression = await getSchedulingSuppression();
     if (schedulingSuppression.suppressed) {
       await writeSkippedHeartbeatRequest("heartbeat.scheduling_suppressed", {
@@ -38002,6 +38354,7 @@ export function heartbeatService(
     // myrmidon(IDLE-PICKUP): periodic idle-pickup pass, exposed for the
     // scheduler tick in index.ts and for tests and operators
     sweepIdlePickup: (now?: Date) => idlePickupSweeper.sweep(now),
+    sweepInProgressIdleWake: (now?: Date) => inProgressIdleWakeSweeper.sweep(now),
 
     // myrmidon(AUTO-RESUME): resumes an agent left in `error` once its backoff
     // step is due; logic in myrmidon/auto-resume.ts. Called by the scheduler

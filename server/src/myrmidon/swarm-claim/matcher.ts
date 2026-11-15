@@ -53,6 +53,7 @@ import {
   projects,
   type Db,
 } from "@myrmidon/db";
+import { releaseFocusCondition } from "../release-focus.js";
 import {
   DEFAULT_SWARM_MAX_ACTIVE_TASKS,
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
@@ -1699,6 +1700,7 @@ export async function liveClaimCountsByAgent(
 function readyQueueConditions(db: Db, companyId: string): SQL[] {
   return [
     eq(issues.companyId, companyId),
+    releaseFocusCondition(companyId),
     isNull(issues.assigneeUserId),
     isNull(issues.hiddenAt),
     isNull(issues.conversationAgentId),

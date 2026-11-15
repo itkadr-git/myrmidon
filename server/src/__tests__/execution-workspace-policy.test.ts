@@ -48,6 +48,24 @@ describe("execution workspace policy helpers", () => {
     ).toBe("isolated_workspace");
   });
 
+  it("applies the operator isolated default only to projects without a stored policy", () => {
+    expect(applyDefaultIsolatedExecutionWorkspacePolicy({
+      projectPolicy: null,
+      defaultIsolatedWorkspacesEnabled: true,
+      hasProject: true,
+    })).toEqual({ enabled: true, defaultMode: "isolated_workspace" });
+    expect(applyDefaultIsolatedExecutionWorkspacePolicy({
+      projectPolicy: { enabled: true, defaultMode: "shared_workspace" },
+      defaultIsolatedWorkspacesEnabled: true,
+      hasProject: true,
+    })).toEqual({ enabled: true, defaultMode: "shared_workspace" });
+    expect(applyDefaultIsolatedExecutionWorkspacePolicy({
+      projectPolicy: null,
+      defaultIsolatedWorkspacesEnabled: true,
+      hasProject: false,
+    })).toBeNull();
+  });
+
   it("resolves shared-workspace concurrency from issue override, project policy, then auto", () => {
     expect(
       resolveSharedWorkspaceConcurrency({

@@ -49,6 +49,7 @@ function settings(overrides: Partial<RunPrioritySettings> = {}): RunPrioritySett
     // arithmetic of the priority/aging terms alone, and the band width stays
     // the one the arithmetic below spells out.
     pheromoneWeight: 0,
+    inProgressIdleWakeMinutes: 20,
     ...overrides,
   };
 }

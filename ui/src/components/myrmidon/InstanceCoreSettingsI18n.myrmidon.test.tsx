@@ -33,6 +33,7 @@ const RUN_PRIORITY_VIEW = {
     starvationLimitMinutes: 90,
     starvationTopWeight: 10_000,
     pheromoneWeight: 15,
+    inProgressIdleWakeMinutes: 20,
   },
 };
 

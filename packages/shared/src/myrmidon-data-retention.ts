@@ -13,6 +13,10 @@
 //   - `secretAccessDays` — how long secret access audit events are kept (default 30);
 //   - `litellmCostEventsDays` — how long LiteLLM cost-event rows are kept
 //     (default 30, matching SpendLogs).
+//   - `documentRevisionKeepPerDocument` — retain this many recent revisions
+//     per document, and retain every revision younger than 90 days (default 20).
+//   - `agentWakeupRequestsDays` and `environmentLeasesDays` — terminal wakes
+//     and released leases (default 30 days).
 //
 // Each value is a whole number of days >= 0; `0` means "keep forever". The
 // stored value is the single truth — there is no env fallback (retention is a
@@ -45,6 +49,11 @@ export const DATA_RETENTION_DEFAULT_ACTIVITY_LOG_DAYS = 90;
 export const DATA_RETENTION_ACCESS_AUDIT_DEFAULT_DAYS = 180;
 export const DATA_RETENTION_SECRET_ACCESS_DEFAULT_DAYS = 30;
 export const DATA_RETENTION_LITELLM_COST_EVENTS_DEFAULT_DAYS = 30;
+export const DATA_RETENTION_DEFAULT_DOCUMENT_REVISION_KEEP = 20;
+export const DATA_RETENTION_DEFAULT_DOCUMENT_REVISION_DAYS = 90;
+export const DATA_RETENTION_DEFAULT_OPERATIONAL_ROWS_DAYS = 30;
+/** Archived execution_workspaces rows are deleted this many days after they were closed. */
+export const DATA_RETENTION_EXECUTION_WORKSPACES_ARCHIVED_DAYS = 90;
 
 /** A retention value: whole days >= 0; 0 means "keep forever". */
 const retentionDaysSchema = z.number().int().min(0);
@@ -55,6 +64,10 @@ export const DATA_RETENTION_SETTING_KEYS = [
   "accessAuditDays",
   "secretAccessDays",
   "litellmCostEventsDays",
+  "agentWakeupRequestsDays",
+  "environmentLeasesDays",
+  "documentRevisionKeepPerDocument",
+  "documentRevisionDays",
 ] as const;
 
 export type DataRetentionSettingKey = (typeof DATA_RETENTION_SETTING_KEYS)[number];
@@ -70,6 +83,10 @@ export const dataRetentionSettingsSchema = z
     accessAuditDays: retentionDaysSchema,
     secretAccessDays: retentionDaysSchema.default(DATA_RETENTION_SECRET_ACCESS_DEFAULT_DAYS),
     litellmCostEventsDays: retentionDaysSchema.default(DATA_RETENTION_LITELLM_COST_EVENTS_DEFAULT_DAYS),
+    agentWakeupRequestsDays: retentionDaysSchema.default(DATA_RETENTION_DEFAULT_OPERATIONAL_ROWS_DAYS),
+    environmentLeasesDays: retentionDaysSchema.default(DATA_RETENTION_DEFAULT_OPERATIONAL_ROWS_DAYS),
+    documentRevisionKeepPerDocument: z.number().int().min(0).default(DATA_RETENTION_DEFAULT_DOCUMENT_REVISION_KEEP),
+    documentRevisionDays: retentionDaysSchema.default(DATA_RETENTION_DEFAULT_DOCUMENT_REVISION_DAYS),
   })
   .strict();
 
@@ -87,6 +104,10 @@ export const patchDataRetentionSettingsSchema = z
     accessAuditDays: retentionDaysSchema.optional(),
     secretAccessDays: retentionDaysSchema.optional(),
     litellmCostEventsDays: retentionDaysSchema.optional(),
+    agentWakeupRequestsDays: retentionDaysSchema.optional(),
+    environmentLeasesDays: retentionDaysSchema.optional(),
+    documentRevisionKeepPerDocument: z.number().int().min(0).optional(),
+    documentRevisionDays: retentionDaysSchema.optional(),
     // myrmidon(1.6.5-F14B): "the machine is backed up outside" mode of the
     // backup gate (the same stored key the context compaction gate reads).
     externalMachineBackup: z.boolean().optional(),
@@ -103,14 +124,18 @@ export const DATA_RETENTION_DEFAULT_SETTINGS: DataRetentionSettings = {
   accessAuditDays: DATA_RETENTION_ACCESS_AUDIT_DEFAULT_DAYS,
   secretAccessDays: DATA_RETENTION_SECRET_ACCESS_DEFAULT_DAYS,
   litellmCostEventsDays: DATA_RETENTION_LITELLM_COST_EVENTS_DEFAULT_DAYS,
+  agentWakeupRequestsDays: DATA_RETENTION_DEFAULT_OPERATIONAL_ROWS_DAYS,
+  environmentLeasesDays: DATA_RETENTION_DEFAULT_OPERATIONAL_ROWS_DAYS,
+  documentRevisionKeepPerDocument: DATA_RETENTION_DEFAULT_DOCUMENT_REVISION_KEEP,
+  documentRevisionDays: DATA_RETENTION_DEFAULT_DOCUMENT_REVISION_DAYS,
 };
 
 /**
  * The stored object also carries the sweep state (`lastRun`) and the sibling
  * keys of the same block (DBC-1 `heartbeatRunContextDays`, `contextLastRun`,
- * `contextCompactMaxBatches`, F14B `externalMachineBackup`); only the four
- * retention settings are handed to the strict schema parser. Sibling care
- * keys are validated by their own normalizers.
+ * `contextCompactMaxBatches`, F14B `externalMachineBackup`); only retention
+ * settings are handed to the strict schema parser. Sibling care keys are
+ * validated by their own normalizers.
  */
 function pickDataRetentionKeys(raw: unknown): unknown {
   if (typeof raw !== "object" || raw === null) return raw;
@@ -140,6 +165,10 @@ export function normalizeDataRetentionSettings(raw: unknown): DataRetentionSetti
     litellmCostEventsDays: parsed.success
       ? parsed.data.litellmCostEventsDays
       : DATA_RETENTION_LITELLM_COST_EVENTS_DEFAULT_DAYS,
+    agentWakeupRequestsDays: parsed.success ? parsed.data.agentWakeupRequestsDays : DATA_RETENTION_DEFAULT_OPERATIONAL_ROWS_DAYS,
+    environmentLeasesDays: parsed.success ? parsed.data.environmentLeasesDays : DATA_RETENTION_DEFAULT_OPERATIONAL_ROWS_DAYS,
+    documentRevisionKeepPerDocument: parsed.success ? parsed.data.documentRevisionKeepPerDocument : DATA_RETENTION_DEFAULT_DOCUMENT_REVISION_KEEP,
+    documentRevisionDays: parsed.success ? parsed.data.documentRevisionDays : DATA_RETENTION_DEFAULT_DOCUMENT_REVISION_DAYS,
   };
 }
 
@@ -156,6 +185,10 @@ export function dataRetentionSources(
     accessAuditDays: stored ? "settings" : "default",
     secretAccessDays: stored ? "settings" : "default",
     litellmCostEventsDays: stored ? "settings" : "default",
+    agentWakeupRequestsDays: stored ? "settings" : "default",
+    environmentLeasesDays: stored ? "settings" : "default",
+    documentRevisionKeepPerDocument: stored ? "settings" : "default",
+    documentRevisionDays: stored ? "settings" : "default",
   };
 }
 
@@ -180,7 +213,7 @@ export interface DataRetentionLastRun {
   waitingForBackup: boolean;
   backupCheckedAt: string | null;
   freedBytesTotal: number;
-  perTable: Record<"runs" | "activity" | "access" | "litellmCostEvents", DataRetentionTableStatus>;
+  perTable: Record<"runs" | "activity" | "access" | "litellmCostEvents" | "documentRevisions" | "agentWakeupRequests" | "environmentLeases" | "executionWorkspaces", DataRetentionTableStatus>;
 }
 
 const tableStatusSchema = z.object({
@@ -195,11 +228,15 @@ const lastRunSchema = z.object({
   backupCheckedAt: z.string().nullable(),
   freedBytesTotal: z.number().min(0),
   perTable: z.object({
-    runs: tableStatusSchema,
-    activity: tableStatusSchema,
-    access: tableStatusSchema,
-    litellmCostEvents: tableStatusSchema,
-  }),
+    runs: tableStatusSchema.optional(),
+    activity: tableStatusSchema.optional(),
+    access: tableStatusSchema.optional(),
+    litellmCostEvents: tableStatusSchema.optional(),
+    documentRevisions: tableStatusSchema.optional(),
+    agentWakeupRequests: tableStatusSchema.optional(),
+    environmentLeases: tableStatusSchema.optional(),
+    executionWorkspaces: tableStatusSchema.optional(),
+  }).optional(),
 });
 
 /** The empty sweep state: never ran, not waiting, nothing deleted. */
@@ -214,6 +251,10 @@ export function emptyDataRetentionLastRun(): DataRetentionLastRun {
       activity: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
       access: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
       litellmCostEvents: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+      documentRevisions: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+      agentWakeupRequests: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+      environmentLeases: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+      executionWorkspaces: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
     },
   };
 }
@@ -222,9 +263,32 @@ export function emptyDataRetentionLastRun(): DataRetentionLastRun {
 export function normalizeDataRetentionLastRun(raw: unknown): DataRetentionLastRun {
   const empty = emptyDataRetentionLastRun();
   if (typeof raw !== "object" || raw === null) return empty;
-  const parsed = lastRunSchema.safeParse(raw);
+  const parsed = lastRunSchema.partial({ perTable: true }).safeParse(raw);
   if (!parsed.success) return empty;
-  return parsed.data;
+  const stored = parsed.data;
+  const perTable = stored.perTable ?? {};
+  const normalizeTable = (key: keyof DataRetentionLastRun["perTable"]): DataRetentionTableStatus => {
+    const candidate = perTable[key];
+    const parsedTable = tableStatusSchema.safeParse(candidate);
+    return parsedTable.success ? parsedTable.data : empty.perTable[key];
+  };
+  return {
+    ...empty,
+    lastRunAt: stored.lastRunAt ?? empty.lastRunAt,
+    waitingForBackup: stored.waitingForBackup ?? empty.waitingForBackup,
+    backupCheckedAt: stored.backupCheckedAt ?? empty.backupCheckedAt,
+    freedBytesTotal: stored.freedBytesTotal ?? empty.freedBytesTotal,
+    perTable: {
+      runs: normalizeTable("runs"),
+      activity: normalizeTable("activity"),
+      access: normalizeTable("access"),
+      litellmCostEvents: normalizeTable("litellmCostEvents"),
+      documentRevisions: normalizeTable("documentRevisions"),
+      agentWakeupRequests: normalizeTable("agentWakeupRequests"),
+      environmentLeases: normalizeTable("environmentLeases"),
+      executionWorkspaces: normalizeTable("executionWorkspaces"),
+    },
+  };
 }
 
 /** Response of `GET /api/myrmidon/data-retention`. */
