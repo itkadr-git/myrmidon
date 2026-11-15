@@ -170,9 +170,11 @@ run_deploy() { # run_deploy <jobId> <digest>
   version="$(image_label "$MYR_CI_IMAGE@$digest" org.opencontainers.image.version || true)"
   commit="$(image_label "$MYR_CI_IMAGE@$digest" org.opencontainers.image.revision || true)"
   if ((rc == 0)); then
+    if ! record_release_event "deploy.result" "$job" "$digest" "succeeded" "deploy.sh finished: version ${version:-<none>}, commit ${commit:0:12}"; then
+      report "$job" error "audit failure after successful deploy; reconcile running image and audit before retry" "$version" "$commit"
+      return 1
+    fi
     report "$job" health-ok "deploy.sh finished" "$version" "$commit"
-    record_release_event "deploy.result" "$job" "$digest" "succeeded" "deploy.sh finished: version ${version:-<none>}, commit ${commit:0:12}" \
-      || log "WARNING: release audit: could not record deploy result for $job"
     return 0
   fi
   # myrmidon(R5-C): a failed health check is not the end when the automatic
@@ -182,28 +184,38 @@ run_deploy() { # run_deploy <jobId> <digest>
   # warns. A successful rollback still has to pass its health check, so
   # "rolled-back" means the board answers on the previous image again.
   if [[ "$AUTO_ROLLBACK" != "0" ]]; then
-    record_release_event "deploy.result" "$job" "$digest" "failed" "deploy.sh failed with exit $rc; automatic rollback follows" \
-      || log "WARNING: release audit: could not record deploy result for $job"
+    if ! record_release_event "deploy.result" "$job" "$digest" "failed" "deploy.sh failed with exit $rc; automatic rollback follows"; then
+      report "$job" error "audit failure recording failed deploy; reconcile before rollback" "$version" "$commit"
+      return 1
+    fi
+    if ! record_release_event "rollback.intent" "$job" "$digest" "planned" "automatic rollback initiated after failed deploy (exit $rc)"; then
+      report "$job" error "audit failure recording rollback intent; reconcile before rollback" "$version" "$commit"
+      return 1
+    fi
     report "$job" rolling-back "deploy failed (exit $rc); rolling back automatically; see $STATE_DIR/job-$job.log" "$version" "$commit"
-    record_release_event "rollback.intent" "$job" "$digest" "planned" "automatic rollback initiated after failed deploy (exit $rc)" \
-      || log "WARNING: release audit: could not record rollback intent for $job"
     local rc_rb=0
     "$MYR_SCRIPT_DIR/rollback.sh" --config "$config" 2>>"$STATE_DIR/job-$job.log"
     rc_rb=$?
     if ((rc_rb == 0)); then
+      if ! record_release_event "rollback.result" "$job" "$digest" "succeeded" "automatic rollback finished; health check passed"; then
+        report "$job" error "audit failure after successful rollback; reconcile before retry"
+        return 1
+      fi
       report "$job" rolled-back "rolled back to the previous image; health check passed" "" ""
-      record_release_event "rollback.result" "$job" "$digest" "succeeded" "automatic rollback finished; health check passed" \
-        || log "WARNING: release audit: could not record rollback result for $job"
       return 0
     fi
+    if ! record_release_event "rollback.result" "$job" "$digest" "failed" "automatic rollback failed with exit $rc_rb; maintenance window stays on"; then
+      report "$job" error "audit failure after failed rollback; reconcile before retry"
+      return 1
+    fi
     report "$job" rollback-failed "rollback failed with exit $rc_rb; maintenance stays on; see $STATE_DIR/job-$job.log" "" ""
-    record_release_event "rollback.result" "$job" "$digest" "failed" "automatic rollback failed with exit $rc_rb; maintenance window stays on" \
-      || log "WARNING: release audit: could not record rollback result for $job"
+    return 1
+  fi
+  if ! record_release_event "deploy.result" "$job" "$digest" "failed" "deploy.sh failed with exit $rc (auto-rollback off)"; then
+    report "$job" error "audit failure after failed deploy; reconcile before retry" "$version" "$commit"
     return 1
   fi
   report "$job" health-failed "deploy.sh failed with exit $rc; see $STATE_DIR/job-$job.log" "$version" "$commit"
-  record_release_event "deploy.result" "$job" "$digest" "failed" "deploy.sh failed with exit $rc (auto-rollback off)" \
-    || log "WARNING: release audit: could not record deploy result for $job"
   return "$rc"
 }
 
