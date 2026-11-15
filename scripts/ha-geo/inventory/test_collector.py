@@ -36,6 +36,23 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(report['postgres']['status'], 'error')
         self.assertNotIn('fixture-secret', json.dumps(report))
 
+    def test_local_capabilities_report_actual_results_without_secrets(self):
+        with patch.object(collector.shutil, 'which', side_effect=lambda name: '/usr/bin/' + name if name in ('openssl', 'sshd', 'chromium') else None), \
+             patch.object(collector, 'time_sync_status', return_value={'status': 'ok', 'synchronized': True}):
+            report = collector.collect()
+        self.assertTrue(report['tls']['openssl_available'])
+        self.assertTrue(report['login_method']['sshd_available'])
+        self.assertTrue(report['ci_browser_profile']['chromium_available'])
+        self.assertTrue(report['time_sync']['synchronized'])
+        self.assertEqual(report['backup']['status'], 'unknown')
+
+    def test_postgres_incomplete_when_standby_lag_unavailable(self):
+        fixture = dict.fromkeys(collector.FIELDS, 1)
+        fixture.update(server_version_num=160002, in_recovery=True, lag_bytes=None)
+        with patch.object(collector, 'query_postgres', return_value=fixture):
+            report = collector.collect('/socket', 'db', 'operator')
+        self.assertEqual(report['postgres']['status'], 'incomplete')
+
     def test_remote_socket_is_rejected(self):
         result = subprocess.run([sys.executable, str(Path(collector.__file__)), '--socket', 'example.com', '--database', 'db', '--user', 'operator'], capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
