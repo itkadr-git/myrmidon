@@ -5,7 +5,9 @@ export type ExecutionWorkspaceStrategyType =
   | "project_primary"
   | "git_worktree"
   | "adapter_managed"
-  | "cloud_sandbox";
+  | "cloud_sandbox"
+  // myrmidon(1.6.9, OPE-13213): the task directory of a bot container, no files on the board.
+  | "bot_container";
 
 export type ProjectExecutionWorkspaceDefaultMode =
   | "shared_workspace"
@@ -349,7 +351,7 @@ export interface WorkspaceRealizationRequest {
     projectWorkspaceId: string | null;
     repoUrl: string | null;
     repoRef: string | null;
-    strategy: "project_primary" | "git_worktree";
+    strategy: "project_primary" | "git_worktree" | "bot_container";
     branchName: string | null;
     worktreePath: string | null;
   };
