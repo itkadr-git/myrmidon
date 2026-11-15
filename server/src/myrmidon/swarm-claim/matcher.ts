@@ -1412,11 +1412,11 @@ export async function openLoadByAgent(db: Db, companyId: string): Promise<Map<st
 }
 
 /**
- * A linked PR waiting on CI or review discounts assigned load for at most
- * fifteen minutes after the last activity observation; stale PRs count again.
+ * A linked open PR waiting on CI or review discounts assigned load after
+ * fifteen minutes without an activity observation.
  */
 async function ciWaitingPullRequestIssueIds(db: Db, companyId: string): Promise<Set<string>> {
-  const products = await db.select({ issueId: issueWorkProducts.issueId, issueStatus: issues.status, metadata: issueWorkProducts.metadata, externalId: issueWorkProducts.externalId, reviewState: issueWorkProducts.reviewState, updatedAt: issueWorkProducts.updatedAt })
+  const products = await db.select({ issueId: issueWorkProducts.issueId, issueStatus: issues.status, status: issueWorkProducts.status, metadata: issueWorkProducts.metadata, externalId: issueWorkProducts.externalId, reviewState: issueWorkProducts.reviewState, updatedAt: issueWorkProducts.updatedAt })
     .from(issueWorkProducts)
     .innerJoin(issues, eq(issues.id, issueWorkProducts.issueId))
     .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.provider, "github")));
@@ -1446,9 +1446,10 @@ async function ciWaitingPullRequestIssueIds(db: Db, companyId: string): Promise<
     const observedAt = typeof ci?.observedAt === "string" ? Date.parse(ci.observedAt) : NaN;
     const lastActivityAt = Number.isFinite(observedAt) ? Math.max(observedAt, product.updatedAt.getTime()) : product.updatedAt.getTime();
     const age = Date.now() - lastActivityAt;
-    const recentReview = product.reviewState === "ready_for_review" && age >= 0 && age <= 15 * 60_000;
-    const recentCiWait = waitingForCi && matchingCiHead && age >= 0 && age <= 15 * 60_000;
-    if (currentPr?.issueId === product.issueId && (recentCiWait || recentReview)) {
+    const waitingLongEnough = age >= 15 * 60_000;
+    const reviewWait = product.status === "open" && product.reviewState === "ready_for_review" && waitingLongEnough;
+    const ciWait = product.status === "open" && waitingForCi && matchingCiHead && waitingLongEnough;
+    if (currentPr?.issueId === product.issueId && (ciWait || reviewWait)) {
       waiting.add(product.issueId);
     }
   }
