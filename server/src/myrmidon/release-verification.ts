@@ -531,16 +531,33 @@ export function hasCurrentReleaseVerificationEvidence(
   key: string,
   now: Date = new Date(),
 ): boolean {
-  return comments.some((comment) => {
-    if (comment.authorType !== "system") return false;
+  let latestTime = -Infinity;
+  let latestValid = false;
+  for (const comment of comments) {
+    if (comment.authorType !== "system") continue;
     const line = comment.body.split("\n").find((item) => item.startsWith("release-evidence-v1: "));
-    if (!line) return false;
+    if (!line) continue;
     try {
-      return validateReleaseVerificationEvidence(JSON.parse(line.slice("release-evidence-v1: ".length)), scope, key, now);
+      const record = JSON.parse(line.slice("release-evidence-v1: ".length)) as ReleaseEvidencePayload & { signature: string };
+      if (!key || record.companyId !== scope.companyId || record.issueId !== scope.issueId ||
+          typeof record.checkedAt !== "string" || typeof record.signature !== "string" ||
+          !/^[a-f0-9]{64}$/.test(record.signature)) continue;
+      const checkedAt = Date.parse(record.checkedAt);
+      if (!Number.isFinite(checkedAt) || !timingSafeEqual(
+        Buffer.from(record.signature, "hex"), Buffer.from(evidenceSignature(record, key), "hex"),
+      )) continue;
+      const valid = validateReleaseVerificationEvidence(record, scope, key, now);
+      if (checkedAt > latestTime) {
+        latestTime = checkedAt;
+        latestValid = valid;
+      } else if (checkedAt === latestTime) {
+        latestValid = latestValid && valid;
+      }
     } catch {
-      return false;
+      continue;
     }
-  });
+  }
+  return latestValid;
 }
 
 /**
