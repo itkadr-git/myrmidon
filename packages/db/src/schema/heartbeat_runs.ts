@@ -250,6 +250,9 @@ export const heartbeatRuns = pgTable(
     // which no other index serves. Persisted from the production database, see
     // migration 0308_db_care_audit_indexes.
     updatedAtIdx: index("heartbeat_runs_updated_at_idx").on(table.updatedAt),
+    // myrmidon(1.7 data-retention): FK column with no index; the wakeup-request
+    // prune probes it per candidate (NOT EXISTS) instead of scanning the table.
+    wakeupRequestIdx: index("heartbeat_runs_wakeup_request_id_idx").on(table.wakeupRequestId),
     // myrmidon(SWARM-B): the matcher reads the provider-quota failures of the
     // candidate agents on every match. Such rows are a sliver of the table, so a
     // partial index keeps that read off the week of ordinary runs.
