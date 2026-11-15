@@ -13,6 +13,14 @@ test("only open epics from the current release are candidates", () => {
   assert.deepEqual(releaseEpicCandidates(rows, null), []);
 });
 
+test("release separators are literal, not regex wildcards", () => {
+  const rows = [
+    { id: "wrong", identifier: "DEV-1", title: "Epic 1x6x9", status: "todo" },
+    { id: "right", identifier: "DEV-2", title: "Epic 1.6.9", status: "todo" },
+  ];
+  assert.deepEqual(releaseEpicCandidates(rows, "1.6.9").map((row) => row.id), ["right"]);
+});
+
 test("counts project members with empty queues and ignores outsiders", () => {
   const result = projectQueueShortages("company", [
     { projectId: "a", memberIds: new Set(["one", "two", "three"]) },
