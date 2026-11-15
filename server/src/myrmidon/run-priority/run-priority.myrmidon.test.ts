@@ -25,12 +25,8 @@ import {
   sortByRunPriority,
   type PriorityScoredRun,
 } from "./scoring.js";
-import {
-  applyRunPrioritySettings,
-  currentRunPrioritySettings,
-  resetRunPriorityForTests,
-  resolveRunPriority,
-} from "./state.js";
+import { applyRunPrioritySettings, isReleaseFocusActive } from "./service.js";
+import { currentRunPrioritySettings, resetRunPriorityForTests, resolveRunPriority } from "./state.js";
 
 const NOW = 1_700_000_000_000;
 const MIN = 60_000;
@@ -42,6 +38,7 @@ const ENV_FREE: Record<string, string | undefined> = Object.fromEntries(
     defaultRoleWeight: "MYRMIDON_RUN_PRIORITY_DEFAULT_ROLE_WEIGHT",
     issuePriorityWeights: "MYRMIDON_RUN_PRIORITY_ISSUE_WEIGHTS",
     currentRelease: "MYRMIDON_CURRENT_RELEASE",
+    strictReleaseFocus: "MYRMIDON_STRICT_RELEASE_FOCUS",
     releaseBonus: "MYRMIDON_RUN_RELEASE_BONUS",
     agingStepMinutes: "MYRMIDON_RUN_AGING_STEP_MIN",
     agingStepWeight: "MYRMIDON_RUN_AGING_STEP_WEIGHT",

@@ -8,7 +8,8 @@
 // run, so new weights reach the queue without a restart. Both sweeps read the
 // in-force settings fresh on every pass (`currentRunPrioritySettings`).
 
-import type { Db } from "@myrmidon/db";
+import { and, eq, notInArray } from "drizzle-orm";
+import { issueLabels, issues, labels, type Db } from "@myrmidon/db";
 import {
   mergeRunPrioritySettings,
   assertRunPriorityQueueInvariant,
@@ -59,6 +60,27 @@ export interface RunPriorityService {
 
 /** `instance.run_priority.updated` — the audit action of a settings change. */
 export const RUN_PRIORITY_ACTION = "instance.run_priority.updated";
+
+/** True only while strict focus is enabled and this company has open release work. */
+export async function isReleaseFocusActive(db: Db, companyId: string): Promise<boolean> {
+  const general = await instanceSettingsService(db).getGeneral();
+  const settings = resolveRunPriority(general.runPriority).settings;
+  if (!settings.strictReleaseFocus || !settings.currentRelease) return false;
+  const [row] = await db
+    .select({ id: issues.id })
+    .from(issues)
+    .innerJoin(issueLabels, eq(issueLabels.issueId, issues.id))
+    .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        notInArray(issues.status, ["done", "cancelled"]),
+        eq(labels.name, settings.currentRelease),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
 
 let runPriorityTransitionQueue: Promise<void> = Promise.resolve();
 
