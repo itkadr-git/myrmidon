@@ -54,7 +54,10 @@ const runFinishTimeoutMs = 10_000;
 // Postgres, so deterministic fake timers cannot drive the background
 // execution loop — a genuine short delay between checks is required.
 async function waitForRunToFinish(
-  heartbeat: { getRun(runId: string): Promise<unknown> },
+  heartbeat: {
+    getRun(runId: string): Promise<unknown>;
+    drainActiveRunExecutions(): Promise<void>;
+  },
   runId: string,
 ) {
   const deadline = Date.now() + runFinishTimeoutMs;
@@ -63,7 +66,11 @@ async function waitForRunToFinish(
       | { status?: string }
       | null
       | undefined;
-    if (run && !["queued", "running"].includes(run.status ?? "")) return run;
+    if (run && !["queued", "running"].includes(run.status ?? "")) {
+      // The terminal row precedes runtime-state persistence in finalization.
+      await heartbeat.drainActiveRunExecutions();
+      return run;
+    }
     await new Promise((resolve) => setTimeout(resolve, pollDelayMs));
   }
   return heartbeat.getRun(runId);

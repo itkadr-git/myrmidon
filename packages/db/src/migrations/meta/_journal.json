@@ -2797,9 +2797,16 @@
       "breakpoints": true
     },
     {
-      "idx": 485,
+      "idx": 484,
       "version": "7",
       "when": 1794535121133,
+      "tag": "0484_secret_audit_slim",
+      "breakpoints": true
+    },
+    {
+      "idx": 485,
+      "version": "7",
+      "when": 1794712363430,
       "tag": "0485_agent_liveness_probe",
       "breakpoints": true
     }
