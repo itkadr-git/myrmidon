@@ -55,6 +55,9 @@ import {
   resetRunPriorityForTests,
 } from "../myrmidon/run-priority/state.js";
 import { runPriorityService } from "../myrmidon/run-priority/service.js";
+import { advanceFocusDeferredRuns } from "../myrmidon/run-priority/sync.js";
+import { registerSettingsAppliers } from "../myrmidon/settings-appliers/index.js";
+import { strictReleaseFocusRelease } from "../myrmidon/release-focus.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -625,6 +628,102 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
     expect(mockAdapterExecute).toHaveBeenCalled();
     expect(["running", "succeeded"]).toContain((await runRow(run.id))?.status);
   });
+
+  const actorUser = { actorType: "user" as const, actorId: "responsible-user", agentId: null, runId: null, agentApiKeyId: null };
+
+  it("strict focus: lifting the focus makes the deferred runs due at once, no waiting for the recheck ladder", async () => {
+    const { agentId, otherIssueId } = await seedFocusScenario(true);
+    const run = await commentWake(agentId, otherIssueId);
+    await sweep();
+    const parked = await runRow(run.id);
+    expect(parked?.status).toBe("scheduled_retry");
+    // The ladder parks it well into the future.
+    expect(parked!.scheduledRetryAt!.getTime()).toBeGreaterThan(Date.now() + 30_000);
+
+    const service = runPriorityService(db, {
+      env: {},
+      advanceDeferredRuns: () => advanceFocusDeferredRuns(db),
+    });
+    await service.update({ strictReleaseFocus: false }, actorUser);
+    expect((await runRow(run.id))!.scheduledRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
+
+    await heartbeat.promoteDueScheduledRetries();
+    await sweep();
+    expect(mockAdapterExecute).toHaveBeenCalled();
+    expect(["running", "succeeded"]).toContain((await runRow(run.id))?.status);
+  }, 30_000);
+
+  it("only runs parked by the focus are advanced; a failed run's retry that copied the key keeps its real backoff", async () => {
+    const { companyId, agentId, otherIssueId } = await seedFocusScenario(true);
+    const parkedByFocus = await commentWake(agentId, otherIssueId);
+    await sweep();
+    const focusRow = await runRow(parkedByFocus.id);
+    expect(focusRow?.status).toBe("scheduled_retry");
+
+    // A retry of a failed run: the context (with the deferral key of the
+    // original) is copied, the due time is its own backoff.
+    const backoffAt = new Date(Date.now() + 10 * MINUTE_MS);
+    const retryId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: retryId, companyId, agentId, status: "scheduled_retry", invocationSource: "automation",
+      scheduledRetryAt: backoffAt, scheduledRetryReason: "transient_upstream_failure",
+      contextSnapshot: {
+        issueId: otherIssueId,
+        releaseFocusDeferral: { count: 1, firstDeferredAt: new Date().toISOString(), deferredAt: new Date().toISOString(), dueAt: new Date(Date.now() - 60_000).toISOString() },
+      },
+    });
+
+    const advanced = await advanceFocusDeferredRuns(db);
+    expect(advanced).toBe(1);
+    expect((await runRow(parkedByFocus.id))!.scheduledRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    expect((await runRow(retryId))!.scheduledRetryAt!.getTime()).toBe(backoffAt.getTime());
+  }, 30_000);
+
+  it("strict focus: a change of the current release advances the deferred runs too; an unrelated change does not", async () => {
+    const { agentId, otherIssueId } = await seedFocusScenario(true);
+    const run = await commentWake(agentId, otherIssueId);
+    await sweep();
+    const parkedAt = (await runRow(run.id))!.scheduledRetryAt!.getTime();
+    const service = runPriorityService(db, {
+      env: {},
+      advanceDeferredRuns: () => advanceFocusDeferredRuns(db),
+    });
+    await service.update({ roleWeights: { ...defaultSettings().roleWeights, engineer: 123 } }, actorUser);
+    expect((await runRow(run.id))!.scheduledRetryAt!.getTime()).toBe(parkedAt);
+    await service.update({ currentRelease: "1.7" }, actorUser);
+    expect((await runRow(run.id))!.scheduledRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
+  }, 30_000);
+
+  it("another process sees a saved focus change through the settings_changed path, not through a direct apply", async () => {
+    const handlers: Array<(payload: unknown) => void> = [];
+    const bus = {
+      publish: async (_channel: "settings_changed", payload: unknown) => {
+        for (const handler of handlers) handler(payload);
+      },
+      subscribe: <T,>(_channel: "settings_changed", handler: (payload: T) => void) => {
+        handlers.push(handler as (payload: unknown) => void);
+        return () => undefined;
+      },
+    };
+    // The "other process": it listens on the bus and keeps its own memory.
+    registerSettingsAppliers(bus, { db: db as never });
+    applyRunPrioritySettings({ ...defaultSettings(), currentRelease: "1.6.9", strictReleaseFocus: true });
+    expect(strictReleaseFocusRelease()).toBe("1.6.9");
+
+    // The writing process: its own apply never touches this memory.
+    const writer = runPriorityService(db, {
+      env: {},
+      // The writing process applies the stored row to ITS memory; keep ours untouched.
+      applyStored: async () => ({ ...defaultSettings(), currentRelease: "1.6.9", strictReleaseFocus: false }),
+      publishChanged: () => bus.publish("settings_changed", { changedKeys: ["runPriority"] }),
+    });
+    await writer.update({ strictReleaseFocus: false }, actorUser);
+    await vi.waitFor(() => expect(strictReleaseFocusRelease()).toBeNull());
+    expect(currentRunPrioritySettings().strictReleaseFocus).toBe(false);
+
+    await writer.update({ strictReleaseFocus: true, currentRelease: "1.7" }, actorUser);
+    await vi.waitFor(() => expect(strictReleaseFocusRelease()).toBe("1.7"));
+  }, 30_000);
 
   it("strict focus: the deferred run starts once no open current-release task is left", async () => {
     const { agentId, otherIssueId, currentIssueId } = await seedFocusScenario(true);

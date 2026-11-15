@@ -7,6 +7,8 @@ const resetMaintenanceGateCaches = vi.hoisted(() => vi.fn());
 const startProcessesSettings = vi.hoisted(() => vi.fn());
 const applyTaskDrain = vi.hoisted(() => vi.fn());
 const getGeneral = vi.hoisted(() => vi.fn());
+const syncRunPriorityFromStore = vi.hoisted(() => vi.fn());
+vi.mock("../run-priority/sync.js", () => ({ syncRunPriorityFromStore }));
 
 vi.mock("../runtime-limits/index.js", () => ({ startRuntimeLimits }));
 vi.mock("../maintenance/gate.js", () => ({ resetMaintenanceGateCaches }));
@@ -42,6 +44,7 @@ describe("settings appliers", () => {
     startProcessesSettings.mockReset().mockResolvedValue(undefined);
     applyTaskDrain.mockReset();
     getGeneral.mockReset();
+    syncRunPriorityFromStore.mockReset().mockResolvedValue(undefined);
   });
 
   it("applies only the changed keys, from the database", async () => {
@@ -61,6 +64,14 @@ describe("settings appliers", () => {
     );
     expect(resetMaintenanceGateCaches).toHaveBeenCalledTimes(1);
     expect(startProcessesSettings).toHaveBeenCalledWith(db, supervisor);
+  });
+
+  it("re-reads the run priority settings from the database on runPriority", async () => {
+    await applySettingsChanged({ changedKeys: ["runPriority"] }, { db });
+    expect(syncRunPriorityFromStore).toHaveBeenCalledWith(db);
+    syncRunPriorityFromStore.mockClear();
+    await applySettingsChanged({ changedKeys: ["runLimits"] }, { db });
+    expect(syncRunPriorityFromStore).not.toHaveBeenCalled();
   });
 
   it("ignores unknown keys and empty payloads", async () => {
