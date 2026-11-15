@@ -3357,9 +3357,3 @@ Every limit can also be set per agent (`adapterConfig.runGuard.<name>`, or the s
 | `MYRMIDON_RUN_GUARD_IDLE_TIMEOUT_SEC` | RUN-GUARD | unset (`MYRMIDON_RUN_GUARD_IDLE_TIMEOUT_MS`, then 20 min) | Seconds without any event from the run after which the run guard stops it with `idle_timeout`. When set, it wins over `MYRMIDON_RUN_GUARD_IDLE_TIMEOUT_MS`. | A positive number; other values are ignored. |
 | `MYRMIDON_RUN_GUARD_IDLE_TIMEOUT_MS` | RUN-GUARD | `1200000` (20 min) | The same idle timeout in milliseconds, used when the seconds variable is not set. | A positive number; other values are ignored. |
 | `MYRMIDON_RUN_GUARD_TOOL_RETRY_LIMIT` | RUN-GUARD | `3` | Number of identical consecutive failures of one tool call (same tool, same arguments; a successful tool call resets the count) after which the run guard stops the run with `tool_retry_loop`. | A positive number; other values are ignored. |
-
-## Current-release focus and owner assignments
-
-When `general.runPriority.currentRelease` is set and the company has an open, visible issue with that exact label (case-insensitive, surrounding whitespace ignored), swarm matching and idle pickup exclude other release labels. Review participation is unaffected. This exact-label filter is separate from the run-priority scoring substring comparison.
-
-An explicit assignment by a board user is an exception only when the latest assignment audit record names the current agent and no later swarm claim exists. Automatic assignments do not qualify. Legacy assignments without matching audit evidence fail closed while focus is active: to restore the exception, a board user must explicitly reassign the issue (unassign it first if necessary so an assignment change is recorded). Once no current-release issues remain open, the filter no longer applies.
