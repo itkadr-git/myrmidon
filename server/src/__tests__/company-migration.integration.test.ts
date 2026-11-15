@@ -50,6 +50,19 @@ describe("company migration dry run", () => {
     expect(response.status).toBe(200);
     expect(response.body.dryRun).toBe(true);
     expect(response.body.validation.errors).toEqual([]);
+
+    const apply = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+      target: { mode: "new_company", newCompanyName: "Destination" },
+      dryRun: false,
+      apply: true,
+      confirm: "approved",
+    });
+    expect(apply.status).toBe(400);
+    const existingTarget = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+      target: { mode: "existing_company", companyId: source!.id },
+    });
+    expect(existingTarget.status).toBe(400);
+
     expect(insert).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
