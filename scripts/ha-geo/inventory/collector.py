@@ -53,6 +53,16 @@ def capability(name, label):
             'reason': 'binary availability does not establish configuration or service health'}
 
 
+def browser_profile():
+    profile = capability('chromium', 'chromium_available')
+    try:
+        shared = os.statvfs('/dev/shm')
+        profile['shared_memory_bytes'] = shared.f_frsize * shared.f_blocks
+    except OSError:
+        profile['shared_memory_bytes'] = None
+    return profile
+
+
 def query_postgres(socket, database, user):
     # A clean environment prevents libpq from consuming credentials or connection overrides.
     env = {'PATH': '/usr/bin:/bin', 'HOME': '/nonexistent', 'PGPASSFILE': '/dev/null',
@@ -85,7 +95,7 @@ def collect(socket=None, database=None, user=None):
         disk_info = {'status': 'error', 'reason': 'disk usage unavailable'}
     return {'schemaVersion': 1, 'postgres': postgres, 'disk': disk_info,
             'resources': {'cpu_count': os.cpu_count(), 'memory_bytes': memory()},
-            'ci_browser_profile': capability('chromium', 'chromium_available'),
+            'ci_browser_profile': browser_profile(),
             'time_sync': time_sync_status(),
             'tls': capability('openssl', 'openssl_available'),
             'login_method': capability('sshd', 'sshd_available'),

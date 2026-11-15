@@ -23,6 +23,8 @@ collector does not enable TLS for a Unix socket; it does not assess remote TLS.
 The disk measurement is for `/`, not necessarily the database volume. The collector
 checks only whether the `chromium`, `openssl` and `sshd` executables are present;
 this does not identify the CI profile, configured TLS, or allowed login methods.
+The CI/browser section also reports the total size of `/dev/shm` when available;
+this is the current mount's capacity, not proof of the CI job configuration.
 Time synchronization is reported when `timedatectl` exposes it. Backup configuration
 is unknown; archive mode, timeout, last successful archive time and failed archive
 count are PostgreSQL facts, not proof of a backup. `ssl_configured` reports the

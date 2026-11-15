@@ -46,6 +46,20 @@ class CollectorTests(unittest.TestCase):
         self.assertTrue(report['time_sync']['synchronized'])
         self.assertEqual(report['backup']['status'], 'unknown')
 
+    def test_ci_profile_includes_shared_memory_capacity(self):
+        with patch.object(collector.os, 'statvfs') as statvfs:
+            statvfs.return_value.f_frsize = 4096
+            statvfs.return_value.f_blocks = 100
+            report = collector.collect()
+        self.assertEqual(report['ci_browser_profile']['shared_memory_bytes'], 409600)
+        self.assertEqual(report['ci_browser_profile']['status'], 'incomplete')
+
+    def test_shared_memory_unavailable_is_explicit(self):
+        with patch.object(collector.os, 'statvfs', side_effect=OSError('secret detail')):
+            report = collector.collect()
+        self.assertIsNone(report['ci_browser_profile']['shared_memory_bytes'])
+        self.assertNotIn('secret detail', json.dumps(report))
+
     def test_standby_time_lag_is_reported_and_required(self):
         fixture = dict.fromkeys(collector.FIELDS, 1)
         fixture.update(server_version_num=160002, in_recovery=True, lag_seconds=12.5)
