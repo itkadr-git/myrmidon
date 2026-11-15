@@ -21,6 +21,18 @@ describe("migration manifest validation", () => {
     expect(JSON.stringify(result)).not.toContain("never-print-this");
   });
 
+  it("rejects cycles in the imported management hierarchy", () => {
+    const agent = { slug: "worker", reportsToSlug: "boss", reportsToExistingAgentId: null,
+      reportsToExistingAgentSlug: null, skills: [], permissionGrants: [] };
+    const boss = { ...agent, slug: "boss", reportsToSlug: "worker" };
+    const manifest = { agents: [agent, boss], skills: [], envInputs: [] };
+    expect(validateMigrationManifest(manifest).errors).toEqual(
+      expect.arrayContaining([expect.stringContaining("management cycle")]),
+    );
+    expect(validateMigrationManifest({ ...manifest, agents: [{ ...agent, reportsToSlug: "worker" }] }).errors)
+      .toEqual(expect.arrayContaining([expect.stringContaining("management cycle")]));
+  });
+
   it("accepts references inside the package and rejects cross-company references", () => {
     const agent = { slug: "worker", reportsToSlug: "boss", reportsToExistingAgentId: null,
       reportsToExistingAgentSlug: null, skills: ["skill-key"], permissionGrants: [] };
