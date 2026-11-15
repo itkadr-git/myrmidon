@@ -350,7 +350,7 @@ export async function updateAgentAllowlistsForCompany(
       );
       const agentModels = [...new Set([
         ...enabledForCard,
-        ...additionalModelNames,
+        ...(options.cardModelsOnly ? additionalModelNames.filter((name) => cardModels.includes(name)) : additionalModelNames),
       ])].filter((name) => !removedModelNames.includes(name) && !disabledRegistryNames.includes(name));
       const additions = agentModels.filter((name) => !current.includes(name));
       const finalModels = [...new Set([...survivors, ...agentModels])];

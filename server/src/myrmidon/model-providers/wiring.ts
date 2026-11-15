@@ -250,7 +250,7 @@ export function createPluginProviderModelSync(
         companyPluginModelNames,
         [],
         false,
-        { includeRegistryModels: false },
+        { cardModelsOnly: true },
       );
     },
     async remove(companyId, plugin) {
@@ -286,7 +286,7 @@ export function createPluginProviderModelSync(
         [...stillOwnedNames],
         removableModelNames,
         true,
-        { includeRegistryModels: false },
+        { cardModelsOnly: true },
       );
     },
   };
