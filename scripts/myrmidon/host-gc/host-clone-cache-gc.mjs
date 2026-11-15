@@ -1835,6 +1835,12 @@ async function main() {
     const scratchDirs = [...args.scratchRoots];
     if (scratchDirs.length === 0) {
       scratchDirs.push(...discoverBotScratchDirs(root));
+      // The deployed wrapper invokes GC separately for each bot's workspace.
+      if (path.basename(path.resolve(root)) === "workspace" && lstatSafe(root).st?.isDirectory()) {
+        const botDir = path.dirname(path.resolve(root));
+        scratchDirs.push(...discoverBotScratchDirs(path.dirname(botDir)).filter((dir) =>
+          path.dirname(path.dirname(path.dirname(dir))) === botDir));
+      }
     }
     const openInfo = collectOpenProcInfo(args.procDir);
     for (const sDir of scratchDirs) {
