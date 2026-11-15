@@ -223,7 +223,7 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
   projectService: () => ({}),
   routineService: () => mockRoutineService,
-  workProductService: () => ({}),
+  workProductService: () => ({ listForIssue: vi.fn(async () => []) }),
 }));
 
 vi.mock("../services/external-objects.js", () => ({
@@ -417,7 +417,7 @@ describe.sequential("issue comment reopen routes", () => {
         onRejected?: (reason: unknown) => unknown,
       ) => Promise.resolve([]).then(onFulfilled, onRejected),
     }));
-    mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
+    mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere, innerJoin: () => ({ where: async () => [] }) }));
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDb.transaction.mockImplementation(
       async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx),
