@@ -711,7 +711,7 @@ export async function fetchCommitCheckRuns(
   headSha: string,
   token: string | null,
   fetchImpl: FetchLike = fetch,
-  options: { maxPages?: number; etag?: string; cachedRuns?: CommitCheckRunsCacheEntry } = {},
+  options: { maxPages?: number; etag?: string; cachedRuns?: CommitCheckRunsCacheEntry; source?: GitHubRequestSource } = {},
 ): Promise<CheckRunsFetchResult> {
   const maxPages = options.maxPages ?? 10;
   const cachedRuns = options.cachedRuns;
@@ -741,7 +741,7 @@ export async function fetchCommitCheckRuns(
     let res: Response;
     try {
       res = await fetchImpl(url, { headers });
-      recordGitHubRequest("ci-resolver", res);
+      recordGitHubRequest(options.source ?? "ci-resolver", res);
     } catch {
       fetchFailed = true;
       break;
@@ -965,6 +965,13 @@ export function clearCiCacheForTests(): void {
   jobLogCache.clear();
   resetGitHubRateLimitForTests();
   resetGitHubObjectCacheForTests();
+}
+
+/** Invalidate cached CI snapshots for one company and PR head after a GitHub event. */
+export function invalidateCiCacheForHead(companyId: string, repository: string, headSha: string): void {
+  const normalizedRepository = repository.toLowerCase();
+  ciCache.delete(`${companyId}:${normalizedRepository}@${headSha.toLowerCase()}`);
+  checkRunsCache.delete(`${normalizedRepository}@${headSha.toLowerCase()}`);
 }
 
 export const GITHUB_REQUEST_TIMEOUT_MS = 8_000;
@@ -1230,9 +1237,9 @@ export function createPullRequestCiResolver(
         };
       }
 
-      const cacheKey = `${companyId}:${repoKey}@${headSha}`;
+      const cacheKey = `${companyId}:${repoKey.toLowerCase()}@${headSha.toLowerCase()}`;
       const cached = ciCache.get(cacheKey);
-      const commitCacheKey = `${repoKey}@${headSha}`;
+      const commitCacheKey = `${repoKey.toLowerCase()}@${headSha.toLowerCase()}`;
       const rateLimited = isGitHubRateLimited();
       if (rateLimited) {
         const resetStr = getGitHubRateLimitResetTime() ?? "unknown";
@@ -1283,7 +1290,10 @@ export function createPullRequestCiResolver(
           runs: [],
         };
       }
-      if (cached && cached.expiresAt > Date.now()) {
+      const cachedRunsEntry = checkRunsCache.get(commitCacheKey);
+      const cacheIsFresh = cached && cached.expiresAt > Date.now()
+        && !(source === "run-context" && cached.result.status === "completed");
+      if (cacheIsFresh) {
         return cached.result;
       }
 
@@ -1310,7 +1320,6 @@ export function createPullRequestCiResolver(
         };
       }
 
-      const cachedRunsEntry = checkRunsCache.get(commitCacheKey);
       let runs: CheckRunsFetchResult;
       try {
         runs = await fetchCommitCheckRuns(
@@ -1319,7 +1328,7 @@ export function createPullRequestCiResolver(
           headSha,
           token,
           fetchImpl,
-          { etag: cachedRunsEntry?.etag ?? undefined, cachedRuns: cachedRunsEntry },
+          { etag: cachedRunsEntry?.etag ?? undefined, cachedRuns: cachedRunsEntry, source },
         );
         if (runs.conclusion === "incomplete" && runs.summary === "checks unchanged (not modified)" && cachedRunsEntry) {
           runs = cachedRunsEntry.runs;
