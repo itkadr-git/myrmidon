@@ -158,6 +158,24 @@ describe.skipIf(process.platform === "win32")("syncDirectoryFromSsh staging dire
     expect(await leftoverStagingDirs()).toEqual([]);
   }, 20_000);
 
+  it("keeps the ssh diagnostic first when tar also fails on the empty stream", async () => {
+    setEnv("FAKE_SSH_MODE", "refuse");
+    setEnv("FAKE_TAR_MODE", "die-on-extract");
+
+    let caughtError: unknown = null;
+    try {
+      await syncDirectoryFromSsh({ spec, remoteDir: "/workspace", localDir });
+    } catch (error) {
+      caughtError = error;
+    }
+
+    expect(caughtError).toBeInstanceOf(Error);
+    const message = (caughtError as Error).message;
+    expect(message).toContain("Connection refused");
+    expect(message.startsWith("ssh: connect to host runner.invalid")).toBe(true);
+    expect(await leftoverStagingDirs()).toEqual([]);
+  }, 20_000);
+
   it("reports why tar failed, not the exit code ssh gives to the SIGTERM that stops it", async () => {
     setEnv("FAKE_SSH_MODE", "serve-term255");
     setEnv("FAKE_TAR_MODE", "die-on-extract");
@@ -168,6 +186,31 @@ describe.skipIf(process.platform === "win32")("syncDirectoryFromSsh staging dire
 
     expect(await leftoverStagingDirs()).toEqual([]);
   }, 20_000);
+
+  it("keeps the ssh error and the tar error in a fixed order across 50 failed restores", async () => {
+    // OPE-13128: ssh and tar fail almost together; the message must not depend on
+    // which exits first. The ssh side (here the producing tar's stderr or the ssh
+    // diagnostic) is reported first; tar's own text is not asserted beyond the
+    // fake extraction failure that the test injects itself.
+    setEnv("FAKE_SSH_MODE", "serve");
+    setEnv("FAKE_TAR_MODE", "die-on-extract");
+    const filler = Buffer.alloc(1024 * 1024, 0x61);
+    for (let i = 0; i < 4; i += 1) {
+      await writeFile(path.join(sourceDir, `filler-${i}.bin`), filler);
+    }
+
+    for (let run = 0; run < 50; run += 1) {
+      let caughtError: unknown = null;
+      try {
+        await syncDirectoryFromSsh({ spec, remoteDir: "/workspace", localDir });
+      } catch (error) {
+        caughtError = error;
+      }
+      expect(caughtError, `run ${run + 1} must reject`).toBeInstanceOf(Error);
+      expect((caughtError as Error).message, `run ${run + 1}`).toContain("No space left on device");
+      expect(await leftoverStagingDirs(), `run ${run + 1}`).toEqual([]);
+    }
+  }, 120_000);
 
   it("settles promptly when the extracting tar dies before the ssh stream is drained", async () => {
     // Regression for OPE-12842/OPE-12875: with a large source the SIGTERM lands while
