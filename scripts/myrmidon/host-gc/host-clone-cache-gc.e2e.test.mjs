@@ -136,6 +136,28 @@ describe("host-clone-cache-gc e2e", () => {
     assert.equal(fs.existsSync(clone), false);
   });
 
+  it("keeps a closed clone when a nested repository has unpublished work", async () => {
+    const root = path.join(tmpDir, "root");
+    fs.mkdirSync(root);
+    const clone = makeGitClone(path.join(root, "OPE-12345"));
+    const git = (...args) => {
+      const result = spawnSync("git", args, { cwd: clone, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+    };
+    const remote = path.join(tmpDir, "remote.git");
+    assert.equal(spawnSync("git", ["init", "--bare", remote]).status, 0);
+    git("remote", "add", "origin", remote);
+    git("push", "-u", "origin", "HEAD");
+    git("config", "core.excludesFile", path.join(tmpDir, "global-ignore"));
+    fs.writeFileSync(path.join(tmpDir, "global-ignore"), "nested/\n");
+    const nested = makeGitClone(path.join(clone, "nested"));
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    fs.utimesSync(clone, old, old);
+    const r = await runScript(["--root", root, "--lock", path.join(tmpDir, "gc.lock"), "--journal", path.join(tmpDir, "gc.jsonl"), "--apply"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(fs.existsSync(nested), "unsafe nested repository must not be deleted");
+  });
+
   it("preserves unpublished commits on a non-current branch", async () => {
     const root = path.join(tmpDir, "root");
     fs.mkdirSync(root);
