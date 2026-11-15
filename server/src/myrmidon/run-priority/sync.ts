@@ -30,11 +30,25 @@ export async function advanceFocusDeferredRuns(db: Db, now: Date = new Date()): 
     .where(
       and(
         eq(heartbeatRuns.status, "scheduled_retry"),
-        sql`${heartbeatRuns.contextSnapshot} -> ${RELEASE_FOCUS_DEFERRAL_CONTEXT_KEY}::text is not null`,
+        // Only a run parked BY the focus: its deferral key names the very due
+        // time the gate wrote into scheduled_retry_at. A failed run's retry
+        // copies the context (key included) but has its own due time, and a
+        // real backoff must stay a backoff.
+        sql`(${heartbeatRuns.contextSnapshot} -> ${RELEASE_FOCUS_DEFERRAL_CONTEXT_KEY}::text ->> 'dueAt') is not null
+          and date_trunc('milliseconds', ((${heartbeatRuns.contextSnapshot} -> ${RELEASE_FOCUS_DEFERRAL_CONTEXT_KEY}::text ->> 'dueAt')::timestamptz))
+            = date_trunc('milliseconds', ${heartbeatRuns.scheduledRetryAt})`,
       ),
     )
     .returning({ id: heartbeatRuns.id });
   return rows.length;
+}
+
+/** Re-read the stored row and put it in force in this process (the row, not a patch, is the truth). */
+export async function applyStoredRunPriority(db: Db): Promise<RunPrioritySettings> {
+  const general = await instanceSettingsService(db).getGeneral();
+  const next = resolveRunPriority(general.runPriority).settings;
+  applyRunPrioritySettings(next);
+  return next;
 }
 
 /**
@@ -42,13 +56,30 @@ export async function advanceFocusDeferredRuns(db: Db, now: Date = new Date()): 
  * release focus changed, make the deferred runs due at once.
  */
 export async function syncRunPriorityFromStore(db: Db): Promise<RunPrioritySettings> {
-  const general = await instanceSettingsService(db).getGeneral();
-  const next = resolveRunPriority(general.runPriority).settings;
   const before = currentRunPrioritySettings();
-  applyRunPrioritySettings(next);
+  const next = await applyStoredRunPriority(db);
   if (releaseFocusChanged(before, next)) {
     const advanced = await advanceFocusDeferredRuns(db);
     if (advanced > 0) logger.info({ advanced }, "release focus changed: deferred runs are due now");
   }
   return next;
+}
+
+export const RUN_PRIORITY_REFRESH_INTERVAL_MS = 3 * 60_000;
+
+/**
+ * A lost NOTIFY heals itself: every few minutes the process re-reads the stored
+ * settings. The timer is unref'ed, it never keeps the process alive.
+ */
+export function startRunPriorityRefresh(
+  db: Db,
+  intervalMs: number = RUN_PRIORITY_REFRESH_INTERVAL_MS,
+): () => void {
+  const timer = setInterval(() => {
+    syncRunPriorityFromStore(db).catch((err: unknown) => {
+      logger.warn({ err }, "periodic run priority refresh failed");
+    });
+  }, intervalMs);
+  timer.unref();
+  return () => clearInterval(timer);
 }

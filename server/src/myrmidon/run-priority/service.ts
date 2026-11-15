@@ -16,9 +16,9 @@ import {
 } from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
-import { applyRunPrioritySettings, resolveRunPriority, type RunPriorityView } from "./state.js";
+import { resolveRunPriority, type RunPriorityView } from "./state.js";
 import type { RunPrioritySettings } from "@myrmidon/shared";
-import { releaseFocusChanged } from "./sync.js";
+import { applyStoredRunPriority, releaseFocusChanged } from "./sync.js";
 
 /** Who changed the settings, for the activity log. */
 export interface RunPriorityActor {
@@ -45,8 +45,8 @@ export interface RunPriorityServiceDeps {
   };
   listCompanyIds(): Promise<string[]>;
   logActivity(entry: RunPriorityAuditEntry): Promise<unknown>;
-  /** Put the settings in force for the live sweeps. */
-  apply(settings: RunPrioritySettings): void;
+  /** Re-read the stored row and put it in force for the live sweeps; returns what is in force. */
+  applyStored(): Promise<RunPrioritySettings>;
   /** Ask the queued-run sweep to run shortly, so held runs reorder at once. */
   scheduleResweep(): void;
   /** Make runs parked by strict release focus due now (focus changed). */
@@ -85,7 +85,7 @@ export function runPriorityService(
     settings: instanceSettingsService(db),
     listCompanyIds: () => instanceSettingsService(db).listCompanyIds(),
     logActivity: (entry) => logActivity(db, entry),
-    apply: applyRunPrioritySettings,
+    applyStored: () => applyStoredRunPriority(db),
     scheduleResweep: () => undefined,
     ...overrides,
   };
@@ -126,23 +126,26 @@ export function runPriorityService(
 
         // Only after the row and the audit records are committed: the
         // settings in force must never run ahead of what the log says.
-        deps.apply(next);
-        if (releaseFocusChanged(before, next)) {
+        // The in-force settings are process memory: the other board processes
+        // re-read the stored row on this notice (settings-appliers). Publish
+        // first, so a failure below cannot keep them from converging.
+        await deps.publishChanged?.().catch((err: unknown) => {
+          logger.warn({ err }, "run priority saved but process notification failed");
+        });
+        // This process applies the stored row too, not its own `next`: two
+        // concurrent saves converge to the value in the database.
+        const inForce = await deps.applyStored();
+        if (releaseFocusChanged(before, inForce)) {
           await deps.advanceDeferredRuns?.().catch((err: unknown) => {
             logger.warn({ err }, "release focus changed but deferred runs were not advanced");
           });
         }
-        // The in-force settings are process memory: the other board processes
-        // re-read the stored row on this notice (settings-appliers).
-        await deps.publishChanged?.().catch((err: unknown) => {
-          logger.warn({ err }, "run priority saved but process notification failed");
-        });
         deps.scheduleResweep();
         logger.info(
-          { settings: next, actorType: actor.actorType },
+          { settings: inForce, actorType: actor.actorType },
           "run queue priority settings updated without a restart",
         );
-        return { settings: next, source: "settings" as const };
+        return { settings: inForce, source: "settings" as const };
       }),
   };
 }

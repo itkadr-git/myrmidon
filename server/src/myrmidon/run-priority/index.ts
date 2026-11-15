@@ -12,7 +12,7 @@ import { scheduleQueuedResweep } from "../run-admission.js";
 import { runPriorityRoutes } from "./routes.js";
 import { runPriorityService, type RunPriorityServiceDeps } from "./service.js";
 import { applyRunPrioritySettings } from "./state.js";
-import { advanceFocusDeferredRuns } from "./sync.js";
+import { advanceFocusDeferredRuns, applyStoredRunPriority, startRunPriorityRefresh } from "./sync.js";
 
 export {
   applyRunPrioritySettings,
@@ -48,7 +48,7 @@ function defaultDeps(db: Db, bus: RunPriorityBus | null = null): RunPriorityServ
     settings: instanceSettingsService(db),
     listCompanyIds: () => instanceSettingsService(db).listCompanyIds(),
     logActivity: (entry) => logActivity(db, entry),
-    apply: applyRunPrioritySettings,
+    applyStored: () => applyStoredRunPriority(db),
     advanceDeferredRuns: () => advanceFocusDeferredRuns(db),
     publishChanged: bus ? () => bus.publish("settings_changed", { changedKeys: ["runPriority"] }) : undefined,
     scheduleResweep: () =>
@@ -75,6 +75,7 @@ export async function startRunPriority(db: Db): Promise<void> {
     const view = await runPriorityService(db, defaultDeps(db)).read();
     assertRunPriorityQueueInvariant(view.settings);
     applyRunPrioritySettings(view.settings);
+    startRunPriorityRefresh(db);
     logger.info(
       { settings: view.settings, source: view.source },
       "run queue priority settings at startup",

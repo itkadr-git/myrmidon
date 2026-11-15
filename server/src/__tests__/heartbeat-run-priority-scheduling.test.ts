@@ -653,6 +653,32 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
     expect(["running", "succeeded"]).toContain((await runRow(run.id))?.status);
   }, 30_000);
 
+  it("only runs parked by the focus are advanced; a failed run's retry that copied the key keeps its real backoff", async () => {
+    const { companyId, agentId, otherIssueId } = await seedFocusScenario(true);
+    const parkedByFocus = await commentWake(agentId, otherIssueId);
+    await sweep();
+    const focusRow = await runRow(parkedByFocus.id);
+    expect(focusRow?.status).toBe("scheduled_retry");
+
+    // A retry of a failed run: the context (with the deferral key of the
+    // original) is copied, the due time is its own backoff.
+    const backoffAt = new Date(Date.now() + 10 * MINUTE_MS);
+    const retryId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: retryId, companyId, agentId, status: "scheduled_retry", invocationSource: "automation",
+      scheduledRetryAt: backoffAt, scheduledRetryReason: "transient_upstream_failure",
+      contextSnapshot: {
+        issueId: otherIssueId,
+        releaseFocusDeferral: { count: 1, firstDeferredAt: new Date().toISOString(), deferredAt: new Date().toISOString(), dueAt: new Date(Date.now() - 60_000).toISOString() },
+      },
+    });
+
+    const advanced = await advanceFocusDeferredRuns(db);
+    expect(advanced).toBe(1);
+    expect((await runRow(parkedByFocus.id))!.scheduledRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    expect((await runRow(retryId))!.scheduledRetryAt!.getTime()).toBe(backoffAt.getTime());
+  }, 30_000);
+
   it("strict focus: a change of the current release advances the deferred runs too; an unrelated change does not", async () => {
     const { agentId, otherIssueId } = await seedFocusScenario(true);
     const run = await commentWake(agentId, otherIssueId);
@@ -687,7 +713,8 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
     // The writing process: its own apply never touches this memory.
     const writer = runPriorityService(db, {
       env: {},
-      apply: () => undefined,
+      // The writing process applies the stored row to ITS memory; keep ours untouched.
+      applyStored: async () => ({ ...defaultSettings(), currentRelease: "1.6.9", strictReleaseFocus: false }),
       publishChanged: () => bus.publish("settings_changed", { changedKeys: ["runPriority"] }),
     });
     await writer.update({ strictReleaseFocus: false }, actorUser);
