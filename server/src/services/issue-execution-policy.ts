@@ -1244,6 +1244,9 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         restartPreferredParticipant: existingState.currentParticipant ?? null,
       });
     }
+    if (requestedStatus === "done" && isRelease) {
+      throw unprocessable("Cannot mark release task done without a verify execution stage.");
+    }
     const orphanApproval = approveOrphanedPendingReviewStage(input, existingState, actor);
     if (orphanApproval) return orphanApproval;
     if (!requestedAssigneePatchProvided) {
