@@ -398,6 +398,32 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     };
   }
 
+  it("dispatches two project tasks into distinct isolated workspaces", async () => {
+    const fixture = await seedWorkspaceFixture({ issueWorkspaceSettings: null });
+    await instanceSettingsService(db).updateExperimental({
+      enableIsolatedWorkspaces: true,
+      enableIsolatedWorkspacesByDefault: true,
+    });
+    await db.update(issues).set({ executionRunId: null, executionLockedAt: null, executionAgentNameKey: null })
+      .where(eq(issues.id, fixture.holderIssueId));
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.holderRunId));
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, fixture.holderAgentId));
+    const runs = await Promise.all([
+      heartbeat.invoke(fixture.holderAgentId, "assignment", { issueId: fixture.holderIssueId, wakeReason: "issue_assigned" }, "system"),
+      heartbeat.invoke(fixture.agentId, "assignment", { issueId: fixture.issueId, wakeReason: "issue_assigned" }, "system"),
+    ]);
+    expect(runs.every(Boolean)).toBe(true);
+    const completed = await Promise.all(runs.map((run) => waitForRunToLeaveActiveStates(run!.id)));
+    expect(completed.map((run) => run?.status)).toEqual(["succeeded", "succeeded"]);
+    const workspaces = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.projectId, fixture.projectId));
+    const taskWorkspaces = [fixture.holderIssueId, fixture.issueId].map((id) => workspaces.find((workspace) => workspace.sourceIssueId === id));
+    expect(taskWorkspaces.map((workspace) => workspace?.mode)).toEqual(["isolated_workspace", "isolated_workspace"]);
+    expect(taskWorkspaces[0]?.cwd).toBeTruthy();
+    expect(taskWorkspaces[1]?.cwd).toBeTruthy();
+    expect(taskWorkspaces[0]?.cwd).not.toBe(taskWorkspaces[1]?.cwd);
+    expect(taskWorkspaces.map((workspace) => workspace?.cwd)).not.toContain(workspaceCwd);
+  });
+
   it("creates separate task workspaces for concurrent issues on the same project checkout", async () => {
     const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-isolation-"));
     const gitDir = path.join(baseDir, "project");
