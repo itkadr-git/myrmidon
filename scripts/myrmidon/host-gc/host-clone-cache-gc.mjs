@@ -1671,6 +1671,33 @@ function archiveExcludes(clonePath) {
 }
 
 function archiveClone(clonePath, archiveRoot) {
+  // A clean, readable single-repository checkout needs only its unpublished refs.
+  // Other cases retain the existing safety-net archive until their recovery is covered.
+  const repos = archiveRepos(clonePath);
+  if (repos.length === 1 && repos[0] === clonePath && isGitWorktree(clonePath) &&
+      isClean(clonePath) && !hasStash(clonePath) && !hasAlternates(clonePath) &&
+      !isPushed(clonePath)) {
+    if (!fs.existsSync(archiveRoot)) fs.mkdirSync(archiveRoot, { recursive: true });
+    const stage = fs.mkdtempSync(path.join(archiveRoot, ".bundle-"));
+    const archivePath = path.join(archiveRoot, `${path.basename(clonePath)}-${crypto.randomUUID()}.tar.gz`);
+    try {
+      const bundle = path.join(stage, "unpublished.bundle");
+      const created = git(["bundle", "create", bundle, "--all", "--not", "--remotes"], clonePath);
+      if (created.status !== 0) throw new Error(`bundle failed: ${created.stderr}`);
+      const verified = git(["bundle", "verify", bundle], clonePath);
+      if (verified.status !== 0) throw new Error(`bundle verification failed: ${verified.stderr}`);
+      const packed = spawnSync("tar", ["-czf", archivePath, "-C", stage, "unpublished.bundle"], { timeout: 60000 });
+      if (packed.status !== 0 || spawnSync("tar", ["-tzf", archivePath], { timeout: 60000, stdio: "ignore" }).status !== 0) {
+        throw new Error("bundle archive failed verification");
+      }
+      return archivePath;
+    } catch (err) {
+      fs.rmSync(archivePath, { force: true });
+      throw err;
+    } finally {
+      fs.rmSync(stage, { recursive: true, force: true });
+    }
+  }
   if (!fs.existsSync(archiveRoot)) fs.mkdirSync(archiveRoot, { recursive: true });
   const name = path.basename(clonePath);
   const ts = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-").slice(0, 15);
