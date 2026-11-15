@@ -57,7 +57,20 @@ const CACHE_TTL_HOURS = 72;
 // build, OPE-13104), but only where git confirms the path is ignored: see archiveExcludes().
 // A file git does not ignore (user or uncommitted work) is always archived, even inside `dist/`.
 const ARCHIVE_EXCLUDES = ["node_modules", ".pnpm-store", ".turbo", "dist", ".next", "coverage"];
-const SCRATCH_TTL_HOURS = 12;
+const SCRATCH_TTL_HOURS = 6;
+// Disk pressure (partitionThresholdPercent / partitionCriticalPercent of the bots disk): above the
+// first the scratch TTL drops to one hour; above the second the journal gets a disk-critical record
+// for the board operator. This mode does not change the 24 h life of archives (they expire after
+// 24 h in every mode, unpushed work included) and does not touch the checkouts of open tasks.
+const PRESSURE_PERCENT = 85;
+const CRITICAL_PERCENT = 95;
+const PRESSURE_SCRATCH_TTL_HOURS = 1;
+export function diskUsedPercent(dir) {
+  try {
+    const st = fs.statfsSync(dir);
+    return st.blocks > 0 ? Math.round(((st.blocks - st.bfree) / st.blocks) * 1000) / 10 : null;
+  } catch { return null; }
+}
 // myrmidon(1.6.8 OPE-12722 / OPE-12759): an SSH runner (the omp container) keeps one copy of
 // the workspace per run under `<runner>/workspace/.paperclip-runtime/runs/<runId>`. A run that
 // fails or is cancelled never reaches the restore that removes its copy, and the adapter prunes
@@ -222,6 +235,8 @@ export function parseArgs(argv) {
     cloneTtlHours: CLONE_TTL_HOURS,
     cacheTtlHours: CACHE_TTL_HOURS,
     scratchTtlHours: defaultScratchTtl,
+    pressurePercent: Number(process.env.HOST_GC_PRESSURE_PERCENT) || PRESSURE_PERCENT,
+    criticalPercent: Number(process.env.HOST_GC_CRITICAL_PERCENT) || CRITICAL_PERCENT,
     procDir: process.env.PROC_DIR || "/proc",
     runnerRoots: (process.env.HOST_GC_RUNNER_ROOTS || "").split(":").map((r) => r.trim()).filter(Boolean),
     runnerContainerPrefix: process.env.MYRMIDON_HOST_GC_OMP_RUNNER_CONTAINER_PREFIX || "myrmidon-omp-runner-",
@@ -244,6 +259,8 @@ export function parseArgs(argv) {
     else if (a === "--clone-ttl") args.cloneTtlHours = Number(argv[++i]);
     else if (a === "--cache-ttl") args.cacheTtlHours = Number(argv[++i]);
     else if (a === "--scratch-ttl") args.scratchTtlHours = Number(argv[++i]);
+    else if (a === "--pressure-percent") args.pressurePercent = Number(argv[++i]);
+    else if (a === "--critical-percent") args.criticalPercent = Number(argv[++i]);
     else if (a === "--proc-dir") args.procDir = argv[++i];
     else if (a === "--runner-root") args.runnerRoots.push(argv[++i]);
     else if (a === "--run-copy-ttl") args.runCopyTtlHours = Number(argv[++i]);
@@ -310,14 +327,122 @@ function assertNotSymlink(p, label) {
 
 // --- Git helpers ------------------------------------------------------------
 
+// spawnSync's default maxBuffer is 1 MiB: a long `git status` or `ls-files` would end in ENOBUFS.
+const GIT_MAX_BUFFER = 256 * 1024 * 1024;
+
 function git(args, cwd) {
-  return spawnSync("git", args, { cwd, encoding: "utf8", timeout: 30000 });
+  return spawnSync("git", args, { cwd, encoding: "utf8", timeout: 30000, maxBuffer: GIT_MAX_BUFFER });
+}
+
+// --- Server-verified "pushed" (OPE-13218) ------------------------------------
+// Local refs/remotes/* only say what the last fetch saw: a branch deleted or rewritten on the
+// server since then still looks pushed. A commit counts as pushed only when a tip the server
+// itself advertises (`git ls-remote`) is present locally and reaches it.
+// One `ls-remote` per remote URL per pass: ~100 copies of one origin ask the server once. The
+// entry is what the server advertised ({ ok, shas } or { ok: false, reason }), kept in memory
+// for the process only (one GC pass), so a later pass always asks again.
+const REMOTE_ANSWERS = new Map();
+
+export function resetRemoteCache() {
+  REMOTE_ANSWERS.clear();
+}
+
+function remoteTimeoutSeconds() {
+  return Math.min(archiveTimeoutSeconds(), 60);
+}
+
+// A remote given as a path or `file://` is a directory on this host, not a server: it can vanish
+// with the copy or be a stale mirror, so it never proves anything is pushed.
+// Test hook HOST_GC_TEST_ALLOW_LOCAL_REMOTES=1 treats such a remote as a server, but only inside
+// a node:test process (NODE_TEST_CONTEXT) and never under --apply: a stray variable in the
+// service environment must not make the real pass trust a local directory.
+let applyMode = false;
+function isLocalRemote(url) {
+  if (process.env.HOST_GC_TEST_ALLOW_LOCAL_REMOTES === "1" && process.env.NODE_TEST_CONTEXT && !applyMode) return false;
+  return /^file:/i.test(url) || /^(\/|\.{1,2}\/|~)/.test(url) || (!url.includes("://") && !url.includes(":"));
+}
+
+function askRemote(repo, name, url) {
+  const cached = REMOTE_ANSWERS.get(url);
+  if (cached) return cached;
+  const timeoutS = remoteTimeoutSeconds();
+  const r = spawnSync("timeout", ["--kill-after=5s", `${timeoutS}s`, "git", "ls-remote", "--heads", "--tags", name], {
+    cwd: repo,
+    encoding: "utf8",
+    timeout: (timeoutS + 20) * 1000,
+    maxBuffer: GIT_MAX_BUFFER,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || "ssh -o BatchMode=yes" },
+  });
+  let answer;
+  if (r.status !== 0) {
+    const why = r.status === 124 || r.status === 137 || r.error?.code === "ETIMEDOUT" ? `timed out after ${timeoutS} s` : `exit ${r.status}: ${String(r.stderr ?? "").trim().slice(0, 200)}`;
+    answer = { ok: false, reason: `ls-remote ${name}: ${why}` };
+  } else {
+    const shas = new Set();
+    for (const line of r.stdout.split("\n")) {
+      const sha = line.split("\t")[0].trim();
+      if (/^[0-9a-f]{40,64}$/.test(sha)) shas.add(sha);
+    }
+    answer = { ok: true, shas };
+  }
+  REMOTE_ANSWERS.set(url, answer);
+  return answer;
+}
+
+// { verified, tips, reason }: `tips` are server tips (commits and tags) that exist locally.
+// `verified` is false when there is no remote, a remote is a local path, or any remote did not
+// answer: nothing is then known to be on the server.
+function serverTips(repo) {
+  const listed = git(["remote"], repo);
+  if (listed.status !== 0) return { verified: false, tips: [], reason: "remote listing failed" };
+  const names = listed.stdout.split("\n").map((n) => n.trim()).filter(Boolean);
+  if (!names.length) return { verified: false, tips: [], reason: "no remote" };
+  const advertised = new Set();
+  for (const name of names) {
+    const url = git(["remote", "get-url", name], repo).stdout.trim() || name;
+    if (isLocalRemote(url)) return { verified: false, tips: [], reason: `remote ${name} is a local path, not a server` };
+    const answer = askRemote(repo, name, url);
+    if (!answer.ok) return { verified: false, tips: [], reason: answer.reason };
+    for (const sha of answer.shas) advertised.add(sha);
+  }
+  if (!advertised.size) return { verified: true, tips: [] };
+  const checked = spawnSync("git", ["cat-file", "--batch-check=%(objecttype) %(objectname)"], {
+    cwd: repo, input: `${[...advertised].join("\n")}\n`, encoding: "utf8", timeout: 30000, maxBuffer: GIT_MAX_BUFFER,
+  });
+  if (checked.status !== 0) return { verified: false, tips: [], reason: "cat-file failed" };
+  const tips = [];
+  for (const line of checked.stdout.split("\n")) {
+    const m = /^(commit|tag) ([0-9a-f]{40,64})$/.exec(line.trim());
+    if (m) tips.push(m[2]);
+  }
+  if (tips.length > 10000) return { verified: false, tips: [], reason: "too many server refs" };
+  return { verified: true, tips };
+}
+
+// { verified, pushed, tips, reason }. `pushed` needs a verified server answer and no local
+// branch, tag or HEAD commit outside it.
+function pushState(repo) {
+  const server = serverTips(repo);
+  if (!server.verified) return { verified: false, pushed: false, tips: [], reason: server.reason };
+  const args = ["rev-list", "HEAD", "--branches", "--tags"];
+  if (server.tips.length) args.push("--not", ...server.tips);
+  const r = git(args, repo);
+  return { verified: true, pushed: r.status === 0 && r.stdout.trim() === "", tips: server.tips };
 }
 
 function isGitWorktree(dir) {
   try {
     const r = git(["rev-parse", "--is-inside-work-tree"], dir);
     return r.status === 0 && r.stdout.trim() === "true";
+  } catch { return false; }
+}
+
+// A `.git` that is empty or broken is skipped by git, which then finds the parent repository:
+// such a directory is no worktree of its own.
+function isOwnWorktree(dir) {
+  try {
+    const r = git(["rev-parse", "--show-toplevel"], dir);
+    return r.status === 0 && fs.realpathSync(r.stdout.trim()) === fs.realpathSync(dir);
   } catch { return false; }
 }
 
@@ -330,8 +455,7 @@ function isClean(dir) {
 
 function isPushed(dir) {
   try {
-    const r = git(["log", "@{u}..HEAD", "--oneline"], dir);
-    return r.status === 0 && r.stdout.trim() === "";
+    return pushState(dir).pushed;
   } catch { return false; }
 }
 
@@ -342,12 +466,58 @@ function hasStash(dir) {
   } catch { return false; }
 }
 
+// `.git` is a directory in a plain clone but a file (`gitdir: <path>`) in a linked worktree or a
+// submodule: the objects, and their alternates file, then live in the real gitdir (and the
+// common dir behind it), so look there.
 function hasAlternates(dir) {
   try {
-    const gitDir = path.join(dir, ".git");
-    const altFile = path.join(gitDir, "objects", "info", "alternates");
-    return fs.existsSync(altFile);
+    const dotGit = path.join(dir, ".git");
+    const st = fs.lstatSync(dotGit);
+    const gitDirs = [];
+    if (st.isDirectory()) {
+      gitDirs.push(dotGit);
+    } else if (st.isFile()) {
+      const m = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(dotGit, "utf8"));
+      if (m) gitDirs.push(path.resolve(dir, m[1].trim()));
+    }
+    for (const gd of [...gitDirs]) {
+      try {
+        const common = fs.readFileSync(path.join(gd, "commondir"), "utf8").trim();
+        if (common) gitDirs.push(path.resolve(gd, common));
+      } catch { /* no commondir: the gitdir is the common dir */ }
+    }
+    return gitDirs.some((gd) => fs.existsSync(path.join(gd, "objects", "info", "alternates")));
   } catch { return false; }
+}
+
+// Every directory under `top` (itself included) holding a `.git` entry, directory or file, at
+// any depth and inside any directory, node_modules, dist, .next, .helper or .gc-archive among
+// them. Symlinks are not followed and `.git` is not entered. `complete` is false when a
+// directory could not be read or the tree is implausibly large: nothing can be proven then.
+const GIT_TREE_ENTRY_LIMIT = 5_000_000;
+function scanGitTree(top) {
+  const roots = [];
+  let complete = true;
+  let seen = 0;
+  const stack = [top];
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      complete = false;
+      continue;
+    }
+    seen += entries.length;
+    if (seen > GIT_TREE_ENTRY_LIMIT) return { roots: roots.sort(), complete: false };
+    if (entries.some((e) => e.name === ".git")) roots.push(dir);
+    for (const e of entries) {
+      if (e.name === ".git" || e.isSymbolicLink() || !e.isDirectory()) continue;
+      stack.push(path.join(dir, e.name));
+    }
+  }
+  return { roots: roots.sort(), complete };
 }
 
 // --- Scanning ---------------------------------------------------------------
@@ -373,7 +543,8 @@ function scanTaskClones(root, now, ttlHours) {
     if (!isGit) continue; // not a git clone, skip
 
     const clean = isClean(fullPath);
-    const pushed = isPushed(fullPath);
+    // `pushed` asks the server (ls-remote): left to assessClone, which main runs only for clones the
+    // board reports closed. Open tasks are never touched and need no network round trip.
     const stash = hasStash(fullPath);
     const alternates = hasAlternates(fullPath);
 
@@ -384,14 +555,22 @@ function scanTaskClones(root, now, ttlHours) {
       mtimeMs: st.mtimeMs,
       isGit: true,
       clean,
-      pushed,
+      pushed: null,
       stash,
       alternates,
-      safeToRemove: clean && pushed && !stash && !alternates,
-      reason: clean && pushed && !stash && !alternates ? "clean-pushed" : "unsafe-archive",
+      safeToRemove: false,
+      reason: "unassessed",
     });
   }
   return results;
+}
+
+// Fills in `pushed` (checked against the server) and the removal verdict of a scanned clone.
+function assessClone(c) {
+  c.pushed = c.clean && !c.stash && !c.alternates ? isPushed(c.path) : false;
+  c.safeToRemove = c.clean && c.pushed && !c.stash && !c.alternates;
+  c.reason = c.safeToRemove ? "clean-pushed" : "unsafe-archive";
+  return c;
 }
 
 function scanBuildCaches(root, now, ttlHours) {
@@ -575,6 +754,11 @@ function judgeRunnerTaskFolder(folder, boardStatus) {
   }
   const gitDirs = runnerFolderGitDirs(folder);
   if (gitDirs === null) return { action: "archive-remove", reason: "unreadable-folder" };
+  // Independent of the depth-limited list above: a `.git` anywhere (skipped directories too) that
+  // the list lacks sends the folder to the archive pass, which saves or keeps it.
+  const tree = scanGitTree(folder);
+  const listed = new Set(gitDirs);
+  if (!tree.complete || tree.roots.some((r) => !listed.has(r))) return { action: "archive-remove", reason: "unlisted-git-repository" };
   if (gitDirs.length === 0) return { action: "remove", reason: "no-git-repos" };
   for (const dir of gitDirs) {
     const readable = isGitWorktree(dir);
@@ -853,6 +1037,24 @@ export function isTreeOpen(targetPath, inodes, openPaths, openInodes) {
   return false;
 }
 
+// Scratch can hold a task checkout, not just disposable temporary files. Never
+// reclaim a tree containing git metadata or one that cannot be inspected safely.
+function scratchTreeIsDisposable(target, device) {
+  const stack = [target];
+  while (stack.length) {
+    const current = stack.pop();
+    let st;
+    try { st = fs.lstatSync(current); } catch { return false; }
+    if (st.dev !== device || st.isSymbolicLink()) return false;
+    if (!st.isDirectory()) continue;
+    let entries;
+    try { entries = fs.readdirSync(current); } catch { return false; }
+    if (entries.includes(".git")) return false;
+    for (const entry of entries) stack.push(path.join(current, entry));
+  }
+  return true;
+}
+
 export function scanScratchDirectory(scratchDir, now, ttlHours, openInfo = { openPaths: new Set(), openInodes: new Set() }) {
   const ttlMs = ttlHours * HOUR_MS;
   const results = [];
@@ -880,6 +1082,12 @@ export function scanScratchDirectory(scratchDir, now, ttlHours, openInfo = { ope
     }
 
     if (ageMs >= ttlMs) {
+      let device;
+      try { device = fs.lstatSync(scratchDir).dev; } catch { device = null; }
+      if (device === null || !scratchTreeIsDisposable(fullPath, device)) {
+        results.push({ name: entry.name, path: fullPath, reason: "unsafe-scratch-tree", sizeBytes: totalSizeBytes, ageMs });
+        continue;
+      }
       results.push({ name: entry.name, path: fullPath, reason: "ttl", sizeBytes: totalSizeBytes, ageMs, mtimeMs: maxMtimeMs });
     } else {
       results.push({ name: entry.name, path: fullPath, reason: "fresh", sizeBytes: totalSizeBytes, ageMs, mtimeMs: maxMtimeMs });
@@ -900,10 +1108,14 @@ export function discoverBotScratchDirs(botsRoot) {
   }
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-    const scratchDir = path.join(botsRoot, entry.name, "hermes/cache/scratch");
-    if (fs.existsSync(scratchDir)) {
-      dirs.push(scratchDir);
+    let scratchDir = path.join(botsRoot, entry.name);
+    let safe = true;
+    for (const part of ["hermes", "cache", "scratch"]) {
+      scratchDir = path.join(scratchDir, part);
+      const { st } = lstatSafe(scratchDir);
+      if (!st?.isDirectory()) { safe = false; break; }
     }
+    if (safe) dirs.push(scratchDir);
   }
   return dirs;
 }
@@ -949,12 +1161,23 @@ export async function fetchAgentAdapter(agentId, {
   const headers = { Accept: "application/json" };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
   try {
-    const response = await fetchImpl(`${base}/agents/${encodeURIComponent(agentId)}`, { headers });
-    if (response.status === 404) return { ok: true, adapterType: null };
-    if (!response.ok) return { ok: false, reason: "board-unavailable", statusCode: response.status };
+    // Runner names use engN, while GET /agents/{id} accepts only UUIDs. Resolve
+    // the canonical company agent name through the company-scoped list route.
+    const companyId = process.env.MYRMIDON_COMPANY_ID || process.env.PAPERCLIP_COMPANY_ID;
+    if (!companyId) return { ok: false, reason: "company-id-missing" };
+    const number = /^eng(\d+)$/.exec(agentId)?.[1];
+    if (!number) return { ok: false, reason: "bad-agent-id" };
+    const response = await fetchImpl(`${base}/companies/${encodeURIComponent(companyId)}/agents?q=${encodeURIComponent(`adm-dev-eng-${number}`)}`, { headers });
+    if (!response.ok) return { ok: false, reason: `board-http-${response.status}`, statusCode: response.status };
     const body = await response.json();
-    if (!body || typeof body !== "object" || typeof body.adapterType !== "string") return { ok: false, reason: "board-unavailable" };
-    return { ok: true, adapterType: body.adapterType };
+    if (!Array.isArray(body)) return { ok: false, reason: "board-invalid-agent-list" };
+    const agent = body.find((entry) => entry?.name === `adm-dev-eng-${number}`);
+    if (!agent) return { ok: true, adapterType: null };
+    // adapterType is part of AgentListItem; do not make a second detail request.
+    if (typeof agent.id !== "string" || typeof agent.adapterType !== "string") {
+      return { ok: false, reason: "board-invalid-agent-list" };
+    }
+    return { ok: true, adapterType: agent.adapterType };
   } catch {
     return { ok: false, reason: "board-unavailable" };
   }
@@ -1516,6 +1739,21 @@ function newestMtimeInTree(entryPath, dev, freshAfterMs) {
  * (`runner-tmp-root-missing`, `runner-tmp-scan-failed`) and the scan goes on with the next
  * runner or entry. Each item carries `runnersRoot`, the root the removal is guarded against.
  */
+// Treat unreadable trees as unsafe; symlinks are not followed by the removal path.
+function runnerTmpContainsGit(root) {
+  const stack = [root];
+  while (stack.length) {
+    const current = stack.pop();
+    let entries;
+    try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { return true; }
+    for (const entry of entries) {
+      if (entry.name === ".git") return true;
+      if (entry.isDirectory()) stack.push(path.join(current, entry.name));
+    }
+  }
+  return false;
+}
+
 export function scanRunnerTmp(runnersRoot, now, ttlHours, { onEvent = () => {} } = {}) {
   const results = [];
   const ttlMs = ttlHours * HOUR_MS;
@@ -1574,6 +1812,10 @@ export function scanRunnerTmp(runnersRoot, now, ttlHours, { onEvent = () => {} }
             continue;
           }
           const ageMs = now - Math.max(tree.maxMtimeMs, st.mtimeMs);
+          if (ageMs >= ttlMs && st.isDirectory() && runnerTmpContainsGit(entryPath)) {
+            results.push({ ...base, ageMs, sizeBytes: tree.sizeBytes, reason: "unsafe-git-tree" });
+            continue;
+          }
           results.push({
             ...base,
             mtimeMs: Math.max(tree.maxMtimeMs, st.mtimeMs),
@@ -1613,26 +1855,10 @@ export function pruneRunnerTmp(items, journalPath) {
 
 // --- Archive ----------------------------------------------------------------
 
-// Git repos inside a clone: the clone itself and nested ones (`.git` dir or file) a few levels down.
+// Git repos inside a clone: the clone itself and every nested one (`.git` directory or file) at
+// any depth, skipped directories included (a repository inside node_modules is still one).
 function archiveRepos(clonePath) {
-  const repos = [];
-  const visit = (dir, depth) => {
-    if (fs.existsSync(path.join(dir, ".git"))) repos.push(dir);
-    if (depth === 0) return;
-    let entries;
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
-      if (entry.name === ".git" || ARCHIVE_EXCLUDES.includes(entry.name) || BOT_SCAN_SKIP_NAMES.has(entry.name)) continue;
-      visit(path.join(dir, entry.name), depth - 1);
-    }
-  };
-  visit(clonePath, 3);
-  return repos;
+  return scanGitTree(clonePath).roots;
 }
 
 // tar `--exclude` arguments: exact member paths (`<clone name>/<path>`) that git reports as ignored
@@ -1641,7 +1867,8 @@ function archiveRepos(clonePath) {
 function archiveExcludes(clonePath) {
   const name = path.basename(clonePath);
   const out = new Set();
-  for (const repo of archiveRepos(clonePath)) {
+  const allRepos = archiveRepos(clonePath);
+  for (const repo of allRepos) {
     let r;
     try {
       r = git(["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], repo);
@@ -1653,13 +1880,181 @@ function archiveExcludes(clonePath) {
     for (const entry of r.stdout.split("\0")) {
       const rel = entry.replace(/\/+$/, "");
       if (!rel || !ARCHIVE_EXCLUDES.includes(rel.split("/").pop())) continue;
+      // Never leave out a directory that holds a repository: its work is only safe inside the archive.
+      const abs = path.join(repo, rel);
+      if (allRepos.some((other) => other === abs || other.startsWith(`${abs}${path.sep}`))) continue;
       out.add(`--exclude=${[name, repoRel, rel].filter(Boolean).join("/")}`);
     }
   }
   return [...out];
 }
 
-function archiveClone(clonePath, archiveRoot) {
+// Per-archive limit, 10 min by default. The test hook is the env var (finite, > 0).
+function archiveTimeoutSeconds() {
+  const envTimeoutS = Number(process.env.HOST_GC_ARCHIVE_TIMEOUT_SECONDS);
+  return Number.isFinite(envTimeoutS) && envTimeoutS > 0 ? envTimeoutS : 600;
+}
+
+// Runs one tool of the archive under `timeout`, so a hang kills the whole process tree and a
+// failure is reported in words (stderr is often empty for a killed child).
+// 124 = `timeout` fired; 137 = it had to KILL the child after --kill-after.
+function runArchiveTool(cmd, args, what, extra = {}) {
+  const timeoutS = archiveTimeoutSeconds();
+  const result = spawnSync("timeout", ["--kill-after=10s", `${timeoutS}s`, cmd, ...args], { timeout: (timeoutS + 30) * 1000, maxBuffer: 1024 * 1024 * 1024, ...extra });
+  if (result.status !== 0) {
+    const timedOut = result.error?.code === "ETIMEDOUT" || result.status === 124 || result.status === 137;
+    const reason = timedOut
+      ? `timed out after ${timeoutS} s`
+      : `exit code ${result.status}, signal ${result.signal}${result.error ? `, error ${result.error.message}` : ""}`;
+    throw new Error(`${what} failed: ${reason}: ${String(result.stderr ?? "").trim()}`);
+  }
+  return result;
+}
+
+// Why a checkout cannot be archived compactly (bundle + patches). `{ keep: true }` means no
+// safe archive of any kind exists (a full copy would lack the borrowed objects): the checkout
+// stays. Otherwise the reason is journaled and the previous full archive is used.
+function compactBlocker(clonePath, repos) {
+  if (!repos.length) return { reason: "no-git-repository" };
+  for (const repo of repos) {
+    if (hasAlternates(repo)) return { keep: true, reason: `alternate-objects: ${repo}` };
+  }
+  for (const repo of repos) {
+    if (!isOwnWorktree(repo)) {
+      // The full archive leaves out git-ignored build and dependency directories: a broken
+      // repository inside one would be lost with the copy. Keep the copy then.
+      const skipped = path.relative(clonePath, repo).split(path.sep).some((seg) => ARCHIVE_EXCLUDES.includes(seg) || BOT_SCAN_SKIP_NAMES.has(seg));
+      return skipped ? { keep: true, reason: `unusable-repository in a skipped directory: ${repo}` } : { reason: `unusable-repository: ${repo}` };
+    }
+  }
+  // Files outside every git root (bundle and patches cannot carry them). `repos` holds every
+  // `.git` found at any depth (scanGitTree), so a root is never mistaken for plain files.
+  const roots = new Set(repos);
+  const hasFiles = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return true; }
+    return entries.some((e) => (e.isDirectory() && !e.isSymbolicLink() ? hasFiles(path.join(dir, e.name)) : true));
+  };
+  const outside = (dir) => {
+    if (roots.has(dir)) return false;
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return true; }
+    const hasRepoBelow = repos.some((r) => r.startsWith(`${dir}${path.sep}`));
+    if (!hasRepoBelow) return hasFiles(dir);
+    return entries.some((e) => {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory() && !e.isSymbolicLink()) return outside(p);
+      return true;
+    });
+  };
+  if (outside(clonePath)) return { reason: "files-outside-git" };
+  return null;
+}
+
+// Compact recovery of one git root into `dest`: unpublished commits (git bundle), staged and
+// unstaged changes (patches), untracked files. Returns the member names written (empty when
+// everything is already on the remote).
+function compactRepo(repo, dest, nestedRepos, journalPath, clonePath) {
+  fs.mkdirSync(dest, { recursive: true });
+  const members = [];
+  const stashes = git(["stash", "list", "--format=%H"], repo);
+  if (stashes.status !== 0) throw new Error(`stash listing failed: ${stashes.stderr}`);
+  const stashCount = stashes.stdout.trim().split("\n").filter(Boolean).length;
+  if (stashCount > 1) throw new Error("multiple stash entries require reflog preservation; keeping checkout");
+  const state = pushState(repo);
+  if (!state.verified && journalPath) {
+    journalRecord(journalPath, { event: "remote-unverified", path: repo, clone: clonePath, reason: state.reason });
+  }
+  if (!state.pushed || stashCount) {
+    const bundle = path.join(dest, "unpublished.bundle");
+    // A bundle includes stashes as well as unpublished branches and tags. Only commits the server
+    // itself advertised (and that exist here) are left out; without a verified answer nothing is.
+    const exclude = state.verified && state.tips.length ? ["--not", ...state.tips] : [];
+    runArchiveTool("git", ["-C", repo, "bundle", "create", bundle, "HEAD", "--all", ...exclude], "bundle creation");
+    runArchiveTool("git", ["-C", repo, "bundle", "verify", bundle], "bundle verification");
+    members.push("unpublished.bundle");
+  }
+  // Patches are bytes: the diff goes straight to the file, nothing is decoded or buffered.
+  for (const [name, diffArgs] of [
+    ["staged.patch", ["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--"]],
+    ["changes.patch", ["diff", "--binary", "--no-ext-diff", "--no-textconv", "--"]],
+  ]) {
+    const file = path.join(dest, name);
+    const fd = fs.openSync(file, "w");
+    try {
+      runArchiveTool("git", ["-C", repo, ...diffArgs], `${name} diff`, { stdio: ["ignore", fd, "pipe"] });
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (fs.statSync(file).size > 0) members.push(name);
+    else fs.rmSync(file, { force: true });
+  }
+  const listed = runArchiveTool("git", ["-C", repo, "ls-files", "--others", "--exclude-standard", "-z"], "untracked listing");
+  // A nested repository is archived by its own pass; the parent lists it as one directory. Names are
+  // handled as latin1 so non-UTF-8 bytes survive the round trip to tar unchanged.
+  const nestedRel = nestedRepos.map((r) => Buffer.from(path.relative(repo, r), "utf8").toString("latin1"));
+  const untracked = Buffer.from(listed.stdout).toString("latin1").split("\0").filter((entry) => {
+    if (!entry) return false;
+    const clean = entry.replace(/\/+$/, "");
+    return !nestedRel.some((n) => clean === n || clean.startsWith(`${n}/`));
+  });
+  if (untracked.length) {
+    runArchiveTool("tar", ["-cf", path.join(dest, "untracked.tar"), "-C", repo, "--null", "-T", "-"], "untracked archive", { input: Buffer.from(`${untracked.join("\0")}\0`, "latin1") });
+    members.push("untracked.tar");
+  }
+  return members;
+}
+
+// Archives only what could be lost: per git root (the checkout itself and repositories inside
+// it) unpublished commits, uncommitted changes and untracked files. Returns the archive path,
+// or null when everything is already pushed (nothing worth keeping). Where a compact archive is
+// impossible the previous full archive is made and the reason journaled; a checkout whose Git
+// state cannot be recovered by either way stays in place (throws).
+function archiveClone(clonePath, archiveRoot, journalPath) {
+  const tree = scanGitTree(clonePath);
+  // A directory that cannot be read may hide a repository: nothing can be proven, keep the copy.
+  if (!tree.complete) throw new Error(`cannot safely archive ${clonePath}: unreadable or oversized tree; keeping checkout`);
+  const repos = tree.roots;
+  const blocker = compactBlocker(clonePath, repos);
+  if (blocker?.keep) throw new Error(`cannot safely archive ${clonePath}: ${blocker.reason}; keeping checkout`);
+  if (blocker) {
+    // The full archive leaves out git-ignored build and dependency directories. A repository inside
+    // one is not archived on its own here, so its unpushed work would go with the copy: keep it.
+    const hidden = repos.find((r) => r !== clonePath && path.relative(clonePath, r).split(path.sep).some((seg) => ARCHIVE_EXCLUDES.includes(seg) || BOT_SCAN_SKIP_NAMES.has(seg)));
+    if (hidden) throw new Error(`cannot safely archive ${clonePath}: repository in a skipped directory (${hidden}) cannot go into the full archive; keeping checkout`);
+    if (journalPath) journalRecord(journalPath, { event: "archive-full-fallback", path: clonePath, reason: blocker.reason });
+    return archiveCloneFull(clonePath, archiveRoot);
+  }
+  const stage = fs.mkdtempSync(path.join(fs.existsSync(archiveRoot) ? archiveRoot : (fs.mkdirSync(archiveRoot, { recursive: true }), archiveRoot), ".bundle-"));
+  const archivePath = path.join(archiveRoot, `${path.basename(clonePath)}-${crypto.randomUUID()}.tar.gz`);
+  try {
+    const manifest = [];
+    for (const repo of repos) {
+      const rel = path.relative(clonePath, repo);
+      const nested = repos.filter((r) => r !== repo && r.startsWith(`${repo}${path.sep}`));
+      // The checkout's own repository keeps flat member names; inner ones go under repos/<path>.
+      const members = compactRepo(repo, rel ? path.join(stage, "repos", rel) : stage, nested, journalPath, clonePath);
+      if (members.length) manifest.push({ path: rel || ".", members });
+    }
+    if (!manifest.length) {
+      fs.rmSync(archivePath, { force: true });
+      return null;
+    }
+    fs.writeFileSync(path.join(stage, "manifest.json"), `${JSON.stringify({ clone: path.basename(clonePath), repos: manifest }, null, 2)}\n`);
+    runArchiveTool("tar", ["-czf", archivePath, "-C", stage, "."], `archive for ${clonePath}`);
+    runArchiveTool("tar", ["-tzf", archivePath], `archive verification for ${archivePath}`, { stdio: "ignore" });
+    return archivePath;
+  } catch (err) {
+    fs.rmSync(archivePath, { force: true });
+    throw err;
+  } finally {
+    fs.rmSync(stage, { recursive: true, force: true });
+  }
+}
+
+// Previous full archive (the whole checkout, minus git-ignored build output). Used only where the
+// compact archive is impossible; archiveClone journals why.
+function archiveCloneFull(clonePath, archiveRoot) {
   if (!fs.existsSync(archiveRoot)) fs.mkdirSync(archiveRoot, { recursive: true });
   const name = path.basename(clonePath);
   const ts = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-").slice(0, 15);
@@ -1709,11 +2104,16 @@ function archiveClone(clonePath, archiveRoot) {
   return archivePath;
 }
 
+
 // --- Main -------------------------------------------------------------------
 
 async function main() {
   const args = parseArgs(process.argv);
   const now = Date.now();
+  applyMode = !args.dryRun;
+  if (applyMode && process.env.HOST_GC_TEST_ALLOW_LOCAL_REMOTES !== undefined) {
+    journalRecord(args.journal, { event: "test-hook-ignored", level: "warn", variable: "HOST_GC_TEST_ALLOW_LOCAL_REMOTES", reason: "ignored under --apply" });
+  }
 
   const lock = acquireLock(args.lock);
   if (!lock.ok) {
@@ -1725,6 +2125,14 @@ async function main() {
     const root = args.root || "/srv/myrmidon-bots";
     const cloneTtlMs = args.cloneTtlHours * HOUR_MS;
     const cacheTtlMs = args.cacheTtlHours * HOUR_MS;
+    const usedPercent = diskUsedPercent(root);
+    if (usedPercent !== null && usedPercent >= args.pressurePercent) {
+      args.scratchTtlHours = Math.min(args.scratchTtlHours, PRESSURE_SCRATCH_TTL_HOURS);
+      journalRecord(args.journal, { event: "disk-pressure", usedPercent, thresholdPercent: args.pressurePercent, scratchTtlHours: args.scratchTtlHours });
+      if (usedPercent >= args.criticalPercent) {
+        journalRecord(args.journal, { event: "disk-critical", usedPercent, thresholdPercent: args.criticalPercent });
+      }
+    }
 
     const plan = { clones: [], caches: [], scratch: [], botData: [], runCopies: [], staleOmpRunners: [], runnerTaskFolders: [], runnerNpmCaches: [], runnerTmp: [], runnerUnrecognized: [], kept: [], removed: [], archived: [] };
 
@@ -1741,7 +2149,12 @@ async function main() {
       });
     }
     for (const c of cloneStatuses.candidates) {
-      if (c.safeToRemove) {
+      assessClone(c);
+      // A nested repository may be ignored by its parent and contain unpublished work:
+      // archiveClone handles every git root of the clone on its own.
+      // The walk covers every depth and every skipped directory: an unseen `.git` means no plain removal.
+      const tree = c.safeToRemove ? scanGitTree(c.path) : null;
+      if (tree && tree.complete && tree.roots.every((repo) => repo === c.path)) {
         plan.clones.push({ ...c, action: "remove" });
       } else {
         plan.clones.push({ ...c, action: "archive-remove" });
@@ -1769,6 +2182,12 @@ async function main() {
     const scratchDirs = [...args.scratchRoots];
     if (scratchDirs.length === 0) {
       scratchDirs.push(...discoverBotScratchDirs(root));
+      // The deployed wrapper invokes GC separately for each bot's workspace.
+      if (path.basename(path.resolve(root)) === "workspace" && lstatSafe(root).st?.isDirectory()) {
+        const botDir = path.dirname(path.resolve(root));
+        scratchDirs.push(...discoverBotScratchDirs(path.dirname(botDir)).filter((dir) =>
+          path.dirname(path.dirname(path.dirname(dir))) === botDir));
+      }
     }
     const openInfo = collectOpenProcInfo(args.procDir);
     for (const sDir of scratchDirs) {
@@ -1798,9 +2217,6 @@ async function main() {
           plan.kept.push({ path: item.path, action: "keep", reason: `bot-data:${item.reason}`, details: item.details });
           journalRecord(args.journal, { event: "bot-data-held-unpushed", path: item.path, details: item.details });
           console.error(JSON.stringify({ ok: true, held: item.path, reason: "bot-data-held-unpushed", details: item.details }));
-        } else if (item.reason === "board-unavailable") {
-          plan.kept.push({ path: item.path, action: "keep", reason: `bot-data:${item.reason}` });
-          journalRecord(args.journal, { event: "bot-data-board-unavailable", path: item.path, details: item.details });
         } else {
           plan.kept.push({ path: item.path, action: "keep", reason: `bot-data:${item.reason}` });
         }
@@ -1819,6 +2235,7 @@ async function main() {
         });
         if (!stale.ok) {
           journalRecord(args.journal, { event: "stale-omp-runner-scan-unavailable", reason: stale.reason, root: runnersRoot });
+          console.error(JSON.stringify({ ok: false, event: "stale-omp-runner-scan-unavailable", reason: stale.reason, root: runnersRoot }));
           continue;
         }
         for (const item of stale.plan) {
@@ -1923,10 +2340,38 @@ async function main() {
       }
     }
 
+    // Expire only regular archive files under the configured GC roots; never follow links.
+    plan.expiredArchives = [];
+    plan.archiveBytes = 0;
+    for (const archiveRoot of new Set([root, ...args.runnerRoots].map((r) => path.join(r, ".gc-archive")))) {
+      let entries;
+      try {
+        if (!fs.lstatSync(archiveRoot).isDirectory()) continue;
+        entries = fs.readdirSync(archiveRoot, { withFileTypes: true });
+      } catch (err) {
+        if (!isAbsent(err)) journalRecord(args.journal, { event: "archive-scan-failed", path: archiveRoot, error: err.message });
+        continue;
+      }
+      for (const entry of entries) {
+        if (!entry.isFile() || !/\.(?:tar\.gz|tar\.zst)$/.test(entry.name)) continue;
+        const archive = path.join(archiveRoot, entry.name);
+        try {
+          const st = fs.lstatSync(archive);
+          if (st.isFile()) {
+            plan.archiveBytes += st.size;
+            if (now - st.mtimeMs >= DAY_MS) plan.expiredArchives.push({ path: archive, root: archiveRoot });
+          }
+        } catch (err) {
+          if (!isAbsent(err)) journalRecord(args.journal, { event: "archive-scan-failed", path: archive, error: err.message });
+        }
+      }
+    }
+
     // 4. Execute or report
     if (args.dryRun) {
       journalRecord(args.journal, {
         event: "dry-run",
+        archiveBytes: plan.archiveBytes,
         clones: plan.clones.length,
         caches: plan.caches.length,
         scratch: plan.scratch.length,
@@ -1941,11 +2386,28 @@ async function main() {
       console.log(JSON.stringify({ ok: true, dryRun: true, plan }, null, 2));
     } else {
       let staleOmpRunnersStopped = 0;
+      for (const archive of plan.expiredArchives) {
+        try {
+          const st = fs.lstatSync(archive.path);
+          if (!st.isFile() || now - st.mtimeMs < DAY_MS) continue;
+          atomicDrop(archive.path, archive.root);
+          journalRecord(args.journal, { event: "archive-expired", path: archive.path, sizeBytes: st.size });
+        } catch (err) {
+          if (!isAbsent(err)) journalRecord(args.journal, { event: "archive-expire-failed", path: archive.path, error: err.message });
+        }
+      }
       // Apply: process archives first, then removals
       const archiveRoot = path.join(root, ".gc-archive");
       for (const c of plan.clones.filter((x) => x.action === "archive-remove")) {
         try {
-          const archivePath = archiveClone(c.path, archiveRoot);
+          const archivePath = archiveClone(c.path, archiveRoot, args.journal);
+          if (!archivePath) {
+            // Everything is pushed (every git root): nothing to keep.
+            atomicDrop(c.path, root);
+            plan.removed.push({ path: c.path });
+            journalRecord(args.journal, { event: "clone-removed", path: c.path, reason: "all-pushed" });
+            continue;
+          }
           journalRecord(args.journal, { event: "clone-archived", path: c.path, archive: archivePath, sizeBytes: c.sizeBytes });
           atomicDrop(c.path, root);
           plan.archived.push({ path: c.path, archive: archivePath });
@@ -2045,7 +2507,14 @@ async function main() {
       // be proven, plain removal for clean closed ones; both guarded against the runner root.
       for (const f of plan.runnerTaskFolders.filter((x) => x.action === "archive-remove")) {
         try {
-          const archivePath = archiveClone(f.path, path.join(f.runnersRoot, ".gc-archive"));
+          const archivePath = archiveClone(f.path, path.join(f.runnersRoot, ".gc-archive"), args.journal);
+          if (!archivePath) {
+            atomicDrop(f.path, f.runnersRoot);
+            plan.removed.push({ path: f.path });
+            journalRecord(args.journal, { event: "runner-task-folder-removed", path: f.path, reason: "all-pushed", runner: f.runner, ageHours: Math.round(f.ageMs / HOUR_MS) });
+            runnerTaskFoldersRemoved++;
+            continue;
+          }
           journalRecord(args.journal, { event: "runner-task-folder-archived", path: f.path, archive: archivePath, reason: f.reason });
           atomicDrop(f.path, f.runnersRoot);
           plan.archived.push({ path: f.path, archive: archivePath });
@@ -2067,6 +2536,7 @@ async function main() {
       }
       journalRecord(args.journal, {
         event: "apply-complete",
+        archiveBytesBeforeCleanup: plan.archiveBytes,
         removed: plan.removed.length,
         archived: plan.archived.length,
         scratchPruned: plan.scratch.length,
@@ -2083,6 +2553,7 @@ async function main() {
       console.log(JSON.stringify({
         ok: true,
         dryRun: false,
+        archiveBytesBeforeCleanup: plan.archiveBytes,
         removed: plan.removed.length,
         archived: plan.archived.length,
         scratchPruned: plan.scratch.length,

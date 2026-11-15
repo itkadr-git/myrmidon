@@ -3,10 +3,22 @@
 // 1.6.6 OPE-9932: Unit tests for pool model enrichment in agent model selection.
 
 import { describe, expect, it } from "vitest";
-import { enrichWithPoolModels, type PoolAccountChannelProvider } from "./pool-models.js";
+import { enrichWithPoolModels, mergeLitellmChatGptPoolModels, type PoolAccountChannelProvider } from "./pool-models.js";
 import type { AdapterModel } from "@myrmidon/adapter-utils";
 
 describe("enrichWithPoolModels (1.6.6 OPE-9932)", () => {
+  it("adds discovered LiteLLM ChatGPT groups without duplicating existing models", () => {
+    const base = [{ id: "chatgpt-pool/gpt-6-sol", label: "GPT-6 Sol" }];
+    expect(mergeLitellmChatGptPoolModels(base, [
+      "chatgpt-pool/gpt-6-sol",
+      "chatgpt-pool/gpt-6-astra",
+      "other-provider/model",
+    ])).toEqual([
+      { id: "chatgpt-pool/gpt-6-sol", label: "GPT-6 Sol" },
+      { id: "chatgpt-pool/gpt-6-astra", label: "gpt-6-astra" },
+    ]);
+  });
+
   it("returns base models unchanged when company has no pool providers", async () => {
     const mockDb: any = {
       select: () => ({

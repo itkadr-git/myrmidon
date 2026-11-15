@@ -58,7 +58,7 @@ vi.mock("../litellm-sync/client.js", () => ({
   }),
 }));
 
-const allowlistUpdates: Array<{ companyId: string; models: string[]; allowEmpty?: boolean }> = [];
+const allowlistUpdates: Array<{ companyId: string; models: string[]; removed: string[]; options?: { cardModelsOnly?: boolean } }> = [];
 vi.mock("../litellm-sync/agent-allowlist-handler.js", () => ({
   updateAgentAllowlistsForCompany: vi.fn(
     async (
@@ -67,10 +67,9 @@ vi.mock("../litellm-sync/agent-allowlist-handler.js", () => ({
       companyId: string,
       additional?: readonly string[],
       removed?: readonly string[],
-      allowEmpty?: boolean,
+      options?: { cardModelsOnly?: boolean },
     ) => {
-      allowlistUpdates.push({ companyId, models: [...(additional ?? [])], allowEmpty });
-      void removed;
+      allowlistUpdates.push({ companyId, models: [...(additional ?? [])], removed: [...(removed ?? [])], options });
     },
   ),
 }));
@@ -239,7 +238,12 @@ describeEmbeddedPostgres("createPluginProviderModelSync multi-plugin / multi-com
 
     expect(unregisteredModels.sort()).toEqual(["chatgpt-pool/gpt-5.2", "chatgpt-pool/gpt-5.2-codex"]);
     expect(allowlistUpdates).toEqual([
-      { companyId: COMPANY_A, models: [], allowEmpty: true },
+      {
+        companyId: COMPANY_A,
+        models: [],
+        removed: ["chatgpt-pool/gpt-5.2", "chatgpt-pool/gpt-5.2-codex"],
+        options: { cardModelsOnly: true },
+      },
     ]);
   });
 });

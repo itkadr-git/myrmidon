@@ -69,6 +69,10 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
+  vi.doMock("../services/secrets.js", async () => ({
+    ...await vi.importActual<typeof import("../services/secrets.js")>("../services/secrets.js"),
+    secretService: () => mockSecretService,
+  }));
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
     agentInstructionsService: () => mockAgentInstructionsService,
@@ -247,7 +251,82 @@ describe("pool models behavior tests (1.6.6 OPE-9932)", () => {
     globalThis.fetch = originalFetch;
     await unregisterTestAdapter(poolTestAdapterType);
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    const { resetGatewayModelsCacheForTests } = await import("../adapters/hermes-gateway-models.js");
+    resetGatewayModelsCacheForTests();
   });
+
+  it("exposes every LiteLLM ChatGPT pool catalog group through the Hermes models route", async () => {
+    const names = ["chatgpt-pool/gpt-6-astra", "chatgpt-pool/gpt-6.1-terra", "chatgpt-pool/new-model"];
+    const query = (rows: unknown[]) => {
+      const result = {
+        where: () => result,
+        orderBy: () => result,
+        then: (resolve: (value: unknown[]) => unknown, reject: (reason: unknown) => unknown) => Promise.resolve(rows).then(resolve, reject),
+      };
+      return result;
+    };
+    const db = {
+      select: (projection?: unknown) => ({
+        from: () => query(projection ? [...names, "other/model"].map((modelName) => ({ modelName })) : []),
+      }),
+    };
+    await registerTestAdapter({
+      type: "hermes_gateway",
+      label: "Hermes Gateway",
+      models: [],
+      validateConfig: () => null,
+      execute: async () => ({ exitCode: 0 }),
+    });
+    try {
+      const app = await createApp(db);
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/adapters/hermes_gateway/models"),
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.filter((model: { id: string }) => model.id.startsWith("chatgpt-pool/")).map((model: { id: string }) => model.id)).toEqual(names);
+      expect(res.body.some((model: { id: string }) => model.id === "other/model")).toBe(false);
+    } finally {
+      await unregisterTestAdapter("hermes_gateway");
+    }
+  });
+  it.each(["hermes_gateway", "hermes_local", "omp_local"])(
+    "OPE-13204: %s GET and PATCH use the secret-authenticated live catalog rather than env",
+    async (adapterType) => {
+      vi.stubEnv("MYRMIDON_LITELLM_BASE_URL", "http://gateway.local");
+      vi.stubEnv("MYRMIDON_LITELLM_KEY_SECRET", "catalog-key");
+      for (const name of ["MYRMIDON_LITELLM_KEY", "MYRMIDON_LITELLM_API_KEY", "MYRMIDON_LITELLM_MASTER_KEY", "MYRMIDON_LITELLM_ADMIN_KEY", "LITELLM_MASTER_KEY", "LLM_GATEWAY_API_KEY", "OPENAI_API_KEY"]) vi.stubEnv(name, "");
+      vi.stubEnv("PAPERCLIP_ADAPTER_MODELS", JSON.stringify({ [adapterType]: [{ id: "stale-env-model" }] }));
+      const liveModel = adapterType === "omp_local" ? "chatgpt-pool/gpt-6.1-terra" : "chatgpt-pool/gpt-6-astra";
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+        data: [{ id: liveModel }],
+      })));
+      const agentId = "22222222-2222-4222-8222-222222222222";
+      mockAgentService.getById.mockResolvedValue({
+        id: agentId, companyId: "company-1", name: "Catalog Bot", role: "engineer",
+        status: "idle", adapterType, adapterConfig: { model: "stale-env-model" },
+        runtimeConfig: {}, permissions: {}, metadata: null,
+      });
+      mockAgentService.update.mockImplementation(async (_id: string, patch: any) => ({
+        id: agentId, companyId: "company-1", adapterType, ...patch,
+      }));
+      const query: any = { where: () => query, orderBy: () => query, limit: () => query, then: (resolve: any) => Promise.resolve([]).then(resolve) };
+      const app = await createApp({ select: () => ({ from: () => query }) });
+      const catalog = await requestApp(app, (url) => request(url).get(`/api/companies/company-1/adapters/${adapterType}/models`));
+      expect(catalog.status).toBe(200);
+      const expectedModel = adapterType === "omp_local" ? `litellm/${liveModel}` : liveModel;
+      expect(catalog.body.map((model: any) => model.id)).toEqual([expectedModel]);
+      const saved = await requestApp(app, (url) => request(url).patch(`/api/agents/${agentId}`).send({ adapterConfig: { model: expectedModel } }));
+      expect(saved.status).toBe(200);
+      expect(saved.body.adapterConfig.model).toBe(expectedModel);
+      expect(mockSecretService.getByName).toHaveBeenCalledWith("company-1", "catalog-key");
+      expect(fetchSpy).toHaveBeenCalledWith("http://gateway.local/v1/models", expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer mock-pool-api-key" }),
+      }));
+      const rejected = await requestApp(app, (url) => request(url).patch(`/api/agents/${agentId}`).send({ adapterConfig: { model: "stale-env-model-other" } }));
+      expect(rejected.status).toBe(422);
+    },
+  );
 
   it("(a) GET /adapters/:type/models enriches pool models with non-banned accounts and excludes banned-only models", async () => {
     const app = await createApp();

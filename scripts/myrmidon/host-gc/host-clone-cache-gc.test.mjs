@@ -5,8 +5,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import subprocess from "node:child_process";
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, before, after, beforeEach, afterEach } from "node:test";
+import { startGitDaemon } from "./git-daemon-fixture.mjs";
 
+// Fixtures use bare repositories on disk as "servers": a git daemon makes them real git:// remotes.
+const gitDaemon = await startGitDaemon();
+Object.assign(process.env, gitDaemon.env);
+after(() => gitDaemon.stop());
 const ROOT = path.resolve(new URL("../../..", import.meta.url).pathname);
 // A bot container exports empty GIT_AUTHOR_*/GIT_COMMITTER_* variables; git honors an
 // empty env var over config, which breaks commit fixtures. Strip them everywhere.
@@ -444,6 +449,19 @@ describe("runner /tmp (OPE-12966)", () => {
     assert.equal(fs.existsSync(path.join(outside, "young.txt")), true, "the link target must survive");
   });
 
+  it("retains an old runner tmp checkout with unpublished work", () => {
+    const runners = path.join(tmpDir, "runners");
+    const checkout = makeTmpEntry(runners, "eng17", "checkout", { ageHours: 48, dir: true });
+    fs.mkdirSync(path.join(checkout, ".git"));
+    fs.writeFileSync(path.join(checkout, ".git", "HEAD"), "unpublished");
+    setAge(path.join(checkout, ".git", "HEAD"), 48);
+    setAge(path.join(checkout, ".git"), 48);
+    setAge(checkout, 48);
+    const { res } = runGc(["--apply", "--runner-root", runners]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.readFileSync(path.join(checkout, ".git", "HEAD"), "utf8"), "unpublished");
+  });
+
   it("a runner whose tmp is a symlink is skipped", () => {
     const runners = path.join(tmpDir, "runners");
     const outside = path.join(tmpDir, "outside");
@@ -569,7 +587,7 @@ describe("stale OMP runner collection", () => {
       "const http = require('node:http');",
       "const server = http.createServer((_req, res) => {",
       "  res.writeHead(200, { 'Content-Type': 'application/json' });",
-      "  res.end(JSON.stringify({ adapterType: 'hermes_gateway' }));",
+      "  res.end(JSON.stringify([{ id: 'agent-uuid-8', name: 'adm-dev-eng-8', adapterType: 'hermes_gateway' }]));",
       "});",
       "server.listen(0, '127.0.0.1', () => console.log(server.address().port));",
     ].join("\n");
@@ -585,6 +603,7 @@ describe("stale OMP runner collection", () => {
         PATH: `${dir}:${process.env.PATH}`,
         MYRMIDON_HOST_GC_DOCKER: docker,
         MYRMIDON_HOST_GC_DOCKER_BOT: docker,
+        MYRMIDON_COMPANY_ID: "company-uuid",
         BOARD_API_URL: `http://127.0.0.1:${port}`,
       });
     } finally {
@@ -626,8 +645,30 @@ describe("stale OMP runner collection", () => {
   });
 
   it("fails closed on board errors", async () => {
-    const unavailable = await fetchAgentAdapter("eng8", { baseUrl: "http://board", fetchImpl: async () => { throw new Error("offline"); } });
+    const previousCompanyId = process.env.MYRMIDON_COMPANY_ID;
+    process.env.MYRMIDON_COMPANY_ID = "company-uuid";
+    let unavailable;
+    try {
+      unavailable = await fetchAgentAdapter("eng8", { baseUrl: "http://board", fetchImpl: async () => { throw new Error("offline"); } });
+    } finally {
+      if (previousCompanyId === undefined) delete process.env.MYRMIDON_COMPANY_ID;
+      else process.env.MYRMIDON_COMPANY_ID = previousCompanyId;
+    }
     assert.deepEqual(unavailable, { ok: false, reason: "board-unavailable" });
+  });
+
+  it("does not query agents when the host GC company id is unset", async () => {
+    const previousCompanyId = process.env.MYRMIDON_COMPANY_ID;
+    delete process.env.MYRMIDON_COMPANY_ID;
+    try {
+      const result = await fetchAgentAdapter("eng8", {
+        baseUrl: "http://board",
+        fetchImpl: async () => { throw new Error("must not call board without company id"); },
+      });
+      assert.deepEqual(result, { ok: false, reason: "company-id-missing" });
+    } finally {
+      if (previousCompanyId !== undefined) process.env.MYRMIDON_COMPANY_ID = previousCompanyId;
+    }
   });
 
   it("rejects unsafe agent ids without a board call", async () => {
@@ -651,9 +692,9 @@ describe("stale OMP runner collection", () => {
     const boardScript = [
       "const http = require('node:http');",
       "const server = http.createServer((req, res) => {",
-      "  const adapterType = req.url.endsWith('/eng10') ? 'omp_local' : 'hermes_gateway';",
+      "  const agents = [{ id: 'agent-uuid-8', name: 'adm-dev-eng-8', adapterType: 'hermes_gateway' }, { id: 'agent-uuid-10', name: 'adm-dev-eng-10', adapterType: 'omp_local' }];",
       "  res.writeHead(200, { 'Content-Type': 'application/json' });",
-      "  res.end(JSON.stringify({ adapterType }));",
+      "  res.end(JSON.stringify(agents.filter((agent) => req.url.includes(agent.name))));",
       "});",
       "server.listen(0, '127.0.0.1', () => console.log(server.address().port));",
     ].join("\n");
@@ -663,7 +704,7 @@ describe("stale OMP runner collection", () => {
       board.once("error", reject);
       board.once("exit", (code) => reject(new Error(`board fixture exited: ${code}`)));
     });
-    const envOverrides = { PATH: `${dir}:${process.env.PATH}`, MYRMIDON_HOST_GC_DOCKER: docker, BOARD_API_URL: `http://127.0.0.1:${port}`, MYRMIDON_HOST_GC_DOCKER_BOT: docker };
+    const envOverrides = { PATH: `${dir}:${process.env.PATH}`, MYRMIDON_HOST_GC_DOCKER: docker, BOARD_API_URL: `http://127.0.0.1:${port}`, MYRMIDON_HOST_GC_DOCKER_BOT: docker, MYRMIDON_COMPANY_ID: "company-uuid" };
     let result;
     try {
       result = runGc(["--apply", "--runner-root", root], envOverrides);
@@ -679,22 +720,42 @@ describe("stale OMP runner collection", () => {
     assert.equal(complete.staleOmpRunnersStopped, 1);
   });
 
-  it("fetches the adapter from the agent endpoint and stops by exact container name", async () => {
-    let requestUrl;
-    const result = await fetchAgentAdapter("eng8", {
-      baseUrl: "http://board",
-      fetchImpl: async (url) => { requestUrl = url; return { ok: true, status: 200, json: async () => ({ adapterType: "hermes_gateway" }) }; },
-    });
-    assert.equal(requestUrl, "http://board/api/agents/eng8");
-    assert.deepEqual(result, { ok: true, adapterType: "hermes_gateway" });
-    const dir = path.join(tmpDir, "docker-mock");
-    fs.mkdirSync(dir);
-    const docker = path.join(dir, "docker");
-    const log = path.join(dir, "args");
-    fs.writeFileSync(docker, `#!/bin/sh\nprintf '%s\\n' "$@" > '${log}'\n`);
-    fs.chmodSync(docker, 0o755);
-    assert.equal(stopOmpRunner("myrmidon-omp-runner-eng8", { docker }), true);
-    assert.deepEqual(fs.readFileSync(log, "utf8").trim().split("\n"), ["rm", "-f", "myrmidon-omp-runner-eng8"]);
+  it("resolves engN through the slim company list and plans only non-omp_local runners for removal", async () => {
+    const previousCompanyId = process.env.MYRMIDON_COMPANY_ID;
+    process.env.MYRMIDON_COMPANY_ID = "company-uuid";
+    const requests = [];
+    try {
+      const adapter = await fetchAgentAdapter("eng8", {
+        baseUrl: "http://board",
+        apiKey: "test-key",
+        fetchImpl: async (url, options) => {
+          requests.push({ url, options });
+          if (url === "http://board/api/agents/eng8") return { ok: false, status: 422 };
+          assert.equal(url, "http://board/api/companies/company-uuid/agents?q=adm-dev-eng-8");
+          return { ok: true, status: 200, json: async () => [{ id: "agent-uuid-8", name: "adm-dev-eng-8", adapterType: "hermes_gateway" }] };
+        },
+      });
+      assert.deepEqual(adapter, { ok: true, adapterType: "hermes_gateway" });
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].options.headers.Authorization, "Bearer test-key");
+
+      const dir = path.join(tmpDir, "docker-mock");
+      fs.mkdirSync(dir);
+      const docker = path.join(dir, "docker");
+      fs.writeFileSync(docker, `#!/bin/sh\nprintf '%s\\n' myrmidon-omp-runner-eng8 myrmidon-omp-runner-eng10\n`);
+      fs.chmodSync(docker, 0o755);
+      const plan = await planStaleOmpRunners(path.join(tmpDir, "runners"), {
+        docker,
+        fetchAdapter: async (agentKey) => ({ ok: true, adapterType: agentKey === "eng10" ? "omp_local" : adapter.adapterType }),
+      });
+      assert.deepEqual(plan.plan.map(({ agentKey, action, reason }) => [agentKey, action, reason]), [
+        ["eng8", "stop-remove", "adapter-changed"],
+        ["eng10", "keep", "omp-local"],
+      ]);
+    } finally {
+      if (previousCompanyId === undefined) delete process.env.MYRMIDON_COMPANY_ID;
+      else process.env.MYRMIDON_COMPANY_ID = previousCompanyId;
+    }
   });
 });
 
@@ -1745,6 +1806,8 @@ describe("runner task folders", () => {
     const aged = new Date(Date.now() - 30 * HOUR);
     fs.utimesSync(folder, aged, aged);
     const listing = await archiveListing(runners, "OPE-9303");
+    const gcJournal = fs.readFileSync(path.join(tmpDir, "gc-task.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.ok(gcJournal.some((e) => e.event === "archive-full-fallback" && e.path === folder), "the compact-archive blocker is journaled");
     for (const sub of ["plain", "broken"]) {
       assert.ok(listing.includes(`OPE-9303/${sub}/node_modules/x/y.js`), `${sub}: node_modules archived`);
       assert.ok(listing.includes(`OPE-9303/${sub}/dist/out.js`), `${sub}: dist archived`);
@@ -1769,6 +1832,7 @@ describe("runner task folders", () => {
       const out = await runGcTask(["--apply", "--runner-root", runners], {
         PAPERCLIP_API_URL: `http://127.0.0.1:${fake.address().port}`,
         PATH: `${fakeBin}:/usr/bin:/bin`,
+        MYRMIDON_COMPANY_ID: "company-uuid",
         ...envExtra,
       });
       const archiveDir = path.join(runners, ".gc-archive");

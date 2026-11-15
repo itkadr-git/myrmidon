@@ -175,7 +175,7 @@ import {
   type LeaderLeaseManager,
 } from "./myrmidon/leader-lease/index.js"; // myrmidon(PROCS-1.7): leader lease (design OPE-5394 §5)
 import { startLitellmBudgetSync } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
-import { startLitellmModelReconciliation } from "./myrmidon/litellm-sync/startup-reconciler.js"; // myrmidon(1.6.1 MODEL-PROVIDERS B)
+import { startLitellmModelReconciliation, startAgentAllowlistWatchdog, reconcileAgentAllowlistDrift } from "./myrmidon/litellm-sync/startup-reconciler.js";
 import { startModelFallbackSignalSweep } from "./myrmidon/litellm-fallback-signal/sweep.js"; // myrmidon(BOT-RUNTIME-TUNING D)
 import { startFeatureHealthSweep, stopFeatureHealthSweep } from "./myrmidon/features/sweep.js"; // myrmidon(FEATURES)
 import { startBaselineSnapshots, stopBaselineSnapshots } from "./myrmidon/baseline/startup.js"; // myrmidon(1.6-BASELINE)
@@ -210,6 +210,8 @@ import { createDataRetentionScheduler } from "./myrmidon/data-retention/index.js
 import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
 // myrmidon(HERMES-RUN-REATTACH): reattach live gateway runs after a board restart
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
+// myrmidon(1.8 AGENT-LIVENESS A1, OPE-13021): periodic process probe of every probeable agent
+import { AGENT_LIVENESS_PROBE_SWEEP_INTERVAL_MS } from "./myrmidon/agent-liveness/probe-sweep.js";
 import { GATEWAY_REMOTE_CLOSE_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-close.js";
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
 import { createTaskPrSyncScheduler, reconcileClosedIssuePullRequests, backfillPullRequestWorkProducts } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
@@ -1704,6 +1706,7 @@ async function startServerWithDatabaseTeardown(
   // instead of doubling up on candidates the startup sweep just scanned.
   let lastGatewayReattachSweepAtMs = 0;
   let lastGatewayRemoteCloseSweepAtMs = 0; // myrmidon(HERMES-GATEWAY-CLOSE, OPE-11889)
+  let lastAgentLivenessProbeSweepAtMs = 0; // myrmidon(AGENT-LIVENESS, OPE-13021)
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     let tracked: Promise<void>;
@@ -2580,6 +2583,7 @@ async function startServerWithDatabaseTeardown(
     startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set
     startLitellmBudgetSync(db as any); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection; a no-op unless the gateway contour is set and the document enables it
     startLitellmModelReconciliation(db as any); // myrmidon(1.6.1 MODEL-PROVIDERS B): reconcile LiteLLM models with DB state
+    if (processRoleProfile.runsBackground) startAgentAllowlistWatchdog(() => reconcileAgentAllowlistDrift(db as any));
     startModelFallbackSignalSweep(db as any); // myrmidon(BOT-RUNTIME-TUNING D): model fallback attention signals; a no-op unless MYRMIDON_MODEL_FALLBACK_ENABLED=1
     startFeatureHealthSweep(db as any); // myrmidon(FEATURES): feature health pass that feeds the attention signal
     startBaselineSnapshots(db as any); // myrmidon(1.6-BASELINE): freeze the 14-day metric window; a no-op unless MYRMIDON_BASELINE_INTERVAL_SEC is set
@@ -3078,6 +3082,14 @@ async function startServerWithDatabaseTeardown(
                 );
               }
             })
+            // myrmidon(OPE-13202): the safety wake of an in_progress task whose
+            // executor has had no run and no wake for runPriority.inProgressIdleWakeMinutes.
+            .then(async () => {
+              const woken = await heartbeat.sweepInProgressIdleWake(new Date());
+              if (woken.woken > 0) {
+                logger.warn({ ...woken }, "periodic in-progress idle wake woke idle executors");
+              }
+            })
             // myrmidon(T1.6, design BOARD-PROCESSES §4.3): the periodic
             // orphan-reattach pass. When an executor process dies, its gateway
             // runs keep a frozen controller lease until expiry; once expired,
@@ -3116,6 +3128,20 @@ async function startServerWithDatabaseTeardown(
               const closed = await heartbeat.sweepTerminalGatewayRunCloses();
               if (closed.attempted > 0 || closed.failed > 0) {
                 logger.info({ ...closed }, "periodic terminal gateway run close pass complete");
+              }
+            })
+            // myrmidon(1.8 AGENT-LIVENESS A1, OPE-13021): the periodic process
+            // probe of every probeable agent (hermes_gateway / http): stamp
+            // lastProbeAt/lastProbeOutcome so the agents list can show an
+            // honest derived status instead of "spawned once, assumed alive".
+            .then(async () => {
+              if (Date.now() - lastAgentLivenessProbeSweepAtMs < AGENT_LIVENESS_PROBE_SWEEP_INTERVAL_MS) {
+                return;
+              }
+              lastAgentLivenessProbeSweepAtMs = Date.now();
+              const swept = await heartbeat.sweepAgentLivenessProbes();
+              if (swept.probed > 0) {
+                logger.info({ ...swept }, "periodic agent liveness probe pass complete");
               }
             })
             .catch((err) => {

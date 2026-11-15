@@ -55,6 +55,7 @@ import { summarySlotRoutes } from "./routes/summary-slots.js";
 import { statusCardRoutes } from "./routes/status-cards.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
+
 import type { SetupTokenSessionService } from "./services/setup-token-session.js";
 import {
   buildSetupTokenLoginTransport,
@@ -247,11 +248,14 @@ import {
   createChatReconciliationWorkGates,
   type ChatReconciliationWorkGates,
   myrmidonCasteRoutes,
+  myrmidonModelGroupRulesRoutes,
   myrmidonGuardrailsRoutes,
   myrmidonInstalledLocalesRoutes,
   myrmidonVendorNameCheckRoutes,
   startDenyListPuller,
   createPluginProviderModelSync,
+  updateAgentAllowlistsForCompany,
+  defaultAgentGatewayKeyDeps,
   localeUploadRoutes,
   localeModuleRoutes,
   myrmidonHindsightModelsRoutes,
@@ -1177,6 +1181,23 @@ export async function createApp(
   });
   api.use(
     agentRoutes(db, {
+      syncAgentModelAllowlist: async ({ companyId, agentId, db: transactionDb }) => {
+        const result = await updateAgentAllowlistsForCompany(
+          transactionDb,
+          defaultAgentGatewayKeyDeps(transactionDb),
+          companyId,
+          [],
+          [],
+          { cardModelsOnly: true, agentId, apply: true },
+        );
+        const failures = result.skipped.filter((reason) => reason !== "gateway-key-management-not-configured" && reason !== `agent-without-key:${agentId}` && reason !== `key-all-models:${agentId}`);
+        if (failures.length) {
+          logger.warn({ companyId, agentId, failures }, "agent card saved but gateway allowlist reconciliation failed");
+        }
+      },
+      onAgentModelAllowlistSyncFailure: ({ companyId, agentId, error }) => {
+        logger.warn({ companyId, agentId, err: error }, "agent card saved but gateway allowlist reconciliation failed");
+      },
       chatRunRetries: chatChannels,
       pluginWorkerManager: workerManager,
       deploymentMode: opts.deploymentMode,
@@ -1590,6 +1611,7 @@ export async function createApp(
     }),
   );
   api.use(myrmidonCasteRoutes(db)); // myrmidon(CUSTOM-CASTES): caste directory CRUD
+  api.use(myrmidonModelGroupRulesRoutes(db)); // myrmidon(1.8 MODEL-BY-STEP, OPE-12997)
   api.use(myrmidonGuardrailsRoutes(db)); // myrmidon(1.6-GRD): flag-only guardrail event journal (board-only read route)
   api.use(
     accessRoutes(db, {

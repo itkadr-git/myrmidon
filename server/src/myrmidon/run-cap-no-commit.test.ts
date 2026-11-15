@@ -5,6 +5,7 @@ import {
   countRunsWithoutCommit,
   extractRunHeadSha,
   extractRunSummary,
+  isRunCapNoCommitRole,
   resolveRunCapNoCommitWakeTargetId,
   resolveTaskRunsWithoutCommitLimit,
   DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT,
@@ -12,6 +13,15 @@ import {
   RUN_CAP_NO_COMMIT_UNBLOCK_ACTION,
   type RunCommitObservation,
 } from "./run-cap-no-commit.js";
+
+describe("isRunCapNoCommitRole", () => {
+  it("includes leads and other assigned agent roles", () => {
+    expect(isRunCapNoCommitRole("lead")).toBe(true);
+    expect(isRunCapNoCommitRole("engineer")).toBe(true);
+    expect(isRunCapNoCommitRole(null)).toBe(false);
+    expect(isRunCapNoCommitRole(" ")).toBe(false);
+  });
+});
 
 describe("countRunsWithoutCommit", () => {
   const currentHeadSha = "abc1234567890";

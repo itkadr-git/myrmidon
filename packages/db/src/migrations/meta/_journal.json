@@ -2800,7 +2800,28 @@
       "idx": 484,
       "version": "7",
       "when": 1794535121133,
-      "tag": "0484_step_model_snapshot",
+      "tag": "0484_secret_audit_slim",
+      "breakpoints": true
+    },
+    {
+      "idx": 485,
+      "version": "7",
+      "when": 1794723281270,
+      "tag": "0485_demonic_katie_power",
+      "breakpoints": true
+    },
+    {
+      "idx": 486,
+      "version": "7",
+      "when": 1794728549398,
+      "tag": "0486_agent_liveness_probe",
+      "breakpoints": true
+    },
+    {
+      "idx": 487,
+      "version": "7",
+      "when": 1794728549399,
+      "tag": "0487_step_model_snapshot",
       "breakpoints": true
     }
   ]

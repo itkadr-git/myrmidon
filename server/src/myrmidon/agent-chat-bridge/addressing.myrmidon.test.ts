@@ -394,11 +394,13 @@ describe("myrmidon(X9a) resolveTelegramAddressee", () => {
         ],
       }).db;
 
-      const result = await resolveBridgeAddressee(dbDuplicates, {
+      const input = {
         companyId: COMPANY_A,
         text: "@duplicatename привет",
         endpointAgentId: "agent-1",
-      });
+      };
+      const result = await resolveBridgeAddressee(dbDuplicates, input);
+      const repeatedResult = await resolveBridgeAddressee(dbDuplicates, input);
 
       expect(result).toEqual({
         kind: "ambiguous",
@@ -408,6 +410,7 @@ describe("myrmidon(X9a) resolveTelegramAddressee", () => {
           { agentId: "agent-2", name: "DuplicateName" },
         ],
       });
+      expect(repeatedResult).toEqual(result);
     });
 
     it("resolves unique name even if same name exists in another company", async () => {

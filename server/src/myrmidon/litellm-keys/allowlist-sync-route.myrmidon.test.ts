@@ -91,11 +91,18 @@ describe("POST …/litellm/keys/allowlist-sync", () => {
     const res = await request(app(admin)).post(url).expect(200);
 
     expect(mocks.pass).toHaveBeenCalledTimes(1);
-    expect(mocks.pass).toHaveBeenCalledWith(db, keyDeps, COMPANY_ID, [], [], false, { apply: false });
+    expect(mocks.pass).toHaveBeenCalledWith(db, keyDeps, COMPANY_ID, [], [], { apply: false });
     expect(res.body).toMatchObject({ mode: "dry-run", applied: false, attempted: 2, updated: 0 });
     expect(res.body.dryRun.wouldChange).toBe(2);
     expect(res.body.dryRun.changes).toHaveLength(2);
     expect(mocks.record).not.toHaveBeenCalled();
+  });
+
+  it("an applied synchronization is the full admin pass: it does not pass cardModelsOnly", async () => {
+    await request(app(admin)).post(`${url}?apply=true`).expect(200);
+    expect(mocks.pass).toHaveBeenCalledWith(db, keyDeps, COMPANY_ID, [], [], { apply: true });
+    const options = mocks.pass.mock.calls[0]![5] as Record<string, unknown>;
+    expect(options.cardModelsOnly).toBeUndefined();
   });
 
   it("applies only with ?apply=true (or 1), and writes an audit row", async () => {
@@ -103,7 +110,7 @@ describe("POST …/litellm/keys/allowlist-sync", () => {
 
     const res = await request(app(admin)).post(`${url}?apply=true`).expect(200);
 
-    expect(mocks.pass).toHaveBeenCalledWith(db, keyDeps, COMPANY_ID, [], [], false, { apply: true });
+    expect(mocks.pass).toHaveBeenCalledWith(db, keyDeps, COMPANY_ID, [], [], { apply: true });
     expect(res.body).toMatchObject({ mode: "apply", applied: true, attempted: 2, updated: 2 });
     expect(mocks.record).toHaveBeenCalledTimes(1);
     expect(mocks.record).toHaveBeenCalledWith(
@@ -117,14 +124,14 @@ describe("POST …/litellm/keys/allowlist-sync", () => {
 
     mocks.pass.mockClear();
     await request(app(admin)).post(`${url}?apply=1`).expect(200);
-    expect(mocks.pass).toHaveBeenCalledWith(db, keyDeps, COMPANY_ID, [], [], false, { apply: true });
+    expect(mocks.pass).toHaveBeenCalledWith(db, keyDeps, COMPANY_ID, [], [], { apply: true });
   });
 
   it("any other apply value stays a dry run", async () => {
     for (const value of ["false", "0", "yes", "", "TRUEISH"]) {
       mocks.pass.mockClear();
       const res = await request(app(admin)).post(`${url}?apply=${value}`).expect(200);
-      expect(mocks.pass).toHaveBeenCalledWith(db, keyDeps, COMPANY_ID, [], [], false, { apply: false });
+      expect(mocks.pass).toHaveBeenCalledWith(db, keyDeps, COMPANY_ID, [], [], { apply: false });
       expect(res.body.applied).toBe(false);
     }
     expect(mocks.record).not.toHaveBeenCalled();

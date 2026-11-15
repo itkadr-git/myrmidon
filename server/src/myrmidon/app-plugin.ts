@@ -44,6 +44,8 @@ export { myrmidonBrowserConsoleRoutes } from "./browser-console/wiring.js"; // m
 export { myrmidonLitellmCostsRoutes } from "./litellm-costs/routes.js"; // myrmidon(M2-A)
 export { myrmidonLitellmKeysRoutes } from "./litellm-keys/routes.js"; // myrmidon(M2-B)
 export { myrmidonModelProviderRoutes, createPluginProviderModelSync } from "./model-providers/wiring.js";
+export { defaultAgentGatewayKeyDeps } from "./litellm-keys/agent-keys.js";
+export { updateAgentAllowlistsForCompany } from "./litellm-sync/agent-allowlist-handler.js";
 export { bindModelProviderPluginLifecycle } from "./model-providers/plugin-lifecycle.js"; // myrmidon(1.6.6 OPE-7198)
 export { myrmidonAgentExchangeRoutes } from "./agent-exchange/wiring.js"; // myrmidon(1.7-AGENT-EXCHANGE-A)
 export { myrmidonAgentExchangeFeedRoutes } from "./agent-exchange/feed-wiring.js"; // myrmidon(1.7-AGENT-EXCHANGE-B)
@@ -146,6 +148,7 @@ export { chatReconcileMinimumSpacingMs, getChatReconcileFallbackIntervalMs, crea
 export { createChatReconciliationWorkGates } from "./chat-reconciliation/work-gates.js";
 export type { ChatReconciliationWorkGates } from "./chat-reconciliation/work-gates.js";
 export { myrmidonCasteRoutes } from "./castes/wiring.js";
+export { myrmidonModelGroupRulesRoutes } from "./model-group-rules/wiring.js"; // myrmidon(1.8 MODEL-BY-STEP, OPE-12997)
 export { myrmidonGuardrailsRoutes } from "./guardrails/index.js"; // myrmidon(1.6-GRD)
 export { goalJudgeRoutes, myrmidonGoalJudgeRoutes } from "./goal-judge/routes.js"; // myrmidon(1.7-GOAL-JUDGE)
 export { goalJudgeSettingsService } from "./goal-judge/settings.js"; // myrmidon(1.7-GOAL-JUDGE)
