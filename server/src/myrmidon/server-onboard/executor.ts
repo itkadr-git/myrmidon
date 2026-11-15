@@ -38,6 +38,7 @@ export interface ExecutorReporter {
 export interface OnboardExecutorDeps {
   createSshExecutor?: (options: SshConnectionOptions) => SshExecutor | Promise<SshExecutor>;
   generateKeyPair?: () => { publicKey: string; privateKey: string };
+  skipMonitoring?: boolean;
 }
 
 export interface ExecutorExecutionResult {
@@ -274,28 +275,20 @@ export class FleetOnboardExecutor {
           }
 
           case "monitoring": {
-            // Monitoring bootstrap or skip with note
-            await reporter.reportStep("monitoring", "skipped", "Monitoring agent skipped: instance monitoring not configured");
+            if (!this.deps.skipMonitoring) {
+              throw new Error("Monitoring bootstrap is not configured; an explicit skip is required");
+            }
+            await reporter.reportStep("monitoring", "skipped", "Monitoring explicitly disabled by executor configuration");
             stepsCompleted.push("monitoring");
             break;
           }
 
           case "role": {
-            if (!activeSsh) {
-              activeSsh = await this.getSsh(connOptions);
-              await activeSsh.connect(connOptions);
-            }
-
             const role = claim.options.role ?? "generic";
-            if (role === "build-runner") {
-              await activeSsh.execute("docker --version || true");
-            } else if (role === "sandbox") {
-              await activeSsh.execute("docker --version || true");
-            } else if (role === "bot-host") {
-              await activeSsh.execute("test -d /opt/fleetd || true");
+            if (role !== "generic") {
+              throw new Error(`Role bootstrap is not implemented: ${role}`);
             }
-
-            await reporter.reportStep("role", "ok", `Role bootstrap applied: ${role}`);
+            await reporter.reportStep("role", "skipped", "Generic role requires no bootstrap");
             stepsCompleted.push("role");
             break;
           }

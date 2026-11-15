@@ -59,6 +59,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
 
     const executor = new FleetOnboardExecutor({
       createSshExecutor: () => mockSsh,
+      skipMonitoring: true,
       generateKeyPair: () => ({
         publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIgeneratedKey test-key",
         privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nfake-key\n-----END OPENSSH PRIVATE KEY-----",
