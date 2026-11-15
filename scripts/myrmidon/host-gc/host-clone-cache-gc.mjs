@@ -1932,6 +1932,29 @@ async function main() {
       }
     }
 
+    // Expire only regular archive files under the configured GC roots; never follow links.
+    plan.expiredArchives = [];
+    for (const archiveRoot of new Set([root, ...args.runnerRoots].map((r) => path.join(r, ".gc-archive")))) {
+      let entries;
+      try {
+        if (!fs.lstatSync(archiveRoot).isDirectory()) continue;
+        entries = fs.readdirSync(archiveRoot, { withFileTypes: true });
+      } catch (err) {
+        if (!isAbsent(err)) journalRecord(args.journal, { event: "archive-scan-failed", path: archiveRoot, error: err.message });
+        continue;
+      }
+      for (const entry of entries) {
+        if (!entry.isFile() || !/\.(?:tar\.gz|tar\.zst)$/.test(entry.name)) continue;
+        const archive = path.join(archiveRoot, entry.name);
+        try {
+          const st = fs.lstatSync(archive);
+          if (st.isFile() && now - st.mtimeMs >= DAY_MS) plan.expiredArchives.push({ path: archive, root: archiveRoot });
+        } catch (err) {
+          if (!isAbsent(err)) journalRecord(args.journal, { event: "archive-scan-failed", path: archive, error: err.message });
+        }
+      }
+    }
+
     // 4. Execute or report
     if (args.dryRun) {
       journalRecord(args.journal, {
@@ -1950,6 +1973,16 @@ async function main() {
       console.log(JSON.stringify({ ok: true, dryRun: true, plan }, null, 2));
     } else {
       let staleOmpRunnersStopped = 0;
+      for (const archive of plan.expiredArchives) {
+        try {
+          const st = fs.lstatSync(archive.path);
+          if (!st.isFile() || now - st.mtimeMs < DAY_MS) continue;
+          atomicDrop(archive.path, archive.root);
+          journalRecord(args.journal, { event: "archive-expired", path: archive.path, sizeBytes: st.size });
+        } catch (err) {
+          if (!isAbsent(err)) journalRecord(args.journal, { event: "archive-expire-failed", path: archive.path, error: err.message });
+        }
+      }
       // Apply: process archives first, then removals
       const archiveRoot = path.join(root, ".gc-archive");
       for (const c of plan.clones.filter((x) => x.action === "archive-remove")) {
