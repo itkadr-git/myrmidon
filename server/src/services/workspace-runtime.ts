@@ -3232,6 +3232,25 @@ export async function realizeExecutionWorkspace(input: {
   const rawStrategy = parseObject(input.config.workspaceStrategy);
   const strategyType = asString(rawStrategy.type, "project_primary");
   const requestedExistingBranch = asString(rawStrategy.existingBranch, "").trim();
+  if (strategyType === "git_worktree" && (input.agent.adapterType === "hermes_gateway" || input.agent.adapterType === "omp_local")) {
+    const identifier = input.issue?.identifier;
+    if (!identifier || !/^[A-Za-z]+-[0-9]+$/.test(identifier)) {
+      throw new WorkspaceRuntimeValidationFailure("Container workspace requires a valid issue identifier.", {
+        workspaceValidation: { reason: "invalid_container_workspace_issue_identifier" },
+      });
+    }
+    return {
+      ...input.base,
+      strategy: "project_primary",
+      cwd: path.posix.join("/workspace", identifier, "repo"),
+      branchName: null,
+      worktreePath: null,
+      warnings: [],
+      created: false,
+      branchCreatedByRuntime: false,
+      baseRefSha: null,
+    };
+  }
   if (strategyType !== "git_worktree") {
     if (requestedExistingBranch) {
       throw new WorkspaceRuntimeValidationFailure(
