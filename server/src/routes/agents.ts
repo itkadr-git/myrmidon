@@ -3504,8 +3504,8 @@ export function agentRoutes(
       return;
     }
     const rawModels = refresh
-      ? await refreshAdapterModels(modelAdapterType)
-      : await listAdapterModels(modelAdapterType, companyId);
+      ? await refreshAdapterModels(modelAdapterType, companyId, db)
+      : await listAdapterModels(modelAdapterType, companyId, db);
     const models = await enrichWithPoolModels(db, companyId, rawModels);
     res.json(models);
   });
