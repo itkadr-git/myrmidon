@@ -91,6 +91,20 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
     workspaceCwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-busy-"));
+    // Workspace validation requires the fixture path to be a real Git checkout.
+    await execFileAsync("git", ["init", "--quiet", workspaceCwd]);
+    await execFileAsync("git", [
+      "-C",
+      workspaceCwd,
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "initial",
+    ]);
     registerServerAdapter({
       type: WORKSPACE_BUSY_TEST_ADAPTER,
       execute: async (input) => {
@@ -129,7 +143,13 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
 
   afterAll(async () => {
     unregisterServerAdapter(WORKSPACE_BUSY_TEST_ADAPTER);
-    if (workspaceCwd) await fs.rm(workspaceCwd, { recursive: true, force: true });
+    try {
+      await execFileAsync("git", ["worktree", "prune", "--expire", "now"], { cwd: workspaceCwd });
+      await fs.rm(workspaceCwd, { recursive: true, force: true });
+    } catch {
+      // The test database is already torn down; best-effort fixture cleanup.
+      await fs.rm(workspaceCwd, { recursive: true, force: true });
+    }
     await tempDb?.cleanup();
   });
 
