@@ -5984,7 +5984,13 @@ function getActorIdentityPart(req: Request): string {
         asRecord(existing.adapterConfig),
         normalizedEffectiveAdapterConfig,
       );
-      patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
+      const modelOnlyPatch = requestedAdapterType === "hermes_gateway"
+        && !changingAdapterType && !replaceAdapterConfig && requestedAdapterConfig !== null
+        && Object.keys(requestedAdapterConfig).length === 1 && hasOwn(requestedAdapterConfig, "model");
+      // Validate the normalized config, but keep legacy bindings byte-for-byte on a model-only edit.
+      patchData.adapterConfig = modelOnlyPatch
+        ? rawEffectiveAdapterConfig
+        : syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
       assertExternalInstructionsAdmin(req, {
         ...existing,
         adapterConfig: patchData.adapterConfig,
