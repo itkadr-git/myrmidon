@@ -120,6 +120,10 @@ export async function writeDataRetentionSettings(
     accessAuditDays: patch.accessAuditDays ?? current.accessAuditDays,
     secretAccessDays: patch.secretAccessDays ?? current.secretAccessDays,
     litellmCostEventsDays: patch.litellmCostEventsDays ?? current.litellmCostEventsDays,
+    agentWakeupRequestsDays: patch.agentWakeupRequestsDays ?? current.agentWakeupRequestsDays,
+    environmentLeasesDays: patch.environmentLeasesDays ?? current.environmentLeasesDays,
+    documentRevisionKeepPerDocument: patch.documentRevisionKeepPerDocument ?? current.documentRevisionKeepPerDocument,
+    documentRevisionDays: patch.documentRevisionDays ?? current.documentRevisionDays,
   };
   // merge over the stored object: `lastRun` and the sibling DBC-1 keys
   // (`heartbeatRunContextDays`, `contextLastRun`) are not ours to drop

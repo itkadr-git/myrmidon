@@ -17,6 +17,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   activityLog,
   agentTaskSessions,
+  agentWakeupRequests,
   agents,
   companies,
   completionContracts,
@@ -29,6 +30,9 @@ import {
   decisions,
   decisionTriage,
   decisionTriageEvents,
+  documents,
+  documentRevisions,
+  environmentLeases,
   executionWorkspaces,
   financeEvents,
   heartbeatRunEvents,
@@ -37,6 +41,7 @@ import {
   inboxDismissals,
   instanceSettings,
   issues,
+  issuePlanDecompositions,
   nativeRunFinalizations,
   nativeRunResults,
   projects,
@@ -92,6 +97,11 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     await db.delete(decisionTriage);
     await db.delete(decisionRetention);
     await db.delete(decisionQueues);
+    await db.delete(environmentLeases);
+    await db.delete(agentWakeupRequests);
+    await db.delete(issuePlanDecompositions);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
     await db.delete(agentTaskSessions);
     await db.delete(costEvents);
     await db.delete(financeEvents);
@@ -211,6 +221,79 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
       .where(eq(heartbeatRuns.id, runId));
     return rows.length;
   }
+
+  it("retains recent and newest document revisions, and only prunes old terminal wakes and released leases", async () => {
+    const company = await seedCompany();
+    const { companyId, agentId } = company;
+    const documentId = randomUUID();
+    const old = new Date(Date.now() - 100 * DAY_MS);
+    const young = new Date(Date.now() - 10 * DAY_MS);
+    const revisions = Array.from({ length: 25 }, (_, index) => ({
+      id: randomUUID(), companyId, documentId, revisionNumber: index + 1,
+      body: `revision ${index + 1}`, format: "markdown",
+      createdAt: index === 0 || index === 24 ? old : young,
+    }));
+    await db.insert(documents).values({ id: documentId, companyId, latestBody: "latest", latestRevisionNumber: 25, latestRevisionId: revisions[24].id });
+    await db.insert(documentRevisions).values(revisions);
+    const wakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values([
+      { id: wakeId, companyId, agentId, source: "test", status: "cancelled", requestedAt: old, finishedAt: old },
+      { companyId, agentId, source: "test", status: "queued", requestedAt: old },
+    ]);
+    const activeLeaseId = randomUUID();
+    await db.insert(environmentLeases).values([
+      { id: activeLeaseId, companyId, status: "active", acquiredAt: old, lastUsedAt: old },
+      { companyId, status: "released", releasedAt: old, acquiredAt: old, lastUsedAt: old },
+    ]);
+
+    const { sweep } = makeSweep({ freshBackup: true });
+    const result = await sweep.sweep();
+
+    expect(result.perTable.documentRevisions.deleted).toBe(1);
+    const keptRevisions = await db.select({ revisionNumber: documentRevisions.revisionNumber }).from(documentRevisions);
+    expect(keptRevisions).toHaveLength(24);
+    expect(keptRevisions.some(({ revisionNumber }) => revisionNumber === 1)).toBe(false);
+    expect(result.perTable.agentWakeupRequests.deleted).toBe(1);
+    const remainingWakes = await db.select({ status: agentWakeupRequests.status }).from(agentWakeupRequests);
+    expect(remainingWakes.map(({ status }) => status)).toContain("queued");
+    expect(result.perTable.environmentLeases.deleted).toBe(1);
+    const leases = await db.select({ id: environmentLeases.id, status: environmentLeases.status }).from(environmentLeases);
+    expect(leases).toEqual([{ id: activeLeaseId, status: "active" }]);
+  });
+
+  it("applies newest-N when revision age retention is disabled", async () => {
+    const { companyId } = await seedCompany();
+    const documentId = randomUUID();
+    const revisions = [1, 2, 3].map((revisionNumber) => ({
+      id: randomUUID(), companyId, documentId, revisionNumber, body: "revision", format: "markdown",
+    }));
+    await db.insert(documents).values({ id: documentId, companyId, latestBody: "latest", latestRevisionId: revisions[2].id, latestRevisionNumber: 3 });
+    await db.insert(documentRevisions).values(revisions);
+    await writeDataRetentionSettings(instanceSettingsService(db), { documentRevisionDays: 0, documentRevisionKeepPerDocument: 2 });
+    const { sweep } = makeSweep({ freshBackup: true });
+    expect((await sweep.sweep()).perTable.documentRevisions.deleted).toBe(1);
+    const kept = await db.select({ id: documentRevisions.id }).from(documentRevisions);
+    expect(kept.map((row) => row.id).sort()).toEqual([revisions[1].id, revisions[2].id].sort());
+  });
+
+  it("disables count protection at zero but preserves referenced revisions", async () => {
+    const { companyId } = await seedCompany();
+    const documentId = randomUUID();
+    const old = new Date(Date.now() - 100 * DAY_MS);
+    const revisions = [1, 2, 3, 4].map((revisionNumber) => ({
+      id: randomUUID(), companyId, documentId, revisionNumber, body: "revision", format: "markdown", createdAt: old,
+    }));
+    await db.insert(documents).values({ id: documentId, companyId, latestBody: "latest", latestRevisionId: revisions[0].id, latestRevisionNumber: 4 });
+    await db.insert(documentRevisions).values(revisions);
+    const issueId = await seedIssue({ companyId, title: "accepted plan" });
+    await db.insert(issuePlanDecompositions).values({ companyId, sourceIssueId: issueId, acceptedPlanRevisionId: revisions[1].id, requestFingerprint: "test" });
+    await writeDataRetentionSettings(instanceSettingsService(db), { documentRevisionDays: 90, documentRevisionKeepPerDocument: 0 });
+    const { sweep } = makeSweep({ freshBackup: true });
+    expect((await sweep.sweep()).perTable.documentRevisions.deleted).toBe(2);
+    const kept = await db.select({ id: documentRevisions.id }).from(documentRevisions);
+    expect(kept.map((row) => row.id).sort()).toEqual([revisions[0].id, revisions[1].id].sort());
+    expect(await db.select().from(issuePlanDecompositions)).toHaveLength(1);
+  });
 
   async function seedIssue(input: { companyId: string; title: string }) {
     const issueId = randomUUID();
@@ -772,6 +855,10 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
       accessAuditDays: 180,
       secretAccessDays: 30,
       litellmCostEventsDays: 30,
+      documentRevisionDays: 90,
+      documentRevisionKeepPerDocument: 20,
+      agentWakeupRequestsDays: 30,
+      environmentLeasesDays: 30,
     });
   });
 
@@ -835,6 +922,9 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
         activity: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
         access: { deletedTotal: 2, lastDeleted: 2, lastFreedBytes: 234 },
         litellmCostEvents: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+        documentRevisions: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+        agentWakeupRequests: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+        environmentLeases: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
         executionWorkspaces: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
       },
     });
@@ -857,6 +947,10 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
       accessAuditDays: 180,
       secretAccessDays: 30,
       litellmCostEventsDays: 30,
+      documentRevisionDays: 90,
+      documentRevisionKeepPerDocument: 20,
+      agentWakeupRequestsDays: 30,
+      environmentLeasesDays: 30,
     });
     const lastRun = await readDataRetentionLastRun(settings);
     expect(lastRun.freedBytesTotal).toBe(1234);
