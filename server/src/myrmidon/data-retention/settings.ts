@@ -118,7 +118,6 @@ export async function writeDataRetentionSettings(
     heartbeatRunsDays: patch.heartbeatRunsDays ?? current.heartbeatRunsDays,
     activityLogDays: patch.activityLogDays ?? current.activityLogDays,
     accessAuditDays: patch.accessAuditDays ?? current.accessAuditDays,
-    secretAccessDays: patch.secretAccessDays ?? current.secretAccessDays,
     litellmCostEventsDays: patch.litellmCostEventsDays ?? current.litellmCostEventsDays,
   };
   // merge over the stored object: `lastRun` and the sibling DBC-1 keys

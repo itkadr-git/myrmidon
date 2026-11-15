@@ -727,7 +727,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     expect(result.perTable.activity.deleted).toBe(2);
     // the seeded access rows are 100 days old — inside the 180d default
     // access-audit retention, so nothing is deleted
-    expect(result.perTable.access.deleted).toBe(1);
+    expect(result.perTable.access.deleted).toBe(0);
     const remainingActivity = await db
       .select({ action: activityLog.action, runId: activityLog.runId })
       .from(activityLog);
@@ -737,7 +737,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     // retention window: it is removed rather than retained with a null run_id.
     expect(remainingActivity.some((row) => row.action === "test.old_gone_run")).toBe(false);
     expect(await db.select({ id: toolAccessAuditEvents.id }).from(toolAccessAuditEvents)).toHaveLength(2);
-    expect(await db.select({ id: secretAccessEvents.id }).from(secretAccessEvents)).toHaveLength(1);
+    expect(await db.select({ id: secretAccessEvents.id }).from(secretAccessEvents)).toHaveLength(2);
   });
 
   it("retention 0 keeps everything, and a settings change applies on the next pass without a restart", async () => {
@@ -766,29 +766,8 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
       heartbeatRunsDays: 90,
       activityLogDays: 90,
       accessAuditDays: 180,
-      secretAccessDays: 30,
       litellmCostEventsDays: 30,
     });
-  });
-
-  it("uses secretAccessDays independently from tool access audit retention", async () => {
-    const { companyId } = await seedCompany();
-    const settings = instanceSettingsService(db);
-    await writeDataRetentionSettings(settings, { accessAuditDays: 90, secretAccessDays: 30 });
-    const expired = new Date(Date.now() - 45 * DAY_MS);
-    await db.insert(secretAccessEvents).values({
-      companyId, provider: "local_encrypted", actorType: "agent", consumerType: "agent",
-      consumerId: "retention-test", outcome: "success", createdAt: expired,
-    });
-    await db.insert(toolAccessAuditEvents).values({
-      companyId, actorType: "system", action: "invoke", outcome: "ok", createdAt: expired,
-    });
-
-    const { sweep } = makeSweep({ freshBackup: true });
-    const result = await sweep.sweep();
-    expect(result.perTable.access.deleted).toBe(1);
-    expect(await db.select({ id: secretAccessEvents.id }).from(secretAccessEvents)).toHaveLength(0);
-    expect(await db.select({ id: toolAccessAuditEvents.id }).from(toolAccessAuditEvents)).toHaveLength(1);
   });
 
   it("the backup gate blocks deletes until a fresh backup appears, then lifts", async () => {
@@ -850,7 +829,6 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
       heartbeatRunsDays: 90,
       activityLogDays: 30,
       accessAuditDays: 180,
-      secretAccessDays: 30,
       litellmCostEventsDays: 30,
     });
     const lastRun = await readDataRetentionLastRun(settings);

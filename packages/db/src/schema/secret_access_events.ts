@@ -38,8 +38,14 @@ export const secretAccessEvents = pgTable(
   },
   (table) => ({
     companyCreatedIdx: index("secret_access_events_company_created_idx").on(table.companyId, table.createdAt),
+    secretCreatedIdx: index("secret_access_events_secret_created_idx").on(table.secretId, table.createdAt),
     userDefinitionCreatedIdx: index("secret_access_events_user_definition_created_idx").on(
       table.userSecretDefinitionId,
+      table.createdAt,
+    ),
+    credentialOwnerIdx: index("secret_access_events_company_credential_owner_idx").on(
+      table.companyId,
+      table.credentialOwnerUserId,
       table.createdAt,
     ),
     consumerIdx: index("secret_access_events_consumer_idx").on(table.companyId, table.consumerType, table.consumerId),
