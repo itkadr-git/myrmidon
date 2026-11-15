@@ -1671,22 +1671,38 @@ function archiveExcludes(clonePath) {
 }
 
 function archiveClone(clonePath, archiveRoot) {
-  // A clean, readable single-repository checkout needs only its unpublished refs.
-  // Other cases retain the existing safety-net archive until their recovery is covered.
+  // Stashes, alternates, nested repositories and unreadable trees still need the safety net.
   const repos = archiveRepos(clonePath);
   if (repos.length === 1 && repos[0] === clonePath && isGitWorktree(clonePath) &&
-      isClean(clonePath) && !hasStash(clonePath) && !hasAlternates(clonePath) &&
-      !isPushed(clonePath)) {
+      !hasStash(clonePath) && !hasAlternates(clonePath)) {
     if (!fs.existsSync(archiveRoot)) fs.mkdirSync(archiveRoot, { recursive: true });
     const stage = fs.mkdtempSync(path.join(archiveRoot, ".bundle-"));
     const archivePath = path.join(archiveRoot, `${path.basename(clonePath)}-${crypto.randomUUID()}.tar.gz`);
     try {
-      const bundle = path.join(stage, "unpublished.bundle");
-      const created = git(["bundle", "create", bundle, "--all", "--not", "--remotes"], clonePath);
-      if (created.status !== 0) throw new Error(`bundle failed: ${created.stderr}`);
-      const verified = git(["bundle", "verify", bundle], clonePath);
-      if (verified.status !== 0) throw new Error(`bundle verification failed: ${verified.stderr}`);
-      const packed = spawnSync("tar", ["-czf", archivePath, "-C", stage, "unpublished.bundle"], { timeout: 60000 });
+      const members = [];
+      if (!isPushed(clonePath)) {
+        const bundle = path.join(stage, "unpublished.bundle");
+        const created = git(["bundle", "create", bundle, "--all", "--not", "--remotes"], clonePath);
+        if (created.status !== 0) throw new Error(`bundle failed: ${created.stderr}`);
+        const verified = git(["bundle", "verify", bundle], clonePath);
+        if (verified.status !== 0) throw new Error(`bundle verification failed: ${verified.stderr}`);
+        members.push("unpublished.bundle");
+      }
+      const diff = git(["diff", "--binary", "HEAD", "--"], clonePath);
+      if (diff.status !== 0) throw new Error(`diff failed: ${diff.stderr}`);
+      if (diff.stdout) {
+        fs.writeFileSync(path.join(stage, "changes.patch"), diff.stdout);
+        members.push("changes.patch");
+      }
+      const untracked = git(["ls-files", "--others", "--exclude-standard", "-z"], clonePath);
+      if (untracked.status !== 0) throw new Error(`untracked listing failed: ${untracked.stderr}`);
+      if (untracked.stdout) {
+        const packedUntracked = spawnSync("tar", ["-cf", path.join(stage, "untracked.tar"), "-C", clonePath, "--null", "-T", "-"], { input: untracked.stdout, timeout: 60000 });
+        if (packedUntracked.status !== 0) throw new Error(`untracked archive failed: ${packedUntracked.stderr}`);
+        members.push("untracked.tar");
+      }
+      if (!members.length) throw new Error("no recoverable changes found");
+      const packed = spawnSync("tar", ["-czf", archivePath, "-C", stage, ...members], { timeout: 60000 });
       if (packed.status !== 0 || spawnSync("tar", ["-tzf", archivePath], { timeout: 60000, stdio: "ignore" }).status !== 0) {
         throw new Error("bundle archive failed verification");
       }
