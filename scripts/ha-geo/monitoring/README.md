@@ -2,6 +2,12 @@
 
 This directory contains an offline evaluator. It does not connect to a host,
 PostgreSQL, or an alerting system. A caller supplies one JSON sample on stdin.
+`adapter.py` accepts an object with `replication`, `receiver`, `wal`, and `host`
+entries, each shaped as `{ "observed_at": <Unix seconds>, "value": <data> }`.
+The replication value is the check-lag JSON; the other values are objects
+containing their respective fields below. It assembles the sample and invokes
+the evaluator; missing or stale inputs remain critical. It does not collect data.
+For an already collected JSON file, run `python3 scripts/ha-geo/monitoring/adapter.py < sources.json`.
 
 ## Input contract
 
