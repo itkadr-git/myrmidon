@@ -330,7 +330,7 @@ function isClean(dir) {
 
 function isPushed(dir) {
   try {
-    const r = git(["log", "@{u}..HEAD", "--oneline"], dir);
+    const r = git(["rev-list", "HEAD", "--branches", "--tags", "--not", "--remotes"], dir);
     return r.status === 0 && r.stdout.trim() === "";
   } catch { return false; }
 }
@@ -1682,7 +1682,7 @@ function archiveClone(clonePath, archiveRoot) {
       const members = [];
       if (!isPushed(clonePath)) {
         const bundle = path.join(stage, "unpublished.bundle");
-        const created = git(["bundle", "create", bundle, "--all", "--not", "--remotes"], clonePath);
+        const created = git(["bundle", "create", bundle, "HEAD", "--all", "--not", "--remotes"], clonePath);
         if (created.status !== 0) throw new Error(`bundle failed: ${created.stderr}`);
         const verified = git(["bundle", "verify", bundle], clonePath);
         if (verified.status !== 0) throw new Error(`bundle verification failed: ${verified.stderr}`);
