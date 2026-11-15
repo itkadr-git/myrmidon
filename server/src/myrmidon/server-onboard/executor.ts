@@ -299,6 +299,9 @@ export class FleetOnboardExecutor {
           }
 
           case "verify": {
+            if (!connOptions.privateKey) {
+              throw new Error("Final verification requires SSH key credentials");
+            }
             if (!activeSsh) {
               activeSsh = await this.getSsh(connOptions);
               await activeSsh.connect(connOptions);
