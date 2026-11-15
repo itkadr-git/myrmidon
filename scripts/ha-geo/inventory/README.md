@@ -1,0 +1,29 @@
+# HA-GEO inventory (partial implementation)
+
+This is not a readiness check. The default command does not connect to a database
+or a remote host. It reports unmeasured fields as unknown and exits 2 while any
+required area remains unknown. Do not place passwords or connection strings in
+arguments. PostgreSQL access uses a local Unix socket only, a clean environment,
+no password file, no prompt, and a fixed read-only query. Permission errors are
+reported without server error text. Operators must obtain separate approval
+before running on any production host.
+
+After approval, on the approved host, from the repository root:
+
+```
+python3 scripts/ha-geo/inventory/collector.py --help
+python3 scripts/ha-geo/inventory/collector.py
+python3 scripts/ha-geo/inventory/collector.py --socket /var/run/postgresql --database DATABASE_NAME --user READ_ONLY_USER
+```
+
+Replace the socket directory, database and user with the approved values. The
+account must be permitted to connect without a password prompt and to read the
+listed statistics. No credentials are passed through the environment. The
+collector does not enable TLS for a Unix socket; it does not assess remote TLS.
+The disk measurement is for `/`, not necessarily the database volume. Backups,
+CI/browser configuration, time synchronization, TLS and login method are not yet
+collected. Exit 2 therefore remains expected even when the PostgreSQL query
+succeeds. `lag_bytes` is replay byte lag on a standby, not time-based RPO.
+Do not treat a null lag as zero or this output as proof of a working standby.
+
+Run isolated fixture checks with `python3 -m unittest discover -s scripts/ha-geo/inventory -v`.
