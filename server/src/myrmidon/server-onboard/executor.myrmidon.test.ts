@@ -255,6 +255,8 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
 
     const result = await executor.execute(claim, mockReporter.reporter);
     expect(result.status).toBe("succeeded");
+    // Decommission must never stop containers owned by unrelated workloads.
+    expect(mockSsh.hasExecuted("docker stop $(docker ps -q) 2>/dev/null || true")).toBe(false);
     expect(mockReporter.steps).toEqual([
       { step: "cleanup", result: "ok", detail: expect.stringContaining("Decommission cleanup completed") },
     ]);
