@@ -466,6 +466,24 @@ esac
     assert.ok(!(result.stdout || "").includes("deploy scripts at"), result.stdout);
   });
 
+  it("does not publish success when the deploy result audit fails", () => {
+    const sb = sandbox({ job: { id: JOB_ID, status: "maintenance_on", digest: NEW } });
+    fs.writeFileSync(path.join(sb.bin, "jq"), `#!/usr/bin/env bash\ncase " $* " in *" deploy.result "*) exit 1 ;; esac\nexec /usr/bin/jq "$@"\n`, { mode: 0o755 });
+    const { out } = run(sb, ["--once"]);
+    assert.equal(report(sb).phase, "error", out);
+    assert.match(report(sb).detail, /audit|reconcil/i);
+    assert.match(read(sb.override), new RegExp(`image: ${CI_IMAGE}@${NEW}`));
+  });
+
+  it("does not roll back without a recorded rollback intent", () => {
+    const sb = sandbox({ job: { id: JOB_ID, status: "maintenance_on", digest: NEW }, health: { status: "ok", version: "0.0.0", commit: COMMIT } });
+    fs.writeFileSync(path.join(sb.bin, "jq"), `#!/usr/bin/env bash\ncase " $* " in *" rollback.intent "*) exit 1 ;; esac\nexec /usr/bin/jq "$@"\n`, { mode: 0o755 });
+    const { out } = run(sb, ["--once"]);
+    assert.equal(report(sb).phase, "error", out);
+    assert.match(report(sb).detail, /audit|reconcil/i);
+    assert.doesNotMatch(calls(sb), new RegExp(`docker pull --quiet ${CI_IMAGE}@${OLD}`));
+  });
+
   it("reports error and halts before switching when recording deploy intent fails", () => {
     const sb = sandbox({ job: { id: JOB_ID, status: "maintenance_on", digest: NEW } });
     const auditFile = path.join(sb.dir, "state", "release-events.jsonl");
