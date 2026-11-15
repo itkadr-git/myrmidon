@@ -1,6 +1,17 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { createAutoSlicePolicy, projectQueueShortages, runAutoSlicePass } from "./auto-slice-policy.ts";
+import { createAutoSlicePolicy, projectQueueShortages, runAutoSlicePass, releaseEpicCandidates } from "./auto-slice-policy.ts";
+
+test("only open epics from the current release are candidates", () => {
+  const rows = [
+    { id: "a", identifier: "DEV-1", title: "Epic 1.6.9", status: "in_progress" },
+    { id: "b", identifier: "DEV-2", title: "Epic 1.7.0", status: "todo" },
+    { id: "c", identifier: "DEV-3", title: "Epic 1.6.9", status: "done" },
+    { id: "d", identifier: "DEV-4", title: "Task 1.6.9", status: "todo" },
+  ];
+  assert.deepEqual(releaseEpicCandidates(rows, "1.6.9").map((row) => row.id), ["a"]);
+  assert.deepEqual(releaseEpicCandidates(rows, null), []);
+});
 
 test("counts project members with empty queues and ignores outsiders", () => {
   const result = projectQueueShortages("company", [
