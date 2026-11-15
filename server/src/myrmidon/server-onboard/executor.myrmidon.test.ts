@@ -69,12 +69,9 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     mockSsh.mockResponse(/pkill -f 'sleep 300/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse('echo "onboard-verified"', { stdout: "onboard-verified\n", exitCode: 0 });
 
+    const durablePair = defaultGenerateKeyPair();
     const executor = new FleetOnboardExecutor({
       createSshExecutor: () => mockSsh,
-      generateKeyPair: () => ({
-        publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIgeneratedKey test-key",
-        privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nfake-key\n-----END OPENSSH PRIVATE KEY-----",
-      }),
     });
 
     const mockReporter = createMockReporter();
@@ -103,13 +100,14 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
         protocol: "ssh",
         keepPassword: false,
         passwordSecretKey: "fleet-srv-node-1-bootstrap-password",
-        accessKeySecretKey: null,
+        accessKeySecretKey: "fleet-srv-node-1-access-key",
         hostKeyFingerprint: null,
       },
       steps: ["connect", "preflight", "access", "harden", "monitoring", "role", "verify"],
       options: { keepPassword: false, installDocker: false, role: "generic" },
       secretValues: {
         bootstrapPassword: "initial-password-123",
+        accessKey: durablePair.privateKey,
       },
     };
 
