@@ -136,6 +136,41 @@ describe("host-clone-cache-gc e2e", () => {
     assert.equal(fs.existsSync(clone), false);
   });
 
+  it("preserves unpublished commits on a non-current branch", async () => {
+    const root = path.join(tmpDir, "root");
+    fs.mkdirSync(root);
+    const clone = makeGitClone(path.join(root, "OPE-12346"));
+    const git = (...args) => {
+      const result = spawnSync("git", args, { cwd: clone, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      return result.stdout.trim();
+    };
+    const remote = path.join(tmpDir, "remote.git");
+    assert.equal(spawnSync("git", ["init", "--bare", remote]).status, 0);
+    git("remote", "add", "origin", remote);
+    git("push", "-u", "origin", "HEAD");
+    const original = git("branch", "--show-current");
+    git("switch", "-c", "unpublished");
+    fs.writeFileSync(path.join(clone, "work.txt"), "unpublished\n");
+    git("add", "work.txt");
+    git("commit", "-m", "unpublished work");
+    const commit = git("rev-parse", "HEAD");
+    git("switch", original);
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    fs.utimesSync(clone, old, old);
+    const r = await runScript(["--root", root, "--lock", path.join(tmpDir, "gc.lock"), "--journal", path.join(tmpDir, "gc.jsonl"), "--apply"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(fs.existsSync(clone), false);
+    const archives = fs.readdirSync(path.join(root, ".gc-archive"));
+    assert.equal(archives.length, 1);
+    const extracted = path.join(tmpDir, "extracted-branch");
+    fs.mkdirSync(extracted);
+    assert.equal(spawnSync("tar", ["-xf", path.join(root, ".gc-archive", archives[0]), "-C", extracted]).status, 0);
+    const heads = spawnSync("git", ["bundle", "list-heads", path.join(extracted, "unpublished.bundle")], { encoding: "utf8" });
+    assert.equal(heads.status, 0, heads.stderr);
+    assert.match(heads.stdout, new RegExp(commit));
+  });
+
   it("preserves an unpushed commit in a small bundle without archiving the clone", async () => {
     const root = path.join(tmpDir, "root");
     fs.mkdirSync(root);
