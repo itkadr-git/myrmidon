@@ -104,6 +104,18 @@ describe("host-clone-cache-gc e2e", () => {
     assert.equal(fs.lstatSync(link).isSymbolicLink(), true);
   });
 
+  it("reports archive bytes without following symlinks", async () => {
+    const root = path.join(tmpDir, "root");
+    const archives = path.join(root, ".gc-archive");
+    fs.mkdirSync(archives, { recursive: true });
+    fs.writeFileSync(path.join(archives, "OPE-1.tar.gz"), "12345");
+    fs.writeFileSync(path.join(archives, "OPE-2.tar.zst"), "1234567");
+    fs.symlinkSync(path.join(archives, "OPE-1.tar.gz"), path.join(archives, "OPE-3.tar.gz"));
+    const r = await runScript(["--root", root, "--lock", path.join(tmpDir, "gc.lock"), "--journal", path.join(tmpDir, "gc.jsonl"), "--dry-run"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).plan.archiveBytes, 12);
+  });
+
   it("dry-run plans but does not delete", async () => {
     const root = path.join(tmpDir, "root");
     fs.mkdirSync(root);
