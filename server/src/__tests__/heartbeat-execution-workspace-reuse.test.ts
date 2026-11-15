@@ -173,12 +173,20 @@ describeEmbeddedPostgres("execution workspace row lifecycle across runs", () => 
   }
 
   async function runOnce(agentId: string, issueId: string) {
-    const run = await heartbeat.invoke(
-      agentId,
-      "assignment",
-      { issueId, wakeReason: "issue_assigned" },
-      "system",
-    );
+    // A reason-less invoke is a throttle candidate: after two no-progress runs
+    // on the issue the re-wake cooldown (issue_rewake_throttled) holds the next
+    // wake back and admission returns null — unless some activity-log row
+    // happens to land after the previous run finished, which made this test
+    // flaky. The real assignment path carries reason issue_assigned, which
+    // is never throttled, so the test wakes the same way.
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "system",
+    });
     expect(run).not.toBeNull();
     const finished = await waitForRunToFinish(run!.id);
     expect(finished?.status).toBe("succeeded");
