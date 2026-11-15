@@ -137,6 +137,22 @@ describe("updateAgentAllowlistsForCompany", () => {
     expect(gateway.calls[0]?.models).toHaveLength(7);
   });
 
+  it("normalizes the litellm provider prefix on selected card models", async () => {
+    const alias = agentKeySecretName({ agentId: "agent-card", agentSlug: "Card Model" });
+    const gateway = recordingGateway(undefined, { [alias]: ["vendor/old"] });
+    const db = scriptedDb([
+      [{ litellmModelName: "vendor/primary", enabled: true }, { litellmModelName: "vendor/fallback", enabled: true }],
+      [{ id: "agent-card", name: "Card Model", adapterConfig: {
+        model: "litellm/vendor/primary", models: { fallbacks: ["litellm/vendor/fallback"] },
+      } }],
+    ]);
+    await updateAgentAllowlistsForCompany(
+      db, deps({ db, gateway: () => gateway, findSecretId: async () => "id-key" }),
+      "company-a", [], [], false, { cardModelsOnly: true },
+    );
+    expect(gateway.calls[0]?.models).toEqual(["vendor/old", "vendor/primary", "vendor/fallback"]);
+  });
+
   it("applies registry changes only to agents whose card names that model", async () => {
     const alias = agentKeySecretName({ agentId: "agent-card", agentSlug: "Card Model" });
     const otherAlias = agentKeySecretName({ agentId: "agent-other", agentSlug: "Other" });
