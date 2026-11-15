@@ -55,7 +55,7 @@ export function RunPrioritySettingsPanel() {
         if (raw.length > 64) { setError(t("area.settings-models-runtime-2.run-priority-settings-panel.releaseTooLong")); return; }
         continue;
       }
-      if (key === "enabled") { patch.enabled = raw === "true"; continue; }
+      if (key === "enabled" || key === "strictReleaseFocus") { Object.assign(patch, { [key]: raw === "true" }); continue; }
       const max = key === "starvationTopWeight" ? 1_000_000 :
         key === "starvationLimitMinutes" ? 239 : key === "agingMaxBonus" ? 10_000 :
           key === "agingStepMinutes" || key === "inProgressIdleWakeMinutes" ? 1440 : 1000;
@@ -74,6 +74,7 @@ export function RunPrioritySettingsPanel() {
       {loadError && <p role="alert" className="text-destructive">{loadError instanceof Error ? loadError.message : t("area.settings-models-runtime-2.run-priority-settings-panel.loadFailed")}</p>}
       {settings && <>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={draft?.enabled !== undefined ? draft.enabled === "true" : settings.enabled} disabled={!admin} onChange={(event) => change("enabled", String(event.target.checked))} />{t("area.settings-models-runtime-2.run-priority-settings-panel.enabled")}</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={draft?.strictReleaseFocus !== undefined ? draft.strictReleaseFocus === "true" : settings.strictReleaseFocus} disabled={!admin} onChange={(event) => change("strictReleaseFocus", String(event.target.checked))} />{t("area.settings-models-runtime-2.run-priority-settings-panel.strictReleaseFocus")}</label>
         <div className="grid gap-3 md:grid-cols-2">
           {ROLES.map((role) => <div key={role}><Label htmlFor={`queue-role-${role}`}>{fieldLabel(`role:${role}`)}</Label><Input id={`queue-role-${role}`} inputMode="numeric" disabled={!admin} value={value(`role:${role}`, settings.roleWeights[role])} onChange={(event) => change(`role:${role}`, event.target.value)} /></div>)}
           {ISSUE_PRIORITIES.map((priority) => <div key={priority}><Label htmlFor={`queue-issue-${priority}`}>{fieldLabel(`issue:${priority}`)}</Label><Input id={`queue-issue-${priority}`} inputMode="numeric" disabled={!admin} value={value(`issue:${priority}`, settings.issuePriorityWeights[priority])} onChange={(event) => change(`issue:${priority}`, event.target.value)} /></div>)}

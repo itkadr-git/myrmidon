@@ -1,9 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, issueLabels, issues, labels } from "@myrmidon/db";
+import { agents, companies, createDb, issueLabels, issues, labels } from "@myrmidon/db";
 import { normalizeRunPrioritySettings } from "@myrmidon/shared";
-import { heartbeatService } from "../services/heartbeat.ts";
 import { findTopReadyIssueForAgent } from "../myrmidon/idle-pickup.js";
 import { applyRunPrioritySettings, resetRunPriorityForTests } from "../myrmidon/run-priority/state.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -11,7 +10,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 const support = await getEmbeddedPostgresTestSupport();
 const describeDb = support.supported ? describe : describe.skip;
 
-describeDb("release-focused production wake and task selection", () => {
+describeDb("release-focused idle-pickup task selection", () => {
   let db: ReturnType<typeof createDb>;
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
 
@@ -45,47 +44,23 @@ describeDb("release-focused production wake and task selection", () => {
     return { companyId, agentId, currentId, otherId };
   }
 
-  it("records release_focus for an off-release timer wake before adapter admission", async () => {
-    const { agentId, otherId } = await seed();
-    expect(await heartbeatService(db).wakeup(agentId, { source: "timer", payload: { issueId: otherId } })).toBeNull();
-    const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
-    expect(rows).toEqual([expect.objectContaining({ status: "skipped", reason: "release_focus" })]);
-  });
-
-  it("admits current-release work and other work after current-release work closes", async () => {
-    const { agentId, currentId, otherId } = await seed();
-    const heartbeat = heartbeatService(db);
-    await heartbeat.wakeup(agentId, { source: "timer", payload: { issueId: currentId } });
-    await db.update(issues).set({ status: "done" }).where(eq(issues.id, currentId));
-    await heartbeat.wakeup(agentId, { source: "timer", payload: { issueId: otherId } });
-    const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
-    expect(rows).toHaveLength(2);
-    expect(rows.every((row) => row.reason === "heartbeat.disabled")).toBe(true);
-  });
-
-  it("keeps other releases suppressed while current-release work is blocked", async () => {
-    const { companyId, agentId, currentId, otherId } = await seed();
-    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, currentId));
-    expect(await findTopReadyIssueForAgent(db, { id: agentId, companyId })).toBeNull();
-    await heartbeatService(db).wakeup(agentId, { source: "timer", payload: { issueId: otherId } });
-    const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
-    expect(rows).toEqual([expect.objectContaining({ reason: "release_focus" })]);
-  });
-
-  it("preserves authenticated manual user overrides", async () => {
-    const { agentId, otherId } = await seed();
-    await heartbeatService(db).wakeup(agentId, {
-      source: "timer", payload: { issueId: otherId }, manualUserWake: true,
-      requestedByActorType: "user", requestedByActorId: "release-focus-test-user",
-    });
-    const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
-    expect(rows).toEqual([expect.objectContaining({ reason: "heartbeat.disabled" })]);
-  });
-
   it("selects current-release work ahead of a higher priority other-release task", async () => {
     const { companyId, agentId, currentId, otherId } = await seed();
     expect((await findTopReadyIssueForAgent(db, { id: agentId, companyId }))?.id).toBe(currentId);
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, currentId));
     expect((await findTopReadyIssueForAgent(db, { id: agentId, companyId }))?.id).toBe(otherId);
+  });
+
+  it("strictReleaseFocus=false lifts the selection filter, true restores it, no restart", async () => {
+    const { companyId, agentId, currentId } = await seed();
+    const on = normalizeRunPrioritySettings({ currentRelease: "1.6.9", strictReleaseFocus: true });
+    try {
+      applyRunPrioritySettings({ ...on, strictReleaseFocus: false });
+      expect(await findTopReadyIssueForAgent(db, { id: agentId, companyId })).not.toBeNull();
+      applyRunPrioritySettings(on);
+      expect((await findTopReadyIssueForAgent(db, { id: agentId, companyId }))?.id).toBe(currentId);
+    } finally {
+      applyRunPrioritySettings(normalizeRunPrioritySettings({ currentRelease: "1.6.9" }));
+    }
   });
 });

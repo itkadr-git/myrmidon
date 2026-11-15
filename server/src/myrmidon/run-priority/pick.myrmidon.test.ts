@@ -35,6 +35,7 @@ const NOW = 1_700_000_000_000;
 function settings(overrides: Partial<RunPrioritySettings> = {}): RunPrioritySettings {
   return {
     enabled: true,
+    strictReleaseFocus: true,
     roleWeights: { ...DEFAULT_RUN_PRIORITY_ROLE_WEIGHTS },
     defaultRoleWeight: 30,
     issuePriorityWeights: { critical: 100, high: 80, medium: 60, low: 40, none: 20 },

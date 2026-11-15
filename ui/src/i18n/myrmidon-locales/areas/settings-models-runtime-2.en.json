@@ -217,6 +217,7 @@
         "releaseTooLong": "Release must be at most 64 characters.",
         "invalidNumber": "{{field}}: enter an integer between 0 and {{max}}.",
         "enabled": "Enabled",
+        "strictReleaseFocus": "Strict focus on the current release",
         "roleWeight": "{{role}} role weight",
         "issueWeight": "{{priority}} issue weight",
         "roles": {
