@@ -251,16 +251,6 @@ export async function updateAgentAllowlistsForCompany(
 
   const companyModels: { name: string; enabled: boolean }[] =
     options.includeRegistryModels === false ? [] : await listCompanyModels(db, companyId);
-  const enabledNames = companyModels.filter((model) => model.enabled).map((model) => model.name);
-  const models = [...new Set([
-    ...(options.cardModelsOnly ? [] : enabledNames),
-    ...additionalModelNames,
-  ])].filter((model) => !removedModelNames.includes(model));
-  if (models.length === 0 && !allowEmpty && !options.cardModelsOnly && options.includeRegistryModels !== false) {
-    // Nothing enabled yet: leave keys at their current lists rather than
-    // churning them on a pass with nothing to say.
-    return skip("no-enabled-models");
-  }
   // LiteLLM (verified live against v1.103.2, isolated instance) treats
   // /key/update with models:[] as "restrictions removed": the key may call
   // EVERY registered model, including ones it never held. A disable pass that
