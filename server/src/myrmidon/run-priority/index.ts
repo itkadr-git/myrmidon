@@ -22,7 +22,6 @@ export {
 } from "./state.js";
 export {
   runPriorityService,
-  isReleaseFocusActive,
   RUN_PRIORITY_ACTION,
 } from "./service.js";
 export type {

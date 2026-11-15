@@ -54,7 +54,7 @@ import {
   currentRunPrioritySettings,
   resetRunPriorityForTests,
 } from "../myrmidon/run-priority/state.js";
-import { isReleaseFocusActive, runPriorityService } from "../myrmidon/run-priority/service.js";
+import { runPriorityService } from "../myrmidon/run-priority/service.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -550,24 +550,109 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
     expect(stillQueued?.status).toBe("queued");
   }, 30_000);
 
-  it("checks strict release focus against open work and live settings for the company", async () => {
-    const first = await seedCompanyAndAgent({ name: "Focus", role: "engineer" });
-    const other = await seedCompanyAndAgent({ name: "Other", role: "engineer" });
-    const issueId = await seedIssue(first.companyId, { title: "Release work", priority: "high" });
-    const labelId = randomUUID();
-    await db.insert(labels).values({ id: labelId, companyId: first.companyId, name: "1.6.9", color: "#ffffff" });
-    await db.insert(issueLabels).values({ issueId, labelId, companyId: first.companyId });
-    const service = runPriorityService(db, { env: {} });
-    const actor = { actorType: "user" as const, actorId: "responsible-user", agentId: null, runId: null, agentApiKeyId: null };
-    await service.update({ currentRelease: "1.6.9", strictReleaseFocus: true }, actor);
-    expect(await isReleaseFocusActive(db, first.companyId)).toBe(true);
-    expect(await isReleaseFocusActive(db, other.companyId)).toBe(false);
-    await service.update({ strictReleaseFocus: false }, actor);
-    expect(await isReleaseFocusActive(db, first.companyId)).toBe(false);
-    await service.update({ strictReleaseFocus: true }, actor);
-    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
-    expect(await isReleaseFocusActive(db, first.companyId)).toBe(false);
-  }, 30_000);
+  // myrmidon(OPE-13231): strict release focus at the run-start gate.
+  async function seedFocusScenario(strict: boolean) {
+    pinAdmission({ maxConcurrentRuns: 0 });
+    applyRunPrioritySettings({ ...defaultSettings(), currentRelease: "1.6.9", strictReleaseFocus: strict });
+    const { companyId, agentId } = await seedCompanyAndAgent({ name: "Engineer", role: "engineer" });
+    const colleague = randomUUID();
+    await db.insert(agents).values({
+      id: colleague, companyId, name: "Colleague", role: "engineer", status: "active",
+      adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    // The engineer has only a 1.8 task; the 1.6.9 task belongs to a colleague.
+    const otherIssueId = await seedIssue(companyId, { title: "1.8 work", priority: "medium", assigneeAgentId: agentId });
+    const currentIssueId = await seedIssue(companyId, { title: "1.6.9 work", priority: "medium", assigneeAgentId: colleague });
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, otherIssueId));
+    for (const [issueId, name] of [[otherIssueId, "1.8"], [currentIssueId, "1.6.9"]] as const) {
+      const labelId = randomUUID();
+      await db.insert(labels).values({ id: labelId, companyId, name, color: "#ffffff" });
+      await db.insert(issueLabels).values({ issueId, labelId, companyId });
+    }
+    return { companyId, agentId, otherIssueId, currentIssueId };
+  }
+
+  async function commentWake(agentId: string, issueId: string) {
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_commented" },
+    });
+    expect(run).not.toBeNull();
+    return run!;
+  }
+
+  async function sweep() {
+    pinAdmission({ maxConcurrentRuns: 1 });
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+  }
+
+  it("strict focus: a comment wake on a 1.8 task of an engineer without own 1.6.9 work is deferred, not lost", async () => {
+    const { agentId, otherIssueId } = await seedFocusScenario(true);
+    const run = await commentWake(agentId, otherIssueId);
+    await sweep();
+    const row = await runRow(run.id);
+    expect(row?.status).toBe("scheduled_retry");
+    expect(row?.scheduledRetryAt).not.toBeNull();
+    expect(JSON.stringify(row?.contextSnapshot)).toContain("releaseFocusDeferral");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("strict focus: a queued continuation or retry of a 1.8 task that bypassed the wake path does not start", async () => {
+    const { companyId, agentId, otherIssueId } = await seedFocusScenario(true);
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId, companyId, agentId, status: "queued", invocationSource: "automation",
+      contextSnapshot: { issueId: otherIssueId, wakeReason: "max_turn_continuation" },
+    });
+    await sweep();
+    expect((await runRow(runId))?.status).toBe("scheduled_retry");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("strict focus: the deferred run starts after the flag is switched off, without a restart", async () => {
+    const { agentId, otherIssueId } = await seedFocusScenario(true);
+    const run = await commentWake(agentId, otherIssueId);
+    await sweep();
+    expect((await runRow(run.id))?.status).toBe("scheduled_retry");
+    applyRunPrioritySettings({ ...defaultSettings(), currentRelease: "1.6.9", strictReleaseFocus: false });
+    await db.update(heartbeatRuns).set({ scheduledRetryAt: new Date(Date.now() - 1000) }).where(eq(heartbeatRuns.id, run.id));
+    await heartbeat.promoteDueScheduledRetries();
+    await sweep();
+    expect(mockAdapterExecute).toHaveBeenCalled();
+    expect(["running", "succeeded"]).toContain((await runRow(run.id))?.status);
+  });
+
+  it("strict focus: the deferred run starts once no open current-release task is left", async () => {
+    const { agentId, otherIssueId, currentIssueId } = await seedFocusScenario(true);
+    const run = await commentWake(agentId, otherIssueId);
+    await sweep();
+    expect((await runRow(run.id))?.status).toBe("scheduled_retry");
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, currentIssueId));
+    await db.update(heartbeatRuns).set({ scheduledRetryAt: new Date(Date.now() - 1000) }).where(eq(heartbeatRuns.id, run.id));
+    await heartbeat.promoteDueScheduledRetries();
+    await sweep();
+    expect(mockAdapterExecute).toHaveBeenCalled();
+  });
+
+  it("flag off: the 1.8 wake runs as before focus", async () => {
+    const off = await seedFocusScenario(false);
+    const offRun = await commentWake(off.agentId, off.otherIssueId);
+    await sweep();
+    expect(["running", "succeeded"]).toContain((await runRow(offRun.id))?.status);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it("strict focus: a run of a current-release task starts", async () => {
+    const { currentIssueId } = await seedFocusScenario(true);
+    const colleague = (await db.select({ a: issues.assigneeAgentId }).from(issues).where(eq(issues.id, currentIssueId)))[0]!.a!;
+    const run = await commentWake(colleague, currentIssueId);
+    await sweep();
+    expect(["running", "succeeded"]).toContain((await runRow(run.id))?.status);
+  });
 
   it("a weights change through the settings service reorders the next sweep without a restart", async () => {
     pinAdmission({ maxConcurrentRuns: 0 });
