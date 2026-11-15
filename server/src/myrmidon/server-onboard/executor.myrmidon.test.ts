@@ -243,6 +243,22 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockReporter.completion?.status).toBe("failed");
   });
 
+  it("fails hardening when the firewall policy command fails even if SSH remains reachable", async () => {
+    const mockSsh = new MockSshExecutor();
+    mockSsh.mockResponse(/sudo ufw default deny incoming/, { exitCode: 1, stderr: "ufw failed" });
+    mockSsh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => mockSsh });
+    const mockReporter = createMockReporter();
+    const claim: any = {
+      job: { id: "job-firewall-policy", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, mockReporter.reporter);
+    expect(result.status).toBe("failed");
+    expect(mockReporter.completion?.status).toBe("failed");
+  });
+
   it("rolls back firewall and fails job when firewall connectivity check fails", async () => {
     const mockSsh = new MockSshExecutor();
     mockSsh.mockResponse(/ssh-keygen -l/, {
