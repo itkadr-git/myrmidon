@@ -12,6 +12,85 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.9
 
+### Strict-focus settings reach every board process, and runs parked by the focus are re-checked at once (1.6.9 RUN-PRIORITY-SYNC)
+
+- The in-force run priority settings are process memory, so a save reached only the process that took the request. A save (`PATCH /api/myrmidon/run-priority` or `PATCH /api/instance/settings/general` with `runPriority`) now publishes `settings_changed` and every process re-reads the stored row; each process also re-reads it every 3 minutes.
+- When `currentRelease` or `strictReleaseFocus` changes, runs parked by the release focus get `scheduled_retry_at = now` and are checked on the next sweep instead of waiting up to 30 minutes.
+
+### Engineer tasks are spread over idle engineers (OPE-13252)
+
+- An agent that carries an open task or has a live run no longer takes the next queued task while a free agent of the same caste (a member of the task's project, when it has one) can take it. With no free colleague the behaviour is as before.
+- The task-slicing skill now says that engineer slices are created without an assignee.
+
+### The LiteLLM key budget report is bounded and runs in one process (1.6.9 KEY-BUDGETS-OOM)
+
+- `/key/list` is read in pages of 25 keys (was 100) with a 4 MB body limit per page, each page is reduced to the key hash, cap and spend, a page has a 15 s limit and the whole list 120 s, and one evaluation runs per company at a time.
+- The spend sweep and the first budget report start only in the process that owns background work; an api process keeps only the bounded report. On rc.7 the api processes died of "heap out of memory" about 30 s after start.
+
+### Cleanup of terminal wake requests skips wakes still named by a run (1.6.9 DATA-RETENTION-WAKEUP-FK)
+
+- Deleting `agent_wakeup_requests` failed on `heartbeat_runs_wakeup_request_id_agent_wakeup_requests_id_fk` on every pass, because wake requests are kept 30 days and runs 90. The doomed set now skips wake requests that `heartbeat_runs.wakeup_request_id` still names.
+- The wake-request group and the document-revisions group run at most one batch per pass. No migration, no index.
+
+### The devbuild startup self-check no longer copies `/workspace` to the build host (1.6.9 DEVBUILD-SELFCHECK)
+
+- The self-check ran `devbuild 'true'` on `/workspace`, which devbuild sends to the build host with rsync (3-7 GB per container start). It now probes an empty scratch directory with a fixed name, removed after the check. `DEVBUILD_CHECK_WORKSPACE` is used as given.
+
+### `devbuild` installs dependencies in a fresh remote copy (1.6.9 DEVBUILD-AUTO-INSTALL)
+
+- For commands that use node tools, when the remote copy has `package.json` and `pnpm-lock.yaml` but no finished install, `devbuild` runs `pnpm install --frozen-lockfile --prefer-offline` first, under a lock in the copy. `DEVBUILD_NO_AUTO_INSTALL=1` turns it off.
+
+### Isolated task workspace of container agents lives on the bot disk, not on the board (OPE-13213)
+
+For `hermes_gateway` and `omp_local`, an isolated run now uses the task directory of the bot (`/workspace/<ISSUE>`). The board creates no git worktree, no shared checkout, no clone and no project directory for it. The run is recorded as one `execution_workspaces` row per task with strategy `bot_container`. A board-side git worktree (local adapters) is refused with `WORKTREE_PARTITION_FULL` when the partition is at or above `general.botDisk.partitionRefuseOpenPercent`.
+
+### The api child heap ceiling defaults to 2560 MB (OPE-13266)
+
+- Each api child of the split board now starts with `--max-old-space-size=2560` (was 1024). The startup heap of the api process reached about 1 GB by 2026-11-15, and production children died with OOM 10-25 s after ready. `MYRMIDON_API_MAX_OLD_SPACE_MB` still overrides it; the accepted range stays 256..8192.
+
+### The board reports an approved pull request stuck BLOCKED and records GitHub's merge refusal (OPE-13136)
+
+When an approved pull request stays `BLOCKED` on GitHub for longer than a threshold although the review marker is on it and the required checks are green (for example a required check left "expected" by a workflow), the board now writes one `issue.review_routing.board_merge_blocked` activity record on the task and one warning in the server log. The record names the repository, pull request number, head, minutes blocked and required checks, and is not repeated for the same head; a new head or a pull request that is no longer blocked starts the count over. The threshold is the new `boardMerge.blockedAlertAfterMinutes` review-routing setting (default 30, `0` switches the alert off, maximum 1440).
+
+When GitHub refuses the board's merge call (HTTP 405 / 422), the board now records an `issue.review_routing.board_merge_refused` activity on the task with the HTTP status and GitHub's own message, at most once per hour per pull request.
+
+### A push to the task's PR now counts as progress of a run that hands the task back (EMPTY-RUNS-1)
+
+- The EMPTY-RUNS-1 guard treats a run that moves a task `in_progress -> todo` with a note as having made no progress.
+  An engineer's run does exactly that after pushing commits to the task's pull request, and a push leaves no row under
+  the run, so on 16.11 the task OPE-13243 cooled down (two runs, a 60 minute pause) while the head of its PR changed in
+  every run.
+- When the head of a task's pull request moves (`metadata.headSha` of the `pull_request` work product changes, seen by
+  the GitHub `pull_request` event), the board now writes an `issue.work_product_head_changed` activity row on the task
+  (actor `system`, details `workProductId`, `headShaChanged: true`, `fromSha`, `toSha`, and `sender`, the GitHub login, when the event has one). Nothing is written when the head
+  stays the same or the event carries none. The row is not part of the progress and new-input action lists, so it wakes
+  and thaws nothing by itself.
+- The no-progress read of the task cooling and of the rewake throttle credits a run with progress when such a row, from
+  any actor, falls between the start of the run and its end plus 15 minutes (the webhook arrives after the push). One
+  head change is credited to one run: the run that holds it, otherwise the run that ended last before it; a run that has
+  not finished ends at now. At most 200 newest rows are read. A run without a head change is judged as before.
+
+### Fresh CI results after GitHub job reruns (OPE-13123)
+GitHub `check_run`, `check_suite`, and `workflow_run` deliveries now invalidate the affected pull request head's CI snapshots. Run-context reads revalidate completed results through the existing conditional check-runs request, so a rerun can change FAILURE to SUCCESS without waiting for the old aggregate TTL. Unchanged UI reads retain the existing completed-result cache behavior.
+
+### Monitor of a task that waits for subtasks no longer polls with a model (MONITOR-IDLE-LOOP / OPE-13141)
+
+- A due monitor of a task that has subtasks compares a snapshot (task and subtask statuses, pull requests, comments and documents by anyone but the owner) with the one recorded at the previous wake. Nothing changed: no model wake, the monitor moves on (`issue.monitor_deferred`, reason `issue_state_unchanged`).
+- After `general.processes.monitorUnchangedWakeLimit` unchanged terms in a row (default 3, 0 = off) the monitor is removed and `issue.monitor_cleared` with a warning is written to the activity log. Monitors of tasks without subtasks, review CI-wait monitors and manual triggers are not affected.
+- When a subtask's pull request is merged and the board settles the subtask to `done`, the owner of the parent is woken once (`issue_children_completed`, key per parent and subtask; `allChildrenTerminal` says whether it was the last one).
+- The no-commit run cap (`taskRunsWithoutCommitLimit`) applies to every agent role, not only to engineers.
+
+### The review liveness wake no longer re-wakes a reviewer who cannot do anything (OPE-13149)
+
+- On 14.11 (candidate 1.6.9-rc.5) 86 of 164 agent runs in one hour were empty (52%); one reviewer alone made 30 runs in 70 minutes.
+  The source was the periodic review routing pass (`myrmidon_review_wakeup_retry`, wake reason `execution_review_requested`): it woke the
+  reviewer of every stale pending review on a 10-minute backoff, with no look at the pull request. The reviewer found the head's CI
+  still running ("CI result for the current pull request head is not complete", REQUEST CHANGES refused with HTTP 422) and did nothing.
+- The pass now reads the CI result of the head with the board's own reader and does not wake the reviewer while it is not complete; the
+  `ci_completed` event wakes the reviewer when the result arrives. A task that is no longer `in_review` (returned to the implementer) is
+  never woken. The same (task, reviewer, stage, head, CI state) is woken once by the pass; a moved head, a new stage, a changed CI state or
+  a cancelled run (failed dispatch) wakes again. An unreadable CI does not hold the wake.
+
 ### A bot container Docker marks unhealthy is no longer restarted while its run is alive (BOT-HEALTH-LIVE-RUN)
 
 - On 14.11 the container health probe (`curl /health`, 5 s timeout) timed out under host load (load 9-12) and Docker marked live bots `unhealthy`. The board restarted them at once and cut two running runs (`myrmidon_maintenance_interrupted`).
