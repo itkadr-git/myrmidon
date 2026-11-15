@@ -20,7 +20,7 @@ vi.mock("../litellm-keys/agent-keys.js", () => ({ defaultAgentGatewayKeyDeps: ()
 vi.mock("../../services/index.js", () => ({ secretService: () => ({}) }));
 vi.mock("../../middleware/logger.js", () => ({ logger: { info: () => undefined, warn: () => undefined } }));
 
-import { startLitellmModelReconciliation } from "./startup-reconciler.js";
+import { startLitellmModelReconciliation, startAgentAllowlistWatchdog } from "./startup-reconciler.js";
 
 const ENV = {
   MYRMIDON_LITELLM_BASE_URL: "http://gateway.internal:4000",
@@ -33,6 +33,20 @@ function emptyDb(): Db {
   chain.then = (resolve: (value: unknown[]) => unknown) => Promise.resolve([]).then(resolve);
   return { select: () => chain } as unknown as Db;
 }
+
+describe("the periodic allowlist watchdog", () => {
+  it("repairs drift on each tick and stops cleanly", async () => {
+    vi.useFakeTimers();
+    const reconcile = vi.fn(async () => {});
+    const stop = startAgentAllowlistWatchdog(reconcile, 1000);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    stop();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+});
 
 describe("the default startup allowlist port", () => {
   beforeEach(() => {

@@ -92,6 +92,29 @@ const defaultPorts: LitellmReconcilePorts = {
  * A no-op when the gateway settings are absent; one company's failure never
  * stops the others; nothing here rejects the caller's promise.
  */
+export async function reconcileAgentAllowlistDrift(db: Db): Promise<void> {
+  for (const companyId of await defaultPorts.listCompanyIds(db)) {
+    try {
+      const result = await defaultPorts.reportAgentAllowlists(db, companyId, process.env);
+      logger.info({ companyId, ...summarizeAllowlistResult(result as Parameters<typeof summarizeAllowlistResult>[0]) }, "litellm allowlist watchdog completed");
+    } catch (err) {
+      logger.warn({ err, companyId }, "litellm allowlist watchdog failed for company");
+    }
+  }
+}
+
+export function startAgentAllowlistWatchdog(reconcile: () => Promise<void>, intervalMs = 300_000): () => void {
+  let running = false;
+  const timer = setInterval(() => {
+    if (running) return;
+    running = true;
+    void reconcile().catch((err) => logger.warn({ err }, "litellm allowlist watchdog failed"))
+      .finally(() => { running = false; });
+  }, intervalMs);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
 export async function startLitellmModelReconciliation(
   db: Db,
   opts: { env?: NodeJS.ProcessEnv; ports?: Partial<LitellmReconcilePorts> } = {},
