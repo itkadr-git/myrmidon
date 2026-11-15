@@ -337,7 +337,7 @@ export async function updateAgentAllowlistsForCompany(
         ? cardModels.filter((name) =>
           companyModels.some((model) => model.name === name && model.enabled) || additionalModelNames.includes(name),
         )
-        : cardModels;
+        : [...enabledNames, ...cardModels];
       const cardRetirements = current.filter((name) =>
         (disabledRegistryNames.includes(name) && cardModels.includes(name)) ||
         (options.cardModelsOnly && removedModelNames.includes(name)),

@@ -44,6 +44,8 @@ export { myrmidonBrowserConsoleRoutes } from "./browser-console/wiring.js"; // m
 export { myrmidonLitellmCostsRoutes } from "./litellm-costs/routes.js"; // myrmidon(M2-A)
 export { myrmidonLitellmKeysRoutes } from "./litellm-keys/routes.js"; // myrmidon(M2-B)
 export { myrmidonModelProviderRoutes, createPluginProviderModelSync } from "./model-providers/wiring.js";
+export { defaultAgentGatewayKeyDeps } from "./litellm-keys/agent-keys.js";
+export { updateAgentAllowlistsForCompany } from "./litellm-sync/agent-allowlist-handler.js";
 export { bindModelProviderPluginLifecycle } from "./model-providers/plugin-lifecycle.js"; // myrmidon(1.6.6 OPE-7198)
 export { myrmidonAgentExchangeRoutes } from "./agent-exchange/wiring.js"; // myrmidon(1.7-AGENT-EXCHANGE-A)
 export { myrmidonAgentExchangeFeedRoutes } from "./agent-exchange/feed-wiring.js"; // myrmidon(1.7-AGENT-EXCHANGE-B)

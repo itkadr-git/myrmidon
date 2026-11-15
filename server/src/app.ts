@@ -55,8 +55,7 @@ import { summarySlotRoutes } from "./routes/summary-slots.js";
 import { statusCardRoutes } from "./routes/status-cards.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
-import { defaultAgentGatewayKeyDeps } from "./myrmidon/litellm-keys/agent-keys.js";
-import { updateAgentAllowlistsForCompany } from "./myrmidon/litellm-sync/agent-allowlist-handler.js";
+import { updateAgentAllowlistsForCompany, defaultAgentGatewayKeyDeps } from "./myrmidon/app-plugin.js";
 import type { SetupTokenSessionService } from "./services/setup-token-session.js";
 import {
   buildSetupTokenLoginTransport,
