@@ -112,7 +112,14 @@ see "SSH runner run copies" below for the one that matters, `HOST_GC_RUNNER_ROOT
    `git fetch "$HOME/gc-recovery/unpublished.bundle" 'refs/heads/*:refs/heads/recovered/*'`.
    Apply `staged.patch` with `git apply --index`, then `changes.patch` with `git apply`;
    extract `untracked.tar` into the checkout after inspecting its contents. Not every archive
-   contains every member. Stashes and detached HEADs may require inspecting bundle refs with
+   contains every member. Each git root has its own members: the checkout's own repository is
+   at the top of the archive, a repository inside it under `repos/<path>/`; `manifest.json` lists
+   them. A checkout whose files lie outside every git root, or with a broken repository, gets the
+   previous full archive instead (journal event `archive-full-fallback` with the reason); a
+   checkout with alternate objects stays on disk. When everything is pushed no archive is made.
+   Disk pressure: at `--pressure-percent` (default 85, env `HOST_GC_PRESSURE_PERCENT`) the scratch
+   TTL drops to 1 h and `disk-pressure` is journaled; at `--critical-percent` (95) `disk-critical`
+   is journaled for the board operator. Stashes and detached HEADs may require inspecting bundle refs with
    `git bundle list-heads` and fetching the needed ref explicitly. Do not overwrite existing work.
 4. **Re-run in dry-run mode** to verify the plan before re-enabling.
 

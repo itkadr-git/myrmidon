@@ -58,6 +58,18 @@ const CACHE_TTL_HOURS = 72;
 // A file git does not ignore (user or uncommitted work) is always archived, even inside `dist/`.
 const ARCHIVE_EXCLUDES = ["node_modules", ".pnpm-store", ".turbo", "dist", ".next", "coverage"];
 const SCRATCH_TTL_HOURS = 6;
+// Disk pressure (partitionThresholdPercent / partitionCriticalPercent of the bots disk): above the
+// first the scratch TTL drops to one hour; above the second the journal gets a disk-critical record
+// for the board operator. Archives of unpushed work and open tasks are never touched by this mode.
+const PRESSURE_PERCENT = 85;
+const CRITICAL_PERCENT = 95;
+const PRESSURE_SCRATCH_TTL_HOURS = 1;
+export function diskUsedPercent(dir) {
+  try {
+    const st = fs.statfsSync(dir);
+    return st.blocks > 0 ? Math.round(((st.blocks - st.bfree) / st.blocks) * 1000) / 10 : null;
+  } catch { return null; }
+}
 // myrmidon(1.6.8 OPE-12722 / OPE-12759): an SSH runner (the omp container) keeps one copy of
 // the workspace per run under `<runner>/workspace/.paperclip-runtime/runs/<runId>`. A run that
 // fails or is cancelled never reaches the restore that removes its copy, and the adapter prunes
@@ -222,6 +234,8 @@ export function parseArgs(argv) {
     cloneTtlHours: CLONE_TTL_HOURS,
     cacheTtlHours: CACHE_TTL_HOURS,
     scratchTtlHours: defaultScratchTtl,
+    pressurePercent: Number(process.env.HOST_GC_PRESSURE_PERCENT) || PRESSURE_PERCENT,
+    criticalPercent: Number(process.env.HOST_GC_CRITICAL_PERCENT) || CRITICAL_PERCENT,
     procDir: process.env.PROC_DIR || "/proc",
     runnerRoots: (process.env.HOST_GC_RUNNER_ROOTS || "").split(":").map((r) => r.trim()).filter(Boolean),
     runnerContainerPrefix: process.env.MYRMIDON_HOST_GC_OMP_RUNNER_CONTAINER_PREFIX || "myrmidon-omp-runner-",
@@ -244,6 +258,8 @@ export function parseArgs(argv) {
     else if (a === "--clone-ttl") args.cloneTtlHours = Number(argv[++i]);
     else if (a === "--cache-ttl") args.cacheTtlHours = Number(argv[++i]);
     else if (a === "--scratch-ttl") args.scratchTtlHours = Number(argv[++i]);
+    else if (a === "--pressure-percent") args.pressurePercent = Number(argv[++i]);
+    else if (a === "--critical-percent") args.criticalPercent = Number(argv[++i]);
     else if (a === "--proc-dir") args.procDir = argv[++i];
     else if (a === "--runner-root") args.runnerRoots.push(argv[++i]);
     else if (a === "--run-copy-ttl") args.runCopyTtlHours = Number(argv[++i]);
@@ -1928,6 +1944,14 @@ async function main() {
     const root = args.root || "/srv/myrmidon-bots";
     const cloneTtlMs = args.cloneTtlHours * HOUR_MS;
     const cacheTtlMs = args.cacheTtlHours * HOUR_MS;
+    const usedPercent = diskUsedPercent(root);
+    if (usedPercent !== null && usedPercent >= args.pressurePercent) {
+      args.scratchTtlHours = Math.min(args.scratchTtlHours, PRESSURE_SCRATCH_TTL_HOURS);
+      journalRecord(args.journal, { event: "disk-pressure", usedPercent, thresholdPercent: args.pressurePercent, scratchTtlHours: args.scratchTtlHours });
+      if (usedPercent >= args.criticalPercent) {
+        journalRecord(args.journal, { event: "disk-critical", usedPercent, thresholdPercent: args.criticalPercent });
+      }
+    }
 
     const plan = { clones: [], caches: [], scratch: [], botData: [], runCopies: [], staleOmpRunners: [], runnerTaskFolders: [], runnerNpmCaches: [], runnerTmp: [], runnerUnrecognized: [], kept: [], removed: [], archived: [] };
 

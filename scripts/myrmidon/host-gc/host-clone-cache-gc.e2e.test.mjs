@@ -222,6 +222,23 @@ describe("host-clone-cache-gc e2e", () => {
     assert.ok(!fs.existsSync(archiveRoot) || fs.readdirSync(archiveRoot).length === 0, "nothing worth archiving");
   });
 
+  it("under disk pressure the scratch TTL drops to one hour and the journal says so", async () => {
+    const root = path.join(tmpDir, "root");
+    fs.mkdirSync(root);
+    const journal = path.join(tmpDir, "gc.jsonl");
+    const r = await runScript(["--root", root, "--lock", path.join(tmpDir, "gc.lock"), "--journal", journal, "--pressure-percent", "0.1", "--critical-percent", "100", "--scratch-ttl", "6", "--apply"]);
+    assert.equal(r.status, 0, r.stderr);
+    const events = readJournal(journal);
+    const p = events.find((e) => e.event === "disk-pressure");
+    assert.ok(p, "pressure journaled");
+    assert.equal(p.scratchTtlHours, 1);
+    assert.ok(!events.some((e) => e.event === "disk-critical"));
+    const calm = path.join(tmpDir, "calm.jsonl");
+    const r2 = await runScript(["--root", root, "--lock", path.join(tmpDir, "gc.lock"), "--journal", calm, "--pressure-percent", "101", "--apply"]);
+    assert.equal(r2.status, 0, r2.stderr);
+    assert.ok(!readJournal(calm).some((e) => e.event === "disk-pressure"));
+  });
+
   it("preserves unpublished commits on a non-current branch", async () => {
     const root = path.join(tmpDir, "root");
     fs.mkdirSync(root);
