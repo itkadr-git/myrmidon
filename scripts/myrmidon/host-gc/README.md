@@ -20,13 +20,13 @@ Host-side garbage collector for bot task clones and build caches on `vm-core` an
 | Item | TTL | Condition |
 |------|-----|-----------|
 | Task clone (done/cancelled) | > 3 h | `git status` clean **and** all commits pushed **and** no stash **and** no alternates |
-| Task clone (unsafe) | > 3 h | Archive to `.gc-archive/` first, then remove |
+| Task clone (unsafe) | > 3 h | Create a compact recovery archive first, then remove; retain the checkout if its state cannot be safely archived |
 | Active checkout/worktree | — | Never touched |
 | Bot data directory (`/srv/myrmidon-bots/<bot-uuid>`, OPE-12654) | > 24 h | No `myrmidon-bot-<key>` container of any state **and** the board lists no `hermes_gateway` card for the agent (moved away, terminated or deleted) **and** no heartbeat run of the agent is `running` **and** no git worktree under `workspace/` holds unpushed work (uncommitted edits, stash, an operation in progress, commits on no remote). The quota project entries (`/etc/projid`, `/etc/projects`) are cleared after the removal |
 | Build cache | > 72 h | LRU eviction by mtime |
 | SSH runner run copy (`<runner root>/<runner>/workspace/.paperclip-runtime/runs/<runId>`, OPE-12722) | > 4 h (`--run-copy-ttl`, at least 3) | Counted from the run directory's own mtime (set when the run starts). Runs **only when a runner root is configured** (`--runner-root` / `HOST_GC_RUNNER_ROOTS`); a path through a symlink is skipped |
 | SSH runner npm/npx cache (`<runner root>/<runner>/home/.npm/{_cacache,_npx}`, OPE-12855) | > 4 h (`--npm-cache-ttl`, at least 1) | Counted from the **newest mtime in the cache tree**, so a cache an npm/npx call is still writing stays fresh; npm refills everything on demand. A symlinked `.npm` or cache dir is skipped. Runs **only when a runner root is configured** (`--runner-root` / `HOST_GC_RUNNER_ROOTS`), the same gate as the run-copy pass |
-| SSH runner task folder (`<runner root>/<runner>/{workspace,home}/OPE-<n>[,-wt]`, `wt-ope<n>`, OPE-12855) | > 3 h (clone TTL) | Issue `done`/`cancelled` on the board **and** every git repo inside is clean, pushed, stash-free and alternates-free → remove; dirty/unpushed or a git state that cannot be read (a worktree with a dead gitdir) → archive to `<runner root>/.gc-archive/` first, then remove; any other issue status or an unreachable board → keep. Runs **only when a runner root is configured** (`--runner-root` / `HOST_GC_RUNNER_ROOTS`), the same gate as the run-copy pass |
+| SSH runner task folder (`<runner root>/<runner>/{workspace,home}/OPE-<n>[,-wt]`, `wt-ope<n>`, OPE-12855) | > 3 h (clone TTL) | Issue `done`/`cancelled` and every git repo clean, pushed, stash-free and alternates-free → remove; otherwise attempt a compact recovery archive and retain the folder if that is unsafe or fails. Any other status or an unreachable board → keep. Runs only when a runner root is configured |
 | Bot scratch item | > 6 h (env configurable) | All tree mtimes > threshold; ignore `gh-cli-cache`; skip if open by running process |
 | `state.db`, `session`, `auth`, `credential`, `.git` | — | Never deleted |
 
@@ -103,10 +103,17 @@ see "SSH runner run copies" below for the one that matters, `HOST_GC_RUNNER_ROOT
 
 1. **Stop the timer**: `sudo systemctl stop myrmidon-host-gc.timer`
 2. **Inspect the journal**: `sudo tail -f /var/log/myrmidon-host-gc.jsonl`
-3. **Restore an archived clone**:
+3. **Inspect a compact recovery archive** (archives expire after 24 hours):
    ```bash
-   sudo tar -xf /srv/myrmidon-bots/.gc-archive/<NAME>-<ts>.tar.zst -C /srv/myrmidon-bots/
+   mkdir -p "$HOME/gc-recovery"
+   tar -xzf /srv/myrmidon-bots/.gc-archive/<NAME>.tar.gz -C "$HOME/gc-recovery"
    ```
+   Restore `unpublished.bundle` into a checkout with its prerequisite remote objects using
+   `git fetch "$HOME/gc-recovery/unpublished.bundle" 'refs/heads/*:refs/heads/recovered/*'`.
+   Apply `staged.patch` with `git apply --index`, then `changes.patch` with `git apply`;
+   extract `untracked.tar` into the checkout after inspecting its contents. Not every archive
+   contains every member. Stashes and detached HEADs may require inspecting bundle refs with
+   `git bundle list-heads` and fetching the needed ref explicitly. Do not overwrite existing work.
 4. **Re-run in dry-run mode** to verify the plan before re-enabling.
 
 ## Replacement of `devbuild-v2-gc.sh`
@@ -222,10 +229,10 @@ configured (`--runner-root` / `HOST_GC_RUNNER_ROOTS`), per the same host matrix.
   or nested up to depth 3; `.next`, `.helper`, `node_modules`, `.gc-archive` are not walked) is
   clean, fully pushed, stash-free and alternates-free. A folder with no git repository at all
   is removed outright (`no-git-repos`).
-- Unpushed work, or a git state that cannot be proven from the host (a worktree whose gitdir
-  is gone fails every git command) → the folder is archived to `<runner root>/.gc-archive/`
-  first (zstd/tar.gz + verification; `node_modules`, `.pnpm-store`, `.turbo`, `dist`, `.next` and `coverage` are excluded, `.git` and working files are kept; the 600 s limit failure is the pipeline runs under `timeout` (kill-after 10 s, so `tar`/`zstd` die with it) with `pipefail`; a timeout is journaled as `timed out after 600 s`) and removed only after the archive verifies — the archive
-  is the safety net for work the host could not inspect.
+- Unpushed work triggers a compact archive attempt. The current implementation can archive only
+  a repository at the task-folder root with readable Git state and no alternates. Nested
+  repositories, missing gitdirs and other unsupported states are retained and journaled as
+  `runner-task-folder-archive-failed`; they are not replaced with a whole-folder archive.
 - Every removal is guarded against the runner root (`runner-task-folder-remove-failed` on a
   containment violation); a missing root is journaled as `runner-folder-root-missing`, an
   unreadable root or runner as `runner-folder-scan-failed`. Neither stops the rest of the
