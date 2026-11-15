@@ -383,11 +383,10 @@ describe("host-clone-cache-gc e2e", () => {
 
     const r = await runScript(["--root", root, "--lock", lock, "--journal", journal, "--apply"]);
     assert.equal(r.status, 0, r.stderr);
-    // Should be archived, not plain-removed; the directory should be gone from original path
-    assert.equal(fs.existsSync(clone), false);
-    // Archive should exist
+    // Alternates cannot be safely bundled here; retain the checkout rather than archive it whole.
+    assert.ok(fs.existsSync(clone));
     const archiveDir = path.join(root, ".gc-archive");
-    assert.ok(fs.existsSync(archiveDir));
+    assert.ok(!fs.existsSync(archiveDir) || fs.readdirSync(archiveDir).length === 0);
   });
 
   it("writes JSONL journal entries", async () => {
