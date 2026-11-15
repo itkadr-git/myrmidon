@@ -1795,7 +1795,11 @@ async function main() {
       });
     }
     for (const c of cloneStatuses.candidates) {
-      if (c.safeToRemove) {
+      // A nested repository may be ignored by its parent and contain unpublished work.
+      if (archiveRepos(c.path).some((repo) => repo !== c.path)) {
+        plan.kept.push({ ...c, action: "keep", reason: "nested-repository" });
+        journalRecord(args.journal, { event: "clone-skipped", path: c.path, reason: "nested-repository" });
+      } else if (c.safeToRemove) {
         plan.clones.push({ ...c, action: "remove" });
       } else {
         plan.clones.push({ ...c, action: "archive-remove" });
