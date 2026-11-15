@@ -24,12 +24,38 @@ def evaluate(sample, now=None):
     add('freshness', 'ok' if fresh else 'critical', 'sample age must be between 0 and 60 seconds')
     replication = sample.get('replication')
     replication = replication if isinstance(replication, dict) else {}
+    if replication.get('command') == 'check-lag':
+        results = replication.get('results')
+        valid = (isinstance(results, list) and len(results) in (1, 2)
+                 and all(isinstance(item, dict) for item in results))
+        targets = [item.get('target') for item in results] if valid else []
+        valid = valid and all(target in ('board', 'hindsight') for target in targets) and len(set(targets)) == len(targets)
+        if valid:
+            replication = {
+                'success': all(item.get('success') is True for item in results),
+                'rpoOk': replication.get('allRpoOk') is True and all(item.get('rpoOk') is True for item in results),
+                'role': 'standby' if all(item.get('role') == 'standby' for item in results) else 'invalid',
+                'inRecovery': all(item.get('inRecovery') is True for item in results),
+                'timeLagSeconds': max((item['timeLagSeconds'] for item in results), default=None)
+                if all(number(item.get('timeLagSeconds')) and item['timeLagSeconds'] >= 0 for item in results)
+                else None,
+            }
+        else:
+            replication = {}
     standby = (replication.get('success') is True and replication.get('rpoOk') is True
                and replication.get('role') == 'standby' and replication.get('inRecovery') is True)
     add('standby', 'ok' if standby else 'critical', 'checkLag must confirm a successful standby with RPO met')
     streaming = sample.get('receiver_status') == 'streaming'
     add('streaming', 'ok' if streaming else 'critical', 'WAL receiver must be streaming')
     lag = replication.get('timeLagSeconds')
+    if replication.get('target') == 'all':
+        databases = replication.get('databases')
+        if (not isinstance(databases, list) or len(databases) != 2
+                or any(not isinstance(db, dict) or not number(db.get('timeLagSeconds'))
+                       or db['timeLagSeconds'] < 0 for db in databases)):
+            lag = None
+        else:
+            lag = max(db['timeLagSeconds'] for db in databases)
     if not number(lag) or lag < 0:
         lag_status = 'critical'
     elif lag >= 300:

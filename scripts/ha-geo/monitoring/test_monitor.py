@@ -44,6 +44,22 @@ class MonitoringTest(unittest.TestCase):
             with self.subTest(changes=changes):
                 self.check('critical', **changes)
 
+    def test_check_lag_cli_output_is_consumed(self):
+        sample = copy.deepcopy(self.sample)
+        sample['replication'] = {'command': 'check-lag', 'allRpoOk': True,
+                                 'results': [dict(sample['replication'], target='board')]}
+        self.assertEqual(evaluate(sample, now=1000)['status'], 'ok')
+        sample['replication']['results'][0]['timeLagSeconds'] = 300
+        self.assertEqual(evaluate(sample, now=1000)['status'], 'critical')
+        sample['replication']['results'] = []
+        self.assertEqual(evaluate(sample, now=1000)['status'], 'critical')
+
+    def test_aggregate_lag_does_not_hide_missing_database_sample(self):
+        child = dict(self.sample['replication'], target='board', timeLagSeconds=None)
+        aggregate = dict(self.sample['replication'], target='all', timeLagSeconds=10,
+                         databases=[child, dict(self.sample['replication'], target='hindsight')])
+        self.check('critical', replication=aggregate)
+
     def test_resource_pressure_and_missing(self):
         for field in ('disk_used_percent', 'memory_used_percent', 'cpu_used_percent'):
             with self.subTest(field=field):
