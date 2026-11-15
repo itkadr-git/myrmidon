@@ -40,7 +40,8 @@ function tokens(source) {
       continue;
     }
     if (c === '/' && source[i + 1] !== '/' && source[i + 1] !== '*' &&
-        (!result.length || /[({[=,:;!?&|+*-~<>]/.test(result.at(-1).value))) {
+        (!result.length || /^[({[=,:;!?&|+*~<>-]$/.test(result.at(-1).value) ||
+         ['return', 'throw', 'case', 'delete', 'void', 'typeof', 'yield', 'await', 'in', 'instanceof'].includes(result.at(-1).value))) {
       let j = i + 1; let inClass = false; let closed = false;
       while (j < source.length) {
         if (source[j] === '\\') { j += 2; continue; }
