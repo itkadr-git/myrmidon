@@ -174,6 +174,7 @@ async function runExecutor(
     prepareRemoteManagedHome?: AcpxEngineExecutorOptions["prepareRemoteManagedHome"];
     terminalCallbackRegistry?: AcpxEngineExecutorOptions["terminalCallbackRegistry"];
     startupTraceContext?: AdapterExecutionContext["startupTraceContext"];
+    expectedExitCode?: number;
   } = {},
 ) {
   const runtimeOptions: Record<string, unknown>[] = [];
@@ -226,7 +227,7 @@ async function runExecutor(
     },
   } as never);
 
-  expect(result.exitCode).toBe(0);
+  expect(result.exitCode).toBe(options.expectedExitCode ?? 0);
   return { logs, meta, events, runtimeOptions, configOptions, sessionInputs, turnInputs, result };
 }
 
@@ -4068,10 +4069,16 @@ describe("ACPX engine remote session-lifecycle re-staging (PR 3: stage once / re
         let call = 0;
         return () => {
           call += 1;
-          return recordingRuntime({
+          const runtime = recordingRuntime({
             ensureInputs,
             terminalStatus: call === 1 ? "failed" : "completed",
-          }) as never;
+          });
+          const ensureSession = runtime.ensureSession;
+          runtime.ensureSession = async (...args: Parameters<typeof ensureSession>) => ({
+            ...await ensureSession(...args),
+            backendSessionId: `backend-session-${call}`,
+          });
+          return runtime as never;
         };
       })(),
     });
@@ -7770,6 +7777,7 @@ describe("ACPX startup handshake guard and late-completion fence", () => {
     const { result } = await runExecutor(
       { agent: "claude" },
       {
+        expectedExitCode: 1,
         terminalCallbackRegistry: {
           apply: () => ({
             applied: true,
