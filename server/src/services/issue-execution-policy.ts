@@ -950,6 +950,11 @@ function assertVerifyEvidence(input: {
 }) {
   if (input.stage.requirements?.skip) return;
   const isRelease = input.isRelease ?? false;
+  // Free-form decision text is not proof that the deployed build was checked.
+  // Fail closed until the persisted release-verification verdict is validated here.
+  if (isRelease) {
+    throw unprocessable("Release verification requires a validated persisted runtime verdict.");
+  }
   const requirements = {
     deployVersion: isRelease || (input.stage.requirements?.deployVersion ?? false),
     checkMethod: isRelease || (input.stage.requirements?.checkMethod ?? false),
