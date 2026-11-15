@@ -450,6 +450,12 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
               SELECT id FROM agent_wakeup_requests
               WHERE status IN ('skipped', 'failed', 'cancelled', 'completed', 'coalesced')
                 AND finished_at < ${cutoff}::timestamptz
+                -- heartbeat_runs.wakeup_request_id is the only FK to this table
+                -- (no action): runs live 90 days by default, wakes 30, so a
+                -- wake still named by a run stays until the run is gone.
+                AND NOT EXISTS (
+                  SELECT 1 FROM heartbeat_runs r WHERE r.wakeup_request_id = agent_wakeup_requests.id
+                )
               ORDER BY finished_at LIMIT ${batchSize}
             ), deleted AS (
               DELETE FROM agent_wakeup_requests w USING doomed WHERE w.id = doomed.id

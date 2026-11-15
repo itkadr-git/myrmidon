@@ -52,7 +52,7 @@ import {
   workAssessments,
 } from "@myrmidon/db";
 import { DATA_RETENTION_WAITING_FOR_BACKUP_ACTION } from "@myrmidon/shared";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -98,7 +98,6 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     await db.delete(decisionRetention);
     await db.delete(decisionQueues);
     await db.delete(environmentLeases);
-    await db.delete(agentWakeupRequests);
     await db.delete(issuePlanDecompositions);
     await db.delete(documentRevisions);
     await db.delete(documents);
@@ -114,6 +113,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     await db.delete(executionWorkspaces);
     await db.delete(projects);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(agents);
     await db.delete(companies);
     await db.delete(instanceSettings);
@@ -259,6 +259,55 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     expect(result.perTable.environmentLeases.deleted).toBe(1);
     const leases = await db.select({ id: environmentLeases.id, status: environmentLeases.status }).from(environmentLeases);
     expect(leases).toEqual([{ id: activeLeaseId, status: "active" }]);
+  });
+
+  it("FK safety: a wakeup request still referenced by a run is kept without failing the pass; an unreferenced one is deleted", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const old = new Date(Date.now() - 100 * DAY_MS);
+    const referencedWakeId = randomUUID();
+    const freeWakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values([
+      { id: referencedWakeId, companyId, agentId, source: "test", status: "completed", requestedAt: old, finishedAt: old },
+      { id: freeWakeId, companyId, agentId, source: "test", status: "completed", requestedAt: old, finishedAt: old },
+    ]);
+    // A young run (inside the 90-day run retention) still names the old wake.
+    const runId = randomUUID();
+    const runAt = new Date(Date.now() - 5 * DAY_MS);
+    await db.insert(heartbeatRuns).values({
+      id: runId, companyId, agentId, invocationSource: "assignment", status: "succeeded",
+      wakeupRequestId: referencedWakeId, createdAt: runAt, updatedAt: runAt, finishedAt: runAt,
+    });
+
+    const { sweep } = makeSweep({ freshBackup: true });
+    const result = await sweep.sweep();
+
+    expect(result.perTable.agentWakeupRequests.deleted).toBe(1);
+    const wakes = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests);
+    expect(wakes).toEqual([{ id: referencedWakeId }]);
+    expect(await runCount(runId)).toBe(1);
+
+    // A second pass is a stable no-op (the referenced wake is skipped, not retried into an error).
+    const second = await sweep.sweep();
+    expect(second.perTable.agentWakeupRequests.deleted).toBe(0);
+  });
+
+  it("FK safety: every foreign key onto the three newly pruned tables is known and either nullable-on-delete or guarded", async () => {
+    const rows = (await db.execute(sql`
+      SELECT c.conrelid::regclass::text AS child, c.confrelid::regclass::text AS parent, c.confdeltype AS del
+      FROM pg_constraint c
+      WHERE c.contype = 'f'
+        AND c.confrelid::regclass::text IN ('agent_wakeup_requests', 'environment_leases', 'document_revisions')
+      ORDER BY 1, 2
+    `)) as unknown as Array<{ child: string; parent: string; del: string }>;
+    // del: a = no action, n = set null, c = cascade.
+    const seen = [...new Set(rows.map((r) => `${r.parent}<-${r.child}:${r.del}`))].sort();
+    expect(seen).toEqual([
+      "agent_wakeup_requests<-heartbeat_runs:a", // guarded by NOT EXISTS in the sweep
+      "document_revisions<-document_annotation_anchor_snapshots:n",
+      "document_revisions<-document_annotation_threads:n",
+      "document_revisions<-issue_plan_decompositions:c", // guarded by NOT EXISTS in the sweep
+      "environment_leases<-environment_custom_image_setup_sessions:n",
+    ]);
   });
 
   it("applies newest-N when revision age retention is disabled", async () => {
