@@ -50,6 +50,7 @@ import {
   issues,
   issueRelations,
   issueWorkProducts,
+  projects,
   type Db,
 } from "@myrmidon/db";
 import {
@@ -98,7 +99,10 @@ import {
   swarmQueueOrderBy,
   type SwarmQueueOrderOptions,
 } from "./effective-pheromone.js";
-import { projectMemberAgentIds, projectScopedClaimGate } from "../project-membership.js";
+import { projectMemberAgentIds, projectMembershipByProject, projectScopedClaimGate } from "../project-membership.js";
+import { issueService } from "../../services/issues.js";
+import { currentRunPrioritySettings } from "../run-priority/state.js";
+import { createAutoSlicePolicy, projectQueueShortages, releaseEpicCandidates, runAutoSlicePass } from "./auto-slice-policy.js";
 import { unassignedTaskRoutedToRole } from "./queue.js";
 import { insertClaim, releaseClaimsForIssue, revertIdleClaimAssignment } from "./store.js";
 
@@ -728,6 +732,60 @@ async function casteDirectoryOf(
  * to a free agent of its caste in its nest, one task per agent. Nothing is woken
  * that no task was found for, and a closed host field matches nothing at all.
  */
+const autoSlicePolicies = new WeakMap<object, ReturnType<typeof createAutoSlicePolicy>>();
+const AUTO_SLICE_TITLE = "[AUTO-SLICE] Пополнить очередь инженеров";
+
+async function autoSliceCompany(deps: SwarmMatcherDeps, companyId: string, castes: Map<string, SwarmMatcherCaste>): Promise<void> {
+  const release = currentRunPrioritySettings().currentRelease;
+  if (!release) return;
+  const [pools, members, projectRows, issueRows] = await Promise.all([
+    listIdleRolePairs(deps.db, companyId, { roles: ["engineer", "lead"], order: queueOrderOf(deps) }),
+    projectMembershipByProject(deps.db, companyId),
+    deps.db.select({ id: projects.id, leadAgentId: projects.leadAgentId }).from(projects)
+      .where(and(eq(projects.companyId, companyId), eq(projects.status, "in_progress"))),
+    deps.db.select({ id: issues.id, identifier: issues.identifier, title: issues.title, status: issues.status, projectId: issues.projectId })
+      .from(issues).where(and(eq(issues.companyId, companyId), isNull(issues.hiddenAt))),
+  ]);
+  const engineers = pools.find((pool) => pool.role === "engineer");
+  if (!engineers || castes.get("engineer")?.swarmEligible === false) return;
+  const free = await availableAgents(deps, companyId, freeAgentsOfPair(engineers, deps.settings, castes.get("engineer") ?? null));
+  const leadPool = pools.find((pool) => pool.role === "lead");
+  const leads = leadPool ? await availableAgents(deps, companyId, freeAgentsOfPair(leadPool, deps.settings, castes.get("lead") ?? null)) : [];
+  const shortageRows = projectQueueShortages(companyId, projectRows.map((p) => ({ projectId: p.id, memberIds: members.get(p.id) ?? new Set<string>() })), free.map((a) => a.agentId), engineers.queue.filter((task) => !task.assigneeAgentId).map((task) => ({ projectId: task.projectId ?? null })));
+  let policy = autoSlicePolicies.get(deps.db);
+  if (!policy) {
+    const configured = Number(process.env.MYRMIDON_AUTO_SLICE_DELAY_MINUTES ?? 10);
+    policy = createAutoSlicePolicy((Number.isFinite(configured) && configured >= 0 ? configured : 10) * 60_000);
+    autoSlicePolicies.set(deps.db, policy);
+  }
+  await runAutoSlicePass(policy, shortageRows, deps.now.getTime(), {
+    createIfAbsent: async ({ projectId, needed }) => {
+      const project = projectRows.find((p) => p.id === projectId);
+      const epics = releaseEpicCandidates(issueRows.filter((row) => row.projectId === projectId), release);
+      if (!project || !epics.length) return false;
+      const eligible = leads.filter((lead) => members.get(projectId)?.has(lead.agentId));
+      const lead = eligible.find((agent) => agent.agentId === project.leadAgentId) ?? eligible[0];
+      if (!lead) return false;
+      const created = await deps.db.transaction(async (tx) => {
+        // Serialize deduplication across simultaneous matcher passes and server processes.
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${companyId}), hashtext(${projectId}))`);
+        const [existing] = await tx.select({ id: issues.id }).from(issues).where(and(
+          eq(issues.companyId, companyId), eq(issues.projectId, projectId), eq(issues.title, AUTO_SLICE_TITLE),
+          isNull(issues.hiddenAt), inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
+        )).limit(1);
+        if (existing) return null;
+        return issueService(deps.db).create(companyId, {
+          projectId, title: AUTO_SLICE_TITLE, status: "todo", priority: "high", assigneeAgentId: lead.agentId,
+          description: `Нарежьте следующую часть выпуска ${release} и добавьте не менее ${needed} готовых задач инженерам.\n\nОткрытые эпики:\n${epics.map((epic) => `- [${epic.identifier ?? epic.id}](/issues/${epic.identifier ?? epic.id}) ${epic.title}`).join("\n")}`,
+        }, tx);
+      });
+      if (!created) return false;
+      await queueIssueAssignmentWakeup({ heartbeat: deps.heartbeat, issue: created, reason: "auto_slice_queue_shortage", mutation: "created", contextSource: "auto_slice" });
+      return true;
+    },
+  });
+}
+
 export async function matchCompany(
   deps: SwarmMatcherDeps,
   companyId: string,
@@ -743,6 +801,7 @@ export async function matchCompany(
   if (!deps.settings.enabled) return result;
 
   const castes = await casteDirectoryOf(deps, companyId);
+  await autoSliceCompany(deps, companyId, castes);
   const pairs = await listIdleRolePairs(deps.db, companyId, { order: queueOrderOf(deps) });
   for (const pair of pairs) {
     const caste = castes.get(pair.role) ?? null;

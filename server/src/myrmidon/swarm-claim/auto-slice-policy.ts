@@ -1,3 +1,20 @@
+export interface ReleaseEpic {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+}
+
+/** Select open, explicitly marked epics belonging to the configured release. */
+export function releaseEpicCandidates<T extends ReleaseEpic>(rows: readonly T[], release: string | null): T[] {
+  if (!release) return [];
+  const version = release.replace(/^v/i, "").replace(/-rc[.\-]?\d+.*$/i, "");
+  const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const marker = new RegExp(`(?:^|[^0-9.])${escaped}(?![0-9.])`, "i");
+  return rows.filter((row) => !["done", "cancelled"].includes(row.status)
+    && /(?:epic|эпик)/i.test(row.title) && marker.test(row.title));
+}
+
 export interface QueueShortage {
   companyId: string;
   projectId: string;

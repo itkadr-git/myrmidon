@@ -1,5 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { issues, projects, type Db } from "@myrmidon/db";
+import { currentRunPrioritySettings } from "./run-priority/state.js";
+import { releaseEpicCandidates } from "./swarm-claim/auto-slice-policy.js";
 
 // Opt-in per project: other board processes retain their existing release path.
 export function devProcessProjectIds(env: NodeJS.ProcessEnv = process.env): Set<string> {
@@ -106,13 +108,12 @@ export interface DevReviewReleaseContext {
 }
 
 async function openReleaseEpics(db: Db, companyId: string, projectId: string): Promise<Array<{ id: string; identifier: string; title: string }>> {
-  const rows = await db.select({ id: issues.id, identifier: issues.identifier, title: issues.title })
+  const rows = await db.select({ id: issues.id, identifier: issues.identifier, title: issues.title, status: issues.status })
     .from(issues)
     .innerJoin(projects, and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
-    .where(and(eq(issues.companyId, companyId), eq(issues.projectId, projectId), eq(issues.status, "todo")));
-  return rows.flatMap((row) => row.identifier && /epic/i.test(row.title)
-    ? [{ ...row, identifier: row.identifier }]
-    : []);
+    .where(and(eq(issues.companyId, companyId), eq(issues.projectId, projectId)));
+  return releaseEpicCandidates(rows, currentRunPrioritySettings().currentRelease)
+    .flatMap((row) => row.identifier ? [{ id: row.id, identifier: row.identifier, title: row.title }] : []);
 }
 
 export async function tryDevReviewContinuationOnRelease(ctx: DevReviewReleaseContext): Promise<boolean> {
