@@ -4327,6 +4327,7 @@ describe.sequential("issue comment reopen routes", () => {
     it("does not wake the executor for a repeated return on the same head", async () => {
       const { options } = routeOptions({ headSha: HEAD_A });
       const issue = await pendingReviewIssue(HEAD_A);
+      issue.executionState.lastDecisionId = "44444444-4444-4444-8444-444444444444";
       const res = await returnTask(issue, "Exact-head CI is still failing, do not resubmit", options);
 
       expect(res.status).toBe(200);
