@@ -4307,9 +4307,11 @@ describe.sequential("issue comment reopen routes", () => {
 
     it("wakes the executor for a second review decision on the same head", async () => {
       const { options } = routeOptions({ headSha: HEAD_A });
+      const issue = await pendingReviewIssue(HEAD_A);
+      issue.executionState.lastDecisionId = "previous-decision";
       const res = await returnTask(
-        await pendingReviewIssue(HEAD_A),
-        "The requested change is still missing from the implementation",
+        issue,
+        "The fix still does not handle the requested edge case",
         options,
       );
 
@@ -4359,23 +4361,25 @@ describe.sequential("issue comment reopen routes", () => {
       expect(resolveReviewHeadFailedChecks).not.toHaveBeenCalled();
     });
 
-    it("wakes the executor for a second new review decision on the same head", async () => {
+    it("does not wake the executor for a code comment when the new return has the same head", async () => {
       const { options } = routeOptions({ headSha: HEAD_A });
-      const issue = await pendingReviewIssue(HEAD_A);
-      issue.executionState.lastDecisionId = "previous-decision";
-
       const res = await returnTask(
-        issue,
-        "The fix still does not handle the requested edge case",
+        await pendingReviewIssue(HEAD_A),
+        "Guard the null case in the handler before it reads the payload",
         options,
       );
 
       expect(res.status).toBe(200);
-      expect(recordedExecutionState()).toMatchObject({
-        status: "changes_requested",
-        lastChangesRequestedHeadSha: HEAD_A,
-      });
-      await waitForWakeup(() => expect(executorWoken()).toBe(true));
+      await waitForWakeup(() =>
+        expect(mockIssueService.addComment).toHaveBeenCalledWith(
+          ISSUE_ID,
+          expect.stringContaining("Повторный возврат на той же голове"),
+          { runId: null },
+          { authorType: "system" },
+        ),
+      );
+      await settleDetachedWork();
+      expect(executorWoken()).toBe(false);
     });
 
     it("does not wake the executor when only infrastructure checks failed and the comment reports only CI", async () => {
