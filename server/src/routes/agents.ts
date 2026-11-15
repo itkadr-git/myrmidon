@@ -1,4 +1,4 @@
-import { enrichWithPoolModels } from "../myrmidon/model-providers/pool-models.js";
+import { enrichWithPoolModels, mergeLitellmChatGptPoolModels } from "../myrmidon/model-providers/pool-models.js";
 import { listOpenRouterModels } from "../services/openrouter-models.js";
 import { notModifiedOrSetEtag } from "../middleware/version-key-etag.js";
 // myrmidon(B1c): product name in user-facing runner errors; see product.ts.
@@ -21,7 +21,7 @@ import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@myrmidon/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
-import { activityLog, agentWakeupRequests, agents as agentsTable, chatConversations, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@myrmidon/db";
+import { activityLog, agentWakeupRequests, agents as agentsTable, chatConversations, companies, heartbeatRuns, issues as issuesTable, litellmModels, projects as projectsTable } from "@myrmidon/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import { toolConnections } from "@myrmidon/db";
 import { sha256Digest } from "../services/feedback-redaction.js";
@@ -559,6 +559,8 @@ export function agentRoutes(
      * then a no-op, which keeps the pre-directory behavior exactly.
      */
     casteDirectory?: AgentCasteDirectoryPort;
+    syncAgentModelAllowlist?: (input: { companyId: string; agentId: string; db: Db }) => Promise<void>;
+    onAgentModelAllowlistSyncFailure?: (input: { companyId: string; agentId: string; error: unknown }) => void;
     agentsModule?: AgentsModule;
   } = {},
 ) {
@@ -630,6 +632,8 @@ export function agentRoutes(
       if (!decommission) throw new Error(DECOMMISSION_UNSUPPORTED_MESSAGE);
       await (runtime.lock ?? botKeyLock).run(botKey, () => decommission.call(runtime.driver, botKey));
     },
+    syncAgentModelAllowlist: options.syncAgentModelAllowlist,
+    onAgentModelAllowlistSyncFailure: options.onAgentModelAllowlistSyncFailure,
     agentsModule: agentsMod,
   });
   const access = accessService(db);
@@ -3514,9 +3518,16 @@ export function agentRoutes(
       return;
     }
     const rawModels = refresh
-      ? await refreshAdapterModels(modelAdapterType)
-      : await listAdapterModels(modelAdapterType, companyId);
-    const models = await enrichWithPoolModels(db, companyId, rawModels);
+      ? await refreshAdapterModels(modelAdapterType, companyId, db)
+      : await listAdapterModels(modelAdapterType, companyId, db);
+    let models = await enrichWithPoolModels(db, companyId, rawModels);
+    if (modelAdapterType === "hermes_gateway") {
+      const catalogRows = await db
+        .select({ modelName: litellmModels.modelName })
+        .from(litellmModels)
+        .orderBy(litellmModels.modelName);
+      models = mergeLitellmChatGptPoolModels(models, catalogRows.map((row) => row.modelName));
+    }
     res.json(models);
   });
 
@@ -5977,7 +5988,13 @@ function getActorIdentityPart(req: Request): string {
         asRecord(existing.adapterConfig),
         normalizedEffectiveAdapterConfig,
       );
-      patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
+      const modelOnlyPatch = requestedAdapterType === "hermes_gateway"
+        && !changingAdapterType && !replaceAdapterConfig && requestedAdapterConfig !== null
+        && Object.keys(requestedAdapterConfig).length === 1 && hasOwn(requestedAdapterConfig, "model");
+      // Validate the normalized config, but keep legacy bindings byte-for-byte on a model-only edit.
+      patchData.adapterConfig = modelOnlyPatch
+        ? rawEffectiveAdapterConfig
+        : syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
       assertExternalInstructionsAdmin(req, {
         ...existing,
         adapterConfig: patchData.adapterConfig,
@@ -6384,6 +6401,7 @@ function getActorIdentityPart(req: Request): string {
     }
     const key = await svc.createApiKey(id, req.body.name, req.body.scope, {
       responsibleUserId: req.actor.userId ?? null,
+      expiresAt: req.body.expiresAt ? new Date(req.body.expiresAt) : null,
     });
 
     await logActivity(db, {
@@ -6398,6 +6416,7 @@ function getActorIdentityPart(req: Request): string {
         name: key.name,
         scope: key.scope,
         responsibleUserId: key.responsibleUserId,
+        expiresAt: key.expiresAt ?? null,
       },
     });
 

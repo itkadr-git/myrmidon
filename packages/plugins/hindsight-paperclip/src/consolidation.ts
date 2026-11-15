@@ -114,6 +114,18 @@ export async function runConsolidationPass(
   if (typeof options.timeBudgetMs !== "number" || !Number.isFinite(options.timeBudgetMs) || options.timeBudgetMs <= 0) {
     throw new Error("timeBudgetMs must be a positive number");
   }
+  if (options.pageSize !== undefined && (!Number.isInteger(options.pageSize) || options.pageSize < 1 || options.pageSize > 500)) {
+    throw new Error("pageSize must be an integer between 1 and 500");
+  }
+  if (options.modelPageSize !== undefined && (!Number.isInteger(options.modelPageSize) || options.modelPageSize < 1 || options.modelPageSize > 500)) {
+    throw new Error("modelPageSize must be an integer between 1 and 500");
+  }
+  if (options.maxModelRefreshes !== undefined && (!Number.isInteger(options.maxModelRefreshes) || options.maxModelRefreshes < 0)) {
+    throw new Error("maxModelRefreshes must be a non-negative integer");
+  }
+  if (options.checkpoint != null && (!Number.isInteger(options.checkpoint.documentOffset) || options.checkpoint.documentOffset < 0 || (options.checkpoint.documentTotal !== null && (!Number.isInteger(options.checkpoint.documentTotal) || options.checkpoint.documentTotal < 0)))) {
+    throw new Error("checkpoint must contain non-negative integer offsets and totals");
+  }
   const clock: Clock = options.now ?? Date.now;
   // One clock read per decision, kept in nowMs: the value a check observed
   // is the value the result reports, so finishedAtMs is the exact moment

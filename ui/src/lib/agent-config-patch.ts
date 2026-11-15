@@ -26,7 +26,11 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
     patch.adapterType = overlay.adapterType;
   }
 
-  if (overlay.adapterType !== undefined || Object.keys(overlay.adapterConfig).length > 0) {
+  if (overlay.adapterType === undefined && Object.keys(overlay.adapterConfig).length === 1 && Object.hasOwn(overlay.adapterConfig, "model")) {
+    // Send a minimal patch so the server merges it with the persisted config,
+    // including values hidden by response redaction.
+    patch.adapterConfig = omitUndefinedEntries(overlay.adapterConfig);
+  } else if (overlay.adapterType !== undefined || Object.keys(overlay.adapterConfig).length > 0) {
     const existing = (agent.adapterConfig ?? {}) as Record<string, unknown>;
     const nextAdapterConfig =
       overlay.adapterType !== undefined

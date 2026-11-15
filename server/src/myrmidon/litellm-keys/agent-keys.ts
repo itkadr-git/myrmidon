@@ -96,6 +96,7 @@ export interface AgentGatewayKeyDeps {
   readSpendWindows?(): Promise<AgentSpendWindow[]>;
   env?: NodeJS.ProcessEnv;
   log?: { info(fields: object, message: string): void; warn(fields: object, message: string): void };
+  recordAllowlistDrift?: (input: { companyId: string; agentId: string; add: string[]; remove: string[] }) => Promise<void>;
 }
 
 /** The key-management surface of the gateway this module uses. */
@@ -756,6 +757,25 @@ export function defaultAgentGatewayKeyDeps(
     },
     rotateSecret: async (secretId, value, expiresAt) => {
       await secrets.rotate(secretId, { value, expiresAt }, { userId: null, agentId: null });
+    },
+    recordAllowlistDrift: async ({ companyId, agentId, add, remove }) => {
+      const details = { addedModels: add, removedModels: remove };
+      console.info({ companyId, agentId, ...details }, "agent gateway allowlist reconciled");
+      try {
+        const { logActivity } = await import("../../services/activity-log.js");
+        await logActivity(db, {
+          companyId,
+          actorType: "system",
+          actorId: "system",
+          action: "agent.gateway_allowlist_reconciled",
+          entityType: "agent",
+          entityId: agentId,
+          agentId,
+          details,
+        });
+      } catch (error) {
+        console.warn({ companyId, agentId, error }, "could not record allowlist reconciliation activity");
+      }
     },
     deleteSecret: async (secretId) => {
       await secrets.remove(secretId);

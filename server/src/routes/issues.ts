@@ -1627,11 +1627,13 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "heartbeat.worktree_execution_cutoff",
   "heartbeat_timer",
   "idle_pickup",
+  "in_progress_no_run",
   "interaction_pending",
   "issue_assigned",
   "issue_blockers_resolved",
   "issue_checked_out",
   "issue_comment_mentioned",
+  "issue_children_completed",
   "issue_commented",
   "issue_dependencies_blocked",
   "issue_disposition_repair",
@@ -1659,6 +1661,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "process_lost_retry",
   "project.token_quota_exceeded",
   "provider_quota_recovery",
+  "release_focus",
   "resurrection_execution_reconciliation_required",
   "retry_failed_run",
   "run_guard_stop_needs_input",
@@ -14033,6 +14036,7 @@ export function issueRoutes(
         details: {
           title: issue.title,
           identifier: issue.identifier,
+          assigneeAgentId: issue.assigneeAgentId,
           ...(watchdogProductBugFollowUp
             ? {
                 watchdogDiscovery: {

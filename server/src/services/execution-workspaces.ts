@@ -104,6 +104,37 @@ function issueTerminalTimestamp(issue: {
 const WORKSPACE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 export const ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON = "issue_terminal";
+
+// A shared project-primary row only references the project checkout, so there is
+// no per-task copy to inspect or delete. When its source task reaches done or
+// cancelled the row is archived in the same transaction as the status change;
+// the data-retention sweep later deletes it once the archive is old enough.
+// Rows of other modes keep the guarded terminal sweep (dirty/unmerged checks).
+export async function archiveSharedExecutionWorkspacesForTerminalIssue(
+  db: Pick<Db, "update">,
+  issue: { id: string; companyId: string },
+  at: Date = new Date(),
+): Promise<string[]> {
+  const rows = await db
+    .update(executionWorkspaces)
+    .set({
+      status: "archived",
+      closedAt: at,
+      cleanupEligibleAt: at,
+      cleanupReason: ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON,
+      updatedAt: at,
+    })
+    .where(and(
+      eq(executionWorkspaces.companyId, issue.companyId),
+      eq(executionWorkspaces.sourceIssueId, issue.id),
+      eq(executionWorkspaces.mode, "shared_workspace"),
+      eq(executionWorkspaces.strategyType, "project_primary"),
+      inArray(executionWorkspaces.status, ["active", "idle", "in_review"]),
+      isNull(executionWorkspaces.closedAt),
+    ))
+    .returning({ id: executionWorkspaces.id });
+  return rows.map((row: { id: string }) => row.id);
+}
 // myrmidon(OPE-13106): rows of the terminal sweep taken per pass for
 // shared_workspace, and the hard cap. Each row is archived by its own guarded
 // single-row UPDATE, so no statement touches more than one row.
@@ -1404,16 +1435,18 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         eq(issues.companyId, workspace.companyId),
         sql<boolean>`
           ${issues.id} IN (
-            WITH RECURSIVE issue_tree(id) AS (
-              SELECT ${issues.id}
+            WITH RECURSIVE issue_tree(id, path, depth) AS (
+              SELECT ${issues.id} AS id, ARRAY[${issues.id}]::text[] AS path, 0 AS depth
               FROM ${issues}
               WHERE ${issues.companyId} = ${workspace.companyId}
                 AND ${issues.id} = ${workspace.sourceIssueId}
               UNION ALL
-              SELECT child.id
+              SELECT child.id, parent.path || child.id::text, parent.depth + 1
               FROM ${issues} child
               JOIN issue_tree parent ON child.parent_id = parent.id
               WHERE child.company_id = ${workspace.companyId}
+                AND parent.depth < 1000
+                AND NOT child.id::text = ANY(parent.path)
             )
             SELECT id FROM issue_tree
           )
@@ -1456,6 +1489,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     opts: { skipPullRequests?: boolean } = {},
   ) {
     const issueTree = await listWorkspaceIssueTree(workspace);
+    if (issueTree.length > 0 && issueTree.length >= 1001) {
+      logger.warn({ companyId: workspace.companyId, sourceIssueId: workspace.sourceIssueId }, "issue tree traversal reached its depth limit");
+    }
     const sourceIssue = issueTree.find((issue) => issue.id === workspace.sourceIssueId) ?? null;
     const sourceIssueTerminal = Boolean(sourceIssue && TERMINAL_ISSUE_STATUSES.has(sourceIssue.status));
     const subtreeTerminal = Boolean(sourceIssue && issueTree.every((issue) => TERMINAL_ISSUE_STATUSES.has(issue.status)));
@@ -2820,7 +2856,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         // the task. Skip the git inspection and the delivery and dirty gates; the
         // terminal-tree, cooldown, reopen and active-run predicates still apply.
         const isSharedWorkspace = workspace.mode === "shared_workspace";
-        const { git, statusInspectionSucceeded } = isSharedWorkspace
+        // myrmidon(1.6.9, OPE-13213): a bot_container row is the task directory
+        // of a bot container. The board holds no files for it, so there is no
+        // git state to inspect and no delivery or dirty gate to apply.
+        const hasNoBoardCopy = isSharedWorkspace || workspace.strategyType === "bot_container";
+        const { git, statusInspectionSucceeded } = hasNoBoardCopy
           ? { git: null, statusInspectionSucceeded: true }
           : await inspectGitCloseReadiness(executionWorkspace);
         if (!statusInspectionSucceeded) {
@@ -2831,7 +2871,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           }
           continue;
         }
-        const assessment = await assessDelivery(workspace, git, { skipPullRequests: isSharedWorkspace });
+        const assessment = await assessDelivery(workspace, git, { skipPullRequests: hasNoBoardCopy });
         const reopenPending = metadataHasReopenPendingConsumption(
           workspace.metadata as Record<string, unknown> | null,
         );
@@ -2851,7 +2891,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedNonTerminalTree += 1;
           continue;
         }
-        if (!isSharedWorkspace && assessment.workspaceDirty) {
+        if (!hasNoBoardCopy && assessment.workspaceDirty) {
           // myrmidon(WORKSPACE-HYGIENE): a dirty tree can never be archived. If
           // it stays that way past the threshold, signal it once.
           await signalStuckUndeliverableWorkspace(workspace, assessment, "dirty");
@@ -2863,7 +2903,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           continue;
         }
         if (
-          !isSharedWorkspace
+          !hasNoBoardCopy
           && assessment.deliveryState !== "merged_via_pr"
           && assessment.deliveryState !== "merged_by_ancestry"
         ) {
@@ -3042,16 +3082,18 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               )`
                 : undefined,
               sql<boolean>`NOT EXISTS (
-                WITH RECURSIVE issue_tree(id, status) AS (
-                  SELECT root.id, root.status
+                WITH RECURSIVE issue_tree(id, status, path, depth) AS (
+                  SELECT root.id AS id, root.status AS status, ARRAY[root.id]::text[] AS path, 0 AS depth
                   FROM ${issues} root
                   WHERE root.company_id = ${workspace.companyId}
                     AND root.id = ${workspace.sourceIssueId}
                   UNION ALL
-                  SELECT child.id, child.status
+                  SELECT child.id, child.status, parent.path || child.id::text, parent.depth + 1
                   FROM ${issues} child
                   JOIN issue_tree parent ON child.parent_id = parent.id
                   WHERE child.company_id = ${workspace.companyId}
+                    AND parent.depth < 1000
+                    AND NOT child.id::text = ANY(parent.path)
                 )
                 SELECT 1 FROM issue_tree WHERE status NOT IN ('done', 'cancelled')
               )`,
@@ -3062,16 +3104,18 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               // disabled, so this predicate drops out of the guard.
               cooldownCutoff
                 ? sql<boolean>`NOT EXISTS (
-                WITH RECURSIVE cooldown_tree(id, status, completed_at, cancelled_at, updated_at) AS (
-                  SELECT root.id, root.status, root.completed_at, root.cancelled_at, root.updated_at
+                WITH RECURSIVE cooldown_tree(id, status, completed_at, cancelled_at, updated_at, path, depth) AS (
+                  SELECT root.id AS id, root.status AS status, root.completed_at AS completed_at, root.cancelled_at AS cancelled_at, root.updated_at AS updated_at, ARRAY[root.id]::text[] AS path, 0 AS depth
                   FROM ${issues} root
                   WHERE root.company_id = ${workspace.companyId}
                     AND root.id = ${workspace.sourceIssueId}
                   UNION ALL
-                  SELECT child.id, child.status, child.completed_at, child.cancelled_at, child.updated_at
+                  SELECT child.id, child.status, child.completed_at, child.cancelled_at, child.updated_at, parent.path || child.id::text, parent.depth + 1
                   FROM ${issues} child
                   JOIN cooldown_tree parent ON child.parent_id = parent.id
                   WHERE child.company_id = ${workspace.companyId}
+                    AND parent.depth < 1000
+                    AND NOT child.id::text = ANY(parent.path)
                 )
                 SELECT 1 FROM cooldown_tree
                 WHERE COALESCE(

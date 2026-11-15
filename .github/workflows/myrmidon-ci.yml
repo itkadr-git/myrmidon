@@ -416,6 +416,13 @@ jobs:
       - name: Build plugin SDK dependencies
         run: pnpm --filter @myrmidon/plugin-sdk ensure-build-deps
 
+      # Unit tests run on the source manifests, before the production bundle
+      # build below rewrites package.json entry fields to dist (OPE-13128). Without
+      # PROD_BOOT_REQUIRED the prod-boot-bundle suite skips itself here (no dist
+      # yet); the "Prod boot smoke" step after the build runs it for real.
+      - name: Run affected tests
+        run: node scripts/myrmidon/ci/affected-tests.mjs run --plan "$RUNNER_TEMP/plan.json"
+
       # The fast tier has no workspace build before this point (see the fast
       # branch of "typecheck + build"), but the affected lane owns the prod-boot
       # smoke: bare `node server/dist/index.js` boots only when every package
@@ -432,10 +439,12 @@ jobs:
           pnpm --filter @myrmidon/server build
           node scripts/myrmidon/prod-runtime-exports.mjs apply --entry @myrmidon/server
 
-      - name: Run affected tests
+      # The prod boot contract (OPE-12188 Ch2) needs the applied manifests, so it
+      # runs after the build + apply above, on its own, and is required here.
+      - name: Prod boot smoke
         env:
           PROD_BOOT_REQUIRED: "1"
-        run: node scripts/myrmidon/ci/affected-tests.mjs run --plan "$RUNNER_TEMP/plan.json"
+        run: pnpm exec vitest run --project @myrmidon/server --exclude "**/dist/**" server/src/__tests__/prod-boot-bundle.test.ts
 
   tests:
     name: tests (${{ matrix.label }})
