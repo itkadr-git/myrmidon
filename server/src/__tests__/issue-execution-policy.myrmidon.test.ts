@@ -2509,6 +2509,17 @@ describe("verify execution stages", () => {
     expect(result.patch).toMatchObject({ status: "in_review", assigneeAgentId: qaAgentId });
   });
 
+  it("rejects a labelled release with merged code and no policy", () => {
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue: { title: "Release without numeric title", status: "in_progress", releaseLabels: ["1.7"], hasMergedCode: true },
+      policy: null,
+      requestedStatus: "done",
+      requestedAssigneePatch: {},
+      actor: { agentId: coderAgentId },
+      commentBody: "done",
+    })).toThrow(/verify/i);
+  });
+
   it("does not let the final review complete a release without verification", () => {
     const policy = reviewOnlyPolicy();
     const issue = {
