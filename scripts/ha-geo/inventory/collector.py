@@ -171,7 +171,7 @@ def collect(socket=None, database=None, user=None, disk_path='/'):
             postgres = {'status': 'error', 'reason': 'query failed or access denied; details suppressed'}
     try:
         disk = shutil.disk_usage(disk_path)
-        disk_info = {'status': 'ok', 'total_bytes': disk.total, 'free_bytes': disk.free}
+        disk_info = {'status': 'ok', 'total_bytes': disk.total, 'used_bytes': disk.used, 'free_bytes': disk.free}
     except OSError:
         disk_info = {'status': 'error', 'reason': 'disk usage unavailable'}
     return {'schemaVersion': 1, 'postgres': postgres, 'disk': disk_info,
