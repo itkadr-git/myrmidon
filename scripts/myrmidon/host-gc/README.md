@@ -27,7 +27,7 @@ Host-side garbage collector for bot task clones and build caches on `vm-core` an
 | SSH runner run copy (`<runner root>/<runner>/workspace/.paperclip-runtime/runs/<runId>`, OPE-12722) | > 4 h (`--run-copy-ttl`, at least 3) | Counted from the run directory's own mtime (set when the run starts). Runs **only when a runner root is configured** (`--runner-root` / `HOST_GC_RUNNER_ROOTS`); a path through a symlink is skipped |
 | SSH runner npm/npx cache (`<runner root>/<runner>/home/.npm/{_cacache,_npx}`, OPE-12855) | > 4 h (`--npm-cache-ttl`, at least 1) | Counted from the **newest mtime in the cache tree**, so a cache an npm/npx call is still writing stays fresh; npm refills everything on demand. A symlinked `.npm` or cache dir is skipped. Runs **only when a runner root is configured** (`--runner-root` / `HOST_GC_RUNNER_ROOTS`), the same gate as the run-copy pass |
 | SSH runner task folder (`<runner root>/<runner>/{workspace,home}/OPE-<n>[,-wt]`, `wt-ope<n>`, OPE-12855) | > 3 h (clone TTL) | Issue `done`/`cancelled` on the board **and** every git repo inside is clean, pushed, stash-free and alternates-free → remove; dirty/unpushed or a git state that cannot be read (a worktree with a dead gitdir) → archive to `<runner root>/.gc-archive/` first, then remove; any other issue status or an unreachable board → keep. Runs **only when a runner root is configured** (`--runner-root` / `HOST_GC_RUNNER_ROOTS`), the same gate as the run-copy pass |
-| Bot scratch item | > 12 h (env configurable) | All tree mtimes > threshold; ignore `gh-cli-cache`; skip if open by running process |
+| Bot scratch item | > 6 h (env configurable) | All tree mtimes > threshold; ignore `gh-cli-cache`; skip if open by running process |
 | `state.db`, `session`, `auth`, `credential`, `.git` | — | Never deleted |
 
 ## Atomic Guards
@@ -53,8 +53,8 @@ Every action is appended as JSONL to `/var/log/myrmidon-host-gc.jsonl`:
 
 Configuration variables can be provided in `/etc/myrmidon-host-gc.env`:
 ```bash
-# Scratch TTL in hours (default: 12)
-SCRATCH_TTL_HOURS=12
+# Scratch TTL in hours (default: 6)
+SCRATCH_TTL_HOURS=6
 # Company whose engN agent cards are matched to omp runner names
 MYRMIDON_COMPANY_ID=<company UUID>
 # SSH runner root for the run-copy pass (OPE-12722); unset = the pass is off

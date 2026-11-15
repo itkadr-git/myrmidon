@@ -328,7 +328,7 @@ describe("host-clone-cache-gc e2e", () => {
       const journal = path.join(tmpDir, "journal.jsonl");
 
       const now = Date.now();
-      // 8 hours old (older than 6h env threshold, but younger than 12h default)
+      // 8 hours old (older than 6h env threshold, but the default is also 6h)
       const age8h = new Date(now - 8 * 3600 * 1000);
       const testDir = path.join(bot1Scratch, "test-8h");
       fs.mkdirSync(testDir, { recursive: true });

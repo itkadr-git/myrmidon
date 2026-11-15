@@ -57,7 +57,7 @@ const CACHE_TTL_HOURS = 72;
 // build, OPE-13104), but only where git confirms the path is ignored: see archiveExcludes().
 // A file git does not ignore (user or uncommitted work) is always archived, even inside `dist/`.
 const ARCHIVE_EXCLUDES = ["node_modules", ".pnpm-store", ".turbo", "dist", ".next", "coverage"];
-const SCRATCH_TTL_HOURS = 12;
+const SCRATCH_TTL_HOURS = 6;
 // myrmidon(1.6.8 OPE-12722 / OPE-12759): an SSH runner (the omp container) keeps one copy of
 // the workspace per run under `<runner>/workspace/.paperclip-runtime/runs/<runId>`. A run that
 // fails or is cancelled never reaches the restore that removes its copy, and the adapter prunes
