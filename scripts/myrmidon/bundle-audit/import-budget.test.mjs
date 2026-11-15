@@ -16,7 +16,7 @@ test('CLI reports eager graph, lazy edges, unknowns, and never executes input', 
       import 'node:fs'; import 'uninstalled-package';
       // import './fake1.js';
       const text = "require('./fake2.js')";
-      const pattern = /require('.\/fake-regex.js')/;
+      const pattern = /require('.\\/fake-regex.js')/;
       const template = \`text \${require('./template-child.mjs')}\`;
       export const marker = 1
       const from = './fake3.js';

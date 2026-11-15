@@ -15,7 +15,19 @@ function tokens(source) {
     if (c === '"' || c === "'" || c === '`') {
       const quote = c; let value = ''; let escaped = false; i++;
       while (i < source.length && source[i] !== quote) {
-        if (source[i] === '\\') { escaped = true; i += 2; } else { value += source[i++]; }
+        if (source[i] === '\\') { escaped = true; i += 2; continue; }
+        if (quote === '`' && source[i] === '$' && source[i + 1] === '{') {
+          let depth = 1, start = i + 2; i += 2;
+          while (i < source.length && depth) {
+            if (source[i] === '\\') { i += 2; continue; }
+            if (source[i] === '{') depth++;
+            if (source[i] === '}') depth--;
+            i++;
+          }
+          result.push({ type: 'opaque', value: '' }, ...tokens(source.slice(start, i - 1)));
+          continue;
+        }
+        value += source[i++];
       }
       i++;
       result.push({ type: quote === '`' || escaped ? 'opaque' : 'string', value });
