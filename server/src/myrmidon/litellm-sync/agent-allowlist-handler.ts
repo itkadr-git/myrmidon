@@ -336,17 +336,14 @@ export async function updateAgentAllowlistsForCompany(
       const disabledRegistryNames = companyModels.filter((model) => !model.enabled).map((model) => model.name);
       // Keep registry-owned models only when this agent's card selects them;
       // registry models are never broadcast to every agent key.
-      const enabledForCard = options.cardModelsOnly
-        ? cardModels.filter((name) => !disabledRegistryNames.includes(name))
-        : [...enabledNames, ...cardModels];
+      const enabledForCard = cardModels.filter((name) => !disabledRegistryNames.includes(name));
       const cardRetirements = current.filter((name) =>
         (disabledRegistryNames.includes(name) && cardModels.includes(name)) ||
         (options.cardModelsOnly && removedModelNames.includes(name)),
       );
       const registryRetirements = disabledRegistryNames;
       const survivors = current.filter((name) =>
-        !registryRetirements.includes(name) && !removedModelNames.includes(name) &&
-        (options.cardModelsOnly || !enabledNames.includes(name)),
+        !registryRetirements.includes(name) && !removedModelNames.includes(name),
       );
       const agentModels = [...new Set([
         ...enabledForCard,
