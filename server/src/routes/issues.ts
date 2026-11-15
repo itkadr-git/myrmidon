@@ -15631,12 +15631,19 @@ export function issueRoutes(
       );
 
       const transitionIssue: IssueRouteSnapshot & {
+        labels?: string[];
         assigneeAgentRole?: string | null;
         terminatedReturnAssigneeAgentId?: string | null;
         fallbackReturnAssigneeAgentId?: string | null;
         executionReviewParticipantAgentIds?: string[];
         defaultEscalationAgentIds?: string[];
       } = { ...existing };
+      if (updateFields.status === "done") {
+        const releaseLabels = await db.select({ name: labels.name }).from(issueLabels)
+          .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+          .where(eq(issueLabels.issueId, existing.id));
+        transitionIssue.labels = releaseLabels.map((label) => label.name);
+      }
       Object.assign(
         transitionIssue,
         await withDefaultEscalationChain(db, existing, nextExecutionPolicy),

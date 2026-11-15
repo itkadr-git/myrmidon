@@ -2530,7 +2530,7 @@ describe("verify execution stages", () => {
   it("rejects an unnumbered release-labelled issue with merged code and no policy", () => {
     const issue = {
       title: "Release candidate",
-      labels: ["1.6.6"],
+      labels: ["1.6"],
       workProducts: [{ type: "pull_request", status: "merged" }],
       status: "in_progress",
       assigneeAgentId: coderAgentId,

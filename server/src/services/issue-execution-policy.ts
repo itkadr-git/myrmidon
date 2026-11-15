@@ -13,6 +13,7 @@ import type {
 import { issueExecutionPolicySchema, issueExecutionStateSchema } from "@myrmidon/shared";
 import { unprocessable } from "../errors.js";
 import { isReleaseTask } from "../myrmidon/task-pr-sync/policy.js";
+import { normaliseReleasePrefix } from "../myrmidon/release-membership.js";
 
 type AssigneeLike = {
   assigneeAgentId?: string | null;
@@ -23,6 +24,7 @@ type IssueLike = AssigneeLike & {
   id?: string;
   status: string;
   title?: string | null;
+  labels?: string[];
   projectId?: string | null;
   casteKey?: string | null;
   reviewEscalationPolicy?: ReviewEscalationPolicyLike | null;
@@ -1156,6 +1158,8 @@ function requestChangesOrphanedPendingReviewStage(
 
 function applyIssueExecutionStageTransition(input: TransitionInput): TransitionResult {
   const patch: Record<string, unknown> = {};
+  const isRelease = isReleaseTask(input.issue.title ?? null) ||
+    (input.issue.labels ?? []).some((label) => normaliseReleasePrefix(label) !== null);
   const existingState = parseIssueExecutionState(input.issue.executionState);
   const currentAssignee = assigneePrincipal(input.issue);
   const actor = actorPrincipal(input.actor);
@@ -1176,6 +1180,9 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     : input.reviewRequest;
 
   if (!input.policy) {
+    if (requestedStatus === "done" && isRelease) {
+      throw unprocessable("Cannot mark release task done without a verify execution stage.");
+    }
     if (existingState) {
       const orphanApproval = approveOrphanedPendingReviewStage(input, existingState, actor);
       if (orphanApproval) return orphanApproval;
@@ -1365,7 +1372,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
           assertVerifyEvidence({
             stage: activeStage,
             commentBody: input.commentBody.trim(),
-            isRelease: isReleaseTask(input.issue.title ?? null),
+            isRelease,
           });
         }
         const approvedState = buildCompletedState(existingState, activeStage);
@@ -1377,6 +1384,15 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         const nextStage = nextPendingStageAfter(input.policy, activeStage, approvedState);
 
         if (!nextStage) {
+          if (
+            isRelease &&
+            !input.policy.stages.some((stage) =>
+              stage.type === "verify" &&
+              (stage.requirements?.skip === true || approvedState.completedStageIds.includes(stage.id)),
+            )
+          ) {
+            throw unprocessable("Cannot mark release task done without a verify execution stage.");
+          }
           patch.executionState = approvedState;
           return {
             patch,
@@ -1667,7 +1683,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   // unless explicitly configured with skip: true in its verify stage requirements.
   const hasVerifyStage = input.policy.stages.some((stage) => stage.type === "verify");
   const isVerifySkipped = input.policy.stages.some((stage) => stage.type === "verify" && stage.requirements?.skip === true);
-  const isRelease = isReleaseTask(input.issue.title ?? null);
+
   if (requestedStatus === "done" && isRelease && !hasVerifyStage && !isVerifySkipped) {
     throw unprocessable(
       "Cannot mark release task done without a verify execution stage. A release task requires an independent verification stage with deploy version and check method, or an explicit skip configuration.",
