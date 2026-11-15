@@ -254,7 +254,7 @@ export async function updateAgentAllowlistsForCompany(
     ...(options.cardModelsOnly ? [] : enabledNames),
     ...additionalModelNames,
   ])].filter((model) => !removedModelNames.includes(model));
-  if (models.length === 0 && !allowEmpty && !options.cardModelsOnly) {
+  if (models.length === 0 && !allowEmpty && !options.cardModelsOnly && options.includeRegistryModels !== false) {
     // Nothing enabled yet: leave keys at their current lists rather than
     // churning them on a pass with nothing to say.
     return skip("no-enabled-models");
