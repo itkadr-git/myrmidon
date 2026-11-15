@@ -88,6 +88,19 @@ describe("migration manifest validation", () => {
     expect(selfParent.errors).toEqual(expect.arrayContaining([expect.stringContaining("parent cycle")]));
   });
 
+  it("rejects cycles in imported task blocker relationships", () => {
+    const issue = { slug: "first", projectSlug: null, assigneeAgentSlug: null,
+      parentSlug: null, blockedBy: ["second"] };
+    const manifest = {
+      agents: [], skills: [], envInputs: [],
+      issues: [issue, { ...issue, slug: "second", blockedBy: ["first"] }],
+    };
+    expect(validateMigrationManifest(manifest).errors)
+      .toEqual(expect.arrayContaining([expect.stringContaining("blocker cycle")]));
+    expect(validateMigrationManifest({ ...manifest, issues: [{ ...issue, blockedBy: ["first"] }] }).errors)
+      .toEqual(expect.arrayContaining([expect.stringContaining("blocker cycle")]));
+  });
+
   it("accepts references inside the package and rejects cross-company references", () => {
     const agent = { slug: "worker", reportsToSlug: "boss", reportsToExistingAgentId: null,
       reportsToExistingAgentSlug: null, skills: ["skill-key"], permissionGrants: [] };

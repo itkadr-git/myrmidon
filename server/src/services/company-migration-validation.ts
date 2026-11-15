@@ -89,6 +89,31 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
       current = parentByIssue.get(current) ?? null;
     }
   }
+  const blockers = new Map((manifest.issues ?? []).map((issue) => [issue.slug, issue.blockedBy ?? []]));
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  for (const slug of blockers.keys()) {
+    if (visited.has(slug)) continue;
+    const stack: Array<{ slug: string; exit: boolean }> = [{ slug, exit: false }];
+    while (stack.length > 0) {
+      const entry = stack.pop()!;
+      if (entry.exit) {
+        visiting.delete(entry.slug);
+        visited.add(entry.slug);
+        continue;
+      }
+      if (visiting.has(entry.slug)) {
+        errors.push(`Task ${entry.slug} has a blocker cycle.`);
+        continue;
+      }
+      if (visited.has(entry.slug) || !blockers.has(entry.slug)) continue;
+      visiting.add(entry.slug);
+      stack.push({ slug: entry.slug, exit: true });
+      for (const dependency of blockers.get(entry.slug) ?? []) {
+        stack.push({ slug: dependency, exit: false });
+      }
+    }
+  }
   for (const input of manifest.envInputs) {
     if (input.kind !== "secret") continue;
     if (input.agentSlug && !agentSlugs.has(input.agentSlug)) {
