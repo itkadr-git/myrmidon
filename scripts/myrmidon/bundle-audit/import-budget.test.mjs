@@ -7,6 +7,17 @@ import { spawnSync } from 'node:child_process';
 
 const cli = new URL('./import-budget.mjs', import.meta.url).pathname;
 
+test('CLI resolves escaped literal specifiers', () => {
+  const dir = mkdtempSync(join(process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || tmpdir(), 'import-budget-'));
+  try {
+    writeFileSync(join(dir, 'entry.mjs'), String.raw`import './ch\u0069ld.mjs';`);
+    writeFileSync(join(dir, 'child.mjs'), 'export default 1;');
+    const run = spawnSync(process.execPath, [cli, join(dir, 'entry.mjs')], { encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(JSON.parse(run.stdout).modules.map(m => m.path), ['child.mjs', 'entry.mjs']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('CLI reports eager graph, lazy edges, unknowns, and never executes input', () => {
   const dir = mkdtempSync(join(process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || tmpdir(), 'import-budget-'));
   try {
