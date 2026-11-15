@@ -52,6 +52,8 @@ export const DATA_RETENTION_LITELLM_COST_EVENTS_DEFAULT_DAYS = 30;
 export const DATA_RETENTION_DEFAULT_DOCUMENT_REVISION_KEEP = 20;
 export const DATA_RETENTION_DEFAULT_DOCUMENT_REVISION_DAYS = 90;
 export const DATA_RETENTION_DEFAULT_OPERATIONAL_ROWS_DAYS = 30;
+/** Archived execution_workspaces rows are deleted this many days after they were closed. */
+export const DATA_RETENTION_EXECUTION_WORKSPACES_ARCHIVED_DAYS = 90;
 
 /** A retention value: whole days >= 0; 0 means "keep forever". */
 const retentionDaysSchema = z.number().int().min(0);
@@ -211,7 +213,7 @@ export interface DataRetentionLastRun {
   waitingForBackup: boolean;
   backupCheckedAt: string | null;
   freedBytesTotal: number;
-  perTable: Record<"runs" | "activity" | "access" | "litellmCostEvents" | "documentRevisions" | "agentWakeupRequests" | "environmentLeases", DataRetentionTableStatus>;
+  perTable: Record<"runs" | "activity" | "access" | "litellmCostEvents" | "documentRevisions" | "agentWakeupRequests" | "environmentLeases" | "executionWorkspaces", DataRetentionTableStatus>;
 }
 
 const tableStatusSchema = z.object({
@@ -233,6 +235,7 @@ const lastRunSchema = z.object({
     documentRevisions: tableStatusSchema.optional(),
     agentWakeupRequests: tableStatusSchema.optional(),
     environmentLeases: tableStatusSchema.optional(),
+    executionWorkspaces: tableStatusSchema.optional(),
   }).optional(),
 });
 
@@ -251,6 +254,7 @@ export function emptyDataRetentionLastRun(): DataRetentionLastRun {
       documentRevisions: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
       agentWakeupRequests: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
       environmentLeases: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+      executionWorkspaces: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
     },
   };
 }

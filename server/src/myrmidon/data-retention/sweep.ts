@@ -95,6 +95,7 @@
 import { sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
+  DATA_RETENTION_EXECUTION_WORKSPACES_ARCHIVED_DAYS,
   HEARTBEAT_RUN_STATUSES,
   emptyDataRetentionLastRun,
   type DataRetentionLastRun,
@@ -167,7 +168,7 @@ export interface DataRetentionSweepResult {
   startedAt: Date;
   finishedAt: Date;
   waitingForBackup: boolean;
-  perTable: Record<"runs" | "activity" | "access" | "litellmCostEvents" | "documentRevisions" | "agentWakeupRequests" | "environmentLeases", { deleted: number; freedBytes: number }>;
+  perTable: Record<"runs" | "activity" | "access" | "litellmCostEvents" | "documentRevisions" | "agentWakeupRequests" | "environmentLeases" | "executionWorkspaces", { deleted: number; freedBytes: number }>;
 }
 
 interface DeletedRow {
@@ -505,7 +506,26 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
     };
   }
 
-  type GroupKey = "runs" | "activity" | "access" | "litellmCostEvents" | "documentRevisions" | "agentWakeupRequests" | "environmentLeases";
+  type GroupKey = "runs" | "activity" | "access" | "litellmCostEvents" | "documentRevisions" | "agentWakeupRequests" | "environmentLeases" | "executionWorkspaces";
+
+  async function deleteExecutionWorkspacesGroup(
+    tx: Db,
+    cutoff: string,
+    batchSize: number,
+  ): Promise<{ deleted: number; freedBytes: number }> {
+    const rows = await tx.execute(sql`
+      DELETE FROM execution_workspaces w
+      WHERE w.id IN (
+        SELECT w2.id FROM execution_workspaces w2
+        WHERE w2.status = 'archived' AND w2.closed_at < ${cutoff}
+        ORDER BY w2.closed_at
+        LIMIT ${batchSize}
+      )
+      RETURNING w.id, pg_column_size(w.id) AS size
+    `);
+    const deletedRows = rows as unknown as DeletedRow[];
+    return { deleted: deletedRows.length, freedBytes: deletedRows.reduce((n, row) => n + (Number(row.size) || 0), 0) };
+  }
 
   async function runAccessGroup(toolCutoff: string | null, secretCutoff: string | null) {
     let deleted = 0;
@@ -520,6 +540,76 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
       freedBytes += result.freedBytes;
     }
     return { deleted, freedBytes };
+  }
+
+  // Shared project-primary rows point at the project checkout, so a task needs
+  // exactly one. Archive what the run path left behind before the delete group
+  // runs: (1) all but one open row per company, project and source task, keeping
+  // the row a task is bound to, then the most recently used one; (2) open rows
+  // whose source task is already done or cancelled. Rows touched within the last
+  // hour are left alone so a run that is starting now keeps its row. Batches run
+  // as their own short transactions, like the delete batches.
+  async function archiveSurplusExecutionWorkspaces(): Promise<void> {
+    const steps = [
+      (batch: number) => sql`
+        UPDATE execution_workspaces w
+        SET status = 'archived', closed_at = now(), cleanup_eligible_at = COALESCE(w.cleanup_eligible_at, now()),
+            cleanup_reason = 'duplicate_shared_workspace', updated_at = now()
+        WHERE w.id IN (
+          SELECT r.id FROM (
+            SELECT e.id, e.last_used_at,
+              row_number() OVER (
+                PARTITION BY e.company_id, e.project_id, e.source_issue_id
+                ORDER BY EXISTS (SELECT 1 FROM issues i WHERE i.execution_workspace_id = e.id) DESC,
+                         e.last_used_at DESC, e.id DESC
+              ) AS rn
+            FROM execution_workspaces e
+            WHERE e.mode = 'shared_workspace' AND e.strategy_type = 'project_primary'
+              AND e.status IN ('active', 'idle', 'in_review') AND e.closed_at IS NULL
+              AND e.source_issue_id IS NOT NULL
+          ) r
+          WHERE r.rn > 1 AND r.last_used_at < now() - interval '1 hour'
+          LIMIT ${batch}
+        )
+        RETURNING w.id`,
+      (batch: number) => sql`
+        UPDATE execution_workspaces w
+        SET status = 'archived', closed_at = now(), cleanup_eligible_at = COALESCE(w.cleanup_eligible_at, now()),
+            cleanup_reason = 'issue_terminal', updated_at = now()
+        WHERE w.id IN (
+          SELECT e.id FROM execution_workspaces e
+          WHERE e.mode = 'shared_workspace' AND e.strategy_type = 'project_primary'
+            AND e.status IN ('active', 'idle', 'in_review') AND e.closed_at IS NULL
+            AND e.last_used_at < now() - interval '1 hour'
+            AND EXISTS (
+              SELECT 1 FROM issues s
+              WHERE s.id = e.source_issue_id AND s.status IN ('done', 'cancelled')
+            )
+          LIMIT ${batch}
+        )
+        RETURNING w.id`,
+    ];
+    for (const step of steps) {
+      let batchSize = DATA_RETENTION_DELETE_BATCH_SIZE;
+      for (let batch = 0; batch < DATA_RETENTION_MAX_BATCHES; batch++) {
+        try {
+          const archived = await deps.db.transaction(async (tx) => {
+            await tx.execute(
+              sql.raw(`SET LOCAL statement_timeout = ${DATA_RETENTION_STATEMENT_TIMEOUT_MS}`),
+            );
+            return (await tx.execute(step(batchSize))) as unknown as unknown[];
+          });
+          if (archived.length < batchSize) break;
+        } catch (err) {
+          if (!isDeleteBlockedError(err)) throw err;
+          if (batchSize > DATA_RETENTION_MIN_BATCH_SIZE) {
+            batchSize = Math.max(DATA_RETENTION_MIN_BATCH_SIZE, Math.floor(batchSize / 2));
+            continue;
+          }
+          break;
+        }
+      }
+    }
   }
 
   async function runGroup(
@@ -537,6 +627,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
                 deleteAccessTable(tx, accessTable ?? "tool_access_audit_events", groupCutoff, batch)
             : group.key === "litellmCostEvents"
               ? deleteLitellmCostEventsGroup
+              : group.key === "executionWorkspaces" ? deleteExecutionWorkspacesGroup
               : (tx: Db, cutoff: string, size: number) => deleteNewRetentionGroup(tx, group.key as "documentRevisions" | "agentWakeupRequests" | "environmentLeases", cutoff, size, group.keepPerDocument ?? 20, group.days);
     let deleted = 0;
     let freedBytes = 0;
@@ -623,6 +714,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
           documentRevisions: { deleted: 0, freedBytes: 0 },
           agentWakeupRequests: { deleted: 0, freedBytes: 0 },
           environmentLeases: { deleted: 0, freedBytes: 0 },
+          executionWorkspaces: { deleted: 0, freedBytes: 0 },
         },
       };
     }
@@ -635,6 +727,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
       documentRevisions: { deleted: 0, freedBytes: 0 },
       agentWakeupRequests: { deleted: 0, freedBytes: 0 },
       environmentLeases: { deleted: 0, freedBytes: 0 },
+      executionWorkspaces: { deleted: 0, freedBytes: 0 },
     };
 
     const groups: Array<{ key: GroupKey; days: number; keepPerDocument?: number }> = [
@@ -645,6 +738,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
       { key: "documentRevisions", days: settings.documentRevisionDays, keepPerDocument: settings.documentRevisionKeepPerDocument },
       { key: "agentWakeupRequests", days: settings.agentWakeupRequestsDays },
       { key: "environmentLeases", days: settings.environmentLeasesDays },
+      { key: "executionWorkspaces", days: DATA_RETENTION_EXECUTION_WORKSPACES_ARCHIVED_DAYS },
     ];
 
     for (const group of groups) {
@@ -655,6 +749,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
         results.access = await runAccessGroup(toolCutoff, secretCutoff);
       } else {
         if (group.days === 0 && (group.key !== "documentRevisions" || group.keepPerDocument === 0)) continue;
+        if (group.key === "executionWorkspaces") await archiveSurplusExecutionWorkspaces();
         results[group.key] = await runGroup(group, cutoffFor(startedAt, group.days));
       }
     }
@@ -675,7 +770,8 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
       results.litellmCostEvents.deleted > 0 ||
       results.documentRevisions.deleted > 0 ||
       results.agentWakeupRequests.deleted > 0 ||
-      results.environmentLeases.deleted > 0;
+      results.environmentLeases.deleted > 0 ||
+      results.executionWorkspaces.deleted > 0;
     // The state is written only when the pass actually deleted something or
     // the backup-gate flag changes — not on every idle tick (operator review
     // dbcare-review-20261008).
@@ -693,7 +789,8 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
           results.litellmCostEvents.freedBytes +
           results.documentRevisions.freedBytes +
           results.agentWakeupRequests.freedBytes +
-          results.environmentLeases.freedBytes,
+          results.environmentLeases.freedBytes +
+          results.executionWorkspaces.freedBytes,
         perTable: {
           runs: mergeTableStatus(previous.perTable.runs, results.runs),
           activity: mergeTableStatus(previous.perTable.activity, results.activity),
@@ -702,6 +799,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
           documentRevisions: mergeTableStatus(previous.perTable.documentRevisions, results.documentRevisions),
           agentWakeupRequests: mergeTableStatus(previous.perTable.agentWakeupRequests, results.agentWakeupRequests),
           environmentLeases: mergeTableStatus(previous.perTable.environmentLeases, results.environmentLeases),
+          executionWorkspaces: mergeTableStatus(previous.perTable.executionWorkspaces, results.executionWorkspaces),
         },
       };
       await deps.writeLastRun(lastRun);
@@ -740,6 +838,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
               documentRevisions: { deleted: 0, freedBytes: 0 },
               agentWakeupRequests: { deleted: 0, freedBytes: 0 },
               environmentLeases: { deleted: 0, freedBytes: 0 },
+              executionWorkspaces: { deleted: 0, freedBytes: 0 },
             },
           });
         }
