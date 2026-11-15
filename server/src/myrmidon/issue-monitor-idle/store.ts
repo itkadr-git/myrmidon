@@ -1,7 +1,7 @@
 // myrmidon(MONITOR-IDLE-LOOP, OPE-13141): database reads for the idle-monitor policy.
 
 import { createHash } from "node:crypto";
-import { and, desc, eq, gte, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   activityLog,
@@ -144,11 +144,29 @@ export async function readIssueMonitorSnapshotHash(
   return createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
 }
 
-/** The latest wake or silent deferral of the task's monitor that recorded a snapshot. */
+/**
+ * The latest wake or silent deferral of the task's monitor that recorded a snapshot. Only records of
+ * the current monitor count: nothing older than the last trigger (`since`) and nothing from before the
+ * last removal of a monitor (a removed monitor ended its instance).
+ */
 export async function readLastMonitorObservation(
   db: Db,
-  input: { companyId: string; issueId: string },
+  input: { companyId: string; issueId: string; since?: Date | null },
 ): Promise<MonitorObservation | null> {
+  const lastEnd = await db
+    .select({ createdAt: activityLog.createdAt })
+    .from(activityLog)
+    .where(
+      and(
+        eq(activityLog.companyId, input.companyId),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, input.issueId),
+        inArray(activityLog.action, ["issue.monitor_cleared", "issue.monitor_exhausted"]),
+      ),
+    )
+    .orderBy(desc(activityLog.createdAt))
+    .limit(1)
+    .then((rows) => rows[0]?.createdAt ?? null);
   const row = await db
     .select({ details: activityLog.details })
     .from(activityLog)
@@ -159,6 +177,8 @@ export async function readLastMonitorObservation(
         eq(activityLog.entityId, input.issueId),
         inArray(activityLog.action, [...MONITOR_OBSERVATION_ACTIONS]),
         sql`${activityLog.details} ->> 'snapshotHash' is not null`,
+        ...(input.since ? [gte(activityLog.createdAt, input.since)] : []),
+        ...(lastEnd ? [gt(activityLog.createdAt, lastEnd)] : []),
       ),
     )
     .orderBy(desc(activityLog.createdAt))
@@ -172,17 +192,18 @@ export async function readLastMonitorObservation(
 }
 
 /**
- * Terms in a row (newest first, only the last `limit` rows are read, within a day) at which the
- * CI of the task's pull request could not be read for lack of access. Counts rows written by
- * the monitor tick itself, so any other outcome of a tick ends the streak.
+ * The run of consecutive terms (newest first, within a day) at which the CI of the task's pull request
+ * could not be read for lack of access. Counts rows written by the monitor tick itself, so any other
+ * outcome of a tick ends the run. `firstAt` is the time of the oldest term of the run, taken from the
+ * tick's own clock recorded in the row.
  */
-export async function countRecentCiNoAccessDeferrals(
+export async function readCiNoAccessStreak(
   db: Db,
-  input: { companyId: string; issueId: string; now: Date; limit: number },
-): Promise<number> {
+  input: { companyId: string; issueId: string; now: Date },
+): Promise<{ count: number; firstAt: Date | null }> {
   const since = new Date(input.now.getTime() - 24 * 60 * 60_000);
   const rows = await db
-    .select({ action: activityLog.action, details: activityLog.details })
+    .select({ details: activityLog.details, createdAt: activityLog.createdAt })
     .from(activityLog)
     .where(
       and(
@@ -194,13 +215,17 @@ export async function countRecentCiNoAccessDeferrals(
       ),
     )
     .orderBy(desc(activityLog.createdAt))
-    .limit(input.limit);
-  let streak = 0;
+    .limit(50);
+  let count = 0;
+  let firstAt: Date | null = null;
   for (const row of rows) {
-    if (asRecord(row.details)?.reason !== CI_NO_ACCESS_DEFER_REASON) break;
-    streak += 1;
+    const details = asRecord(row.details);
+    if (details?.reason !== CI_NO_ACCESS_DEFER_REASON) break;
+    count += 1;
+    const at = typeof details.at === "string" ? new Date(details.at) : row.createdAt;
+    firstAt = Number.isNaN(at.getTime()) ? row.createdAt : at;
   }
-  return streak;
+  return { count, firstAt };
 }
 
 /** True when the issue already carries a comment with exactly this body (a note is written once). */

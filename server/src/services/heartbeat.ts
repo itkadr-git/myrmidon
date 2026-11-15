@@ -29,9 +29,12 @@ import {
 } from "../myrmidon/pr-wait-monitor/policy.js";
 import { readAgentLastLookAt } from "../myrmidon/pr-wait-monitor/store.js";
 import {
+  BOARD_VISIBLE_CI_MONITOR_SERVICE_NAME,
   CI_NO_ACCESS_DEFER_REASON,
   CI_NO_ACCESS_MAX_FAILURES,
+  CI_NO_ACCESS_MIN_WINDOW_MS,
   CI_NO_ACCESS_NOTE,
+  CI_NO_ACCESS_PAUSE_MS,
   decideIdleMonitor,
   decideUnchangedBackoff,
   isCiAccessDeniedReason,
@@ -46,8 +49,8 @@ import {
   reviewWakesQuotaForCompany,
 } from "../myrmidon/review-stage-recovery/review-wakes-quota.js";
 import {
-  countRecentCiNoAccessDeferrals,
   issueHasCommentBody,
+  readCiNoAccessStreak,
   loadMonitorUnchangedWakeLimit,
   readIssueMonitorSnapshotHash,
   readLastMonitorObservation,
@@ -12575,6 +12578,7 @@ export function heartbeatService(
       const note = maxAttemptsExhaustedNote({
         attemptCount: input.nextAttemptCount - 1,
         maxAttempts: input.monitor?.maxAttempts ?? null,
+        scheduledAt: input.scheduledAtIso,
       });
       if (!(await issueHasCommentBody(db, { companyId: input.claimed.companyId, issueId: input.claimed.id, body: note }))) {
         await db.insert(issueComments).values({
@@ -12734,10 +12738,10 @@ export function heartbeatService(
     });
     const recoveryPolicy = monitorRecoveryPolicy(limitMonitor);
     const monitorMetadata = {
-      serviceName: monitor?.serviceName ?? null,
-      timeoutAt: monitor?.timeoutAt ?? null,
-      maxAttempts: monitor?.maxAttempts ?? null,
-      recoveryPolicy: monitor?.recoveryPolicy ?? null,
+      serviceName: limitMonitor?.serviceName ?? null,
+      timeoutAt: limitMonitor?.timeoutAt ?? null,
+      maxAttempts: limitMonitor?.maxAttempts ?? null,
+      recoveryPolicy: limitMonitor?.recoveryPolicy ?? null,
     };
     const executionState =
       claimed.status === "in_review"
@@ -12755,8 +12759,10 @@ export function heartbeatService(
     // myrmidon(OPE-10045): the review waited for CI on the PR head; the wake
     // goes to the stage participant as a review-recovery run, so a run that
     // again ends without a decision goes back through the bounded recovery.
+    // myrmidon(EMPTY-RUNS-MONITOR): read through `limitMonitor`: a monitor re-armed after a trigger has no
+    // policy monitor, its service name lives in `execution_state.monitor`.
     const isReviewCiWaitMonitor =
-      monitor?.serviceName === REVIEW_CI_WAIT_MONITOR_SERVICE_NAME &&
+      limitMonitor?.serviceName === REVIEW_CI_WAIT_MONITOR_SERVICE_NAME &&
       Boolean(reviewParticipantAgentId);
     const isReviewRecoveryMonitor =
       isProviderQuotaReviewMonitor || isReviewCiWaitMonitor;
@@ -12964,13 +12970,16 @@ export function heartbeatService(
           // become readable by waiting. After CI_NO_ACCESS_MAX_FAILURES terms in a row the monitor
           // is removed with one note; nobody is woken.
           if (ci.state === "unknown" && isCiAccessDeniedReason(ci.reason)) {
-            const priorFailures = await countRecentCiNoAccessDeferrals(db, {
+            const noAccess = await readCiNoAccessStreak(db, {
               companyId: claimed.companyId,
               issueId: claimed.id,
               now: input.now,
-              limit: CI_NO_ACCESS_MAX_FAILURES - 1,
             });
-            if (priorFailures + 1 >= CI_NO_ACCESS_MAX_FAILURES) {
+            // Three terms in a row AND at least 15 minutes between the first and this one.
+            if (
+              noAccess.count + 1 >= CI_NO_ACCESS_MAX_FAILURES &&
+              input.now.getTime() - (noAccess.firstAt ?? input.now).getTime() >= CI_NO_ACCESS_MIN_WINDOW_MS
+            ) {
               await db
                 .update(issues)
                 .set({
@@ -13015,9 +13024,7 @@ export function heartbeatService(
               });
               return { outcome: "skipped" as const, reason: CI_NO_ACCESS_DEFER_REASON };
             }
-            const noAccessNextCheckAt = new Date(
-              input.now.getTime() + Math.min(10 * 60_000, 30_000 * Math.pow(2, Math.min(nextAttemptCount - 1, 4))),
-            );
+            const noAccessNextCheckAt = new Date(input.now.getTime() + CI_NO_ACCESS_PAUSE_MS);
             await db.update(issues).set({
               monitorNextCheckAt: noAccessNextCheckAt,
               monitorAttemptCount: nextAttemptCount,
@@ -13037,6 +13044,7 @@ export function heartbeatService(
                 identifier: claimed.identifier,
                 reason: CI_NO_ACCESS_DEFER_REASON,
                 ciReason: ci.reason ?? null,
+                at: input.now.toISOString(),
                 nextCheckAt: noAccessNextCheckAt.toISOString(),
                 attemptCount: nextAttemptCount,
               },
@@ -13141,10 +13149,10 @@ export function heartbeatService(
         let prWaitChange: PrWaitObservedChange | null = null;
         if (!isReviewRecoveryMonitor && input.activitySource === "scheduled" && prProducts.length > 0) {
           const prWaitMonitor = {
-            kind: monitor?.kind ?? null,
-            serviceName: monitor?.serviceName ?? null,
-            notes: claimed.monitorNotes ?? monitor?.notes ?? null,
-            timeoutAt: monitor?.timeoutAt ?? null,
+            kind: limitMonitor?.kind ?? null,
+            serviceName: limitMonitor?.serviceName ?? null,
+            notes: claimed.monitorNotes ?? limitMonitor?.notes ?? null,
+            timeoutAt: limitMonitor?.timeoutAt ?? null,
           };
           const prWait = evaluatePrWaitMonitor({
             now: input.now,
@@ -13249,6 +13257,7 @@ export function heartbeatService(
               previous: await readLastMonitorObservation(db, {
                 companyId: claimed.companyId,
                 issueId: claimed.id,
+                since: claimed.monitorLastTriggeredAt,
               }),
               limit: await loadMonitorUnchangedWakeLimit(db),
             });
@@ -13317,7 +13326,14 @@ export function heartbeatService(
           // myrmidon(EMPTY-RUNS-MONITOR): a task without subtasks has no board-side event to wait for,
           // but the same fingerprint as at the previous term still means the wake finds nothing new:
           // the pause doubles with each such term, up to four hours.
-          if (!idleSnapshotHash) {
+          // Only a wait the board reads itself (its own "CI" monitor on a task with a pull request);
+          // a monitor of an external service wakes on its date. Limit 0 turns the protection off.
+          if (
+            !idleSnapshotHash &&
+            limitMonitor?.serviceName === BOARD_VISIBLE_CI_MONITOR_SERVICE_NAME &&
+            prProducts.length > 0 &&
+            (await loadMonitorUnchangedWakeLimit(db)) > 0
+          ) {
             const leafHash = await readIssueMonitorSnapshotHash(db, {
               companyId: claimed.companyId,
               issueId: claimed.id,
@@ -13332,6 +13348,7 @@ export function heartbeatService(
                 previous: await readLastMonitorObservation(db, {
                   companyId: claimed.companyId,
                   issueId: claimed.id,
+                  since: claimed.monitorLastTriggeredAt,
                 }),
               });
               if (leafDecision.action === "defer") {
@@ -13876,7 +13893,7 @@ export function heartbeatService(
             ${issues.status} = 'in_review'
             and ${issues.executionState} ->> 'status' = 'pending'
             and ${issues.executionState} ->> 'currentStageType' = 'review'
-            and coalesce(${issues.executionPolicy} -> 'monitor' ->> 'serviceName', '') not in (
+            and coalesce(${issues.executionPolicy} -> 'monitor' ->> 'serviceName', ${issues.executionState} -> 'monitor' ->> 'serviceName', '') not in (
               ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME},
               ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
             )
@@ -13913,7 +13930,7 @@ export function heartbeatService(
                 ${issues.status} = 'in_review'
                 and ${issues.executionState} ->> 'status' = 'pending'
                 and ${issues.executionState} ->> 'currentStageType' = 'review'
-                and coalesce(${issues.executionPolicy} -> 'monitor' ->> 'serviceName', '') not in (
+                and coalesce(${issues.executionPolicy} -> 'monitor' ->> 'serviceName', ${issues.executionState} -> 'monitor' ->> 'serviceName', '') not in (
                   ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME},
                   ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
                 )

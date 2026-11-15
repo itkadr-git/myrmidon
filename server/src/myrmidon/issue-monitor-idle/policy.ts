@@ -118,12 +118,31 @@ export const CI_NO_ACCESS_NOTE = "CI не читается: нет доступ�
 /** A CI read that GitHub refused for this repository (401/403/404, not a rate limit). */
 export function isCiAccessDeniedReason(reason: string | null | undefined): boolean {
   if (!reason) return false;
-  return reason.split("+").some((part) => /http_(401|403|404)(?!_rate_limited)/.test(part));
+  // Every read attempt (with the token, then anonymous) must have been refused: a token that was
+  // refused while the anonymous read was only rate limited says nothing about access.
+  return reason.split("+").every((part) => /http_(401|403|404)(?!_rate_limited)/.test(part));
 }
 
+/** A repository counts as unreadable only when the refusals span at least this long (first to last). */
+export const CI_NO_ACCESS_MIN_WINDOW_MS = 15 * 60_000;
+/** Pause between two reads of a CI the board has no access to. */
+export const CI_NO_ACCESS_PAUSE_MS = 5 * 60_000;
+
+/**
+ * Waits whose state the board reads itself: the pull-request state and CI marks of the board's
+ * own "CI" monitor. Only these may back off on an unchanged fingerprint; a monitor of an external
+ * service (a deploy, a vendor) changes where the board cannot see, so it wakes on its date.
+ */
+export const BOARD_VISIBLE_CI_MONITOR_SERVICE_NAME = "CI";
+
 /** The monitor stops after its limit of attempts: one note, no wake of the owner. */
-export function maxAttemptsExhaustedNote(input: { attemptCount: number; maxAttempts: number | null }): string {
-  return `Монитор снят: исчерпан предел попыток (${input.attemptCount} из ${input.maxAttempts ?? "?"}). Исполнитель не будится; новый монитор ставится только осознанно.`;
+export function maxAttemptsExhaustedNote(input: {
+  attemptCount: number;
+  maxAttempts: number | null;
+  /** The due time of the monitor that ran out: tells one monitor of the task from the next. */
+  scheduledAt: string;
+}): string {
+  return `Монитор снят: исчерпан предел попыток (${input.attemptCount} из ${input.maxAttempts ?? "?"}, срок ${input.scheduledAt}). Исполнитель не будится; новый монитор ставится только осознанно.`;
 }
 
 /** Pause of a reviewer wake the per-tick quota could not admit. */

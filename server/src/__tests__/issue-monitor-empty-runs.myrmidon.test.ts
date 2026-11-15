@@ -108,6 +108,8 @@ describe("pure decisions of the empty-runs monitor fix", () => {
     expect(isCiAccessDeniedReason("pull:http_404+anonymous:http_404")).toBe(true);
     expect(isCiAccessDeniedReason("pull:http_403 (anonymous)")).toBe(true);
     expect(isCiAccessDeniedReason("pull:http_403_rate_limited")).toBe(false);
+    // The token was refused, the anonymous read was only rate limited: not a verdict on access.
+    expect(isCiAccessDeniedReason("pull:http_403+anonymous:http_403_rate_limited")).toBe(false);
     expect(isCiAccessDeniedReason("check_runs:network_error")).toBe(false);
     expect(isCiAccessDeniedReason(null)).toBe(false);
   });
@@ -289,7 +291,7 @@ describeEmbeddedPostgres("issue monitors that cannot change anything", () => {
     return rows.filter((row) => row.action === action);
   }
 
-  async function seedReviewWait(input: { withReviewer: boolean }) {
+  async function seedReviewWait(input: { withReviewer: boolean; stateOnly?: boolean }) {
     const { companyId, engineerId, reviewerId, issuePrefix } = await seedCompany();
     const issueId = randomUUID();
     const notes = "Review admission waits for the next tick's reviewer-wake quota (1 per tick)";
@@ -312,7 +314,8 @@ describeEmbeddedPostgres("issue monitors that cannot change anything", () => {
       assigneeAgentId: input.withReviewer ? reviewerId : engineerId,
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
-      executionPolicy: { mode: "normal", commentRequired: true, stages: [], monitor },
+      // stateOnly: the monitor survived a trigger only in execution_state (the policy has none).
+      executionPolicy: input.stateOnly ? null : { mode: "normal", commentRequired: true, stages: [], monitor },
       executionState: executionState(
         monitorState({ notes, serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME }),
         input.withReviewer ? { reviewerId, engineerId } : undefined,
@@ -369,7 +372,7 @@ describeEmbeddedPostgres("issue monitors that cannot change anything", () => {
     expect(await activityOf(issueId, "issue.monitor_exhausted")).toHaveLength(1);
     let comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("исчерпан предел попыток (88 из 20)");
+    expect(comments[0]?.body).toContain("исчерпан предел попыток (88 из 20, срок ");
 
     // Armed again by the owner's own path: still no wake and still one note.
     await db
@@ -466,15 +469,16 @@ describeEmbeddedPostgres("issue monitors that cannot change anything", () => {
     expect(cleared[0]?.details).toMatchObject({ reason: "review_wait_without_reviewer" });
   });
 
-  it("backs off an unchanged task without subtasks: 10 min, 20 min, and wakes when it changes", async () => {
+  /** A task with a pull request whose monitor is due; `serviceName` and `kind` set what the monitor waits for. */
+  async function seedLeafMonitor(input: { serviceName: string; kind: string; withPullRequest: boolean }) {
     const { companyId, engineerId, issuePrefix } = await seedCompany();
     const issueId = randomUUID();
     const monitor = {
       nextCheckAt: DUE_AT.toISOString(),
       notes: "wait",
       scheduledBy: "assignee",
-      kind: "external_service",
-      serviceName: "CI",
+      kind: input.kind,
+      serviceName: input.serviceName,
       timeoutAt: null,
       maxAttempts: null,
       recoveryPolicy: "wake_owner",
@@ -482,41 +486,69 @@ describeEmbeddedPostgres("issue monitors that cannot change anything", () => {
     await db.insert(issues).values({
       id: issueId,
       companyId,
-      title: "Waiting for something outside",
+      title: "Waiting",
       status: "in_progress",
       priority: "medium",
       assigneeAgentId: engineerId,
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
       executionPolicy: { mode: "normal", commentRequired: true, stages: [], monitor },
-      executionState: executionState(monitorState({ serviceName: "CI" })),
+      executionState: executionState(monitorState({ serviceName: input.serviceName, kind: input.kind })),
       monitorNextCheckAt: DUE_AT,
       monitorAttemptCount: 0,
       monitorNotes: "wait",
       monitorScheduledBy: "assignee",
     });
-    const rearmedMonitor = (dueAt: Date) => ({
+    if (input.withPullRequest) {
+      await db.insert(issueWorkProducts).values({
+        id: randomUUID(),
+        companyId,
+        issueId,
+        type: "pull_request",
+        provider: "github",
+        title: "PR #7",
+        status: "open",
+        url: PR_URL,
+        metadata: { repository: "company-a/example.com", number: 7, headSha: HEAD },
+      });
+    }
+    const rearmed = (dueAt: Date) => ({
       executionPolicy: { mode: "normal", commentRequired: true, stages: [], monitor: { ...monitor, nextCheckAt: dueAt.toISOString() } },
-      executionState: executionState(monitorState({ serviceName: "CI", nextCheckAt: dueAt.toISOString() })),
+      executionState: executionState(
+        monitorState({ serviceName: input.serviceName, kind: input.kind, nextCheckAt: dueAt.toISOString() }),
+      ),
       monitorNextCheckAt: dueAt,
       monitorWakeRequestedAt: null,
     });
-    const snapshotHash = await readIssueMonitorSnapshotHash(db, {
-      companyId,
-      issueId,
-      ownerAgentId: engineerId,
-      allowLeaf: true,
+    const recordWake = async (extra?: Record<string, unknown>) => {
+      const snapshotHash = await readIssueMonitorSnapshotHash(db, {
+        companyId,
+        issueId,
+        ownerAgentId: engineerId,
+        allowLeaf: true,
+      });
+      expect(snapshotHash).not.toBeNull();
+      await db.insert(activityLog).values({
+        companyId,
+        actorType: "system",
+        actorId: "heartbeat_scheduler",
+        action: "issue.monitor_triggered",
+        entityType: "issue",
+        entityId: issueId,
+        details: { snapshotHash, unchangedCount: 0 },
+        ...extra,
+      });
+    };
+    return { companyId, engineerId, issueId, rearmed, recordWake };
+  }
+
+  it("backs off an unchanged wait the board reads itself (CI of a pull request): 10 min, 20 min, and wakes when it changes", async () => {
+    const { companyId, issueId, rearmed, recordWake } = await seedLeafMonitor({
+      serviceName: "CI",
+      kind: "external_service",
+      withPullRequest: true,
     });
-    expect(snapshotHash).not.toBeNull();
-    await db.insert(activityLog).values({
-      companyId,
-      actorType: "system",
-      actorId: "heartbeat_scheduler",
-      action: "issue.monitor_triggered",
-      entityType: "issue",
-      entityId: issueId,
-      details: { snapshotHash, unchangedCount: 0 },
-    });
+    await recordWake();
     const heartbeat = heartbeatService(db);
 
     expect((await heartbeat.tickTimers(TICK_AT)).enqueued).toBe(0);
@@ -524,7 +556,7 @@ describeEmbeddedPostgres("issue monitors that cannot change anything", () => {
     expect(issue.monitorNextCheckAt?.getTime()).toBe(TICK_AT.getTime() + 10 * 60_000);
 
     const second = new Date(TICK_AT.getTime() + 11 * 60_000);
-    await db.update(issues).set(rearmedMonitor(new Date(second.getTime() - 1_000))).where(eq(issues.id, issueId));
+    await db.update(issues).set(rearmed(new Date(second.getTime() - 1_000))).where(eq(issues.id, issueId));
     expect((await heartbeat.tickTimers(second)).enqueued).toBe(0);
     [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(issue.monitorNextCheckAt?.getTime()).toBe(second.getTime() + 20 * 60_000);
@@ -539,13 +571,120 @@ describeEmbeddedPostgres("issue monitors that cannot change anything", () => {
       body: "CI is green now",
     });
     const third = new Date(second.getTime() + 21 * 60_000);
-    await db.update(issues).set(rearmedMonitor(new Date(third.getTime() - 1_000))).where(eq(issues.id, issueId));
+    await db.update(issues).set(rearmed(new Date(third.getTime() - 1_000))).where(eq(issues.id, issueId));
     expect((await heartbeat.tickTimers(third)).enqueued).toBe(1);
     await waitForHeartbeatSideEffectsSettled();
   });
 
-  it("drops a monitor whose CI cannot be read for lack of access after three terms, with one note", async () => {
-    const { engineerId, reviewerId, issueId } = await seedReviewWait({ withReviewer: true });
+  it("wakes a monitor of an external service on its date even when the board sees nothing new", async () => {
+    const { engineerId, recordWake } = await seedLeafMonitor({
+      serviceName: "Deploy of the staging stand",
+      kind: "external_service",
+      withPullRequest: false,
+    });
+    await recordWake();
+
+    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(1);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, engineerId));
+    expect(wakeups.map((row) => row.reason)).toEqual(["issue_monitor_due"]);
+    await waitForHeartbeatSideEffectsSettled();
+  });
+
+  it("ignores an observation of an earlier monitor instance (older than the last trigger)", async () => {
+    const { issueId, recordWake } = await seedLeafMonitor({
+      serviceName: "CI",
+      kind: "external_service",
+      withPullRequest: true,
+    });
+    // The same fingerprint was recorded in January; the monitor was last triggered in April.
+    await recordWake({ createdAt: new Date("2026-01-05T10:00:00.000Z") });
+    await db
+      .update(issues)
+      .set({ monitorLastTriggeredAt: new Date("2026-04-01T10:00:00.000Z") })
+      .where(eq(issues.id, issueId));
+
+    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(1);
+    await waitForHeartbeatSideEffectsSettled();
+  });
+
+  it("applies the review-CI wait to a monitor kept only in execution_state: the reviewer quota defers, nobody is woken", async () => {
+    const { companyId, issueId } = await seedReviewWait({ withReviewer: true, stateOnly: true });
+    mockReviewCi.resolveCi.mockResolvedValue({
+      state: "complete",
+      pullRequestUrl: PR_URL,
+      headSha: HEAD,
+      finalCheckConclusion: "success",
+    });
+    reviewWakesQuotaForCompany(companyId).remaining = 0;
+
+    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(0);
+
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.monitorNextCheckAt?.getTime()).toBe(TICK_AT.getTime() + 60_000);
+    const deferred = await activityOf(issueId, "issue.monitor_deferred");
+    expect(deferred).toHaveLength(1);
+    expect(deferred[0]?.details).toMatchObject({ reason: "review_wake_quota" });
+  });
+
+  it("reads CI access for a review wait kept only in execution_state", async () => {
+    const { issueId } = await seedReviewWait({ withReviewer: true, stateOnly: true });
+    mockReviewCi.resolveCi.mockResolvedValue({
+      state: "unknown",
+      pullRequestUrl: PR_URL,
+      headSha: null,
+      reason: "pull:http_404+anonymous:http_404",
+    });
+
+    expect((await heartbeatService(db).tickTimers(TICK_AT)).enqueued).toBe(0);
+
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+    const deferred = await activityOf(issueId, "issue.monitor_deferred");
+    expect(deferred).toHaveLength(1);
+    expect(deferred[0]?.details).toMatchObject({ reason: "review_ci_no_access" });
+  });
+
+  it("gives each exhausted monitor its own note (the due time is part of it)", async () => {
+    const { companyId, engineerId, issuePrefix } = await seedCompany();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Waiting for evidence",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: engineerId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      executionPolicy: null,
+      executionState: executionState(monitorState({ attemptCount: 5, maxAttempts: 5 })),
+      monitorNextCheckAt: DUE_AT,
+      monitorAttemptCount: 5,
+      monitorNotes: "wait",
+      monitorScheduledBy: "assignee",
+    });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.tickTimers(TICK_AT);
+
+    const later = new Date(DUE_AT.getTime() + 3 * 60 * 60_000);
+    await db
+      .update(issues)
+      .set({
+        executionState: executionState(monitorState({ attemptCount: 5, maxAttempts: 5, nextCheckAt: later.toISOString() })),
+        monitorNextCheckAt: later,
+        monitorWakeRequestedAt: null,
+      })
+      .where(eq(issues.id, issueId));
+    await heartbeat.tickTimers(new Date(later.getTime() + 60_000));
+
+    const notes = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(notes).toHaveLength(2);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+  });
+
+  it("drops a monitor whose CI cannot be read for lack of access: three terms in a row AND 15 minutes, with one note", async () => {
+    const { issueId } = await seedReviewWait({ withReviewer: true });
     mockReviewCi.resolveCi.mockResolvedValue({
       state: "unknown",
       pullRequestUrl: PR_URL,
@@ -553,19 +692,20 @@ describeEmbeddedPostgres("issue monitors that cannot change anything", () => {
       reason: "pull:http_404+anonymous:http_404",
     });
     const heartbeat = heartbeatService(db);
+    const termAt = (minutes: number) => new Date(TICK_AT.getTime() + minutes * 60_000);
 
-    for (const [index, term] of [0, 1].entries()) {
-      const at = new Date(TICK_AT.getTime() + term * 60 * 60_000);
-      if (index > 0) await rearm(issueId, new Date(at.getTime() - 1_000));
-      expect((await heartbeat.tickTimers(at)).enqueued).toBe(0);
+    // Terms at 0, 5 and 10 minutes: three in a row, but the window is not 15 minutes yet.
+    for (const minutes of [0, 5, 10]) {
+      if (minutes > 0) await rearm(issueId, new Date(termAt(minutes).getTime() - 1_000));
+      expect((await heartbeat.tickTimers(termAt(minutes))).enqueued).toBe(0);
       const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
       expect(issue.monitorNextCheckAt).not.toBeNull();
     }
-    expect(await activityOf(issueId, "issue.monitor_deferred")).toHaveLength(2);
+    expect(await activityOf(issueId, "issue.monitor_deferred")).toHaveLength(3);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).toHaveLength(0);
 
-    const last = new Date(TICK_AT.getTime() + 2 * 60 * 60_000);
-    await rearm(issueId, new Date(last.getTime() - 1_000));
-    expect((await heartbeat.tickTimers(last)).enqueued).toBe(0);
+    await rearm(issueId, new Date(termAt(15).getTime() - 1_000));
+    expect((await heartbeat.tickTimers(termAt(15))).enqueued).toBe(0);
 
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(issue.monitorNextCheckAt).toBeNull();
@@ -576,7 +716,5 @@ describeEmbeddedPostgres("issue monitors that cannot change anything", () => {
     const cleared = await activityOf(issueId, "issue.monitor_cleared");
     expect(cleared).toHaveLength(1);
     expect(cleared[0]?.details).toMatchObject({ reason: "review_ci_no_access" });
-    void engineerId;
-    void reviewerId;
   });
 });
