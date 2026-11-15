@@ -4308,7 +4308,7 @@ describe.sequential("issue comment reopen routes", () => {
     it("wakes the executor for a second review decision on the same head", async () => {
       const { options } = routeOptions({ headSha: HEAD_A });
       const issue = await pendingReviewIssue(HEAD_A);
-      issue.executionState.lastDecisionId = "previous-decision";
+      issue.executionState.lastDecisionId = "44444444-4444-4444-8444-444444444444";
       const res = await returnTask(
         issue,
         "The fix still does not handle the requested edge case",
