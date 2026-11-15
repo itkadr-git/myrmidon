@@ -1,12 +1,12 @@
-# HA-GEO operational runbook — DRAFT, DO NOT EXECUTE
+# HA-GEO operational runbook
 
-Incomplete working draft. Existing `doc/runbooks/t9-center-standby.md` overlaps this scope; lead coordination and interface verification are pending. Examples below are not verified and must not be executed. This document does not authorize production access or production changes.
+This is a procedure template, not evidence of site readiness or authorization to execute. See the existing [T9 standby runbook](../../../doc/runbooks/t9-center-standby.md). Its historical 900-second RPO threshold does not demonstrate the HA-GEO target of 300 seconds. All live execution requires a separate operator authorization and window.
 
 ## Scope and safety
 
 The target is a manually operated PostgreSQL streaming standby and a cold application/worker site. The target is RPO <= 300 seconds and manual RTO <= 1800 seconds. The primary and standby names, addresses, DNS records, secret-store paths, compose paths, image digests, and release versions are parameters. Replace every `<...>` value before execution. An unresolved value is a hard stop.
 
-Parts A-D are dependencies and remain pending unless their owners record completion: site/network readiness, replication implementation, application routing, and worker fencing. Existing `geo-check`, `standby-ctl`, and `/api/health/replication` interfaces must be used as released. This runbook does not redefine or implement them.
+Parts A-D are dependencies and remain pending unless their owners record completion: site/network readiness, replication implementation, application routing, and worker fencing. `geo-check` and `standby-ctl` are present in this revision. The context names `/api/health/replication`, but its route and response are not confirmed in this revision: do not call it or rely on a guessed response. The dependent step is blocked until the release source and contract are verified.
 
 No step below permits a connection to a site. Lab rehearsal uses synthetic data and isolated paths only. Production steps require the named operator, an approved maintenance window, and a recorded change or incident reference.
 
@@ -32,13 +32,7 @@ myrmidon geo-check --json --config <approved-config>
 
 Check that the report passes OS, Docker, PostgreSQL client, PostgreSQL reachability, required-secret presence, and mirror configuration checks. `geo-check` is a readiness gate, not proof of replication or failover. Do not copy secret values into the report.
 
-If the released replication health endpoint is available in the target release, query it without changing state:
-
-```bash
-curl --fail --silent --show-error <BOARD_URL>/api/health/replication
-```
-
-A missing or undocumented endpoint is a failed prerequisite, not a reason to invent a substitute. Abort: stop and return the missing parameter or pending dependency to the change record.
+The replication endpoint is pending contract verification; no command or response is specified. A missing or undocumented endpoint is a failed prerequisite for endpoint-dependent steps, not a reason to invent a substitute. Abort: stop and return the missing parameter or pending dependency to the change record.
 
 ## 2. Prepare the standby
 
@@ -47,33 +41,33 @@ Prerequisites: inventory passes; approved primary endpoint and replication crede
 First inspect the plan without execution:
 
 ```bash
-scripts/myrmidon/standby/standby-ctl.sh setup --target all --dry-run
+bash scripts/myrmidon/standby/standby-ctl.sh setup --target all --dry-run
 ```
 
 After approval, run setup with a secret reference supplied by the approved credential mechanism. Do not put a password in shell history or documentation:
 
 ```bash
-scripts/myrmidon/standby/standby-ctl.sh setup --target all --credentials <approved-passfile>
+bash scripts/myrmidon/standby/standby-ctl.sh setup --target all --credentials <approved-passfile>
 ```
 
-Verify: exit code `0`; standby service is running; both databases report `pg_is_in_recovery() = 1`; the replication health interface reports streaming; the slot is present and bounded; no application or worker is active on the cold site. Record the tool JSON and timestamps with secrets redacted.
+Verify: exit code `0`; standby service is running; both databases report `pg_is_in_recovery() = 1`; the approved replication evidence confirms streaming; the slot is present and bounded; no application or worker is active on the cold site. Record the tool JSON and timestamps with secrets redacted.
 
 Abort: if any preflight fails, do not use `--force`; correct the prerequisite. If a destructive step has started and fails, stop, preserve the data directory, and escalate to the database owner. Never delete a promoted standby to make setup pass.
 
 ## 3. Backup and restore rehearsal
 
-Prerequisites: isolated lab paths and synthetic data; an approved backup destination; released backup/restore commands and image digest. Operator: database owner. Window: lab window; production backup or restore requires a separate approved window.
+Prerequisites: isolated lab paths and synthetic data; an approved backup destination; released backup/restore commands and image digest. The default wrapper uses host networking and production-named mounts: it is prohibited in the isolated lab. Use an independently verified host-mode isolated fixture with no production volumes; if unavailable, do not run this drill. Operator: database owner. Window: lab window; production backup or restore requires a separate approved window.
 
 Create a dry-run plan first:
 
 ```bash
-scripts/myrmidon/standby/standby-ctl.sh rehearse --target all --dry-run
+bash scripts/myrmidon/standby/standby-ctl.sh rehearse --target all --dry-run
 ```
 
 Run the isolated rehearsal only with synthetic data:
 
 ```bash
-scripts/myrmidon/standby/standby-ctl.sh rehearse --target all
+bash scripts/myrmidon/standby/standby-ctl.sh rehearse --target all
 ```
 
 Verify: the isolated instance starts, promotes, answers smoke queries for each target, reports elapsed time, and removes its drill directory. Exit code `0` is required. Verify the directory is absent after cleanup. A retained drill requires an explicit cleanup action and must not share live data or production secrets.
@@ -82,23 +76,27 @@ Abort: stop the isolated instance, remove only the named isolated drill path, re
 
 ## 4. Manual failover
 
-Prerequisites: incident or approved window; last replication health result; measured lag <= 300 seconds or an explicit RPO exception; application drain plan; tested rollback; fencing authority present. Operator: incident commander coordinates; database owner promotes; infrastructure operator fences. Window: production emergency or approved failover window.
+Prerequisites: incident or approved window; last replication health result; measured lag <= 300 seconds; an unknown or larger lag fails acceptance and blocks this procedure; application drain plan; tested rollback; fencing authority present. Operator: incident commander coordinates; database owner promotes; infrastructure operator fences. Window: production emergency or approved failover window.
 
 1. Freeze writes and drain application work according to the released application procedure. Verify no active writer remains on the standby.
 2. Fence the old primary before promotion. The fencing authority must stop or isolate the old writer at the infrastructure boundary, then record method, operator, UTC time, and evidence. A failed ping or database connection is not fencing.
 3. Run the released failover guard with explicit fencing evidence:
 
 ```bash
-scripts/myrmidon/standby/standby-ctl.sh failover <target> --fenced "<change-id>: <fencing evidence>"
+bash scripts/myrmidon/standby/standby-ctl.sh failover board --fenced="<change-id>: <fencing evidence>"
 ```
 
-4. Verify the promoted database reports `pg_is_in_recovery() = 0`, the old writer remains fenced, and the replication health result is not incorrectly treated as standby-ready.
+4. Verify the promoted database reports `pg_is_in_recovery() = 0`, the old writer remains fenced, and the promoted node is not incorrectly treated as standby-ready.
 5. Start the cold application only through the approved production compose/service procedure. Keep scheduler, outbound integrations, and workers disabled until the single-active checks pass.
 6. Route traffic using the approved routing procedure. Do not invent a DNS or load-balancer command. Verify board health, database target, integration probes, and worker count.
 
 Abort: if fencing cannot be proven, do not promote. If promotion succeeds but application or integration checks fail, keep the old site fenced, stop newly started workers, and invoke incident rollback; do not promote the old writer again.
 
-RTO measurement starts at the declared failover time and ends when the board health, database write test, integrations, and single-active worker checks all pass. The acceptance limit is 1800 seconds.
+
+
+RTO starts at incident declaration and ends when board health, database write test, integrations, and single-active worker checks all pass. Record UTC timestamps and compute seconds offline: `python3 -c 'print(int("<end_epoch>") - int("<start_epoch>"))'`. Reject missing or negative values and durations over 1800 seconds.
+
+For RPO, before the incident run `bash scripts/myrmidon/standby/standby-ctl.sh check-lag --target all --rpo 300` and retain the exit code and both results. Exit 0 does not prove RPO at a later failure time. Record the last acknowledged primary write and latest recovered write in an approved test dataset. Subtract their UTC timestamps with the offline calculation above. Reject missing markers, clock uncertainty, negative values, or results over 300 seconds. A quiet primary's last replay timestamp alone is not a lag measurement.
 
 ## 5. Fencing and single-active controls
 
@@ -108,7 +106,6 @@ Before enabling the application, verify:
 
 ```bash
 curl --fail --silent --show-error <ACTIVE_BOARD_URL>/healthz
-curl --fail --silent --show-error <ACTIVE_BOARD_URL>/api/health/replication
 ```
 
 Verify integrations with the released, non-destructive health/probe interface. Do not send real customer traffic from a lab drill. Verify there is one active board writer, one scheduler owner, and zero cold-site workers until explicitly enabled. Record process/container identities and timestamps; do not rely on a process-name grep alone.
@@ -123,7 +120,7 @@ Prerequisites: incident commander approval; active site is healthy; all post-fai
 2. Rebuild or rewind the old site only with the released PostgreSQL procedure. Verify system identity and timeline before allowing it to start.
 3. Start the old site as a standby and verify recovery and streaming. Do not start it as a writer.
 4. Drain the active application. Stop active-site workers and verify zero workers before routing changes.
-5. Route the application to the re-synced site through the approved routing procedure. Verify health, integrations, one writer, and zero stale workers.
+5. Fence the current writer with independently verified evidence. Promote the resynced standby only using a separately approved promotion procedure; verify it is the sole writer. If fencing or promotion is unproven, abort without routing. Then route the application using the approved procedure and verify health, integrations, one writer, and zero stale workers.
 6. Re-arm the former active site as standby only after the new writer is proven. Record the new RPO baseline.
 
 Abort: retain the currently active site and its fence if any timeline, LSN, identity, health, or worker check fails. Never discard the only copy of post-failover writes. Roll back routing to the currently verified writer, not automatically to the old host.
@@ -137,7 +134,7 @@ Rollback is a controlled return to the last verified writer. It is not an unplan
 | Evidence | Lab (synthetic, isolated) | Real site (operator window) |
 |---|---|---|
 | Inventory | `geo-check --json` pass; parameters are complete | Same report plus approved read-only site evidence |
-| Standby | setup dry-run and isolated setup; both targets in recovery | Released setup output, replication health, slot and timeline evidence |
+| Standby | isolated setup and both targets in recovery; dry-run is not setup evidence | Released setup output, confirmed streaming, slot and timeline evidence |
 | RPO <= 300s | Synthetic write timestamp versus replay timestamp; `check-lag` with `--rpo 300` | Operator records `check-lag --target all --rpo 300` output and timestamps |
 | RTO <= 1800s | Rehearsal elapsed time, exit `0`, cleanup verified | Failover start/end timestamps; health, write, integrations, and worker checks pass |
 | Fencing | Simulated old writer cannot write; evidence is synthetic | Infrastructure stop/isolation evidence plus independent write rejection |
