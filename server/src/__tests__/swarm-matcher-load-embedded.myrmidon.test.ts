@@ -225,6 +225,20 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
   }
 
   describe("load", () => {
+    it("spreads concurrent issue events across free engineers", async () => {
+      const companyId = await seedCompany();
+      const agentA = await seedAgent(companyId, "agent-a");
+      const agentB = await seedAgent(companyId, "agent-b");
+      const taskA = await seedTask(companyId);
+      const taskB = await seedTask(companyId);
+      const wakes: string[] = [];
+
+      await Promise.all([matchIssue(deps(wakes), taskA), matchIssue(deps(wakes), taskB)]);
+
+      expect(new Set([await assigneeOf(taskA), await assigneeOf(taskB)])).toEqual(new Set([agentA, agentB]));
+      expect(wakes).toHaveLength(2);
+    });
+
     it("prefers a free engineer to one that already carries seven open tasks", async () => {
       const companyId = await seedCompany();
       const { low, high } = orderedIds();
