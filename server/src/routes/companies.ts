@@ -1122,6 +1122,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
 
   router.post("/:companyId/migrations", async (req, res) => {
     assertBoard(req);
+    assertCompanyAccess(req, req.params.companyId as string);
     const body = z.object({
       target: z.object({ mode: z.literal("new_company"), newCompanyName: z.string().trim().min(1) }).strict(),
       export: companyPortabilityExportSchema.optional().default({}),
