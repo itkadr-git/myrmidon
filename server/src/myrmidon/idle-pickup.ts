@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import { blockerOpenSql } from "./blocker-resolved.js";
 import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issueExecutionDecisions, issues, issueWorkProducts, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
@@ -17,7 +17,7 @@ import {
 // budget without restarting the server — a restart drops every run in flight.
 import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@myrmidon/shared";
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
-import { liveIdlePickupSettings, liveIdleWakeBudget } from "./runs-queue-settings/live.js";
+import { currentRunPrioritySettings } from "./run-priority/state.js";
 // myrmidon(1.6.5 F-26 T5): the cooling window of stale wake candidates (design §4.3).
 import { isIssueCoolingDown, readSwarmSettings } from "./wake-task-guard.js";
 
@@ -387,8 +387,40 @@ function issuePriorityRank(priority: string | null | undefined): number {
  * no execution hold (HOLD-READY). The remaining checks (live run, queued wake) need per-issue lookups and
  * run in the loop in `idlePickupForAgent`.
  */
+function idleReleaseFocusCondition(companyId: string): SQL {
+  const release = currentRunPrioritySettings().currentRelease;
+  if (!release?.trim()) return sql`true`;
+  const normalized = release.trim().toLowerCase();
+  const labelMatch = (name: SQL) => sql`(
+    lower(trim(${name})) = ${normalized}
+    or (length(${normalized}) >= 3 and length(lower(trim(${name}))) >= 3
+      and (lower(trim(${name})) like ${`%${normalized}%`}
+        or ${normalized} like ('%' || lower(trim(${name})) || '%')))
+  )`;
+  const currentReleaseExists = sql`exists (
+    select 1 from issues current_issue
+    join issue_labels current_issue_label on current_issue_label.issue_id = current_issue.id
+      and current_issue_label.company_id = ${companyId}
+    join labels current_label on current_label.id = current_issue_label.label_id
+      and current_label.company_id = ${companyId}
+    where current_issue.company_id = ${companyId}
+      and current_issue.hidden_at is null
+      and current_issue.status not in ('done', 'cancelled')
+      and ${labelMatch(sql`current_label.name`)}
+  )`;
+  const candidateMatches = sql`exists (
+    select 1 from issue_labels candidate_issue_label
+    join labels candidate_label on candidate_label.id = candidate_issue_label.label_id
+      and candidate_label.company_id = ${companyId}
+    where candidate_issue_label.issue_id = ${issues.id}
+      and candidate_issue_label.company_id = ${companyId}
+      and ${labelMatch(sql`candidate_label.name`)}
+  )`;
+  return or(isNotNull(issues.assigneeAgentId), sql`not (${currentReleaseExists}) or ${candidateMatches}`)!;
+}
+
 export function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
-  // Keep idle-pickup candidate SQL prefilter aligned: review stages in_review where agent is currentParticipant
+  const focus = idleReleaseFocusCondition(companyId);
   const isReviewParticipant =
     sql`${issues.status} = 'in_review' and ${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent' and ${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agentId}`;
   return db
@@ -404,15 +436,19 @@ export function idlePickupCandidateRows(db: Db, companyId: string, agentId: stri
     .where(
       and(
         eq(issues.companyId, companyId),
-        or(
-          and(
-            eq(issues.assigneeAgentId, agentId),
-            isNull(issues.assigneeUserId),
-            inArray(issues.status, [...WAKEABLE_ISSUE_STATUSES]),
+        or(isNotNull(issues.assigneeAgentId), focus),
+        and(
+          or(
+            and(
+              eq(issues.assigneeAgentId, agentId),
+              isNull(issues.assigneeUserId),
+              inArray(issues.status, [...WAKEABLE_ISSUE_STATUSES]),
+            ),
+            and(isNull(issues.assigneeAgentId), isReviewParticipant),
           ),
-          isReviewParticipant,
+          isNull(issues.assigneeUserId),
+          inArray(issues.status, [...WAKEABLE_ISSUE_STATUSES]),
         ),
-        isNull(issues.hiddenAt),
         isNull(issues.conversationAgentId),
         // 1.7 PRIVATE-TASKS part C: private tasks never become idle-pickup
         // candidates for an agent (neither general assigned-task lane nor
