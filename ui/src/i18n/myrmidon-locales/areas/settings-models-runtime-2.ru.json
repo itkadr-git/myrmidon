@@ -201,6 +201,7 @@
         "releaseTooLong": "Название релиза — не более 64 символов.",
         "invalidNumber": "{{field}}: введите целое число от 0 до {{max}}.",
         "enabled": "Включено",
+        "strictReleaseFocus": "Строгий фокус на текущем релизе",
         "roleWeight": "Вес роли «{{role}}»",
         "issueWeight": "Вес задач с приоритетом «{{priority}}»",
         "roles": {
