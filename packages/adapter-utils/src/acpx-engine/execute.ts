@@ -3890,6 +3890,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
   const warmHandles = deps.warmHandles ?? defaultWarmHandles;
   const stagedRuntimes = deps.stagedRuntimes ?? defaultStagedRuntimes;
   const stagingLocks = deps.stagingLocks ?? defaultStagingLocks;
+  // Registry lifetime matches the executor instance, so repeated turns handled
+  // by this executor deduplicate callbacks while separate executors stay isolated.
   const terminalCallbackRegistry = deps.terminalCallbackRegistry ?? new TerminalCallbackRegistry();
   const engine = resolveEngineSettings(deps);
 
