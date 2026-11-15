@@ -156,7 +156,7 @@ describe("buildAgentUpdatePatch", () => {
       unknown: { nested: [1, { enabled: true }] },
     };
     const patch = buildAgentUpdatePatch(agent, makeOverlay({ adapterConfig: { model: "chatgpt-pool/new" } }));
-    expect(patch.adapterConfig).toEqual({ ...agent.adapterConfig, model: "chatgpt-pool/new" });
+    expect(patch).toEqual({ adapterConfig: { model: "chatgpt-pool/new" } });
   });
 
   it("preserves adapter-agnostic keys when changing adapter types", () => {
