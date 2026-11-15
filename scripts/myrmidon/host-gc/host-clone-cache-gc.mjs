@@ -352,10 +352,13 @@ function remoteTimeoutSeconds() {
 }
 
 // A remote given as a path or `file://` is a directory on this host, not a server: it can vanish
-// with the copy or be a stale mirror, so it never proves anything is pushed. (Test hook:
-// HOST_GC_TEST_ALLOW_LOCAL_REMOTES=1 lets fixtures use bare repositories as servers.)
+// with the copy or be a stale mirror, so it never proves anything is pushed.
+// Test hook HOST_GC_TEST_ALLOW_LOCAL_REMOTES=1 treats such a remote as a server, but only inside
+// a node:test process (NODE_TEST_CONTEXT) and never under --apply: a stray variable in the
+// service environment must not make the real pass trust a local directory.
+let applyMode = false;
 function isLocalRemote(url) {
-  if (process.env.HOST_GC_TEST_ALLOW_LOCAL_REMOTES === "1") return false;
+  if (process.env.HOST_GC_TEST_ALLOW_LOCAL_REMOTES === "1" && process.env.NODE_TEST_CONTEXT && !applyMode) return false;
   return /^file:/i.test(url) || /^(\/|\.{1,2}\/|~)/.test(url) || (!url.includes("://") && !url.includes(":"));
 }
 
@@ -2107,6 +2110,10 @@ function archiveCloneFull(clonePath, archiveRoot) {
 async function main() {
   const args = parseArgs(process.argv);
   const now = Date.now();
+  applyMode = !args.dryRun;
+  if (applyMode && process.env.HOST_GC_TEST_ALLOW_LOCAL_REMOTES !== undefined) {
+    journalRecord(args.journal, { event: "test-hook-ignored", level: "warn", variable: "HOST_GC_TEST_ALLOW_LOCAL_REMOTES", reason: "ignored under --apply" });
+  }
 
   const lock = acquireLock(args.lock);
   if (!lock.ok) {

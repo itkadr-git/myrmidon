@@ -127,6 +127,8 @@ see "SSH runner run copies" below for the one that matters, `HOST_GC_RUNNER_ROOT
    (`remote-unverified` in the journal) and the clone is never removed without an archive. One
    `ls-remote` per remote URL serves a whole pass, and only clones the board reports closed are
    checked. The
+   test hook `HOST_GC_TEST_ALLOW_LOCAL_REMOTES` works only inside a node:test process and never
+   under `--apply` (a `test-hook-ignored` warn is journaled if it is set). The
    host needs read access to the clones' remotes for compact archives to stay small. A `.git`
    (directory or file) is looked for at any depth, inside `node_modules`, `dist` and the like
    too, and every repository found is archived on its own; a broken one in such a directory keeps
