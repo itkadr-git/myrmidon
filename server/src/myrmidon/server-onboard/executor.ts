@@ -14,7 +14,7 @@
 // - Password secret is consumed only after verified key login (reported in access step).
 // - Step failure rolls back hardening changes and leaves server in needs_attention.
 
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import type {
   SshConnectionOptions,
   SshExecutionResult,
@@ -213,15 +213,33 @@ export class FleetOnboardExecutor {
 
             // Optional password disable (only after key login verified)
             if (!claim.options.keepPassword) {
-              await activeSsh.execute(
-                "sudo mkdir -p /etc/ssh/sshd_config.d && printf 'PasswordAuthentication no\\nKbdInteractiveAuthentication no\\n' | sudo tee /etc/ssh/sshd_config.d/50-myrmidon-hardening.conf",
-              );
-              const sshdTest = await activeSsh.execute("sudo sshd -t");
-              if (sshdTest.exitCode !== 0) {
-                await activeSsh.execute("sudo rm -f /etc/ssh/sshd_config.d/50-myrmidon-hardening.conf");
-                throw new Error("sshd configuration test failed; reverted password disable");
+              const backup = `/var/tmp/myrmidon-sshd-${randomUUID()}`;
+              const file = "/etc/ssh/sshd_config.d/50-myrmidon-hardening.conf";
+              const snapshot = await activeSsh.execute(`sudo mkdir -m 700 ${backup} && if sudo test -e ${file}; then sudo cp -p ${file} ${backup}/original; else sudo touch ${backup}/absent; fi`);
+              if (snapshot.exitCode !== 0) throw new Error("Cannot snapshot password hardening configuration");
+              try {
+                const write = await activeSsh.execute(
+                  `sudo mkdir -p /etc/ssh/sshd_config.d && printf 'PasswordAuthentication no\\nKbdInteractiveAuthentication no\\n' | sudo tee ${file}`,
+                );
+                if (write.exitCode !== 0) throw new Error("Password hardening write failed");
+                const sshdTest = await activeSsh.execute("sudo sshd -t");
+                if (sshdTest.exitCode !== 0) throw new Error("sshd configuration test failed");
+                const reload = await activeSsh.execute("sudo systemctl reload ssh || sudo systemctl reload sshd");
+                if (reload.exitCode !== 0) throw new Error("sshd reload failed");
+                const fresh = await this.getSsh(keyConnOptions);
+                try {
+                  await fresh.connect(keyConnOptions);
+                  const check = await fresh.execute('echo "myrmidon-key-verify"');
+                  if (check.exitCode !== 0 || !check.stdout.includes("myrmidon-key-verify")) throw new Error("SSH verification after password hardening failed");
+                } finally {
+                  await fresh.disconnect().catch(() => {});
+                }
+              } catch (error) {
+                const restore = await activeSsh.execute(`: restore-myrmidon-password-config; if sudo test -f ${backup}/absent; then sudo rm -f ${file}; else sudo cp -p ${backup}/original ${file}; fi && sudo sshd -t && (sudo systemctl reload ssh || sudo systemctl reload sshd)`);
+                if (restore.exitCode !== 0) throw new Error("Password hardening failed and configuration restoration failed");
+                throw error;
               }
-              await activeSsh.execute("sudo systemctl reload ssh || sudo systemctl reload sshd");
+              await activeSsh.execute(`sudo rm -rf ${backup}`);
             }
 
             await reporter.reportStep(
