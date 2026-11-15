@@ -900,10 +900,14 @@ export function discoverBotScratchDirs(botsRoot) {
   }
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-    const scratchDir = path.join(botsRoot, entry.name, "hermes/cache/scratch");
-    if (fs.existsSync(scratchDir)) {
-      dirs.push(scratchDir);
+    let scratchDir = path.join(botsRoot, entry.name);
+    let safe = true;
+    for (const part of ["hermes", "cache", "scratch"]) {
+      scratchDir = path.join(scratchDir, part);
+      const { st } = lstatSafe(scratchDir);
+      if (!st?.isDirectory()) { safe = false; break; }
     }
+    if (safe) dirs.push(scratchDir);
   }
   return dirs;
 }
