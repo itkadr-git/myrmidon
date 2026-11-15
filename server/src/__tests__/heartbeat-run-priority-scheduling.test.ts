@@ -54,7 +54,7 @@ import {
   currentRunPrioritySettings,
   resetRunPriorityForTests,
 } from "../myrmidon/run-priority/state.js";
-import { runPriorityService } from "../myrmidon/run-priority/service.js";
+import { isReleaseFocusActive, runPriorityService } from "../myrmidon/run-priority/service.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -548,6 +548,25 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
     const stillQueued = await runRow(lowRun.id);
     expect(startedHigh?.status).not.toBe("queued");
     expect(stillQueued?.status).toBe("queued");
+  }, 30_000);
+
+  it("checks strict release focus against open work and live settings for the company", async () => {
+    const first = await seedCompanyAndAgent({ name: "Focus", role: "engineer" });
+    const other = await seedCompanyAndAgent({ name: "Other", role: "engineer" });
+    const issueId = await seedIssue(first.companyId, { title: "Release work", priority: "high" });
+    const labelId = randomUUID();
+    await db.insert(labels).values({ id: labelId, companyId: first.companyId, name: "1.6.9", color: "#ffffff" });
+    await db.insert(issueLabels).values({ issueId, labelId, companyId: first.companyId });
+    const service = runPriorityService(db, { env: {} });
+    const actor = { actorType: "user" as const, actorId: "responsible-user", agentId: null, runId: null, agentApiKeyId: null };
+    await service.update({ currentRelease: "1.6.9", strictReleaseFocus: true }, actor);
+    expect(await isReleaseFocusActive(db, first.companyId)).toBe(true);
+    expect(await isReleaseFocusActive(db, other.companyId)).toBe(false);
+    await service.update({ strictReleaseFocus: false }, actor);
+    expect(await isReleaseFocusActive(db, first.companyId)).toBe(false);
+    await service.update({ strictReleaseFocus: true }, actor);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+    expect(await isReleaseFocusActive(db, first.companyId)).toBe(false);
   }, 30_000);
 
   it("a weights change through the settings service reorders the next sweep without a restart", async () => {
