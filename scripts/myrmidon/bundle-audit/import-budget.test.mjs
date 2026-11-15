@@ -28,6 +28,16 @@ test('CLI ignores regular expressions following return', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('CLI ignores regex literals after control conditions', () => {
+  const dir = mkdtempSync(join(process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || tmpdir(), 'import-budget-'));
+  try {
+    writeFileSync(join(dir, 'entry.mjs'), "if (ready) /require('fake-package')/.test(value);\n");
+    const run = spawnSync(process.execPath, [cli, join(dir, 'entry.mjs')], { encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(JSON.parse(run.stdout).unknown, []);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('CLI sees require after division', () => {
   const dir = mkdtempSync(join(process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || tmpdir(), 'import-budget-'));
   try {
