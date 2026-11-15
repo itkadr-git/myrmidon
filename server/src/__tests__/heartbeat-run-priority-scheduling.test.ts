@@ -706,8 +706,10 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
     expect(mockAdapterExecute).not.toHaveBeenCalled();
     applyRunPrioritySettings({ ...defaultSettings(), currentRelease: "1.6.9", strictReleaseFocus: false });
     await dueCycle(run.id);
+    // The queued-run staleness gate must not cancel the non-assignee run as a reassignment.
+    const finalRow = await runRow(run.id);
+    expect({ status: finalRow?.status, errorCode: finalRow?.errorCode }).toEqual({ status: expect.stringMatching(/^(running|succeeded)$/), errorCode: null });
     expect(mockAdapterExecute).toHaveBeenCalled();
-    expect(["running", "succeeded"]).toContain((await runRow(run.id))?.status);
   });
 
   it("strict focus: a review the agent participates in runs without delay", async () => {

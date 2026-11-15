@@ -739,6 +739,7 @@ export function createPostgresRunDispatchAdapter(
       isStarterPackScoutWake: isStarterPackScoutRun,
       isAutomaticContinuationWake,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
+      isReleaseFocusDeferral: isReleaseFocusDeferral(context),
       resumeIntent,
       wakeCommentIdPresent: Boolean(wakeCommentId),
       continuationParkApplies,

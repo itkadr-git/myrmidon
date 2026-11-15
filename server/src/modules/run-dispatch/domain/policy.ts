@@ -191,6 +191,8 @@ export type QueuedRunFacts = {
    */
   isAutomaticContinuationWake?: boolean;
   isNonAssigneeWorkspaceBusyRetry: boolean;
+  /** myrmidon(OPE-13231): the run was parked by strict release focus and keeps its original ownership facts. */
+  isReleaseFocusDeferral?: boolean;
 
   resumeIntent: boolean;
   wakeCommentIdPresent: boolean;
@@ -641,6 +643,7 @@ export function decideQueuedRunStaleness(
     runAgentId: facts.runAgentId,
     issueAssigneeAgentId: facts.issueAssigneeAgentId,
     isNonAssigneeWorkspaceBusyRetry: facts.isNonAssigneeWorkspaceBusyRetry,
+    isReleaseFocusDeferral: facts.isReleaseFocusDeferral,
     isInteractionWake: facts.isInteractionWake,
     // myrmidon(P2): forward the addressee bypass; this call site lists bypasses explicitly
     isPendingInteractionAddresseeWake: facts.isPendingInteractionAddresseeWake,
