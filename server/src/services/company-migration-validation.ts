@@ -15,7 +15,11 @@ type MigrationManifest = {
 // This validates a new-company migration; existing target references are never portable.
 export function validateMigrationManifest(manifest: MigrationManifest) {
   const errors: string[] = [];
-  const agentSlugs = new Set(manifest.agents.map((agent) => agent.slug));
+  const agentSlugs = new Set<string>();
+  for (const agent of manifest.agents) {
+    if (agentSlugs.has(agent.slug)) errors.push(`Duplicate agent slug: ${agent.slug}.`);
+    agentSlugs.add(agent.slug);
+  }
   const validPermissions: ReadonlySet<string> = new Set(PERMISSION_KEYS);
   const managers = new Map(manifest.agents.map((agent) => [agent.slug, agent.reportsToSlug]));
   const checked = new Set<string>();
@@ -49,7 +53,11 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
       }
     }
   }
-  const projectSlugs = new Set((manifest.projects ?? []).map((project) => project.slug));
+  const projectSlugs = new Set<string>();
+  for (const project of manifest.projects ?? []) {
+    if (projectSlugs.has(project.slug)) errors.push(`Duplicate project slug: ${project.slug}.`);
+    projectSlugs.add(project.slug);
+  }
   for (const input of manifest.envInputs) {
     if (input.kind !== "secret") continue;
     if (input.agentSlug && !agentSlugs.has(input.agentSlug)) {
