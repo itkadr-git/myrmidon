@@ -7,11 +7,13 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
+import { startGitDaemon } from "./git-daemon-fixture.mjs";
 
 const ROOT = path.resolve(new URL("../../..", import.meta.url).pathname);
 const SCRIPT = path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs");
 
 let tmpDir;
+let gitDaemon;
 let boardServer;
 let boardUrl;
 
@@ -20,6 +22,7 @@ beforeEach(() => {
 });
 
 before(async () => {
+  gitDaemon = await startGitDaemon();
   boardServer = createServer((req, res) => {
     const identifier = decodeURIComponent(req.url.split("/").pop());
     if (!req.url.startsWith("/api/issues/") || !/^OPE-\d+$/.test(identifier)) {
@@ -36,6 +39,7 @@ before(async () => {
 });
 
 after(async () => {
+  gitDaemon.stop();
   await new Promise((resolve) => boardServer.close(resolve));
 });
 afterEach(() => {
@@ -46,7 +50,7 @@ function runScript(args = [], env = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn("node", [SCRIPT, ...args], {
       encoding: "utf8",
-      env: { ...process.env, BOARD_API_URL: boardUrl, HOST_GC_TEST_ALLOW_LOCAL_REMOTES: "1", ...env },
+      env: { ...process.env, BOARD_API_URL: boardUrl, ...gitDaemon.env, ...env },
     });
     let stdout = "";
     let stderr = "";
@@ -998,13 +1002,13 @@ describe("host-clone-cache-gc compact archive recovery (OPE-13218)", () => {
     assert.ok(!journal().some((e) => e.event === "clone-removed" || e.event === "clone-removed-after-archive"));
   });
 
-  it("does not treat a local-path remote as a server: the history is bundled", async () => {
+  it("under --apply a local-path remote is no server even with the test hook set: the history is bundled", async () => {
     const root = path.join(tmpDir, "root");
     const { clone } = makeTask(root, "OPE-20014");
     const sha = gitIn(clone, "rev-parse", "HEAD");
     age(clone);
 
-    const r = await gc(root, { HOST_GC_TEST_ALLOW_LOCAL_REMOTES: "" });
+    const r = await gc(root, { GIT_CONFIG_COUNT: "0", HOST_GC_TEST_ALLOW_LOCAL_REMOTES: "1", NODE_TEST_CONTEXT: "child-v8" });
     assert.equal(r.status, 0, r.stderr);
     assert.equal(fs.existsSync(clone), false);
     const extracted = path.join(tmpDir, "ex");
@@ -1012,6 +1016,7 @@ describe("host-clone-cache-gc compact archive recovery (OPE-13218)", () => {
     assert.equal(spawnSync("tar", ["-xf", onlyArchive(root), "-C", extracted]).status, 0);
     assert.match(gitIn(extracted, "bundle", "list-heads", path.join(extracted, "unpublished.bundle")), new RegExp(sha));
     assert.ok(journal().some((e) => e.event === "remote-unverified" && /local path/.test(e.reason)));
+    assert.ok(journal().some((e) => e.event === "test-hook-ignored" && e.level === "warn"), "warn journaled");
   });
 
   it("asks the server once for many copies of one origin", async () => {

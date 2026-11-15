@@ -5,10 +5,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import subprocess from "node:child_process";
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, before, after, beforeEach, afterEach } from "node:test";
+import { startGitDaemon } from "./git-daemon-fixture.mjs";
 
-// Fixtures use bare repositories on disk as "servers"; production treats a local-path remote as no server.
-process.env.HOST_GC_TEST_ALLOW_LOCAL_REMOTES = "1";
+// Fixtures use bare repositories on disk as "servers": a git daemon makes them real git:// remotes.
+const gitDaemon = await startGitDaemon();
+Object.assign(process.env, gitDaemon.env);
+after(() => gitDaemon.stop());
 const ROOT = path.resolve(new URL("../../..", import.meta.url).pathname);
 // A bot container exports empty GIT_AUTHOR_*/GIT_COMMITTER_* variables; git honors an
 // empty env var over config, which breaks commit fixtures. Strip them everywhere.
