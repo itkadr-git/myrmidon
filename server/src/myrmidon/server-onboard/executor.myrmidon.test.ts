@@ -202,6 +202,28 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockReporter.completion?.status).toBe("failed");
   });
 
+  it("fails and restores password configuration when sshd reload fails", async () => {
+    const mockSsh = new MockSshExecutor();
+    mockSsh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
+    mockSsh.mockResponse(/sudo systemctl reload ssh \|\| sudo systemctl reload sshd/, { exitCode: 1, stderr: "reload failed" });
+    const executor = new FleetOnboardExecutor({
+      createSshExecutor: () => mockSsh,
+      generateKeyPair: () => ({ publicKey: "ssh-ed25519 test", privateKey: "private-key" }),
+    });
+    const mockReporter = createMockReporter();
+    const claim: any = {
+      job: { id: "job-reload", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["access"], options: { keepPassword: false },
+      secretValues: { bootstrapPassword: "pass" },
+    };
+
+    const result = await executor.execute(claim, mockReporter.reporter);
+    expect(result.status).toBe("failed");
+    expect(mockReporter.completion?.status).toBe("failed");
+    expect(mockSsh.hasExecuted(/restore-myrmidon-password-config/)).toBe(true);
+  });
+
   it("does not enable the firewall when the SSH allow rule fails", async () => {
     const mockSsh = new MockSshExecutor();
     mockSsh.mockResponse(/sudo ufw allow/, { stdout: "", stderr: "rule rejected", exitCode: 1 });
