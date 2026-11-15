@@ -286,6 +286,7 @@ export function normalizeDataRetentionLastRun(raw: unknown): DataRetentionLastRu
       documentRevisions: normalizeTable("documentRevisions"),
       agentWakeupRequests: normalizeTable("agentWakeupRequests"),
       environmentLeases: normalizeTable("environmentLeases"),
+      executionWorkspaces: normalizeTable("executionWorkspaces"),
     },
   };
 }
