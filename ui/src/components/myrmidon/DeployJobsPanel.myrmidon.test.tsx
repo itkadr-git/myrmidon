@@ -81,6 +81,20 @@ describe("DeployJobsPanel", () => {
     expect(panel!.textContent).toContain("No deploy has run yet");
   });
 
+  it("shows release intent and failure details from the host journal", () => {
+    const digest = `sha256:${"b".repeat(64)}`;
+    const panel = render({ state: { job: job(), history: [], audit: [
+      { eventId: "1", event: "deploy.intent", jobId: "job-a", digest, status: "planned", detail: "accepted", at: NOW },
+      { eventId: "2", event: "deploy.result", jobId: "job-a", digest, status: "failed", detail: "health check failed", at: NOW },
+    ] } });
+    const audit = panel!.querySelector('[data-testid="myrmidon-release-audit"]')!;
+    expect(audit.textContent).toContain("deploy.intent");
+    expect(audit.textContent).toContain("planned");
+    expect(audit.textContent).toContain("deploy.result");
+    expect(audit.textContent).toContain("failed");
+    expect(audit.textContent).toContain("health check failed");
+  });
+
   it("shows the live job with its status and steps, and the abort while abortable", () => {
     const panel = render({ state: { job: job(), history: [], audit: [] } });
     expect(panel!.textContent).toContain("Waiting for the maintenance window to drain");
