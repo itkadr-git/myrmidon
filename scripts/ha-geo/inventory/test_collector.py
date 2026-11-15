@@ -100,6 +100,14 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(report['postgres']['data']['archive_failures'], 3)
         self.assertEqual(report['postgres']['data']['ssl_configured'], 'on')
 
+    def test_postgres_access_reports_local_transport_without_guessing_authentication(self):
+        fixture = dict.fromkeys(collector.FIELDS, 1)
+        fixture.update(server_version_num=160002, in_recovery=False)
+        with patch.object(collector, 'query_postgres', return_value=fixture):
+            report = collector.collect('/socket', 'db', 'operator')
+        self.assertEqual(report['postgres']['access']['transport'], 'unix_socket')
+        self.assertEqual(report['postgres']['access']['authentication']['status'], 'unknown')
+
     def test_query_uses_read_only_transaction_and_scrubbed_environment(self):
         response = subprocess.CompletedProcess([], 0, stdout='{}', stderr='')
         with patch.object(collector.subprocess, 'run', return_value=response) as run:

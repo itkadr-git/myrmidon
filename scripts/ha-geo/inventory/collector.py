@@ -94,7 +94,10 @@ def collect(socket=None, database=None, user=None, disk_path='/'):
             data = {key: raw.get(key) for key in FIELDS}
             data['major'] = raw['server_version_num'] // 10000
             required = [k for k in FIELDS if k not in ('lag_bytes', 'lag_seconds') or data['in_recovery']]
-            postgres = {'status': 'ok' if all(data[k] is not None for k in required) else 'incomplete', 'data': data}
+            postgres = {'status': 'ok' if all(data[k] is not None for k in required) else 'incomplete',
+                        'data': data,
+                        'access': {'transport': 'unix_socket',
+                                   'authentication': {'status': 'unknown', 'reason': 'authentication method not exposed by PostgreSQL'}}}
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
             postgres = {'status': 'error', 'reason': 'query failed or access denied; details suppressed'}
     try:
