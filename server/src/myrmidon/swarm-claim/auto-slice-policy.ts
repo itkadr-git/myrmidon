@@ -40,3 +40,17 @@ export function createAutoSlicePolicy(delayMs = 10 * 60_000) {
     },
   };
 }
+
+export async function runAutoSlicePass(
+  policy: ReturnType<typeof createAutoSlicePolicy>,
+  shortages: readonly QueueShortage[],
+  nowMs: number,
+  ports: { createIfAbsent(input: { companyId: string; projectId: string; needed: number }): Promise<boolean> },
+): Promise<void> {
+  for (const shortage of shortages) {
+    const needed = policy.observe(shortage, nowMs);
+    if (needed > 0) {
+      await ports.createIfAbsent({ companyId: shortage.companyId, projectId: shortage.projectId, needed });
+    }
+  }
+}
