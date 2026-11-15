@@ -47,12 +47,14 @@ function makeSweep(opts: { maxBatchThatFits: number; totalRows: number }) {
         heartbeatRunsDays: 30,
         activityLogDays: 90,
         accessAuditDays: 0,
+        secretAccessDays: 0,
         litellmCostEventsDays: 0,
         documentRevisionDays: 90,
         documentRevisionKeepPerDocument: 20,
         agentWakeupRequestsDays: 30,
         environmentLeasesDays: 30,
       }) as never,
+
     readLastRun: async () => {
       const empty = { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 };
       return {
