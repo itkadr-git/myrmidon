@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { and, desc, eq, gte, inArray, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import { resolveStatusOnResume } from "../myrmidon/pause-drain.js";
 import { versionKeyEtag } from "../middleware/version-key-etag.js";
@@ -999,15 +1000,24 @@ export function agentService(
       Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig") &&
       isPlainRecord(normalizedPatch.adapterConfig)
     ) {
-      const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
-        existing.companyId,
-        normalizedPatch.adapterConfig,
-        { adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string },
-      );
-      normalizedPatch.adapterConfig = normalizePaperclipRunnerAdapterConfig(
-        (normalizedPatch.adapterType ?? existing.adapterType) as string,
-        normalizedAdapterConfig,
-      );
+      const priorConfig = isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {};
+      const nextConfig = normalizedPatch.adapterConfig;
+      const { model: _priorModel, ...priorOther } = priorConfig;
+      const { model: _nextModel, ...nextOther } = nextConfig;
+      const onlyModelChanged = existing.adapterType === "hermes_gateway"
+        && (normalizedPatch.adapterType ?? existing.adapterType) === existing.adapterType
+        && isDeepStrictEqual(priorOther, nextOther);
+      if (!onlyModelChanged) {
+        const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+          existing.companyId,
+          nextConfig,
+          { adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string },
+        );
+        normalizedPatch.adapterConfig = normalizePaperclipRunnerAdapterConfig(
+          (normalizedPatch.adapterType ?? existing.adapterType) as string,
+          normalizedAdapterConfig,
+        );
+      }
     } else if (
       Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterType")
       && isPlainRecord(existing.adapterConfig)
