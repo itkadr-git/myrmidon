@@ -17,6 +17,7 @@ import {
 
 type StateWithHead = {
   status?: string | null;
+  lastDecisionId?: string | null;
   lastChangesRequestedHeadSha?: string | null;
 } | null | undefined;
 
@@ -51,8 +52,14 @@ export async function decideReviewReturnWake(
   const next = input.nextState;
   if (!next || next.status !== "changes_requested") return { action: "wake" };
 
-  const repeatedHead = repeatedReturnHead(input.previousState, next);
-  if (repeatedHead) return { action: "suppress", reason: "repeat_same_head", headSha: repeatedHead };
+  // A same-head return is a duplicate only when no new review decision was made.
+  const hasNewDecision = Boolean(
+    next.lastDecisionId && next.lastDecisionId !== input.previousState?.lastDecisionId,
+  );
+  if (!hasNewDecision) {
+    const repeatedHead = repeatedReturnHead(input.previousState, next);
+    if (repeatedHead) return { action: "suppress", reason: "repeat_same_head", headSha: repeatedHead };
+  }
 
   const headSha = normalizeHeadSha(next.lastChangesRequestedHeadSha);
   if (!headSha) return { action: "wake" };
