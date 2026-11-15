@@ -207,6 +207,11 @@ export class FleetOnboardExecutor {
             connOptions.privateKey = activePrivateKey;
             delete connOptions.password;
 
+            // Never lock out the host using a key that exists only in this process.
+            if (!claim.options.keepPassword && (!claim.server.accessKeySecretKey || !claim.secretValues.accessKey)) {
+              throw new Error("Cannot disable password authentication without a durable access key");
+            }
+
             // Optional password disable (only after key login verified)
             if (!claim.options.keepPassword) {
               await activeSsh.execute(
