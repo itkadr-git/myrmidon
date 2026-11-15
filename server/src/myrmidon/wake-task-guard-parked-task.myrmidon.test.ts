@@ -273,6 +273,54 @@ describeEmbeddedPostgres("myrmidon(EMPTY-RUNS-1) parked task cooling against Pos
     expect((await isIssueCoolingDown(db, companyId, answered, settings, now)).cooling).toBe(false);
   });
 
+  /** The row the board writes when the head of the task's PR moves (webhook), under no run. */
+  async function logPrHeadChange(issueId: string, at: Date, details: Record<string, unknown> = { headShaChanged: true }) {
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "system",
+      actorId: "system:github-webhook",
+      action: "issue.work_product_head_changed",
+      entityType: "issue",
+      entityId: issueId,
+      details: { workProductId: randomUUID(), fromSha: "a".repeat(40), toSha: "b".repeat(40), ...details },
+      createdAt: at,
+    });
+  }
+
+  it("a pickup that pushed to the PR and handed the task back does not cool it (head change in the window)", async () => {
+    const now = new Date();
+    const issueId = await seedIssue("todo");
+    const at = new Date(now.getTime() - 20 * 60_000);
+    const runId = await seedAdvancedPickup(issueId, at);
+    await logRunActivity(issueId, runId, new Date(at.getTime() - 1_000), [handBack(runId), parkingNote]);
+    // the webhook reports the push after the run has ended, inside the 15 min late window
+    await logPrHeadChange(issueId, new Date(at.getTime() + 5 * 60_000));
+    expect((await isIssueCoolingDown(db, companyId, issueId, settings, now)).cooling).toBe(false);
+  });
+
+  it("the same pickup without a head change cools the task as before", async () => {
+    const now = new Date();
+    const issueId = await seedIssue("todo");
+    const at = new Date(now.getTime() - 5 * 60_000);
+    const runId = await seedAdvancedPickup(issueId, at);
+    await logRunActivity(issueId, runId, new Date(at.getTime() - 1_000), [handBack(runId), parkingNote]);
+    expect(await isIssueCoolingDown(db, companyId, issueId, settings, now)).toMatchObject({ cooling: true, staleCount: 1, reason: "no_progress" });
+  });
+
+  it("a head change outside the window of the run is not its progress", async () => {
+    const now = new Date();
+    const issueId = await seedIssue("todo");
+    const at = new Date(now.getTime() - 40 * 60_000);
+    const runId = await seedAdvancedPickup(issueId, at);
+    await logRunActivity(issueId, runId, new Date(at.getTime() - 1_000), [handBack(runId), parkingNote]);
+    await logPrHeadChange(issueId, new Date(at.getTime() + 16 * 60_000)); // 15 min late window is over
+    await logPrHeadChange(issueId, new Date(at.getTime() - 41_000 - 60_000)); // before the run started
+    // a row that does not say the head changed is no progress either
+    await logPrHeadChange(issueId, new Date(at.getTime() - 10_000), { headShaChanged: false });
+    expect(await isIssueCoolingDown(db, companyId, issueId, settings, new Date(at.getTime() + 10 * 60_000)))
+      .toMatchObject({ cooling: true, staleCount: 1, reason: "no_progress" });
+  });
+
   it("a task that is being worked on (in_progress) is not cooled by a quiet advanced run", async () => {
     const now = new Date();
     const issueId = await seedIssue("in_progress");

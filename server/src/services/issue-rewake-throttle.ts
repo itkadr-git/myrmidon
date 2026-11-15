@@ -266,6 +266,53 @@ export function collectRunIdsWithIssueProgress(
   return withProgress;
 }
 
+/**
+ * myrmidon(EMPTY-RUNS-1): the activity row the board writes when the head of the
+ * task's pull request moves (`metadata.headSha` of the `pull_request` work
+ * product changes, see github-connection-events.ts). An engineer's run pushes
+ * commits to the PR and hands the task back to `todo`; the push leaves no row
+ * under the run (the board learns of it from GitHub), so this row is the only
+ * trace of the code work. Deliberately not part of ISSUE_PROGRESS_ACTIVITY_ACTIONS
+ * and ISSUE_NEW_INPUT_ACTIVITY_ACTIONS: it carries no run id, and as new input it
+ * would wake and thaw the very tasks it is only meant to explain.
+ */
+export const PR_HEAD_CHANGE_ACTIVITY_ACTION = "issue.work_product_head_changed";
+
+/**
+ * How long after a run ends a PR head change is still credited to that run. The
+ * webhook (or the reconciliation of the PR) reports a push with a delay, so the
+ * row can land after the run is already finished.
+ */
+export const PR_HEAD_CHANGE_LATE_WINDOW_MS = 15 * 60_000;
+
+/** The span of one run, as the head-change credit needs it. */
+export interface RunSpan {
+  id: string;
+  createdAt?: Date | null;
+  startedAt?: Date | null;
+  finishedAt?: Date | null;
+}
+
+/**
+ * The runs that moved the head of the task's PR: a head-change row (any actor)
+ * falls between the start of the run and its end plus
+ * PR_HEAD_CHANGE_LATE_WINDOW_MS. A run that has not finished has no upper bound.
+ * A run with neither start nor creation time is never credited.
+ */
+export function collectRunIdsWithPrHeadChange(
+  runs: readonly RunSpan[],
+  headChangeTimes: readonly Date[],
+): Set<string> {
+  const credited = new Set<string>();
+  for (const run of runs) {
+    const from = (run.startedAt ?? run.createdAt)?.getTime();
+    if (from === undefined) continue;
+    const to = run.finishedAt ? run.finishedAt.getTime() + PR_HEAD_CHANGE_LATE_WINDOW_MS : Infinity;
+    if (headChangeTimes.some((at) => at.getTime() >= from && at.getTime() <= to)) credited.add(run.id);
+  }
+  return credited;
+}
+
 export interface IssueRewakeCandidateInput {
   reason: string | null;
   wakeCommentId: string | null;

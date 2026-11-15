@@ -6,7 +6,9 @@
 // 176 such pickups on ten tasks in eight hours.
 import { describe, expect, it } from "vitest";
 import {
+  PR_HEAD_CHANGE_LATE_WINDOW_MS,
   collectRunIdsWithIssueProgress,
+  collectRunIdsWithPrHeadChange,
   evaluateIssueRewakeThrottle,
   isIssueProgressActivity,
   isReturnToQueue,
@@ -228,6 +230,47 @@ describe("rewake throttle on the parked-task loop", () => {
       recentTerminalRuns: succeededRuns(ids),
       runIdsWithIssueProgress: collectRunIdsWithIssueProgress(rows, () => AGENT),
       hasNewIssueInputSinceLastRun: true,
+    })).toEqual({ blocked: false, noProgressStreak: 0 });
+  });
+});
+
+describe("collectRunIdsWithPrHeadChange (myrmidon EMPTY-RUNS-1: a PR head change is the progress of the run that pushed)", () => {
+  const startedAt = new Date("2026-11-13T07:00:00.000Z");
+  const finishedAt = new Date("2026-11-13T07:10:00.000Z");
+  const run = { id: "r1", startedAt, createdAt: startedAt, finishedAt };
+  const at = (ms: number) => new Date(ms);
+
+  it("credits a head change inside the run and in the late window after it", () => {
+    expect([...collectRunIdsWithPrHeadChange([run], [at(startedAt.getTime() + 60_000)])]).toEqual(["r1"]);
+    expect([...collectRunIdsWithPrHeadChange([run], [at(finishedAt.getTime() + PR_HEAD_CHANGE_LATE_WINDOW_MS)])]).toEqual(["r1"]);
+  });
+
+  it("does not credit a head change before the run or later than the window", () => {
+    expect(collectRunIdsWithPrHeadChange([run], [at(startedAt.getTime() - 1)]).size).toBe(0);
+    expect(collectRunIdsWithPrHeadChange([run], [at(finishedAt.getTime() + PR_HEAD_CHANGE_LATE_WINDOW_MS + 1)]).size).toBe(0);
+  });
+
+  it("credits nothing without a head change, and a hand-back stays no progress", () => {
+    expect(collectRunIdsWithPrHeadChange([run], []).size).toBe(0);
+    const rows = [handBack("r1"), parkingNote("r1")];
+    const progress = collectRunIdsWithIssueProgress(rows, () => AGENT);
+    for (const id of collectRunIdsWithPrHeadChange([run], [at(startedAt.getTime() + 60_000)])) progress.add(id);
+    expect([...progress]).toEqual(["r1"]);
+    expect(collectRunIdsWithIssueProgress(rows, () => AGENT).size).toBe(0);
+  });
+
+  it("an unfinished run has no upper bound", () => {
+    expect([...collectRunIdsWithPrHeadChange([{ id: "r2", startedAt }], [at(startedAt.getTime() + 3 * 3600_000)])]).toEqual(["r2"]);
+  });
+
+  it("the streak ends when the throttle counts the head change as progress", () => {
+    const ids = ["r0", "r1", "r2"];
+    const rows = ids.flatMap((id) => [handBack(id), parkingNote(id)]);
+    const progress = collectRunIdsWithIssueProgress(rows, () => AGENT);
+    progress.add("r0");
+    const runs = ids.map((id, i) => ({ id, status: "succeeded", errorCode: null, finishedAt: new Date(NOW.getTime() - (5 + 20 * i) * 60_000) }));
+    expect(evaluateIssueRewakeThrottle({
+      now: NOW, recentTerminalRuns: runs, runIdsWithIssueProgress: progress, hasNewIssueInputSinceLastRun: false,
     })).toEqual({ blocked: false, noProgressStreak: 0 });
   });
 });
