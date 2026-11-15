@@ -760,7 +760,7 @@ export function defaultAgentGatewayKeyDeps(
     },
     recordAllowlistDrift: async ({ companyId, agentId, add, remove }) => {
       const details = { addedModels: add, removedModels: remove };
-      logger.info({ companyId, agentId, ...details }, "agent gateway allowlist reconciled");
+      console.info({ companyId, agentId, ...details }, "agent gateway allowlist reconciled");
       try {
         const { logActivity } = await import("../../services/activity-log.js");
         await logActivity(db, {
@@ -774,7 +774,7 @@ export function defaultAgentGatewayKeyDeps(
           details,
         });
       } catch (error) {
-        logger.warn({ companyId, agentId, error }, "could not record allowlist reconciliation activity");
+        console.warn({ companyId, agentId, error }, "could not record allowlist reconciliation activity");
       }
     },
     deleteSecret: async (secretId) => {
