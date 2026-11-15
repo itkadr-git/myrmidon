@@ -17023,6 +17023,7 @@ export function issueRoutes(
         updateFields.status !== "in_review" &&
         (req.body.assigneeAgentId !== undefined || req.body.assigneeUserId !== undefined);
       const shouldUseTransactionalIssueUpdate =
+        req.body.status === "done" ||
         closesRecoveryIssue ||
           Boolean(commentAttachmentIds?.length) ||
           Boolean(decision) ||
@@ -17049,9 +17050,13 @@ export function issueRoutes(
             const lockedTransitionIssue: typeof transitionIssue = {
               ...existing,
               ...lockedExisting,
-              labels: transitionIssue.labels,
-              workProducts: transitionIssue.workProducts,
-              hasCurrentReleaseEvidence: transitionIssue.hasCurrentReleaseEvidence,
+              ...(req.body.status === "done"
+                ? await releaseTransitionContext(lockedExisting)
+                : {
+                    labels: transitionIssue.labels,
+                    workProducts: transitionIssue.workProducts,
+                    hasCurrentReleaseEvidence: transitionIssue.hasCurrentReleaseEvidence,
+                  }),
               assigneeAgentRole: undefined,
               executionReviewParticipantAgentIds: lockedReviewParticipants,
             };
