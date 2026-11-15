@@ -202,7 +202,7 @@ export class FleetOnboardExecutor {
             const verifySsh = await this.getSsh(keyConnOptions);
             await verifySsh.connect(keyConnOptions);
             const verifyRes = await verifySsh.execute('echo "myrmidon-key-verify"');
-            if (verifyRes.exitCode !== 0 || !verifyRes.stdout.includes("myrmidon-key-verify")) {
+            if (verifyRes.exitCode !== 0 || verifyRes.stdout.trim() !== "myrmidon-key-verify") {
               throw new Error("Key verification failed: unable to verify SSH login using the installed key");
             }
 
@@ -230,7 +230,7 @@ export class FleetOnboardExecutor {
                 try {
                   await fresh.connect(keyConnOptions);
                   const check = await fresh.execute('echo "myrmidon-key-verify"');
-                  if (check.exitCode !== 0 || !check.stdout.includes("myrmidon-key-verify")) throw new Error("SSH verification after password hardening failed");
+                  if (check.exitCode !== 0 || check.stdout.trim() !== "myrmidon-key-verify") throw new Error("SSH verification after password hardening failed");
                 } finally {
                   await fresh.disconnect().catch(() => {});
                 }
