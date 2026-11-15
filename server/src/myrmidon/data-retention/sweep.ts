@@ -419,7 +419,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
 
   async function deleteNewRetentionGroup(
     tx: Db, key: "documentRevisions" | "agentWakeupRequests" | "environmentLeases",
-    cutoff: string, batchSize: number, keepPerDocument: number,
+    cutoff: string, batchSize: number, keepPerDocument: number, revisionDays: number,
   ): Promise<{ deleted: number; freedBytes: number }> {
     const rows = key === "documentRevisions"
       ? await tx.execute(sql`
@@ -429,7 +429,11 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
             FROM document_revisions
           ), doomed AS (
             SELECT id FROM candidates
-            WHERE rank > GREATEST(${keepPerDocument}, 1) AND created_at < ${cutoff}::timestamptz
+            WHERE rank > ${keepPerDocument}
+              AND (${revisionDays} = 0 OR created_at < ${cutoff}::timestamptz)
+              AND NOT EXISTS (
+                SELECT 1 FROM documents doc WHERE doc.latest_revision_id = candidates.id
+              )
               AND NOT EXISTS (
                 SELECT 1 FROM issue_plan_decompositions p WHERE p.accepted_plan_revision_id = candidates.id
               )
@@ -533,7 +537,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
                 deleteAccessTable(tx, accessTable ?? "tool_access_audit_events", groupCutoff, batch)
             : group.key === "litellmCostEvents"
               ? deleteLitellmCostEventsGroup
-              : (tx: Db, cutoff: string, size: number) => deleteNewRetentionGroup(tx, group.key as "documentRevisions" | "agentWakeupRequests" | "environmentLeases", cutoff, size, group.keepPerDocument ?? 20);
+              : (tx: Db, cutoff: string, size: number) => deleteNewRetentionGroup(tx, group.key as "documentRevisions" | "agentWakeupRequests" | "environmentLeases", cutoff, size, group.keepPerDocument ?? 20, group.days);
     let deleted = 0;
     let freedBytes = 0;
     let batchSize = DATA_RETENTION_DELETE_BATCH_SIZE;
@@ -650,7 +654,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
         const secretCutoff = settings.secretAccessDays === 0 ? null : cutoffFor(startedAt, settings.secretAccessDays);
         results.access = await runAccessGroup(toolCutoff, secretCutoff);
       } else {
-        if (group.days === 0) continue;
+        if (group.days === 0 && (group.key !== "documentRevisions" || group.keepPerDocument === 0)) continue;
         results[group.key] = await runGroup(group, cutoffFor(startedAt, group.days));
       }
     }
