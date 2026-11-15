@@ -1223,6 +1223,9 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   }
 
   if (existingState?.currentStageId && !currentStage) {
+    if (requestedStatus === "done" && input.issue.hasMergedCode && isReleaseTask(input.issue.title, input.issue.releaseLabels)) {
+      throw unprocessable("Cannot mark release task done with an orphaned execution stage; verify the release first.");
+    }
     // myrmidon(OPE-10045): the stored stage id is gone from the policy (the
     // policy was re-sent, e.g. by an operator returning a blocked task to
     // review). A request for `in_review` must start the policy's stage, not
