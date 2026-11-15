@@ -168,7 +168,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       // the direct children so the root issue itself is not counted.
       const cteSeed = options.excludeRoot
         ? sql`
-            SELECT ${issues.id}
+            SELECT ${issues.id} AS id, ARRAY[${issues.id}]::text[] AS path, 0 AS depth
             FROM ${issues}
             WHERE ${issues.companyId} = ${companyId}
               AND ${issues.parentId} = ${issueId}
@@ -176,7 +176,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
               AND ${issues.harnessKind} IS NULL
           `
         : sql`
-            SELECT ${issues.id}
+            SELECT ${issues.id} AS id, ARRAY[${issues.id}]::text[] AS path, 0 AS depth
             FROM ${issues}
             WHERE ${issues.companyId} = ${companyId}
               AND ${issues.id} = ${issueId}
@@ -186,7 +186,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
       const cteSeedText = options.excludeRoot
         ? sql`
-            SELECT (${issues.id})::text AS id
+            SELECT (${issues.id})::text AS id, ARRAY[(${issues.id})::text] AS path, 0 AS depth
             FROM ${issues}
             WHERE ${issues.companyId} = ${companyId}
               AND ${issues.parentId} = ${issueId}
@@ -194,7 +194,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
               AND ${issues.harnessKind} IS NULL
           `
         : sql`
-            SELECT (${issues.id})::text AS id
+            SELECT (${issues.id})::text AS id, ARRAY[(${issues.id})::text] AS path, 0 AS depth
             FROM ${issues}
             WHERE ${issues.companyId} = ${companyId}
               AND ${issues.id} = ${issueId}
@@ -204,13 +204,15 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
       const issueTreeCondition = sql<boolean>`
         ${issues.id} IN (
-          WITH RECURSIVE issue_tree(id) AS (
+          WITH RECURSIVE issue_tree(id, path, depth) AS (
             ${cteSeed}
             UNION ALL
-            SELECT ${childIssues.id}
+            SELECT ${childIssues.id}, issue_tree.path || (${childIssues.id})::text, issue_tree.depth + 1
             FROM ${issues} ${childIssues}
             JOIN issue_tree ON ${childIssues.parentId} = issue_tree.id
             WHERE ${childIssues.companyId} = ${companyId}
+              AND issue_tree.depth < 1000
+              AND NOT (${childIssues.id})::text = ANY(issue_tree.path)
               AND ${childIssues.hiddenAt} IS NULL
               AND ${childIssues.harnessKind} IS NULL
           )
@@ -219,13 +221,15 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       `;
 
       const runSummarySql = sql`
-        WITH RECURSIVE issue_tree(id) AS (
+        WITH RECURSIVE issue_tree(id, path, depth) AS (
           ${cteSeedText}
           UNION ALL
-          SELECT (${childIssues.id})::text
+          SELECT (${childIssues.id})::text, issue_tree.path || (${childIssues.id})::text, issue_tree.depth + 1
           FROM ${issues} ${childIssues}
           JOIN issue_tree ON (${childIssues.parentId})::text = issue_tree.id
           WHERE ${childIssues.companyId} = ${companyId}
+            AND issue_tree.depth < 1000
+            AND NOT (${childIssues.id})::text = ANY(issue_tree.path)
             AND ${childIssues.hiddenAt} IS NULL
             AND ${childIssues.harnessKind} IS NULL
         )

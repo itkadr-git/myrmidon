@@ -88,6 +88,7 @@ import {
   issueService,
   instanceSettingsService,
   logActivity, // myrmidon(1.6.6 OPE-12000)
+  reconcileIssueParentCyclesOnStartup,
   reconcileBuiltInAgentsOnStartup,
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
@@ -1513,6 +1514,15 @@ async function startServerWithDatabaseTeardown(
     return listener;
   }
   const workerLoopbackServer = await openWorkerLoopbackListener();
+
+  try {
+    const result = await reconcileIssueParentCyclesOnStartup(db as any);
+    if (result.repaired > 0) {
+      logger.warn(result, "repaired cyclic issue parent relationships during startup");
+    }
+  } catch (err) {
+    logger.error({ err }, "startup reconciliation of cyclic issue parent relationships failed");
+  }
 
   try {
     const result = await workspaceOperationService(db as any)
