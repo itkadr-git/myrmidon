@@ -10,7 +10,7 @@ const cli = new URL('./import-budget.mjs', import.meta.url).pathname;
 test('CLI scans nested template expressions without treating strings as syntax', () => {
   const dir = mkdtempSync(join(process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || tmpdir(), 'import-budget-'));
   try {
-    writeFileSync(join(dir, 'entry.mjs'), "const x = `outer ${ { text: '}', value: `inner ${require('./child.mjs')}` } }`;\n");
+    writeFileSync(join(dir, 'entry.mjs'), "const x = `outer ${ { text: '} require(\\\"./fake.mjs\\\")', value: `inner ${require('./child.mjs')}` } }`;\n");
     writeFileSync(join(dir, 'child.mjs'), 'export default 1;');
     const run = spawnSync(process.execPath, [cli, join(dir, 'entry.mjs')], { encoding: 'utf8' });
     assert.equal(run.status, 0, run.stderr);
