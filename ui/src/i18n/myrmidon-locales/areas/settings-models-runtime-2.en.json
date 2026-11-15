@@ -223,7 +223,8 @@
           "agingMaxBonus": "Aging bonus cap",
           "starvationLimitMinutes": "Starvation limit (minutes)",
           "starvationTopWeight": "Starvation top weight",
-          "pheromoneWeight": "Pheromone weight"
+          "pheromoneWeight": "Pheromone weight",
+          "inProgressIdleWakeMinutes": "In-progress idle wake (minutes, 0 = off)"
         },
         "currentRelease": "Current release",
         "save": "Save queue priority"

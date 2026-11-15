@@ -982,6 +982,8 @@ import {
   findTopReadyIssueForAgent,
   idlePickupForAgent,
 } from "../myrmidon/idle-pickup.js";
+// myrmidon(OPE-13202): the safety wake of an in_progress task whose executor stands idle
+import { createInProgressIdleWakeSweeper } from "../myrmidon/in-progress-idle-wake.js";
 // myrmidon(AUTO-RESUME): the board resumes an agent left in `error` with backoff
 import { createAutoResumeSweeper } from "../myrmidon/auto-resume.js";
 import { pickupNextReview } from "../myrmidon/review-routing/pickup.js";
@@ -21743,6 +21745,32 @@ export function heartbeatService(
     isAgentUnderMaintenance: (agentId) => isAgentUnderMaintenance(db, agentId),
   });
 
+  const inProgressIdleWakeSweeper = createInProgressIdleWakeSweeper({
+    db,
+    budget: idleWakeBudget,
+    readIdleMinutes: () => currentRunPrioritySettings().inProgressIdleWakeMinutes,
+    enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
+    logActivity: async (input) => {
+      await logActivity(db, {
+        companyId: input.companyId,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        agentId: input.agentId,
+        runId: input.runId,
+        action: input.action,
+        entityType: input.entityType,
+        entityId: input.entityId,
+        details: input.details,
+      });
+    },
+    isAgentInvokable: async (agent) => {
+      const full = await getAgent(agent.id);
+      if (!full || full.companyId !== agent.companyId) return false;
+      return (await getAgentInvokability(full)).invokable;
+    },
+    isAgentUnderMaintenance: (agentId) => isAgentUnderMaintenance(db, agentId),
+  });
+
   // myrmidon(AUTO-RESUME): the periodic pass that brings an agent left in
   // `error` back, with a 1/5/15 min backoff and a give-up card to the operator
   // after the attempt cap. It reuses the L3 resume wake chain, so a resumed
@@ -38002,6 +38030,7 @@ export function heartbeatService(
     // myrmidon(IDLE-PICKUP): periodic idle-pickup pass, exposed for the
     // scheduler tick in index.ts and for tests and operators
     sweepIdlePickup: (now?: Date) => idlePickupSweeper.sweep(now),
+    sweepInProgressIdleWake: (now?: Date) => inProgressIdleWakeSweeper.sweep(now),
 
     // myrmidon(AUTO-RESUME): resumes an agent left in `error` once its backoff
     // step is due; logic in myrmidon/auto-resume.ts. Called by the scheduler
