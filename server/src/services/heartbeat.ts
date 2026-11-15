@@ -1073,7 +1073,7 @@ import {
   runMatchesCurrentRelease,
   type PriorityScoredRun,
 } from "../myrmidon/run-priority/scoring.js";
-import { runPriorityWeight, type RunPrioritySettings } from "@myrmidon/shared";
+import { normalizeRunPrioritySettings, runPriorityWeight, type RunPrioritySettings } from "@myrmidon/shared";
 import { effectivePheromone } from "@myrmidon/shared";
 // myrmidon(S2-hostcred): a run never inherits the host's GitHub credentials
 import {
@@ -4340,6 +4340,20 @@ export interface WakeupOptions {
   };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;
+}
+
+function shouldDeferWakeForReleaseFocus(input: {
+  currentRelease: string | null;
+  targetMatchesRelease: boolean;
+  hasOpenCurrentReleaseIssue: boolean;
+  manualUserWake?: boolean;
+}): boolean {
+  return (
+    !input.manualUserWake &&
+    Boolean(input.currentRelease) &&
+    input.hasOpenCurrentReleaseIssue &&
+    !input.targetMatchesRelease
+  );
 }
 
 type UsageTotals = {
@@ -33364,6 +33378,55 @@ export function heartbeatService(
         },
       });
     };
+
+    const runPriorityGeneral = await instanceSettings.getGeneral().catch(() => ({} as Record<string, unknown>));
+    const releaseSettings = normalizeRunPrioritySettings(
+      runPriorityGeneral.runPriority,
+      currentRunPrioritySettings(),
+    );
+    if (issueId && releaseSettings.currentRelease) {
+      const targetLabels = await db
+        .select({ name: labels.name })
+        .from(issueLabels)
+        .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+        .innerJoin(issues, eq(issues.id, issueLabels.issueId))
+        .where(and(eq(issueLabels.issueId, issueId), eq(issues.companyId, agent.companyId)));
+      const targetMatchesRelease = runMatchesCurrentRelease(
+        releaseSettings.currentRelease,
+        targetLabels.map((row) => row.name),
+      );
+      const openReleaseRows = await db
+        .select({ issueId: issues.id, label: labels.name })
+        .from(issues)
+        .innerJoin(issueLabels, eq(issueLabels.issueId, issues.id))
+        .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+        .where(and(
+          eq(issues.companyId, agent.companyId),
+          eq(issues.assigneeAgentId, agentId),
+          inArray(issues.status, ["todo", "in_progress", "in_review"]),
+        ));
+      const hasOpenCurrentReleaseIssue = openReleaseRows.some((row) =>
+        runMatchesCurrentRelease(releaseSettings.currentRelease, [row.label]),
+      );
+      if (shouldDeferWakeForReleaseFocus({
+        currentRelease: releaseSettings.currentRelease,
+        targetMatchesRelease,
+        hasOpenCurrentReleaseIssue,
+        manualUserWake: opts.manualUserWake,
+      })) {
+        await writeSkippedRequest("release_focus", {
+          payload: {
+            ...(payload ?? {}),
+            issueId,
+            releaseFocus: {
+              currentRelease: releaseSettings.currentRelease,
+              reason: "open_current_release_issue",
+            },
+          },
+        });
+        return null;
+      }
+    }
 
     const schedulingSuppression = await getSchedulingSuppression();
     if (schedulingSuppression.suppressed) {
