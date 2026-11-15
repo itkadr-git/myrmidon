@@ -10264,6 +10264,27 @@ export function issueRoutes(
     }
   });
 
+  async function collectReleaseCandidates(companyId: string, issueId: string, releasePrefix: string, refresh: boolean) {
+    const releaseLabelRows = await db
+      .select({ id: labels.id, name: labels.name })
+      .from(labels)
+      .where(eq(labels.companyId, companyId));
+    const releaseLabelIds = releaseLabelRows
+      .filter((row) => normaliseReleasePrefix(row.name) === releasePrefix)
+      .map((row) => row.id);
+    const candidateIssueRows = releaseLabelIds.length
+      ? await db.select({ issueId: issueLabels.issueId }).from(issueLabels)
+          .where(inArray(issueLabels.labelId, releaseLabelIds))
+      : [];
+    const candidateIssueIds = [...new Set(candidateIssueRows.map((row) => row.issueId))];
+    if (!candidateIssueIds.includes(issueId)) candidateIssueIds.push(issueId);
+    const products = new Map<string, Awaited<ReturnType<typeof workProductsSvc.listForIssue>>>();
+    for (const candidateIssueId of candidateIssueIds) {
+      products.set(candidateIssueId, await workProductsSvc.listForIssue(candidateIssueId, { refreshPullRequests: refresh }));
+    }
+    return { candidateIssueIds, members: aggregateReleaseCandidates(products) };
+  }
+
   // VERIFY-ON-PROD (OPE-13014): aggregate the full release candidate set from
   // the issue's pull_request work products, verify the composition against the
   // deployed version, and persist the verdict as a system comment. The release
@@ -10316,31 +10337,9 @@ export function issueRoutes(
       // label), merged or not. Review finding (PR #3093): restricting the set
       // to the single issue's work products would let a release be confirmed
       // on a partial list whenever sibling release issues were skipped.
-      const releaseLabelRows = await db
-        .select({ id: labels.id, name: labels.name })
-        .from(labels)
-        .where(eq(labels.companyId, issue.companyId));
-      const releaseLabelIds = releaseLabelRows
-        .filter((row) => normaliseReleasePrefix(row.name) === releasePrefix)
-        .map((row) => row.id);
-      const candidateIssueRows = releaseLabelIds.length
-        ? await db
-            .select({ issueId: issueLabels.issueId })
-            .from(issueLabels)
-            .where(inArray(issueLabels.labelId, releaseLabelIds))
-        : [];
-      const candidateIssueIds = [...new Set(candidateIssueRows.map((row) => row.issueId))];
-
-      // Include the current issue even if its label row was missed, so the
-      // route always verifies at least the issue it was called on.
-      if (!candidateIssueIds.includes(issue.id)) candidateIssueIds.push(issue.id);
-
-      const memberWorkProducts = new Map<string, Awaited<ReturnType<typeof workProductsSvc.listForIssue>>>();
-      for (const candidateIssueId of candidateIssueIds) {
-        const products = await workProductsSvc.listForIssue(candidateIssueId, { refreshPullRequests: refresh });
-        memberWorkProducts.set(candidateIssueId, products);
-      }
-      const members = aggregateReleaseCandidates(memberWorkProducts);
+      const { candidateIssueIds, members } = await collectReleaseCandidates(
+        issue.companyId, issue.id, releasePrefix, refresh,
+      );
 
       // Resolve the actual release refs from the repository so the deployed
       // version can be validated against them (not just the prefix defaults).
