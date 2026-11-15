@@ -1,4 +1,10 @@
 import copy
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
 import unittest
 
 from monitor import evaluate
@@ -66,6 +72,23 @@ class MonitoringTest(unittest.TestCase):
         aggregate = dict(self.sample['replication'], target='all', timeLagSeconds=10,
                          databases=[child, dict(self.sample['replication'], target='hindsight')])
         self.check('critical', replication=aggregate)
+
+    def test_cli_emits_status_and_exit_code(self):
+        sample = copy.deepcopy(self.sample)
+        now = time.time()
+        sample['observed_at'] = now
+        sample['source_observed_at'] = dict.fromkeys(sample['source_observed_at'], now)
+        command = [sys.executable, str(Path(__file__).with_name('monitor.py'))]
+        for lag, expected_code, expected_status in [(10, 0, 'ok'), (240, 1, 'warning'), (300, 2, 'critical')]:
+            with self.subTest(lag=lag):
+                sample['replication']['timeLagSeconds'] = lag
+                result = subprocess.run(command, input=json.dumps(sample), text=True,
+                                        capture_output=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
+                self.assertEqual(result.returncode, expected_code, result.stderr)
+                self.assertEqual(json.loads(result.stdout)['status'], expected_status)
+        invalid = subprocess.run(command, input='{', text=True, capture_output=True)
+        self.assertEqual(invalid.returncode, 2)
+        self.assertEqual(json.loads(invalid.stdout)['status'], 'critical')
 
     def test_resource_pressure_and_missing(self):
         for field in ('disk_used_percent', 'memory_used_percent', 'cpu_used_percent'):
