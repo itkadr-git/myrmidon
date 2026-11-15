@@ -4839,6 +4839,15 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const warnings = [...source.warnings];
     const errors: string[] = [];
 
+    // Validate content-addressed blobs during preview as well as before apply.
+    for (const [filePath, fileEntry] of Object.entries(source.files)) {
+      if (!filePath.startsWith("blobs/")) continue;
+      const body = portableFileToBuffer(fileEntry, filePath);
+      if (sha256HexOfBytes(body) !== filePath.slice("blobs/".length)) {
+        errors.push(`Bundle blob ${filePath} does not match its declared sha256; the package is corrupted or was tampered with.`);
+      }
+    }
+
     if (include.company && !manifest.company) {
       errors.push("Manifest does not include company metadata.");
     }

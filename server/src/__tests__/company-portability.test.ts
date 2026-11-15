@@ -4813,6 +4813,18 @@ describe("company portability", () => {
     agentSvc.list.mockResolvedValue([]);
     issueSvc.create.mockResolvedValue({ id: "issue-imported", title: "Attachment task", projectId: null });
 
+    const preview = await portability.previewImport({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: true, agents: false, projects: false, issues: true },
+      target: { mode: "new_company", newCompanyName: "Imported" },
+      agents: "all",
+      collisionStrategy: "rename",
+    });
+    expect(preview.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("does not match its declared sha256"),
+    ]));
+    expect(companySvc.create).not.toHaveBeenCalled();
+
     await expect(portability.importBundle({
       source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
       include: { company: true, agents: false, projects: false, issues: true },
