@@ -73,6 +73,7 @@ export * from "../myrmidon-model-menu.js";
 export * from "../myrmidon-model-providers.js";
 export * from "../myrmidon-owner-active-channel.js";
 export * from "../myrmidon-owner-delivery.js";
+export * from "../myrmidon-owned-resources.js";
 export * from "../myrmidon-parallel-helpers.js";
 export * from "../myrmidon-pause-guard.js";
 export * from "../myrmidon-plugin-entitlement.js";

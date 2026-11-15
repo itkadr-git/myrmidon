@@ -87,6 +87,14 @@ export const reportSchema = z
 export function onboardRoutes(deps: { service: OnboardService }) {
   const router = Router();
 
+  router.post("/myrmidon/fleet/onboard-jobs/:id/owned-resources", validate(z.object({ companyId: UUID, resource: z.unknown() }).strict()), async (req, res) => {
+    const jobId = UUID.safeParse(req.params.id);
+    if (!jobId.success) throw new HttpError(400, "job id must be a uuid");
+    try {
+      res.json(await deps.service.recordOwnedResource(executorToken(req), req.body.companyId, jobId.data, req.body.resource));
+    } catch (err) { throw toHttpError(err); }
+  });
+
   router.post("/myrmidon/fleet/servers", validate(fleetServerAddSchema), async (req, res) => {
     const body = req.body as z.infer<typeof fleetServerAddSchema>;
     assertFleetOnboardOwner(req, body.companyId);

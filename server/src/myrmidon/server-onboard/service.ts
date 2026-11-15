@@ -19,6 +19,7 @@
 //   and they never touch the step log (maskStepDetail re-masks detail).
 
 import { generateKeyPairSync } from "node:crypto";
+import { parseOwnedFleetResource } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
@@ -152,6 +153,23 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
   const claimlessAuditEntity = "fleet-onboard-sweep";
 
   return {
+    /** The authenticated executor reports identities, never arbitrary cleanup commands. */
+    async recordOwnedResource(presentedToken: string | null | undefined, companyId: string, jobId: string, value: unknown) {
+      requireEnabled();
+      requireExecutorToken(presentedToken);
+      const job = await deps.store.getJob(companyId, jobId);
+      if (!job) throw new OnboardServiceError(404, "Job not found");
+      if (job.kind !== "onboard" || !["claimed", "running"].includes(job.status)) {
+        throw new OnboardServiceError(409, "Ownership requires an active onboard job");
+      }
+      let resource;
+      try { resource = parseOwnedFleetResource(value); }
+      catch { throw new OnboardServiceError(400, "Invalid owned resource identity"); }
+      const inventory = await deps.store.recordOwnedResource(companyId, job.serverId, jobId, resource);
+      await writeAudit(companyId, "resource_owned", job.serverId, { jobId, kind: resource.kind });
+      return inventory;
+    },
+
     /** Add a server: registry row + secret stash + pending onboard job. */
     async addServer(input: {
       companyId: string;
