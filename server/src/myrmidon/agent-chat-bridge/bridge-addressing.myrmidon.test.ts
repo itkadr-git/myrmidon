@@ -580,6 +580,22 @@ describeEmbeddedPostgres("@<alias> addressing in the bridged Telegram chat (X9b)
   // -------------------------------------------------------------------------
   // Routing (integration)
 
+  it("does not deliver an unknown extended name to its prefix match", async () => {
+    const fixture = await seedCompany();
+    await db.update(agents).set({ name: "Foo-Bar", adapterConfig: {} }).where(eq(agents.id, fixture.gipAgentId));
+    const { callbacks, endpoint } = await configuredTelegramEndpoint(fixture);
+    await linkTelegramPrincipal({ companyId: fixture.companyId, endpointId: endpoint.id, userId: "700011", boardUserId: "owner-user" });
+    const result = await resolveBridgeAddressee(db, {
+      companyId: fixture.companyId, endpointAgentId: fixture.assignedAgentId, text: "@Foo-BarExtra hello",
+    });
+    expect(result).toEqual({ kind: "none" });
+    await sendTelegramDm({ callbacks, endpointId: endpoint.id, channelId: "700011", userId: "700011", text: "@Foo-BarExtra hello", messageId: 1 });
+    const delivered = await db.select().from(issues).where(eq(issues.companyId, fixture.companyId));
+    expect(delivered.every((issue) => issue.conversationAgentId !== fixture.gipAgentId)).toBe(true);
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId));
+    expect(wakes.every((wake) => wake.agentId !== fixture.gipAgentId)).toBe(true);
+  });
+
   it("refuses legacy ambiguous names without creating a task or wakeup", async () => {
     const fixture = await seedCompany();
     await db.update(agents).set({ name: "Foo" }).where(eq(agents.id, fixture.assignedAgentId));
