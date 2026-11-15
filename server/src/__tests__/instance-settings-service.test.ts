@@ -8,6 +8,22 @@ import {
 } from "../services/instance-settings.js";
 
 describe("instance settings service", () => {
+  it("keeps workspace isolation opt-in for missing and malformed settings", () => {
+    for (const stored of [undefined, {}, { enableIsolatedWorkspaces: "invalid" }]) {
+      expect(normalizeExperimentalSettings(stored)).toMatchObject({
+        enableIsolatedWorkspaces: false,
+        enableIsolatedWorkspacesByDefault: false,
+      });
+    }
+    expect(normalizeExperimentalSettings({
+      enableIsolatedWorkspaces: true,
+      enableIsolatedWorkspacesByDefault: true,
+    })).toMatchObject({
+      enableIsolatedWorkspaces: true,
+      enableIsolatedWorkspacesByDefault: true,
+    });
+  });
+
   it("retains alert-recovery settings and journal through general normalization", () => {
     const journal = [{ identity: "monitoring:runs-reconnecting", firedCount: 2 }];
     const settings = { holdMinutes: 10, recurrenceWindowMinutes: 60, owners: {} };

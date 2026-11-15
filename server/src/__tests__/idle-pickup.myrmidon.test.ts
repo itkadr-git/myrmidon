@@ -35,6 +35,7 @@ vi.mock("../middleware/logger.js", () => ({
 
 import {
   createIdlePickupSweeper,
+  DEFAULT_QUEUE_WITHOUT_RUN_THRESHOLD_SEC,
   DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS,
   findTopReadyIssueForAgent,
   idlePickupForAgent,
@@ -55,6 +56,9 @@ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describe("settings readers", () => {
+  it("shares the queue-without-run age default", () => {
+    expect(DEFAULT_QUEUE_WITHOUT_RUN_THRESHOLD_SEC).toBe(20 * 60);
+  });
   const savedInterval = process.env[IDLE_PICKUP_INTERVAL_SEC_ENV];
   const savedEnabled = process.env[IDLE_PICKUP_ENABLED_ENV];
 

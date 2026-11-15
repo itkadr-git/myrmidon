@@ -68,6 +68,7 @@ export const MODEL_CHANNEL_PAUSE_CONTEXT_KEY = "modelChannelPause";
  */
 export const MODEL_CHANNEL_PAUSE_POLL_WAKE_REASONS: readonly string[] = [
   "idle_pickup",
+  "in_progress_no_run",
   "heartbeat_timer",
 ];
 

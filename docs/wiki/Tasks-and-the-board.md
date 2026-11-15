@@ -26,6 +26,16 @@ has not triggered within the overdue threshold, the Attention feed raises an
 and wake history, then resume or reschedule the task; the item clears when the
 monitor is no longer overdue.
 
+## Release focus and wake diagnostics
+
+The effective instance `runPriority.currentRelease` comes from stored run-priority settings, falling back to `MYRMIDON_CURRENT_RELEASE` (unset means no focus). Focus is active only while `runPriority.strictReleaseFocus` is on (the default) and a current release is set. Labels are compared case-insensitively after trimming, and only an exact match counts (`1.6.90` does not match `1.6.9`). The gate uses labels, not workspace branches.
+
+While the company has an open, visible task with the current-release label (blocked and in-review tasks count), a run for a task that does not carry it is not started and not cancelled: it waits in `scheduled_retry` and is looked at again after 2, 5, 10 and then every 30 minutes, with no new wake made. The run gets one event with reason `release_focus` (once per run). It starts when `strictReleaseFocus` is turned off or the last open task of the current release is closed; after the focus is lifted, a parked run starts at its next look, up to 30 minutes later. A blocked current-release task still holds focus; resolve its blocker or close it as appropriate.
+
+Exceptions: a task the board owner assigned (the latest assignment record is by a board user and names the agent, with no later swarm claim; an old assignment without such a record does not count and must be made again), a review the agent is the current participant of, a wake made by a user (manual wake), and a run without a task. Swarm matching and idle pickup use the same predicate and leave out tasks of other releases. Runs already running are not stopped.
+
+See [settings](../myrmidon/SETTINGS.md#release-focus-for-wake-admission).
+
 ## Role queues
 
 With the role-queue pilot, a free agent claims the top task of its role's
