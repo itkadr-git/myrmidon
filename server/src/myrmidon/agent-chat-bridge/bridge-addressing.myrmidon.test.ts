@@ -44,6 +44,7 @@ import type {
 } from "../../services/chat-sdk-runtime.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { issueService } from "../../services/issues.js";
+
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -576,6 +577,32 @@ describeEmbeddedPostgres("@<alias> addressing in the bridged Telegram chat (X9b)
 
   // -------------------------------------------------------------------------
   // Routing (integration)
+
+  it("refuses legacy ambiguous names without creating a task or wakeup", async () => {
+    const fixture = await seedCompany();
+    await db.update(agents).set({ name: "Foo" }).where(eq(agents.id, fixture.assignedAgentId));
+    await db.update(agents).set({ name: "foo", adapterConfig: {} }).where(eq(agents.id, fixture.gipAgentId));
+    const { callbacks, endpoint } = await configuredTelegramEndpoint(fixture);
+    await linkTelegramPrincipal({ companyId: fixture.companyId, endpointId: endpoint.id, userId: "700010", boardUserId: "owner-user" });
+
+    const send = (text: string, messageId: number) => sendTelegramDm({
+      callbacks, endpointId: endpoint.id, channelId: "700010", text, userId: "700010", messageId,
+    });
+    const refusal = await send("@foo hello", 1);
+    expect(refusal.post).toHaveBeenCalledTimes(1);
+    const response = JSON.stringify(refusal.post.mock.calls);
+    expect(response).toContain("Ambiguous mention");
+    for (const value of ["Foo", "foo", fixture.assignedAgentId, fixture.gipAgentId]) expect(response).toContain(value);
+    const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(delivery).toMatchObject({ state: "filtered", redactedError: "Ambiguous agent mention: @foo" });
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId))).toHaveLength(0);
+    const repeated = await send("@foo hello", 1);
+    expect(repeated.post).not.toHaveBeenCalled();
+    expect(await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id))).toHaveLength(1);
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId))).toHaveLength(0);
+  });
 
   it("routes a DM '@гип …' to the GIP's own standing conversation, not the endpoint's assigned agent", async () => {
     const fixture = await seedCompany();
