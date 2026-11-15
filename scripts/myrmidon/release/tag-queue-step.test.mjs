@@ -25,7 +25,7 @@ const page = Number(url.searchParams.get('page') || 1);
 console.log(JSON.stringify({total_count: filtered.length, workflow_runs: filtered.slice((page-1)*100,page*100)}));
 `, { mode: 0o755 });
     return spawnSync("bash", ["-c", script], { cwd: root, encoding: "utf8", env: {
-      ...process.env, PATH: `${dir}:${process.env.PATH}`, FIXTURE: path.join(dir, "runs.json"),
+      ...process.env, BASH_ENV: "", PATH: `${dir}:${process.env.PATH}`, FIXTURE: path.join(dir, "runs.json"),
       REPO: "example/repo", WORKFLOW: "Myrmidon CI (tag)", PRIORITY_POOL: '["priority"]',
     } });
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }

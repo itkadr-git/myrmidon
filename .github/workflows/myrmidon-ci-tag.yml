@@ -802,31 +802,26 @@ jobs:
             exit 1
           fi
 
-          # Paginate: a single per_page=100 page can silently truncate the
-          # competing set and miss a later-queued ordinary run that already
-          # started. Fetch up to 3 pages and fail closed when the API still
-          # reports more pending runs beyond what we saw.
-          runs_json=""
+          # Filter by state at the API so completed history cannot exhaust
+          # the bound. Fail closed if either competing set may be truncated.
+          runs_json='{"workflow_runs":[]}'
+          for status in queued in_progress; do
           for page in 1 2 3; do
-            page_json="$(gh api "repos/$REPO/actions/runs?per_page=100&page=$page" 2>/dev/null || true)"
+            page_json="$(gh api "repos/$REPO/actions/runs?per_page=100&status=$status&page=$page" 2>/dev/null || true)"
             if [ -z "$page_json" ]; then
               echo "ERROR: Unable to fetch workflow runs from GitHub API (page $page)" >&2
               exit 1
             fi
-            if [ "$page" = "1" ]; then
-              runs_json="$page_json"
-            else
-              runs_json="$(RUNS_A="$runs_json" RUNS_B="$page_json" node --input-type=module -e '
-                const a = JSON.parse(process.env.RUNS_A);
-                const b = JSON.parse(process.env.RUNS_B);
-                a.workflow_runs = [...a.workflow_runs, ...b.workflow_runs];
-                a.total_count = b.total_count;
-                console.log(JSON.stringify(a));
-              ')" || {
-                echo "ERROR: failed to merge workflow run pages" >&2
-                exit 1
-              }
-            fi
+            runs_json="$(RUNS_A="$runs_json" RUNS_B="$page_json" node --input-type=module -e '
+              const a = JSON.parse(process.env.RUNS_A);
+              const b = JSON.parse(process.env.RUNS_B);
+              if (!Array.isArray(b.workflow_runs)) throw new Error("invalid workflow runs response");
+              a.workflow_runs.push(...b.workflow_runs);
+              console.log(JSON.stringify(a));
+            ')" || {
+              echo "ERROR: failed to merge workflow run pages" >&2
+              exit 1
+            }
             has_more="$(PAGE_JSON="$page_json" node --input-type=module -e '
               const d = JSON.parse(process.env.PAGE_JSON);
               console.log(d.workflow_runs.length >= 100 ? "yes" : "no");
@@ -838,6 +833,7 @@ jobs:
               echo "ERROR: more than 300 workflow runs reported; refusing to evaluate queue priority on a truncated set (fail closed)" >&2
               exit 1
             fi
+          done
           done
 
           RUNS_JSON="$runs_json" WORKFLOW_NAME="$WORKFLOW" node --input-type=module -e '
@@ -856,7 +852,7 @@ jobs:
             );
             if (pending.length === 0) {
               console.log("PASS: no pending runs competing for the priority pool; queue priority trivially holds.");
-              return;
+              process.exit(0);
             }
             const violations = observedPriorityViolations(pending);
             for (const v of violations) {
