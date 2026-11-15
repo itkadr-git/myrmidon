@@ -71,11 +71,22 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
     if (issueSlugs.has(issue.slug)) errors.push(`Duplicate task slug: ${issue.slug}.`);
     issueSlugs.add(issue.slug);
   }
+  const parentByIssue = new Map((manifest.issues ?? []).map((issue) => [issue.slug, issue.parentSlug ?? null]));
   for (const issue of manifest.issues ?? []) {
     if (issue.projectSlug && !projectSlugs.has(issue.projectSlug)) errors.push(`Task ${issue.slug} references missing project ${issue.projectSlug}.`);
     if (issue.assigneeAgentSlug && !agentSlugs.has(issue.assigneeAgentSlug)) errors.push(`Task ${issue.slug} references missing agent ${issue.assigneeAgentSlug}.`);
     for (const related of [issue.parentSlug, ...(issue.blockedBy ?? [])]) {
       if (related && !issueSlugs.has(related)) errors.push(`Task ${issue.slug} references missing task ${related}.`);
+    }
+    const path = new Set<string>();
+    let current: string | null = issue.slug;
+    while (current) {
+      if (path.has(current)) {
+        errors.push(`Task ${issue.slug} has a parent cycle.`);
+        break;
+      }
+      path.add(current);
+      current = parentByIssue.get(current) ?? null;
     }
   }
   for (const input of manifest.envInputs) {
