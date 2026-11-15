@@ -4305,22 +4305,30 @@ describe.sequential("issue comment reopen routes", () => {
       await waitForWakeup(() => expect(executorWoken()).toBe(true));
     });
 
-    it("does not wake the executor for a second return on the same head", async () => {
+    it("wakes the executor for a second review decision on the same head", async () => {
       const { options } = routeOptions({ headSha: HEAD_A });
-
       const res = await returnTask(
         await pendingReviewIssue(HEAD_A),
-        "Exact-head CI is still failing, do not resubmit",
+        "The requested change is still missing from the implementation",
         options,
       );
 
       expect(res.status).toBe(200);
-      // The decision is recorded exactly as before.
       expect(recordedExecutionState()).toMatchObject({
         status: "changes_requested",
         lastDecisionOutcome: "changes_requested",
         lastChangesRequestedHeadSha: HEAD_A,
       });
+      await waitForWakeup(() => expect(executorWoken()).toBe(true));
+    });
+
+    it("does not wake the executor for a repeated return on the same head", async () => {
+      const { options } = routeOptions({ headSha: HEAD_A });
+      const issue = await pendingReviewIssue(HEAD_A);
+      issue.executionState.lastDecisionId = "previous-decision";
+      const res = await returnTask(issue, "Exact-head CI is still failing, do not resubmit", options);
+
+      expect(res.status).toBe(200);
       await waitForWakeup(() =>
         expect(mockIssueService.addComment).toHaveBeenCalledWith(
           ISSUE_ID,
@@ -4331,15 +4339,6 @@ describe.sequential("issue comment reopen routes", () => {
       );
       await settleDetachedWork();
       expect(executorWoken()).toBe(false);
-      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(ENGINEER_ID, expect.anything());
-      expect(mockLogActivity).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({
-          action: "issue.review_return_wake_suppressed",
-          entityId: ISSUE_ID,
-          details: expect.objectContaining({ reason: "repeat_same_head", headSha: HEAD_A }),
-        }),
-      );
     });
 
     it("wakes the executor when a new commit changed the head since the previous return", async () => {
@@ -4358,6 +4357,25 @@ describe.sequential("issue comment reopen routes", () => {
       });
       await waitForWakeup(() => expect(executorWoken()).toBe(true));
       expect(resolveReviewHeadFailedChecks).not.toHaveBeenCalled();
+    });
+
+    it("wakes the executor for a second new review decision on the same head", async () => {
+      const { options } = routeOptions({ headSha: HEAD_A });
+      const issue = await pendingReviewIssue(HEAD_A);
+      issue.executionState.lastDecisionId = "previous-decision";
+
+      const res = await returnTask(
+        issue,
+        "The fix still does not handle the requested edge case",
+        options,
+      );
+
+      expect(res.status).toBe(200);
+      expect(recordedExecutionState()).toMatchObject({
+        status: "changes_requested",
+        lastChangesRequestedHeadSha: HEAD_A,
+      });
+      await waitForWakeup(() => expect(executorWoken()).toBe(true));
     });
 
     it("does not wake the executor when only infrastructure checks failed and the comment reports only CI", async () => {
