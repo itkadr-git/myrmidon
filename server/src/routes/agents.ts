@@ -1,4 +1,4 @@
-import { enrichWithPoolModels } from "../myrmidon/model-providers/pool-models.js";
+import { enrichWithPoolModels, mergeLitellmChatGptPoolModels } from "../myrmidon/model-providers/pool-models.js";
 import { listOpenRouterModels } from "../services/openrouter-models.js";
 import { notModifiedOrSetEtag } from "../middleware/version-key-etag.js";
 // myrmidon(B1c): product name in user-facing runner errors; see product.ts.
@@ -21,7 +21,7 @@ import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@myrmidon/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
-import { activityLog, agentWakeupRequests, agents as agentsTable, chatConversations, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@myrmidon/db";
+import { activityLog, agentWakeupRequests, agents as agentsTable, chatConversations, companies, heartbeatRuns, issues as issuesTable, litellmModels, projects as projectsTable } from "@myrmidon/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import { toolConnections } from "@myrmidon/db";
 import { sha256Digest } from "../services/feedback-redaction.js";
@@ -3516,7 +3516,14 @@ export function agentRoutes(
     const rawModels = refresh
       ? await refreshAdapterModels(modelAdapterType)
       : await listAdapterModels(modelAdapterType, companyId);
-    const models = await enrichWithPoolModels(db, companyId, rawModels);
+    let models = await enrichWithPoolModels(db, companyId, rawModels);
+    if (modelAdapterType === "hermes_gateway") {
+      const catalogRows = await db
+        .select({ modelName: litellmModels.modelName })
+        .from(litellmModels)
+        .orderBy(litellmModels.modelName);
+      models = mergeLitellmChatGptPoolModels(models, catalogRows.map((row) => row.modelName));
+    }
     res.json(models);
   });
 
