@@ -959,6 +959,18 @@ describe("persisted release evidence", () => {
     )).toBe(true);
   });
 
+  it("does not let a simultaneous failed check for another release line invalidate confirmation", () => {
+    const otherLine = createReleaseVerificationEvidence({
+      ...scope, releasePrefix: "1.7", verdict: "failed", checkedAt: record.checkedAt,
+    }, "secret");
+    const comment = (evidence: typeof record) => ({
+      body: `release-evidence-v1: ${JSON.stringify(evidence)}`,
+      authorType: "system",
+    });
+    expect(hasCurrentReleaseVerificationEvidence([comment(record), comment(otherLine)], scope, "secret", NOW())).toBe(true);
+    expect(hasCurrentReleaseVerificationEvidence([comment(otherLine), comment(record)], scope, "secret", NOW())).toBe(true);
+  });
+
   it("rejects expired and future signed evidence", () => {
     expect(validateReleaseVerificationEvidence(record, scope, "secret", new Date("2026-11-14T12:00:00.001Z"))).toBe(false);
     expect(validateReleaseVerificationEvidence(record, scope, "secret", new Date("2026-11-13T11:59:59.999Z"))).toBe(false);
