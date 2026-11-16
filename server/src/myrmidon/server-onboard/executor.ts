@@ -307,7 +307,16 @@ export class FleetOnboardExecutor {
             // 1. Allow SSH port before deny
             const allowResult = await activeSsh.execute(`sudo ufw allow ${claim.server.port}/tcp comment 'myrmidon-ssh'`);
             if (allowResult.exitCode !== 0) {
-              throw new Error("Firewall SSH allow rule failed; refusing to enable deny policy");
+              let restored = false;
+              try {
+                const restore = await activeSsh.execute(
+                  `: restore-myrmidon-firewall; sudo cp -a ${firewallSnapshot}/ufw/. /etc/ufw/ && sudo cp -a ${firewallSnapshot}/ufw-default /etc/default/ufw && if sudo grep -q '^ENABLED=yes' ${firewallSnapshot}/ufw/ufw.conf; then sudo ufw reload; fi`,
+                );
+                restored = restore.exitCode === 0;
+              } catch {
+                // Keep the snapshot for manual recovery if the session is lost.
+              }
+              throw new Error(`Firewall SSH allow rule failed; refusing to enable deny policy${restored ? "; saved configuration restored" : "; firewall restoration failed or could not be confirmed"}`);
             }
 
             // 2. Start rollback timer (5 minutes / 300s)
