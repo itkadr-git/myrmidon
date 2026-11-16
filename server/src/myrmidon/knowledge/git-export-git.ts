@@ -112,6 +112,8 @@ export async function commitKnowledgeTreeIfChanged(
     if (file.path.includes("..") || path.isAbsolute(file.path)) {
       throw new Error(`refusing to write a path outside the export repo: ${file.path}`);
     }
+  }
+  for (const file of tree.files) {
     const abs = path.join(workDir, prefix + file.path);
     await mkdir(path.dirname(abs), { recursive: true });
     await writeFile(abs, file.content, "utf8");
