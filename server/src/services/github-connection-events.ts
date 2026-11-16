@@ -1119,6 +1119,12 @@ export function githubConnectionEventService(
     invalidateCiCacheForHead(companyId, repository.toLowerCase(), headSha);
     // A rerequest carries no status: the cache is already dropped, nothing to deliver.
     if (!status) return;
+    // A completed check of the head may release a pull request the board parked after
+    // GitHub refused its merge ("... is queued"); the merger ignores every other one.
+    if (status === "completed") {
+      await sendOrDeferAction(afterCommit, companyId, "board merge check notice", () =>
+        notifyBoardMergeTrigger({ companyId, repository, number: pullRequestNumber, headSha, source: "check_completed" }));
+    }
 
     const active = status === "queued" || status === "in_progress";
     if (!active && !conclusion) return;

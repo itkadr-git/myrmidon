@@ -17,8 +17,8 @@ import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../../services/git-credential
 import {
   recordGitHubRequest,
   isGitHubRateLimited,
-  withGitHubReviewBudget,
 } from "../../services/github-rate-limit.js";
+import { withGitHubReviewBudget } from "../../services/github-review-budget.js";
 import type { ReviewReworkPrState } from "./domain.js";
 
 export interface ReviewReworkPrReference {

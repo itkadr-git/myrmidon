@@ -4,6 +4,7 @@ import { issueWorkProducts, issues, issueComments } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { repositoryHasHostedCi, NO_HOSTED_CI_SUMMARY } from "./github-hosted-ci.js";
 import type { FetchLike } from "./github-external-object-provider.js";
+import { withGitHubReviewBudget } from "./github-review-budget.js";
 import {
   resetGitHubObjectCacheForTests,
   resolveGitHubRepositoryToken,
@@ -20,7 +21,6 @@ import {
   isGitHubRateLimited,
   getGitHubRateLimitResetTime,
   formatUtcTime,
-  withGitHubReviewBudget,
   resetGitHubRateLimitForTests,
 } from "./github-rate-limit.js";
 import type { GitHubRequestSource } from "./github-rate-limit.js";
