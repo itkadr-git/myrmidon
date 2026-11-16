@@ -60,7 +60,7 @@ function cycles(report, eagerOnly) {
 
 if (process.argv.length !== 3) fail('arguments');
 let input;
-try { input = readFileSync(process.argv[2], 'utf8'); } catch { fail('read'); }
+try { input = readFileSync(process.argv[2] === '-' ? 0 : process.argv[2], 'utf8'); } catch { fail('read'); }
 let report;
 try { report = JSON.parse(input); } catch { fail('json'); }
 validate(report);
