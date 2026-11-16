@@ -36,7 +36,7 @@ function commit(dir, subject, body) {
 function draft(f, out = join(f.dir, "notes.md")) {
   git(f.dir, "tag", "-f", "beta/v2026.101.0-beta.0");
   execFileSync("bash", [script, "2026.101.0-beta.0", "--repo-dir", f.dir, "--out", out], {
-    env: { ...process.env, PATH: `${f.bin}:${path}`, DRAFT_NOTES_SKIP_PR_ENRICHMENT: "1" }, stdio: "pipe",
+    env: { ...process.env, BASH_ENV: "", PATH: `${f.bin}:${path}`, DRAFT_NOTES_SKIP_PR_ENRICHMENT: "1" }, stdio: "pipe",
   });
   assert.equal(existsSync(join(f.dir, "gh-called")), false, "gh must not be invoked");
   return readFileSync(out, "utf8");
