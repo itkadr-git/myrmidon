@@ -646,6 +646,50 @@ describe("company migration dry run", () => {
     expect(remaining.some((company) => company.id === destination!.id && company.status !== "archived")).toBe(false);
   });
 
+  it("recovers a partial import after agent creation without touching the source", async () => {
+    const [source] = await db.insert(companies).values({ name: "Partial import source", issuePrefix: "MPI" }).returning();
+    const [worker] = await db.insert(agents).values({ companyId: source!.id, name: "Partial import worker" }).returning();
+    await db.insert(projects).values({ companyId: source!.id, name: "Partial import project" });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+
+    const originalInsert = db.insert.bind(db);
+    const insert = vi.spyOn(db, "insert").mockImplementation(((table: Parameters<typeof db.insert>[0]) => {
+      if (table === projects) throw new Error("injected project failure");
+      return originalInsert(table);
+    }) as typeof db.insert);
+    try {
+      const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+        target: { mode: "new_company", newCompanyName: "Partial import destination" },
+        export: { include: { projects: true } },
+        dryRun: false, apply: true, confirm: "approved pilot",
+      });
+      expect(response.status).toBeGreaterThanOrEqual(400);
+    } finally {
+      insert.mockRestore();
+    }
+
+    const destination = (await db.select().from(companies)).find((company) => company.name === "Partial import destination");
+    expect(destination).toBeDefined();
+    const run = (await db.select().from(companyTransferRuns)).find((entry) => entry.companyId === destination!.id);
+    expect(run?.status).toBe("failed");
+    expect((await db.select().from(agents)).some((agent) => agent.companyId === destination!.id)).toBe(true);
+    const rollback = await request(app)
+      .post(`/api/companies/${source!.id}/migrations/${run!.id}/rollback`)
+      .send({ confirm: "recover partial import" });
+    expect(rollback.status).toBe(200);
+    const remainingAgents = await db.select().from(agents);
+    expect(remainingAgents.some((agent) => agent.companyId === destination!.id)).toBe(false);
+    expect(remainingAgents.some((agent) => agent.id === worker!.id && agent.companyId === source!.id)).toBe(true);
+    expect((await db.select().from(projects)).some((project) => project.companyId === source!.id)).toBe(true);
+  });
+
   it("requires confirmation for rollback and removes only the migrated company", async () => {
     const [source] = await db.insert(companies).values({ name: "Rollback fixture", issuePrefix: "MRF" }).returning();
     const app = express();
