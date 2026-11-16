@@ -122,6 +122,19 @@ describe("migration manifest validation", () => {
     ]));
   });
 
+  it("rejects a skill key that collides with another skill's slug even without agent references", () => {
+    const result = validateMigrationManifest({
+      agents: [], envInputs: [],
+      skills: [{ key: "shared", slug: "first" }, { key: "second", slug: "shared" }],
+    });
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("ambiguous skill identity"),
+    ]));
+    expect(validateMigrationManifest({
+      agents: [], envInputs: [], skills: [{ key: "same", slug: "same" }],
+    }).errors).toEqual([]);
+  });
+
   it("rejects an agent skill reference matching different skill keys and slugs", () => {
     const result = validateMigrationManifest({
       agents: [{ slug: "worker", reportsToSlug: null, reportsToExistingAgentId: null,
