@@ -113,18 +113,27 @@ export async function commitKnowledgeTreeIfChanged(
       throw new Error(`refusing to write a path outside the export repo: ${file.path}`);
     }
   }
-  // Check every existing component before writing any file, including dangling links.
+  // Validate the entire requested shape and existing components before any write.
+  const targets = new Set(tree.files.map((file) => path.resolve(workDir, prefix + file.path)));
   for (const file of tree.files) {
+    const components = (prefix + file.path).split(path.sep).filter((part) => part && part !== ".");
     let current = workDir;
-    for (const component of (prefix + file.path).split(path.sep).filter(Boolean)) {
-      current = path.join(current, component);
+    for (let i = 0; i < components.length; i++) {
+      current = path.join(current, components[i]!);
+      const leaf = i === components.length - 1;
+      if (!leaf && targets.has(path.resolve(current))) {
+        throw new Error(`knowledge export: conflicting file and directory: ${file.path}`);
+      }
       try {
-        if ((await lstat(current)).isSymbolicLink()) {
+        const stat = await lstat(current);
+        if (stat.isSymbolicLink()) {
           throw new Error(`refusing to write through a symlink: ${file.path}`);
         }
+        if (leaf ? !stat.isFile() : !stat.isDirectory()) {
+          throw new Error(`knowledge export: incompatible path shape: ${file.path}`);
+        }
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === "ENOENT") break;
-        throw err;
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
       }
     }
   }
