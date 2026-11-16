@@ -139,7 +139,10 @@ import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
+  findIssueBlockersResolvedWakeSince,
+  findLatestBlockerResolvedAt,
 } from "../issue-dependency-wakeups.js";
+import { isIssueInContinuationStop } from "../../myrmidon/continuation-cap.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
 import {
@@ -7774,6 +7777,7 @@ export function recoveryService(
       checked: 0,
       healed: 0,
       existingWakeSkipped: 0,
+      continuationStopSkipped: 0,
       livePathSkipped: 0,
       interactionSkipped: 0,
       pauseHoldSkipped: 0,
@@ -7938,6 +7942,42 @@ export function recoveryService(
           });
         if (existingWake) {
           result.existingWakeSkipped += 1;
+          continue;
+        }
+
+        // One wake per resolution. The cycle key above changes when the
+        // dependent re-enters `blocked` (the continuation stop does that), so
+        // look for a wake after the close of the newest blocker whatever its
+        // cycle. A blocker that was reopened and closed again has a newer
+        // close stamp, so it wakes again.
+        const blockersResolvedAt = await findLatestBlockerResolvedAt(db, {
+          companyId,
+          blockerIssueIds: readiness.blockerIssueIds,
+        });
+        if (
+          blockersResolvedAt &&
+          (await findIssueBlockersResolvedWakeSince(db, {
+            companyId,
+            agentId,
+            dependentIssueId: candidate.id,
+            since: blockersResolvedAt,
+          }))
+        ) {
+          result.existingWakeSkipped += 1;
+          continue;
+        }
+
+        // A task the continuation stop parked stays parked until an external
+        // event; the backstop is not one.
+        if (
+          await isIssueInContinuationStop(db, {
+            companyId,
+            issueId: candidate.id,
+            agentId,
+            blockersResolvedAt,
+          })
+        ) {
+          result.continuationStopSkipped += 1;
           continue;
         }
 
