@@ -10,15 +10,15 @@ test("indexes only named workspace members and picks the first sorted duplicate"
   mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(join(scratch, "workspace-package-index-"));
   try {
-    writeFileSync(join(root, "pnpm-workspace.yaml"), "packages:\n  - 'later/*'\n  - 'packages/*'\n  - '!packages/excluded'\n");
+    writeFileSync(join(root, "pnpm-workspace.yaml"), "packages:\n  - 'packages/*'\n  - 'later/*'\n  - '!packages/excluded'\n");
     const addPackage = (dir, manifest) => {
       const absolute = join(root, dir);
       mkdirSync(absolute, { recursive: true });
       writeFileSync(join(absolute, "package.json"), JSON.stringify(manifest));
     };
 
-    addPackage("later/z-duplicate", { name: "duplicate" });
     addPackage("packages/a-duplicate", { name: "duplicate" });
+    addPackage("later/z-duplicate", { name: "duplicate" });
     addPackage("packages/scoped", { name: "@scope/exact-name" });
     addPackage("packages/plain", { name: "plain-name" });
     addPackage("packages/excluded", { name: "excluded-name" });
