@@ -489,6 +489,28 @@ jobs:
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
     steps:
+      - name: Repair workspace ownership left by earlier container steps
+        # Self-hosted runner: a previous job's docker step may have left
+        # root-owned files in the reused workspace; checkout then cannot clean
+        # it and every job on this runner fails (OPE-13494). Runs BEFORE checkout.
+        run: |
+          set -euo pipefail
+          ws="${GITHUB_WORKSPACE:?}"
+          [ -d "$ws" ] || exit 0
+          foreign() { find "$ws" -not -user "$(id -u)" 2>/dev/null | head -20 || true; }
+          left="$(foreign)"
+          [ -n "$left" ] || exit 0
+          echo "::warning::workspace $ws holds files not owned by $(id -un); first entries:"
+          echo "$left"
+          docker run --rm --network none --user 0:0 -v "$ws:/w" "$GO_IMAGE" \
+            chown -R "$(id -u):$(id -g)" /w
+          left="$(foreign)"
+          if [ -n "$left" ]; then
+            echo "::error::workspace $ws still holds files not owned by $(id -un) after chown:"
+            echo "$left"
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -506,7 +528,7 @@ jobs:
       - name: gofmt, go vet, go test
         run: |
           set -euo pipefail
-          docker run --rm --network none -v "$PWD/tools/fleetd:/src" -w /src \
+          docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/tools/fleetd:/src" -w /src \
             -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local -e GOCACHE=/tmp/gocache "$GO_IMAGE" sh -euc '
               out="$(gofmt -l .)"
               if [ -n "$out" ]; then echo "gofmt: $out"; exit 1; fi
@@ -523,6 +545,28 @@ jobs:
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
     steps:
+      - name: Repair workspace ownership left by earlier container steps
+        # Self-hosted runner: a previous job's docker step may have left
+        # root-owned files in the reused workspace; checkout then cannot clean
+        # it and every job on this runner fails (OPE-13494). Runs BEFORE checkout.
+        run: |
+          set -euo pipefail
+          ws="${GITHUB_WORKSPACE:?}"
+          [ -d "$ws" ] || exit 0
+          foreign() { find "$ws" -not -user "$(id -u)" 2>/dev/null | head -20 || true; }
+          left="$(foreign)"
+          [ -n "$left" ] || exit 0
+          echo "::warning::workspace $ws holds files not owned by $(id -un); first entries:"
+          echo "$left"
+          docker run --rm --network none --user 0:0 -v "$ws:/w" "$GO_IMAGE" \
+            chown -R "$(id -u):$(id -g)" /w
+          left="$(foreign)"
+          if [ -n "$left" ]; then
+            echo "::error::workspace $ws still holds files not owned by $(id -un) after chown:"
+            echo "$left"
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -540,7 +584,7 @@ jobs:
       - name: gofmt, go vet, go test (checked-in fixtures)
         run: |
           set -euo pipefail
-          docker run --rm --network none -v "$PWD/tools/dockergate:/src" -w /src \
+          docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/tools/dockergate:/src" -w /src \
             -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local -e GOCACHE=/tmp/gocache "$GO_IMAGE" sh -euc '
               out="$(gofmt -l .)"
               if [ -n "$out" ]; then echo "gofmt: $out"; exit 1; fi
@@ -583,7 +627,7 @@ jobs:
           # The static fixtures must equal the checked-in ones; traffic.json
           # carries wall-clock mtimes and is only replayed, not compared.
           diff -r -x traffic.json tools/dockergate/contract/testdata "$out"
-          docker run --rm --network none -v "$PWD/tools/dockergate:/src" -v "$out:/contract:ro" -w /src \
+          docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/tools/dockergate:/src" -v "$out:/contract:ro" -w /src \
             -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local -e GOCACHE=/tmp/gocache \
             -e DOCKERGATE_CONTRACT_DIR=/contract "$GO_IMAGE" go test -count=1 ./...
 
