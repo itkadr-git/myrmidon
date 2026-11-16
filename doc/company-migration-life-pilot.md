@@ -12,6 +12,13 @@ company. Chats, secret values, and external integrations are excluded. Secret
 bindings are reported by identifier only; an authorized owner provisions values
 separately in the destination.
 
+The existing portability implementation covers companies, agents, projects,
+issues and skills, with partial support for routines, comments, documents and
+attachments. Server-side Hindsight memory, Hermes profile and session memory,
+knowledge corpus, chat endpoints, external integrations and secret values are
+not covered. An inaccessible source or binding is not evidence that it is empty;
+reconcile these exclusions with their owners before scheduling the pilot.
+
 A dry-run is read-only. Actual application and rollback each require explicit
 confirmation; application also requires separate approval and an agreed window.
 This document is not that approval. No Life migration has been performed as part
