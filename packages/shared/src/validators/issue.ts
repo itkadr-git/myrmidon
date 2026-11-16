@@ -414,11 +414,13 @@ export const issueExecutionStageSchema = z.object({
 /**
  * myrmidon(EMPTY-WAKES-CI-UNREADY): agents write `monitor.kind = "ci"` for a CI wait
  * (28 reviewer runs on 16.11 got HTTP 400 and no monitor). `ci` is a synonym of
- * `external_service` with the service name `github-ci`; the stored value is always
+ * `external_service` with the service name `github-ci`. The schema stays a plain enum
+ * (it is turned into JSON Schema for agent tools, which cannot hold a transform); the
+ * route-side normalisation is `normalizeIssueExecutionMonitorKind` in
+ * `server/src/services/issue-execution-policy.ts`; the stored value is always
  * `external_service`, so what readers see does not change.
  */
 export const ISSUE_EXECUTION_MONITOR_KIND_CI_ALIAS = "ci" as const;
-export const ISSUE_EXECUTION_MONITOR_CI_SERVICE_NAME = "github-ci";
 
 export const issueExecutionMonitorPolicySchema = z.object({
   nextCheckAt: z.string().datetime(),
@@ -462,16 +464,8 @@ export const issueExecutionMonitorPolicySchema = z.object({
     .optional()
     .nullable()
     .default(null),
-}).transform((monitor) => ({
-  ...monitor,
-  kind: (monitor.kind === ISSUE_EXECUTION_MONITOR_KIND_CI_ALIAS
-    ? "external_service"
-    : monitor.kind) as (typeof ISSUE_EXECUTION_MONITOR_KINDS)[number] | null,
-  serviceName:
-    monitor.kind === ISSUE_EXECUTION_MONITOR_KIND_CI_ALIAS && !monitor.serviceName
-      ? ISSUE_EXECUTION_MONITOR_CI_SERVICE_NAME
-      : monitor.serviceName,
-}));
+});
+
 
 export const issueBlockReasonSchema = z.enum([
   "external_wait",
