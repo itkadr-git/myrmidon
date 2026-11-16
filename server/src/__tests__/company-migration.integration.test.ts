@@ -520,6 +520,33 @@ describe("company migration dry run", () => {
     }
   });
 
+  it("scopes migration status to its source and excludes ledger details", async () => {
+    const [source] = await db.insert(companies).values({ name: "Status source", issuePrefix: "MST" }).returning();
+    const [other] = await db.insert(companies).values({ name: "Status other", issuePrefix: "MSO" }).returning();
+    const [run] = await db.insert(companyTransferRuns).values({
+      direction: "import", status: "failed", actorKey: "migration-test",
+      idempotencyKey: "private-status-key", error: "private-status-error",
+      containerRef: { kind: "company_migration", sourceCompanyId: source!.id },
+    }).returning();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id, other!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+
+    const visible = await request(app).get(`/api/companies/${source!.id}/migrations/${run!.id}`);
+    expect(visible.status).toBe(200);
+    expect(visible.body).toEqual({ runId: run!.id, status: "failed" });
+    expect(JSON.stringify(visible.body)).not.toContain("private-status");
+    const crossCompany = await request(app).get(`/api/companies/${other!.id}/migrations/${run!.id}`);
+    expect(crossCompany.status).toBe(404);
+    const invalid = await request(app).get(`/api/companies/${source!.id}/migrations/not-a-run-id`);
+    expect(invalid.status).toBe(404);
+  });
+
   it("rejects rollback of a claimed migration without changing its destination or ledger", async () => {
     const [source] = await db.insert(companies).values({ name: "Recovery safety source", issuePrefix: "MSS" }).returning();
     const [destination] = await db.insert(companies).values({ name: "Recovery safety destination", issuePrefix: "MSD" }).returning();
