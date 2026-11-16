@@ -285,7 +285,7 @@ export class FleetOnboardExecutor {
               const testSsh = await this.getSsh(connOptions);
               await testSsh.connect(connOptions);
               const testPing = await testSsh.execute('echo "ufw-connectivity-ok"');
-              if (testPing.exitCode !== 0 || !testPing.stdout.includes("ufw-connectivity-ok")) {
+              if (testPing.exitCode !== 0 || testPing.stdout.trim() !== "ufw-connectivity-ok") {
                 throw new Error("Connectivity test failed after firewall enablement");
               }
               // Disarm rollback timer
