@@ -1832,6 +1832,8 @@ export async function fetchAgentDecommissionState(agentId, {
   if (!body || typeof body !== "object" || typeof body.adapterType !== "string" || typeof body.status !== "string") {
     return { ok: false, reason: "board-unavailable" };
   }
+  const validStatuses = new Set(["active", "paused", "idle", "running", "error", "pending_approval", "terminated"]);
+  if (!validStatuses.has(body.status) || !body.adapterType.trim()) return { ok: false, reason: "board-unavailable" };
   if (body.status === "terminated") return { ok: true, state: "terminated" };
   if (body.adapterType === HERMES_GATEWAY_ADAPTER_TYPE) return { ok: true, state: "hermes_gateway" };
   if (body.status === "running") return { ok: true, state: "running" };

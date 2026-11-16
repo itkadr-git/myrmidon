@@ -688,6 +688,9 @@ jobs:
           printf 'Running %s\n' "${files[@]}"
           node --test "${files[@]}"
 
+      - name: Root contract tests (node:test)
+        run: node --test scripts/*.myrmidon.test.mjs
+
       - name: Brand release audit (DEBRAND gate)
         if: ${{ !cancelled() }}
         run: |

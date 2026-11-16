@@ -132,6 +132,23 @@ function normalizeMonitorNotes(notes: string | null | undefined) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+const MONITOR_KIND_CI_ALIAS = "ci";
+const MONITOR_CI_SERVICE_NAME = "github-ci";
+
+/**
+ * myrmidon(EMPTY-WAKES-CI-UNREADY): `monitor.kind = "ci"` is a synonym of `external_service`;
+ * a caller that gave no service name gets `github-ci`. The stored kind is never `ci`.
+ */
+export function normalizeIssueExecutionMonitorKind(
+  kind: string | null,
+  serviceName: string | null,
+): { kind: "external_service" | null; serviceName: string | null } {
+  if (kind === MONITOR_KIND_CI_ALIAS) {
+    return { kind: "external_service", serviceName: serviceName ?? MONITOR_CI_SERVICE_NAME };
+  }
+  return { kind: kind as "external_service" | null, serviceName };
+}
+
 function normalizeMonitorText(value: string | null | undefined) {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -466,8 +483,10 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
       nextCheckAt: parsed.data.monitor.nextCheckAt,
       notes: normalizeMonitorNotes(parsed.data.monitor.notes),
       scheduledBy: parsed.data.monitor.scheduledBy,
-      kind: parsed.data.monitor.kind ?? null,
-      serviceName: normalizeMonitorText(parsed.data.monitor.serviceName),
+      ...normalizeIssueExecutionMonitorKind(
+        parsed.data.monitor.kind ?? null,
+        normalizeMonitorText(parsed.data.monitor.serviceName),
+      ),
       externalRef: redactIssueMonitorExternalRef(parsed.data.monitor.externalRef),
       timeoutAt: parsed.data.monitor.timeoutAt ?? null,
       maxAttempts: parsed.data.monitor.maxAttempts ?? null,
