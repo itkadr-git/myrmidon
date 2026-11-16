@@ -15,6 +15,7 @@ const fixture = () => ({
     { path: 'reachable', bytes: Number.MAX_SAFE_INTEGER, eager: true },
     { path: 'disconnected', bytes: 2, eager: false },
     { path: 'other', bytes: 3, eager: false },
+    { path: 'isolated', bytes: 4, eager: false },
   ],
   edges: [
     { from: 'entry', to: 'target', kind: 'eager', specifier: './target' },
@@ -41,7 +42,7 @@ const cases = [
   ['unsafe bytes', r => { r.modules[4].bytes = Number.MAX_SAFE_INTEGER + 1; }, 'shape'],
   ['non-number bytes', r => { r.modules[4].bytes = '3'; }, 'shape'],
   ['non-boolean eager', r => { r.modules[4].eager = 0; }, 'shape'],
-  ['duplicate late path', r => { r.modules[4].path = 'disconnected'; }, 'graph'],
+  ['duplicate late path', r => { r.modules[5].path = 'disconnected'; }, 'graph'],
   ['missing entry', r => { r.entry = 'missing'; }, 'graph'],
   ['late edge null', r => { r.edges[3] = null; }, 'shape'],
   ['late edge array', r => { r.edges[3] = []; }, 'shape'],
