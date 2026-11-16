@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { APPROVED_LABEL, decideApproveLabel, detectMigrationViolation, parseVerdictLines } from "./review-approve-label.mjs";
 
 const head = "bd4b5f8924df56595fde8268885f8f912ff6b262";
@@ -52,3 +56,23 @@ for (const [name, pinned, actual] of [
     assert.deepEqual(decideApproveLabel({ ...base, verdict: { ...parsed, at }, pr: { ...pr, headSha: actual } }), label);
   });
 }
+
+test("negative control detects an incorrect expected decision", () => {
+  const directory = mkdtempSync(join(tmpdir(), "review-decision-negative-"));
+  try {
+    const source = readFileSync(new URL(import.meta.url), "utf8");
+    const expected = '{ action: "skip", reason: "' + 'no-verdict" }';
+    assert.equal(source.split(expected).length, 2);
+    const altered = source.replace(expected, '{ action: "skip", reason: "pr-not-open" }')
+      .replace('"./review-approve-label.mjs"', JSON.stringify(new URL("./review-approve-label.mjs", import.meta.url).href));
+    const fixture = join(directory, "negative.test.mjs");
+    writeFileSync(fixture, altered);
+    const result = spawnSync(process.execPath, ["--test", "--test-name-pattern=^no verdict before closed$", fixture], { encoding: "utf8" });
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stdout, /not ok 1 - no verdict before closed/);
+    assert.match(result.stdout, /no-verdict/);
+    assert.match(result.stdout, /pr-not-open/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
