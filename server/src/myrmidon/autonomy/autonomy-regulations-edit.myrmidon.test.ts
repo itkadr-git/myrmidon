@@ -112,11 +112,9 @@ describe("updateKnowledgeAutonomyRegulation", () => {
     expect(log).toHaveBeenCalledOnce();
     expect(log).toHaveBeenCalledWith(expect.objectContaining({ companyId: company, actorType: "agent", actorId: "editor", entityId: id }));
     const [scope, revisions, update] = f.predicates;
-    expect(scope.sql).toContain('"knowledge_items"."nest_id"');
-    expect(scope.sql).toContain('"knowledge_items"."id"');
-    expect(scope.sql).toContain('"knowledge_items"."kind"');
+    expect(scope.sql).toBe('("knowledge_items"."nest_id" = $1 and "knowledge_items"."id" = $2 and "knowledge_items"."kind" = $3)');
     expect(scope.params).toEqual([company, id, "rule"]);
-    expect(revisions.sql).toContain('"knowledge_revisions"."item_id"'); expect(revisions.params).toEqual([id]);
-    expect(update.sql).toContain('"knowledge_items"."id"'); expect(update.params).toEqual([id]);
+    expect(revisions.sql).toBe('"knowledge_revisions"."item_id" = $1'); expect(revisions.params).toEqual([id]);
+    expect(update.sql).toBe('"knowledge_items"."id" = $1'); expect(update.params).toEqual([id]);
   });
 });
