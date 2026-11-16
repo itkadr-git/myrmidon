@@ -99,6 +99,8 @@ export function createBotPartitionThresholdRuntime(
   const now = deps.now ?? (() => new Date());
   const settingsService = db ? instanceSettingsService(db) : null;
   let state: BotPartitionThresholdState = { ...EMPTY_STATE };
+  let lowSpaceNotified = false;
+  let updateQueue: Promise<void> = Promise.resolve();
 
   async function resolveThresholds(): Promise<WsBotDiskPartitionSettings> {
     const botDisk = deps.getBotDiskSettings
@@ -107,7 +109,7 @@ export function createBotPartitionThresholdRuntime(
     return resolveWsBotDiskPartitionSettings({ stored: botDisk, env }).settings;
   }
 
-  async function updateFromPartition(usage: BotPartitionUsage): Promise<BotPartitionThresholdState> {
+  async function evaluatePartition(usage: BotPartitionUsage): Promise<BotPartitionThresholdState> {
     const settings = await resolveThresholds();
     if (!isFreshPhysicalSample(usage, now().getTime())) return markUnmeasured();
     // statfs counts shared reflink extents once. Project quota counters are
@@ -130,19 +132,31 @@ export function createBotPartitionThresholdRuntime(
           : state.criticalNotified && alert === "critical",
       evaluatedAt: now().toISOString(),
     };
-    if (alert === "critical" && !state.criticalNotified && deps.notifyOwner) {
+    // Available bytes exclude reserved blocks; exactly 10% is not low space.
+    const lowSpace = usage.freeBytes / usage.totalBytes < 0.1;
+    if (!lowSpace) lowSpaceNotified = false;
+    const criticalNeedsNotification = alert === "critical" && !state.criticalNotified;
+    if (((lowSpace && !lowSpaceNotified) || criticalNeedsNotification) && deps.notifyOwner) {
       try {
         await deps.notifyOwner({ usage, settings, level: "critical" });
-        state = { ...state, criticalNotified: true };
+        if (lowSpace) lowSpaceNotified = true;
+        if (alert === "critical") state = { ...state, criticalNotified: true };
       } catch (err) {
-        logger.error({ err }, "bot partition critical notification failed");
+        logger.error({ err }, "bot partition low-space notification failed");
       }
     }
     return state;
   }
 
+  function updateFromPartition(usage: BotPartitionUsage): Promise<BotPartitionThresholdState> {
+    // Serialize evaluations so a pending outbox write cannot cause duplicate crossings.
+    const result = updateQueue.then(() => evaluatePartition(usage));
+    updateQueue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
   function markUnmeasured(): BotPartitionThresholdState {
-    state = { ...EMPTY_STATE, evaluatedAt: now().toISOString() };
+    state = { ...EMPTY_STATE, criticalNotified: state.criticalNotified, evaluatedAt: now().toISOString() };
     return state;
   }
 
