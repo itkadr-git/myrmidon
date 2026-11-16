@@ -66,7 +66,6 @@ const expected = {
       { path: 'entry.mjs', distance: 2 },
       { path: 'long.mjs', distance: 2 },
     ] },
-    eager: ['entry.mjs', 'long.mjs', 'mid.mjs', 'short.mjs', 'target.mjs'],
   },
   'short-removed': {
     impact: { entry: 'entry.mjs', target: 'target.mjs', importers: [
@@ -75,22 +74,39 @@ const expected = {
       { path: 'long.mjs', distance: 2 },
       { path: 'entry.mjs', distance: 3 },
     ] },
-    eager: ['entry.mjs', 'long.mjs', 'mid.mjs', 'short.mjs', 'target.mjs'],
   },
   'dynamic-target': {
     impact: { entry: 'entry.mjs', target: 'target.mjs', importers: [
       { path: 'lazy-only.mjs', distance: 1 },
     ] },
-    eager: ['entry.mjs', 'long.mjs', 'mid.mjs', 'short.mjs'],
   },
 };
 
-function assertReport(report, state) {
-  const modules = new Map(report.modules.map(module => [module.path, module]));
-  assert.deepEqual([...modules].filter(([, module]) => module.eager).map(([path]) => path).sort(), [...expected[state].eager].sort());
-  assert.ok(modules.has('target.mjs'));
-  return modules;
-}
+const moduleRow = (path, bytes, eager) => ({ path, bytes, eager });
+const edge = (from, to, kind) => ({ from, specifier: `./${to}`, kind, to });
+const scannerExpected = {
+  baseline: {
+    entry: 'entry.mjs',
+    modules: [moduleRow('dynamic-shortcut.mjs', 80, false), moduleRow('entry.mjs', 273, true), moduleRow('lazy-only.mjs', 80, false), moduleRow('long.mjs', 72, true), moduleRow('mid.mjs', 74, true), moduleRow('short.mjs', 76, true), moduleRow('target.mjs', 54, true)],
+    edges: [edge('dynamic-shortcut.mjs', 'target.mjs', 'lazy'), edge('entry.mjs', 'dynamic-shortcut.mjs', 'lazy'), edge('entry.mjs', 'lazy-only.mjs', 'lazy'), edge('entry.mjs', 'long.mjs', 'eager'), edge('entry.mjs', 'short.mjs', 'eager'), edge('lazy-only.mjs', 'target.mjs', 'eager'), edge('long.mjs', 'mid.mjs', 'eager'), edge('mid.mjs', 'target.mjs', 'eager'), edge('short.mjs', 'target.mjs', 'eager')],
+    unknown: [], counts: { modules: 7, eagerModules: 5, edges: 9 }, bytes: { total: 709, eager: 549 },
+    heaviestEager: [moduleRow('entry.mjs', 273, true), moduleRow('short.mjs', 76, true), moduleRow('mid.mjs', 74, true), moduleRow('long.mjs', 72, true), moduleRow('target.mjs', 54, true)],
+  },
+  'short-removed': {
+    entry: 'entry.mjs',
+    modules: [moduleRow('dynamic-shortcut.mjs', 80, false), moduleRow('entry.mjs', 273, true), moduleRow('lazy-only.mjs', 80, false), moduleRow('long.mjs', 72, true), moduleRow('mid.mjs', 74, true), moduleRow('short.mjs', 53, true), moduleRow('target.mjs', 54, true)],
+    edges: [edge('dynamic-shortcut.mjs', 'target.mjs', 'lazy'), edge('entry.mjs', 'dynamic-shortcut.mjs', 'lazy'), edge('entry.mjs', 'lazy-only.mjs', 'lazy'), edge('entry.mjs', 'long.mjs', 'eager'), edge('entry.mjs', 'short.mjs', 'eager'), edge('lazy-only.mjs', 'target.mjs', 'eager'), edge('long.mjs', 'mid.mjs', 'eager'), edge('mid.mjs', 'target.mjs', 'eager')],
+    unknown: [], counts: { modules: 7, eagerModules: 5, edges: 8 }, bytes: { total: 686, eager: 526 },
+    heaviestEager: [moduleRow('entry.mjs', 273, true), moduleRow('mid.mjs', 74, true), moduleRow('long.mjs', 72, true), moduleRow('target.mjs', 54, true), moduleRow('short.mjs', 53, true)],
+  },
+  'dynamic-target': {
+    entry: 'entry.mjs',
+    modules: [moduleRow('dynamic-shortcut.mjs', 80, false), moduleRow('entry.mjs', 273, true), moduleRow('lazy-only.mjs', 80, false), moduleRow('long.mjs', 72, true), moduleRow('mid.mjs', 75, true), moduleRow('short.mjs', 53, true), moduleRow('target.mjs', 54, false)],
+    edges: [edge('dynamic-shortcut.mjs', 'target.mjs', 'lazy'), edge('entry.mjs', 'dynamic-shortcut.mjs', 'lazy'), edge('entry.mjs', 'lazy-only.mjs', 'lazy'), edge('entry.mjs', 'long.mjs', 'eager'), edge('entry.mjs', 'short.mjs', 'eager'), edge('lazy-only.mjs', 'target.mjs', 'eager'), edge('long.mjs', 'mid.mjs', 'eager'), edge('mid.mjs', 'target.mjs', 'lazy')],
+    unknown: [], counts: { modules: 7, eagerModules: 4, edges: 8 }, bytes: { total: 687, eager: 473 },
+    heaviestEager: [moduleRow('entry.mjs', 273, true), moduleRow('mid.mjs', 75, true), moduleRow('long.mjs', 72, true), moduleRow('short.mjs', 53, true)],
+  },
+};
 
 test('real scanner and consumer follow reverse impact across source transitions', t => {
   const dir = fixture(t);
@@ -108,12 +124,7 @@ test('real scanner and consumer follow reverse impact across source transitions'
     assert.notEqual(scan.stdout, '', state);
     const raw = scan.stdout;
     rawReports.set(state, raw);
-    const report = JSON.parse(raw);
-    const modules = assertReport(report, state);
-    const expectedPaths = state === 'dynamic-target'
-      ? ['entry.mjs', 'short.mjs', 'long.mjs', 'mid.mjs', 'dynamic-shortcut.mjs', 'lazy-only.mjs', 'target.mjs']
-      : ['entry.mjs', 'short.mjs', 'long.mjs', 'mid.mjs', 'dynamic-shortcut.mjs', 'lazy-only.mjs', 'target.mjs'];
-    assert.deepEqual([...modules.keys()].sort(), expectedPaths.sort(), state);
+    assert.deepEqual(JSON.parse(raw), scannerExpected[state], state);
     consume(dir, raw, expected[state].impact);
     for (const [name, contents] of before) assert.equal(readFileSync(join(dir, name), 'utf8'), contents, `${state}: scanner changed ${name}`);
     assert.equal(existsSync(join(dir, 'scanner-sentinel')), false, `${state}: source executed`);
@@ -124,6 +135,8 @@ test('real scanner and consumer follow reverse impact across source transitions'
     assert.equal(repeat.stderr, '', `${state} repeat`);
     assert.equal(repeat.stdout, raw, `${state}: stale or nondeterministic report`);
     consume(dir, repeat.stdout, expected[state].impact);
+    for (const [name, contents] of before) assert.equal(readFileSync(join(dir, name), 'utf8'), contents, `${state} repeat: changed ${name}`);
+    assert.equal(existsSync(join(dir, 'scanner-sentinel')), false, `${state} repeat: source executed`);
   }
   assert.notEqual(rawReports.get('baseline'), rawReports.get('short-removed'));
   assert.notEqual(rawReports.get('short-removed'), rawReports.get('dynamic-target'));
