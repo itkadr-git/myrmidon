@@ -385,6 +385,22 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockReporter.completion?.status).toBe("failed");
   });
 
+  it("fails hardening if the rollback timer cannot be disarmed", async () => {
+    const mockSsh = new MockSshExecutor();
+    mockSsh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
+    mockSsh.mockResponse(/pkill -f 'sleep 300/, { exitCode: 1, stderr: "timer still active" });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => mockSsh });
+    const claim: any = {
+      job: { id: "job-firewall-disarm", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(result.stepsCompleted).not.toContain("harden");
+  });
+
   it("rejects a forged firewall connectivity marker", async () => {
     const mockSsh = new MockSshExecutor();
     mockSsh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "not-ufw-connectivity-ok\n", exitCode: 0 });
