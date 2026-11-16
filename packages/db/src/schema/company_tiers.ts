@@ -3,7 +3,7 @@ import { companies } from "./companies.js";
 
 // myrmidon(1.7 TIER-SCHEMA OPE-12091): subscription plan of a company plus its
 // agent quota. One row per company; existing companies receive the `free` tier
-// with a quota of 5 agents (migration 0488 backfill). `updatedAt` is maintained
+// with a quota of 5 agents (migration 0489 backfill). `updatedAt` is maintained
 // by whoever writes the row; the schema itself only stores the plan.
 export const companyTiers = pgTable(
   "company_tiers",

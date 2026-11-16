@@ -25,7 +25,7 @@ function columnDefault(table: PgTable, columnName: string): string | undefined {
   return config.default === undefined ? undefined : String(config.default);
 }
 
-const BACKFILL_NUMBER = "0488";
+const BACKFILL_NUMBER = "0489";
 
 function backfillSql(): string {
   const migrationsDir = fileURLToPath(new URL("./migrations/", import.meta.url));
