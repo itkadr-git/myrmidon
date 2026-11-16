@@ -17,8 +17,8 @@ const captures = vi.hoisted(() => ({
   telegramConfigs: [] as Array<Record<string, unknown>>,
 }));
 
-vi.mock("@chat-adapter/discord", () => ({
-  createDiscordAdapter: (config: Record<string, unknown>) => {
+vi.mock("./discord-adapter-loader.js", () => ({
+  createDiscordAdapterLazy: (config: Record<string, unknown>) => {
     captures.discordConfigs.push(config);
     return {
       name: "discord",

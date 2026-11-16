@@ -28,6 +28,7 @@ import {
   type TelegramRawMessage,
 } from "@chat-adapter/telegram";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createDiscordAdapterLazy } from "./discord-adapter-loader.js";
 import {
   Chat,
   type ActionEvent,
@@ -134,10 +135,6 @@ const DISCORD_GATEWAY_SESSION_MS = 24 * 60 * 60_000;
 const DISCORD_GATEWAY_RESTART_MAX_DELAY_MS = 60_000;
 const DISCORD_GATEWAY_HEALTHY_SESSION_MS = 60_000;
 
-async function createDiscordAdapterLazy(config: DiscordAdapterConfig): Promise<DiscordAdapter> {
-  const { createDiscordAdapter } = await import("@chat-adapter/discord");
-  return createDiscordAdapter(config);
-}
 
 /** Public Paperclip provider ids. The Teams SDK name remains an internal detail. */
 export type ChatSdkProvider =
@@ -1352,13 +1349,13 @@ export function scopeMicrosoftTeamsEgress(
   return adapter;
 }
 
-async function createProviderAdapter(
+function createProviderAdapter(
   config: ResolvedChatSdkProviderConfig,
   logger: CreateChatSdkEndpointRuntimeOptions["logger"],
   callbacks: ChatSdkRuntimeCallbacks,
   endpointId: string,
   observeDiscordGatewayFatal?: (fatal: boolean) => void,
-): Promise<Adapter> {
+): Adapter {
   const resolvedLogger = adapterLogger(logger);
   switch (config.provider) {
     case "imessage-photon": throw new Error("Photon adapter requires scoped persistence");
@@ -1471,7 +1468,7 @@ async function createProviderAdapter(
         },
         userName: config.userName,
       };
-      return (await createDiscordAdapterLazy(adapterConfig)) as unknown as Adapter;
+      return createDiscordAdapterLazy(adapterConfig) as unknown as Adapter;
     }
     case "microsoft-teams": {
       const adapterConfig: TeamsAdapterConfig = {
@@ -2048,7 +2045,7 @@ export class ChatSdkEndpointRuntime {
   private retired = false;
   private photonReceiver?: PhotonReceiver;
   private readonly runtimeOptions: CreateChatSdkEndpointRuntimeOptions;
-  private readonly adapterReady: Promise<Adapter>;
+
   private shutdownTask: Promise<void> | null = null;
   private shutdownCompleted = false;
 
@@ -2103,10 +2100,10 @@ export class ChatSdkEndpointRuntime {
       1,
       Math.min(options.webhookIngressTimeoutMs ?? 2_500, 10_000),
     );
-    this.adapterReady = options.providerConfig.provider === "imessage-photon"
-      ? Promise.resolve(new PhotonChatAdapter(options.providerConfig.userName,
+    this.adapter = options.providerConfig.provider === "imessage-photon"
+      ? new PhotonChatAdapter(options.providerConfig.userName,
           new PhotonLineAuthentication(options.providerConfig.credentials, options.providerConfig.credentials.projectSecret),
-          new PhotonState({ companyId: options.companyId, endpointId: options.endpointId }, options.persistence)))
+          new PhotonState({ companyId: options.companyId, endpointId: options.endpointId }, options.persistence))
       : createProviderAdapter(
       options.providerConfig,
       options.logger,
@@ -2116,7 +2113,7 @@ export class ChatSdkEndpointRuntime {
         this.discordGatewayFatal = fatal;
       },
     );
-    this.adapter = this.adapterReady as unknown as Adapter;
+
     if (this.provider === "telegram") {
       const adapter = this.adapter as unknown as {
         botUserId?: string;
@@ -2198,6 +2195,9 @@ export class ChatSdkEndpointRuntime {
       state,
       userName: options.providerConfig.userName,
     });
+    if (this.provider === "discord") {
+      assertDiscordAdapterCompatibility(this.adapter, this.chat);
+    }
     registerCallbacks(
       this.chat,
       this.endpointId,
@@ -2306,13 +2306,7 @@ export class ChatSdkEndpointRuntime {
     this.assertNotRetired();
     // The service still chooses when to initialize, after installing callback
     // context. Retirement owns the settlement of that exact SDK operation.
-    this.initialization ??= (async () => {
-      this.adapter = await this.adapterReady;
-      if (this.provider === "discord") {
-        assertDiscordAdapterCompatibility(this.adapter, this.chat);
-      }
-      await this.chat.initialize();
-    })();
+    this.initialization ??= this.chat.initialize();
     await this.initialization;
     this.assertNotRetired();
   }
