@@ -6,7 +6,7 @@ const cmp = (a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
 
 function readReport(file) {
   let report;
-  try { report = JSON.parse(readFileSync(file, 'utf8')); } catch { fail('invalid json or file'); }
+  try { report = JSON.parse(readFileSync(file === '-' ? 0 : file, 'utf8')); } catch { fail('invalid json or file'); }
   if (!report || typeof report.entry !== 'string' || !Array.isArray(report.modules)) fail('invalid report');
   const modules = new Map();
   let total = 0, eager = 0, eagerModules = 0;
@@ -23,7 +23,7 @@ function readReport(file) {
 }
 
 try {
-  if (process.argv.length !== 4) fail('invalid arguments');
+  if (process.argv.length !== 4 || (process.argv[2] === '-' && process.argv[3] === '-')) fail('invalid arguments');
   const base = readReport(process.argv[2]), current = readReport(process.argv[3]);
   if (base.entry !== current.entry) fail('entry mismatch');
   const delta = Object.fromEntries(Object.keys(base.totals).map(key => [key, current.totals[key] - base.totals[key]]));
