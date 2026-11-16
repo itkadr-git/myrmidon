@@ -14,6 +14,7 @@ import { registerSettingsAppliers } from "../settings-appliers/index.js";
 const updated: unknown[] = [];
 let companySettings: Record<string, unknown> = {};
 const db = {
+  execute: async () => undefined,
   select: () => ({ from: () => ({ where: async () => [{ general: { behaviorSettingsByCompany: companySettings } }] }) }),
   update: () => ({ set: (v: unknown) => ({ where: () => ({ returning: async () => { updated.push(v); return []; } }) }) }),
 } as unknown as Db;

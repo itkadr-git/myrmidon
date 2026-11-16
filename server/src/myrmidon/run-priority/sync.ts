@@ -70,6 +70,23 @@ export function applyStoredRunPriority(db: Db): Promise<RunPrioritySettings> {
   const turn = applyQueue.then(async () => {
     const general = await instanceSettingsService(db).getGeneral();
     const next = resolveRunPriority(general.runPriority).settings;
+    if (next.strictReleaseFocus && next.currentRelease?.trim()) {
+      // Preserve legacy focus only when its owner is unambiguous. The atomic
+      // update never replaces an explicit company setting, including opt-out.
+      const legacyFocus = JSON.stringify({ currentRelease: next.currentRelease, strictReleaseFocus: true });
+      await db.execute(sql`
+        update instance_settings settings
+        set general = jsonb_set(
+          coalesce(settings.general, '{}'::jsonb), '{behaviorSettingsByCompany}',
+          coalesce(settings.general -> 'behaviorSettingsByCompany', '{}'::jsonb) ||
+            jsonb_build_object(owner.id::text,
+              coalesce(settings.general -> 'behaviorSettingsByCompany' -> owner.id::text, '{}'::jsonb) ||
+                jsonb_build_object('releaseFocus', ${legacyFocus}::jsonb)), true)
+        from (select min(id::text)::uuid as id from companies having count(*) = 1) owner
+        where settings.singleton_key = 'default'
+          and not (coalesce(settings.general -> 'behaviorSettingsByCompany' -> owner.id::text, '{}'::jsonb) ? 'releaseFocus')
+      `);
+    }
     const focus = await readCompanyReleaseFocus(db);
     applyRunPrioritySettings(next);
     applyCompanyReleaseFocus(focus);
