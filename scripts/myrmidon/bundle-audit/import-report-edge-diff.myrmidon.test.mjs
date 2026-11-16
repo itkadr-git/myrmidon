@@ -45,15 +45,32 @@ test('sorts tuple fields including null before strings and prevents delimiter co
 
 test('rejects bad arguments, shape, graph and duplicate tuples without partial output', t => {
   const { put, dir } = fixture(t); const good = report([]); const base = put('base', good);
-  const cases = [null, [], {}, { ...good, entry: '' }, { ...good, modules: [] }, { ...good, modules: [mod('entry', true), mod('entry')] }, { ...good, modules: [mod('entry', false)] }, { ...good, modules: [{ path: 'entry', bytes: -1, eager: true }] }, { ...good, edges: [edge('missing', '', 'lazy', null)] }, { ...good, edges: [edge('entry', '', 'lazy', 'missing')] }, { ...good, edges: [edge('entry', '', 'wrong', null)] }, { ...good, edges: [edge('entry', '', 'lazy', null), edge('entry', '', 'lazy', null)] }, { ...good, edges: [edge('entry', '', 'eager', 'a')] }, { ...good, entry: 'a', modules: [mod('a', true)] }];
-  for (const [i, value] of cases.entries()) {
+  const cases = [
+    [null, 'invalid report'], [[], 'invalid report'], [{}, 'invalid report'],
+    [{ ...good, entry: '' }, 'invalid report'], [{ ...good, modules: [] }, 'invalid report'],
+    [{ ...good, modules: [mod('entry', true), mod('entry')] }, 'duplicate module'],
+    [{ ...good, modules: [mod('entry', false)] }, 'invalid eager closure'],
+    [{ ...good, modules: [{ path: 'entry', bytes: -1, eager: true }] }, 'invalid module'],
+    [{ ...good, edges: [edge('missing', '', 'lazy', null)] }, 'dangling edge'],
+    [{ ...good, edges: [edge('entry', '', 'lazy', 'missing')] }, 'dangling edge'],
+    [{ ...good, edges: [edge('entry', '', 'wrong', null)] }, 'invalid edge'],
+    [{ ...good, edges: [edge('entry', '', 'lazy', null), edge('entry', '', 'lazy', null)] }, 'duplicate edge'],
+    [{ ...good, edges: [edge('entry', '', 'eager', 'a')] }, 'invalid eager closure'],
+    [{ ...good, entry: 'a', modules: [mod('a', true)] }, 'entry mismatch'],
+    [{ ...good, entry: 'missing' }, 'dangling entry'],
+  ];
+  for (const [i, [value, category]] of cases.entries()) {
     const path = put(`bad${i}`, JSON.stringify(value));
     for (const args of [[base, path], [path, base]]) {
-      const result = run(cli, ...args); assert.equal(result.status, 1, `case ${i}`); assert.equal(result.stdout, ''); assert.match(result.stderr, /^[a-z ]+\n$/); assert.ok(!result.stderr.includes(dir));
+      const result = run(cli, ...args); assert.equal(result.status, 1, `case ${i}`); assert.equal(result.stdout, ''); assert.equal(result.stderr, `${category}\n`, `case ${i}`);
     }
   }
-  for (const args of [[], [base], [base, base, base], [base, put('broken', '{')], [base, join(dir, 'missing')]]) {
-    const result = run(cli, ...args); assert.equal(result.status, 1); assert.equal(result.stdout, ''); assert.match(result.stderr, /^[a-z ]+\n$/);
+  const argumentCases = [
+    [[], 'invalid arguments'], [[base], 'invalid arguments'], [[base, base, base], 'invalid arguments'],
+    [[base, put('broken', '{')], 'invalid json or file'], [[base, join(dir, 'missing')], 'invalid json or file'],
+  ];
+  for (const [args, category] of argumentCases) {
+    const result = run(cli, ...args); assert.equal(result.status, 1); assert.equal(result.stdout, ''); assert.equal(result.stderr, `${category}\n`);
   }
 });
 
