@@ -1826,6 +1826,10 @@ describe("omp local execution", () => {
       const expectedPaperclipFolderKey = ["PAPERCLIP", "TASK", "FOLDER", "NAME"].join("_");
       expect(paperclipKeys).not.toContain(expectedPaperclipFolderKey);
       expect(env.MYRMIDON_TASK_FOLDER_NAME).toBe("OPE-12962");
+      expect(env.MYRMIDON_TASK_BRANCH).toBe("bot/OPE-12962");
+      expect(prepareAdapterExecutionTargetRuntime).toHaveBeenLastCalledWith(
+        expect.objectContaining({ syncWorkspace: false }),
+      );
 
       const ensuredDirs = ensureAdapterExecutionTargetDirectoryMock.mock.calls.map(
         (call) => call[2] as string,
