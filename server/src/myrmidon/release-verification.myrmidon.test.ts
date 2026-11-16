@@ -904,6 +904,19 @@ describe("persisted release evidence", () => {
     expect(hasCurrentReleaseVerificationEvidence(comments, scope, "secret", new Date("2026-11-13T12:00:02.000Z"))).toBe(false);
   });
 
+  it("does not revive an older confirmation after a later check on another deployed build", () => {
+    const laterBuild = createReleaseVerificationEvidence({
+      ...scope, deployedVersion: SHA_C, verdict: "confirmed", checkedAt: "2026-11-13T12:00:01.000Z",
+    }, "secret");
+    const comment = (evidence: typeof record) => ({
+      body: `release-evidence-v1: ${JSON.stringify(evidence)}`,
+      authorType: "system",
+    });
+    const now = new Date("2026-11-13T12:00:02.000Z");
+    expect(hasCurrentReleaseVerificationEvidence([comment(record), comment(laterBuild)], scope, "secret", now)).toBe(false);
+    expect(hasCurrentReleaseVerificationEvidence([comment(laterBuild), comment(record)], scope, "secret", now)).toBe(false);
+  });
+
   it("rejects expired and future signed evidence", () => {
     expect(validateReleaseVerificationEvidence(record, scope, "secret", new Date("2026-11-14T12:00:00.001Z"))).toBe(false);
     expect(validateReleaseVerificationEvidence(record, scope, "secret", new Date("2026-11-13T11:59:59.999Z"))).toBe(false);
