@@ -9,6 +9,11 @@ const proof = {
 };
 const success = { head_sha: "abc123", run_attempt: 2, status: "completed", conclusion: "success" };
 
+test("rejects successful evidence when the live job failed", () => {
+  const run = { ...success, jobs: [{ id: 9, status: "completed", conclusion: "failure", run_attempt: 2 }] };
+  assert.throws(() => validateEvidence(proof, run, "abc123", proof.tag), /live job/);
+});
+
 test("accepts successful jobs on the exact evidenced rerun attempt", () => {
   assert.doesNotThrow(() => validateEvidence(proof, success, "abc123", proof.tag));
 });
