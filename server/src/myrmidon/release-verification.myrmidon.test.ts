@@ -955,6 +955,22 @@ describe("persisted release evidence", () => {
     expect(hasCurrentReleaseVerificationEvidence([comment(wrongKey), comment(record)], scope, "secret", NOW())).toBe(true);
   });
 
+  it("fails closed for a genuine simultaneous failure even alongside a forged failure", () => {
+    const failed = createReleaseVerificationEvidence({
+      ...scope, verdict: "failed", checkedAt: record.checkedAt,
+    }, "secret");
+    const forged = createReleaseVerificationEvidence({
+      ...scope, verdict: "failed", checkedAt: record.checkedAt,
+    }, "other-secret");
+    const comment = (evidence: typeof record) => ({
+      body: `release-evidence-v1: ${JSON.stringify(evidence)}`,
+      authorType: "system",
+    });
+    for (const evidence of [[record, forged, failed], [failed, record, forged], [forged, failed, record]]) {
+      expect(hasCurrentReleaseVerificationEvidence(evidence.map(comment), scope, "secret", NOW())).toBe(false);
+    }
+  });
+
   it("does not let later evidence from another company or release line supersede the current record", () => {
     const foreignCompany = createReleaseVerificationEvidence({
       ...scope, companyId: "company-b", verdict: "failed", checkedAt: "2026-11-13T12:00:01.000Z",
