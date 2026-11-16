@@ -497,6 +497,21 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(ssh.hasExecuted("sudo ufw disable")).toBe(false);
   });
 
+  it("attempts firewall restoration when the SSH allow command loses its connection", async () => {
+    const ssh = new MockSshExecutor({ timeoutCommands: [/sudo ufw allow/] });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-firewall-allow-timeout", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(ssh.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
+    expect(ssh.hasExecuted(/sudo ufw default deny/)).toBe(false);
+  });
+
   it("does not disarm another onboarding job's firewall rollback timer", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
