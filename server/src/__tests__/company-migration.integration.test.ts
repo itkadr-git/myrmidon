@@ -556,6 +556,16 @@ describe("company migration dry run", () => {
     expect((await companyTransferRunService.getRun(db, run.id))?.status).toBe("failed");
   });
 
+  it("does not persist upstream error details when a migration apply fails", async () => {
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "redaction-source", "redaction-key");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    expect(await companyTransferRunService.releaseApplyClaim(db, run.id, "secret-value-canary")).toBe(true);
+    const saved = await companyTransferRunService.getRun(db, run.id);
+    expect(saved?.status).toBe("failed");
+    expect(saved?.error).toBeTruthy();
+    expect(JSON.stringify(saved)).not.toContain("secret-value-canary");
+  });
+
   it("does not reapply a failed migration after it has claimed a destination", async () => {
     const [source] = await db.insert(companies).values({ name: "Retry safety source", issuePrefix: "MRY" }).returning();
     const [destination] = await db.insert(companies).values({ name: "Retry safety destination", issuePrefix: "MRD" }).returning();
