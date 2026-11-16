@@ -3,6 +3,23 @@ import { companyMigrationService } from "../services/company-migration.js";
 import type { companyPortabilityService } from "../services/company-portability.js";
 
 describe("migration dry-run warnings", () => {
+  it("requests a read-only export and never applies the bundle", async () => {
+    const manifest = { agents: [], projects: [], issues: [], skills: [], envInputs: [] };
+    const exportBundle = vi.fn().mockResolvedValue({ rootPath: "package", files: {}, manifest, warnings: [] });
+    const importBundle = vi.fn();
+    const portability = {
+      exportBundle,
+      importBundle,
+      previewImport: vi.fn().mockResolvedValue({ errors: [], warnings: [] }),
+    } as unknown as ReturnType<typeof companyPortabilityService>;
+    const input = { include: { projects: true } };
+
+    await companyMigrationService(portability).dryRun("source", input, "destination");
+
+    expect(exportBundle).toHaveBeenCalledWith("source", input, { preview: true });
+    expect(importBundle).not.toHaveBeenCalled();
+  });
+
   it("reports warning counts without exposing raw export or import messages", async () => {
     const manifest = { agents: [], projects: [], issues: [], skills: [], envInputs: [] };
     const portability = {
