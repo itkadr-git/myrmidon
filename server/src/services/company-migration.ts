@@ -19,7 +19,7 @@ export async function getMigrationStatus(db: Db, sourceCompanyId: string, runId:
 // This entry point is intentionally read-only; apply and rollback are not yet available.
 export function companyMigrationService(portability: Portability) {
   async function prepare(companyId: string, input: CompanyPortabilityExport, newCompanyName: string, collisionStrategy: "rename" | "skip" | "replace") {
-    const exported = await portability.exportBundle(companyId, input, { preview: true });
+    const exported = await portability.exportBundle(companyId, input, { preview: true, rejectUnknownAgentPermissions: true });
     // Export preserves secret binding metadata that is not present in package files.
     const validation = validateMigrationManifest(exported.manifest);
     for (const blob of exported.manifest.blobs ?? []) {

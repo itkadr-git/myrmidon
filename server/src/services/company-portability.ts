@@ -3843,7 +3843,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   async function exportBundle(
     companyId: string,
     input: CompanyPortabilityExport,
-    options: { preview?: boolean; allowExternalInstructions?: boolean } = {},
+    options: { preview?: boolean; allowExternalInstructions?: boolean; rejectUnknownAgentPermissions?: boolean } = {},
   ): Promise<CompanyPortabilityExportResult> {
     const include = normalizeInclude({
       ...input.include,
@@ -3921,7 +3921,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       : [];
     const permissionGrantsByAgentId = new Map<string, PortableAgentPermissionGrant[]>();
     for (const row of agentPermissionGrantRows) {
-      if (!VALID_PERMISSION_KEYS.has(row.permissionKey as PermissionKey)) continue;
+      if (!VALID_PERMISSION_KEYS.has(row.permissionKey as PermissionKey)) {
+        if (options.rejectUnknownAgentPermissions) throw unprocessable("Source contains an unsupported agent permission.");
+        continue;
+      }
       const grants = permissionGrantsByAgentId.get(row.principalId) ?? [];
       grants.push({
         permissionKey: row.permissionKey as PermissionKey,

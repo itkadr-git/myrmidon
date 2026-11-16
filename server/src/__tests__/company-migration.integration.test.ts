@@ -111,10 +111,8 @@ describe("company migration dry run", () => {
     const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
       target: { mode: "new_company", newCompanyName: "ACL destination" },
     });
-    expect(response.status).toBe(200);
-    expect(response.body.validation.errors).toEqual(expect.arrayContaining([
-      expect.stringContaining("unsupported agent permission"),
-    ]));
+    expect(response.status).toBe(422);
+    expect(JSON.stringify(response.body)).toContain("unsupported agent permission");
     expect(JSON.stringify(response.body)).not.toContain("private-unknown-permission");
     expect(JSON.stringify(response.body)).not.toContain("private-scope-value");
   });

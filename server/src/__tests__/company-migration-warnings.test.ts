@@ -42,7 +42,7 @@ describe("migration dry-run warnings", () => {
 
     await companyMigrationService(portability).dryRun("source", input, "destination");
 
-    expect(exportBundle).toHaveBeenCalledWith("source", input, { preview: true });
+    expect(exportBundle).toHaveBeenCalledWith("source", input, { preview: true, rejectUnknownAgentPermissions: true });
     expect(importBundle).not.toHaveBeenCalled();
   });
 
