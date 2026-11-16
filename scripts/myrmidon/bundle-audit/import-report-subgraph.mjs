@@ -38,7 +38,7 @@ function project(report, root, mode) {
 try {
   const args = process.argv.slice(2);
   if (args.length !== 3 || !string(args[0]) || !string(args[1]) || !['eager','all'].includes(args[2])) fail('argv');
-  let input; try { input = readFileSync(args[0], 'utf8'); } catch { fail('read'); }
+  let input; try { input = readFileSync(args[0] === '-' ? 0 : args[0], 'utf8'); } catch { fail('read'); }
   let report; try { report = JSON.parse(input); } catch { fail('json'); }
   process.stdout.write(JSON.stringify(project(report,args[1],args[2])) + '\n');
 } catch (error) {
