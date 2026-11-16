@@ -11,7 +11,7 @@ type MigrationManifest = {
     Partial<Pick<CompanyPortabilityManifest["projects"][number], "ownerAgentSlug" | "leadAgentSlug">>>;
   issues?: Array<Pick<CompanyPortabilityManifest["issues"][number],
     "slug" | "projectSlug" | "assigneeAgentSlug" | "parentSlug" | "blockedBy"> &
-    Partial<Pick<CompanyPortabilityManifest["issues"][number], "recurring" | "routine" | "comments">>>;
+    Partial<Pick<CompanyPortabilityManifest["issues"][number], "recurring" | "routine" | "comments" | "workProducts">>>;
   envInputs: Array<Pick<CompanyPortabilityManifest["envInputs"][number],
     "key" | "agentSlug" | "projectSlug" | "kind" | "requirement">>;
 };
@@ -96,6 +96,10 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
     // The portability importer copies issue conversations; migration must not.
     if ((issue.comments?.length ?? 0) > 0) {
       errors.push(`Task ${issue.slug} has comments that cannot be migrated.`);
+    }
+    // Work products can carry external IDs, URLs and provider-specific metadata.
+    if ((issue.workProducts?.length ?? 0) > 0) {
+      errors.push(`Task ${issue.slug} has work products that cannot be migrated safely.`);
     }
     // Portability recreates webhook triggers, which are outside migration scope.
     if (issue.recurring && issue.routine?.triggers.some((trigger) => trigger.kind === "webhook")) {
