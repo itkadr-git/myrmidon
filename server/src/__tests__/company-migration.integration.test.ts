@@ -81,6 +81,32 @@ describe("company migration dry run", () => {
     insert.mockRestore(); update.mockRestore(); remove.mockRestore();
   });
 
+  it("reports secret bindings without revealing source environment values", async () => {
+    const [source] = await db.insert(companies).values({ name: "Secret fixture", issuePrefix: "MSC" }).returning();
+    await db.insert(agents).values({
+      companyId: source!.id,
+      name: "Secret worker",
+      adapterConfig: { env: { API_KEY: { type: "plain", value: "migration-secret-canary" } } },
+    });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+
+    const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+      target: { mode: "new_company", newCompanyName: "Secret destination" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.body.validation.secretBindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "API_KEY" }),
+    ]));
+    expect(JSON.stringify(response.body)).not.toContain("migration-secret-canary");
+  });
+
   it("rejects migration dry runs from agents without writing to the database", async () => {
     const [source] = await db.insert(companies).values({ name: "Agent access fixture", issuePrefix: "MAC" }).returning();
     const [worker] = await db.insert(agents).values({ companyId: source!.id, name: "Access worker" }).returning();
