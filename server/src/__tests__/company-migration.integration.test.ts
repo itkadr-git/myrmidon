@@ -42,6 +42,8 @@ describe("company migration dry run", () => {
     const insert = vi.spyOn(db, "insert");
     const update = vi.spyOn(db, "update");
     const remove = vi.spyOn(db, "delete");
+    const putFile = vi.spyOn(storage, "putFile");
+    const deleteObject = vi.spyOn(storage, "deleteObject");
     try {
       const beforeCompanies = await db.select().from(companies);
       const beforeAgents = await db.select().from(agents);
@@ -75,6 +77,8 @@ describe("company migration dry run", () => {
       expect(insert).not.toHaveBeenCalled();
       expect(update).not.toHaveBeenCalled();
       expect(remove).not.toHaveBeenCalled();
+      expect(putFile).not.toHaveBeenCalled();
+      expect(deleteObject).not.toHaveBeenCalled();
       expect(await db.select().from(companies)).toEqual(beforeCompanies);
       expect(await db.select().from(agents)).toEqual(beforeAgents);
       expect(await db.select().from(projects)).toEqual(beforeProjects);
@@ -85,6 +89,7 @@ describe("company migration dry run", () => {
       expect(await readFile(sentinelPath, "utf8")).toBe("unchanged storage content");
     } finally {
       insert.mockRestore(); update.mockRestore(); remove.mockRestore();
+      putFile.mockRestore(); deleteObject.mockRestore();
     }
   });
 
