@@ -67,7 +67,10 @@ test("negative control detects an incorrect expected decision", () => {
       .replace('"./review-approve-label.mjs"', JSON.stringify(new URL("./review-approve-label.mjs", import.meta.url).href));
     const fixture = join(directory, "negative.test.mjs");
     writeFileSync(fixture, altered);
-    const result = spawnSync(process.execPath, ["--test", "--test-name-pattern=^no verdict before closed$", fixture], { encoding: "utf8" });
+    // A nested test runner must not inherit the parent runner's recursion guard.
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    const result = spawnSync(process.execPath, ["--test", "--test-name-pattern=^no verdict before closed$", fixture], { encoding: "utf8", env });
     assert.equal(result.status, 1, result.stderr);
     assert.match(result.stdout, /not ok 1 - no verdict before closed/);
     assert.match(result.stdout, /no-verdict/);
