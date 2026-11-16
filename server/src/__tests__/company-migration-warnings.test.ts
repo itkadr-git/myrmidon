@@ -26,6 +26,25 @@ describe("migration dry-run warnings", () => {
     expect(JSON.stringify(result)).not.toContain("sensitive planner detail");
   });
 
+  it("rejects a corrupted exported blob before import preview", async () => {
+    const manifest = {
+      agents: [], projects: [], issues: [], skills: [], envInputs: [],
+      blobs: [{ sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", byteSize: 3, contentType: "application/octet-stream" }],
+    };
+    const previewImport = vi.fn().mockResolvedValue({ errors: [], warnings: [] });
+    const portability = {
+      exportBundle: vi.fn().mockResolvedValue({
+        rootPath: "package", manifest, warnings: [],
+        files: { [`blobs/${manifest.blobs[0]!.sha256}`]: { encoding: "base64", data: Buffer.from("bad").toString("base64") } },
+      }),
+      previewImport,
+    } as unknown as ReturnType<typeof companyPortabilityService>;
+    const result = await companyMigrationService(portability).dryRun("source", {}, "destination");
+    expect(result.validation.errors.length).toBeGreaterThan(0);
+    expect(result.validation.importPreviewSkipped).toBe(true);
+    expect(previewImport).not.toHaveBeenCalled();
+  });
+
   it("distinguishes skipped import validation from a warning-free preview", async () => {
     const manifest = { agents: [], projects: [], issues: [], skills: [], envInputs: [
       { key: "TOKEN", agentSlug: "missing", projectSlug: null, kind: "secret", requirement: "required" },
