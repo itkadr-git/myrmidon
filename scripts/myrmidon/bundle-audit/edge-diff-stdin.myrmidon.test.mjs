@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'nod
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 const cli = fileURLToPath(new URL('./import-report-edge-diff.mjs', import.meta.url));
 const common = { from: 'entry', specifier: 'common', kind: 'eager', to: 'eager' };
@@ -71,5 +71,24 @@ test('invalid arguments take precedence over stdin', t => {
   const f = fixture(t);
   for (const cwd of f.dirs) for (const args of [['-', '-'], [], ['-'], ['-', f.current, 'extra']]) {
     check(run(f, cwd, args, '{'), 1, '', 'invalid arguments\n');
+  }
+});
+
+test('rejects two stdin operands without waiting for EOF', async t => {
+  const f = fixture(t);
+  for (const cwd of f.dirs) {
+    const result = await new Promise(resolve => {
+      const child = spawn(process.execPath, [cli, '-', '-'], { cwd, env: { ...process.env, TMPDIR: f.root }, timeout: 10000 });
+      let stdout = '';
+      let stderr = '';
+      let error;
+      child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
+      child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
+      child.on('error', err => { error = err; });
+      child.on('close', (status, signal) => resolve({ error, status, signal, stdout, stderr }));
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.signal, null);
+    check(result, 1, '', 'invalid arguments\n');
   }
 });
