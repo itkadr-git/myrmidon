@@ -1226,6 +1226,20 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       expect(await blockersResolvedWakes(companyId)).toHaveLength(1);
     });
 
+    it("wakes a stopped dependent when the webhook reported a PR head change after the stop", async () => {
+      const { companyId, agentId, blockedIssueId } = await seedInProgressWithClosedBlocker();
+      await recordContinuationStop(companyId, agentId, blockedIssueId, minutesAgo(10));
+      await db.insert(activityLog).values({
+        companyId, actorType: "system", actorId: "system:github-webhook", action: "issue.work_product_head_changed",
+        entityType: "issue", entityId: blockedIssueId, createdAt: minutesAgo(5),
+      });
+
+      const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
+
+      expect(result.healed).toBe(1);
+      expect(result.continuationStopSkipped).toBe(0);
+    });
+
     it("wakes a stopped dependent when a blocker was closed after the stop", async () => {
       const { companyId, agentId, blockedIssueId, blockerIssueId } = await seedInProgressWithClosedBlocker();
       await recordContinuationStop(companyId, agentId, blockedIssueId, minutesAgo(10));

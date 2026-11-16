@@ -190,9 +190,14 @@ async function loadExternalMovements(
         eq(activityLog.entityType, "issue"),
         eq(activityLog.entityId, input.issueId),
         gt(activityLog.createdAt, input.since),
+        // The system actions of the list below must pass this filter too: a
+        // row the filter drops never reaches the `or` branch (the PR head
+        // change was dropped here, so a push did not reset the count).
         inArray(
           activityLog.action,
-          EXTERNAL_INPUT_ACTIVITY_ACTIONS.filter((action) => !input.ignoreActions?.includes(action)),
+          [...new Set([...EXTERNAL_INPUT_ACTIVITY_ACTIONS, ...EXTERNAL_INPUT_SYSTEM_ACTIONS])].filter(
+            (action) => !input.ignoreActions?.includes(action),
+          ),
         ),
         or(
           eq(activityLog.actorType, "user"),
