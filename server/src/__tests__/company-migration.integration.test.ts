@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companyTransferRuns, createDb, issueComments, issues, principalPermissionGrants, projects } from "@myrmidon/db";
 
@@ -116,6 +116,28 @@ describe("company migration dry run", () => {
     expect(JSON.stringify(response.body)).toContain("unsupported agent permission");
     expect(JSON.stringify(response.body)).not.toContain("private-unknown-permission");
     expect(JSON.stringify(response.body)).not.toContain("private-scope-value");
+  });
+
+  it("rejects malformed source permission scopes without exposing their contents", async () => {
+    const [source] = await db.insert(companies).values({ name: "Malformed ACL source", issuePrefix: "MMS" }).returning();
+    const [worker] = await db.insert(agents).values({ companyId: source!.id, name: "Worker" }).returning();
+    await db.insert(principalPermissionGrants).values({
+      companyId: source!.id, principalType: "agent", principalId: worker!.id,
+      permissionKey: "tasks:assign", scope: sql`'["private-scope-canary"]'::jsonb`,
+    });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+    const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+      target: { mode: "new_company", newCompanyName: "ACL destination" },
+    });
+    expect(response.status).toBe(422);
+    expect(JSON.stringify(response.body)).not.toContain("private-scope-canary");
   });
 
   it("reports source task comments through the real preview without leaking their contents", async () => {
