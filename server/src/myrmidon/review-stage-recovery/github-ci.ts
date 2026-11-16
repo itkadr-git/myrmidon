@@ -540,7 +540,7 @@ async function readWebhookCi(db: Db, companyId: string, reference: GitHubPullReq
     if (payload?.state !== "open" || typeof payload.headSha !== "string" || !payload.headSha) return null;
     const check = sorted.find((row) => {
       const value = asRecord(row.normalizedPayload);
-      return row.event === "check_run" && value?.headSha === payload.headSha && value.checkName === REVIEW_CI_FINAL_CHECK_NAME;
+      return row.event === "check_run" && value !== null && value.headSha === payload.headSha && value.checkName === REVIEW_CI_FINAL_CHECK_NAME;
     });
     const result = asRecord(check?.normalizedPayload);
     if (result?.status !== "completed" || typeof result.conclusion !== "string" || ["cancelled", "skipped"].includes(result.conclusion)) return null;
