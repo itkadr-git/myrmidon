@@ -466,6 +466,21 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockSsh.hasExecuted(/ufw/)).toBe(false);
   });
 
+  it("refuses firewall mutation when the original state cannot be snapshotted", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 1, stderr: "snapshot failed" });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-firewall-snapshot-failed", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(ssh.hasExecuted(/sudo ufw allow|sudo ufw default/)).toBe(false);
+  });
+
   it("does not disarm another onboarding job's firewall rollback timer", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
