@@ -12,7 +12,7 @@
 // so a token stays in the environment the caller already owns.
 
 import { execFile } from "node:child_process";
-import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
@@ -111,6 +111,21 @@ export async function commitKnowledgeTreeIfChanged(
   for (const file of tree.files) {
     if (file.path.includes("..") || path.isAbsolute(file.path)) {
       throw new Error(`refusing to write a path outside the export repo: ${file.path}`);
+    }
+  }
+  // Check every existing component before writing any file, including dangling links.
+  for (const file of tree.files) {
+    let current = workDir;
+    for (const component of (prefix + file.path).split(path.sep).filter(Boolean)) {
+      current = path.join(current, component);
+      try {
+        if ((await lstat(current)).isSymbolicLink()) {
+          throw new Error(`refusing to write through a symlink: ${file.path}`);
+        }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") break;
+        throw err;
+      }
     }
   }
   for (const file of tree.files) {
