@@ -262,6 +262,28 @@ describeEmbeddedPostgres.sequential("CI deliveries by the final result of the he
       expect(tokenProvider).not.toHaveBeenCalled();
     });
 
+    it("does not use a PR webhook older than 30 minutes for the CI verdict", async () => {
+      const seeded = await seedTask({ executing: true, productHeadSha: HEAD });
+      await db.insert(connectionEventDeliveries).values({
+        companyId: seeded.companyId,
+        provider: "github",
+        providerDeliveryId: `pr-stale-${randomUUID()}`,
+        event: "pull_request",
+        status: "processed",
+        createdAt: new Date(Date.now() - 31 * 60_000),
+        normalizedPayload: { repository: REPO, number: 123, state: "open", headSha: HEAD },
+      });
+      const service = startService({ readHead: () => GREEN_HEAD });
+      await expect(service.deliver([ciEvent(seeded, "check_run", "success", "CI result")]))
+        .resolves.toMatchObject({ processed: 1, failed: 0 });
+
+      const fetch = vi.fn(async () => new Response("unavailable", { status: 503 }));
+      const resolve = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => null });
+      await expect(resolve({ companyId: seeded.companyId, issueId: seeded.issueId }))
+        .resolves.toMatchObject({ state: "unknown" });
+      expect(fetch).toHaveBeenCalled();
+    });
+
     it("leaves the task alone on finished jobs and wakes its assignee once on the final result", async () => {
       const seeded = await seedTask({ executing: true });
       const service = startService({ readHead: () => GREEN_HEAD });
