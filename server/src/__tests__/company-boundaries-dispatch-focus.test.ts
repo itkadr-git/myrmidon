@@ -6,6 +6,8 @@ import { resolveSwarmClaimSettings } from "@myrmidon/shared";
 import { matchCompany, type SwarmMatcherDeps } from "../myrmidon/swarm-claim/matcher.js";
 import { idlePickupCandidateRows } from "../myrmidon/idle-pickup.js";
 import { runViolatesReleaseFocus } from "../myrmidon/release-focus.js";
+import { runPriorityService } from "../myrmidon/run-priority/service.js";
+import { syncRunPriorityFromStore } from "../myrmidon/run-priority/sync.js";
 import { applyRunPrioritySettings, currentRunPrioritySettings, resetRunPriorityForTests } from "../myrmidon/run-priority/state.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -82,6 +84,19 @@ suite("company boundaries in dispatch and release focus", () => {
       expect(await db.select().from(issueClaims).where(eq(issueClaims.companyId, company.companyId))).toEqual([]);
       expect(await idlePickupCandidateRows(db, adm.companyId, company.agentId)).toEqual([]);
     }
+  });
+
+  it("persists company focus and restores it during cross-process refresh", async () => {
+    const adm = await seed("ADM");
+    const other = await seed("BBQ");
+    const service = runPriorityService(db);
+    const actor = { actorType: "user" as const, actorId: "operator", agentId: null, runId: null, agentApiKeyId: null };
+    await service.updateCompany(adm.companyId, { currentRelease: "1.7", strictReleaseFocus: true }, actor);
+    resetRunPriorityForTests();
+    await syncRunPriorityFromStore(db);
+    expect(await runViolatesReleaseFocus(db, { companyId: adm.companyId, agentId: adm.agentId, issueId: adm.other })).toBe(true);
+    expect(await runViolatesReleaseFocus(db, { companyId: other.companyId, agentId: other.agentId, issueId: other.other })).toBe(false);
+    expect((await idlePickupCandidateRows(db, other.companyId, other.agentId)).map((row) => row.id)).toEqual([other.other]);
   });
 
   it("does not apply ADM strict focus to another company's assigned work", async () => {
