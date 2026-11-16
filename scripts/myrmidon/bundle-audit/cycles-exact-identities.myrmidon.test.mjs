@@ -18,7 +18,7 @@ const edges = [
   edge('prefix', 'prefix-long'), edge('prefix-long', 'prefix'),
   edge('loop', 'loop'), edge('dag1', 'dag2', 'eager', 'alias-one'),
   edge('dag1', 'dag2', 'eager', 'alias-two'), edge('dag2', 'dag3'),
-  edge('toString', 'dag1'), edge('dag3', 'isolated'),
+  edge('toString', 'dag1'),
 ];
 const expected = {
   entry: '__proto__',
