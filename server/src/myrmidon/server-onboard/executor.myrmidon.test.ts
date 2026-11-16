@@ -300,6 +300,22 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(initial.hasExecuted(/50-myrmidon-hardening\.conf/)).toBe(false);
   });
 
+  it("writes password directives as separate sshd configuration lines", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
+    ssh.mockResponse(/sshd -T/, { stdout: "passwordauthentication no\nkbdinteractiveauthentication no\n", exitCode: 0 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-password-lines", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["access"], options: { keepPassword: false },
+      secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("succeeded");
+    expect(ssh.hasExecuted(/printf 'PasswordAuthentication no\\nKbdInteractiveAuthentication no\\n'/)).toBe(true);
+  });
+
   it("does not report password hardening when effective sshd settings still allow passwords", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
