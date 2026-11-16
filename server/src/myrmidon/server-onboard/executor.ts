@@ -230,6 +230,11 @@ export class FleetOnboardExecutor {
                 if (write.exitCode !== 0) throw new Error("Password hardening write failed");
                 const sshdTest = await activeSsh.execute("sudo sshd -t");
                 if (sshdTest.exitCode !== 0) throw new Error("sshd configuration test failed");
+                const effective = await activeSsh.execute("sudo sshd -T");
+                const settings = effective.stdout.toLowerCase();
+                if (effective.exitCode !== 0 || !/^passwordauthentication\s+no\s*$/m.test(settings) || !/^kbdinteractiveauthentication\s+no\s*$/m.test(settings)) {
+                  throw new Error("Effective sshd configuration still permits password authentication");
+                }
                 const reload = await activeSsh.execute("sudo systemctl reload ssh || sudo systemctl reload sshd");
                 if (reload.exitCode !== 0) throw new Error("sshd reload failed");
                 const fresh = await this.getSsh(keyConnOptions);

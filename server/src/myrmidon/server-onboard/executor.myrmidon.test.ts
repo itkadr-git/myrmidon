@@ -49,6 +49,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     mockSsh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
     mockSsh.mockResponse(/50-myrmidon-hardening\.conf/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse("sudo sshd -t", { stdout: "", exitCode: 0 });
+    mockSsh.mockResponse("sudo sshd -T", { stdout: "passwordauthentication no\nkbdinteractiveauthentication no\n", exitCode: 0 });
     mockSsh.mockResponse(/sudo systemctl reload/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse(/sudo ufw allow/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse(/nohup sh -c 'sleep 300/, { stdout: "", exitCode: 0 });
@@ -342,6 +343,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     const fresh = new MockSshExecutor();
     verified.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
     fresh.mockResponse('echo "myrmidon-key-verify"', { stdout: "forged-myrmidon-key-verify\n", exitCode: 0 });
+    verified.mockResponse("sudo sshd -T", { stdout: "passwordauthentication no\nkbdinteractiveauthentication no\n", exitCode: 0 });
     const connections = [initial, verified, fresh];
     const executor = new FleetOnboardExecutor({
       createSshExecutor: () => {
