@@ -82,6 +82,25 @@ describe("bot partition free-space notification", () => {
     expect(notifyOwner).toHaveBeenCalledTimes(2);
   });
 
+  it("deduplicates concurrent low-space measurements while notification is pending", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const notifyOwner = vi.fn(async () => pending);
+    const runtime = botPartitionThresholdRuntimeForTest({
+      getBotDiskSettings: async () => undefined,
+      notifyOwner,
+      env: {},
+      now: () => new Date(at),
+    });
+    const first = runtime.updateFromPartition(sample(99));
+    await vi.waitFor(() => expect(notifyOwner).toHaveBeenCalledTimes(1));
+    const second = runtime.updateFromPartition(sample(98));
+    await Promise.resolve();
+    release();
+    await Promise.all([first, second]);
+    expect(notifyOwner).toHaveBeenCalledTimes(1);
+  });
+
   it("does not interpret reserved filesystem blocks as free space", async () => {
     const notifyOwner = vi.fn(async () => undefined);
     const runtime = botPartitionThresholdRuntimeForTest({
