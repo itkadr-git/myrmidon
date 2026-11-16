@@ -51,6 +51,17 @@ test("plugin generation is isolated by cwd and repeatable", () => {
     assert.equal(read(a), expectedA);
     assert.equal(read(b), expectedB);
     unchanged();
+
+    // Mutate only the fixture copy to prove the isolation check detects a wrong cwd.
+    const original = read(script);
+    const fixedCwd = original.replace("const packageDir = process.cwd();", `const packageDir = ${JSON.stringify(dirname(b))};`);
+    assert.notEqual(fixedCwd, original);
+    writeFileSync(script, fixedCwd);
+    writeFileSync(a, inputA);
+    run(a);
+    assert.throws(() => assert.equal(read(a), expectedA), assert.AssertionError);
+    assert.equal(read(b), expectedB);
+    unchanged();
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
