@@ -309,6 +309,25 @@ export const companyTransferRunService = {
     return updated.length > 0;
   },
 
+  // Persist the generated key before writing bytes, so even an interrupted
+  // put can later be cleaned up. Only the owning active migration may append.
+  async reserveMigrationObject(db: Db, runId: string, companyId: string, objectKey: string): Promise<void> {
+    if (!objectKey.startsWith(`${companyId}/`) || objectKey.includes("..")) {
+      throw new Error("Invalid migration object key");
+    }
+    const partJson = JSON.stringify([objectKey]);
+    const updated = await db.update(companyTransferRuns).set({
+      completedParts: sql`case when ${companyTransferRuns.completedParts} @> ${partJson}::jsonb then ${companyTransferRuns.completedParts} else ${companyTransferRuns.completedParts} || ${partJson}::jsonb end`,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(companyTransferRuns.id, runId),
+      eq(companyTransferRuns.companyId, companyId),
+      eq(companyTransferRuns.status, "applying"),
+      sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
+    )).returning({ id: companyTransferRuns.id });
+    if (updated.length !== 1) throw new Error("Migration object reservation rejected");
+  },
+
   /** Container part names the run still has to process, in manifest order. */
   remainingParts(run: CompanyTransferRunRow, manifest: CompanyTransferPartsIndex): string[] {
     const completed = new Set(run.completedParts);

@@ -780,6 +780,26 @@ describe("company migration dry run", () => {
     expect((await companyTransferRunService.getRun(db, run!.id))?.status).toBe("applying");
   });
 
+  it("reserves storage keys only for the applying migration's owned destination", async () => {
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "storage-source", "storage-reservation");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Storage reservation destination" }, { transferRunId: run.id });
+    const storage = createStorageService(createLocalDiskStorageProvider(root));
+    const input = { companyId: destination.id, namespace: "migration", originalFilename: "asset.txt", contentType: "text/plain", body: Buffer.from("asset") };
+    let key = "";
+    await storage.putFile({ ...input, beforeWrite: async (objectKey) => {
+      key = objectKey;
+      await companyTransferRunService.reserveMigrationObject(db, run.id, destination.id, objectKey);
+      await companyTransferRunService.reserveMigrationObject(db, run.id, destination.id, objectKey);
+    } });
+    expect((await companyTransferRunService.getRun(db, run.id))?.completedParts).toEqual([key]);
+    await expect(companyTransferRunService.reserveMigrationObject(db, run.id, destination.id, `other/${key}`)).rejects.toThrow();
+    await expect(companyTransferRunService.reserveMigrationObject(db, run.id, "other", key)).rejects.toThrow();
+    await companyTransferRunService.releaseApplyClaim(db, run.id, "interrupted");
+    await expect(companyTransferRunService.reserveMigrationObject(db, run.id, destination.id, key)).rejects.toThrow();
+    expect((await companyTransferRunService.getRun(db, run.id))?.completedParts).toEqual([key]);
+  });
+
   it("atomically associates a created company with an applying transfer run", async () => {
     const [run] = await db.insert(companyTransferRuns).values({
       direction: "import", status: "applying", actorKey: "migration-test",
