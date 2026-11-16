@@ -16,8 +16,8 @@ function writePackage(scope, target) {
 }
 
 test("nearest package wins independently of resolution order; missing package fails", () => {
-  const scratch = process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR;
-  assert.ok(scratch, "a private scratch directory is required");
+  const scratch = process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || join(process.env.HOME, ".cache", "myrmidon-test-scratch");
+  mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(join(scratch, "nested-resolution-"));
   try {
     const nested = join(root, "nested");
