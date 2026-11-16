@@ -31,6 +31,45 @@ describePostgres.sequential("release composition concurrency", () => {
 
   afterAll(async () => { await tempDb?.cleanup(); });
 
+  it("does not replace a primary release candidate while its issue is locked for completion", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Primary race", issuePrefix: "PRC" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Release", status: "in_progress" });
+    await db.insert(issueWorkProducts).values({
+      companyId, issueId, type: "pull_request", provider: "github", title: "Original PR", status: "merged",
+      isPrimary: true, externalId: "acme/project#pull/1", metadata: { repo: "acme/project", number: 1 },
+    });
+    let release!: () => void;
+    let acquired!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const locked = new Promise<void>((resolve) => { acquired = resolve; });
+    const completion = db.transaction(async (tx) => {
+      await tx.select().from(issues).where(eq(issues.id, issueId)).for("update");
+      acquired();
+      await gate;
+    });
+    await locked;
+    const replacement = workProductService(db).createForIssue(issueId, companyId, {
+      type: "pull_request", provider: "github", title: "Replacement PR", status: "merged",
+      isPrimary: true, externalId: "acme/project#pull/2", metadata: { repo: "acme/project", number: 2 },
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const rows = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, issueId));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.externalId).toBe("acme/project#pull/1");
+      expect(rows[0]?.isPrimary).toBe(true);
+    } finally {
+      release();
+      await completion;
+      await replacement;
+    }
+    const rows = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, issueId));
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.isPrimary)?.externalId).toBe("acme/project#pull/2");
+  });
+
   it("does not change a release candidate while its issue is locked for completion", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
