@@ -289,7 +289,12 @@ export function companyService(db: Db) {
           const [created] = await tx.insert(companies).values({ ...data, issuePrefix: candidate }).returning();
           const attached = await tx.update(companyTransferRuns)
             .set({ companyId: created!.id, updatedAt: new Date() })
-            .where(and(eq(companyTransferRuns.id, transferRunId), eq(companyTransferRuns.status, "applying"), isNull(companyTransferRuns.companyId)))
+            .where(and(
+              eq(companyTransferRuns.id, transferRunId),
+              eq(companyTransferRuns.direction, "import"),
+              eq(companyTransferRuns.status, "applying"),
+              isNull(companyTransferRuns.companyId),
+            ))
             .returning({ id: companyTransferRuns.id });
           if (attached.length !== 1) throw new Error("Transfer run cannot claim a new company");
           return created;
