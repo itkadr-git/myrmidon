@@ -216,6 +216,11 @@ export function normaliseVersion(value: string | null): string | null {
   return candidate.replace(/^v(?=\d)/i, "").toLowerCase();
 }
 
+/** True for pre-release / nightly / rc tags that must not count as "latest". */
+export function isPrereleaseTag(tag: string): boolean {
+  return /(?:^|[-.])(nightly|alpha|beta|rc|pre|dev|snapshot|canary)(?:[-.]|\d|$)/i.test(tag);
+}
+
 /**
  * Compare two version tags: negative when `left` is older, positive when
  * newer, 0 when equal. Null when either side carries no comparable core
