@@ -277,6 +277,39 @@ describe("company migration dry run", () => {
     expect(afterRollback.filter((company) => company.name === "Rollback destination" && company.status !== "archived")).toHaveLength(0);
   });
 
+  it("refuses rollback when a migrated agent was modified after import", async () => {
+    const [source] = await db.insert(companies).values({ name: "Modified rollback source", issuePrefix: "MMD" }).returning();
+    await db.insert(agents).values({ companyId: source!.id, name: "Original worker" });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+
+    const applied = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+      target: { mode: "new_company", newCompanyName: "Modified rollback destination" },
+      dryRun: false, apply: true, confirm: "approved pilot",
+    });
+    expect(applied.status).toBe(200);
+    const destination = (await db.select().from(companies)).find((company) => company.name === "Modified rollback destination")!;
+    const copied = (await db.select().from(agents)).find((agent) => agent.companyId === destination.id)!;
+    const { eq } = await import("drizzle-orm");
+    await db.update(agents).set({ name: "Modified worker", updatedAt: new Date(copied.createdAt.getTime() + 60_000) })
+      .where(eq(agents.id, copied.id));
+    const beforeCompanies = await db.select().from(companies);
+    const beforeAgents = await db.select().from(agents);
+
+    const rollback = await request(app)
+      .post(`/api/companies/${source!.id}/migrations/${applied.body.runId}/rollback`)
+      .send({ confirm: "rollback pilot" });
+    expect(rollback.status).toBe(409);
+    expect(await db.select().from(companies)).toEqual(beforeCompanies);
+    expect(await db.select().from(agents)).toEqual(beforeAgents);
+  });
+
   it("rejects rollback of a migration through a different source company", async () => {
     const [source] = await db.insert(companies).values({ name: "Rollback source", issuePrefix: "MRS" }).returning();
     const [other] = await db.insert(companies).values({ name: "Other source", issuePrefix: "MRO" }).returning();
