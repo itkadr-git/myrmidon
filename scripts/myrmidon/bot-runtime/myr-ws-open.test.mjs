@@ -196,6 +196,27 @@ describe("myr-ws open — task copy", { skip: !hasGit }, () => {
     assert.equal(third.reused, true);
   });
 
+  it("refuses a nested standalone clone without changing its files", async () => {
+    const first = copyOf(await run(["ABC-126", REPO, "--json"]));
+    const nested = path.join(first.path, "deep", "repo");
+    fs.mkdirSync(path.dirname(nested));
+    git(tmp, "clone", "-q", originDir, nested);
+    fs.writeFileSync(path.join(nested, "untracked.txt"), "keep me\n");
+    const result = await run(["ABC-126", REPO, "--json"]);
+    assert.equal(result.exitCode, 2);
+    assert.match(result.stderr, /nested.*clone/i);
+    assert.ok(result.stderr.includes(nested));
+    assert.equal(fs.readFileSync(path.join(nested, "untracked.txt"), "utf8"), "keep me\n");
+  });
+
+  it("allows nested linked worktrees and submodules with gitfiles", async () => {
+    const first = copyOf(await run(["ABC-127", REPO, "--json"]));
+    const nested = path.join(first.path, "linked");
+    git(first.path, "worktree", "add", "--detach", nested, "HEAD");
+    const result = await run(["ABC-127", REPO, "--json"]);
+    assert.equal(result.exitCode, 0, result.stderr);
+  });
+
   it("prints just the path without --json", async () => {
     const r = await run(["ABC-102", REPO]);
     assert.equal(r.exitCode, 0);
