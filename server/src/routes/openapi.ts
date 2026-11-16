@@ -2130,6 +2130,15 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/migrations/{runId}",
+  tags: ["companies"],
+  summary: "Get the status of a company migration",
+  request: { params: z.object({ companyId: z.string(), runId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/exports",
   tags: ["companies"],
