@@ -26,6 +26,33 @@ confirmation; application also requires separate approval and an agreed window.
 This document is not that approval. No Life migration has been performed as part
 of implementing the tool.
 
+## Read-only preflight
+
+An authorized board operator with access to the source company can run the
+implemented preflight now. Set `BOARD_URL`, `BOARD_TOKEN` and `SOURCE_COMPANY_ID`
+in the operator's shell; obtain the source ID through the normal company
+selection flow. The following request uses a placeholder destination name and
+never applies the migration:
+
+```sh
+curl --fail-with-body --silent --show-error \
+  -X POST "$BOARD_URL/api/companies/$SOURCE_COMPANY_ID/migrations" \
+  -H "Authorization: Bearer $BOARD_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{"target":{"mode":"new_company","newCompanyName":"Life pilot destination"}}'
+```
+
+Do not enable shell tracing or paste the token or full response into the issue.
+Check that `dryRun` is `true`, `validation.errorCount` is zero,
+`validation.importPreviewSkipped` is `false`, and `counts` match the approved
+inventory. Review `validation.warningCounts` and the identifiers in
+`validation.secretBindings` with their owners; the counts alone do not establish
+that omitted entities or inaccessible sources are empty. A nonzero error count,
+a skipped import preview, a failed request, or an inventory discrepancy stops the
+pilot. Record only the approved scope, counts and outcome without secret values.
+The `runKey` identifies the prepared content; a dry-run creates no durable run,
+so it is not a rollback ID or evidence that apply occurred.
+
 ## Procedure once the tool is available
 
 1. Obtain the separate approval, agree on the window and identify the operator,
