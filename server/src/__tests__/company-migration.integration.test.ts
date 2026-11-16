@@ -861,6 +861,57 @@ describe("company migration dry run", () => {
     expect((await db.select().from(assets)).some((entry) => entry.id === asset!.id)).toBe(true);
   });
 
+  it("recovers a logo uploaded before its asset record could be created", async () => {
+    const [source] = await db.insert(companies).values({ name: "Orphan logo source", issuePrefix: "MOL" }).returning();
+    const storage = createStorageService(createLocalDiskStorageProvider(root));
+    const original = await storage.putFile({
+      companyId: source!.id, namespace: "assets/companies", originalFilename: "logo.png",
+      contentType: "image/png", body: Buffer.from("original logo"),
+    });
+    const [asset] = await db.insert(assets).values({ companyId: source!.id, ...original }).returning();
+    await db.insert(companyLogos).values({ companyId: source!.id, assetId: asset!.id });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, storage));
+    app.use(errorHandler);
+
+    const originalInsert = db.insert.bind(db);
+    const insert = vi.spyOn(db, "insert").mockImplementation(((table: Parameters<typeof db.insert>[0]) => {
+      if (table === assets) throw new Error("injected asset record failure");
+      return originalInsert(table);
+    }) as typeof db.insert);
+    const putFile = vi.spyOn(storage, "putFile");
+    try {
+      const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+        target: { mode: "new_company", newCompanyName: "Orphan logo destination" },
+        dryRun: false, apply: true, confirm: "approved pilot",
+      });
+      expect(response.status).toBeGreaterThanOrEqual(400);
+    } finally {
+      insert.mockRestore();
+    }
+
+    expect(putFile).toHaveBeenCalledTimes(1);
+    const uploaded = await putFile.mock.results[0]!.value;
+    putFile.mockRestore();
+    const destination = (await db.select().from(companies)).find((company) => company.name === "Orphan logo destination");
+    expect(destination).toBeDefined();
+    const run = (await db.select().from(companyTransferRuns)).find((entry) => entry.companyId === destination!.id);
+    expect(run?.status).toBe("failed");
+    expect((await storage.headObject(destination!.id, uploaded.objectKey)).exists).toBe(true);
+    const rollback = await request(app)
+      .post(`/api/companies/${source!.id}/migrations/${run!.id}/rollback`)
+      .send({ confirm: "recover orphan logo" });
+    expect(rollback.status).toBe(200);
+    expect((await storage.headObject(destination!.id, uploaded.objectKey)).exists).toBe(false);
+    expect((await storage.headObject(source!.id, original.objectKey)).exists).toBe(true);
+    expect((await db.select().from(assets)).some((entry) => entry.id === asset!.id)).toBe(true);
+  });
+
   it("requires confirmation for rollback and removes only the migrated company", async () => {
     const [source] = await db.insert(companies).values({ name: "Rollback fixture", issuePrefix: "MRF" }).returning();
     const app = express();
