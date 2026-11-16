@@ -7406,6 +7406,10 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       throw new Error("Failed to determine the occupied allocated port");
     }
 
+    // The release branch already has the test-only bound, but this case still
+    // exhausts all 32 production attempts and can exceed its 20-second budget.
+    const boundedAttempts = 3;
+    setWorkspaceRuntimePortAllocationAttemptsForTests(boundedAttempts);
     const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-no-lsof-"));
     const fakeLsof = path.join(fakeBin, "lsof");
     const previousPath = process.env.PATH;
@@ -7425,11 +7429,12 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         details: {
           code: "workspace_runtime_port_allocation_exhausted",
           port: basePort,
-          attemptedPortCount: WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS,
+          attemptedPortCount: boundedAttempts,
         },
       });
       expect(portBlocker.listening).toBe(true);
     } finally {
+      setWorkspaceRuntimePortAllocationAttemptsForTests(null);
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
       await stopRuntimeServicesForExecutionWorkspace({
