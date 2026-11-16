@@ -288,10 +288,14 @@ export class FleetOnboardExecutor {
             // 4. Verify connectivity using fresh connection
             try {
               const testSsh = await this.getSsh(connOptions);
-              await testSsh.connect(connOptions);
-              const testPing = await testSsh.execute('echo "ufw-connectivity-ok"');
-              if (testPing.exitCode !== 0 || testPing.stdout.trim() !== "ufw-connectivity-ok") {
-                throw new Error("Connectivity test failed after firewall enablement");
+              try {
+                await testSsh.connect(connOptions);
+                const testPing = await testSsh.execute('echo "ufw-connectivity-ok"');
+                if (testPing.exitCode !== 0 || testPing.stdout.trim() !== "ufw-connectivity-ok") {
+                  throw new Error("Connectivity test failed after firewall enablement");
+                }
+              } finally {
+                await testSsh.disconnect().catch(() => {});
               }
               // A timer that remains armed can undo a seemingly successful hardening.
               const disarmResult = await activeSsh.execute("sudo pkill -f 'sleep 300 && sudo ufw disable'");
