@@ -125,6 +125,9 @@ export async function commitKnowledgeTreeIfChanged(
     }
     targets.add(target);
   }
+  if ((await lstat(workDir)).isSymbolicLink()) {
+    throw new Error("refusing to write through a symlink checkout root");
+  }
   for (const file of tree.files) {
     const components = (prefix + file.path).split(path.sep).filter((part) => part && part !== ".");
     let current = workDir;
