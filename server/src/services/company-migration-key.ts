@@ -14,6 +14,7 @@ export function migrationRunKey(input: {
   collisionStrategy: "rename" | "skip" | "replace";
   exportOptions: CompanyPortabilityExport;
   files: Record<string, unknown>;
+  secretBindings?: Array<{ key: string; agentSlug: string | null; projectSlug: string | null; requirement: string }>;
 }): string {
   // Hash package files instead of the parsed manifest's volatile generatedAt timestamp.
   return createHash("sha256").update(canonicalJson(input)).digest("hex");

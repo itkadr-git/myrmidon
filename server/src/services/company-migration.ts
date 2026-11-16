@@ -52,7 +52,7 @@ export function companyMigrationService(portability: Portability) {
     }, { mode: "board_full" }) : null;
     const report = {
       dryRun: true as const,
-      runKey: migrationRunKey({ sourceCompanyId: companyId, targetName: newCompanyName, collisionStrategy, exportOptions: input, files: exported.files }),
+      runKey: migrationRunKey({ sourceCompanyId: companyId, targetName: newCompanyName, collisionStrategy, exportOptions: input, files: exported.files, secretBindings: validation.secretBindings }),
       validation: {
         ...validation,
         // Planner messages can contain paths or upstream error details; expose counts only.
