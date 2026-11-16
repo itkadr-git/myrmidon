@@ -142,6 +142,43 @@ describe("company migration dry run", () => {
     }
   });
 
+  it("rejects a confirmed apply until recovery is implemented, without side effects", async () => {
+    const [source] = await db.insert(companies).values({ name: "Apply safety fixture", issuePrefix: "MSF" }).returning();
+    const storage = createStorageService(createLocalDiskStorageProvider(root));
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, storage));
+    app.use(errorHandler);
+
+    const beforeCompanies = await db.select().from(companies);
+    const beforeRuns = await db.select().from(companyTransferRuns);
+    const beforeAudit = await db.select().from(activityLog);
+    const filesBefore = await readdir(root, { recursive: true });
+    const insert = vi.spyOn(db, "insert");
+    const update = vi.spyOn(db, "update");
+    const remove = vi.spyOn(db, "delete");
+    try {
+      const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+        target: { mode: "new_company", newCompanyName: "Forbidden destination" },
+        dryRun: false, apply: true, confirm: "approved pilot",
+      });
+      expect(response.status).toBe(400);
+      expect(insert).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+      expect(remove).not.toHaveBeenCalled();
+      expect(await db.select().from(companies)).toEqual(beforeCompanies);
+      expect(await db.select().from(companyTransferRuns)).toEqual(beforeRuns);
+      expect(await db.select().from(activityLog)).toEqual(beforeAudit);
+      expect(await readdir(root, { recursive: true })).toEqual(filesBefore);
+    } finally {
+      insert.mockRestore(); update.mockRestore(); remove.mockRestore();
+    }
+  });
+
   it("atomically associates a created company with an applying transfer run", async () => {
     const [run] = await db.insert(companyTransferRuns).values({
       direction: "import", status: "applying", actorKey: "migration-test",
