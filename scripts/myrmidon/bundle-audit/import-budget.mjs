@@ -4,6 +4,32 @@ import { builtinModules } from 'node:module';
 import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 
 // Tokenize without evaluating source. Non-literal expressions are deliberately ignored.
+function regexAllowed(result) {
+  const last = result.at(-1)?.value;
+  if (!result.length || /^[({[=,:;!?&|+*~<>-]$/.test(last) ||
+      ['return', 'throw', 'case', 'delete', 'void', 'typeof', 'yield', 'await', 'in', 'instanceof'].includes(last)) return true;
+  if (last !== ')') return false;
+  let depth = 0;
+  for (let j = result.length - 1; j >= 0; j--) {
+    if (result[j].value === ')') depth++;
+    if (result[j].value === '(' && --depth === 0) return ['if', 'while', 'for', 'with', 'switch', 'catch'].includes(result[j - 1]?.value);
+  }
+  return false;
+}
+
+function regexEnd(source, start) {
+  let j = start + 1, inClass = false;
+  while (j < source.length) {
+    if (source[j] === '\\') { j += 2; continue; }
+    if (source[j] === '[') inClass = true;
+    if (source[j] === ']' && inClass) inClass = false;
+    if (source[j] === '/' && !inClass) { j++; while (j < source.length && /[dgimsuvy]/.test(source[j])) j++; return j; }
+    if (source[j] === '\n') break;
+    j++;
+  }
+  return null;
+}
+
 function tokens(source) {
   const result = [];
   let i = 0;
@@ -34,6 +60,10 @@ function tokens(source) {
               }
               if (i < source.length) i++;
               continue;
+            }
+            if (source[i] === '/' && regexAllowed(tokens(source.slice(start, i)))) {
+              const end = regexEnd(source, i);
+              if (end !== null) { i = end; continue; }
             }
             if (source[i] === '{') depth++;
             if (source[i] === '}') depth--;
