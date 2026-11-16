@@ -416,7 +416,7 @@ export async function resolvePullRequestHeadCi(input: {
 export type IssuePullRequestTarget =
   | { kind: "none" }
   | { kind: "unreadable"; pullRequestUrl: string | null }
-  | { kind: "ok"; pullRequestUrl: string | null; reference: GitHubPullRequestReference };
+  | { kind: "ok"; pullRequestUrl: string | null; reference: GitHubPullRequestReference; knownHeadSha: string | null };
 
 export async function loadIssuePullRequestTarget(
   db: Db,
@@ -472,7 +472,8 @@ export async function loadIssuePullRequestTarget(
   const effectiveUrl = (product.url !== null && product.url !== "") ? product.url : metadataUrl;
   const reference = extractGitHubPullRequestReferences([effectiveUrl, repo && number ? `${repo}#${number}` : null])[0] ?? null;
   if (!reference) return { kind: "unreadable", pullRequestUrl: effectiveUrl };
-  return { kind: "ok", pullRequestUrl: effectiveUrl, reference };
+  const knownHeadSha = typeof metadata.headSha === "string" && metadata.headSha.trim() ? metadata.headSha.trim() : null;
+  return { kind: "ok", pullRequestUrl: effectiveUrl, reference, knownHeadSha };
 }
 
 /**
@@ -567,7 +568,7 @@ export function createReviewPullRequestCiResolver(input: {
     }
     const { reference, pullRequestUrl } = target;
     const webhook = await readWebhookCi(input.db, companyId, reference);
-    if (webhook) return { ...webhook, pullRequestUrl };
+    if (webhook && (!target.knownHeadSha || target.knownHeadSha === webhook.headSha)) return { ...webhook, pullRequestUrl };
     let token: string | null = null;
     let tokenError = false;
     try {
