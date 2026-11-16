@@ -780,6 +780,26 @@ describe("company migration dry run", () => {
     expect((await companyTransferRunService.getRun(db, run!.id))?.status).toBe("applying");
   });
 
+  it("does not write storage when migration reservation fails", async () => {
+    const [destination] = await db.insert(companies).values({ name: "Reservation failure destination", issuePrefix: "MRF" }).returning();
+    const storage = createStorageService(createLocalDiskStorageProvider(root));
+    let attemptedKey = "";
+    await expect(storage.putFile({
+      companyId: destination!.id,
+      namespace: "migration",
+      originalFilename: "private-name.txt",
+      contentType: "text/plain",
+      body: Buffer.from("private content"),
+      beforeWrite: async (objectKey) => {
+        attemptedKey = objectKey;
+        throw new Error("reservation failed");
+      },
+    })).rejects.toThrow("reservation failed");
+    expect(attemptedKey).not.toBe("");
+    expect(attemptedKey).not.toContain("private-name");
+    expect((await storage.headObject(destination!.id, attemptedKey)).exists).toBe(false);
+  });
+
   it("reserves storage keys only for the applying migration's owned destination", async () => {
     const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "storage-source", "storage-reservation");
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
