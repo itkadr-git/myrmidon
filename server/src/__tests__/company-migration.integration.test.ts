@@ -251,6 +251,17 @@ describe("company migration dry run", () => {
     expect((await companyTransferRunService.getRun(db, run!.id))?.status).toBe("failed");
   });
 
+  it("does not block a regular import retry merely because it has a destination", async () => {
+    const [destination] = await db.insert(companies).values({ name: "Regular retry destination", issuePrefix: "MRG" }).returning();
+    const [run] = await db.insert(companyTransferRuns).values({
+      direction: "import", status: "failed", actorKey: "migration-test",
+      idempotencyKey: "regular-import-failed-destination", companyId: destination!.id,
+      containerRef: { kind: "company_import" },
+    }).returning();
+    expect(await companyTransferRunService.claimApply(db, run!.id)).toBe(true);
+    expect((await companyTransferRunService.getRun(db, run!.id))?.status).toBe("applying");
+  });
+
   it("atomically associates a created company with an applying transfer run", async () => {
     const [run] = await db.insert(companyTransferRuns).values({
       direction: "import", status: "applying", actorKey: "migration-test",
