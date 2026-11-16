@@ -115,6 +115,20 @@ suite("company boundaries in dispatch and release focus", () => {
     expect(await service.readCompany(company.companyId)).toEqual({ currentRelease: "1.7", strictReleaseFocus: true });
   });
 
+  it("keeps migrated legacy focus with its original company when another company is added", async () => {
+    const adm = await seed("ADM");
+    const service = runPriorityService(db);
+    const actor = { actorType: "user" as const, actorId: "operator", agentId: null, runId: null, agentApiKeyId: null };
+    await service.update({ currentRelease: "1.7", strictReleaseFocus: true }, actor);
+    await syncRunPriorityFromStore(db);
+    const other = await seed("BBQ");
+    resetRunPriorityForTests();
+    await syncRunPriorityFromStore(db);
+    expect(await service.readCompany(adm.companyId)).toEqual({ currentRelease: "1.7", strictReleaseFocus: true });
+    expect(await runViolatesReleaseFocus(db, { companyId: adm.companyId, agentId: adm.agentId, issueId: adm.other })).toBe(true);
+    expect(await runViolatesReleaseFocus(db, { companyId: other.companyId, agentId: other.agentId, issueId: other.other })).toBe(false);
+  });
+
   it("does not assign legacy instance focus arbitrarily across multiple companies", async () => {
     const adm = await seed("ADM");
     const other = await seed("BBQ");
