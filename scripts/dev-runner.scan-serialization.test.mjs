@@ -31,7 +31,7 @@ async function runner(mode = "dev") {
   const spawn = () => {
     const proc = new EventEmitter();
     proc.stdout = new EventEmitter(); proc.stderr = new EventEmitter();
-    requests.push({ resolve(payload = { status: "ready" }) { proc.stdout.emit("data", JSON.stringify(payload)); proc.emit("exit", 0, null); } });
+    requests.push({ resolve(payload = { status: "ready" }) { proc.stdout.emit("data", JSON.stringify(payload)); proc.emit("exit", 0, null); }, reject() { proc.emit("error", new Error("refresh failed")); } });
     return proc;
   };
   class Clock extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } }
@@ -106,6 +106,13 @@ test("restart guard and failed scan allow a later scan", async () => {
   const pending = r.api.scanForBackendChanges();
   assert.equal(r.requests.length, 1); r.requests.shift().resolve(); await pending;
   assert.deepEqual(r.statuses.at(-1).changedPathsSample, ["server/a.ts"]);
+  r.files.set("server/a.ts", 3);
+  const failedRefresh = r.api.scanForBackendChanges();
+  r.requests.shift().reject();
+  await assert.rejects(failedRefresh, /refresh failed/);
+  r.files.set("server/a.ts", 4);
+  const retry = r.api.scanForBackendChanges();
+  assert.equal(r.requests.length, 1); r.requests.shift().resolve(); await retry;
 });
 
 test("watch skips scanning and timers; dev installs both intervals", async () => {
