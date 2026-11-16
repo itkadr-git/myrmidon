@@ -432,6 +432,25 @@ describe("createReviewPullRequestCiResolver", () => {
     expect(tokenProvider).not.toHaveBeenCalled();
   });
 
+  it("does not accept a delayed successful webhook over a newer running CI run", async () => {
+    const now = Date.now();
+    const rows = [
+      { event: "pull_request", createdAt: new Date(now - 3000), normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
+      { event: "check_run", createdAt: new Date(now - 2000), normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "abc123", checkName: "CI result", runId: "200", status: "in_progress" } },
+      { event: "check_run", createdAt: new Date(now - 1000), normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "abc123", checkName: "CI result", runId: "100", status: "completed", conclusion: "success" } },
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const resolver = createReviewPullRequestCiResolver({ db, fetch: vi.fn(fakeFetch({})), tokenProvider: async () => null });
+    const result = await resolver({ companyId: "company-1", issueId: "issue-1" });
+    expect(result).not.toMatchObject({ state: "complete", finalCheckConclusion: "success" });
+  });
+
   it("uses a fresh webhook head when the final check must be fetched", async () => {
     const rows = [{ event: "pull_request", createdAt: new Date(), normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } }];
     let selects = 0;
