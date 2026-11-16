@@ -223,6 +223,22 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockSsh.hasExecuted(/50-myrmidon-hardening\.conf/)).toBe(false);
   });
 
+  it("does not install a fabricated public key when an existing private key is supplied", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-existing-access-key", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["access"], options: { keepPassword: true },
+      secretValues: { accessKey: "existing-private-key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("succeeded");
+    expect(ssh.hasExecuted(/AAAAC3NzaC1lZDI1NTE5AAAAIExistingKey/)).toBe(false);
+  });
+
   it("closes the bootstrap connection after switching to verified key authentication", async () => {
     const initial = new MockSshExecutor();
     const verified = new MockSshExecutor();
