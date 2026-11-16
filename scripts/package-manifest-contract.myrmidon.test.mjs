@@ -24,9 +24,23 @@ function packageBytes(root, dir = root) {
   }).sort(([a], [b]) => a.localeCompare(b));
 }
 
-function run(root, command) {
+const networkGuard = `
+import net from "node:net";
+import dgram from "node:dgram";
+import dns from "node:dns";
+import { syncBuiltinESMExports } from "node:module";
+const deny = () => { process.stderr.write("NETWORK_ACCESS_BLOCKED\\n"); throw new Error("network access blocked"); };
+net.connect = net.createConnection = deny;
+net.Socket.prototype.connect = deny;
+dgram.createSocket = deny;
+dns.lookup = dns.resolve = dns.resolve4 = dns.resolve6 = deny;
+globalThis.fetch = deny;
+syncBuiltinESMExports();
+`;
+
+function run(root, command, program = "scripts/release-package-map.mjs") {
   return new Promise((resolveRun, reject) => {
-    const child = spawn(process.execPath, ["--permission", "--allow-fs-read=*", join(root, "scripts/release-package-map.mjs"), command], {
+    const child = spawn(process.execPath, ["--permission", "--allow-fs-read=*", "--import", join(root, "scripts/network-guard.mjs"), join(root, program), command], {
       cwd: root,
       env: { PATH: join(root, "bin"), HOME: root, TMPDIR: root },
       timeout: 5000,
@@ -63,6 +77,7 @@ async function exercise(manifest, diagnostic) {
   try {
     mkdirSync(join(root, "scripts"));
     mkdirSync(join(root, "bin"));
+    writeFileSync(join(root, "scripts/network-guard.mjs"), networkGuard);
     copyFileSync(source, join(root, "scripts/release-package-map.mjs"));
     writeJson(root, "scripts/release-package-manifest.json", manifest);
     writeJson(root, "package.json", { private: true, name: "fixture" });
@@ -72,6 +87,7 @@ async function exercise(manifest, diagnostic) {
     for (const command of ["check", "list"]) {
       const result = await run(root, command);
       assert.equal(result.signal, null, `${command} timed out or was killed`);
+      assert.doesNotMatch(result.stderr, /NETWORK_ACCESS_BLOCKED/, `${command} attempted network access`);
       if (diagnostic) {
         assert.notEqual(result.code, 0, `${command} unexpectedly succeeded`);
         assert.match(result.stderr, diagnostic);
@@ -90,6 +106,22 @@ async function exercise(manifest, diagnostic) {
 
 test("valid minimal CLI manifest passes check and list without package writes", async () => {
   await exercise([entry]);
+});
+
+test("network guard rejects a loopback request", async () => {
+  mkdirSync(scratch, { recursive: true });
+  const root = realpathSync(mkdtempSync(join(resolve(scratch), "package-manifest-network-")));
+  try {
+    mkdirSync(join(root, "scripts"));
+    writeFileSync(join(root, "scripts/network-guard.mjs"), networkGuard);
+    writeFileSync(join(root, "scripts/network-probe.mjs"),
+      'import http from "node:http";\nhttp.get("http://127.0.0.1:9");\n');
+    const result = await run(root, "probe", "scripts/network-probe.mjs");
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /NETWORK_ACCESS_BLOCKED/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 for (const [name, manifest, diagnostic] of cases) {
