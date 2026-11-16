@@ -61,11 +61,46 @@ const {
   fetchIssueOpenState,
   volumeFreePercent,
   runnerFolderKeepReason,
+  scanBoardProjectWorkspaces,
+  pruneBoardProjectWorkspaces,
 } = await import(
   path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs")
 );
 
 let tmpDir;
+
+describe("board project workspace GC", () => {
+  it("removes old packs, closed scratch and pnpm cache; keeps open and live git", async () => {
+    const home = path.join(tmpDir, "home");
+    const repo = path.join(home, "instances/default/projects/company/project/myrmidon");
+    const pack = path.join(repo, ".git/objects/pack");
+    const scratch = path.join(repo, ".scratch");
+    const store = path.join(repo, ".paperclip/pnpm-store");
+    for (const p of [pack, path.join(scratch, "ope100"), path.join(scratch, "ope101-wt"), store]) fs.mkdirSync(p, { recursive: true });
+    const old = new Date(Date.now() - 30 * 3600000);
+    for (const name of ["tmp_pack_old", "tmp_idx_old"]) {
+      fs.writeFileSync(path.join(pack, name), "x");
+      fs.utimesSync(path.join(pack, name), old, old);
+    }
+    for (const p of [path.join(scratch, "ope100"), path.join(scratch, "ope101-wt"), store]) fs.utimesSync(p, old, old);
+    const fetchState = async (id) => ({ ok: true, status: id === "OPE-100" ? "done" : "in_progress", closedAt: old.toISOString() });
+    const options = { fetchState, gitActive: () => false };
+    const plan = await scanBoardProjectWorkspaces(home, Date.now(), options);
+    assert.equal(plan.filter((x) => x.action === "remove").length, 4);
+    const journal = path.join(tmpDir, "board-gc.jsonl");
+    await pruneBoardProjectWorkspaces(plan, journal, options);
+    assert.equal(fs.existsSync(path.join(pack, "tmp_pack_old")), false);
+    assert.equal(fs.existsSync(path.join(pack, "tmp_idx_old")), false);
+    assert.equal(fs.existsSync(path.join(scratch, "ope100")), false);
+    assert.equal(fs.existsSync(path.join(scratch, "ope101-wt")), true);
+    assert.equal(fs.existsSync(store), false);
+    assert.equal(fs.readFileSync(journal, "utf8").trim().split("\n").filter((line) => JSON.parse(line).event === "board-project-removed").length, 4);
+    fs.writeFileSync(path.join(pack, "tmp_pack_busy"), "x");
+    fs.utimesSync(path.join(pack, "tmp_pack_busy"), old, old);
+    const busy = await scanBoardProjectWorkspaces(home, Date.now(), { ...options, gitActive: () => true });
+    assert.equal(busy.find((x) => x.path.endsWith("tmp_pack_busy")).action, "keep");
+  });
+});
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "host-gc-test-"));
