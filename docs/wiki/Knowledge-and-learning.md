@@ -86,6 +86,19 @@ admin, and every successful write is journaled as `knowledge.settings_updated`.
 - API: `GET`/`PATCH /api/myrmidon/companies/:companyId/knowledge/settings`
 - Env variables and bounds: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), section «1.7 — KNOWLEDGE-2.0 L-11»
 
+## Knowledge corpus and failed documents
+
+The knowledge corpus lets company bots search indexed documents and read their
+parse state through the board's read-only MCP tools. For setup, tool arguments,
+and failure codes, see the [corpus MCP guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/corpus-mcp-tools.md).
+
+On the knowledge corpus screen, select **Reparse** for a document in the
+`failed` state. The server accepts the request only when the original bytes
+are stored. On acceptance, the row returns to `queued` and its error is cleared;
+the screen then refreshes the list. The screen displays the server's error
+message if the document is no longer failed, its stored bytes are missing, the
+embedder is not configured, or the job cannot be enqueued.
+
 ## ADM archive migration
 
 The opt-in ADM migration command produces a deterministic dry-run before any import. It requires explicit policy summaries and fails closed on scanner errors. Import creates drafts and submits rules for review; it never publishes them. The REST hook delivers bounded summaries with session dedup and byte metrics. It is not installed in production by the migration command. See the [EN/RU operator guide](Adm-knowledge-migration) for environment variables, apply and rollback.
