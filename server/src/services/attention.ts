@@ -2946,7 +2946,7 @@ async function buildAttentionFeedSnapshot(
         }));
       }
       const hostDisk = hostDiskRuntime(db).sweep.lastResult();
-      if (hostDisk?.overThreshold && partitionState.alertLevel !== "warn" && partitionState.alertLevel !== "critical") {
+      if (hostDisk?.overThreshold && !partitionLowSpace && partitionState.alertLevel !== "warn" && partitionState.alertLevel !== "critical") {
         const dedupKey = `host_disk:${hostDisk.measuredPath ?? "unknown"}`;
         add(createItem({
           companyId,
