@@ -34,4 +34,3 @@ Run `node scripts/myrmidon/bundle-audit/artifact-audit.mjs <artifact-root>` agai
 It inspects workspace package manifests matched by that file and checks runtime `main`, `exports` (including conditional and nested wildcard targets), and `bin` entries. Type declarations and `types` conditions are not runtime entries. Missing files, source TypeScript targets, root escapes and dangling or escaping symlinks cause a nonzero exit; a successful audit prints `PASS`. Invalid or empty workspace discovery also fails closed.
 
 This is a standalone tool, not a release pipeline step. Test with `node --test scripts/myrmidon/bundle-audit/artifact-audit.test.mjs`.
-
