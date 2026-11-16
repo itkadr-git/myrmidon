@@ -10,7 +10,7 @@ afterEach(() => {
 });
 
 describe("document parser cancellation contract", () => {
-  it.each([
+  it.each<[string, number, string | null, boolean]>([
     ["cancelled true", 200, '{"cancelled":true}', true],
     ["cancelled false", 200, '{"cancelled":false}', false],
     ["missing cancelled", 200, '{"jobId":"job-1"}', true],
@@ -18,7 +18,7 @@ describe("document parser cancellation contract", () => {
     ["invalid JSON", 200, '{broken', false],
     ["JSON null", 200, 'null', false],
     ["JSON array", 200, '[]', false],
-    ...[404, 405, 429, 500, 501].map((status) => [`HTTP ${status}`, status, '{}', false] as const),
+    ...[404, 405, 429, 500, 501].map<[string, number, string | null, boolean]>((status) => [`HTTP ${status}`, status, '{}', false]),
   ])("returns the expected result for %s with one DELETE", async (_name, status, body, expected) => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(body, { status }));
     const client = createDocumentParserClient({ baseUrl: "http://parser.test", fetchImpl, retry });
