@@ -101,6 +101,23 @@ suite("company boundaries in dispatch and release focus", () => {
     expect((await idlePickupCandidateRows(db, other.companyId, other.agentId)).map((row) => row.id)).toEqual([other.other]);
   });
 
+  it("preserves both companies' settings when focus updates race", async () => {
+    const adm = await seed("ADM");
+    const other = await seed("BBQ");
+    const service = runPriorityService(db);
+    const actor = { actorType: "user" as const, actorId: "operator", agentId: null, runId: null, agentApiKeyId: null };
+    await Promise.all([
+      service.updateCompany(adm.companyId, { currentRelease: "1.7", strictReleaseFocus: true }, actor),
+      service.updateCompany(other.companyId, { currentRelease: "1.8", strictReleaseFocus: true }, actor),
+    ]);
+    resetRunPriorityForTests();
+    await syncRunPriorityFromStore(db);
+    expect(await service.readCompany(adm.companyId)).toEqual({ currentRelease: "1.7", strictReleaseFocus: true });
+    expect(await service.readCompany(other.companyId)).toEqual({ currentRelease: "1.8", strictReleaseFocus: true });
+    expect(await runViolatesReleaseFocus(db, { companyId: adm.companyId, agentId: adm.agentId, issueId: adm.other })).toBe(true);
+    expect(await runViolatesReleaseFocus(db, { companyId: other.companyId, agentId: other.agentId, issueId: other.other })).toBe(false);
+  });
+
   it("does not apply ADM strict focus to another company's assigned work", async () => {
     const adm = await seed("ADM");
     const other = await seed("BBQ");
