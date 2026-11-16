@@ -7,7 +7,7 @@ const compareEdge = (a, b) => compare(a.from, b.from) || compare(a.specifier, b.
 
 function readReport(file) {
   let report;
-  try { report = JSON.parse(readFileSync(file, 'utf8')); } catch { fail('invalid json or file'); }
+  try { report = JSON.parse(readFileSync(file === '-' ? 0 : file, 'utf8')); } catch { fail('invalid json or file'); }
   if (!report || typeof report !== 'object' || Array.isArray(report) || typeof report.entry !== 'string' || !report.entry || !Array.isArray(report.modules) || report.modules.length === 0 || !Array.isArray(report.edges)) fail('invalid report');
 
   const modules = new Map();
@@ -49,7 +49,7 @@ function readReport(file) {
 }
 
 try {
-  if (process.argv.length !== 4) fail('invalid arguments');
+  if (process.argv.length !== 4 || (process.argv[2] === '-' && process.argv[3] === '-')) fail('invalid arguments');
   const base = readReport(process.argv[2]);
   const current = readReport(process.argv[3]);
   if (base.entry !== current.entry) fail('entry mismatch');
