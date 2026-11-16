@@ -36,6 +36,19 @@ describe("migration manifest validation", () => {
     ]));
   });
 
+  it("rejects an environment binding scoped to both an agent and a project", () => {
+    const result = validateMigrationManifest({
+      agents: [{ slug: "worker", reportsToSlug: null, reportsToExistingAgentId: null,
+        reportsToExistingAgentSlug: null, skills: [], permissionGrants: [] }],
+      skills: [], projects: [{ slug: "project" }],
+      envInputs: [{ key: "API_KEY", agentSlug: "worker", projectSlug: "project",
+        kind: "secret", requirement: "required" }],
+    });
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("Secret binding API_KEY has ambiguous scope"),
+    ]));
+  });
+
   it("rejects dangling non-secret environment input references", () => {
     const result = validateMigrationManifest({
       agents: [], skills: [], projects: [],

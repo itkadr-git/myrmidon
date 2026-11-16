@@ -131,6 +131,9 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
   }
   for (const input of manifest.envInputs) {
     const label = input.kind === "secret" ? "Secret binding" : "Environment input";
+    if (input.agentSlug && input.projectSlug) {
+      errors.push(`${label} ${input.key} has ambiguous scope.`);
+    }
     if (input.agentSlug && !agentSlugs.has(input.agentSlug)) {
       errors.push(`${label} ${input.key} references missing agent ${input.agentSlug}.`);
     }
