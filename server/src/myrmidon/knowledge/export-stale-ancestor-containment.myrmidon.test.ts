@@ -25,7 +25,7 @@ function recordingRunner() {
   const runner: GitExportRunner = {
     async git(_cwd, args) {
       calls.push([...args]);
-      return { stdout: args[0] === "ls-files" ? `${tracked}\0` : args[0] === "status" ? "D  company-a/old/stale.md\n" : args[0] === "rev-parse" ? `${"a".repeat(40)}\n` : "", stderr: "" };
+      return { stdout: args[0] === "ls-files" ? `${tracked}\0` : args[0] === "status" && !args.includes("-z") ? "D  company-a/old/stale.md\n" : args[0] === "rev-parse" ? `${"a".repeat(40)}\n` : "", stderr: "" };
     },
   };
   return { runner, calls };
@@ -47,7 +47,7 @@ describe("knowledge export stale ancestor containment", () => {
       expect(outcome.error).toBeInstanceOf(Error);
       expect(String(outcome.error)).toMatch(/symlink/);
       expect(outcome.result).toBeNull();
-      expect(calls).toEqual([["ls-files", "-z"]]);
+      expect(calls).toEqual([["status", "--porcelain", "-z", "--untracked-files=all"], ["ls-files", "-z"]]);
     });
   });
 
@@ -60,8 +60,9 @@ describe("knowledge export stale ancestor containment", () => {
       const result = await commitKnowledgeTreeIfChanged(runner, checkout, "export", tree, undefined, "company-a");
       await expect(readFile(stale)).rejects.toMatchObject({ code: "ENOENT" });
       expect(result).toEqual({ committed: true, commit: "a".repeat(40) });
-      expect(calls.map((args) => args[0])).toEqual(["ls-files", "add", "status", "commit", "rev-parse"]);
-      expect(calls[1]).toEqual(["add", "-A"]);
+      expect(calls.map((args) => args[0])).toEqual(["status", "ls-files", "add", "status", "commit", "rev-parse"]);
+      expect(calls[0]).toEqual(["status", "--porcelain", "-z", "--untracked-files=all"]);
+      expect(calls[2]).toEqual(["add", "-A"]);
     });
   });
 });

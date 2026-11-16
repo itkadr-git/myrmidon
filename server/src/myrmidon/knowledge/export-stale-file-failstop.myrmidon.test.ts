@@ -12,7 +12,7 @@ function recordingRunner() {
     async git(_cwd, args) {
       calls.push(args[0]!);
       if (args[0] === "ls-files") return { stdout: "company/stale\0", stderr: "" };
-      if (args[0] === "status") return { stdout: " D company/stale\n", stderr: "" };
+      if (args[0] === "status") return { stdout: args.includes("-z") ? "" : " D company/stale\n", stderr: "" };
       if (args[0] === "rev-parse") return { stdout: `${"a".repeat(40)}\n`, stderr: "" };
       return { stdout: "", stderr: "" };
     },
@@ -41,7 +41,7 @@ describe("knowledge export stale file fail-stop", () => {
       const { runner, calls } = recordingRunner();
       await expect(commitKnowledgeTreeIfChanged(runner, checkout, "knowledge-export", tree, undefined, "company"))
         .rejects.toMatchObject({ code: "EISDIR" });
-      expect(calls).toEqual(["ls-files"]);
+      expect(calls).toEqual(["status", "ls-files"]);
       expect(await readFile(sentinel, "utf8")).toBe("unchanged");
     });
   });
@@ -54,7 +54,7 @@ describe("knowledge export stale file fail-stop", () => {
       await expect(commitKnowledgeTreeIfChanged(runner, checkout, "knowledge-export", tree, undefined, "company"))
         .resolves.toEqual({ committed: true, commit: "a".repeat(40) });
       await expect(readFile(stale)).rejects.toMatchObject({ code: "ENOENT" });
-      expect(calls).toEqual(["ls-files", "add", "status", "commit", "rev-parse"]);
+      expect(calls).toEqual(["status", "ls-files", "add", "status", "commit", "rev-parse"]);
     });
   });
 
@@ -63,7 +63,7 @@ describe("knowledge export stale file fail-stop", () => {
       const { runner, calls } = recordingRunner();
       await expect(commitKnowledgeTreeIfChanged(runner, checkout, "knowledge-export", tree, undefined, "company"))
         .resolves.toEqual({ committed: true, commit: "a".repeat(40) });
-      expect(calls).toEqual(["ls-files", "add", "status", "commit", "rev-parse"]);
+      expect(calls).toEqual(["status", "ls-files", "add", "status", "commit", "rev-parse"]);
     });
   });
 });

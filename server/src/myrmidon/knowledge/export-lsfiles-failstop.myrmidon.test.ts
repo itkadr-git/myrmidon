@@ -41,7 +41,7 @@ function recordingRunner(fail: boolean) {
       calls.push({ cwd, args: [...args] });
       if (args[0] === "ls-files" && fail) throw new Error("inventory failed");
       const stdout = args[0] === "ls-files" ? "company-a/keep.md\0company-a/stale.md\0company-b/other.md\0"
-        : args[0] === "status" ? " M company-a/keep.md\n D company-a/stale.md\n"
+        : args[0] === "status" ? (args.includes("-z") ? "" : " M company-a/keep.md\n D company-a/stale.md\n")
         : args[0] === "rev-parse" ? `${commit}\n` : "";
       return { stdout, stderr: "" };
     },
@@ -58,6 +58,7 @@ describe("knowledge export ls-files fail-stop", () => {
       expect(await readFile(path.join(workDir, "company-a", "stale.md"))).toEqual(Buffer.from("stale\n"));
       expect(calls).toEqual([
         { cwd: workDir, args: ["fetch", "origin", branch] },
+        { cwd: workDir, args: ["status", "--porcelain", "-z", "--untracked-files=all"] },
         { cwd: workDir, args: ["ls-files", "-z"] },
       ]);
     });
@@ -72,10 +73,11 @@ describe("knowledge export ls-files fail-stop", () => {
       await expect(readFile(path.join(workDir, "company-a", "stale.md"))).rejects.toMatchObject({ code: "ENOENT" });
       expect(await readFile(path.join(workDir, "company-a", "untracked.md"))).toEqual(Buffer.from("untracked\n"));
       expect(await readFile(path.join(workDir, "company-b", "other.md"))).toEqual(Buffer.from("other\n"));
-      expect(calls.map(({ args }) => args[0])).toEqual(["fetch", "ls-files", "add", "status", "commit", "rev-parse", "push"]);
-      expect(calls[1]).toEqual({ cwd: workDir, args: ["ls-files", "-z"] });
-      expect(calls[2]).toEqual({ cwd: workDir, args: ["add", "-A"] });
-      expect(calls[6]).toEqual({ cwd: workDir, args: ["push", "origin", `HEAD:${branch}`] });
+      expect(calls.map(({ args }) => args[0])).toEqual(["fetch", "status", "ls-files", "add", "status", "commit", "rev-parse", "push"]);
+      expect(calls[1]).toEqual({ cwd: workDir, args: ["status", "--porcelain", "-z", "--untracked-files=all"] });
+      expect(calls[2]).toEqual({ cwd: workDir, args: ["ls-files", "-z"] });
+      expect(calls[3]).toEqual({ cwd: workDir, args: ["add", "-A"] });
+      expect(calls[7]).toEqual({ cwd: workDir, args: ["push", "origin", `HEAD:${branch}`] });
     });
   });
 });

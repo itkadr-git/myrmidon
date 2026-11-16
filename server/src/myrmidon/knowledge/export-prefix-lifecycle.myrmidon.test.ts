@@ -17,7 +17,7 @@ function recordingRunner(tracked: string[] = [], status = "") {
     async git(_cwd, args) {
       calls.push(args);
       if (args[0] === "ls-files") return { stdout: `${tracked.join("\0")}\0`, stderr: "" };
-      if (args[0] === "status") return { stdout: status, stderr: "" };
+      if (args[0] === "status") return { stdout: args.includes("-z") ? "" : status, stderr: "" };
       if (args[0] === "rev-parse") return { stdout: `${"a".repeat(40)}\n`, stderr: "" };
       return { stdout: "", stderr: "" };
     },
@@ -63,9 +63,10 @@ describe("knowledge export prefix lifecycle", () => {
       expect(await readFile(path.join(checkout, "company-a/nested/deep/new.md"), "utf8")).toBe("nested\n");
       expect(await readFile(path.join(checkout, "company-ab/old.md"))).toEqual(Buffer.from(initial["company-ab/old.md"]));
       expect(await readFile(path.join(checkout, "company-b/old.md"))).toEqual(Buffer.from(initial["company-b/old.md"]));
-      expect(calls[0]).toEqual(["ls-files", "-z"]);
+      expect(calls[0]).toEqual(["status", "--porcelain", "-z", "--untracked-files=all"]);
+      expect(calls[1]).toEqual(["ls-files", "-z"]);
       expect(calls.filter((args) => args[0] === "commit")).toHaveLength(1);
-      expect(calls.map((args) => args[0])).toEqual(["ls-files", "add", "status", "commit", "rev-parse"]);
+      expect(calls.map((args) => args[0])).toEqual(["status", "ls-files", "add", "status", "commit", "rev-parse"]);
     });
   });
 
@@ -77,7 +78,7 @@ describe("knowledge export prefix lifecycle", () => {
       ]), undefined, "company-a");
       expect(result).toEqual({ committed: false, commit: null });
       expect(await readFile(path.join(checkout, "company-a/keep.md"), "utf8")).toBe("unchanged\n");
-      expect(calls.map((args) => args[0])).toEqual(["ls-files", "add", "status"]);
+      expect(calls.map((args) => args[0])).toEqual(["status", "ls-files", "add", "status"]);
       expect(calls.filter((args) => args[0] === "commit")).toHaveLength(0);
     });
   });
