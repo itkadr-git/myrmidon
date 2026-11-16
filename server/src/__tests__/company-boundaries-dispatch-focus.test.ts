@@ -92,6 +92,8 @@ suite("company boundaries in dispatch and release focus", () => {
     const service = runPriorityService(db);
     const actor = { actorType: "user" as const, actorId: "operator", agentId: null, runId: null, agentApiKeyId: null };
     await service.updateCompany(adm.companyId, { currentRelease: "1.7", strictReleaseFocus: true }, actor);
+    expect(await service.readCompany(adm.companyId)).toEqual({ currentRelease: "1.7", strictReleaseFocus: true });
+    expect(await service.readCompany(other.companyId)).toEqual({ currentRelease: null, strictReleaseFocus: false });
     resetRunPriorityForTests();
     await syncRunPriorityFromStore(db);
     expect(await runViolatesReleaseFocus(db, { companyId: adm.companyId, agentId: adm.agentId, issueId: adm.other })).toBe(true);
