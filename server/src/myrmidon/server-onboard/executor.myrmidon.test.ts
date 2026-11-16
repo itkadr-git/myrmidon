@@ -348,6 +348,28 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(ssh.hasExecuted(/pkill\s+-f/)).toBe(false);
   });
 
+  it("does not disable an existing firewall when connectivity verification fails", async () => {
+    const initial = new MockSshExecutor();
+    const fresh = new MockSshExecutor();
+    initial.mockResponse(/ufw status/, { stdout: "Status: active\n", exitCode: 0 });
+    fresh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "incorrect", exitCode: 0 });
+    const connections = [initial, fresh];
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => {
+      const connection = connections.shift();
+      if (!connection) throw new Error("Unexpected SSH connection");
+      return connection;
+    } });
+    const claim: any = {
+      job: { id: "job-existing-firewall", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(initial.hasExecuted(/ufw disable/)).toBe(false);
+  });
+
   it("does not enable the firewall when the SSH allow rule fails", async () => {
     const mockSsh = new MockSshExecutor();
     mockSsh.mockResponse(/sudo ufw allow/, { stdout: "", stderr: "rule rejected", exitCode: 1 });
