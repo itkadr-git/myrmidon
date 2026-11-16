@@ -298,6 +298,8 @@ export function companyService(db: Db) {
               eq(companyTransferRuns.direction, "import"),
               eq(companyTransferRuns.status, "applying"),
               isNull(companyTransferRuns.companyId),
+              // A deleted destination clears the foreign key, not its ownership history.
+              sql`not (coalesce(${companyTransferRuns.containerRef}->>'kind' = 'company_migration', false) and coalesce(${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true', false))`,
             ))
             .returning({ id: companyTransferRuns.id });
           if (attached.length !== 1) throw new Error("Transfer run cannot claim a new company");
