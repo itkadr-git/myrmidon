@@ -272,6 +272,42 @@ describe("company migration dry run", () => {
     }
   });
 
+  it("accepts explicit apply=false as a read-only dry run", async () => {
+    const [source] = await db.insert(companies).values({ name: "Explicit dry-run source", issuePrefix: "MED" }).returning();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+    const beforeCompanies = await db.select().from(companies);
+    const beforeRuns = await db.select().from(companyTransferRuns);
+    const beforeAudit = await db.select().from(activityLog);
+    const filesBefore = await readdir(root, { recursive: true });
+    const insert = vi.spyOn(db, "insert");
+    const update = vi.spyOn(db, "update");
+    const remove = vi.spyOn(db, "delete");
+    try {
+      const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+        target: { mode: "new_company", newCompanyName: "Explicit dry-run destination" },
+        apply: false,
+      });
+      expect(response.status).toBe(200);
+      expect(response.body.dryRun).toBe(true);
+      expect(insert).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+      expect(remove).not.toHaveBeenCalled();
+      expect(await db.select().from(companies)).toEqual(beforeCompanies);
+      expect(await db.select().from(companyTransferRuns)).toEqual(beforeRuns);
+      expect(await db.select().from(activityLog)).toEqual(beforeAudit);
+      expect(await readdir(root, { recursive: true })).toEqual(filesBefore);
+    } finally {
+      insert.mockRestore(); update.mockRestore(); remove.mockRestore();
+    }
+  });
+
   it("rejects an unconfirmed apply without database, storage, or audit writes", async () => {
     const [source] = await db.insert(companies).values({ name: "Confirmation fixture", issuePrefix: "MCF" }).returning();
     const beforeCompanies = await db.select().from(companies);
