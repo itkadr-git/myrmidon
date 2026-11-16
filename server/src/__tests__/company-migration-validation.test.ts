@@ -157,6 +157,25 @@ describe("migration manifest validation", () => {
     expect(validateMigrationManifest({ agents: [], skills: [], envInputs: [], issues: [safe] }).errors).toEqual([]);
   });
 
+  it("rejects ambiguous and dangling workspace references before import", () => {
+    const issue = { slug: "task", projectSlug: "project", projectWorkspaceKey: "missing",
+      assigneeAgentSlug: null, parentSlug: null, blockedBy: [] };
+    const manifest = { agents: [], skills: [], envInputs: [],
+      projects: [{ slug: "project", workspaces: [{ key: "shared" }, { key: "shared" }] }],
+      issues: [issue] };
+    expect(validateMigrationManifest(manifest).errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("duplicate workspace key"),
+      expect.stringContaining("missing or ambiguous workspace"),
+    ]));
+    expect(validateMigrationManifest({ ...manifest,
+      projects: [{ slug: "project", workspaces: [{ key: "shared" }] }],
+      issues: [{ ...issue, projectWorkspaceKey: "shared" }],
+    }).errors).toEqual([]);
+    expect(validateMigrationManifest({ ...manifest, projects: [],
+      issues: [{ ...issue, projectSlug: null, projectWorkspaceKey: "shared" }],
+    }).errors).toEqual(expect.arrayContaining([expect.stringContaining("missing or ambiguous workspace")]));
+  });
+
   it("rejects dangling project and task relationships before migration", () => {
     const result = validateMigrationManifest({
       agents: [], skills: [], envInputs: [],

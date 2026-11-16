@@ -8,10 +8,12 @@ type MigrationManifest = {
     }>;
   skills: Array<Pick<CompanyPortabilityManifest["skills"][number], "key" | "slug">>;
   projects?: Array<Pick<CompanyPortabilityManifest["projects"][number], "slug"> &
-    Partial<Pick<CompanyPortabilityManifest["projects"][number], "ownerAgentSlug" | "leadAgentSlug">>>;
+    Partial<Pick<CompanyPortabilityManifest["projects"][number], "ownerAgentSlug" | "leadAgentSlug">> & {
+      workspaces?: Array<Pick<CompanyPortabilityManifest["projects"][number]["workspaces"][number], "key">>;
+    }>;
   issues?: Array<Pick<CompanyPortabilityManifest["issues"][number],
     "slug" | "projectSlug" | "assigneeAgentSlug" | "parentSlug" | "blockedBy"> &
-    Partial<Pick<CompanyPortabilityManifest["issues"][number], "recurring" | "routine" | "comments" | "workProducts">>>;
+    Partial<Pick<CompanyPortabilityManifest["issues"][number], "recurring" | "routine" | "comments" | "workProducts" | "projectWorkspaceKey">>>;
   envInputs: Array<Pick<CompanyPortabilityManifest["envInputs"][number],
     "key" | "agentSlug" | "projectSlug" | "kind" | "requirement">>;
 };
@@ -76,9 +78,16 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
     }
   }
   const projectSlugs = new Set<string>();
+  const workspaceKeys = new Map<string, Map<string, number>>();
   for (const project of manifest.projects ?? []) {
     if (projectSlugs.has(project.slug)) errors.push(`Duplicate project slug: ${project.slug}.`);
     projectSlugs.add(project.slug);
+    const keys = new Map<string, number>();
+    for (const workspace of project.workspaces ?? []) {
+      keys.set(workspace.key, (keys.get(workspace.key) ?? 0) + 1);
+      if (keys.get(workspace.key) === 2) errors.push(`Project ${project.slug} has a duplicate workspace key.`);
+    }
+    workspaceKeys.set(project.slug, keys);
   }
   for (const project of manifest.projects ?? []) {
     for (const agentSlug of [project.ownerAgentSlug, project.leadAgentSlug]) {
@@ -106,6 +115,9 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
       errors.push(`Task ${issue.slug} has a webhook trigger that cannot be migrated.`);
     }
     if (issue.projectSlug && !projectSlugs.has(issue.projectSlug)) errors.push(`Task ${issue.slug} references missing project ${issue.projectSlug}.`);
+    if (issue.projectWorkspaceKey && (!issue.projectSlug || workspaceKeys.get(issue.projectSlug)?.get(issue.projectWorkspaceKey) !== 1)) {
+      errors.push(`Task ${issue.slug} references a missing or ambiguous workspace.`);
+    }
     if (issue.assigneeAgentSlug && !agentSlugs.has(issue.assigneeAgentSlug)) errors.push(`Task ${issue.slug} references missing agent ${issue.assigneeAgentSlug}.`);
     for (const related of [issue.parentSlug, ...(issue.blockedBy ?? [])]) {
       if (related && !issueSlugs.has(related)) errors.push(`Task ${issue.slug} references missing task ${related}.`);
