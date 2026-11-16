@@ -18,7 +18,7 @@ export function companyMigrationService(portability: Portability) {
         continue;
       }
       const bytes = Buffer.from(file.data, "base64");
-      if (bytes.length !== blob.byteSize || createHash("sha256").update(bytes).digest("hex") !== blob.sha256) {
+      if (bytes.toString("base64") !== file.data || bytes.length !== blob.byteSize || createHash("sha256").update(bytes).digest("hex") !== blob.sha256) {
         validation.errors.push("A declared blob failed integrity validation.");
       }
     }
@@ -27,6 +27,7 @@ export function companyMigrationService(portability: Portability) {
       if (!path.startsWith("blobs/")) continue;
       const sha = path.slice("blobs/".length);
       if (!/^[a-f0-9]{64}$/.test(sha) || typeof file !== "object" || file === null || file.encoding !== "base64"
+        || Buffer.from(file.data, "base64").toString("base64") !== file.data
         || createHash("sha256").update(Buffer.from(file.data, "base64")).digest("hex") !== sha) {
         validation.errors.push("An exported blob failed integrity validation.");
       }
