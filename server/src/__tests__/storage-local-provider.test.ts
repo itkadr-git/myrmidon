@@ -78,6 +78,16 @@ describe("local disk storage provider", () => {
     await expect(service.getObject("company-b", stored.objectKey)).rejects.toMatchObject({ status: 403 });
   });
 
+  it("reports storage deletion failures instead of treating them as missing objects", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-storage-"));
+    tempRoots.push(root);
+    await fs.mkdir(path.join(root, "company-1", "not-a-file"), { recursive: true });
+
+    const service = createStorageService(createLocalDiskStorageProvider(root));
+    await expect(service.deleteObject("company-1", "company-1/not-a-file"))
+      .rejects.toMatchObject({ code: "EISDIR" });
+  });
+
   it("delete is idempotent", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-storage-"));
     tempRoots.push(root);
