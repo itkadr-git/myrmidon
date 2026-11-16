@@ -59,8 +59,7 @@ describe("omp SSH runner image", () => {
       const section = entrypoint.slice(entrypoint.indexOf("rm -f /etc/profile.d/omp-runner-devbuild.sh"), entrypoint.indexOf("# The board's git mirrors"))
         .replaceAll("/etc/profile.d/omp-runner-devbuild.sh", profile)
         .replaceAll("/opt/devbuild-ssh/id_ed25519", mounted)
-        .replaceAll("/root/.ssh/devbuild_ed25519", copied)
-        .replaceAll("/root/.ssh", path.dirname(copied));
+        .replace(/\/root\/\.ssh(?:\/devbuild_ed25519)?/g, (value) => value.endsWith("devbuild_ed25519") ? copied : path.dirname(copied));
       const run = spawnSync("sh", ["-eu", "-c", section], { encoding: "utf8", env: { ...process.env, DEVBUILD_HOST: "example", DEVBUILD_USER: "builder" } });
       assert.equal(run.status, 0, run.stderr);
       assert.equal(fs.readFileSync(copied, "utf8"), "fixture key\n");

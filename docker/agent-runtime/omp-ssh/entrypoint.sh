@@ -114,14 +114,17 @@ fi
 # file passes DEVBUILD_HOST and DEVBUILD_USER; otherwise the file is removed and
 # the runner behaves as before. The key is the optional read-only mount at
 # /opt/devbuild-ssh/id_ed25519 (an empty file means "not configured").
-rm -f /etc/profile.d/omp-runner-devbuild.sh
+rm -f /etc/profile.d/omp-runner-devbuild.sh /root/.ssh/devbuild_ed25519
 if [ -n "${DEVBUILD_HOST:-}" ] && [ -n "${DEVBUILD_USER:-}" ]; then
   if [ -s /opt/devbuild-ssh/id_ed25519 ]; then
+    install -d -m 0700 /root/.ssh
+    install -m 0600 /opt/devbuild-ssh/id_ed25519 /root/.ssh/devbuild_ed25519
     cat > /etc/profile.d/omp-runner-devbuild.sh <<PROFILE
 # Written by the omp-runner entrypoint (OMP-RUNNER-DEVBUILD).
 export DEVBUILD_HOST='${DEVBUILD_HOST}'
 export DEVBUILD_USER='${DEVBUILD_USER}'
 export DEVBUILD_BASE='${DEVBUILD_BASE:-/srv/devbuild}'
+export DEVBUILD_SSH_KEY='/root/.ssh/devbuild_ed25519'
 PROFILE
     chmod 0644 /etc/profile.d/omp-runner-devbuild.sh
     echo "omp-runner: devbuild enabled for ${DEVBUILD_USER}@${DEVBUILD_HOST}"
