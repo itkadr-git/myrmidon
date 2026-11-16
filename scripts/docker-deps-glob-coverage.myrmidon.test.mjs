@@ -16,13 +16,13 @@ function filesAt(root, dir = root) {
   }).sort(([a], [b]) => a.localeCompare(b)));
 }
 
-function runFixture(pattern, packages, missing) {
+function runFixture(pattern, packages, missing, workspace = "packages:\n  - 'packages/*'\n  - 'packages/a/*'\n") {
   mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(path.join(scratch, "deps-glob-"));
   try {
     const files = {
       Dockerfile: `FROM node AS deps\nCOPY ${pattern} /dest/\n`,
-      "pnpm-workspace.yaml": "packages:\n  - 'packages/*'\n",
+      "pnpm-workspace.yaml": workspace,
       ...Object.fromEntries(packages.map((pkg, index) => [pkg, JSON.stringify({ name: `fixture-${index}`, version: "1.0.0" }) + "\n"])),
     };
     for (const [name, content] of Object.entries(files)) {
@@ -60,3 +60,15 @@ for (const [name, pattern, packages, missing] of cases) {
   test(`${name}: covered manifests`, () => runFixture(pattern, packages.filter((pkg) => !missing.includes(pkg)), []));
   test(`${name}: nearest misses`, () => runFixture(pattern, packages, missing));
 }
+
+test("deep workspace manifest is enumerated", () => {
+  runFixture("packages/a/*/package.json", ["packages/a/b/c/package.json"], ["packages/a/b/c/package.json"]);
+});
+
+test("start anchor rejects a leading path prefix", () => {
+  runFixture("packages/a/package.json", ["xpackages/a/package.json"], ["xpackages/a/package.json"], "packages:\n  - 'xpackages/*'\n");
+});
+
+test("end anchor rejects a trailing path suffix", () => {
+  runFixture("packages/a/package.json", ["packages/a/package.json/package.json"], ["packages/a/package.json/package.json"], "packages:\n  - 'packages/a/*'\n");
+});
