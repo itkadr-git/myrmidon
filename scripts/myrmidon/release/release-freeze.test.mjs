@@ -155,6 +155,18 @@ function runScript(sandbox, mode, extraEnv = {}) {
 }
 
 describe("release-freeze.sh (fake gh)", () => {
+  it("reports an active freeze without failing the PR check", () => {
+    const sb = makeSandbox({
+      ciStatus: "in_progress",
+      ciConclusion: null,
+      issues: [{ number: 7, title: "release-freeze: myr-v1.6.10" }],
+    });
+    const result = runScript(sb, "--check");
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /RELEASE FREEZE ACTIVE/);
+    assert.match(result.stderr, /Advisory only/);
+  });
+
   it("no release tags -> no freeze, both modes exit 0", () => {
     const sb = makeSandbox({ tags: [{ ref: "refs/tags/nightly-1" }] });
     const setR = runScript(sb, "--set-state");
