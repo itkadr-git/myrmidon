@@ -1,6 +1,6 @@
 import * as controllerLeases from "../services/legacy-controller-lease.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { applyRunPrioritySettings, currentRunPrioritySettings, resetRunPriorityForTests } from "../myrmidon/run-priority/state.js";
+import { applyRunPrioritySettings, currentRunPrioritySettings } from "../myrmidon/run-priority/state.js";
 import { randomUUID } from "node:crypto";
 import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { issueService } from "../services/issues.js";
@@ -491,11 +491,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   }, 60_000);
   beforeEach(() => {
     resetSharedRunAdmissionForTests();
+    // The finish-handoff tests need the board in-progress wake off (with it on, in_progress is a valid outcome).
+    applyRunPrioritySettings({ ...currentRunPrioritySettings({}), inProgressIdleWakeMinutes: 0 });
   });
 
 
   afterEach(async () => {
-    resetRunPriorityForTests();
     vi.useRealTimers();
     vi.clearAllMocks();
     // A recovery policy can stop before adapter dispatch; do not leak an
@@ -5670,8 +5671,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("queues one finish-handoff wake when a successful run leaves in-progress work without a next action", async () => {
-    // With the board in-progress wake on, in_progress is a valid outcome; the corrective wake is for the wake switched off.
-    applyRunPrioritySettings({ ...currentRunPrioritySettings({}), inProgressIdleWakeMinutes: 0 });
     const { companyId, agentId, runId, issueId } =
       await seedQueuedIssueRunFixture();
     mockAdapterExecute.mockImplementationOnce(
