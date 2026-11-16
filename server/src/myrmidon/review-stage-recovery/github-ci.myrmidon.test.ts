@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+vi.mock("../../services/github-rate-limit.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../services/github-rate-limit.js")>();
+  return { ...actual, withGitHubReviewBudget: (_db: unknown, _source: unknown, fetch: unknown) => fetch };
+});
 import { resetGitHubRateLimitForTests } from "../../services/github-rate-limit.js";
 import {
   createReviewHeadFailedChecksResolver,
