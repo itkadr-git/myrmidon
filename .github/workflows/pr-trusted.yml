@@ -293,6 +293,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -402,6 +403,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       # Share the checked-in lockfile key with master. PR merge refs must not
@@ -508,6 +510,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       # Share the checked-in lockfile key with master. PR merge refs must not
@@ -640,6 +643,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       # Share the checked-in lockfile key with master. PR merge refs must not
@@ -732,6 +736,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       # Share the checked-in lockfile key with master. PR merge refs must not
@@ -816,6 +821,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       # Share the checked-in lockfile key with master. PR merge refs must not
@@ -872,6 +878,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       # Share the checked-in lockfile key with master. PR merge refs must not
@@ -969,6 +976,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       # Share the checked-in lockfile key with master. PR merge refs must not
