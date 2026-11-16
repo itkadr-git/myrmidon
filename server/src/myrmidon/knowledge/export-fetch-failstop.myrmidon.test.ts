@@ -69,7 +69,7 @@ describe("knowledge export fetch fail-stop", () => {
       expect(result.committed).toBe(true);
       expect(await readFile(path.join(workDir, "old.md"), "utf8")).toBe("replacement\n");
       expect(await readFile(path.join(workDir, "new.md"), "utf8")).toBe("new\n");
-      expect(calls.map((args) => args[0])).toEqual(["fetch", "ls-files", "add", "status", "commit", "rev-parse", "push"]);
+      expect(calls.map((args) => args[0])).toEqual(["fetch", "show-ref", "checkout", "merge", "ls-files", "add", "status", "commit", "rev-parse", "push"]);
     });
   });
 });
