@@ -36,6 +36,19 @@ describe("migration manifest validation", () => {
     ]));
   });
 
+  it("rejects dangling non-secret environment input references", () => {
+    const result = validateMigrationManifest({
+      agents: [], skills: [], projects: [],
+      envInputs: [
+        { key: "HOST", agentSlug: "missing-agent", projectSlug: null, kind: "plain" as const, requirement: "required" as const },
+        { key: "PORT", agentSlug: null, projectSlug: "missing-project", kind: "plain" as const, requirement: "required" as const },
+      ],
+    });
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("missing-agent"), expect.stringContaining("missing-project"),
+    ]));
+  });
+
   it("rejects duplicate agent and project slugs before resolving references", () => {
     const agent = { slug: "worker", reportsToSlug: null, reportsToExistingAgentId: null,
       reportsToExistingAgentSlug: null, skills: [], permissionGrants: [] };
