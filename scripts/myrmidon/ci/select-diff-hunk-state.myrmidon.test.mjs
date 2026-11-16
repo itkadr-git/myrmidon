@@ -43,6 +43,11 @@ describe("diff export and type hunk state", () => {
 diff --git a/src/b.ts b/src/b.ts
 @@ -1 +1 @@ function run() {
 +  return 1;`, []],
+    ["resets type state at file boundary before any next hunk", `diff --git a/src/a.ts b/src/a.ts
+@@ -1 +1 @@ interface User {
++  // comment only
+diff --git a/src/b.ts b/src/b.ts
++  return 1;`, []],
     ["detects type state in the next file", `diff --git a/src/a.ts b/src/a.ts
 @@ -1 +1 @@ function run() {
 +  return 1;
