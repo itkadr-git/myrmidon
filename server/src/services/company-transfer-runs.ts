@@ -366,7 +366,15 @@ export const companyTransferRunService = {
   async releaseApplyClaim(db: Db, runId: string, error: string): Promise<boolean> {
     const released = await db
       .update(companyTransferRuns)
-      .set({ status: "failed", error, finishedAt: new Date(), updatedAt: new Date() })
+      .set({
+        status: "failed",
+        // Migration failures may originate in adapters or secret-bearing input;
+        // keep the durable ledger diagnostic-free while retaining legacy details
+        // for ordinary chunked imports.
+        error: sql`case when coalesce(${companyTransferRuns.containerRef}->>'kind', '') = 'company_migration' then 'migration apply failed; inspect migration status and rollback provenance' else ${error} end`,
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+      })
       .where(and(eq(companyTransferRuns.id, runId), eq(companyTransferRuns.status, "applying")))
       .returning({ id: companyTransferRuns.id });
     return released.length > 0;
@@ -397,7 +405,12 @@ export const companyTransferRunService = {
   async fail(db: Db, runId: string, error: string): Promise<void> {
     await db
       .update(companyTransferRuns)
-      .set({ status: "failed", error, finishedAt: new Date(), updatedAt: new Date() })
+      .set({
+        status: "failed",
+        error: sql`case when coalesce(${companyTransferRuns.containerRef}->>'kind', '') = 'company_migration' then 'migration failed; inspect migration status and rollback provenance' else ${error} end`,
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+      })
       .where(and(
         eq(companyTransferRuns.id, runId),
         // Only the guarded releaseApplyClaim may settle an active migration.

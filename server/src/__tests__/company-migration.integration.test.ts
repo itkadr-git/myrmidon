@@ -564,6 +564,13 @@ describe("company migration dry run", () => {
     expect(saved?.status).toBe("failed");
     expect(saved?.error).toBeTruthy();
     expect(JSON.stringify(saved)).not.toContain("secret-value-canary");
+
+    const pending = await companyTransferRunService.resumeOrCreateMigration(db, "redaction-source", "pending-redaction-key");
+    await companyTransferRunService.fail(db, pending.run.id, "other-secret-canary");
+    const failedPending = await companyTransferRunService.getRun(db, pending.run.id);
+    expect(failedPending?.status).toBe("failed");
+    expect(failedPending?.error).toBeTruthy();
+    expect(JSON.stringify(failedPending)).not.toContain("other-secret-canary");
   });
 
   it("does not reapply a failed migration after it has claimed a destination", async () => {
