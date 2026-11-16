@@ -8,7 +8,7 @@ import { idlePickupCandidateRows } from "../myrmidon/idle-pickup.js";
 import { runViolatesReleaseFocus } from "../myrmidon/release-focus.js";
 import { runPriorityService } from "../myrmidon/run-priority/service.js";
 import { syncRunPriorityFromStore } from "../myrmidon/run-priority/sync.js";
-import { applyRunPrioritySettings, currentRunPrioritySettings, resetRunPriorityForTests } from "../myrmidon/run-priority/state.js";
+import { applyCompanyReleaseFocus, resetRunPriorityForTests } from "../myrmidon/run-priority/state.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -63,7 +63,7 @@ suite("company boundaries in dispatch and release focus", () => {
   it("matches only the selected company's engineer and task when roles and labels coincide", async () => {
     const adm = await seed("ADM");
     const others = await Promise.all([seed("BBQ"), seed("WRK"), seed("LIF")]);
-    applyRunPrioritySettings({ ...currentRunPrioritySettings({}), currentRelease: "1.7", strictReleaseFocus: true });
+    applyCompanyReleaseFocus(new Map([[adm.companyId, { currentRelease: "1.7", strictReleaseFocus: true }]]));
     const beforeIssues = await db.select().from(issues);
     const beforeAgents = await db.select().from(agents);
     const wakes: string[] = [];
@@ -89,12 +89,9 @@ suite("company boundaries in dispatch and release focus", () => {
   it("persists company focus and restores it during cross-process refresh", async () => {
     const adm = await seed("ADM");
     const other = await seed("BBQ");
-    const service = runPriorityService(db) as ReturnType<typeof runPriorityService> & {
-      updateCompany?: (companyId: string, patch: { currentRelease: string; strictReleaseFocus: boolean }, actor: { actorType: "user"; actorId: string; agentId: null; runId: null; agentApiKeyId: null }) => Promise<unknown>;
-    };
+    const service = runPriorityService(db);
     const actor = { actorType: "user" as const, actorId: "operator", agentId: null, runId: null, agentApiKeyId: null };
-    expect(service.updateCompany).toBeDefined();
-    await service.updateCompany?.(adm.companyId, { currentRelease: "1.7", strictReleaseFocus: true }, actor);
+    await service.updateCompany(adm.companyId, { currentRelease: "1.7", strictReleaseFocus: true }, actor);
     resetRunPriorityForTests();
     await syncRunPriorityFromStore(db);
     expect(await runViolatesReleaseFocus(db, { companyId: adm.companyId, agentId: adm.agentId, issueId: adm.other })).toBe(true);
@@ -105,10 +102,7 @@ suite("company boundaries in dispatch and release focus", () => {
   it("does not apply ADM strict focus to another company's assigned work", async () => {
     const adm = await seed("ADM");
     const other = await seed("BBQ");
-    const settings = { ...currentRunPrioritySettings({}), currentRelease: "1.7" };
-    applyRunPrioritySettings({ ...settings, strictReleaseFocus: false });
-    expect((await idlePickupCandidateRows(db, other.companyId, other.agentId)).map((row) => row.id)).toEqual([other.other]);
-    applyRunPrioritySettings({ ...settings, strictReleaseFocus: true });
+    applyCompanyReleaseFocus(new Map([[adm.companyId, { currentRelease: "1.7", strictReleaseFocus: true }]]));
     expect(await runViolatesReleaseFocus(db, { companyId: adm.companyId, agentId: adm.agentId, issueId: adm.other })).toBe(true);
     expect(await runViolatesReleaseFocus(db, { companyId: other.companyId, agentId: other.agentId, issueId: other.other })).toBe(false);
     expect((await idlePickupCandidateRows(db, other.companyId, other.agentId)).map((row) => row.id)).toEqual([other.other]);
