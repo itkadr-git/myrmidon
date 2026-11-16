@@ -32,6 +32,8 @@ const FAKE_GH = `#!/usr/bin/env bash
 # of release-stop-notify.sh from files in $SANDBOX; records calls and mutations.
 echo "gh $*" >> "$SANDBOX/calls.log"
 set -euo pipefail
+trace() { printf '%s pid=%s %s\\n' "$(date +%s.%N)" "$$" "$*" >> "$SANDBOX/trace.log"; }
+trace "begin $*"
 sub="$1"; shift
 case "$sub" in
   api)
@@ -53,10 +55,12 @@ case "$sub" in
       exit 1
     fi
     if [ -n "$jq_filter" ]; then
-      jq -r "$jq_filter" "$SANDBOX/issues.json"
+      result="$(jq -r "$jq_filter" "$SANDBOX/issues.json")"
     else
-      jq -r '.[].title' "$SANDBOX/issues.json"
-    fi ;;
+      result="$(jq -r '.[].title' "$SANDBOX/issues.json")"
+    fi
+    trace "scan result=$result"
+    printf '%s\\n' "$result" ;;
   label)
     verb="$1"; shift
     name=""
@@ -76,11 +80,14 @@ case "$sub" in
           mv "$SANDBOX/issues.json.tmp" "$SANDBOX/issues.json"
         fi
         if ! mkdir "$SANDBOX/label-$name.lock" 2>/dev/null; then
+          trace "lock busy $name"
           echo "label with name \\"$name\\" already exists; use --force to update its color and description" >&2
           exit 1
         fi
+        trace "lock acquired $name"
         exit 0 ;;
       delete)
+        trace "lock deleting $name"
         rm -rf "$SANDBOX/label-$name.lock"
         exit 0 ;;
     esac ;;
@@ -335,7 +342,7 @@ describe("release-stop-notify.sh (fake gh)", () => {
     assert.match(outputs, /stop=deduplicated issue=100 event=111/);
     const issues = JSON.parse(fs.readFileSync(path.join(sb.dir, "issues.json"), "utf8"));
     const matchingIssues = issues.filter((it) => it.title === "release-stop: myr-v1.8.0 (111)");
-    assert.equal(matchingIssues.length, 1, `expected exactly 1 matching issue, got: ${JSON.stringify(issues)}`);
+    assert.equal(matchingIssues.length, 1, `expected exactly 1 matching issue, got: ${JSON.stringify(issues)}\n${fs.readFileSync(path.join(sb.dir, "trace.log"), "utf8")}\np1: ${r1.stderr}\np2: ${r2.stderr}`);
     assert.equal(matchingIssues[0].state, "open");
   });
 
