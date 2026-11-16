@@ -15,6 +15,7 @@ describe("release candidate aggregation regression", () => {
     const empty = Object.freeze([]);
     const last = Object.freeze([
       Object.freeze({ type: "artifact", status: "ready", metadata: Object.freeze({ repo: "beta/app", number: 100 }) }),
+      Object.freeze({ type: "pull_request", status: "merged", metadata: Object.freeze({ repo: "alpha/app", number: 42, mergeCommitSha: "a".repeat(40) }) }),
       Object.freeze({ type: "pull_request", status: "merged", metadata: Object.freeze({ repo: "beta/app", number: 42, mergeCommitSha: "b".repeat(40) }) }),
       Object.freeze({ type: "pull_request", status: "merged", metadata: Object.freeze({ number: 8, mergeCommitSha: "c".repeat(40) }) }),
       Object.freeze({ type: "pull_request", status: "draft" }),
@@ -25,6 +26,7 @@ describe("release candidate aggregation regression", () => {
     const expected = [
       { id: "OPE-2:PR#42", repository: "alpha/app", mergeCommitSha: "a".repeat(40), merged: true },
       { id: "OPE-2:PR#7", repository: "alpha/app", mergeCommitSha: null, merged: false },
+      { id: "OPE-1:PR#42", repository: "alpha/app", mergeCommitSha: "a".repeat(40), merged: true },
       { id: "OPE-1:PR#42", repository: "beta/app", mergeCommitSha: "b".repeat(40), merged: true },
       { id: "OPE-1:PR#8", repository: "", mergeCommitSha: "c".repeat(40), merged: true },
       { id: "OPE-1:PR#?", repository: "", mergeCommitSha: null, merged: false },
