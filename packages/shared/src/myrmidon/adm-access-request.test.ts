@@ -18,7 +18,7 @@ const validCreateInput = {
   targetCompanyId: TARGET,
   resourceType: "skill" as const,
   resourceRef: "skill:atlas-report",
-  action: "read_metadata" as const,
+  action: "grant_capability" as const,
   justification: "Cross-company report needs the skill catalog metadata",
   requestedScope: { resourceKey: "atlas-report" },
   ttlSeconds: 3600,
