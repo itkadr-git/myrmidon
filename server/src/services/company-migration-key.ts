@@ -16,6 +16,15 @@ export function migrationRunKey(input: {
   files: Record<string, unknown>;
   secretBindings?: Array<{ key: string; agentSlug: string | null; projectSlug: string | null; requirement: string }>;
 }): string {
+  // Binding order is an export traversal detail, not migration identity.
+  const normalized = {
+    ...input,
+    secretBindings: [...(input.secretBindings ?? [])].sort((left, right) => {
+      const a = canonicalJson(left);
+      const b = canonicalJson(right);
+      return a < b ? -1 : a > b ? 1 : 0;
+    }),
+  };
   // Hash package files instead of the parsed manifest's volatile generatedAt timestamp.
-  return createHash("sha256").update(canonicalJson(input)).digest("hex");
+  return createHash("sha256").update(canonicalJson(normalized)).digest("hex");
 }

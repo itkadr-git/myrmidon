@@ -28,6 +28,16 @@ describe("migration run identity", () => {
     expect(migrationRunKey({ ...request, files: { ...request.files, "agents/worker.md": "changed" } })).not.toBe(key);
   });
 
+  it("treats secret bindings as an unordered set of metadata", () => {
+    const bindings = [
+      { key: "TOKEN", agentSlug: "worker", projectSlug: null, requirement: "required" },
+      { key: "PASSWORD", agentSlug: null, projectSlug: "project", requirement: "optional" },
+    ];
+    const first = migrationRunKey({ ...request, secretBindings: bindings });
+    expect(migrationRunKey({ ...request, secretBindings: [...bindings].reverse() })).toBe(first);
+    expect(migrationRunKey({ ...request, secretBindings: [bindings[0]!] })).not.toBe(first);
+  });
+
   it("preserves array order and does not expose package content in the key", () => {
     const secret = "sensitive-package-content";
     const first = migrationRunKey({ ...request, exportOptions: { agents: ["a", "b"] }, files: { "agent.md": secret } });
