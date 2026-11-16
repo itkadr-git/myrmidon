@@ -5,6 +5,7 @@ import { activityLog, agents, companies, companyMemberships, companyTransferRuns
 
 import { companyRoutes } from "../routes/companies.js";
 import { companyService } from "../services/companies.js";
+import { companyTransferRunService } from "../services/company-transfer-runs.js";
 import { errorHandler } from "../middleware/index.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
@@ -236,6 +237,18 @@ describe("company migration dry run", () => {
     } finally {
       insert.mockRestore(); update.mockRestore(); remove.mockRestore();
     }
+  });
+
+  it("does not reapply a failed migration after it has claimed a destination", async () => {
+    const [source] = await db.insert(companies).values({ name: "Retry safety source", issuePrefix: "MRY" }).returning();
+    const [destination] = await db.insert(companies).values({ name: "Retry safety destination", issuePrefix: "MRD" }).returning();
+    const [run] = await db.insert(companyTransferRuns).values({
+      direction: "import", status: "failed", actorKey: "migration-test",
+      idempotencyKey: "migration-failed-destination", companyId: destination!.id,
+      containerRef: { kind: "company_migration", sourceCompanyId: source!.id },
+    }).returning();
+    expect(await companyTransferRunService.claimApply(db, run!.id)).toBe(false);
+    expect((await companyTransferRunService.getRun(db, run!.id))?.status).toBe("failed");
   });
 
   it("atomically associates a created company with an applying transfer run", async () => {
