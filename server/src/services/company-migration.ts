@@ -22,8 +22,10 @@ export function companyMigrationService(portability: Portability) {
         dryRun: true as const,
         validation: {
           ...validation,
-          errors: [...validation.errors, ...(preview?.errors ?? [])],
-          // Raw portability warnings can contain paths or upstream error messages.
+          // Planner messages can contain paths or upstream error details; expose counts only.
+          errorCount: validation.errors.length + (preview?.errors.length ?? 0),
+          importErrorCount: preview?.errors.length ?? 0,
+          errors: [...validation.errors, ...((preview?.errors.length ?? 0) > 0 ? ["Import preview reported errors; inspect the source package."] : [])],
           warningCounts: { export: exported.warnings.length, import: preview?.warnings.length ?? 0 },
           importPreviewSkipped: preview === null,
         },
