@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
-import { heartbeatRunEvents, issueWorkProducts, workspaceRuntimeServices } from "@myrmidon/db";
+import { heartbeatRunEvents, issueWorkProducts, issues, workspaceRuntimeServices } from "@myrmidon/db";
 import type { IssueWorkProduct } from "@myrmidon/shared";
 import { HttpError } from "../errors.js";
 import { insertRowsInChunks } from "./batch-insert.js";
@@ -312,6 +312,10 @@ export function workProductService(
           .where(eq(issueWorkProducts.id, id))
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
+
+        // Serialize updates with transitions holding the owning issue row.
+        await tx.select({ id: issues.id }).from(issues)
+          .where(eq(issues.id, existing.issueId)).for("update");
 
         if (patch.isPrimary === true) {
           await tx
