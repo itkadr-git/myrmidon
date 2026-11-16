@@ -87,6 +87,16 @@ export const reportSchema = z
 export function onboardRoutes(deps: { service: OnboardService }) {
   const router = Router();
 
+  router.post("/myrmidon/fleet/onboard-jobs/:id/host-key", validate(z.object({ companyId: UUID, fingerprint: z.string().regex(/^SHA256:[A-Za-z0-9+/]{43}$/) }).strict()), async (req, res) => {
+    const jobId = UUID.safeParse(req.params.id);
+    if (!jobId.success) throw new HttpError(400, "job id must be a uuid");
+    try {
+      const accepted = await deps.service.pinHostKey(executorToken(req), req.body.companyId, jobId.data, req.body.fingerprint);
+      if (!accepted) throw conflict("Host key does not match the stored pin");
+      res.json({ accepted: true });
+    } catch (err) { throw toHttpError(err); }
+  });
+
   router.post("/myrmidon/fleet/onboard-jobs/:id/owned-resources", validate(z.object({ companyId: UUID, resource: z.unknown() }).strict()), async (req, res) => {
     const jobId = UUID.safeParse(req.params.id);
     if (!jobId.success) throw new HttpError(400, "job id must be a uuid");

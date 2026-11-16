@@ -60,6 +60,13 @@ function createMocks() {
       return job;
   };
   const mockStore: FleetOnboardStore = {
+    async pinHostKey(companyId, serverId, jobId, fingerprint) {
+      const job = store.jobs.find((j: any) => j.id === jobId && j.companyId === companyId && j.serverId === serverId && ["claimed", "running"].includes(j.status));
+      const server = store.servers.find((s: any) => s.id === serverId && s.companyId === companyId);
+      if (!job || !server || (server.hostKeyFingerprint && server.hostKeyFingerprint !== fingerprint)) return false;
+      server.hostKeyFingerprint = fingerprint;
+      return true;
+    },
     async recordOwnedResource(companyId, serverId, jobId, resource) {
       const server = store.servers.find((s: any) => s.id === serverId && s.companyId === companyId);
       if (!server) throw new Error("server not found");

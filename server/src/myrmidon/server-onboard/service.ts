@@ -153,6 +153,15 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
   const claimlessAuditEntity = "fleet-onboard-sweep";
 
   return {
+    async pinHostKey(presentedToken: string | null | undefined, companyId: string, jobId: string, fingerprint: string): Promise<boolean> {
+      requireEnabled();
+      requireExecutorToken(presentedToken);
+      const job = await deps.store.getJob(companyId, jobId);
+      if (!job) throw new OnboardServiceError(404, "Job not found");
+      if (!["claimed", "running"].includes(job.status)) throw new OnboardServiceError(409, "Host pin requires an active job");
+      return deps.store.pinHostKey(companyId, job.serverId, job.id, fingerprint);
+    },
+
     /** The authenticated executor reports identities, never arbitrary cleanup commands. */
     async recordOwnedResource(presentedToken: string | null | undefined, companyId: string, jobId: string, value: unknown) {
       requireEnabled();
