@@ -41,6 +41,20 @@ describe("bot partition free-space notification", () => {
     expect(notifyOwner).toHaveBeenCalledTimes(1);
   });
 
+  it("does not duplicate a critical notification after an unmeasured interval", async () => {
+    const notifyOwner = vi.fn(async () => undefined);
+    const runtime = botPartitionThresholdRuntimeForTest({
+      getBotDiskSettings: async () => ({ partitionCriticalPercent: 95 }),
+      notifyOwner,
+      env: {},
+      now: () => new Date(at),
+    });
+    await runtime.updateFromPartition(sample(40));
+    runtime.markUnmeasured();
+    await runtime.updateFromPartition(sample(30));
+    expect(notifyOwner).toHaveBeenCalledTimes(1);
+  });
+
   it("retries a failed notification on the next measurement", async () => {
     const notifyOwner = vi.fn().mockRejectedValueOnce(new Error("outbox unavailable")).mockResolvedValue(undefined);
     const runtime = botPartitionThresholdRuntimeForTest({
