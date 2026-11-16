@@ -272,6 +272,39 @@ describe("workProductService", () => {
       expect(result?.id).toBe("existing-1");
     });
 
+    it("keeps status, review state, primary flag and headSha of the stored record on repeated registration", async () => {
+      const { tx, transaction, selectLimit } = makeTx();
+      const existing = createWorkProductRow({
+        id: "existing-2",
+        externalId: "itkadr-git/myrmidon#pull/3321",
+        url: "https://github.com/itkadr-git/myrmidon/pull/3321",
+        status: "merged",
+        reviewState: "approved",
+        isPrimary: true,
+        metadata: { headSha: "b".repeat(40), state: "merged", number: 3321 },
+      });
+      selectLimit.mockResolvedValueOnce([existing]);
+      const updateReturning = vi.fn(async () => [existing]);
+      const updateSet = vi.fn(() => ({ where: () => ({ returning: updateReturning }) }));
+      const txUpdate = vi.fn(() => ({ set: updateSet }));
+      (tx as any).update = txUpdate;
+      const svc = workProductService({ transaction } as any);
+
+      await svc.createForIssue("issue-1", "company-1", {
+        ...prInput("https://github.com/itkadr-git/myrmidon/pull/3321"),
+        status: "open",
+        reviewState: "draft",
+        metadata: { headSha: "a".repeat(40), state: "open" },
+      });
+
+      expect(txUpdate).toHaveBeenCalledTimes(1);
+      const setArg = (updateSet.mock.calls[0] as unknown[])[0] as Record<string, any>;
+      expect(setArg).not.toHaveProperty("status");
+      expect(setArg).not.toHaveProperty("reviewState");
+      expect(setArg).not.toHaveProperty("isPrimary");
+      expect(setArg.metadata).toMatchObject({ headSha: "b".repeat(40), state: "merged" });
+    });
+
     it("derives url and externalId from metadata.repository + metadata.number", async () => {
       const { tx, transaction, txInsert, insertValues } = makeTx();
       const svc = workProductService({ transaction } as any);

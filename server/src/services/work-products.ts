@@ -364,6 +364,24 @@ export function workProductService(
               .limit(1)
               .then((rows) => rows[0] ?? null)
           : null;
+        if (duplicate) {
+          // The stored record owns status, review state, primary flag and PR state (headSha, merged, ...), which
+          // the webhook keeps current. A repeated registration only fills what is missing.
+          const incomingMetadata = (data.metadata as Record<string, unknown> | null) ?? {};
+          return await tx
+            .update(issueWorkProducts)
+            .set({
+              externalId: duplicate.externalId ?? data.externalId ?? null,
+              url: duplicate.url ?? data.url ?? null,
+              title: duplicate.title || data.title,
+              summary: duplicate.summary ?? data.summary ?? null,
+              metadata: { ...incomingMetadata, ...((duplicate.metadata as Record<string, unknown> | null) ?? {}) },
+              updatedAt: new Date(),
+            })
+            .where(eq(issueWorkProducts.id, duplicate.id))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+        }
         if (data.isPrimary) {
           await tx
             .update(issueWorkProducts)
@@ -375,23 +393,6 @@ export function workProductService(
                 eq(issueWorkProducts.type, data.type),
               ),
             );
-        }
-        if (duplicate) {
-          const { metadata: incomingMetadata, ...incoming } = data;
-          return await tx
-            .update(issueWorkProducts)
-            .set({
-              ...incoming,
-              externalId: duplicate.externalId ?? data.externalId ?? null,
-              metadata: {
-                ...((duplicate.metadata as Record<string, unknown> | null) ?? {}),
-                ...((incomingMetadata as Record<string, unknown> | null) ?? {}),
-              },
-              updatedAt: new Date(),
-            })
-            .where(eq(issueWorkProducts.id, duplicate.id))
-            .returning()
-            .then((rows) => rows[0] ?? null);
         }
         return await tx
           .insert(issueWorkProducts)
