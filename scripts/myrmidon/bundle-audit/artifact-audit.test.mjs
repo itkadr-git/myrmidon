@@ -49,6 +49,22 @@ test('rejects TypeScript files matched by wildcard targets', (t) => {
   assert.match(result.stderr, /source TypeScript.*src\/nested\/index\.ts/);
 });
 
+test('rejects direct runtime symlinks resolving to source TypeScript', (t) => {
+  const root = fixture(t, { main: './dist/index.js' }, { 'dist/keep.js': '', 'src/index.ts': '' });
+  symlinkSync('../src/index.ts', join(root, 'packages/app/dist/index.js'));
+  const result = audit(root);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /source TypeScript.*src\/index\.ts/);
+});
+
+test('rejects wildcard runtime symlinks resolving to source TypeScript', (t) => {
+  const root = fixture(t, { exports: { './*': './dist/*.js' } }, { 'dist/keep.js': '', 'src/index.ts': '' });
+  symlinkSync('../src/index.ts', join(root, 'packages/app/dist/index.js'));
+  const result = audit(root);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /source TypeScript.*src\/index\.ts/);
+});
+
 test('types-only exports are not runtime entries', (t) => {
   const root = fixture(t, { exports: { '.': { types: './dist/missing.d.ts' } } });
   assert.equal(audit(root).status, 0);
