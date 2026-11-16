@@ -158,16 +158,23 @@ export function measureRun({
     let pollTimer = null;
     let killTimer = null;
     let timeoutTimer = null;
+    let immediate = null;
+    let probeController = null;
+    let probeTimeout = null;
 
     const clearTimers = () => {
       if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
       if (timeoutTimer) { clearTimeout(timeoutTimer); timeoutTimer = null; }
+      if (immediate) { clearImmediate(immediate); immediate = null; }
+      if (probeTimeout) { clearTimeout(probeTimeout); probeTimeout = null; }
+      probeController?.abort();
     };
 
     /** SIGTERM to the process group, then SIGKILL after killGraceMs. */
     const stopChild = () => {
       if (killed) return;
       killed = true;
+      clearTimers();
       killProcessGroup(pid, "SIGTERM");
       killTimer = setTimeout(() => {
         killProcessGroup(pid, "SIGKILL");
@@ -220,19 +227,26 @@ export function measureRun({
     });
 
     const probe = async () => {
-      if (measured !== null || settled) return;
+      if (measured !== null || settled || killed || probeController) return;
+      const controller = new AbortController();
+      probeController = controller;
+      probeTimeout = setTimeout(() => controller.abort(), Math.min(pollIntervalMs * 5, 2000));
+      probeTimeout.unref?.();
       try {
         const response = await fetchImpl(`http://127.0.0.1:${port}/api/health`, {
-          signal: AbortSignal.timeout(Math.min(pollIntervalMs * 5, 2000)),
+          signal: controller.signal,
         });
         // Only HTTP 200 counts as ready; 503 or others keep polling.
-        if (response.status === 200 && measured === null && !settled) {
+        if (response.status === 200 && measured === null && !settled && !killed && !controller.signal.aborted) {
           measured = elapsedMsSince(startedAt);
           // Stop the server and wait for close so port is free for subsequent runs.
           stopChild();
         }
       } catch {
         // Connection refused / reset / aborted before readiness: keep polling.
+      } finally {
+        if (probeTimeout) { clearTimeout(probeTimeout); probeTimeout = null; }
+        probeController = null;
       }
     };
 
@@ -242,7 +256,8 @@ export function measureRun({
     pollTimer.unref?.();
 
     // Fire first probe shortly after spawn
-    setImmediate(() => {
+    immediate = setImmediate(() => {
+      immediate = null;
       void probe();
     });
 
