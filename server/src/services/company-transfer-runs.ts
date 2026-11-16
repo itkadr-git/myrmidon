@@ -398,7 +398,11 @@ export const companyTransferRunService = {
     await db
       .update(companyTransferRuns)
       .set({ status: "failed", error, finishedAt: new Date(), updatedAt: new Date() })
-      .where(eq(companyTransferRuns.id, runId));
+      .where(and(
+        eq(companyTransferRuns.id, runId),
+        // A late failure must not reopen a completed or cancelled migration.
+        sql`(coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration' or ${companyTransferRuns.status} not in ('completed', 'cancelled'))`,
+      ));
   },
 
   async cancel(db: Db, runId: string): Promise<void> {
