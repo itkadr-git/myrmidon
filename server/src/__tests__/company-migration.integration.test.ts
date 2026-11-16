@@ -866,6 +866,7 @@ describe("company migration dry run", () => {
     const invalidKeys = [
       `${destination.id}/assets/general/private-name.txt`,
       `${destination.id}/assets/general/2026/11/16/not-a-uuid-file`,
+      `${destination.id}/assets/general/abcd/11/16/550e8400-e29b-41d4-a716-446655440000-file`,
       `${destination.id}/assets/general/2026/11/16/550e8400-e29b-41d4-a716-446655440000-private-name.txt`,
       `${destination.id}/assets/general/2026/11/16/550e8400-e29b-41d4-a716-446655440000-file/extra`,
       `${destination.id}/assets/general/2026/11/16/550e8400-e29b-41d4-a716-446655440000-file\\extra`,
