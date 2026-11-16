@@ -447,6 +447,11 @@ import {
 import { externalObjectService } from "../services/external-objects.js";
 import { getExternalChannelBindingSummary } from "../services/chat-channel-binding.js";
 import { deliverAgentUnblockNotification, isStaleBlockGuardedTransition } from "../services/routable-blocked.js";
+import {
+  findLastExternalIssueEventAt,
+  findLastUnblockRequestWakeAt,
+  resolveUnblockEscalationAgentId,
+} from "../services/unblock-request-context.js";
 import { isRegisteredEventKey } from "../myrmidon/stale-block/index.js";
 import {
   BLOCKED_LOOP_SIGNATURE_KEY,
@@ -17231,11 +17236,51 @@ export function issueRoutes(
       if (enteringBlocked) {
         const blockedIssue = issue;
         let ownerNotifiedAt: Date | null = null;
+        const blockedOwnerAgentId =
+          blockedIssue.unblockDescriptor && typeof blockedIssue.unblockDescriptor.owner === "object" &&
+          "agentId" in blockedIssue.unblockDescriptor.owner
+            ? blockedIssue.unblockDescriptor.owner.agentId
+            : null;
         await deliverAgentUnblockNotification({
           issue: blockedIssue,
           wakeup: heartbeat.wakeup,
           markNotified: async (blockedOwnerNotifiedAt) => {
             ownerNotifiedAt = blockedOwnerNotifiedAt;
+          },
+          // myrmidon(UNBLOCK-REQUEST-NO-SELF-WAKE): no wake of the assignee for its own
+          // block, and repeat wakes are throttled by nextCheckAt / 30 minutes.
+          nextCheckAt: (blockedIssue.blockerMetadata as { nextCheckAt?: string } | null | undefined)?.nextCheckAt ?? null,
+          lastWakeAt: (agentId) =>
+            findLastUnblockRequestWakeAt(db, { companyId: blockedIssue.companyId, issueId: blockedIssue.id, agentId }),
+          lastExternalEventAt: (ownerAgentId) =>
+            findLastExternalIssueEventAt(db, {
+              companyId: blockedIssue.companyId,
+              issueId: blockedIssue.id,
+              ignoreAgentIds: [ownerAgentId, blockedIssue.assigneeAgentId ?? ""],
+            }),
+          resolveEscalationAgentId: () =>
+            blockedIssue.assigneeAgentId
+              ? resolveUnblockEscalationAgentId(db, {
+                  companyId: blockedIssue.companyId,
+                  projectId: blockedIssue.projectId ?? null,
+                  assigneeAgentId: blockedIssue.assigneeAgentId,
+                })
+              : Promise.resolve(null),
+          onOutcome: async (outcome, detail) => {
+            if (outcome === "woken") return;
+            await logActivity(db, {
+              companyId: blockedIssue.companyId,
+              actorType: "system",
+              actorId: "system",
+              agentId: null,
+              runId: null,
+              action: `issue.unblock_request_${outcome}`,
+              entityType: "issue",
+              entityId: blockedIssue.id,
+              details: { ownerAgentId: detail.ownerAgentId, targetAgentId: detail.targetAgentId, blockedBy: blockedOwnerAgentId },
+            }).catch((err) => {
+              logger.warn({ err, issueId: blockedIssue.id }, "failed to log unblock request outcome");
+            });
           },
         });
         if (ownerNotifiedAt) {
