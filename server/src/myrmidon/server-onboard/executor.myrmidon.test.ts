@@ -404,6 +404,22 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockReporter.completion?.status).toBe("failed");
   });
 
+  it("reports password restoration failure when the SSH restore command throws", async () => {
+    const ssh = new MockSshExecutor({ timeoutCommands: [/restore-myrmidon-password-config/] });
+    ssh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
+    ssh.mockResponse("sudo sshd -t", { exitCode: 1, stderr: "invalid configuration" });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-restore-timeout", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["access"], options: { keepPassword: false },
+      secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("configuration restoration failed");
+  });
+
   it("restores the password configuration when the post-reload SSH check fails", async () => {
     const initial = new MockSshExecutor();
     const verified = new MockSshExecutor();
