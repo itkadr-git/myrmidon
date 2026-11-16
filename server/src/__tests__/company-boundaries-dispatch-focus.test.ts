@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { activityLog, agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issueClaims, issueLabels, issues, labels } from "@myrmidon/db";
+import { activityLog, agentWakeupRequests, agents, companies, createDb, heartbeatRuns, instanceSettings, issueClaims, issueLabels, issues, labels } from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 import { resolveSwarmClaimSettings } from "@myrmidon/shared";
 import { matchCompany, type SwarmMatcherDeps } from "../myrmidon/swarm-claim/matcher.js";
@@ -33,6 +33,7 @@ suite("company boundaries in dispatch and release focus", () => {
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
+    await db.delete(instanceSettings);
   });
   afterAll(async () => { await database?.cleanup(); });
 
@@ -111,6 +112,22 @@ suite("company boundaries in dispatch and release focus", () => {
     expect(await runViolatesReleaseFocus(db, {
       companyId: company.companyId, agentId: company.agentId, issueId: company.other,
     })).toBe(true);
+    expect(await service.readCompany(company.companyId)).toEqual({ currentRelease: "1.7", strictReleaseFocus: true });
+  });
+
+  it("does not assign legacy instance focus arbitrarily across multiple companies", async () => {
+    const adm = await seed("ADM");
+    const other = await seed("BBQ");
+    const service = runPriorityService(db);
+    const actor = { actorType: "user" as const, actorId: "operator", agentId: null, runId: null, agentApiKeyId: null };
+    await service.update({ currentRelease: "1.7", strictReleaseFocus: true }, actor);
+    resetRunPriorityForTests();
+    await syncRunPriorityFromStore(db);
+    for (const company of [adm, other]) {
+      expect(await runViolatesReleaseFocus(db, {
+        companyId: company.companyId, agentId: company.agentId, issueId: company.other,
+      })).toBe(false);
+    }
   });
 
   it("preserves both companies' settings when focus updates race", async () => {
