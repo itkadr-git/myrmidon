@@ -208,6 +208,48 @@ test("run: refuses when the route returns no verdict", async () => {
   assert.equal(code, 1);
 });
 
+test("run: rejects malformed verdicts without overwriting an existing artifact", async () => {
+  const cases = [
+    [],
+    { ...VERDICT, verdict: "unknown" },
+    { ...VERDICT, issueId: " " },
+    { ...VERDICT, checkedAt: "" },
+    { ...VERDICT, signature: 42 },
+    { ...VERDICT, deployedVersion: 42 },
+    { ...VERDICT, deployedVersion: undefined },
+  ];
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fetch-contract-"));
+  try {
+    const out = path.join(dir, "verdict.json");
+    for (const verdict of cases) {
+      fs.writeFileSync(out, "previous artifact\n");
+      const { fetchBoard } = fakeBoard({ verdict });
+      const code = await run({ version: "1.8.0", issue: ISSUE_ID, out }, { ...silent, env: env() }, fetchBoard);
+      assert.equal(code, 1, JSON.stringify(verdict));
+      assert.equal(fs.readFileSync(out, "utf8"), "previous artifact\n");
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("run: preserves confirmed and failed verdicts including unsigned diagnostics", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fetch-contract-"));
+  try {
+    const out = path.join(dir, "verdict.json");
+    const failed = { ...VERDICT, verdict: "failed", deployedVersion: null, reason: "not deployed" };
+    delete failed.signature;
+    for (const verdict of [VERDICT, failed]) {
+      const { fetchBoard } = fakeBoard({ verdict });
+      const code = await run({ version: "1.8.0", issue: ISSUE_ID, out }, { ...silent, env: env() }, fetchBoard);
+      assert.equal(code, 0);
+      assert.deepEqual(JSON.parse(fs.readFileSync(out, "utf8")), verdict);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("run: writes to stdout when --out is omitted", async () => {
   const { fetchBoard } = fakeBoard();
   const stdoutWrite = mock.method(process.stdout, "write");

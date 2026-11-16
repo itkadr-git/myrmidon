@@ -27,6 +27,7 @@
 // "External input" reuses the movement notion of the cooling guard
 // (wake-task-guard.ts `isRealTaskMovement`): a comment or a movement activity
 // by a user or by a different agent, a blocker resolved, a PR/CI sync event.
+// A change of the PR head (`issue.work_product_head_changed`) counts too.
 // The agent's own comments and updates and system bookkeeping do not count.
 
 import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
@@ -38,6 +39,7 @@ import {
   isRealTaskMovement,
   type TaskMovement,
 } from "./wake-task-guard.js";
+import { PR_HEAD_CHANGE_ACTIVITY_ACTION } from "../services/issue-rewake-throttle.js";
 
 export const CONTINUATION_WAKE_REASON = "issue_continuation_needed";
 
@@ -67,7 +69,15 @@ export const CONTINUATION_CAP_UNBLOCK_ACTION =
 
 /** Movement actions that count as external input: the cooling guard's list plus an assignment. */
 const EXTERNAL_INPUT_ACTIVITY_ACTIONS: string[] = [...MOVEMENT_ACTIVITY_ACTIONS, "issue.assigned"];
-const EXTERNAL_INPUT_SYSTEM_ACTIONS: string[] = [...EXTERNAL_SYSTEM_MOVEMENTS];
+// A change of the head of the task's pull request (a push the webhook saw) is
+// real progress outside the agent's own chatter, so it restarts the count. It
+// is local to this cap: the cooling guard's movement list is left as it was.
+const EXTERNAL_INPUT_SYSTEM_ACTIONS: string[] = [...EXTERNAL_SYSTEM_MOVEMENTS, PR_HEAD_CHANGE_ACTIVITY_ACTION];
+
+function isExternalInput(move: TaskMovement, agentId: string): boolean {
+  if (isRealTaskMovement(move, agentId)) return true;
+  return move.actorType === "system" && move.action === PR_HEAD_CHANGE_ACTIVITY_ACTION;
+}
 
 export interface ContinuationIssueFacts {
   status: string;
@@ -106,7 +116,7 @@ export function countContinuationsWithoutExternalInput(input: {
 }): number {
   let lastExternalAt = Number.NEGATIVE_INFINITY;
   for (const move of input.moves) {
-    if (isRealTaskMovement(move, input.agentId) && move.at > lastExternalAt) lastExternalAt = move.at;
+    if (isExternalInput(move, input.agentId) && move.at > lastExternalAt) lastExternalAt = move.at;
   }
   let count = 0;
   for (const run of input.runs) {
