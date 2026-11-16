@@ -25,8 +25,11 @@ describe("release verification repository scope", () => {
       });
       expect(result.verdict).toBe("failed");
       expect(result.allMembersPresent).toBe(false);
+      expect(result.members[0]?.membership).toBe("present");
+      expect(result.members[0]?.releaseRefs).toEqual([tag]);
       expect(result.members[1]?.membership).toBe("unknown");
       expect(result.members[1]?.releaseRefs).toEqual([]);
+      expect(calls.some((url) => url.includes("/acme/primary/"))).toBe(true);
       expect(calls.some((url) => url.includes("/acme/other/"))).toBe(false);
     },
   );
