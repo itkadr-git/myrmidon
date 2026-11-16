@@ -304,8 +304,16 @@ export class FleetOnboardExecutor {
               }
               firewallRollbackArmed = false;
             } catch (err) {
-              // Rollback immediately
-              await activeSsh.execute("sudo ufw disable").catch(() => {});
+              // Keep the timer armed if the immediate rollback cannot be confirmed.
+              let rollbackSucceeded = false;
+              try {
+                rollbackSucceeded = (await activeSsh.execute("sudo ufw disable")).exitCode === 0;
+              } catch {
+                // The timer remains armed for a later attempt.
+              }
+              if (!rollbackSucceeded) {
+                throw new Error(`Firewall allow-before-deny verification failed; firewall rollback failed: ${(err as Error).message}`);
+              }
               firewallRollbackArmed = false;
               throw new Error(`Firewall allow-before-deny verification failed; rolled back: ${(err as Error).message}`);
             }
