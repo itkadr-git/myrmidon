@@ -1,5 +1,6 @@
 import express from "express";
 import request from "supertest";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companyTransferRuns, createDb, issueComments, issues, principalPermissionGrants, projects } from "@myrmidon/db";
 
@@ -658,6 +659,22 @@ describe("company migration dry run", () => {
     expect(saved?.status).toBe("cancelled");
     expect(saved?.error).toBeTruthy();
     expect(JSON.stringify(saved)).not.toContain("idle-secret-canary");
+  });
+
+  it("retains the run identity after its migration-owned destination is deleted", async () => {
+    const [destination] = await db.insert(companies).values({ name: "Deleted destination", issuePrefix: "MDD" }).returning();
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "deleted-destination-source", "deleted-destination-key");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    await db.update(companyTransferRuns).set({ companyId: destination!.id }).where(eq(companyTransferRuns.id, run.id));
+    await companyTransferRunService.releaseApplyClaim(db, run.id, "interrupted");
+    await db.delete(companies).where(eq(companies.id, destination!.id));
+
+    expect((await companyTransferRunService.getRun(db, run.id))?.companyId).toBeNull();
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(false);
+    await companyTransferRunService.cancel(db, run.id);
+    const retry = await companyTransferRunService.resumeOrCreateMigration(db, "deleted-destination-source", "deleted-destination-key");
+    expect(retry.run.id).toBe(run.id);
+    expect(retry.run.status).toBe("failed");
   });
 
   it("does not reapply a failed migration after it has claimed a destination", async () => {
