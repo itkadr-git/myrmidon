@@ -624,6 +624,15 @@ describe("company migration dry run", () => {
     expect(JSON.stringify(after)).not.toContain("private-migration-value");
   });
 
+  it("does not persist arbitrary part names in the migration ledger", async () => {
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "part-source", "part-redaction");
+    const before = await companyTransferRunService.getRun(db, run.id);
+    expect(await companyTransferRunService.completePart(db, run.id, "private-part-value")).toBe(false);
+    const after = await companyTransferRunService.getRun(db, run.id);
+    expect(after).toEqual(before);
+    expect(JSON.stringify(after)).not.toContain("private-part-value");
+  });
+
   it("does not persist upstream error details when a migration apply fails", async () => {
     const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "redaction-source", "redaction-key");
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
