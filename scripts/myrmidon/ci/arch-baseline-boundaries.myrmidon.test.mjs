@@ -45,23 +45,18 @@ describe("INV-13 baseline boundaries", { concurrency: false }, () => {
   });
 
   it("suppresses a gap just below the explicit boundary, but reports gaps at and above it", () => {
-    withFixture([1, 3, 5, 7], (root) => {
-      writeBaseline(root, { numbers: [1, 3, 5], enforceGapsFrom: 4 });
+    withFixture([1, 5], (root) => {
+      writeBaseline(root, { numbers: [1, 5], enforceGapsFrom: 3 });
       TEST_HOOKS.migrationBaselineOverride = "baseline.json";
       assert.deepEqual(checkMigrations(root), [
+        "packages/db/src/migrations: new gap at migration number 0003 (INV-13)",
         "packages/db/src/migrations: new gap at migration number 0004 (INV-13)",
-        "packages/db/src/migrations: new gap at migration number 0006 (INV-13)",
       ]);
-      writeBaseline(root, { numbers: [1, 3, 5], enforceGapsFrom: 3 });
-      assert.deepEqual(checkMigrations(root), [
-        "packages/db/src/migrations: new gap at migration number 0004 (INV-13)",
-        "packages/db/src/migrations: new gap at migration number 0006 (INV-13)",
-      ]);
-      writeBaseline(root, { numbers: [1, 3, 5], enforceGapsFrom: 2 });
+      writeBaseline(root, { numbers: [1, 5], enforceGapsFrom: 2 });
       assert.deepEqual(checkMigrations(root), [
         "packages/db/src/migrations: new gap at migration number 0002 (INV-13)",
+        "packages/db/src/migrations: new gap at migration number 0003 (INV-13)",
         "packages/db/src/migrations: new gap at migration number 0004 (INV-13)",
-        "packages/db/src/migrations: new gap at migration number 0006 (INV-13)",
       ]);
     });
   });
