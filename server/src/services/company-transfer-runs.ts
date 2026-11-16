@@ -400,8 +400,9 @@ export const companyTransferRunService = {
       .set({ status: "failed", error, finishedAt: new Date(), updatedAt: new Date() })
       .where(and(
         eq(companyTransferRuns.id, runId),
-        // A late failure must not reopen a completed or cancelled migration.
-        sql`(coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration' or ${companyTransferRuns.status} not in ('completed', 'cancelled'))`,
+        // Only the guarded releaseApplyClaim may settle an active migration.
+        // A stale failure must not reopen a completed or cancelled migration.
+        sql`(coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration' or ${companyTransferRuns.status} not in ('applying', 'completed', 'cancelled'))`,
       ));
   },
 
