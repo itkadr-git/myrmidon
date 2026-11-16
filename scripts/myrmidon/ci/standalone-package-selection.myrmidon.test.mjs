@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +11,7 @@ const scratch = process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_S
 
 function runFixture(t, workspace, publicPackages) {
   mkdirSync(scratch, { recursive: true });
-  const dir = mkdtempSync(path.join(scratch, "standalone-selection-"));
+  const dir = realpathSync(mkdtempSync(path.join(scratch, "standalone-selection-")));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(path.join(dir, "scripts"), { recursive: true });
   mkdirSync(path.join(dir, "bin"));
