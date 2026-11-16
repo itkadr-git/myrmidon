@@ -63,6 +63,7 @@ import {
   pullRequestWorkProductData,
 } from "../myrmidon/task-pr-sync/linking.js";
 import { workProductService } from "./work-products.js";
+import { githubDeliveryTransactionGate, githubPullRequestDeliveryQueue } from "./github-delivery-gate.js";
 import { lockObjectInTransaction, postgresErrorInfo, runTransactionWithRetry } from "./postgres-transaction-retry.js";
 
 type LeasedEvent = SealedConnectorEvents["events"][number];
@@ -1682,24 +1683,32 @@ export function githubConnectionEventService(
         // a transaction Postgres rolled back for a deadlock or a serialization
         // failure runs again, a bounded number of times, from a clean slate.
         const lockKey = githubPullRequestLockKey(companyId, normalizedEvent.payload);
-        await runTransactionWithRetry(async () => {
-          postCommitWakes.length = 0;
-          postCommitPublications.length = 0;
-          await db.transaction(async (tx) => {
-            if (lockKey) await lockObjectInTransaction(tx, lockKey);
-            await applyAndFinalize(tx as unknown as Db);
+        // myrmidon(WEBHOOK-LOCK-POOL): the wait for the turn of the pull request and
+        // for a free transaction slot is here, in the process, before a pooled
+        // connection is taken; the advisory lock below only keeps the other api
+        // process apart. The pull request queue is entered first, so a delivery
+        // that waits for its pull request holds no slot.
+        const runDelivery = () => githubDeliveryTransactionGate.run(async () => {
+          await runTransactionWithRetry(async () => {
+            postCommitWakes.length = 0;
+            postCommitPublications.length = 0;
+            await db.transaction(async (tx) => {
+              if (lockKey) await lockObjectInTransaction(tx, lockKey);
+              await applyAndFinalize(tx as unknown as Db);
+            });
+          }, {
+            onRetry: ({ attempt, error }) => {
+              logger.warn({
+                companyId,
+                providerDeliveryId: event.id,
+                attempt,
+                pgCode: error.code,
+                pgMessage: error.message,
+              }, "GitHub delivery transaction rolled back by Postgres, running it again");
+            },
           });
-        }, {
-          onRetry: ({ attempt, error }) => {
-            logger.warn({
-              companyId,
-              providerDeliveryId: event.id,
-              attempt,
-              pgCode: error.code,
-              pgMessage: error.message,
-            }, "GitHub delivery transaction rolled back by Postgres, running it again");
-          },
         });
+        await (lockKey ? githubPullRequestDeliveryQueue.run(lockKey, runDelivery) : runDelivery());
       } else {
         await applyAndFinalize(db);
       }
