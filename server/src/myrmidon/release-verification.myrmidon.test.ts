@@ -890,6 +890,20 @@ describe("persisted release evidence", () => {
     }
   });
 
+  it("rejects an older confirmation when a later signed check has a different candidate set", () => {
+    const changed = createReleaseVerificationEvidence({
+      ...scope,
+      members: [...members, member("issue-b:PR#2", SHA_C)],
+      verdict: "confirmed",
+      checkedAt: "2026-11-13T12:00:01.000Z",
+    }, "secret");
+    const comments = [record, changed].map((evidence) => ({
+      body: `release-evidence-v1: ${JSON.stringify(evidence)}`,
+      authorType: "system",
+    }));
+    expect(hasCurrentReleaseVerificationEvidence(comments, scope, "secret", new Date("2026-11-13T12:00:02.000Z"))).toBe(false);
+  });
+
   it("rejects expired and future signed evidence", () => {
     expect(validateReleaseVerificationEvidence(record, scope, "secret", new Date("2026-11-14T12:00:00.001Z"))).toBe(false);
     expect(validateReleaseVerificationEvidence(record, scope, "secret", new Date("2026-11-13T11:59:59.999Z"))).toBe(false);
