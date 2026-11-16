@@ -67,11 +67,12 @@ for (const [name, config, rebuild] of [
   test(`${name} content invalidates the appropriate builds with unchanged mtime`, (t) => {
     const { root, run } = fixture(t);
     const initial = [shared, sdk];
-    run(initial);
     const file = path.join(root, config);
     const time = new Date(1_600_000_000_000);
     fs.utimesSync(file, time, time);
+    run(initial);
     const before = fs.statSync(file).mtimeMs;
+    assert.equal(before, time.getTime());
     const contents = JSON.parse(fs.readFileSync(file, "utf8"));
     contents[name === "TypeScript version" ? "version" : "contractTest"] = "changed";
     fs.writeFileSync(file, `${JSON.stringify(contents)}\n`);
