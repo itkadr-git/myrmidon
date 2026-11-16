@@ -27,6 +27,20 @@ describe("bot partition free-space notification", () => {
     expect(notifyOwner).toHaveBeenCalledTimes(2);
   });
 
+  it("retries a failed notification on the next measurement", async () => {
+    const notifyOwner = vi.fn().mockRejectedValueOnce(new Error("outbox unavailable")).mockResolvedValue(undefined);
+    const runtime = botPartitionThresholdRuntimeForTest({
+      getBotDiskSettings: async () => undefined,
+      notifyOwner,
+      env: {},
+      now: () => new Date(at),
+    });
+    await runtime.updateFromPartition(sample(99));
+    await runtime.updateFromPartition(sample(98));
+    await runtime.updateFromPartition(sample(97));
+    expect(notifyOwner).toHaveBeenCalledTimes(2);
+  });
+
   it("does not interpret reserved filesystem blocks as free space", async () => {
     const notifyOwner = vi.fn(async () => undefined);
     const runtime = botPartitionThresholdRuntimeForTest({
