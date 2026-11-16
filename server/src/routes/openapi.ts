@@ -2124,6 +2124,7 @@ registry.registerPath({
       target: z.object({ mode: z.literal("new_company"), newCompanyName: z.string().trim().min(1) }).strict(),
       export: companyPortabilityExportSchema.optional().default({}),
       dryRun: z.literal(true).optional().default(true),
+      apply: z.literal(false).optional().default(false),
       collisionStrategy: z.enum(["rename", "skip", "replace"]).optional().default("rename"),
     }).strict()),
   },
