@@ -1,8 +1,9 @@
 # Life company migration pilot
 
-Status: design/runbook only. The migration service and its apply and rollback
-endpoints are not yet implemented. Do not use the existing company import API as
-a substitute: it does not provide the provenance-based recovery required here.
+Status: the operator migration route supports read-only dry runs; apply and
+rollback are not yet implemented. Confirmed apply requests are rejected. Do not
+use the existing company import API as a substitute: it does not provide the
+provenance-based recovery required here.
 
 ## Scope and authorization
 
