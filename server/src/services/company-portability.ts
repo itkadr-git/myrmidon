@@ -86,6 +86,7 @@ import { generateReadme } from "./company-export-readme.js";
 import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
 import { companySkillService } from "./company-skills.js";
 import { companyService } from "./companies.js";
+import { companyTransferRunService } from "./company-transfer-runs.js";
 import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
 import { issueService } from "./issues.js";
@@ -5393,6 +5394,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     if (!targetCompany) throw notFound("Target company not found");
 
+    const migrationRunId = options?.transferRunId;
+    const destinationCompanyId = targetCompany.id;
+    const migrationStorageReservation = migrationRunId
+      ? (objectKey: string) => companyTransferRunService.reserveMigrationObject(db, migrationRunId, destinationCompanyId, objectKey)
+      : undefined;
+
     const importedAgentEnvSlugs = new Set(
       plan.preview.plan.agentPlans
         .filter((entry) => entry.action !== "skip")
@@ -5449,6 +5456,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                   originalFilename: path.posix.basename(logoPath),
                   contentType,
                   body,
+                  beforeWrite: migrationStorageReservation,
                 });
                 const createdAsset = await assetRecords.create(targetCompany.id, {
                   provider: stored.provider,
@@ -5465,6 +5473,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 });
                 targetCompany = updated ?? targetCompany;
               } catch (err) {
+                if (migrationStorageReservation) throw err;
                 warnings.push(`Failed to import company logo ${logoPath}: ${err instanceof Error ? err.message : String(err)}`);
               }
             }
@@ -5501,6 +5510,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 originalFilename: embeddedAsset.originalFilename,
                 contentType: embeddedAsset.contentType,
                 body,
+                beforeWrite: migrationStorageReservation,
               });
               const createdAsset = await assetRecords.create(targetCompany.id, {
                 provider: stored.provider,
@@ -5514,6 +5524,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               });
               embeddedAssetIdMap.set(embeddedAsset.assetId, createdAsset.id);
             } catch (error) {
+              if (migrationStorageReservation) throw error;
               warnings.push(`Embedded image asset ${embeddedAssetLabel} could not be imported: ${error instanceof Error ? error.message : String(error)}; its references were left unchanged.`);
             }
           }
@@ -6247,6 +6258,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 originalFilename: attachmentEntry.originalFilename,
                 contentType: attachmentEntry.contentType,
                 body,
+                beforeWrite: migrationStorageReservation,
               });
               attachmentRows.push({
                 companyId: targetCompany.id,
@@ -6262,6 +6274,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 createdByUserId: actorUserId ?? null,
               });
             } catch (error) {
+              if (migrationStorageReservation) throw error;
               warnings.push(`Task ${manifestIssue.slug} attachment ${attachmentLabel} could not be imported: ${error instanceof Error ? error.message : String(error)}`);
             }
           }
