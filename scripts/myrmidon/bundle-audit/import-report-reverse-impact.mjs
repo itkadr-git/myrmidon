@@ -49,7 +49,7 @@ function reverseImpact(report, target) {
 try {
   if (process.argv.length !== 4 || !name(process.argv[2]) || !name(process.argv[3])) fail('argv');
   let contents, report;
-  try { contents = readFileSync(process.argv[2], 'utf8'); } catch { fail('file'); }
+  try { contents = readFileSync(process.argv[2] === '-' ? 0 : process.argv[2], 'utf8'); } catch { fail('file'); }
   try { report = JSON.parse(contents); } catch { fail('json'); }
   process.stdout.write(`${JSON.stringify(reverseImpact(report, process.argv[3]))}\n`);
 } catch (error) {
