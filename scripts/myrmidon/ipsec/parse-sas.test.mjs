@@ -19,6 +19,11 @@ test('established and installed SAs expose counters without addresses', () => {
   assert.doesNotMatch(JSON.stringify(result), /192\.0\.2|local\.example/);
 });
 
+test('unknown metadata inside an otherwise healthy snapshot is not healthy', () => {
+  const input = readFileSync(fixture('rekey'), 'utf8');
+  assert.notEqual(run(input + '  UNKNOWN: garbage\n').status, 'healthy');
+});
+
 test('IKE without CHILD is not healthy even when named established', () => {
   assert.notEqual(run('office: #1, ESTABLISHED, IKEv2\n').status, 'healthy');
   assert.notEqual(run('office\n').status, 'healthy');
