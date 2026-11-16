@@ -1,4 +1,38 @@
+import { instanceSettings, type Db } from "@myrmidon/db";
+import { eq, sql } from "drizzle-orm";
 import { logger } from "../middleware/logger.js";
+
+const REVIEW_BUDGET_KEY = "github-review-request-budget";
+
+/** Reserve before each request; both review workers share a rolling one-hour cap. */
+export async function reserveGitHubReviewRequest(
+  db: Db,
+  _source: "review-recovery" | "review-rework",
+  installationLimit = 5000,
+): Promise<boolean> {
+  try {
+    return await db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${REVIEW_BUDGET_KEY}, 0))`);
+      const clock = await tx.execute(sql`select extract(epoch from clock_timestamp()) * 1000 as now_ms`);
+      const now = Number(clock[0]?.now_ms);
+      if (!Number.isFinite(now)) return false;
+      const [row] = await tx.select({ general: instanceSettings.general }).from(instanceSettings)
+        .where(eq(instanceSettings.singletonKey, REVIEW_BUDGET_KEY));
+      const entries = Array.isArray(row?.general.requests) ? row.general.requests : [];
+      const recent = entries.filter((value): value is number =>
+        typeof value === "number" && Number.isFinite(value) && value > now - 3_600_000,
+      );
+      if (recent.length >= Math.floor(installationLimit * 0.4)) return false;
+      const general = { requests: [...recent, now] };
+      await tx.insert(instanceSettings).values({ singletonKey: REVIEW_BUDGET_KEY, general })
+        .onConflictDoUpdate({ target: instanceSettings.singletonKey, set: { general } });
+      return true;
+    });
+  } catch (error) {
+    logger.warn({ err: error }, "GitHub review budget unavailable; skipping request");
+    return false;
+  }
+}
 
 // myrmidon(OPE-11767): "board-merge" counts the requests of the board-side merge.
 // myrmidon(OPE-12397): per-reader buckets — the provider tags every read with
