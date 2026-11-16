@@ -839,6 +839,24 @@ describe("persisted release evidence", () => {
     expect(hasCurrentReleaseVerificationEvidence(comments, after, "secret", NOW())).toBe(false);
   });
 
+  it("rejects evidence after a sibling candidate is added, removed, or replaced", () => {
+    const sibling = member("issue-b:PR#2", SHA_C);
+    const before = { ...scope, members: [...members, sibling] };
+    const confirmed = createReleaseVerificationEvidence({
+      ...before, verdict: "confirmed", checkedAt: "2026-11-13T12:00:00.000Z",
+    }, "secret");
+    const comments = [{ body: `release-evidence-v1: ${JSON.stringify(confirmed)}`, authorType: "system" }];
+    const changedSets = [
+      members,
+      [...before.members, member("issue-c:PR#3", SHA_A)],
+      [...members, member("issue-b:PR#2", SHA_B)],
+    ];
+    expect(hasCurrentReleaseVerificationEvidence(comments, before, "secret", NOW())).toBe(true);
+    for (const changedMembers of changedSets) {
+      expect(hasCurrentReleaseVerificationEvidence(comments, { ...before, members: changedMembers }, "secret", NOW())).toBe(false);
+    }
+  });
+
   it("rejects expired and future signed evidence", () => {
     expect(validateReleaseVerificationEvidence(record, scope, "secret", new Date("2026-11-14T12:00:00.001Z"))).toBe(false);
     expect(validateReleaseVerificationEvidence(record, scope, "secret", new Date("2026-11-13T11:59:59.999Z"))).toBe(false);
