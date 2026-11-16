@@ -15676,8 +15676,23 @@ export function issueRoutes(
         executionReviewParticipantAgentIds?: string[];
         defaultEscalationAgentIds?: string[];
       } = { ...existing };
+      const requestedReleaseLabels = updateFields.status === "done" && Array.isArray(req.body.labelIds) && req.body.labelIds.length > 0
+        ? (await db.select({ name: labels.name }).from(labels).where(and(
+            eq(labels.companyId, existing.companyId),
+            inArray(labels.id, req.body.labelIds as string[]),
+          ))).map((row) => row.name).filter((name) => normaliseReleasePrefix(name) !== null)
+        : [];
+      const includeRequestedReleaseLabels = (context: Awaited<ReturnType<typeof releaseTransitionContext>>) => {
+        const existingLabels = new Set(context.labels);
+        return {
+          ...context,
+          labels: [...context.labels, ...requestedReleaseLabels],
+          hasCurrentReleaseEvidence: context.hasCurrentReleaseEvidence &&
+            requestedReleaseLabels.every((label) => existingLabels.has(label)),
+        };
+      };
       if (updateFields.status === "done") {
-        Object.assign(transitionIssue, await releaseTransitionContext(existing));
+        Object.assign(transitionIssue, includeRequestedReleaseLabels(await releaseTransitionContext(existing)));
         // A single PATCH must not hide either the old or the requested title
         // from release classification while completing the issue.
         if (typeof updateFields.title === "string" && isReleaseTask(updateFields.title)) {
@@ -17071,7 +17086,7 @@ export function issueRoutes(
                 ? updateFields.title
                 : lockedExisting.title,
               ...(req.body.status === "done"
-                ? await releaseTransitionContext(lockedExisting)
+                ? includeRequestedReleaseLabels(await releaseTransitionContext(lockedExisting))
                 : {
                     labels: transitionIssue.labels,
                     workProducts: transitionIssue.workProducts,
