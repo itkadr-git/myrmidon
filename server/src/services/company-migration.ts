@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { CompanyPortabilityExport } from "@myrmidon/shared";
 import type { companyPortabilityService } from "./company-portability.js";
 import { validateMigrationManifest } from "./company-migration-validation.js";
@@ -11,6 +12,17 @@ export function companyMigrationService(portability: Portability) {
       const exported = await portability.exportBundle(companyId, input, { preview: true });
       // Export preserves secret binding metadata that is not present in package files.
       const validation = validateMigrationManifest(exported.manifest);
+      for (const blob of exported.manifest.blobs ?? []) {
+        const file = exported.files[`blobs/${blob.sha256}`];
+        if (!/^[a-f0-9]{64}$/.test(blob.sha256) || typeof file !== "object" || file === null || file.encoding !== "base64") {
+          validation.errors.push("A declared blob is missing or invalid.");
+          continue;
+        }
+        const bytes = Buffer.from(file.data, "base64");
+        if (bytes.length !== blob.byteSize || createHash("sha256").update(bytes).digest("hex") !== blob.sha256) {
+          validation.errors.push("A declared blob failed integrity validation.");
+        }
+      }
       // Invalid references must not reach the import planner.
       const preview = validation.errors.length === 0 ? await portability.previewImport({
         source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
