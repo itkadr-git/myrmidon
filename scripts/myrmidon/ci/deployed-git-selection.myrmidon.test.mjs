@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -38,15 +38,15 @@ function fixture(run) {
 if (process.env.MYRMIDON_SELECTION_REPEAT_CHILD !== "1") {
   test("two consecutive suite runs produce identical passing results", () => {
     const args = ["--test", "--test-reporter=dot", new URL(import.meta.url).pathname];
-    const options = {
-      encoding: "utf8",
-      env: { ...process.env, MYRMIDON_SELECTION_REPEAT_CHILD: "1" },
-      stdio: ["ignore", "pipe", "pipe"],
-    };
-    const first = execFileSync(process.execPath, args, options);
-    const second = execFileSync(process.execPath, args, options);
-    assert.equal(first.trim(), "......");
-    assert.equal(second.trim(), first.trim());
+    const env = { ...process.env, MYRMIDON_SELECTION_REPEAT_CHILD: "1" };
+    delete env.NODE_TEST_CONTEXT;
+    const run = () => spawnSync(process.execPath, args, { encoding: "utf8", env });
+    const first = run();
+    const second = run();
+    assert.equal(first.status, 0, first.stderr);
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(first.stdout.trim(), "......");
+    assert.equal(second.stdout.trim(), first.stdout.trim());
   });
 }
 
