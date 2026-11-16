@@ -23,8 +23,8 @@
 // the largest user of the App's 5000/h budget.
 
 import { createHash } from "node:crypto";
-import { and, eq } from "drizzle-orm";
-import { issueWorkProducts, type Db } from "@myrmidon/db";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { connectionEventDeliveries, issueWorkProducts, type Db } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../../services/git-credentials.js";
 import { getGitHubRateLimitMetrics, isGitHubRateLimited, recordGitHubRequest } from "../../services/github-rate-limit.js";
 import { ghFetch, gitHubApiBase } from "../../services/github-fetch.js";
@@ -515,6 +515,40 @@ export async function readReviewPullRequestHeadSha(input: {
   }
 }
 
+/** Only a matching, recent PR head and final check are authoritative together. */
+async function readWebhookCi(db: Db, companyId: string, reference: GitHubPullRequestReference): Promise<{
+  state: "complete"; headSha: string; finalCheckConclusion: string;
+} | null> {
+  try {
+    const rows = await db.select({
+      event: connectionEventDeliveries.event,
+      createdAt: connectionEventDeliveries.createdAt,
+      normalizedPayload: connectionEventDeliveries.normalizedPayload,
+    }).from(connectionEventDeliveries).where(and(
+      eq(connectionEventDeliveries.companyId, companyId),
+      eq(connectionEventDeliveries.provider, "github"),
+      eq(connectionEventDeliveries.status, "processed"),
+      inArray(connectionEventDeliveries.event, ["pull_request", "check_run"]),
+      gte(connectionEventDeliveries.createdAt, new Date(Date.now() - 30 * 60_000)),
+      sql`lower(${connectionEventDeliveries.normalizedPayload}->>'repository') = lower(${`${reference.owner}/${reference.repo}`})`,
+      sql`coalesce(${connectionEventDeliveries.normalizedPayload}->>'pullRequestNumber', ${connectionEventDeliveries.normalizedPayload}->>'number') = ${String(reference.number)}`,
+    )).orderBy(desc(connectionEventDeliveries.createdAt)).limit(200);
+    const sorted = [...rows].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    const pull = sorted.find((row) => row.event === "pull_request");
+    const payload = asRecord(pull?.normalizedPayload);
+    if (payload?.state !== "open" || typeof payload.headSha !== "string" || !payload.headSha) return null;
+    const check = sorted.find((row) => {
+      const value = asRecord(row.normalizedPayload);
+      return row.event === "check_run" && value?.headSha === payload.headSha && value.checkName === REVIEW_CI_FINAL_CHECK_NAME;
+    });
+    const result = asRecord(check?.normalizedPayload);
+    if (result?.status !== "completed" || typeof result.conclusion !== "string" || ["cancelled", "skipped"].includes(result.conclusion)) return null;
+    return { state: "complete", headSha: payload.headSha, finalCheckConclusion: result.conclusion };
+  } catch {
+    return null;
+  }
+}
+
 export function createReviewPullRequestCiResolver(input: {
   db: Db;
   fetch?: FetchLike;
@@ -532,6 +566,8 @@ export function createReviewPullRequestCiResolver(input: {
       return { state: "unknown", pullRequestUrl: target.pullRequestUrl, headSha: null, reason: "pull_request_reference_unreadable" };
     }
     const { reference, pullRequestUrl } = target;
+    const webhook = await readWebhookCi(input.db, companyId, reference);
+    if (webhook) return { ...webhook, pullRequestUrl };
     let token: string | null = null;
     let tokenError = false;
     try {
