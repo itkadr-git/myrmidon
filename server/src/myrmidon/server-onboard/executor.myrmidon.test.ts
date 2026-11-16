@@ -271,6 +271,27 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(initial.hasExecuted(/50-myrmidon-hardening\.conf/)).toBe(false);
   });
 
+  it("does not report password hardening when effective sshd settings still allow passwords", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
+    ssh.mockResponse(/sshd -T/, { stdout: "passwordauthentication yes\nkbdinteractiveauthentication yes\n", exitCode: 0 });
+    const executor = new FleetOnboardExecutor({
+      createSshExecutor: () => ssh,
+      generateKeyPair: () => ({ publicKey: "ssh-ed25519 test", privateKey: "private-key" }),
+    });
+    const claim: any = {
+      job: { id: "job-effective-password-settings", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["access"], options: { keepPassword: false },
+      secretValues: { bootstrapPassword: "pass" },
+    };
+    const reporter = createMockReporter();
+    const result = await executor.execute(claim, reporter.reporter);
+    expect(result.status).toBe("failed");
+    expect(ssh.hasExecuted(/restore-myrmidon-password-config/)).toBe(true);
+    expect(reporter.steps).not.toContainEqual(expect.objectContaining({ step: "access", result: "ok" }));
+  });
+
   it("fails and restores password configuration when sshd reload fails", async () => {
     const mockSsh = new MockSshExecutor();
     mockSsh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
