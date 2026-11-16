@@ -277,6 +277,21 @@ describe("release-freeze.sh (fake gh)", () => {
     assert.match(s.stdout, /freeze=inactive/);
   });
 
+  it("clears an open freeze when the tag run fails but the same commit has green branch CI", () => {
+    const sb = makeSandbox({ issues: [{ number: 7, title: "release-freeze: myr-v1.6.10" }] });
+    writeJson(sb.dir, "runs.json", { workflow_runs: [
+      { path: ".github/workflows/myrmidon-ci-tag.yml", head_branch: "myr-v1.6.10", event: "push", status: "completed", conclusion: "failure" },
+      { path: ".github/workflows/myrmidon-ci.yml", head_branch: "rel/1.6.10", event: "push", status: "completed", conclusion: "success" },
+    ] });
+    const check = runScript(sb, "--check");
+    assert.equal(check.status, 0, check.stderr);
+    assert.match(check.stderr, /merges open/);
+    const set = runScript(sb, "--set-state");
+    assert.equal(set.status, 0, set.stderr);
+    assert.match(set.stdout, /freeze=inactive/);
+    assert.match(fs.readFileSync(path.join(sb.dir, "mutations.log"), "utf8"), /close number=7/);
+  });
+
   it("a green manual dispatch of myrmidon-ci.yml on the tag commit counts too", () => {
     const sb = makeSandbox({
       runPath: ".github/workflows/myrmidon-ci.yml",
