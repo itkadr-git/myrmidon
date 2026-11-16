@@ -341,7 +341,12 @@ export const companyTransferRunService = {
   async cancelIfIdle(db: Db, runId: string, idleSince: Date, error: string): Promise<boolean> {
     const claimed = await db
       .update(companyTransferRuns)
-      .set({ status: "cancelled", error, finishedAt: new Date(), updatedAt: new Date() })
+      .set({
+        status: "cancelled",
+        error: sql`case when coalesce(${companyTransferRuns.containerRef}->>'kind', '') = 'company_migration' then 'migration cancelled after inactivity' else ${error} end`,
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+      })
       .where(
         and(
           eq(companyTransferRuns.id, runId),
