@@ -34,6 +34,7 @@ describe("omp SSH runner image", () => {
     assert.match(dockerfile, /COPY docker\/bot-runtime\/myr-ws\/ \/opt\/paperclip\/myr-ws\//);
     assert.match(dockerfile, /COPY docker\/bot-runtime\/botd\/ \/opt\/paperclip\/botd\//);
     assert.match(dockerfile, /ln -s \/usr\/bin\/node \/opt\/node24\/bin\/node/);
+    assert.match(dockerfile, /ln -s \/usr\/bin\/git \/opt\/paperclip\/libexec\/git/);
     assert.match(dockerfile, /process\.versions\.node\.split/);
     assert.match(dockerfile, /myr-ws --help >\/dev\/null/);
     assert.match(workflow, /docker\/bot-runtime\/myr-ws\/\*\*/);

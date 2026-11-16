@@ -95,6 +95,8 @@ RUN set -eu \
   && chmod 0755 /usr/local/bin/omp-runner-entrypoint /usr/local/bin/git /usr/local/bin/run-reap \
   && mkdir -p /opt/node24/bin \
   && ln -s /usr/bin/node /opt/node24/bin/node \
+  && mkdir -p /opt/paperclip/libexec \
+  && ln -s /usr/bin/git /opt/paperclip/libexec/git \
   && chmod 0755 /opt/paperclip/myr-ws/myr-ws \
   && ln -s /opt/paperclip/myr-ws/myr-ws /usr/local/bin/myr-ws \
   && node -e 'if (process.versions.node.split(".")[0] !== "24") process.exit(1)' \
