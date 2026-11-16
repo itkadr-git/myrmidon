@@ -83,6 +83,14 @@ const IDLE_OPEN_CLONE_HOURS = 6;
 const LOW_FREE_PERCENT = 10;
 const LOW_FREE_IDLE_OPEN_CLONE_HOURS = 1;
 const IDLE_OPEN_STATUSES = new Set(["in_review", "blocked", "backlog"]);
+// myrmidon(1.6.9 OPE-13411): a reviewer bot makes a full worktree (about 0.5 GB) for each PR it reviews,
+// about one per 3 minutes per reviewer. After the review the task goes to an engineer or to done, and
+// the reviewer's copy would stay (the idle rule above only matches in_review, blocked and backlog).
+// A reviewer's copy is freed in any task status after REVIEW_CLONE_IDLE_MINUTES, if the reviewer has
+// no run of its own, the copy is clean and its HEAD is on the server.
+const REVIEW_CLONE_IDLE_MINUTES = 10;
+const MINUTE_MS = 60 * 1000;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Untracked service directories that never hold work (they are rebuilt); the same names the
 // archive leaves out. An untracked entry of any other name keeps the clone.
 const IDLE_OPEN_JUNK_UNTRACKED = new Set([...ARCHIVE_EXCLUDES, ".helper", ".gc-archive"]);
@@ -626,6 +634,8 @@ export async function fetchIssueOpenState(identifier, {
       ok: true,
       status: issue.status,
       liveRunId: issue.executionRunId || issue.checkoutRunId || null,
+      // Both fields apart: they may belong to different agents (the engineer's run and a reviewer's).
+      liveRunIds: [issue.executionRunId, issue.checkoutRunId].filter((id, i, all) => typeof id === "string" && id && all.indexOf(id) === i),
     };
   } catch {
     return { ok: false, reason: "board-unavailable" };
@@ -773,6 +783,31 @@ export async function scanIdleOpenClones(root, now, {
   return { items, thresholdHours, freePercent };
 }
 
+// Removes a planned worktree clone and exactly its own admin dir; returns how it was done.
+function removeWorktreeClone(c, root) {
+  let via;
+  // `git worktree remove` finds the worktree by the path in the admin dir's `gitdir` file; when that
+  // is a container path (/bot/...) it does not match on the host: the copy and exactly its own admin
+  // dir are removed instead. No `git worktree prune`: it would also drop the admin dirs of other
+  // tasks of this git-base, whose container paths do not exist on the host either.
+  const registered = (() => {
+    try { return fs.realpathSync(path.dirname(fs.readFileSync(path.join(c.adminDir, "gitdir"), "utf8").trim())) === fs.realpathSync(c.path); } catch { return false; }
+  })();
+  if (registered) {
+    const r = spawnSync("git", ["--git-dir", c.commonDir, "worktree", "remove", "--force", c.path], { encoding: "utf8", timeout: 600000 });
+    if (r.status !== 0) throw new Error(`git worktree remove: ${String(r.stderr).trim().slice(0, 300)}`);
+    via = "git-worktree-remove";
+    if (fs.existsSync(c.path)) atomicDrop(c.path, root);
+  } else {
+    atomicDrop(c.path, root);
+    const worktrees = path.join(c.commonDir, "worktrees");
+    if (path.dirname(c.adminDir) !== worktrees) throw new Error(`unexpected admin dir ${c.adminDir}`);
+    fs.rmSync(c.adminDir, { recursive: true, force: true });
+    via = "rm-and-admin-dir";
+  }
+  return via;
+}
+
 /**
  * Removes the planned idle clones. Just before the removal the board is asked again (a run may have
  * started since the scan). Returns the paths removed.
@@ -792,30 +827,177 @@ export async function pruneIdleOpenClones(items, root, journalPath, { fetchState
       }
       const sizeBytes = c.sizeBytes ?? null;
       const ageHours = Math.round(c.ageMs / HOUR_MS);
-      let via;
-      // `git worktree remove` finds the worktree by the path in the admin dir's `gitdir` file; when that
-      // is a container path (/bot/...) it does not match on the host: the copy and exactly its own admin
-      // dir are removed instead. No `git worktree prune`: it would also drop the admin dirs of other
-      // tasks of this git-base, whose container paths do not exist on the host either.
-      const registered = (() => {
-        try { return fs.realpathSync(path.dirname(fs.readFileSync(path.join(c.adminDir, "gitdir"), "utf8").trim())) === fs.realpathSync(c.path); } catch { return false; }
-      })();
-      if (registered) {
-        const r = spawnSync("git", ["--git-dir", c.commonDir, "worktree", "remove", "--force", c.path], { encoding: "utf8", timeout: 600000 });
-        if (r.status !== 0) throw new Error(`git worktree remove: ${String(r.stderr).trim().slice(0, 300)}`);
-        via = "git-worktree-remove";
-        if (fs.existsSync(c.path)) atomicDrop(c.path, root);
-      } else {
-        atomicDrop(c.path, root);
-        const worktrees = path.join(c.commonDir, "worktrees");
-        if (path.dirname(c.adminDir) !== worktrees) throw new Error(`unexpected admin dir ${c.adminDir}`);
-        fs.rmSync(c.adminDir, { recursive: true, force: true });
-        via = "rm-and-admin-dir";
-      }
+      const via = removeWorktreeClone(c, root);
       removed.push(c.path);
       journalRecord(journalPath, { event: "idle-open-clone-removed", path: c.path, identifier: c.identifier, status: c.status, sizeBytes, ageHours, thresholdHours: c.thresholdHours, lowSpace: c.lowSpace, via });
     } catch (err) {
       journalRecord(journalPath, { event: "idle-open-clone-remove-failed", path: c.path, identifier: c.identifier, error: err.message });
+    }
+  }
+  return removed;
+}
+
+// --- Copies of reviewer bots (OPE-13411) ------------------------------------
+
+function boardApiBase(baseUrl) {
+  let base = (baseUrl || "").replace(/\/$/, "");
+  if (!base) base = "http://127.0.0.1:3100";
+  if (!base.endsWith("/api")) base += "/api";
+  return base;
+}
+
+/**
+ * The board's agent of a bot folder: `<bots root>/<key>` where the key is the agent id (UUID) or the
+ * agent name. Returns { ok, id, name, role } or { ok: false, reason }; { ok: true, id: null } when the
+ * board has no such agent.
+ */
+export async function fetchBotAgent(key, {
+  baseUrl = process.env.BOARD_API_URL || process.env.PAPERCLIP_API_URL || process.env.MYRMIDON_API_URL || "http://127.0.0.1:3100",
+  apiKey = process.env.PAPERCLIP_API_KEY,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  if (typeof fetchImpl !== "function") return { ok: false, reason: "board-unavailable" };
+  const base = boardApiBase(baseUrl);
+  const headers = { Accept: "application/json" };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  const pick = (a) => ({ ok: true, id: a.id, name: typeof a.name === "string" ? a.name : null, role: typeof a.role === "string" ? a.role : null });
+  try {
+    if (UUID_PATTERN.test(key)) {
+      const response = await fetchImpl(`${base}/agents/${encodeURIComponent(key)}`, { headers });
+      if (response.status === 404) return { ok: true, id: null };
+      if (!response.ok) return { ok: false, reason: `board-http-${response.status}` };
+      const agent = await response.json();
+      return agent && typeof agent.id === "string" ? pick(agent) : { ok: false, reason: "board-invalid-agent" };
+    }
+    const companyId = process.env.MYRMIDON_COMPANY_ID || process.env.PAPERCLIP_COMPANY_ID;
+    if (!companyId) return { ok: false, reason: "company-id-missing" };
+    const response = await fetchImpl(`${base}/companies/${encodeURIComponent(companyId)}/agents?q=${encodeURIComponent(key)}`, { headers });
+    if (!response.ok) return { ok: false, reason: `board-http-${response.status}` };
+    const list = await response.json();
+    if (!Array.isArray(list)) return { ok: false, reason: "board-invalid-agent-list" };
+    const agent = list.find((a) => a?.name === key || a?.id === key);
+    return agent && typeof agent.id === "string" ? pick(agent) : { ok: true, id: null };
+  } catch {
+    return { ok: false, reason: "board-unavailable" };
+  }
+}
+
+// Owner of a run: GET /heartbeat-runs/<id> carries `agentId`.
+export async function fetchRunAgentId(runId, {
+  baseUrl = process.env.BOARD_API_URL || process.env.PAPERCLIP_API_URL || process.env.MYRMIDON_API_URL || "http://127.0.0.1:3100",
+  apiKey = process.env.PAPERCLIP_API_KEY,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  if (typeof fetchImpl !== "function") return { ok: false, reason: "board-unavailable" };
+  const headers = { Accept: "application/json" };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  try {
+    const response = await fetchImpl(`${boardApiBase(baseUrl)}/heartbeat-runs/${encodeURIComponent(runId)}`, { headers });
+    if (!response.ok) return { ok: false, reason: `board-http-${response.status}` };
+    const run = await response.json();
+    return typeof run?.agentId === "string" ? { ok: true, agentId: run.agentId } : { ok: false, reason: "board-invalid-run" };
+  } catch {
+    return { ok: false, reason: "board-unavailable" };
+  }
+}
+
+// A reviewer is an agent whose role says so or, as the board has no reviewer role (AGENT_ROLES), whose
+// name has the `-review-` part (adm-dev-review-10). An unknown agent is not a reviewer: nothing is freed.
+export function isReviewerAgent(agent) {
+  if (!agent?.ok || !agent.id) return false;
+  return agent.role === "reviewer" || /-review-/.test(agent.name || "");
+}
+
+// Does the reviewer have a run of its own on the task? A run of another agent (the engineer's
+// executionRunId/checkoutRunId) does not use the reviewer's copy. A run whose owner is unknown
+// counts as the reviewer's: nothing is freed on a guess.
+async function reviewerRunLive(state, agentId, fetchRun) {
+  const ids = state.liveRunIds ?? (state.liveRunId ? [state.liveRunId] : []);
+  for (const runId of ids) {
+    const run = await fetchRun(runId);
+    if (!run.ok || run.agentId === agentId) return runId;
+  }
+  return null;
+}
+
+/**
+ * Plans the removal of the copies of a reviewer bot under `root` (the bot's `workspace` directory),
+ * in any task status. Not a reviewer (or board does not answer): no items. Items are as in
+ * scanIdleOpenClones, with action "remove" | "keep".
+ */
+export async function scanReviewerClones(root, now, {
+  idleMinutes = REVIEW_CLONE_IDLE_MINUTES,
+  fetchState = fetchIssueOpenState,
+  fetchAgent = fetchBotAgent,
+  fetchRun = fetchRunAgentId,
+  onEvent = () => {},
+} = {}) {
+  const items = [];
+  if (path.basename(path.resolve(root)) !== "workspace") return { items, agent: null };
+  const agentRoot = path.dirname(path.resolve(root));
+  const agent = await fetchAgent(path.basename(agentRoot));
+  if (!isReviewerAgent(agent)) return { items, agent };
+  let entries;
+  try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return { items, agent }; }
+  for (const entry of entries) {
+    if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
+    const identifier = issueIdentifierFromCloneName(entry.name);
+    if (!/^[A-Za-z]+-\d+$/.test(identifier)) continue;
+    const clonePath = safeJoin(root, entry.name);
+    if (isSymlink(clonePath)) continue;
+    const base = { name: entry.name, path: clonePath, identifier, agentId: agent.id, thresholdMinutes: idleMinutes };
+    const keep = (reason, extra = {}) => items.push({ ...base, ...extra, action: "keep", reason });
+    const state = await fetchState(identifier);
+    if (!state.ok) { keep(state.reason); continue; }
+    base.status = state.status;
+    const live = await reviewerRunLive(state, agent.id, fetchRun);
+    if (live) { keep("live-run", { liveRunId: live }); continue; }
+    const dirs = resolveWorktreeGitDirs(clonePath, agentRoot);
+    if (!dirs.adminDir) { keep(dirs.reason); continue; }
+    const ageMs = now - newestCloneChangeMs(clonePath, dirs.adminDir);
+    base.ageMs = ageMs;
+    if (ageMs < idleMinutes * MINUTE_MS) { keep("fresh"); continue; }
+    const env = { GIT_DIR: dirs.adminDir, GIT_WORK_TREE: clonePath, GIT_OPTIONAL_LOCKS: "0" };
+    // Clean means `git status` is empty, as for the idle rule (untracked service directories are junk).
+    if (!isCleanIgnoringJunk(clonePath, env)) { keep("dirty"); continue; }
+    const tree = scanGitTree(clonePath);
+    if (!tree.complete || !tree.roots.every((r) => r === clonePath)) { keep("nested-repo"); continue; }
+    const pushed = headIsOnServer(clonePath, env);
+    if (!pushed.pushed) { keep(pushed.reason); continue; }
+    items.push({ ...base, ...dirs, sizeBytes: cloneSizeBytes(clonePath), action: "remove", reason: "reviewer-copy-idle" });
+  }
+  for (const item of items) {
+    if (item.action === "keep") {
+      onEvent({ event: "review-clone-kept", path: item.path, identifier: item.identifier, status: item.status, reason: item.reason, ageMinutes: item.ageMs === undefined ? undefined : Math.round(item.ageMs / MINUTE_MS) });
+    }
+  }
+  return { items, agent };
+}
+
+/**
+ * Removes the planned reviewer copies. Just before the removal the board is asked again: a run of the
+ * reviewer may have started, and the copy must still be untouched.
+ */
+export async function pruneReviewerClones(items, root, journalPath, {
+  fetchState = fetchIssueOpenState,
+  fetchRun = fetchRunAgentId,
+  now = Date.now,
+} = {}) {
+  const removed = [];
+  for (const c of items.filter((x) => x.action === "remove")) {
+    const kept = (status, reason) => journalRecord(journalPath, { event: "review-clone-kept", path: c.path, identifier: c.identifier, status, reason });
+    try {
+      if (!fs.existsSync(c.path)) { kept(c.status, "already-gone"); continue; }
+      const state = await fetchState(c.identifier);
+      if (!state.ok) { kept(c.status, state.reason); continue; }
+      if (await reviewerRunLive(state, c.agentId, fetchRun)) { kept(state.status, "live-run"); continue; }
+      if (newestCloneChangeMs(c.path, c.adminDir) > now() - c.thresholdMinutes * MINUTE_MS) { kept(state.status, "fresh"); continue; }
+      const sizeBytes = c.sizeBytes ?? null;
+      const via = removeWorktreeClone(c, root);
+      removed.push(c.path);
+      journalRecord(journalPath, { event: "review-clone-removed", path: c.path, identifier: c.identifier, status: state.status, sizeBytes, ageMinutes: Math.round(c.ageMs / MINUTE_MS), thresholdMinutes: c.thresholdMinutes, via });
+    } catch (err) {
+      journalRecord(journalPath, { event: "review-clone-remove-failed", path: c.path, identifier: c.identifier, error: err.message });
     }
   }
   return removed;
@@ -2382,7 +2564,7 @@ async function main() {
       }
     }
 
-    const plan = { clones: [], caches: [], scratch: [], botData: [], runCopies: [], staleOmpRunners: [], runnerTaskFolders: [], runnerNpmCaches: [], runnerTmp: [], runnerUnrecognized: [], idleOpenClones: [], kept: [], removed: [], archived: [] };
+    const plan = { clones: [], caches: [], scratch: [], botData: [], runCopies: [], staleOmpRunners: [], runnerTaskFolders: [], runnerNpmCaches: [], runnerTmp: [], runnerUnrecognized: [], idleOpenClones: [], reviewClones: [], kept: [], removed: [], archived: [] };
 
     // 1. Scan task clones
     const clones = scanTaskClones(root, now, args.cloneTtlHours);
@@ -2425,6 +2607,19 @@ async function main() {
           if (args.dryRun) journalRecord(args.journal, { event: "idle-open-clone-would-remove", path: item.path, identifier: item.identifier, status: item.status, sizeBytes: item.sizeBytes, ageHours: Math.round(item.ageMs / HOUR_MS), thresholdHours: item.thresholdHours });
         } else {
           plan.kept.push({ path: item.path, action: "keep", reason: `idle-open:${item.reason}` });
+        }
+      }
+    }
+
+    // 1c. Copies of reviewer bots (OPE-13411): any task status, 10 minutes idle, no run of the reviewer.
+    {
+      const planned = new Set([...plan.clones.map((c) => c.path), ...plan.idleOpenClones.map((c) => c.path)]);
+      const review = await scanReviewerClones(root, now, { onEvent: (event) => journalRecord(args.journal, event) });
+      for (const item of review.items) {
+        if (planned.has(item.path)) continue; // another rule frees it already
+        if (item.action === "remove") {
+          plan.reviewClones.push(item);
+          if (args.dryRun) journalRecord(args.journal, { event: "review-clone-would-remove", path: item.path, identifier: item.identifier, status: item.status, sizeBytes: item.sizeBytes, ageMinutes: Math.round(item.ageMs / MINUTE_MS) });
         }
       }
     }
@@ -2642,6 +2837,7 @@ async function main() {
         archiveBytes: plan.archiveBytes,
         clones: plan.clones.length,
         idleOpenClones: plan.idleOpenClones.length,
+        reviewClones: plan.reviewClones.length,
         caches: plan.caches.length,
         scratch: plan.scratch.length,
         staleOmpRunners: plan.staleOmpRunners.length,
@@ -2696,6 +2892,8 @@ async function main() {
       }
       const idleOpenGone = await pruneIdleOpenClones(plan.idleOpenClones, root, args.journal);
       for (const gone of idleOpenGone) plan.removed.push({ path: gone });
+      const reviewGone = await pruneReviewerClones(plan.reviewClones, root, args.journal);
+      for (const gone of reviewGone) plan.removed.push({ path: gone });
       for (const c of plan.caches.filter((x) => x.action === "remove")) {
         try {
           atomicDrop(c.path, path.dirname(c.path));
@@ -2810,6 +3008,7 @@ async function main() {
         archiveBytesBeforeCleanup: plan.archiveBytes,
         removed: plan.removed.length,
         idleOpenClonesRemoved: idleOpenGone.length,
+        reviewClonesRemoved: reviewGone.length,
         archived: plan.archived.length,
         scratchPruned: plan.scratch.length,
         botDataRemoved: plan.botData.length,
@@ -2828,6 +3027,7 @@ async function main() {
         archiveBytesBeforeCleanup: plan.archiveBytes,
         removed: plan.removed.length,
         idleOpenClonesRemoved: idleOpenGone.length,
+        reviewClonesRemoved: reviewGone.length,
         archived: plan.archived.length,
         scratchPruned: plan.scratch.length,
         botDataRemoved: plan.botData.length,
