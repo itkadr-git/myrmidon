@@ -50,7 +50,7 @@ import {
   writeImportTransferPart,
 } from "../services/company-import-transfers.js";
 import { companyTransferRunService } from "../services/company-transfer-runs.js";
-import { companyMigrationService } from "../services/company-migration.js";
+import { companyMigrationService, getMigrationStatus } from "../services/company-migration.js";
 import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
 import { resolvePortableExportAgentSelection } from "../services/company-portability-agent-selection.js";
 import {
@@ -1132,6 +1132,17 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       req.params.companyId as string, body.export, body.target.newCompanyName,
     );
     res.json(result);
+  });
+
+  router.get("/:companyId/migrations/:runId", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const runId = req.params.runId as string;
+    if (!isImportTransferRunId(runId)) throw notFound("Migration not found");
+    const status = await getMigrationStatus(db, companyId, runId);
+    if (!status) throw notFound("Migration not found");
+    res.json(status);
   });
 
   router.post("/:companyId/exports/preview", async (req, res) => {

@@ -1,9 +1,19 @@
 import { createHash } from "node:crypto";
 import type { CompanyPortabilityExport } from "@myrmidon/shared";
+import type { Db } from "@myrmidon/db";
 import type { companyPortabilityService } from "./company-portability.js";
 import { validateMigrationManifest } from "./company-migration-validation.js";
+import { companyTransferRunService } from "./company-transfer-runs.js";
 
 type Portability = ReturnType<typeof companyPortabilityService>;
+
+export async function getMigrationStatus(db: Db, sourceCompanyId: string, runId: string) {
+  const run = await companyTransferRunService.getRun(db, runId);
+  const ref = run?.containerRef;
+  if (!run || run.direction !== "import" || typeof ref !== "object" || ref === null || Array.isArray(ref)) return null;
+  if (!("kind" in ref) || ref.kind !== "company_migration" || !("sourceCompanyId" in ref) || ref.sourceCompanyId !== sourceCompanyId) return null;
+  return { runId: run.id, status: run.status };
+}
 
 // This entry point is intentionally read-only; apply and rollback are not yet available.
 export function companyMigrationService(portability: Portability) {

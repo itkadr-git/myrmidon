@@ -440,6 +440,28 @@ describe("company migration dry run", () => {
     expect(await db.select().from(companies)).toEqual(before);
   });
 
+  it("exposes only source-scoped migration ledger status without transfer details", async () => {
+    const [source] = await db.insert(companies).values({ name: "Ledger source", issuePrefix: "MLS" }).returning();
+    const [other] = await db.insert(companies).values({ name: "Ledger other", issuePrefix: "MLO" }).returning();
+    const [run] = await db.insert(companyTransferRuns).values({
+      direction: "import", status: "failed", actorKey: "migration-test", idempotencyKey: "status-scope",
+      containerRef: { kind: "company_migration", sourceCompanyId: source!.id }, error: "private diagnostic",
+    }).returning();
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id, other!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+
+    const result = await request(app).get(`/api/companies/${source!.id}/migrations/${run!.id}`);
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ runId: run!.id, status: "failed" });
+    expect((await request(app).get(`/api/companies/${other!.id}/migrations/${run!.id}`)).status).toBe(404);
+    expect((await request(app).get(`/api/companies/${source!.id}/migrations/not-a-uuid`)).status).toBe(404);
+  });
+
   it("returns migration status only through its source company", async () => {
     const [source] = await db.insert(companies).values({ name: "Status source", issuePrefix: "MST" }).returning();
     const [other] = await db.insert(companies).values({ name: "Status other", issuePrefix: "MSO" }).returning();
