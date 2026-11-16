@@ -169,10 +169,25 @@ export const KNOWLEDGE_EXPORT_INTERVAL_HOURS_ENV = "MYRMIDON_KNOWLEDGE_EXPORT_IN
 
 const BRANCH_RE = /^[A-Za-z0-9._/-]+$/;
 
+function isValidKnowledgeExportBranch(branch: string): boolean {
+  if (!BRANCH_RE.test(branch) || branch.includes("..")) {
+    return false;
+  }
+
+  const components = branch.split("/");
+  return (
+    !branch.startsWith("/") &&
+    !branch.endsWith("/") &&
+    !branch.endsWith(".") &&
+    !branch.startsWith("-") &&
+    components.every((component) => component.length > 0 && !component.startsWith(".") && !component.endsWith(".lock"))
+  );
+}
+
 export function readKnowledgeExportSettings(env: NodeJS.ProcessEnv = process.env): KnowledgeExportSettings {
   const repoUrl = env[KNOWLEDGE_EXPORT_REPO_ENV]?.trim() || null;
   const branchRaw = env[KNOWLEDGE_EXPORT_BRANCH_ENV]?.trim() || KNOWLEDGE_EXPORT_DEFAULT_BRANCH;
-  const branch = BRANCH_RE.test(branchRaw) && !branchRaw.includes("..") ? branchRaw : KNOWLEDGE_EXPORT_DEFAULT_BRANCH;
+  const branch = isValidKnowledgeExportBranch(branchRaw) ? branchRaw : KNOWLEDGE_EXPORT_DEFAULT_BRANCH;
   const hoursRaw = Number(env[KNOWLEDGE_EXPORT_INTERVAL_HOURS_ENV]);
   const intervalHours = Number.isInteger(hoursRaw) && hoursRaw >= 1 && hoursRaw <= 168 ? hoursRaw : 24;
   return {

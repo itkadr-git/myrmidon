@@ -12,7 +12,7 @@
 // so a token stays in the environment the caller already owns.
 
 import { execFile } from "node:child_process";
-import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
@@ -113,6 +113,21 @@ export async function commitKnowledgeTreeIfChanged(
       throw new Error(`refusing to write a path outside the export repo: ${file.path}`);
     }
   }
+  // Check every existing component before writing any file, including dangling links.
+  for (const file of tree.files) {
+    let current = workDir;
+    for (const component of (prefix + file.path).split(path.sep).filter(Boolean)) {
+      current = path.join(current, component);
+      try {
+        if ((await lstat(current)).isSymbolicLink()) {
+          throw new Error(`refusing to write through a symlink: ${file.path}`);
+        }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") break;
+        throw err;
+      }
+    }
+  }
   for (const file of tree.files) {
     const abs = path.join(workDir, prefix + file.path);
     await mkdir(path.dirname(abs), { recursive: true });
@@ -210,20 +225,15 @@ export async function publishKnowledgeExport(input: PublishKnowledgeExportInput)
       await git(runner, input.workDir, ["remote", "add", "origin", input.repoUrl], env);
     }
   } else {
-    const fetched = await git(runner, input.workDir, ["fetch", "origin", input.branch], env).then(() => true).catch(() => {
-      // The branch may not exist yet. A failed fetch must not hide a later
-      // push error: we only swallow "no such branch" by continuing to commit.
-      return false;
-    });
-    if (fetched) {
-      const localBranchExists = await git(runner, input.workDir, ["show-ref", "--verify", "--quiet", `refs/heads/${input.branch}`], env)
-        .then(() => true).catch(() => false);
-      if (localBranchExists) {
-        await git(runner, input.workDir, ["checkout", input.branch], env);
-        await git(runner, input.workDir, ["merge", "--ff-only", "FETCH_HEAD"], env);
-      } else {
-        await git(runner, input.workDir, ["checkout", "-b", input.branch, "FETCH_HEAD"], env);
-      }
+    // Even a missing branch fails closed: an existing checkout may be stale.
+    await git(runner, input.workDir, ["fetch", "origin", input.branch], env);
+    const localBranchExists = await git(runner, input.workDir, ["show-ref", "--verify", "--quiet", `refs/heads/${input.branch}`], env)
+      .then(() => true).catch(() => false);
+    if (localBranchExists) {
+      await git(runner, input.workDir, ["checkout", input.branch], env);
+      await git(runner, input.workDir, ["merge", "--ff-only", "FETCH_HEAD"], env);
+    } else {
+      await git(runner, input.workDir, ["checkout", "-b", input.branch, "FETCH_HEAD"], env);
     }
   }
 
