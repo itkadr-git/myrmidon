@@ -117,7 +117,14 @@ export async function commitKnowledgeTreeIfChanged(
     }
   }
   // Validate the entire requested shape and existing components before any write.
-  const targets = new Set(tree.files.map((file) => path.resolve(workDir, prefix + file.path)));
+  const targets = new Set<string>();
+  for (const file of tree.files) {
+    const target = path.resolve(workDir, prefix + file.path);
+    if (targets.has(target)) {
+      throw new Error(`knowledge export: duplicate file path: ${file.path}`);
+    }
+    targets.add(target);
+  }
   for (const file of tree.files) {
     const components = (prefix + file.path).split(path.sep).filter((part) => part && part !== ".");
     let current = workDir;
