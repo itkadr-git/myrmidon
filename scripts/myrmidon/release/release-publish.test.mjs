@@ -246,8 +246,8 @@ function sandbox({ runs = [], releases = {}, changelog = CHANGELOG, auditReport 
 // head_branch mirrors the GitHub API: for a push of tag myr-vX.Y.Z the runs
 // started by that push report head_branch = the tag; runs of the same commit
 // pushed to main earlier report head_branch = "main".
-const run = (sha, pathOfWf, conclusion, status = "completed", headBranch = "myr-v1.6.0") => ({
-  head_sha: sha, path: pathOfWf, status, conclusion, head_branch: headBranch,
+const run = (sha, pathOfWf, conclusion, status = "completed", headBranch = "myr-v1.6.0", event = "push") => ({
+  head_sha: sha, path: pathOfWf, status, conclusion, head_branch: headBranch, event,
 });
 
 function runScript(sb, tag, { extraEnv = {}, args = [] } = {}) {
@@ -470,19 +470,43 @@ describe("publish-github-release.sh: the CI gate", () => {
 
   // ---- TAG-CI (the 1.6.4 incident): the tag's own run is the ONLY source of green ----
 
-  it("CI gate no longer accepts the same-commit main run: the publish green comes from the tag's own run only", () => {
-    // 1.6.4 shape: the release commit's main-branch runs are green, but the
-    // tag has no CI run of its own yet (myrmidon-ci-tag.yml still starting).
-    // The old gate passed CI on the main run; the new gate waits for the
-    // TAG run and refuses when it never completes.
+  it("CI gate accepts a green push run of myrmidon-ci.yml of the same commit on a rel branch (CI-TAG-REUSE-BRANCH-RUN)", () => {
+    // The release tag sits on the head of rel/*, whose full CI is green; the
+    // tag has no CI run of its own (it reuses, or has not started yet).
+    const sb = sandbox({ runs: [
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "rel/1.6.6-fixes"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-dockergate.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-fleetd.yml", "success"),
+    ] });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.equal(code, 0, out);
+    assert.match(out, /Myrmidon CI \(branch run of the same commit\) success/);
+    assert.match(mutations(sb), /create tag=myr-v1\.6\.0/);
+  });
+
+  it("a green main-branch push run of the same commit also counts", () => {
     const sb = sandbox({ runs: [
       run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "main"),
       run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-dockergate.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-fleetd.yml", "success"),
     ] });
     const { code, out } = runScript(sb, "myr-v1.6.0");
-    assert.notEqual(code, 0, out);
-    assert.match(out, /no run of Myrmidon CI \(tag\) found|timed out waiting for Myrmidon CI \(tag\)/);
-    assert.equal(mutations(sb), "");
+    assert.equal(code, 0, out);
+  });
+
+  it("a red or pull_request run of myrmidon-ci.yml does not satisfy the gate (the tag run is still required)", () => {
+    for (const ci of [
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "failure", "completed", "rel/1.6.6-fixes"),
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "bot/x", "pull_request"),
+    ]) {
+      const sb = sandbox({ runs: [ci, run(COMMIT, ".github/workflows/myrmidon-image.yml", "success")] });
+      const { code, out } = runScript(sb, "myr-v1.6.0");
+      assert.notEqual(code, 0, out);
+      assert.match(out, /no run of Myrmidon CI \(tag\) found|timed out waiting for Myrmidon CI \(tag\)/);
+      assert.equal(mutations(sb), "");
+    }
   });
 
   it("publishes when the tag's own CI run is green even with no main-branch run at all", () => {
@@ -1079,6 +1103,18 @@ describe("myrmidon-ci-tag.yml: the tag CI is a separate un-cancellable run", () 
     }
     // every lane is mandatory for the result: nothing may skip
     assert.match(workflow, /all\(to_entries\[\]; \.value\.result == "success"\)/);
+  });
+
+  it("reuses the green branch CI run of the same commit: first job decides, lanes are gated, CI result honours the mode (CI-TAG-REUSE-BRANCH-RUN)", () => {
+    assert.match(workflow, /\njobs:\n  reuse-check:/);
+    assert.match(workflow, /tag-ci-reuse\.mjs/);
+    for (const lane of ["typecheck", "build", "tests", "tests-other", "tests-runner", "checks", "fleetd", "dockergate"]) {
+      const m = workflow.match(new RegExp(`\\n  ${lane}:\\n(?:    #[^\\n]*\\n)*    name: [^\\n]*\\n    needs: \\[reuse-check\\]\\n    if: \\$\\{\\{ needs\\.reuse-check\\.outputs\\.mode == 'full' \\}\\}`));
+      assert.ok(m, `lane ${lane} must need reuse-check and run only in full mode`);
+    }
+    assert.match(workflow, /needs: \[reuse-check, typecheck,/);
+    assert.match(workflow, /\.\["reuse-check"\]\.result == "success"/);
+    assert.match(workflow, /\.\["reuse-check"\]\.outputs\.mode == "reuse"/);
   });
 
   it("workflow_dispatch checks out the typed tag (the 1.6.4 manual re-run path)", () => {
