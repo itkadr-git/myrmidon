@@ -335,7 +335,7 @@ export function createDocumentParserClient(options: DocumentParserClientOptions)
               lastDone = -1;
             }
             const done = job.progress?.done;
-            if (done !== undefined && done > lastDone) {
+            if (done !== undefined && Number.isInteger(done) && done > lastDone) {
               lastDone = done;
               lastProgressAt = moment;
             }
