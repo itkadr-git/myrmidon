@@ -827,6 +827,18 @@ describe("persisted release evidence", () => {
     expect(hasCurrentReleaseVerificationEvidence([comment(failed), comment(record)], scope, "secret", NOW())).toBe(false);
   });
 
+  it("rejects previously confirmed evidence when a sibling release candidate changes", () => {
+    const sibling = member("issue-b:PR#2", SHA_C);
+    const before = { ...scope, members: [...members, sibling] };
+    const confirmed = createReleaseVerificationEvidence({
+      ...before, verdict: "confirmed", checkedAt: "2026-11-13T12:00:00.000Z",
+    }, "secret");
+    const comments = [{ body: `release-evidence-v1: ${JSON.stringify(confirmed)}`, authorType: "system" }];
+    const after = { ...before, members: [...members, { ...sibling, merged: false }] };
+    expect(hasCurrentReleaseVerificationEvidence(comments, before, "secret", NOW())).toBe(true);
+    expect(hasCurrentReleaseVerificationEvidence(comments, after, "secret", NOW())).toBe(false);
+  });
+
   it("rejects expired and future signed evidence", () => {
     expect(validateReleaseVerificationEvidence(record, scope, "secret", new Date("2026-11-14T12:00:00.001Z"))).toBe(false);
     expect(validateReleaseVerificationEvidence(record, scope, "secret", new Date("2026-11-13T11:59:59.999Z"))).toBe(false);
