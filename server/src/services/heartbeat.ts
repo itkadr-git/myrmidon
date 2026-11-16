@@ -172,7 +172,12 @@ import {
   listOwnerChatTurnRunIds,
 } from "../myrmidon/chat-holds/chat-backed.js";
 // myrmidon(1.6.5 F-26 T5): taskless-wake gate + cooling (design §3.7, §4.3).
-import { tasklessGateReason, readSwarmSettings } from "../myrmidon/wake-task-guard.js";
+import { tasklessGateReason, readSwarmSettings, issueWaitsForOwnPrCi } from "../myrmidon/wake-task-guard.js";
+import {
+  decideWakeCiGate,
+  isWakeCiGatedReason,
+  readWakeCiUnreadyGateEnabled,
+} from "../myrmidon/wake-ci-unready-gate.js";
 import {
   CONTINUATION_CAP_COMMENT,
   MAX_CONTINUATIONS_WITHOUT_EXTERNAL_INPUT,
@@ -33721,6 +33726,68 @@ export function heartbeatService(
           });
           return null;
         }
+      }
+    }
+
+
+    // myrmidon(EMPTY-WAKES-CI-UNREADY): the one point where every automatic wake of a
+    // review participant or of an executor waiting for its own CI is decided. While the CI
+    // of the head is pending or cannot be read (GitHub limit), no wake row and no run is
+    // created; the sources ask again and `ci_completed` (not gated) wakes the task when
+    // the CI is final. A person's manual wake always passes.
+    if (
+      issueId &&
+      !opts.manualUserWake &&
+      opts.requestedByActorType !== "user" &&
+      readWakeCiUnreadyGateEnabled() &&
+      isWakeCiGatedReason(readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason)
+    ) {
+      const gatedReason = (readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason)!;
+      try {
+        const [gatedIssue] = await db
+          .select({
+            id: issues.id,
+            status: issues.status,
+            priority: issues.priority,
+            assigneeAgentId: issues.assigneeAgentId,
+            executionState: issues.executionState,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+          .limit(1);
+        if (gatedIssue) {
+          const { createReviewPullRequestCiResolver } = await import(
+            "../myrmidon/review-stage-recovery/github-ci.js"
+          );
+          const rateLimit = await import("./github-rate-limit.js");
+          const decision = await decideWakeCiGate(
+            { agentId, companyId: agent.companyId, reason: gatedReason, issue: gatedIssue },
+            {
+              resolveCi: createReviewPullRequestCiResolver({ db }),
+              engineerWaitsForOwnPrCi: (companyId, id) => issueWaitsForOwnPrCi(db, companyId, id),
+              isRateLimited: rateLimit.isGitHubRateLimited,
+              rateLimitResetEpochSeconds: rateLimit.getGitHubRateLimitResetEpochSeconds,
+            },
+          );
+          if (decision.action === "defer") {
+            logger.info(
+              {
+                agentId,
+                issueId,
+                reason: gatedReason,
+                role: decision.role,
+                cause: decision.cause,
+                resumeAt: decision.resumeAt?.toISOString() ?? null,
+                counter: "myrmidon.heartbeat.wakes_deferred_ci_unready",
+              },
+              "myrmidon.wake_ci_unready: wake not created, the head CI is unfinished or unreadable",
+            );
+            return null;
+          }
+        }
+      } catch (err) {
+        // The gate must never kill a wake: an unexpected failure admits it as before.
+        logger.warn({ err, agentId, issueId }, "myrmidon.wake_ci_unready: gate failed, wake admitted");
       }
     }
 
