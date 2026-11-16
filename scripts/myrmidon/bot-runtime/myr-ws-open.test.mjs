@@ -145,6 +145,26 @@ describe("myr-ws open — contract constants", () => {
 });
 
 describe("myr-ws open — task copy", { skip: !hasGit }, () => {
+  it("creates its real git base under MYRMIDON_WS_HOME", async () => {
+    const originRoot = path.join(tmp, `local-origin-${n}`);
+    const repoOrigin = path.join(originRoot, "acme", "widgets.git");
+    fs.mkdirSync(path.dirname(repoOrigin), { recursive: true });
+    git(tmp, "clone", "-q", "--bare", originDir, repoOrigin);
+    const env = {
+      ...ctx.env,
+      MYRMIDON_WS_HOME: ctx.home,
+      MYRMIDON_WS_REMOTE_BASE: `file://${originRoot}`,
+    };
+    const result = await run(["ABC-100", REPO, "--json"], { env, ensureBase: null });
+    assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+    const out = copyOf(result);
+    const base = path.join(ctx.home, "git-base", "acme", "widgets.git");
+    assert.equal(git(base, "rev-parse", "--is-bare-repository"), "true");
+    const common = git(out.path, "rev-parse", "--git-common-dir");
+    assert.equal(fs.realpathSync(path.resolve(out.path, common)), fs.realpathSync(base));
+    assert.equal(fs.readFileSync(path.join(out.path, "README.md"), "utf8"), "# widgets\n");
+  });
+
   it("creates a worktree of the base on bot/<KEY> without an object store", async () => {
     const r = await run(["ABC-101", REPO, "--json"]);
     assert.equal(r.exitCode, 0, r.stderr);
