@@ -269,6 +269,16 @@ describe("company migration dry run", () => {
     expect(copiedAgents[0]!.name).toBe(sourceAgent!.name);
     expect(copiedAgents[0]!.id).not.toBe(sourceAgent!.id);
 
+    const agentApp = express();
+    agentApp.use((req, _res, next) => {
+      req.actor = { type: "agent", agentId: copiedAgents[0]!.id, companyId: destination!.id, source: "agent_key" };
+      next();
+    });
+    agentApp.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    agentApp.use(errorHandler);
+    expect((await request(agentApp).get(`/api/companies/${destination!.id}`)).status).toBe(200);
+    expect((await request(agentApp).get(`/api/companies/${source!.id}`)).status).toBe(403);
+
     const second = await request(app).post(`/api/companies/${source!.id}/migrations`).send(payload);
     expect(second.status).toBe(200);
     expect(second.body.resume).toBe("already_completed");
