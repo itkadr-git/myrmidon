@@ -241,6 +241,7 @@ describe("company migration dry run", () => {
 
   it("applies a confirmed migration once and reuses the completed run", async () => {
     const [source] = await db.insert(companies).values({ name: "Apply fixture", issuePrefix: "MAP" }).returning();
+    const [sourceAgent] = await db.insert(agents).values({ companyId: source!.id, name: "Apply worker" }).returning();
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -260,11 +261,18 @@ describe("company migration dry run", () => {
     expect(first.status).toBe(200);
     expect(first.body.dryRun).toBe(false);
     const afterFirst = await db.select().from(companies);
-    expect(afterFirst.filter((company) => company.name === "Apply destination")).toHaveLength(1);
+    const destination = afterFirst.find((company) => company.name === "Apply destination");
+    expect(destination).toBeDefined();
+    const agentsAfterFirst = await db.select().from(agents);
+    const copiedAgents = agentsAfterFirst.filter((agent) => agent.companyId === destination!.id);
+    expect(copiedAgents).toHaveLength(1);
+    expect(copiedAgents[0]!.name).toBe(sourceAgent!.name);
+    expect(copiedAgents[0]!.id).not.toBe(sourceAgent!.id);
 
     const second = await request(app).post(`/api/companies/${source!.id}/migrations`).send(payload);
     expect(second.status).toBe(200);
     expect(second.body.resume).toBe("already_completed");
     expect(await db.select().from(companies)).toEqual(afterFirst);
+    expect(await db.select().from(agents)).toEqual(agentsAfterFirst);
   });
 });
