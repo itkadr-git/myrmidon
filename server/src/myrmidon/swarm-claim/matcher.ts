@@ -102,7 +102,7 @@ import {
 } from "./effective-pheromone.js";
 import { projectMemberAgentIds, projectMembershipByProject, projectScopedClaimGate } from "../project-membership.js";
 import { issueService } from "../../services/issues.js";
-import { currentRunPrioritySettings } from "../run-priority/state.js";
+import { currentCompanyReleaseFocus } from "../run-priority/state.js";
 import { createAutoSlicePolicy, projectQueueShortages, releaseEpicCandidates, runAutoSlicePass } from "./auto-slice-policy.js";
 import { unassignedTaskRoutedToRole } from "./queue.js";
 import { insertClaim, releaseClaimsForIssue, revertIdleClaimAssignment } from "./store.js";
@@ -737,7 +737,7 @@ const autoSlicePolicies = new WeakMap<object, ReturnType<typeof createAutoSliceP
 const AUTO_SLICE_TITLE = "[AUTO-SLICE] Пополнить очередь инженеров";
 
 async function autoSliceCompany(deps: SwarmMatcherDeps, companyId: string, castes: Map<string, SwarmMatcherCaste>): Promise<void> {
-  const release = currentRunPrioritySettings().currentRelease;
+  const release = currentCompanyReleaseFocus(companyId).currentRelease;
   if (!release) return;
   const [pools, members, projectRows, issueRows] = await Promise.all([
     listIdleRolePairs(deps.db, companyId, { roles: ["engineer", "lead"], order: queueOrderOf(deps) }),
