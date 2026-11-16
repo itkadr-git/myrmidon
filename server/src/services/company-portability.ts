@@ -3925,6 +3925,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         if (options.rejectUnknownAgentPermissions) throw unprocessable("Source contains an unsupported agent permission.");
         continue;
       }
+      if (options.rejectUnknownAgentPermissions && row.scope != null && !isPlainRecord(row.scope)) {
+        throw unprocessable("Source contains an invalid agent permission scope.");
+      }
       const grants = permissionGrantsByAgentId.get(row.principalId) ?? [];
       grants.push({
         permissionKey: row.permissionKey as PermissionKey,
