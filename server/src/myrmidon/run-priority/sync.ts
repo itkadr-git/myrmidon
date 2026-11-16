@@ -10,7 +10,7 @@ import type { RunPrioritySettings } from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { RELEASE_FOCUS_DEFERRAL_CONTEXT_KEY } from "../../modules/run-dispatch/domain/wake-context.js";
-import { applyCompanyReleaseFocus, applyRunPrioritySettings, currentRunPrioritySettings, resolveRunPriority, type CompanyReleaseFocus } from "./state.js";
+import { applyCompanyReleaseFocus, applyRunPrioritySettings, companyReleaseFocusSnapshot, currentRunPrioritySettings, resolveRunPriority, type CompanyReleaseFocus } from "./state.js";
 
 /** Load the company snapshots from the preserved behavior-settings area. */
 export async function readCompanyReleaseFocus(db: Db): Promise<Map<string, CompanyReleaseFocus>> {
@@ -78,8 +78,15 @@ export async function applyStoredRunPriority(db: Db): Promise<RunPrioritySetting
  */
 export async function syncRunPriorityFromStore(db: Db): Promise<RunPrioritySettings> {
   const before = currentRunPrioritySettings();
+  const beforeCompanies = companyReleaseFocusSnapshot();
   const next = await applyStoredRunPriority(db);
-  if (releaseFocusChanged(before, next)) {
+  const afterCompanies = companyReleaseFocusSnapshot();
+  const companyFocusChanged = [...new Set([...beforeCompanies.keys(), ...afterCompanies.keys()])].some((id) => {
+    const previous = beforeCompanies.get(id);
+    const current = afterCompanies.get(id);
+    return previous?.currentRelease !== current?.currentRelease || previous?.strictReleaseFocus !== current?.strictReleaseFocus;
+  });
+  if (releaseFocusChanged(before, next) || companyFocusChanged) {
     const advanced = await advanceFocusDeferredRuns(db);
     if (advanced > 0) logger.info({ advanced }, "release focus changed: deferred runs are due now");
   }

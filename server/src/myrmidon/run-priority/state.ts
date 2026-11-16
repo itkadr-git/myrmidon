@@ -48,6 +48,10 @@ export function currentCompanyReleaseFocus(companyId: string): CompanyReleaseFoc
   return companyReleaseFocus.get(companyId) ?? { currentRelease: null, strictReleaseFocus: false };
 }
 
+export function companyReleaseFocusSnapshot(): ReadonlyMap<string, CompanyReleaseFocus> {
+  return new Map(companyReleaseFocus);
+}
+
 /** Put settings in force for the live queue sweeps. */
 export function applyRunPrioritySettings(settings: RunPrioritySettings): void {
   inForce = settings;
