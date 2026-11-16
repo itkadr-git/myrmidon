@@ -10,7 +10,8 @@ type MigrationManifest = {
   projects?: Array<Pick<CompanyPortabilityManifest["projects"][number], "slug"> &
     Partial<Pick<CompanyPortabilityManifest["projects"][number], "ownerAgentSlug" | "leadAgentSlug">>>;
   issues?: Array<Pick<CompanyPortabilityManifest["issues"][number],
-    "slug" | "projectSlug" | "assigneeAgentSlug" | "parentSlug" | "blockedBy">>;
+    "slug" | "projectSlug" | "assigneeAgentSlug" | "parentSlug" | "blockedBy"> &
+    Partial<Pick<CompanyPortabilityManifest["issues"][number], "recurring" | "routine">>>;
   envInputs: Array<Pick<CompanyPortabilityManifest["envInputs"][number],
     "key" | "agentSlug" | "projectSlug" | "kind" | "requirement">>;
 };
@@ -92,6 +93,10 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
   const parentByIssue = new Map((manifest.issues ?? []).map((issue) => [issue.slug, issue.parentSlug ?? null]));
   const checkedParents = new Set<string>();
   for (const issue of manifest.issues ?? []) {
+    // Portability recreates webhook triggers, which are outside migration scope.
+    if (issue.recurring && issue.routine?.triggers.some((trigger) => trigger.kind === "webhook")) {
+      errors.push(`Task ${issue.slug} has a webhook trigger that cannot be migrated.`);
+    }
     if (issue.projectSlug && !projectSlugs.has(issue.projectSlug)) errors.push(`Task ${issue.slug} references missing project ${issue.projectSlug}.`);
     if (issue.assigneeAgentSlug && !agentSlugs.has(issue.assigneeAgentSlug)) errors.push(`Task ${issue.slug} references missing agent ${issue.assigneeAgentSlug}.`);
     for (const related of [issue.parentSlug, ...(issue.blockedBy ?? [])]) {

@@ -134,6 +134,20 @@ describe("migration manifest validation", () => {
       .toEqual(expect.arrayContaining([expect.stringContaining("management cycle")]));
   });
 
+  it("rejects recurring tasks with webhook triggers without exposing trigger metadata", () => {
+    const issue = { slug: "scheduled-task", projectSlug: null, assigneeAgentSlug: null,
+      parentSlug: null, blockedBy: [], recurring: true,
+      routine: { concurrencyPolicy: null, catchUpPolicy: null, triggers: [{
+        kind: "webhook", label: "private-webhook-label", enabled: true,
+        cronExpression: null, timezone: null, signingMode: "bearer", replayWindowSec: 300,
+      }] } };
+    const result = validateMigrationManifest({ agents: [], skills: [], envInputs: [], issues: [issue] });
+    expect(result.errors).toEqual(expect.arrayContaining([expect.stringContaining("webhook trigger")]));
+    expect(JSON.stringify(result)).not.toContain("private-webhook-label");
+    const safe = { ...issue, routine: { ...issue.routine, triggers: [] } };
+    expect(validateMigrationManifest({ agents: [], skills: [], envInputs: [], issues: [safe] }).errors).toEqual([]);
+  });
+
   it("rejects dangling project and task relationships before migration", () => {
     const result = validateMigrationManifest({
       agents: [], skills: [], envInputs: [],
