@@ -112,6 +112,9 @@ export async function commitKnowledgeTreeIfChanged(
     if (file.path.includes("..") || path.isAbsolute(file.path)) {
       throw new Error(`refusing to write a path outside the export repo: ${file.path}`);
     }
+    if (path.normalize(prefix + file.path).split(path.sep)[0] === ".git") {
+      throw new Error(`refusing to write git metadata: ${file.path}`);
+    }
   }
   // Check every existing component before writing any file, including dangling links.
   for (const file of tree.files) {
