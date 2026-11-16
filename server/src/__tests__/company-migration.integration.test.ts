@@ -81,6 +81,33 @@ describe("company migration dry run", () => {
     insert.mockRestore(); update.mockRestore(); remove.mockRestore();
   });
 
+  it("rejects migration dry runs from agents without writing to the database", async () => {
+    const [source] = await db.insert(companies).values({ name: "Agent access fixture", issuePrefix: "MAC" }).returning();
+    const [worker] = await db.insert(agents).values({ companyId: source!.id, name: "Access worker" }).returning();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "agent", agentId: worker!.id, companyId: source!.id, source: "agent_key" };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+    const insert = vi.spyOn(db, "insert");
+    const update = vi.spyOn(db, "update");
+    const remove = vi.spyOn(db, "delete");
+    try {
+      const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+        target: { mode: "new_company", newCompanyName: "Unauthorized destination" },
+      });
+      expect(response.status).toBe(403);
+      expect(insert).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+      expect(remove).not.toHaveBeenCalled();
+    } finally {
+      insert.mockRestore(); update.mockRestore(); remove.mockRestore();
+    }
+  });
+
   it("rejects an unconfirmed apply without database, storage, or audit writes", async () => {
     const [source] = await db.insert(companies).values({ name: "Confirmation fixture", issuePrefix: "MCF" }).returning();
     const beforeCompanies = await db.select().from(companies);
