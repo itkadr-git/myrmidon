@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   agentWakeupRequests,
@@ -79,15 +79,6 @@ describeEmbedded("interaction wakes and the daily run limit", () => {
       runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" },
     });
   }, 60_000);
-
-  afterEach(async () => {
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(issueThreadInteractions);
-    await db.delete(issues);
-    await db.delete(agents);
-    await db.delete(companies);
-  });
 
   afterAll(async () => {
     await tempDb?.cleanup();
@@ -228,13 +219,23 @@ describeEmbedded("interaction wakes and the daily run limit", () => {
   });
 
   it("stops bypassing once the per-day interaction wake cap is used", async () => {
-    const { companyId, addresseeId, issueId } = await seed({ maxDailyRuns: 1, maxDailyInteractionWakes: 1 });
+    const { companyId, addresseeId, askerId, issueId } = await seed({ maxDailyRuns: 1, maxDailyInteractionWakes: 1 });
     await useUpDailyLimit(companyId, addresseeId);
+    // A second task: a wake on the task the first run holds would be parked, not refused.
+    const secondIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: secondIssueId,
+      companyId,
+      title: "Another engineer waits",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: askerId,
+    });
     const first = await seedCard({ companyId, issueId, addresseeId });
-    const second = await seedCard({ companyId, issueId, addresseeId });
+    const second = await seedCard({ companyId, issueId: secondIssueId, addresseeId });
 
     await heartbeat.wakeup(addresseeId, wakeFor({ issueId, cardId: first }));
-    await heartbeat.wakeup(addresseeId, wakeFor({ issueId, cardId: second }));
+    await heartbeat.wakeup(addresseeId, wakeFor({ issueId: secondIssueId, cardId: second }));
 
     const receipts = await receiptsOf(addresseeId);
     const byCard = (cardId: string) =>
