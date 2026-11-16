@@ -89,9 +89,12 @@ suite("company boundaries in dispatch and release focus", () => {
   it("persists company focus and restores it during cross-process refresh", async () => {
     const adm = await seed("ADM");
     const other = await seed("BBQ");
-    const service = runPriorityService(db);
+    const service = runPriorityService(db) as ReturnType<typeof runPriorityService> & {
+      updateCompany?: (companyId: string, patch: { currentRelease: string; strictReleaseFocus: boolean }, actor: { actorType: "user"; actorId: string; agentId: null; runId: null; agentApiKeyId: null }) => Promise<unknown>;
+    };
     const actor = { actorType: "user" as const, actorId: "operator", agentId: null, runId: null, agentApiKeyId: null };
-    await service.updateCompany(adm.companyId, { currentRelease: "1.7", strictReleaseFocus: true }, actor);
+    expect(service.updateCompany).toBeDefined();
+    await service.updateCompany?.(adm.companyId, { currentRelease: "1.7", strictReleaseFocus: true }, actor);
     resetRunPriorityForTests();
     await syncRunPriorityFromStore(db);
     expect(await runViolatesReleaseFocus(db, { companyId: adm.companyId, agentId: adm.agentId, issueId: adm.other })).toBe(true);
