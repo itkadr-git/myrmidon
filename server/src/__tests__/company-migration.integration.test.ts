@@ -268,6 +268,36 @@ describe("company migration dry run", () => {
     expect(await db.select().from(agents)).toEqual(agentsAfterFirst);
   });
 
+  it("rolls back the destination owned by a completed migration without touching the source", async () => {
+    const [source] = await db.insert(companies).values({ name: "Rollback source", issuePrefix: "MRB" }).returning();
+    const [worker] = await db.insert(agents).values({ companyId: source!.id, name: "Rollback worker" }).returning();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+    const endpoint = `/api/companies/${source!.id}/migrations`;
+    const applied = await request(app).post(endpoint).send({
+      target: { mode: "new_company", newCompanyName: "Rollback destination" },
+      dryRun: false, apply: true, confirm: "approved pilot",
+    });
+    expect(applied.status).toBe(200);
+    const run = await companyTransferRunService.getRun(db, applied.body.runId);
+    expect(run?.companyId).toBeTruthy();
+    expect(run?.companyId).not.toBe(source!.id);
+    const destinationId = run!.companyId;
+    expect((await db.select().from(agents)).some((agent) => agent.companyId === destinationId)).toBe(true);
+
+    const rollback = await request(app).post(`${endpoint}/${run!.id}/rollback`).send({ confirm: "rollback pilot" });
+    expect(rollback.status).toBe(200);
+    expect((await db.select().from(agents)).some((agent) => agent.companyId === destinationId)).toBe(false);
+    expect((await db.select().from(agents)).some((agent) => agent.id === worker!.id && agent.companyId === source!.id)).toBe(true);
+    expect((await db.select().from(companies)).some((company) => company.id === source!.id)).toBe(true);
+  });
+
   it("rejects a confirmed apply until recovery is implemented, without side effects", async () => {
     const [source] = await db.insert(companies).values({ name: "Apply safety fixture", issuePrefix: "MSF" }).returning();
     const storage = createStorageService(createLocalDiskStorageProvider(root));
