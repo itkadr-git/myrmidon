@@ -613,6 +613,17 @@ describe("company migration dry run", () => {
     expect((await companyTransferRunService.getRun(db, run.id))?.status).toBe("failed");
   });
 
+  it("does not persist secret-bearing manifests in the migration ledger", async () => {
+    const declared = await companyTransferRunService.resumeOrCreateMigration(db, "manifest-source", "manifest-redaction");
+    const before = await companyTransferRunService.getRun(db, declared.run.id);
+    await companyTransferRunService.recordManifest(db, declared.run.id, {
+      secretValue: "private-migration-value", chunks: [], blobs: [],
+    }, "manifest-hash");
+    const after = await companyTransferRunService.getRun(db, declared.run.id);
+    expect(after).toEqual(before);
+    expect(JSON.stringify(after)).not.toContain("private-migration-value");
+  });
+
   it("does not persist upstream error details when a migration apply fails", async () => {
     const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "redaction-source", "redaction-key");
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
