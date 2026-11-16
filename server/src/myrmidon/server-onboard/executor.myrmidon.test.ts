@@ -401,6 +401,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     const result = await executor.execute(claim, mockReporter.reporter);
     expect(result.status).toBe("failed");
     expect(result.error).toContain("configuration restoration failed");
+    expect(result.error).toContain("sshd configuration test failed");
     expect(mockReporter.completion?.status).toBe("failed");
   });
 
