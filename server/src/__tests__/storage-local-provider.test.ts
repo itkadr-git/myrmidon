@@ -60,6 +60,7 @@ describe("local disk storage provider", () => {
       throw new Error("reservation failed");
     } })).rejects.toThrow("reservation failed");
     expect(reservedKey).toMatch(/^company-1\/migration\//);
+    expect(reservedKey).not.toContain("demo");
     expect((await service.headObject("company-1", reservedKey)).exists).toBe(false);
 
     const stored = await service.putFile({ ...input, beforeWrite: async (key) => {
