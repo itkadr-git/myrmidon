@@ -3,11 +3,11 @@
  *
  * On 16.11 the volume filled up to 100% and 63 runs failed in ten minutes:
  * `myr-ws open` refused the copy (BOT_DISK_QUOTA_EXCEEDED) while the run was
- * already started, so the run died. Below 10% free space on the physical volume
+ * already started, so the run died. Below the minimum free space (default 5%, env MYRMIDON_DISK_BUDGET_MIN_FREE_PERCENT) on the physical volume
  * a queued run is not started and not cancelled: the same row waits in
  * `scheduled_retry` with the reason `disk_budget` (like the daily run limit and
  * the model channel pause), and the due-retry sweep brings it back to the claim
- * gate, which measures again. At 10% free or more the gate lets the run through.
+ * gate, which measures again. At the minimum free space or more the gate lets the run through.
  *
  * The first deferral also asks the host for an extraordinary cleanup (host GC,
  * `scripts/myrmidon/host-gc`). The request is a small file the host watches
@@ -29,8 +29,17 @@ export const DISK_BUDGET_REASON = "disk_budget";
 /** Key of the context marker of a `scheduled_retry` run that waits for free space. */
 export const DISK_BUDGET_DEFERRAL_CONTEXT_KEY = "diskBudgetDeferral";
 
-/** Free space below this percent of the physical volume defers new runs (10% and more passes). */
-export const DISK_BUDGET_MIN_FREE_PERCENT = 10;
+/** Default minimum free percent of the physical volume: below it new runs wait (exactly the minimum passes). */
+export const DISK_BUDGET_MIN_FREE_PERCENT = 5;
+export const DISK_BUDGET_MIN_FREE_PERCENT_ENV = "MYRMIDON_DISK_BUDGET_MIN_FREE_PERCENT";
+
+/** The minimum free percent in force: the env value when it is a number in (0, 50], else the default. */
+export function resolveDiskBudgetMinFreePercent(env: Record<string, string | undefined> = process.env): number {
+  const raw = env[DISK_BUDGET_MIN_FREE_PERCENT_ENV]?.trim();
+  if (!raw) return DISK_BUDGET_MIN_FREE_PERCENT;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 && value <= 50 ? value : DISK_BUDGET_MIN_FREE_PERCENT;
+}
 
 /** Recheck ladder of a deferred run: 1, 2, then 5 minutes. */
 export const DISK_BUDGET_RECHECK_LADDER_MS = [1, 2, 5].map((minutes) => minutes * 60_000);
@@ -52,9 +61,9 @@ export function freePercentOf(volume: DiskBudgetVolume | null | undefined): numb
   return (Math.min(freeBytes, totalBytes) / totalBytes) * 100;
 }
 
-/** True only when the volume is measured and has less than the minimum free: 9.99% blocks, 10% passes. */
-export function isBelowDiskBudget(freePercent: number | null): boolean {
-  return freePercent !== null && freePercent < DISK_BUDGET_MIN_FREE_PERCENT;
+/** True only when the volume is measured and has less than the minimum free: 4.9% blocks, 5% passes. */
+export function isBelowDiskBudget(freePercent: number | null, minFreePercent: number = DISK_BUDGET_MIN_FREE_PERCENT): boolean {
+  return freePercent !== null && freePercent < minFreePercent;
 }
 
 /** When a run deferred for the `count`-th time (0 = first) is looked at again. */
@@ -67,7 +76,7 @@ export type HostGcRequestOutcome = "requested" | "cooldown" | "in_flight" | "fai
 
 export type DiskBudgetVerdict =
   | { blocked: false }
-  | { blocked: true; freePercent: number; gc: HostGcRequestOutcome };
+  | { blocked: true; freePercent: number; minFreePercent: number; gc: HostGcRequestOutcome };
 
 export interface DiskBudgetGateDeps {
   /** Physical numbers of the bot volume; null/throw = not measured. */
@@ -76,6 +85,8 @@ export interface DiskBudgetGateDeps {
   requestGc: (info: { freePercent: number; at: Date }) => Promise<boolean>;
   /** False when no request channel exists (nothing to ask). */
   gcConfigured?: boolean;
+  /** Minimum free percent; default from the env (MYRMIDON_DISK_BUDGET_MIN_FREE_PERCENT) or 5. */
+  minFreePercent?: number;
   now?: () => Date;
 }
 
@@ -85,6 +96,7 @@ export interface DiskBudgetGate {
 
 export function createDiskBudgetGate(deps: DiskBudgetGateDeps): DiskBudgetGate {
   const now = deps.now ?? (() => new Date());
+  const minFreePercent = deps.minFreePercent ?? resolveDiskBudgetMinFreePercent();
   let nextRequestAt = 0;
   let inFlight: Promise<HostGcRequestOutcome> | null = null;
 
@@ -121,9 +133,9 @@ export function createDiskBudgetGate(deps: DiskBudgetGateDeps): DiskBudgetGate {
         volume = null;
       }
       const freePercent = freePercentOf(volume);
-      if (freePercent === null || !isBelowDiskBudget(freePercent)) return { blocked: false };
+      if (freePercent === null || !isBelowDiskBudget(freePercent, minFreePercent)) return { blocked: false };
       const gc = await requestGcOnce(freePercent);
-      return { blocked: true, freePercent, gc };
+      return { blocked: true, freePercent, minFreePercent, gc };
     },
   };
 }

@@ -363,25 +363,25 @@ describe("myr-ws open — invalid keys", { skip: !hasGit }, () => {
 });
 
 describe("myr-ws open — physical volume budget", { skip: !hasGit }, () => {
-  it("refuses a new copy at 9% free and permits it after recovery to 10%", async () => {
-    let free = 9;
-    const statfs = () => ({ blocks: 100, bavail: free });
+  it("refuses a new copy at 4.9% free and permits it after recovery to 5%", async () => {
+    let free = 49;
+    const statfs = () => ({ blocks: 1000, bavail: free });
     const refused = await run(["ABC-901", REPO, "--json"], { statfs });
     assert.equal(refused.exitCode, 3);
     assert.match(copyOf(refused).error, /^BOT_DISK_QUOTA_EXCEEDED:.*disk_budget/);
     assert.equal(ctx.calls.length, 0);
     assert.equal(fs.existsSync(path.join(ctx.workspaceRoot, "ABC-901")), false);
 
-    free = 10;
+    free = 50;
     const recovered = await run(["ABC-901", REPO, "--json"], { statfs });
     assert.equal(recovered.exitCode, 0, recovered.stderr);
     assert.equal(copyOf(recovered).reused, false);
   });
 
   it("reuses an existing copy even when the volume falls below the threshold", async () => {
-    const opened = await run(["ABC-902", REPO, "--json"], { statfs: () => ({ blocks: 100, bavail: 10 }) });
+    const opened = await run(["ABC-902", REPO, "--json"], { statfs: () => ({ blocks: 1000, bavail: 50 }) });
     assert.equal(opened.exitCode, 0, opened.stderr);
-    const reused = await run(["ABC-902", REPO, "--json"], { statfs: () => ({ blocks: 100, bavail: 9 }) });
+    const reused = await run(["ABC-902", REPO, "--json"], { statfs: () => ({ blocks: 1000, bavail: 49 }) });
     assert.equal(reused.exitCode, 0, reused.stderr);
     assert.equal(copyOf(reused).reused, true);
   });

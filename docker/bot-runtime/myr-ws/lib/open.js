@@ -343,6 +343,12 @@ function resolveCopyDir(ctx, reg, { key, repo, scratch, klass }) {
   return { dir: secondary, known: reg.entries.find((e) => e.path === secondary) };
 }
 
+// Minimum free percent of the physical volume (default 5, MYRMIDON_DISK_BUDGET_MIN_FREE_PERCENT, same as the board gate).
+function diskBudgetMinFreePercent(env) {
+  const value = Number(String(env.MYRMIDON_DISK_BUDGET_MIN_FREE_PERCENT ?? "").trim());
+  return Number.isFinite(value) && value > 0 && value <= 50 ? value : 5;
+}
+
 function makeCtx(deps = {}) {
   const env = deps.env || process.env;
   return {
@@ -464,8 +470,8 @@ async function open(request, deps = {}) {
   while (!fs.existsSync(volumePath) && path.dirname(volumePath) !== volumePath) volumePath = path.dirname(volumePath);
   try {
     const volume = ctx.statfs(volumePath);
-    if (volume.blocks > 0 && volume.bavail * 10 < volume.blocks) {
-      throw new MyrWsError(EXIT.quotaExceeded, `${QUOTA_PREFIX} disk_budget: less than 10% free on the workspace filesystem; no new copy is created`);
+    if (volume.blocks > 0 && volume.bavail * 100 < volume.blocks * diskBudgetMinFreePercent(process.env)) {
+      throw new MyrWsError(EXIT.quotaExceeded, `${QUOTA_PREFIX} disk_budget: less than ${diskBudgetMinFreePercent(process.env)}% free on the workspace filesystem; no new copy is created`);
     }
   } catch (error) {
     if (error instanceof MyrWsError) throw error;

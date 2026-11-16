@@ -908,9 +908,9 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
     );
   }
 
-  it("disk budget: at 9% free a run is deferred with reason disk_budget, not failed, and host GC is asked once", async () => {
+  it("disk budget: at 4.9% free a run is deferred with reason disk_budget, not failed, and host GC is asked once", async () => {
     const { agentId, otherIssueId } = await seedFocusScenario(false);
-    const state = { freePercent: 9, gcOk: true, gcCalls: 0 };
+    const state = { freePercent: 4.9, gcOk: true, gcCalls: 0 };
     pinDiskBudget(state);
     const first = await commentWake(agentId, otherIssueId);
     const second = await commentWake(agentId, otherIssueId);
@@ -930,14 +930,14 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
     expect(state.gcCalls).toBe(1);
   }, 30_000);
 
-  it("disk budget: the deferred run starts by itself once the volume is back at 10% free", async () => {
+  it("disk budget: the deferred run starts by itself once the volume is back at 5% free", async () => {
     const { agentId, otherIssueId } = await seedFocusScenario(false);
-    const state = { freePercent: 9, gcOk: true, gcCalls: 0 };
+    const state = { freePercent: 4.9, gcOk: true, gcCalls: 0 };
     pinDiskBudget(state);
     const run = await commentWake(agentId, otherIssueId);
     await sweep();
     expect((await runRow(run.id))?.status).toBe("scheduled_retry");
-    state.freePercent = 10;
+    state.freePercent = 5;
     await db.update(heartbeatRuns).set({ scheduledRetryAt: new Date(Date.now() - 1000) }).where(eq(heartbeatRuns.id, run.id));
     await heartbeat.promoteDueScheduledRetries();
     await sweep();
@@ -950,7 +950,7 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
 
   it("disk budget: a refused cleanup request does not fail the run; it stays deferred", async () => {
     const { agentId, otherIssueId } = await seedFocusScenario(false);
-    const state = { freePercent: 5, gcOk: false, gcCalls: 0 };
+    const state = { freePercent: 3, gcOk: false, gcCalls: 0 };
     pinDiskBudget(state);
     const run = await commentWake(agentId, otherIssueId);
     await sweep();

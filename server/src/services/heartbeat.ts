@@ -1090,7 +1090,6 @@ import {
 // myrmidon(1.6.9, OPE-13419): disk budget of the physical bot volume at the run-start gate.
 import {
   DISK_BUDGET_DEFERRAL_CONTEXT_KEY,
-  DISK_BUDGET_MIN_FREE_PERCENT,
   DISK_BUDGET_REASON,
   diskBudgetDueAt,
 } from "../myrmidon/disk-budget/disk-budget.js";
@@ -20334,7 +20333,7 @@ export function heartbeatService(
 
   // myrmidon(OPE-13419): disk budget at the one run-start gate. A queued run is
   // not started and not cancelled while the physical bot volume has less than
-  // DISK_BUDGET_MIN_FREE_PERCENT free: the same row waits in `scheduled_retry`
+  // the minimum free percent (default 5): the same row waits in `scheduled_retry`
   // (reason `disk_budget` in `contextSnapshot.diskBudgetDeferral` and in the run
   // event), the due-retry sweep brings it back here and the volume is measured
   // again, so the run resumes by itself once space is back. The first refusal
@@ -20384,7 +20383,7 @@ export function heartbeatService(
             deferredAt: now.toISOString(),
             dueAt: dueAt.toISOString(),
             freePercent,
-            minFreePercent: DISK_BUDGET_MIN_FREE_PERCENT,
+            minFreePercent: verdict.minFreePercent,
             hostGc: verdict.gc,
           },
         }),
@@ -20413,11 +20412,11 @@ export function heartbeatService(
       eventType: "lifecycle",
       stream: "system",
       level: "warn",
-      message: `Disk budget: ${freePercent}% free on the bot volume (minimum ${DISK_BUDGET_MIN_FREE_PERCENT}%); the run waits until space is back (host cleanup: ${verdict.gc})`,
+      message: `Disk budget: ${freePercent}% free on the bot volume (minimum ${verdict.minFreePercent}%); the run waits until space is back (host cleanup: ${verdict.gc})`,
       payload: {
         reason: DISK_BUDGET_REASON,
         freePercent,
-        minFreePercent: DISK_BUDGET_MIN_FREE_PERCENT,
+        minFreePercent: verdict.minFreePercent,
         hostGc: verdict.gc,
         scheduledRetryAt: dueAt.toISOString(),
       },
@@ -20980,7 +20979,7 @@ export function heartbeatService(
     // myrmidon(OPE-13231): strict release focus.
     if (await deferQueuedRunForReleaseFocus(run)) return null;
 
-    // myrmidon(OPE-13419): below 10% free space on the physical bot volume no run
+    // myrmidon(OPE-13419): below the minimum free space (default 5%) on the physical bot volume no run
     // starts; it waits (reason disk_budget) while host GC is asked to clean up.
     if (await deferQueuedRunForDiskBudget(run)) return null;
 

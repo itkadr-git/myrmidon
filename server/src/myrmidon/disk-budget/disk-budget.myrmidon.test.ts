@@ -9,6 +9,7 @@ import {
   createHostGcRequestFileWriter,
   diskBudgetDueAt,
   freePercentOf,
+  resolveDiskBudgetMinFreePercent,
 } from "./disk-budget.js";
 
 const TOTAL = 1000;
@@ -26,17 +27,26 @@ function gateWith(free: () => number, requestGc: (i: { freePercent: number; at: 
 }
 
 describe("disk budget gate (OPE-13419)", () => {
-  it("blocks at 9% free and lets the run through at 10% free", async () => {
-    let free = 90;
+  it("blocks at 4.9% free and lets the run through at 5% free", async () => {
+    let free = 49;
     let calls = 0;
     const { gate } = gateWith(() => free, async () => { calls += 1; return true; });
-    const blocked = await gate.check();
-    expect(blocked).toMatchObject({ blocked: true, gc: "requested" });
-    free = 100; // exactly 10%
+    expect(await gate.check()).toMatchObject({ blocked: true, minFreePercent: 5, gc: "requested" });
+    free = 50; // exactly 5%
     expect(await gate.check()).toEqual({ blocked: false });
-    free = 99; // 9.9%
+    free = 49;
     expect((await gate.check()).blocked).toBe(true);
     expect(calls).toBe(1);
+  });
+
+  it("the minimum is configurable (MYRMIDON_DISK_BUDGET_MIN_FREE_PERCENT); a bad value falls back to 5", async () => {
+    expect(resolveDiskBudgetMinFreePercent({})).toBe(5);
+    expect(resolveDiskBudgetMinFreePercent({ MYRMIDON_DISK_BUDGET_MIN_FREE_PERCENT: "8" })).toBe(8);
+    for (const bad of ["", "abc", "0", "-3", "75"]) {
+      expect(resolveDiskBudgetMinFreePercent({ MYRMIDON_DISK_BUDGET_MIN_FREE_PERCENT: bad })).toBe(5);
+    }
+    const gate = createDiskBudgetGate({ measure: vol(70), requestGc: async () => true, minFreePercent: 8 });
+    expect(await gate.check()).toMatchObject({ blocked: true, minFreePercent: 8 });
   });
 
   it("does not block when the volume cannot be measured", async () => {
@@ -51,7 +61,7 @@ describe("disk budget gate (OPE-13419)", () => {
   it("parallel checks ask host GC once (single flight), then the cooldown holds", async () => {
     let calls = 0;
     let release: (ok: boolean) => void = () => undefined;
-    const { gate, clock } = gateWith(() => 50, () => { calls += 1; if (calls > 1) return Promise.resolve(true); return new Promise<boolean>((r) => { release = r; }); });
+    const { gate, clock } = gateWith(() => 30, () => { calls += 1; if (calls > 1) return Promise.resolve(true); return new Promise<boolean>((r) => { release = r; }); });
     const all = Promise.all([gate.check(), gate.check(), gate.check()]);
     await new Promise((resolve) => setTimeout(resolve, 0));
     release(true);
@@ -67,7 +77,7 @@ describe("disk budget gate (OPE-13419)", () => {
 
   it("a failed cleanup request still defers the run and is retried after the short cooldown", async () => {
     let calls = 0;
-    const { gate, clock } = gateWith(() => 50, async () => { calls += 1; throw new Error("no channel"); });
+    const { gate, clock } = gateWith(() => 30, async () => { calls += 1; throw new Error("no channel"); });
     expect(await gate.check()).toMatchObject({ blocked: true, gc: "failed" });
     expect(await gate.check()).toMatchObject({ blocked: true, gc: "cooldown" });
     clock.t += DISK_BUDGET_GC_FAILURE_COOLDOWN_MS;
