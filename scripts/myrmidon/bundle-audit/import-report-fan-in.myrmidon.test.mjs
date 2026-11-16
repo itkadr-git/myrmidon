@@ -1,0 +1,144 @@
+import { deepStrictEqual, equal, match, ok } from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import test from 'node:test';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const cli = join(here, 'import-report-fan-in.mjs');
+const importBudget = join(here, 'import-budget.mjs');
+const scratchRoot = process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_SCRATCH_DIR || tmpdir();
+
+function runReport(report) {
+  const dir = mkdtempSync(join(scratchRoot, 'fan-in-'));
+  try {
+    const input = join(dir, 'report.json');
+    writeFileSync(input, JSON.stringify(report));
+    return spawnSync(process.execPath, [cli, input], { encoding: 'utf8', timeout: 5000 });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function edge(from, specifier, kind, to) {
+  return { from, specifier, kind, to };
+}
+
+const graph = {
+  entry: 'entry.mjs',
+  modules: [
+    { path: 'entry.mjs', bytes: 30, eager: true },
+    { path: 'diamond.mjs', bytes: 20, eager: true },
+    { path: 'shared.mjs', bytes: 50, eager: true },
+    { path: 'zero.mjs', bytes: 40, eager: false },
+    { path: 'lazy-only.mjs', bytes: 99, eager: false },
+    { path: 'disconnected.mjs', bytes: 1000, eager: false },
+  ],
+  edges: [
+    edge('entry.mjs', './diamond.mjs', 'eager', 'diamond.mjs'),
+    edge('entry.mjs', './shared-a.mjs', 'eager', 'shared.mjs'),
+    edge('entry.mjs', './shared-b.mjs', 'eager', 'shared.mjs'),
+    edge('diamond.mjs', './shared.mjs', 'eager', 'shared.mjs'),
+    edge('shared.mjs', './shared.mjs', 'eager', 'shared.mjs'),
+    edge('entry.mjs', './lazy-only.mjs', 'lazy', 'lazy-only.mjs'),
+    edge('entry.mjs', 'external', 'lazy', null),
+    edge('disconnected.mjs', './entry.mjs', 'eager', 'entry.mjs'),
+  ],
+};
+
+test('reports exact direct eager fan-in and is independent of input permutations', () => {
+  const expected = {
+    entry: 'entry.mjs',
+    modules: [
+      { path: 'shared.mjs', bytes: 50, importerCount: 2, importers: ['diamond.mjs', 'entry.mjs'] },
+      { path: 'diamond.mjs', bytes: 20, importerCount: 1, importers: ['entry.mjs'] },
+      { path: 'entry.mjs', bytes: 30, importerCount: 0, importers: [] },
+    ],
+  };
+  const first = runReport(graph);
+  equal(first.status, 0, first.stderr);
+  equal(first.stderr, '');
+  deepStrictEqual(JSON.parse(first.stdout), expected);
+
+  const permuted = {
+    entry: graph.entry,
+    modules: [...graph.modules].reverse(),
+    edges: [...graph.edges].reverse(),
+  };
+  const second = runReport(permuted);
+  equal(second.status, 0, second.stderr);
+  equal(second.stdout, first.stdout);
+});
+
+test('accepts additional fields and preserves zero-importer entry only', () => {
+  const report = runReport({
+    ...graph,
+    metadata: { source: 'fixture' },
+    modules: graph.modules.map(module => ({ ...module, extra: true })),
+    edges: graph.edges.map(item => ({ ...item, extra: true })),
+  });
+  equal(report.status, 0, report.stderr);
+  equal(JSON.parse(report.stdout).modules.some(module => module.path === 'zero.mjs'), false);
+});
+
+test('rejects malformed reports without stdout or echoed input', () => {
+  for (const invalid of [
+    { entry: '', modules: [], edges: [] },
+    { entry: 'entry.mjs', modules: [{ path: 'entry.mjs', bytes: 0, eager: false }], edges: [] },
+    { entry: 'entry.mjs', modules: [{ path: 'entry.mjs', bytes: 0, eager: true }], edges: [edge('entry.mjs', './missing.mjs', 'eager', 'missing.mjs')] },
+    { entry: 'entry.mjs', modules: [{ path: 'entry.mjs', bytes: 0, eager: true }], edges: [edge('entry.mjs', './x', 'eager', null), edge('entry.mjs', './x', 'eager', null)] },
+  ]) {
+    const result = runReport(invalid);
+    equal(result.status, 1);
+    equal(result.stdout, '');
+    match(result.stderr, /^fan-in report: invalid input\n$/);
+    ok(!result.stderr.includes('missing.mjs'));
+  }
+});
+
+test('rejects argv, read, and JSON errors with stable category', () => {
+  const noArg = spawnSync(process.execPath, [cli], { encoding: 'utf8' });
+  equal(noArg.status, 1);
+  equal(noArg.stdout, '');
+  equal(noArg.stderr, 'fan-in report: invalid input\n');
+
+  const missing = spawnSync(process.execPath, [cli, '/host/private/report.json'], { encoding: 'utf8' });
+  equal(missing.status, 1);
+  equal(missing.stdout, '');
+  equal(missing.stderr, 'fan-in report: invalid input\n');
+
+  const dir = mkdtempSync(join(scratchRoot, 'fan-in-json-'));
+  try {
+    const input = join(dir, 'bad.json');
+    writeFileSync(input, '{not json');
+    const badJson = spawnSync(process.execPath, [cli, input], { encoding: 'utf8' });
+    equal(badJson.status, 1);
+    equal(badJson.stdout, '');
+    equal(badJson.stderr, 'fan-in report: invalid input\n');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('integrates with a real import-budget report', () => {
+  const dir = mkdtempSync(join(scratchRoot, 'fan-in-budget-'));
+  try {
+    writeFileSync(join(dir, 'entry.mjs'), "import './a.mjs'; import './b.mjs';");
+    writeFileSync(join(dir, 'a.mjs'), "export { value } from './shared.mjs';");
+    writeFileSync(join(dir, 'b.mjs'), "export { value as other } from './shared.mjs';");
+    writeFileSync(join(dir, 'shared.mjs'), 'export const value = 1;');
+    const budget = spawnSync(process.execPath, [importBudget, join(dir, 'entry.mjs')], { encoding: 'utf8' });
+    equal(budget.status, 0, budget.stderr);
+    const reportPath = join(dir, 'report.json');
+    writeFileSync(reportPath, budget.stdout);
+    const fanIn = spawnSync(process.execPath, [cli, reportPath], { encoding: 'utf8' });
+    equal(fanIn.status, 0, fanIn.stderr);
+    deepStrictEqual(JSON.parse(fanIn.stdout).modules.map(module => module.path), ['shared.mjs', 'a.mjs', 'b.mjs', 'entry.mjs']);
+    deepStrictEqual(JSON.parse(fanIn.stdout).modules[0].importers, ['a.mjs', 'b.mjs']);
+    equal(readFileSync(reportPath, 'utf8'), budget.stdout);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
