@@ -371,6 +371,18 @@ describe("company migration dry run", () => {
     expect((await companyTransferRunService.getRun(db, run!.id))?.companyId).toBe(owned!.id);
   });
 
+  it("cannot attach an independently created company to an unclaimed migration", async () => {
+    const [source] = await db.insert(companies).values({ name: "Unclaimed migration source", issuePrefix: "MUS" }).returning();
+    const [independent] = await db.insert(companies).values({ name: "Independent company", issuePrefix: "MUI" }).returning();
+    const [run] = await db.insert(companyTransferRuns).values({
+      direction: "import", status: "applying", actorKey: "migration-test",
+      idempotencyKey: "unclaimed-migration-destination",
+      containerRef: { kind: "company_migration", sourceCompanyId: source!.id },
+    }).returning();
+    await expect(companyTransferRunService.attachCompany(db, run!.id, independent!.id)).rejects.toThrow();
+    expect((await companyTransferRunService.getRun(db, run!.id))?.companyId).toBeNull();
+  });
+
   it("does not let a transfer run claim a second destination", async () => {
     const [run] = await db.insert(companyTransferRuns).values({
       direction: "import", status: "applying", actorKey: "migration-test",
