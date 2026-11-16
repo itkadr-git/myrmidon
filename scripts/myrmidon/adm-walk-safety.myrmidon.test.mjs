@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { buildMigration } from './adm-migrate.mjs';
 
 const cleanScannerPort = () => ({ clean: true, findings: [] });
@@ -95,8 +97,28 @@ for (const kind of ['CLAUDE.md', 'memory', 'nested file', 'nested directory']) {
     }
     symlinkSync(target, link);
     let scans = 0;
-    assert.throws(() => buildMigration(root, { scan: () => { scans++; return cleanScannerPort(); } }), /Symlinks are not migration sources/);
+    const reads = [];
+    const originalReadFileSync = fs.readFileSync;
+    const originalReaddirSync = fs.readdirSync;
+    const track = (path) => reads.push(fs.realpathSync(path));
+    fs.readFileSync = function trackedRead(path, ...args) {
+      track(path);
+      return originalReadFileSync.call(this, path, ...args);
+    };
+    fs.readdirSync = function trackedDirectory(path, ...args) {
+      track(path);
+      return originalReaddirSync.call(this, path, ...args);
+    };
+    syncBuiltinESMExports();
+    try {
+      assert.throws(() => buildMigration(root, { scan: () => { scans++; return cleanScannerPort(); } }), /Symlinks are not migration sources/);
+    } finally {
+      fs.readFileSync = originalReadFileSync;
+      fs.readdirSync = originalReaddirSync;
+      syncBuiltinESMExports();
+    }
     assert.equal(scans, 0);
+    assert.equal(reads.some((path) => path === fs.realpathSync(external) || path.startsWith(fs.realpathSync(external) + '/')), false, 'external content must not be read');
   }));
 }
 
