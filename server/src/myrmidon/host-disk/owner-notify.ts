@@ -1,8 +1,8 @@
 import { chatPublications, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { projectSafeChatPublication } from "../../services/chat-publication-projection.js";
-import { defaultTelegramNotifySettings } from "../telegram-notify/settings.js";
 import { readTelegramNotifySettingsDocument } from "../telegram-notify/settings-store.js";
+import { findActiveOwnerDeliveryConversation } from "../bot-containers/update-notify.js";
 import { resolveTargetConversation } from "../telegram-notify/jobs.js";
 import type { BotPartitionNotifyInput } from "./partition.js";
 
@@ -18,6 +18,25 @@ import type { BotPartitionNotifyInput } from "./partition.js";
  * the notification is skipped and logged — the attention card still carries
  * the signal.
  */
+
+/**
+ * The owner's conversation, resolved the way the update notifications do it:
+ * the active direct telegram conversation of the owner first, then the
+ * configured `updates` chat/topic. The fixed `escalations` document is empty
+ * by default (chatId null), so resolving through it never found a recipient on
+ * production and the partition signal of 1.6.7 stayed card-only (OPE-13420).
+ */
+async function resolveOwnerRecipient(db: Db, companyId: string) {
+  const owner = await findActiveOwnerDeliveryConversation(db, companyId);
+  if (owner) return owner;
+  const { settings } = await readTelegramNotifySettingsDocument(db, companyId);
+  if (!settings.updates.enabled) return null;
+  return resolveTargetConversation(db, {
+    companyId,
+    chatId: settings.updates.chatId,
+    topicId: settings.updates.topicId,
+  });
+}
 
 export interface OwnerTelegramNotifierDeps {
   /** Company ids to notify; the host disk is instance-wide, every company owner gets the card. */
@@ -40,14 +59,9 @@ export function createOwnerTelegramNotifier(
       const usage = input.usage;
       const settings = input.settings as import("@myrmidon/shared").WsRootDiskSettings;
       const critical = input.level === "critical";
-      const channel = defaultTelegramNotifySettings().escalations;
       const companyIds = await deps.listCompanyIds();
       for (const companyId of companyIds) {
-        const conversation = await resolveTargetConversation(db, {
-          companyId,
-          chatId: channel.chatId,
-          topicId: channel.topicId,
-        });
+        const conversation = await resolveOwnerRecipient(db, companyId);
         if (!conversation) {
           logger.info({ companyId }, "host root threshold: no owner telegram channel, card only");
           continue;
@@ -103,16 +117,7 @@ export function createOwnerTelegramNotifier(
     const { usage, settings } = input as BotPartitionNotifyInput;
     const companyIds = await deps.listCompanyIds();
     for (const companyId of companyIds) {
-      const notifySettings = (await readTelegramNotifySettingsDocument(db, companyId)).settings;
-      if (!notifySettings.updates.enabled) {
-        logger.info({ companyId }, "bot partition critical: owner notifications disabled");
-        continue;
-      }
-      const conversation = await resolveTargetConversation(db, {
-        companyId,
-        chatId: notifySettings.updates.chatId,
-        topicId: notifySettings.updates.topicId,
-      });
+      const conversation = await resolveOwnerRecipient(db, companyId);
       if (!conversation) {
         logger.info({ companyId }, "bot partition critical: no owner telegram channel, card only");
         continue;
