@@ -258,8 +258,14 @@ export class FleetOnboardExecutor {
                   await fresh.disconnect().catch(() => {});
                 }
               } catch (error) {
-                const restore = await activeSsh.execute(`: restore-myrmidon-password-config; if sudo test -f ${backup}/absent; then sudo rm -f ${file}; else sudo cp -p ${backup}/original ${file}; fi && sudo sshd -t && (sudo systemctl reload ssh || sudo systemctl reload sshd)`);
-                if (restore.exitCode !== 0) throw new Error("Password hardening failed and configuration restoration failed");
+                let restored = false;
+                try {
+                  const restore = await activeSsh.execute(`: restore-myrmidon-password-config; if sudo test -f ${backup}/absent; then sudo rm -f ${file}; else sudo cp -p ${backup}/original ${file}; fi && sudo sshd -t && (sudo systemctl reload ssh || sudo systemctl reload sshd)`);
+                  restored = restore.exitCode === 0;
+                } catch {
+                  // A lost SSH session leaves restoration unconfirmed.
+                }
+                if (!restored) throw new Error("Password hardening failed and configuration restoration failed");
                 throw error;
               }
               await activeSsh.execute(`sudo rm -rf ${backup}`);
