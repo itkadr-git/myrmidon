@@ -6,7 +6,7 @@ const testFile = fileURLToPath(new URL("../../../scripts/myrmidon/ci/standalone-
 
 describe("OPE-14008 standalone package selection", () => {
   it("executes the node contract tests", () => {
-    const output = execFileSync(process.execPath, ["--test", testFile], { encoding: "utf8", timeout: 60000 });
+    const output = execFileSync(process.execPath, ["--test", "--test-reporter=tap", testFile], { encoding: "utf8", timeout: 60000 });
     expect(output).toMatch(/# pass 2\b/);
     expect(output).toMatch(/# fail 0\b/);
   }, 70000);
