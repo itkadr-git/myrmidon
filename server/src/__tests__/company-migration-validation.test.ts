@@ -158,6 +158,18 @@ describe("migration manifest validation", () => {
       .toEqual(expect.arrayContaining([expect.stringContaining("blocker cycle")]));
   });
 
+  it("accepts a shared dependency in an acyclic blocker graph", () => {
+    const issue = (slug: string, blockedBy: string[]) => ({
+      slug, projectSlug: null, assigneeAgentSlug: null, parentSlug: null, blockedBy,
+    });
+    const result = validateMigrationManifest({
+      agents: [], skills: [], envInputs: [],
+      issues: [issue("root", ["left", "right"]), issue("left", ["shared"]),
+        issue("right", ["shared"]), issue("shared", [])],
+    });
+    expect(result.errors).toEqual([]);
+  });
+
   it("accepts references inside the package and rejects cross-company references", () => {
     const agent = { slug: "worker", reportsToSlug: "boss", reportsToExistingAgentId: null,
       reportsToExistingAgentSlug: null, skills: ["skill-key"], permissionGrants: [] };
