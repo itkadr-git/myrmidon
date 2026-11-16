@@ -353,6 +353,7 @@ function makeCtx(deps = {}) {
     now: deps.now || (() => Date.now()),
     diskStateStaleSec: deps.diskStateStaleSec ?? DISK_STATE_STALE_SEC,
     sizeOf: deps.sizeOf || defaultSizeOf,
+    statfs: deps.statfs || fs.statfsSync,
     ensureBase: deps.ensureBase || null,
     warn: deps.warn || ((m) => process.stderr.write(`myr-ws: ${m}\n`)),
   };
@@ -456,6 +457,19 @@ async function open(request, deps = {}) {
       });
       return stripUndefined({ ok: true, key, path: dir, class: klass, repo: adoptedRepo, branch: adoptedBranch, reused: true, ...recoveryFields(healed) });
     }
+  }
+
+  // Measure the containing filesystem, even before the workspace directory exists.
+  let volumePath = scratch ? ctx.scratchRoot : ctx.workspaceRoot;
+  while (!fs.existsSync(volumePath) && path.dirname(volumePath) !== volumePath) volumePath = path.dirname(volumePath);
+  try {
+    const volume = ctx.statfs(volumePath);
+    if (volume.blocks > 0 && volume.bavail * 10 < volume.blocks) {
+      throw new MyrWsError(EXIT.quotaExceeded, "disk_budget: less than 10% free on the workspace filesystem; no new copy is created");
+    }
+  } catch (error) {
+    if (error instanceof MyrWsError) throw error;
+    warn(`physical disk budget measurement failed: ${error.message}`);
   }
 
   // 2b. Full legacy clones are converted only after validating their identity.
