@@ -210,6 +210,19 @@ describe("company portability", () => {
     expect(agentSvc.create).not.toHaveBeenCalled();
   });
 
+  it("rejects tracked new-company imports before preview or side effects until recovery exists", async () => {
+    const portability = companyPortabilityService({} as never);
+    await expect(portability.importBundle({
+      source: { type: "inline", rootPath: "package", files: {} },
+      target: { mode: "new_company", newCompanyName: "Destination" },
+    }, null, { mode: "board_full", transferRunId: "run" })).rejects.toThrow(
+      "Tracked imports are unavailable until recovery is implemented",
+    );
+    expect(companySvc.create).not.toHaveBeenCalled();
+    expect(companySvc.update).not.toHaveBeenCalled();
+    expect(agentSvc.create).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     instanceSettingsSvc.getExperimental.mockResolvedValue({ enableNativeRunner: false });

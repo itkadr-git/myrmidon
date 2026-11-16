@@ -5237,6 +5237,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     if (options?.transferRunId && input.target.mode !== "new_company") {
       throw unprocessable("Tracked imports require a new company destination.");
     }
+    // Destination ownership alone cannot recover the import's other side effects.
+    // Keep tracked imports closed until entity and storage provenance is complete.
+    if (options?.transferRunId) {
+      throw unprocessable("Tracked imports are unavailable until recovery is implemented.");
+    }
     const plan = await buildPreview(input, options);
     if (plan.preview.errors.length > 0) {
       throw unprocessable(`Import preview has errors: ${plan.preview.errors.join("; ")}`);
