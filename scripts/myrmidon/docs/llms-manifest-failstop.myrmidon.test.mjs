@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { buildManifest, resolvePageFile } from "./generate-llms-txt.mjs";
 
@@ -151,10 +152,12 @@ test("negative control proves the manifest assertion is sensitive", () => {
       return;
     }
     assert.match(manifest, /\[Real title\]\(real\.md\)/);
+    const childEnv = { ...process.env, LLMS_FAILSTOP_NEGATIVE: "1" };
+    delete childEnv.NODE_TEST_CONTEXT;
     const negative = spawnSync(
       process.execPath,
-      ["--test", path.resolve(process.argv[1])],
-      { env: { ...process.env, LLMS_FAILSTOP_NEGATIVE: "1" }, encoding: "utf8" },
+      ["--test", fileURLToPath(import.meta.url)],
+      { env: childEnv, encoding: "utf8" },
     );
     assert.equal(negative.status, 1, "mutated assertion must fail the suite");
     assert.match(negative.stdout, /Intentionally wrong title/);
