@@ -288,7 +288,11 @@ export function companyService(db: Db) {
         return await db.transaction(async (tx) => {
           const [created] = await tx.insert(companies).values({ ...data, issuePrefix: candidate }).returning();
           const attached = await tx.update(companyTransferRuns)
-            .set({ companyId: created!.id, updatedAt: new Date() })
+            .set({
+              companyId: created!.id,
+              containerRef: sql`case when ${companyTransferRuns.containerRef}->>'kind' = 'company_migration' then jsonb_set(${companyTransferRuns.containerRef}, '{destinationClaimed}', 'true'::jsonb) else ${companyTransferRuns.containerRef} end`,
+              updatedAt: new Date(),
+            })
             .where(and(
               eq(companyTransferRuns.id, transferRunId),
               eq(companyTransferRuns.direction, "import"),

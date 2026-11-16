@@ -662,10 +662,9 @@ describe("company migration dry run", () => {
   });
 
   it("retains the run identity after its migration-owned destination is deleted", async () => {
-    const [destination] = await db.insert(companies).values({ name: "Deleted destination", issuePrefix: "MDD" }).returning();
     const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "deleted-destination-source", "deleted-destination-key");
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
-    await db.update(companyTransferRuns).set({ companyId: destination!.id }).where(eq(companyTransferRuns.id, run.id));
+    const destination = await companyService(db).create({ name: "Deleted destination" }, { transferRunId: run.id });
     await companyTransferRunService.releaseApplyClaim(db, run.id, "interrupted");
     await db.delete(companies).where(eq(companies.id, destination!.id));
 

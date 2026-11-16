@@ -246,7 +246,7 @@ export const companyTransferRunService = {
           inArray(companyTransferRuns.status, RESUMABLE_STATUSES),
           // A migration with a claimed destination may have made partial writes.
           // Recovery must inspect/roll it back rather than replay the importer.
-          sql`not (coalesce(${companyTransferRuns.containerRef}->>'kind' = 'company_migration', false) and ${companyTransferRuns.companyId} is not null)`,
+          sql`not (coalesce(${companyTransferRuns.containerRef}->>'kind' = 'company_migration', false) and (${companyTransferRuns.companyId} is not null or coalesce(${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true', false)))`,
         ),
       )
       .returning({ id: companyTransferRuns.id });
@@ -262,7 +262,7 @@ export const companyTransferRunService = {
           eq(companyTransferRuns.id, runId),
           inArray(companyTransferRuns.status, RESUMABLE_STATUSES),
           // Do not erase the failure evidence for a partially applied migration.
-          sql`not (coalesce(${companyTransferRuns.containerRef}->>'kind' = 'company_migration', false) and ${companyTransferRuns.companyId} is not null)`,
+          sql`not (coalesce(${companyTransferRuns.containerRef}->>'kind' = 'company_migration', false) and (${companyTransferRuns.companyId} is not null or coalesce(${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true', false)))`,
         ),
       );
   },
@@ -362,7 +362,7 @@ export const companyTransferRunService = {
           inArray(companyTransferRuns.status, PART_UPLOAD_STATUSES),
           lt(companyTransferRuns.updatedAt, idleSince),
           // An owned destination must remain discoverable for recovery.
-          sql`not (coalesce(${companyTransferRuns.containerRef}->>'kind' = 'company_migration', false) and ${companyTransferRuns.companyId} is not null)`,
+          sql`not (coalesce(${companyTransferRuns.containerRef}->>'kind' = 'company_migration', false) and (${companyTransferRuns.companyId} is not null or coalesce(${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true', false)))`,
         ),
       )
       .returning({ id: companyTransferRuns.id });
@@ -441,7 +441,7 @@ export const companyTransferRunService = {
         eq(companyTransferRuns.id, runId),
         inArray(companyTransferRuns.status, RESUMABLE_STATUSES),
         // Keep a partially applied migration discoverable until recovery.
-        sql`not (coalesce(${companyTransferRuns.containerRef}->>'kind' = 'company_migration', false) and ${companyTransferRuns.companyId} is not null)`,
+        sql`not (coalesce(${companyTransferRuns.containerRef}->>'kind' = 'company_migration', false) and (${companyTransferRuns.companyId} is not null or coalesce(${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true', false)))`,
       ));
   },
 };
