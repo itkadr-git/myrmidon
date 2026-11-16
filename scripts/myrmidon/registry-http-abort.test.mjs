@@ -12,9 +12,20 @@ const accept = "application/vnd.npm.install-v1+json, application/json;q=0.9";
 async function fixture(run) {
   const requests = [];
   const sockets = new Set();
+  let releaseHeld;
+  let heldArrived;
+  const heldResponse = new Promise((resolve) => { releaseHeld = resolve; });
+  const heldRequest = new Promise((resolve) => { heldArrived = resolve; });
   const server = createServer((req, res) => {
     requests.push({ method: req.method, url: req.url, accept: req.headers.accept, authorization: req.headers.authorization });
     if (req.url === "/hang") return;
+    if (req.url === "/held") {
+      heldArrived();
+      heldResponse.then(() => {
+        if (!res.destroyed) res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
+      });
+      return;
+    }
     if (req.url === "/reset") return req.socket.destroy();
     const documents = {
       "/fast": { ok: true },
@@ -36,8 +47,9 @@ async function fixture(run) {
   await once(server, "listening");
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
-    await run({ base, requests });
+    await run({ base, requests, heldRequest, releaseHeld });
   } finally {
+    releaseHeld();
     server.close();
     for (const socket of sockets) socket.destroy();
     await once(server, "close");
@@ -66,13 +78,16 @@ test("fast JSON succeeds with a 1000ms timeout", { timeout: 5000 }, async () => 
   });
 });
 
-test("aborting one concurrent request does not cancel the other", { timeout: 5000 }, async () => {
-  await fixture(async ({ base, requests }) => {
-    const hung = assert.rejects(fetchRegistryJson(`${base}/hang`, { timeoutMs: 100 }), /timed out/);
-    const fast = fetchRegistryJson(`${base}/fast`, { timeoutMs: 1000 });
-    assert.deepEqual(await fast, { ok: true });
+test("aborting one concurrent request does not cancel the other", { timeout: 10000 }, async () => {
+  await fixture(async ({ base, requests, heldRequest, releaseHeld }) => {
+    const held = fetchRegistryJson(`${base}/held`, { timeoutMs: 5000 });
+    held.catch(() => {});
+    await heldRequest;
+    const hung = assert.rejects(fetchRegistryJson(`${base}/hang`, { timeoutMs: 1000 }), /timed out/);
     await hung;
-    assert.deepEqual(requests.map((r) => r.url).sort(), ["/fast", "/hang"]);
+    releaseHeld();
+    assert.deepEqual(await held, { ok: true });
+    assert.deepEqual(requests.map((r) => r.url).sort(), ["/hang", "/held"]);
   });
 });
 
