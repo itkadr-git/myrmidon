@@ -369,6 +369,12 @@ function resolveCopyDir(ctx, reg, { key, repo, scratch, klass }) {
   return { dir: secondary, known: reg.entries.find((e) => e.path === secondary) };
 }
 
+// Minimum free percent of the physical volume (default 5, MYRMIDON_DISK_BUDGET_MIN_FREE_PERCENT, same as the board gate).
+function diskBudgetMinFreePercent(env) {
+  const value = Number(String(env.MYRMIDON_DISK_BUDGET_MIN_FREE_PERCENT ?? "").trim());
+  return Number.isFinite(value) && value > 0 && value <= 50 ? value : 5;
+}
+
 function makeCtx(deps = {}) {
   const env = deps.env || process.env;
   return {
@@ -379,6 +385,7 @@ function makeCtx(deps = {}) {
     now: deps.now || (() => Date.now()),
     diskStateStaleSec: deps.diskStateStaleSec ?? DISK_STATE_STALE_SEC,
     sizeOf: deps.sizeOf || defaultSizeOf,
+    statfs: deps.statfs || fs.statfsSync,
     ensureBase: deps.ensureBase || null,
     warn: deps.warn || ((m) => process.stderr.write(`myr-ws: ${m}\n`)),
   };
@@ -494,6 +501,19 @@ async function open(request, deps = {}) {
       });
       return stripUndefined({ ok: true, key, path: dir, class: klass, repo: adoptedRepo, branch: adoptedBranch, reused: true, ...recoveryFields(healed) });
     }
+  }
+
+  // Measure the containing filesystem, even before the workspace directory exists.
+  let volumePath = scratch ? ctx.scratchRoot : ctx.workspaceRoot;
+  while (!fs.existsSync(volumePath) && path.dirname(volumePath) !== volumePath) volumePath = path.dirname(volumePath);
+  try {
+    const volume = ctx.statfs(volumePath);
+    if (volume.blocks > 0 && volume.bavail * 100 < volume.blocks * diskBudgetMinFreePercent(process.env)) {
+      throw new MyrWsError(EXIT.quotaExceeded, `${QUOTA_PREFIX} disk_budget: less than ${diskBudgetMinFreePercent(process.env)}% free on the workspace filesystem; no new copy is created`);
+    }
+  } catch (error) {
+    if (error instanceof MyrWsError) throw error;
+    warn(`physical disk budget measurement failed: ${error.message}`);
   }
 
   // 2b. Full legacy clones are converted only after validating their identity.

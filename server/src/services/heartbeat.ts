@@ -1087,6 +1087,13 @@ import {
   readWakeBatchWindowMs,
   splitBatchedWakeRuns,
 } from "../myrmidon/wake-batch.js";
+// myrmidon(1.6.9, OPE-13419): disk budget of the physical bot volume at the run-start gate.
+import {
+  DISK_BUDGET_DEFERRAL_CONTEXT_KEY,
+  DISK_BUDGET_REASON,
+  diskBudgetDueAt,
+} from "../myrmidon/disk-budget/disk-budget.js";
+import { getDiskBudgetGate } from "../myrmidon/disk-budget/disk-budget-wiring.js";
 const RELEASE_FOCUS_CONTEXT_KEY = RELEASE_FOCUS_DEFERRAL_CONTEXT_KEY;
 // Recheck ladder of a deferred run, like the model channel pause: 2, 5, 10, then 30 minutes.
 const RELEASE_FOCUS_RECHECK_LADDER_MS = [2, 5, 10, 30].map((minutes) => minutes * 60_000);
@@ -20326,6 +20333,117 @@ export function heartbeatService(
     return true;
   }
 
+  // myrmidon(OPE-13419): disk budget at the one run-start gate. A queued run is
+  // not started and not cancelled while the physical bot volume has less than
+  // the minimum free percent (default 5): the same row waits in `scheduled_retry`
+  // (reason `disk_budget` in `contextSnapshot.diskBudgetDeferral` and in the run
+  // event), the due-retry sweep brings it back here and the volume is measured
+  // again, so the run resumes by itself once space is back. The first refusal
+  // asks the host for an extraordinary cleanup (single-flight and rate-limited
+  // in the gate; a failed request does not fail the run). The run's retry
+  // identity is left alone, as for the daily run limit. A wake made by a user is
+  // not held. An unmeasurable volume never blocks.
+  async function deferQueuedRunForDiskBudget(
+    run: typeof heartbeatRuns.$inferSelect,
+  ): Promise<boolean> {
+    let verdict: Awaited<ReturnType<ReturnType<typeof getDiskBudgetGate>["check"]>>;
+    try {
+      verdict = await getDiskBudgetGate().check();
+    } catch (error) {
+      logger.warn({ err: error, runId: run.id }, "disk budget check failed; not deferring");
+      return false;
+    }
+    if (!verdict.blocked) return false;
+    const wake = run.wakeupRequestId
+      ? await db
+          .select({ payload: agentWakeupRequests.payload })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+      : null;
+    if (parseObject(wake?.payload).manualUserWake === true) return false;
+    const now = new Date();
+    const context = parseObject(run.contextSnapshot);
+    const previous = parseObject(context[DISK_BUDGET_DEFERRAL_CONTEXT_KEY]);
+    const previousCount = Number(previous.count ?? 0);
+    const count = Number.isFinite(previousCount) ? previousCount : 0;
+    const isFirstDeferral = !previous.firstDeferredAt;
+    const dueAt = diskBudgetDueAt(now, count);
+    const freePercent = Math.round(verdict.freePercent * 10) / 10;
+    const deferred = await db
+      .update(heartbeatRuns)
+      .set({
+        status: "scheduled_retry",
+        scheduledRetryAt: dueAt,
+        ...runContextPersistenceFields({
+          ...context,
+          [DISK_BUDGET_DEFERRAL_CONTEXT_KEY]: {
+            reason: DISK_BUDGET_REASON,
+            count: count + 1,
+            firstDeferredAt: previous.firstDeferredAt ?? now.toISOString(),
+            deferredAt: now.toISOString(),
+            dueAt: dueAt.toISOString(),
+            freePercent,
+            minFreePercent: verdict.minFreePercent,
+            hostGc: verdict.gc,
+          },
+        }),
+        executionStatusDeliveryId: randomUUID(),
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.id, run.id),
+          eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.status, "queued"),
+        ),
+      )
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    // The run left `queued` under us (cancelled or deferred by a concurrent claim).
+    if (!deferred) return true;
+    // Once per run, not once per recheck: a re-park only moves the due time.
+    if (!isFirstDeferral) return true;
+    publishLiveEvent({
+      companyId: deferred.companyId,
+      type: "heartbeat.run.status",
+      payload: buildHeartbeatRunStatusLiveEventPayload(deferred),
+    });
+    await appendRunEvent(deferred, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: `Disk budget: ${freePercent}% free on the bot volume (minimum ${verdict.minFreePercent}%); the run waits until space is back (host cleanup: ${verdict.gc})`,
+      payload: {
+        reason: DISK_BUDGET_REASON,
+        freePercent,
+        minFreePercent: verdict.minFreePercent,
+        hostGc: verdict.gc,
+        scheduledRetryAt: dueAt.toISOString(),
+      },
+    });
+    // The wait is not execution: reset the issue lock (taken again at claim)
+    // unless the retry kind is only valid while it owns the lock.
+    const keepsIssueLock = [run.scheduledRetryReason, readNonEmptyString(context.retryReason)].some(
+      (reason) =>
+        reason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+        reason === AI_CONNECTION_BUSY_RETRY_REASON,
+    );
+    const issueId = readNonEmptyString(context.issueId);
+    if (!keepsIssueLock && issueId) {
+      await db
+        .update(issues)
+        .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: now })
+        .where(and(eq(issues.companyId, deferred.companyId), eq(issues.id, issueId), eq(issues.executionRunId, deferred.id)));
+      await db
+        .update(issues)
+        .set({ checkoutRunId: null, updatedAt: now })
+        .where(and(eq(issues.companyId, deferred.companyId), eq(issues.id, issueId), eq(issues.checkoutRunId, deferred.id)));
+    }
+    return true;
+  }
+
   async function cancelQueuedRunForHeartbeatDailyCap(
     run: typeof heartbeatRuns.$inferSelect,
     dailyCapBlock: NonNullable<
@@ -20862,6 +20980,10 @@ export function heartbeatService(
 
     // myrmidon(OPE-13231): strict release focus.
     if (await deferQueuedRunForReleaseFocus(run)) return null;
+
+    // myrmidon(OPE-13419): below the minimum free space (default 5%) on the physical bot volume no run
+    // starts; it waits (reason disk_budget) while host GC is asked to clean up.
+    if (await deferQueuedRunForDiskBudget(run)) return null;
 
     const issueId = readNonEmptyString(context.issueId);
     if (issueId) {

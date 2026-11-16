@@ -1,0 +1,13 @@
+[Unit]
+Description=Myrmidon Host GC - extraordinary pass requested by the board (disk budget, OPE-13419)
+Documentation=file:///opt/myrmidon/scripts/myrmidon/host-gc/README.md
+
+[Path]
+# The board writes this file when the bot volume has less than 5% free (MYRMIDON_DISK_BUDGET_MIN_FREE_PERCENT); host GC removes it
+# when the pass starts. Set MYRMIDON_HOST_GC_REQUEST_FILE on the board and HOST_GC_REQUEST_FILE
+# in /etc/myrmidon-host-gc.env to the same file (the directory must be shared with the board).
+PathChanged=/srv/myrmidon-bots/.gc-request/request.json
+Unit=myrmidon-host-gc.service
+
+[Install]
+WantedBy=multi-user.target
