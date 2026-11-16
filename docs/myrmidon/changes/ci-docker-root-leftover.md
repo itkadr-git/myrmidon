@@ -13,6 +13,11 @@ detects files owned by another user, prints their paths, hands them back to the
 runner user with a throwaway container and fails with a clear error if that
 does not help.
 
+Also, every `pnpm/action-setup` step now installs pnpm into the runner's own
+tool cache (`dest: ${{ runner.tool_cache }}/setup-pnpm`) instead of the shared
+`$HOME/setup-pnpm`; parallel runners on one host no longer race on that
+directory (`ENOTEMPTY ... setup-pnpm/node_modules/.bin/store`).
+
 ## changelog-ru
 
 ### Go-проверки CI больше не оставляют файлы root, ломающие следующий checkout
@@ -27,3 +32,8 @@ used inside a git repository`), из-за чего ломались все за�
 шага до checkout: он находит файлы чужого владельца, печатает их пути, возвращает
 владение пользователю раннера одноразовым контейнером и падает с понятной
 ошибкой, если это не помогло.
+
+Кроме того, каждый шаг `pnpm/action-setup` теперь ставит pnpm в собственный
+кэш инструментов раннера (`dest: ${{ runner.tool_cache }}/setup-pnpm`), а не в
+общий `$HOME/setup-pnpm`; параллельные раннеры одного хоста больше не гоняются за
+этот каталог (`ENOTEMPTY ... setup-pnpm/node_modules/.bin/store`).

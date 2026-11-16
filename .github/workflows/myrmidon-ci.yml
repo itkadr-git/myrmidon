@@ -132,6 +132,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -274,6 +275,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -390,6 +392,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -490,6 +493,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -548,6 +552,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -624,6 +629,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -900,6 +906,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -990,6 +997,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
