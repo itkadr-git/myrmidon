@@ -76,6 +76,18 @@ describe("migration manifest validation", () => {
     ]));
   });
 
+  it("rejects an agent skill reference matching different skill keys and slugs", () => {
+    const result = validateMigrationManifest({
+      agents: [{ slug: "worker", reportsToSlug: null, reportsToExistingAgentId: null,
+        reportsToExistingAgentSlug: null, skills: ["shared"], permissionGrants: [] }],
+      skills: [{ key: "shared", slug: "first" }, { key: "second", slug: "shared" }],
+      envInputs: [],
+    });
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("missing or ambiguous skill shared"),
+    ]));
+  });
+
   it("rejects cycles in the imported management hierarchy", () => {
     const agent = { slug: "worker", reportsToSlug: "boss", reportsToExistingAgentId: null,
       reportsToExistingAgentSlug: null, skills: [], permissionGrants: [] };
