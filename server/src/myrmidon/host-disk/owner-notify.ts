@@ -1,7 +1,8 @@
 import { chatPublications, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { projectSafeChatPublication } from "../../services/chat-publication-projection.js";
-import { defaultTelegramNotifySettings } from "../telegram-notify/settings.js";
+import { readTelegramNotifySettingsDocument } from "../telegram-notify/settings-store.js";
+import { findActiveOwnerDeliveryConversation } from "../bot-containers/update-notify.js";
 import { resolveTargetConversation } from "../telegram-notify/jobs.js";
 import type { BotPartitionNotifyInput } from "./partition.js";
 
@@ -17,6 +18,25 @@ import type { BotPartitionNotifyInput } from "./partition.js";
  * the notification is skipped and logged — the attention card still carries
  * the signal.
  */
+
+/**
+ * The owner's conversation, resolved the way the update notifications do it:
+ * the active direct telegram conversation of the owner first, then the
+ * configured `updates` chat/topic. The fixed `escalations` document is empty
+ * by default (chatId null), so resolving through it never found a recipient on
+ * production and the partition signal of 1.6.7 stayed card-only (OPE-13420).
+ */
+async function resolveOwnerRecipient(db: Db, companyId: string) {
+  const owner = await findActiveOwnerDeliveryConversation(db, companyId);
+  if (owner) return owner;
+  const { settings } = await readTelegramNotifySettingsDocument(db, companyId);
+  if (!settings.updates.enabled) return null;
+  return resolveTargetConversation(db, {
+    companyId,
+    chatId: settings.updates.chatId,
+    topicId: settings.updates.topicId,
+  });
+}
 
 export interface OwnerTelegramNotifierDeps {
   /** Company ids to notify; the host disk is instance-wide, every company owner gets the card. */
@@ -39,14 +59,9 @@ export function createOwnerTelegramNotifier(
       const usage = input.usage;
       const settings = input.settings as import("@myrmidon/shared").WsRootDiskSettings;
       const critical = input.level === "critical";
-      const channel = defaultTelegramNotifySettings().escalations;
       const companyIds = await deps.listCompanyIds();
       for (const companyId of companyIds) {
-        const conversation = await resolveTargetConversation(db, {
-          companyId,
-          chatId: channel.chatId,
-          topicId: channel.topicId,
-        });
+        const conversation = await resolveOwnerRecipient(db, companyId);
         if (!conversation) {
           logger.info({ companyId }, "host root threshold: no owner telegram channel, card only");
           continue;
@@ -100,30 +115,25 @@ export function createOwnerTelegramNotifier(
       return;
     }
     const { usage, settings } = input as BotPartitionNotifyInput;
-    const channel = defaultTelegramNotifySettings().escalations;
     const companyIds = await deps.listCompanyIds();
     for (const companyId of companyIds) {
-      // The part-A settings routes are not merged; until they are, the
-      // channel comes from the fixed document. An operator with no telegram
-      // endpoint configured gets no card — the attention feed row remains.
-      const conversation = await resolveTargetConversation(db, {
-        companyId,
-        chatId: channel.chatId,
-        topicId: channel.topicId,
-      });
+      const conversation = await resolveOwnerRecipient(db, companyId);
       if (!conversation) {
         logger.info({ companyId }, "bot partition critical: no owner telegram channel, card only");
         continue;
       }
+      const lowSpace = usage.freeBytes / usage.totalBytes < 0.1;
       const text = [
         "🚨 Bot partition is critically full",
         "",
-        `- Partition ${usage.mount} is at ${usage.usedPercent.toFixed(1)}% (critical threshold ${settings.partitionCriticalPercent}%).`,
+        lowSpace
+          ? `- Partition ${usage.mount} has less than 10% free space (${(usage.freeBytes / usage.totalBytes * 100).toFixed(1)}% available).`
+          : `- Partition ${usage.mount} is at ${usage.usedPercent.toFixed(1)}% (critical threshold ${settings.partitionCriticalPercent}%).`,
         `- Free: ${(usage.freeBytes / (1024 * 1024 * 1024)).toFixed(1)} GiB of ${(usage.totalBytes / (1024 * 1024 * 1024)).toFixed(1)} GiB.`,
         `- myr-ws open refuses new copies from ${settings.partitionRefuseOpenPercent}% (pressure level hard, grace 0).`,
-        "- Free space on the bot host or raise the quotas; the alert clears below the warn threshold.",
+        "- Free space on the bot host.",
       ].join("\n");
-      const at = now().toISOString().slice(0, 10);
+      const at = usage.at;
       try {
         await db
           .insert(chatPublications)
@@ -147,6 +157,7 @@ export function createOwnerTelegramNotifier(
         );
       } catch (err) {
         logger.error({ err, companyId }, "bot partition critical owner notification failed");
+        throw err;
       }
     }
   };
