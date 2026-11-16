@@ -5232,6 +5232,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     // deliberately small bundle. Reject the fragment rather than importing it.
     assertInlineSourceComplete(input.source);
     const mode = resolveImportMode(options);
+    // A migration run owns only a newly created destination. Refuse tracked
+    // updates before preview or any importer side effect can occur.
+    if (options?.transferRunId && input.target.mode !== "new_company") {
+      throw unprocessable("Tracked imports require a new company destination.");
+    }
     const plan = await buildPreview(input, options);
     if (plan.preview.errors.length > 0) {
       throw unprocessable(`Import preview has errors: ${plan.preview.errors.join("; ")}`);

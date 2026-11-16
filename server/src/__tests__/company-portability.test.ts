@@ -197,6 +197,19 @@ describe("company portability", () => {
   const paperclipKey = "paperclipai/paperclip/paperclip";
   const companyPlaybookKey = "company/company-1/company-playbook";
 
+  it("rejects provenance-tracked imports into an existing company before any writes", async () => {
+    const portability = companyPortabilityService({} as never);
+    await expect(portability.importBundle({
+      source: { type: "inline", rootPath: "package", files: {} },
+      target: { mode: "existing_company", companyId: "destination" },
+    }, null, { mode: "board_full", transferRunId: "run" })).rejects.toThrow(
+      "Tracked imports require a new company",
+    );
+    expect(companySvc.create).not.toHaveBeenCalled();
+    expect(companySvc.update).not.toHaveBeenCalled();
+    expect(agentSvc.create).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     instanceSettingsSvc.getExperimental.mockResolvedValue({ enableNativeRunner: false });
