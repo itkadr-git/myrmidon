@@ -239,6 +239,35 @@ describe("company migration dry run", () => {
     }
   });
 
+  it("applies a confirmed migration once when the same request is retried", async () => {
+    const [source] = await db.insert(companies).values({ name: "Apply retry source", issuePrefix: "MRA" }).returning();
+    await db.insert(agents).values({ companyId: source!.id, name: "Apply retry worker" });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+    const payload = {
+      target: { mode: "new_company", newCompanyName: "Apply retry destination" },
+      dryRun: false, apply: true, confirm: "approved pilot",
+    };
+    const endpoint = `/api/companies/${source!.id}/migrations`;
+    const first = await request(app).post(endpoint).send(payload);
+    expect(first.status).toBe(200);
+    expect(first.body.dryRun).toBe(false);
+    const companiesAfterFirst = await db.select().from(companies);
+    const agentsAfterFirst = await db.select().from(agents);
+    const second = await request(app).post(endpoint).send(payload);
+    expect(second.status).toBe(200);
+    expect(second.body.resume).toBe("already_completed");
+    expect(second.body.runId).toBe(first.body.runId);
+    expect(await db.select().from(companies)).toEqual(companiesAfterFirst);
+    expect(await db.select().from(agents)).toEqual(agentsAfterFirst);
+  });
+
   it("rejects a confirmed apply until recovery is implemented, without side effects", async () => {
     const [source] = await db.insert(companies).values({ name: "Apply safety fixture", issuePrefix: "MSF" }).returning();
     const storage = createStorageService(createLocalDiskStorageProvider(root));
