@@ -682,6 +682,9 @@ jobs:
           printf 'Running %s\n' "${files[@]}"
           node --test "${files[@]}"
 
+      - name: Bootstrap path selection regression
+        run: node --test scripts/bootstrap-path-selection.myrmidon.test.mjs
+
       - name: Brand release audit (DEBRAND gate)
         if: ${{ !cancelled() }}
         run: |
