@@ -31,9 +31,13 @@ describe("knowledge metadata boundaries", () => {
     expectRefusal(() => assertSingleLine(value, "title"), "invalid_metadata");
   });
 
-  it.each([[], ["\u0437\u043d\u0430\u043d\u0438\u0435", "\u65e5\u672c\u8a9e"], ["first", " second "]])(
-    "accepts frozen tags without mutation: %j",
-    (values) => {
+  it.each([
+    { values: [] },
+    { values: ["\u0437\u043d\u0430\u043d\u0438\u0435", "\u65e5\u672c\u8a9e"] },
+    { values: ["first", " second "] },
+  ])(
+    "accepts frozen tags without mutation: $values",
+    ({ values }) => {
       const tags = Object.freeze([...values]);
       expect(() => assertValidTags(tags)).not.toThrow();
       expect(tags).toEqual(values);
