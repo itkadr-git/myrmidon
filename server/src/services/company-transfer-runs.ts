@@ -342,6 +342,8 @@ export const companyTransferRunService = {
           eq(companyTransferRuns.id, runId),
           inArray(companyTransferRuns.status, PART_UPLOAD_STATUSES),
           lt(companyTransferRuns.updatedAt, idleSince),
+          // An owned destination must remain discoverable for recovery.
+          sql`not (coalesce(${companyTransferRuns.containerRef}->>'kind' = 'company_migration', false) and ${companyTransferRuns.companyId} is not null)`,
         ),
       )
       .returning({ id: companyTransferRuns.id });
