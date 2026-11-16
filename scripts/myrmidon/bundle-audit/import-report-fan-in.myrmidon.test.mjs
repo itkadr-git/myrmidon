@@ -119,6 +119,32 @@ test('rejects malformed reports without stdout or echoed input', () => {
   }
 });
 
+test('rejects invalid module, edge and graph shapes', () => {
+  const base = { entry: 'root', modules: [{ path: 'root', bytes: 0, eager: true }], edges: [] };
+  const module = (changes) => ({ ...base, modules: [{ ...base.modules[0], ...changes }] });
+  const invalid = [
+    null, [], {}, { ...base, modules: null }, { ...base, edges: {} },
+    { ...base, entry: 'missing' },
+    module({ path: '' }), module({ bytes: -1 }), module({ bytes: 1.5 }),
+    module({ bytes: Number.MAX_SAFE_INTEGER + 1 }), module({ eager: 'true' }),
+    { ...base, modules: [base.modules[0], base.modules[0]] },
+    { ...base, modules: [null] },
+    ...[null, {}, edge('', 'x', 'eager', null), edge('root', '', 'eager', null),
+      edge('root', 'x', 'other', null), edge('root', 'x', 'eager', ''),
+      edge('missing', 'x', 'eager', null), edge('root', 'x', 'lazy', 'missing')]
+      .map(item => ({ ...base, edges: [item] })),
+    { ...base, modules: [...base.modules, { path: 'other', bytes: 0, eager: true }] },
+    { ...base, modules: [...base.modules, { path: 'other', bytes: 0, eager: false }],
+      edges: [edge('root', 'other', 'eager', 'other')] },
+  ];
+  for (const input of invalid) {
+    const result = runReport(input);
+    equal(result.status, 1, JSON.stringify(input));
+    equal(result.stdout, '');
+    equal(result.stderr, 'fan-in report: invalid input\n');
+  }
+});
+
 test('rejects argv, read, and JSON errors with stable category', () => {
   const noArg = spawnSync(process.execPath, [cli], { encoding: 'utf8', timeout: 5000 });
   equal(noArg.status, 1);
