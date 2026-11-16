@@ -36,6 +36,7 @@ test('rejects malformed shapes and numeric strings', () => {
 
 test('rejects duplicate paths and edge tuples', () => {
   let r = report(); r.modules.push({ ...r.modules[0] }); fail(run(JSON.stringify(r)), 'duplicate');
+  r = report(); r.modules.push({ path: 'entry.js', bytes: 999, eager: false }); fail(run(JSON.stringify(r)), 'duplicate');
   r = report(); r.edges.push({ ...r.edges[0] }); fail(run(JSON.stringify(r)), 'duplicate');
 });
 
@@ -67,4 +68,48 @@ test('accepts a real scanner report without changing fixture files', () => {
     assert.equal(scan.status, 0, scan.stderr); assert.equal(JSON.parse(scan.stdout).unknown.length, 1);
     pass(run(scan.stdout)); pass(run(scan.stdout)); assert.equal(readFileSync(file, 'utf8'), source);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test('rejects non-object roots and invalid numeric boundaries without echoing input', () => {
+  for (const root of [null, []]) fail(run(JSON.stringify(root)), 'shape');
+  for (const mutate of [
+    r => r.modules[0].bytes = -1,
+    r => r.modules[0].bytes = 1.5,
+    r => r.modules[0].bytes = Number.MAX_SAFE_INTEGER + 1,
+    r => r.counts.modules = Number.MAX_SAFE_INTEGER + 1,
+    r => r.bytes.total = Number.MAX_SAFE_INTEGER + 1,
+    r => r.counts.edges = 'NaN-secret',
+    r => r.bytes.eager = 'Infinity-secret',
+  ]) {
+    const r = report(); mutate(r); fail(run(JSON.stringify(r)), 'shape');
+  }
+});
+
+test('ranks the ten heaviest eager modules by bytes then path', () => {
+  const r = report();
+  r.modules = [
+    { path: 'a', bytes: 2, eager: true }, { path: 'b', bytes: 9, eager: true },
+    { path: 'c', bytes: 4, eager: true }, { path: 'd', bytes: 7, eager: true },
+    { path: 'e', bytes: 8, eager: true }, { path: 'f', bytes: 3, eager: true },
+    { path: 'g', bytes: 6, eager: true }, { path: 'h', bytes: 5, eager: true },
+    { path: 'i', bytes: 1, eager: true }, { path: 'j', bytes: 10, eager: true },
+    { path: 'k', bytes: 11, eager: true }, { path: 'l', bytes: 9, eager: true },
+  ];
+  r.entry = 'a'; r.edges = []; r.unknown = [];
+  r.counts = { modules: 12, eagerModules: 12, edges: 0 }; r.bytes = { total: 75, eager: 75 };
+  r.heaviestEager = [
+    { path: 'k', bytes: 11, eager: true }, { path: 'j', bytes: 10, eager: true },
+    { path: 'b', bytes: 9, eager: true }, { path: 'l', bytes: 9, eager: true },
+    { path: 'e', bytes: 8, eager: true }, { path: 'd', bytes: 7, eager: true },
+    { path: 'g', bytes: 6, eager: true }, { path: 'h', bytes: 5, eager: true },
+    { path: 'c', bytes: 4, eager: true }, { path: 'f', bytes: 3, eager: true },
+  ];
+  pass(run(JSON.stringify(r)));
+  const wrongOrder = structuredClone(r);
+  [wrongOrder.heaviestEager[0], wrongOrder.heaviestEager[1]] = [wrongOrder.heaviestEager[1], wrongOrder.heaviestEager[0]];
+  fail(run(JSON.stringify(wrongOrder)), 'inconsistent');
+  const wrongCutoff = structuredClone(r);
+  wrongCutoff.heaviestEager[9] = { path: 'a', bytes: 2, eager: true };
+  fail(run(JSON.stringify(wrongCutoff)), 'inconsistent');
 });
