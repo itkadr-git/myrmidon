@@ -93,7 +93,7 @@ describe("KnowledgeReview draft boundary", () => {
     let resolveDraft: (value: unknown) => void = () => {};
     const draft = new Promise((resolve) => { resolveDraft = resolve; });
     http.post.mockReturnValueOnce(draft).mockResolvedValue({});
-    await act(async () => root.render(createElement(QueryClientProvider, { client }, createElement(KnowledgeReview))));
+    await act(async () => root.render(createElement(QueryClientProvider, { client, children: createElement(KnowledgeReview) })) );
     await settle();
     expect(host.textContent).toContain("Original");
     await click("Edit");
