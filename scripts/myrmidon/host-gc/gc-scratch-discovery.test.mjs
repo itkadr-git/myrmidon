@@ -15,9 +15,7 @@ test("discovers only real, visible scratch directory chains without caching", ()
     const outside = path.join(fixture, "outside");
     fs.mkdirSync(root);
     fs.mkdirSync(outside);
-    const sentinel = path.join(outside, "sentinel");
-    fs.writeFileSync(sentinel, "untouched");
-    const sentinelBefore = fs.statSync(sentinel);
+    const sentinelDirs = [outside, path.join(outside, "scratch"), path.join(outside, "cache", "scratch"), path.join(outside, "hermes", "cache", "scratch")];
     const chain = (agent) => path.join(root, agent, "hermes", "cache", "scratch");
     for (const agent of ["alpha", "beta", ".hidden"]) fs.mkdirSync(chain(agent), { recursive: true });
     fs.writeFileSync(path.join(root, "agent-file"), "not a directory");
@@ -33,7 +31,8 @@ test("discovers only real, visible scratch directory chains without caching", ()
     fs.mkdirSync(path.join(outside, "hermes", "cache", "scratch"), { recursive: true });
     fs.mkdirSync(path.join(outside, "cache", "scratch"), { recursive: true });
     fs.mkdirSync(path.join(outside, "scratch"));
-    fs.symlinkSync(outside, path.join(root, "agent-link"));
+    const links = [path.join(root, "agent-link")];
+    fs.symlinkSync(outside, links[0]);
     for (const [agent, parts] of [
       ["hermes-link", ["hermes"]],
       ["cache-link", ["hermes", "cache"]],
@@ -42,15 +41,32 @@ test("discovers only real, visible scratch directory chains without caching", ()
       const link = path.join(root, agent, ...parts);
       fs.mkdirSync(path.dirname(link), { recursive: true });
       fs.symlinkSync(outside, link);
+      links.push(link);
     }
-    assert.deepEqual(sorted(discoverBotScratchDirs(path.join(fixture, "missing"))), []);
-    assert.deepEqual(sorted(discoverBotScratchDirs(root)), sorted([chain("alpha"), chain("beta")]));
-    fs.renameSync(chain("alpha"), path.join(root, "alpha", "hermes", "cache", "old"));
-    assert.deepEqual(sorted(discoverBotScratchDirs(root)), [chain("beta")]);
-    const sentinelAfter = fs.statSync(sentinel);
-    assert.equal(sentinelAfter.size, sentinelBefore.size);
-    assert.equal(sentinelAfter.mtimeMs, sentinelBefore.mtimeMs);
-    assert.equal(sentinelAfter.atimeMs, sentinelBefore.atimeMs);
+    for (const dir of sentinelDirs) fs.writeFileSync(path.join(dir, "sentinel"), "untouched");
+    const originals = new Map();
+    const forbidden = [];
+    try {
+      for (const name of ["existsSync", "lstatSync", "statSync", "readdirSync", "readFileSync", "openSync", "realpathSync"]) {
+        const original = fs[name];
+        originals.set(name, original);
+        fs[name] = function (target, ...args) {
+          if (typeof target === "string") {
+            const throughLink = links.some((link) => target.startsWith(`${link}${path.sep}`) || (target === link && name !== "lstatSync"));
+            if (target === outside || target.startsWith(`${outside}${path.sep}`) || throughLink) forbidden.push(`${name}: ${target}`);
+          }
+          return original.call(this, target, ...args);
+        };
+      }
+      assert.deepEqual(sorted(discoverBotScratchDirs(path.join(fixture, "missing"))), []);
+      assert.deepEqual(sorted(discoverBotScratchDirs(root)), sorted([chain("alpha"), chain("beta")]));
+      fs.renameSync(chain("alpha"), path.join(root, "alpha", "hermes", "cache", "old"));
+      assert.deepEqual(sorted(discoverBotScratchDirs(root)), [chain("beta")]);
+    } finally {
+      for (const [name, original] of originals) fs[name] = original;
+    }
+    assert.deepEqual(forbidden, []);
+    for (const dir of sentinelDirs) assert.equal(fs.readFileSync(path.join(dir, "sentinel"), "utf8"), "untouched");
   } finally {
     fs.rmSync(fixture, { recursive: true, force: true });
   }
