@@ -26,7 +26,7 @@ const cases = [
   ...[['path', ''], ['path', 1], ['bytes', -1], ['bytes', 1.5], ['bytes', '3'], ['bytes', Number.MAX_SAFE_INTEGER + 1], ['eager', 0], ['eager', null]].map(([field, value]) => [`module ${field} ${JSON.stringify(value)}`, 'shape', r => { r.modules[2][field] = value; return r; }]),
   ...[null, [], 'bad'].map(value => [`edge ${JSON.stringify(value)}`, 'shape', r => { r.edges[1] = value; return r; }]),
   ...[['from', ''], ['from', 1], ['specifier', null], ['specifier', 1], ['kind', 'other'], ['kind', null], ['to', ''], ['to', 1]].map(([field, value]) => [`edge ${field} ${JSON.stringify(value)}`, 'shape', r => { r.edges[1][field] = value; return r; }]),
-  ['duplicate module path', 'graph', r => { r.modules[2].path = 'island'; return r; }],
+  ['duplicate module path', 'graph', r => { r.modules.push({ ...r.modules[1] }); return r; }],
   ['missing entry', 'graph', r => ({ ...r, entry: 'missing' })],
   ['dangling from', 'graph', r => { r.edges[1].from = 'missing'; return r; }],
   ['dangling to', 'graph', r => { r.edges[1].to = 'missing'; return r; }],
@@ -60,24 +60,26 @@ test('valid alias tuples remain distinct in both modes', () => {
   }
 });
 
-test('negative control detects skipped dangling destination validation', { skip: process.env.MYRMIDON_WEAK_MUTANT === '1' }, () => {
+for (const [label, check, replacement] of [
+  ['dangling to', "    if (!modules.has(edge.from) || (edge.to !== null && !modules.has(edge.to))) fail('graph');", "    if (edge.to !== null && !modules.has(edge.to)) continue;\n    if (!modules.has(edge.from)) fail('graph');"],
+  ['duplicate module path', "    if (modules.has(mod.path)) fail('graph');", ''],
+]) test(`negative control detects skipped ${label} validation`, { skip: process.env.MYRMIDON_WEAK_MUTANT === '1' }, () => {
   const scratch = mkdtempSync(join(process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_SCRATCH_DIR || homedir(), 'weak-matrix-'));
   try {
     const original = readFileSync(cli, 'utf8');
-    const check = "    if (!modules.has(edge.from) || (edge.to !== null && !modules.has(edge.to))) fail('graph');";
     assert.ok(original.includes(check), 'mutation target must exist');
-    const mutant = original.replace(check, "    if (edge.to !== null && !modules.has(edge.to)) continue;\n    if (!modules.has(edge.from)) fail('graph');");
+    const mutant = original.replace(check, replacement);
     writeFileSync(join(scratch, 'import-report-weak-components.mjs'), mutant);
     const matrix = join(scratch, 'weak-validation-matrix.myrmidon.test.mjs');
     copyFileSync(fileURLToPath(import.meta.url), matrix);
     const env = { ...process.env, MYRMIDON_WEAK_MUTANT: '1' };
     delete env.NODE_TEST_CONTEXT;
-    const result = spawnSync(process.execPath, ['--test', '--test-reporter=tap', '--test-name-pattern=reject dangling to', matrix], {
+    const result = spawnSync(process.execPath, ['--test', '--test-reporter=tap', `--test-name-pattern=reject ${label}`, matrix], {
       encoding: 'utf8', timeout: 30000, env,
     });
     assert.equal(result.status, 1, result.stderr);
-    assert.match(result.stdout, /not ok .*reject dangling to/);
-    assert.match(result.stdout, /dangling to eager/);
+    assert.ok(result.stdout.includes(`not ok`) && result.stdout.includes(`reject ${label}`));
+    assert.ok(result.stdout.includes(`${label} eager`));
     assert.match(result.stdout, /expected: 1/);
     assert.match(result.stdout, /actual: 0/);
   } finally {
