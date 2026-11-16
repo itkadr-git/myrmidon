@@ -298,7 +298,12 @@ export const companyTransferRunService = {
         updatedAt: new Date(),
       })
       .where(
-        and(eq(companyTransferRuns.id, runId), inArray(companyTransferRuns.status, PART_UPLOAD_STATUSES)),
+        and(
+          eq(companyTransferRuns.id, runId),
+          inArray(companyTransferRuns.status, PART_UPLOAD_STATUSES),
+          // Migration runs do not upload parts; names can contain sensitive data.
+          sql`coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration'`,
+        ),
       )
       .returning({ id: companyTransferRuns.id });
     return updated.length > 0;
