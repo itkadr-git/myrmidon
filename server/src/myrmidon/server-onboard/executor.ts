@@ -305,8 +305,10 @@ export class FleetOnboardExecutor {
 
             // Firewall allow-before-deny with rollback timer:
             // 1. Allow SSH port before deny
-            const allowResult = await activeSsh.execute(`sudo ufw allow ${claim.server.port}/tcp comment 'myrmidon-ssh'`);
-            if (allowResult.exitCode !== 0) {
+            try {
+              const allowResult = await activeSsh.execute(`sudo ufw allow ${claim.server.port}/tcp comment 'myrmidon-ssh'`);
+              if (allowResult.exitCode !== 0) throw new Error("SSH allow command returned a failure");
+            } catch (error) {
               let restored = false;
               try {
                 const restore = await activeSsh.execute(
@@ -316,7 +318,8 @@ export class FleetOnboardExecutor {
               } catch {
                 // Keep the snapshot for manual recovery if the session is lost.
               }
-              throw new Error(`Firewall SSH allow rule failed; refusing to enable deny policy${restored ? "; saved configuration restored" : "; firewall restoration failed or could not be confirmed"}`);
+              const cause = error instanceof Error ? error.message : String(error);
+              throw new Error(`Firewall SSH allow rule failed: ${cause}; refusing to enable deny policy${restored ? "; saved configuration restored" : "; firewall restoration failed or could not be confirmed"}`);
             }
 
             // 2. Start rollback timer (5 minutes / 300s)
