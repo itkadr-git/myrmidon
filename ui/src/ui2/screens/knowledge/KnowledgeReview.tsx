@@ -61,6 +61,7 @@ function ReviewQueue({ companyId, text }: { companyId: string; text: Messages })
           {editing?.id === suggestion.id ? (
             <form className="space-y-3" onSubmit={(event) => {
               event.preventDefault();
+              if (content.length > 500000 || (!suggestion.targetItemId && (title.length > 300 || slug.length > 200))) return;
               decision.mutate({ suggestion, action: "accept", edit: true });
             }}>
               {!suggestion.targetItemId && <>
