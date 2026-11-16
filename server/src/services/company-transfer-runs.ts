@@ -322,6 +322,12 @@ export const companyTransferRunService = {
     if (!companyId || objectKey.includes("..") || !generatedKey.test(objectKey)) {
       throw new Error("Invalid migration object key");
     }
+    const dateParts = objectKey.split("/").slice(-4, -1);
+    const dateText = `${dateParts[0]}-${dateParts[1]}-${dateParts[2]}`;
+    const date = new Date(`${dateText}T00:00:00.000Z`);
+    if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== dateText) {
+      throw new Error("Invalid migration object key");
+    }
     const partJson = JSON.stringify([objectKey]);
     const updated = await db.update(companyTransferRuns).set({
       completedParts: sql`case when ${companyTransferRuns.completedParts} @> ${partJson}::jsonb then ${companyTransferRuns.completedParts} else ${companyTransferRuns.completedParts} || ${partJson}::jsonb end`,
