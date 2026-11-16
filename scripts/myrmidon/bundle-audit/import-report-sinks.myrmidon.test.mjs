@@ -51,6 +51,16 @@ test('error categories and safe sum overflow', () => {
   failure(JSON.stringify(report([mod('a'), mod('b', Number.MAX_SAFE_INTEGER), mod('c')], [edge('a','b'), edge('a','c')])), 'graph');
   failure(JSON.stringify({ entry: 'missing', modules: [mod('a')], edges: [] }), 'graph');
   failure(JSON.stringify(report([{ path: 'a', bytes: -1, eager: true }])), 'shape');
+  failure(JSON.stringify(report([{ path: 'a', bytes: 1 }])), 'shape');
+  failure(JSON.stringify(report([{ path: 'a', bytes: 1, eager: 'yes' }])), 'shape');
+  failure(JSON.stringify(report([{ path: 'a', bytes: 1.5, eager: false }])), 'shape');
+  failure(JSON.stringify(report([{ path: 'a', bytes: Number.MAX_SAFE_INTEGER + 1, eager: false }])), 'shape');
+  failure(JSON.stringify(report([mod('a'), { path: '', bytes: 1, eager: false }])), 'shape');
+  failure(JSON.stringify(report([mod('a')], [{ from: '', to: null, kind: 'eager', specifier: 'x' }])), 'shape');
+  failure(JSON.stringify(report([mod('a')], [{ from: 'a', to: null, kind: 'eager' }])), 'shape');
+  failure(JSON.stringify(report([mod('a')], [{ from: 'a', to: null, kind: 'side-effect', specifier: 'x' }])), 'shape');
+  failure(JSON.stringify(report([mod('a')], [{ from: 'a', to: 7, kind: 'eager', specifier: 'x' }])), 'shape');
+  failure(JSON.stringify(report([mod('a')], [{ from: 'missing', to: null, kind: 'eager', specifier: 'x' }])), 'graph');
 });
 test('stdin chunks and absolute CLI work from another cwd', async () => {
   const r = report([mod('a', 2)]);
