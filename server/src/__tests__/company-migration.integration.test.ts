@@ -305,6 +305,23 @@ describe("company migration dry run", () => {
     expect(await readdir(root, { recursive: true })).toEqual(filesBefore);
   });
 
+  it("serializes migration ledger declarations across operators and isolates sources", async () => {
+    const key = "migration-ledger-concurrent-fixture";
+    const [first, second] = await Promise.all([
+      companyTransferRunService.resumeOrCreateMigration(db, "source-one", key),
+      companyTransferRunService.resumeOrCreateMigration(db, "source-one", key),
+    ]);
+    expect(first.run.id).toBe(second.run.id);
+    expect([first.resumed, second.resumed].sort()).toEqual([false, true]);
+    const otherSource = await companyTransferRunService.resumeOrCreateMigration(db, "source-two", key);
+    expect(otherSource.run.id).not.toBe(first.run.id);
+    expect(otherSource.run.containerRef).toMatchObject({ kind: "company_migration", sourceCompanyId: "source-two" });
+    await companyTransferRunService.complete(db, first.run.id);
+    const retry = await companyTransferRunService.resumeOrCreateMigration(db, "source-one", key);
+    expect(retry.alreadyCompleted).toBe(true);
+    expect(retry.run.id).toBe(first.run.id);
+  });
+
   it("does not reapply a failed migration after it has claimed a destination", async () => {
     const [source] = await db.insert(companies).values({ name: "Retry safety source", issuePrefix: "MRY" }).returning();
     const [destination] = await db.insert(companies).values({ name: "Retry safety destination", issuePrefix: "MRD" }).returning();
