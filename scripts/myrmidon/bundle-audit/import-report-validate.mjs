@@ -51,6 +51,23 @@ function validate(report) {
   if (!entry || !entry.eager) fail('reference');
   const unknownEdges = report.edges.filter(edge => edge.to === null);
   if (unknownKeys.size !== unknownEdges.length || unknownEdges.some(edge => !unknownKeys.has(JSON.stringify([edge.from, edge.specifier, edge.kind, edge.to])))) fail('inconsistent');
+  const adjacency = new Map();
+  for (const edge of report.edges) {
+    if (edge.kind !== 'eager' || edge.to === null) continue;
+    if (!adjacency.has(edge.from)) adjacency.set(edge.from, []);
+    adjacency.get(edge.from).push(edge.to);
+  }
+  const reachable = new Set([report.entry]);
+  const pending = [report.entry];
+  while (pending.length) {
+    for (const target of adjacency.get(pending.pop()) ?? []) {
+      if (!reachable.has(target)) {
+        reachable.add(target);
+        pending.push(target);
+      }
+    }
+  }
+  if (report.modules.some(module => module.eager !== reachable.has(module.path))) fail('inconsistent');
   const eagerModules = report.modules.filter(module => module.eager);
   if (report.counts.modules !== report.modules.length ||
       report.counts.eagerModules !== eagerModules.length || report.counts.edges !== report.edges.length ||
