@@ -661,46 +661,36 @@ describeEmbeddedPostgres("in-progress idle wake sweep (OPE-13202)", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
-  it("does not wake a task outside the strict release focus, but wakes the one inside it", async () => {
+  it("does not wake a task outside the strict release focus; wakes it once it is in the release", async () => {
     applyRunPrioritySettings({ ...currentRunPrioritySettings({}), currentRelease: "1.6.9", strictReleaseFocus: true });
     const { companyId, agentId } = await seedAgent();
-    const inFocus = await seedIssue({ companyId, agentId, idleMinutes: 3 });
-    const outOfFocus = await seedIssue({ companyId, agentId, idleMinutes: 3 });
+    // Strict focus blocks only a task of another release: label the task 1.8, then move it into 1.6.9.
     const labelId = randomUUID();
-    await db.insert(labels).values({ id: labelId, companyId, name: "1.6.9", color: "#123456" });
-    await db.insert(issueLabels).values({ companyId, issueId: inFocus, labelId });
-    // Make the two tasks belong to two executors so that one wake per executor
-    // per pass does not hide the check.
-    const otherAgentId = randomUUID();
-    await db.insert(agents).values({
-      id: otherAgentId,
+    const otherLabelId = randomUUID();
+    await db.insert(labels).values([
+      { id: labelId, companyId, name: "1.6.9", color: "#123456" },
+      { id: otherLabelId, companyId, name: "1.8", color: "#123456" },
+    ]);
+    const issueId = await seedIssue({ companyId, agentId, idleMinutes: 3 });
+    await db.insert(issueLabels).values({ companyId, issueId, labelId: otherLabelId });
+    const run = await seedFinishedRun({ companyId, agentId, issueId, finishedMinutesAgo: 3 });
+    await seedActivity({
       companyId,
-      name: "agent-b",
-      role: "engineer",
-      status: "idle",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
+      issueId,
+      action: "issue.work_product_head_changed",
+      at: new Date(run.finishedAt.getTime() - 30_000),
+      details: { headShaChanged: true },
     });
-    await db.update(issues).set({ assigneeAgentId: otherAgentId }).where(eq(issues.id, outOfFocus));
-    for (const [id, owner] of [[inFocus, agentId], [outOfFocus, otherAgentId]] as const) {
-      const run = await seedFinishedRun({ companyId, agentId: owner, issueId: id, finishedMinutesAgo: 3 });
-      await seedActivity({
-        companyId,
-        issueId: id,
-        action: "issue.work_product_head_changed",
-        at: new Date(run.finishedAt.getTime() - 30_000),
-        details: { headShaChanged: true },
-      });
-    }
     const { sweeper, enqueueWakeup } = makeSweeper();
+    const start = Date.now();
 
-    const result = await sweeper.sweep(new Date());
+    expect((await sweeper.sweep(new Date(start))).woken).toBe(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
 
-    expect(result.issueIds).toEqual([inFocus]);
+    await db.delete(issueLabels).where(eq(issueLabels.labelId, otherLabelId));
+    await db.insert(issueLabels).values({ companyId, issueId, labelId });
+    expect((await sweeper.sweep(new Date(start + 40_000))).issueIds).toEqual([issueId]);
     expect(enqueueWakeup).toHaveBeenCalledTimes(1);
-    expect(enqueueWakeup).toHaveBeenCalledWith(agentId, expect.anything());
   });
 
   it("ignores tasks that are not in_progress and does nothing when the setting is 0", async () => {
