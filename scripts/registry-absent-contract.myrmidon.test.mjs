@@ -67,16 +67,17 @@ if (!entry) process.exit(99);
 const key = name => `${name}@${version}`;
 
 test("exact and trimmed matches are reported in input order despite reversed completions", async () => {
-  const packages = ["@myrmidon/slow", "@myrmidon/lookalike", "@myrmidon/fast", "@myrmidon/slow"];
+  const packages = ["@myrmidon/slow", "@myrmidon/suffix-lookalike", "@myrmidon/prefix-lookalike", "@myrmidon/fast", "@myrmidon/slow"];
   const result = await run(packages, {
     [key(packages[0])]: { output: version, waitFor: "fast-done" },
     [key(packages[1])]: { output: `${version}-canary.1` },
-    [key(packages[2])]: { output: ` \n${version}\t\n`, signal: "fast-done" },
+    [key(packages[2])]: { output: `1${version}` },
+    [key(packages[3])]: { output: ` \n${version}\t\n`, signal: "fast-done" },
   });
   assert.equal(result.code, 1);
   assert.equal(result.stdout, "");
-  assert.equal(result.stderr, [packages[0], packages[2], packages[3]].map(name => `npm version ${name}@${version} already exists.\n`).join(""));
-  assert.ok(result.finished.indexOf(key(packages[2])) < result.finished.indexOf(key(packages[0])));
+  assert.equal(result.stderr, [packages[0], packages[3], packages[4]].map(name => `npm version ${name}@${version} already exists.\n`).join(""));
+  assert.ok(result.finished.indexOf(key(packages[3])) < result.finished.indexOf(key(packages[0])));
 });
 
 test("different, prefix, suffix, empty and failed npm responses are absent", async () => {
