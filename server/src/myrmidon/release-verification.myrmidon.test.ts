@@ -872,6 +872,17 @@ describe("persisted release evidence", () => {
     expect(hasCurrentReleaseVerificationEvidence(comments, after, "secret", NOW())).toBe(false);
   });
 
+  it("accepts the same candidate set in a different order, but rejects duplicate candidates", () => {
+    const sibling = member("issue-b:PR#2", SHA_C);
+    const original = { ...scope, members: [...members, sibling] };
+    const confirmed = createReleaseVerificationEvidence({
+      ...original, verdict: "confirmed", checkedAt: "2026-11-13T12:00:00.000Z",
+    }, "secret");
+    const comments = [{ body: `release-evidence-v1: ${JSON.stringify(confirmed)}`, authorType: "system" }];
+    expect(hasCurrentReleaseVerificationEvidence(comments, { ...original, members: [sibling, ...members] }, "secret", NOW())).toBe(true);
+    expect(hasCurrentReleaseVerificationEvidence(comments, { ...original, members: [...original.members, sibling] }, "secret", NOW())).toBe(false);
+  });
+
   it("rejects evidence after a sibling candidate is added, removed, or replaced", () => {
     const sibling = member("issue-b:PR#2", SHA_C);
     const before = { ...scope, members: [...members, sibling] };
