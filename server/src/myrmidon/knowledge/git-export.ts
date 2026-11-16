@@ -107,6 +107,11 @@ export function buildKnowledgeGitTree(doc: KnowledgeTreeDoc): KnowledgeGitTree {
     content: renderKnowledgePageMarkdown(page),
   }));
   files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  for (let i = 1; i < files.length; i++) {
+    if (files[i - 1].path === files[i].path) {
+      throw new Error(`Duplicate knowledge export path: ${files[i].path}`);
+    }
+  }
 
   const hash = createHash("sha256");
   hash.update(doc.nestId);
