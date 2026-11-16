@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { issues, projects, type Db } from "@myrmidon/db";
-import { currentRunPrioritySettings } from "./run-priority/state.js";
+import { currentCompanyReleaseFocus } from "./run-priority/state.js";
 import { releaseEpicCandidates } from "./swarm-claim/auto-slice-policy.js";
 
 // Opt-in per project: other board processes retain their existing release path.
@@ -112,7 +112,7 @@ async function openReleaseEpics(db: Db, companyId: string, projectId: string): P
     .from(issues)
     .innerJoin(projects, and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
     .where(and(eq(issues.companyId, companyId), eq(issues.projectId, projectId)));
-  return releaseEpicCandidates(rows, currentRunPrioritySettings().currentRelease)
+  return releaseEpicCandidates(rows, currentCompanyReleaseFocus(companyId).currentRelease)
     .flatMap((row) => row.identifier ? [{ id: row.id, identifier: row.identifier, title: row.title }] : []);
 }
 

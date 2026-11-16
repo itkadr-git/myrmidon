@@ -9,13 +9,27 @@
 
 import { Router } from "express";
 import type { Db } from "@myrmidon/db";
-import { patchRunPrioritySchema, type RunPriorityPatch } from "@myrmidon/shared";
+import { patchRunPrioritySchema, runPrioritySettingsSchema, type RunPriorityPatch } from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
-import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
+import { assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import type { RunPriorityService } from "./service.js";
 
 export function runPriorityRoutes(_db: Db, service: RunPriorityService) {
   const router = Router();
+
+  router.get("/myrmidon/run-priority/company/:companyId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await service.readCompany(companyId));
+  });
+
+  router.patch("/myrmidon/run-priority/company/:companyId", validate(runPrioritySettingsSchema.pick({ currentRelease: true, strictReleaseFocus: true })), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertInstanceAdmin(req);
+    await service.updateCompany(companyId, req.body, getActorInfo(req));
+    res.json(await service.readCompany(companyId));
+  });
 
   router.get("/myrmidon/run-priority", async (req, res) => {
     assertBoardOrgAccess(req);

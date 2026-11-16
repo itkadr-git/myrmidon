@@ -31,8 +31,7 @@ vi.mock("../middleware/logger.js", () => ({
 }));
 
 import {
-  applyRunPrioritySettings,
-  currentRunPrioritySettings,
+  applyCompanyReleaseFocus,
   resetRunPriorityForTests,
 } from "../myrmidon/run-priority/state.js";
 import {
@@ -662,8 +661,8 @@ describeEmbeddedPostgres("in-progress idle wake sweep (OPE-13202)", () => {
   });
 
   it("does not wake a task outside the strict release focus; wakes it once it is in the release", async () => {
-    applyRunPrioritySettings({ ...currentRunPrioritySettings({}), currentRelease: "1.6.9", strictReleaseFocus: true });
     const { companyId, agentId } = await seedAgent();
+    applyCompanyReleaseFocus(new Map([[companyId, { currentRelease: "1.6.9", strictReleaseFocus: true }]]));
     // Strict focus blocks only a task of another release: label the task 1.8, then move it into 1.6.9.
     const labelId = randomUUID();
     const otherLabelId = randomUUID();

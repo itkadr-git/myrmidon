@@ -1,6 +1,6 @@
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import { issues, type Db } from "@myrmidon/db";
-import { currentRunPrioritySettings } from "./run-priority/state.js";
+import { currentCompanyReleaseFocus } from "./run-priority/state.js";
 
 /**
  * The release the board is focused on, or null when focus is off: either no
@@ -10,8 +10,8 @@ import { currentRunPrioritySettings } from "./run-priority/state.js";
  * gate on it. When every current-release task is blocked or in review, focus
  * stays active on purpose: the operator lifts it with the setting.
  */
-export function strictReleaseFocusRelease(): string | null {
-  const settings = currentRunPrioritySettings();
+export function strictReleaseFocusRelease(companyId: string): string | null {
+  const settings = currentCompanyReleaseFocus(companyId);
   if (!settings.strictReleaseFocus) return null;
   return settings.currentRelease?.trim() ? settings.currentRelease : null;
 }
@@ -29,7 +29,7 @@ const RELEASE_LABEL_PATTERN = String.raw`^\d+\.\d+(\.\d+)?$`;
  * Shared by swarm queue reads and assigned-task idle pickup; reviews bypass it.
  */
 export function releaseFocusCondition(companyId: string): SQL {
-  const release = strictReleaseFocusRelease();
+  const release = strictReleaseFocusRelease(companyId);
   if (!release) return sql`true`;
   const normalized = release.trim().toLowerCase();
   const matches = (name: SQL) => sql`lower(trim(${name})) = ${normalized}`;
@@ -94,7 +94,7 @@ export async function runViolatesReleaseFocus(
   db: Db,
   input: { companyId: string; agentId: string; issueId: string | null },
 ): Promise<boolean> {
-  if (!input.issueId || !strictReleaseFocusRelease()) return false;
+  if (!input.issueId || !strictReleaseFocusRelease(input.companyId)) return false;
   const reviewParticipant = sql`(${issues.status} = 'in_review'
     and ${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent'
     and ${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${input.agentId})`;
