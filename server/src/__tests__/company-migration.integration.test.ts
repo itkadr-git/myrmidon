@@ -30,7 +30,11 @@ describe("company migration dry run", () => {
 
   it("runs the real operator route without database, storage, or audit writes", async () => {
     const [source] = await db.insert(companies).values({ name: "Migration fixture", issuePrefix: "MIG" }).returning();
-    await db.insert(agents).values({ companyId: source!.id, name: "Migration worker" });
+    const [worker] = await db.insert(agents).values({ companyId: source!.id, name: "Migration worker" }).returning();
+    const [project] = await db.insert(projects).values({ companyId: source!.id, name: "Migration project" }).returning();
+    await db.insert(issues).values({
+      companyId: source!.id, projectId: project!.id, assigneeAgentId: worker!.id, title: "Migration task",
+    });
     const storage = createStorageService(createLocalDiskStorageProvider(root));
     const insert = vi.spyOn(db, "insert");
     const update = vi.spyOn(db, "update");
@@ -52,10 +56,12 @@ describe("company migration dry run", () => {
     app.use(errorHandler);
     const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
       target: { mode: "new_company", newCompanyName: "Destination" },
+      export: { include: { projects: true, issues: true } },
     });
     expect(response.status).toBe(200);
     expect(response.body.dryRun).toBe(true);
     expect(response.body.validation.errors).toEqual([]);
+    expect(response.body.counts).toMatchObject({ agents: 1, projects: 1, issues: 1 });
 
     const existingTarget = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
       target: { mode: "existing_company", companyId: source!.id },
