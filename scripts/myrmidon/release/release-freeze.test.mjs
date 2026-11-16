@@ -200,7 +200,7 @@ describe("release-freeze.sh (fake gh)", () => {
     // Newest by version is myr-v1.6.10-rc.1 (an rc of a NEWER version beats
     // an older final); the fixture's green CI run answers for the stale rc
     // myr-v1.6.5-rc.4, so the newest tag's CI is missing -> freeze active.
-    const r = runScript(sb, "--check");
+    const r = runScript(sb, "--check-state");
     assert.equal(r.status, 1, `expected red gate: ${r.stderr}`);
     assert.match(r.stderr, /RELEASE FREEZE ACTIVE/);
     assert.match(r.stderr, /newest release tag: myr-v1\.6\.10-rc\.1/);
@@ -215,7 +215,7 @@ describe("release-freeze.sh (fake gh)", () => {
       headBranch: "myr-v1.6.5-rc.4",
       ciConclusion: "success",
     });
-    const r = runScript(sb, "--check");
+    const r = runScript(sb, "--check-state");
     assert.equal(r.status, 1, `expected red gate: ${r.stderr}`);
     assert.match(r.stderr, /RELEASE FREEZE ACTIVE/);
     assert.match(r.stderr, /newest release tag: myr-v1\.6\.5$/m);
@@ -234,7 +234,7 @@ describe("release-freeze.sh (fake gh)", () => {
 
   it("--check is RED while the newest tag CI is in progress (freeze active)", () => {
     const sb = makeSandbox({ ciStatus: "in_progress", ciConclusion: null });
-    const r = runScript(sb, "--check");
+    const r = runScript(sb, "--check-state");
     assert.equal(r.status, 1, `expected red gate: ${r.stderr}`);
     assert.match(r.stderr, /RELEASE FREEZE ACTIVE/);
   });
@@ -307,7 +307,7 @@ describe("release-freeze.sh (fake gh)", () => {
       { headBranch: "bot/x", event: "pull_request", ciConclusion: "success" },
     ]) {
       const sb = makeSandbox({ runPath: ".github/workflows/myrmidon-ci.yml", ...opts });
-      const r = runScript(sb, "--check");
+      const r = runScript(sb, "--check-state");
       assert.equal(r.status, 1, r.stderr);
       assert.match(r.stderr, /RELEASE FREEZE ACTIVE/);
     }
@@ -321,7 +321,7 @@ describe("release-freeze.sh (fake gh)", () => {
       headBranch: "myr-v1.6.9", // not the newest tag (1.6.10)
       ciConclusion: "success",
     });
-    const r = runScript(sb, "--check");
+    const r = runScript(sb, "--check-state");
     assert.equal(r.status, 1, `expected red gate: ${r.stderr}`);
     assert.match(r.stderr, /RELEASE FREEZE ACTIVE/);
   });
@@ -377,7 +377,7 @@ describe("release-freeze.sh (fake gh)", () => {
       ciConclusion: null,
       issues: [{ number: 7, title: "release-freeze: myr-v1.6.10" }],
     });
-    const r = runScript(sb, "--check");
+    const r = runScript(sb, "--check-state");
     assert.equal(r.status, 1, `expected red gate: ${r.stderr}`);
   });
 
