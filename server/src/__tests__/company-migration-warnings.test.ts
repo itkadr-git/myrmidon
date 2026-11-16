@@ -15,6 +15,17 @@ describe("migration dry-run warnings", () => {
     expect(JSON.stringify(result)).not.toContain("sensitive");
   });
 
+  it("does not expose raw import planner errors", async () => {
+    const manifest = { agents: [], projects: [], issues: [], skills: [], envInputs: [] };
+    const portability = {
+      exportBundle: vi.fn().mockResolvedValue({ rootPath: "package", files: {}, manifest, warnings: [] }),
+      previewImport: vi.fn().mockResolvedValue({ errors: ["sensitive planner detail"], warnings: [] }),
+    } as unknown as ReturnType<typeof companyPortabilityService>;
+    const result = await companyMigrationService(portability).dryRun("source", {}, "destination");
+    expect(result.validation.importErrorCount).toBe(1);
+    expect(JSON.stringify(result)).not.toContain("sensitive planner detail");
+  });
+
   it("distinguishes skipped import validation from a warning-free preview", async () => {
     const manifest = { agents: [], projects: [], issues: [], skills: [], envInputs: [
       { key: "TOKEN", agentSlug: "missing", projectSlug: null, kind: "secret", requirement: "required" },
