@@ -58,6 +58,10 @@ function audit(input) {
       try {
         const actual = realpathSync(path);
         if (!inside(root, actual)) throw new Error('symlink escapes root');
+        const canonical = relative(root, actual).split(sep).join('/');
+        if (/(?:^|\/)src\/.*\.(?:ts|mts|cts)$/.test(canonical) && !/\.d\.(?:ts|mts|cts)$/.test(canonical)) {
+          errors.push(`${field}: source TypeScript target ${canonical}`);
+        }
         if (!statSync(actual).isFile()) throw new Error('not a file');
       } catch (error) { errors.push(`${field}: ${target}: ${error.message}`); }
     }
