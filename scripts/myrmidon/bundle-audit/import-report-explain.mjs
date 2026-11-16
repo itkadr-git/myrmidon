@@ -44,7 +44,7 @@ function shortest(entry, target, adjacency) {
 try {
   if (process.argv.length !== 4) fail('arguments');
   let text;
-  try { text = readFileSync(process.argv[2], 'utf8'); } catch { fail('read'); }
+  try { text = readFileSync(process.argv[2] === '-' ? 0 : process.argv[2], 'utf8'); } catch { fail('read'); }
   let report;
   try { report = JSON.parse(text); } catch { fail('json'); }
   const { modules, adjacency } = validate(report), target = process.argv[3];
