@@ -51,7 +51,7 @@ function analyze(report, target) {
 try {
   if (process.argv.length !== 4 || !nonempty(process.argv[3])) fail('argv');
   let data;
-  try { data = readFileSync(process.argv[2], 'utf8'); } catch { fail('read'); }
+  try { data = readFileSync(process.argv[2] === '-' ? 0 : process.argv[2], 'utf8'); } catch { fail('read'); }
   let report;
   try { report = JSON.parse(data); } catch { fail('json'); }
   process.stdout.write(JSON.stringify(analyze(report, process.argv[3])) + '\n');
