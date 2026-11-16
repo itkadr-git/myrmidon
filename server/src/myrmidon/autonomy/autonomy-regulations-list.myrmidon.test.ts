@@ -57,8 +57,7 @@ describe("listKnowledgeAutonomyRegulations", () => {
       createdBy: { type: "board", id: "board-creator" }, updatedBy: { type: "agent", id: "agent" },
       revisions: [{ revision: 1, bodyMarkdown: "b-1" }, { revision: 2, bodyMarkdown: "b-2", status: "draft" }] });
     expect(fake.calls.map((call) => call.table)).toEqual([knowledgeItems, knowledgeRevisions]);
-    expect(fake.calls[0].query.sql).toMatch(/"nest_id"\s*=\s*\$1/);
-    expect(fake.calls[0].query.sql).toMatch(/"kind"\s*=\s*\$2/);
+    expect(fake.calls[0].query.sql).toMatch(/^\("[^"]+"\."nest_id"\s*=\s*\$1\s+and\s+"[^"]+"\."kind"\s*=\s*\$2\)$/i);
     expect(fake.calls[0].query.params).toEqual([company, "rule"]);
     expect(fake.calls[1].query.sql).toMatch(/"item_id"\s+in\s*\(\$1,\s*\$2\)/i);
     expect(fake.calls[1].query.params).toEqual(["a", "b"]);
