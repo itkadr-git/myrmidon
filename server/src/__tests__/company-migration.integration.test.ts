@@ -1,7 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, companyMemberships, companyTransferRuns, createDb, issues, projects } from "@myrmidon/db";
+import { activityLog, agents, companies, companyMemberships, companyTransferRuns, createDb, issueComments, issues, projects } from "@myrmidon/db";
 
 import { companyRoutes } from "../routes/companies.js";
 import { companyService } from "../services/companies.js";
@@ -86,6 +86,38 @@ describe("company migration dry run", () => {
     } finally {
       insert.mockRestore(); update.mockRestore(); remove.mockRestore();
     }
+  });
+
+  it("reports source task comments through the real preview without leaking their contents", async () => {
+    const [source] = await db.insert(companies).values({ name: "Conversation source", issuePrefix: "MCV" }).returning();
+    const [issue] = await db.insert(issues).values({ companyId: source!.id, title: "Conversation task" }).returning();
+    await db.insert(issueComments).values({ companyId: source!.id, issueId: issue!.id, body: "private conversation canary" });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+    const beforeRuns = await db.select().from(companyTransferRuns);
+    const beforeAudit = await db.select().from(activityLog);
+    const filesBefore = await readdir(root, { recursive: true });
+
+    const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+      target: { mode: "new_company", newCompanyName: "Conversation destination" },
+      export: { include: { issues: true } },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body.validation.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("comments that cannot be migrated"),
+    ]));
+    expect(response.body.validation.importPreviewSkipped).toBe(true);
+    expect(JSON.stringify(response.body)).not.toContain("private conversation canary");
+    expect(await db.select().from(companyTransferRuns)).toEqual(beforeRuns);
+    expect(await db.select().from(activityLog)).toEqual(beforeAudit);
+    expect(await readdir(root, { recursive: true })).toEqual(filesBefore);
   });
 
   it("keeps concurrent repeated dry runs read-only", async () => {
