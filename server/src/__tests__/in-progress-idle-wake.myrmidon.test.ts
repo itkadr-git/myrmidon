@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -671,6 +671,10 @@ describeEmbeddedPostgres("in-progress idle wake sweep (OPE-13202)", () => {
       { id: labelId, companyId, name: "1.6.9", color: "#123456" },
       { id: otherLabelId, companyId, name: "1.8", color: "#123456" },
     ]);
+    // The focus is active only while an open task of the current release exists.
+    const currentTask = randomUUID();
+    await db.insert(issues).values({ id: currentTask, companyId, title: "current release", status: "todo" });
+    await db.insert(issueLabels).values({ companyId, issueId: currentTask, labelId });
     const issueId = await seedIssue({ companyId, agentId, idleMinutes: 3 });
     await db.insert(issueLabels).values({ companyId, issueId, labelId: otherLabelId });
     const run = await seedFinishedRun({ companyId, agentId, issueId, finishedMinutesAgo: 3 });
@@ -687,7 +691,7 @@ describeEmbeddedPostgres("in-progress idle wake sweep (OPE-13202)", () => {
     expect((await sweeper.sweep(new Date(start))).woken).toBe(0);
     expect(enqueueWakeup).not.toHaveBeenCalled();
 
-    await db.delete(issueLabels).where(eq(issueLabels.labelId, otherLabelId));
+    await db.delete(issueLabels).where(and(eq(issueLabels.issueId, issueId), eq(issueLabels.labelId, otherLabelId)));
     await db.insert(issueLabels).values({ companyId, issueId, labelId });
     expect((await sweeper.sweep(new Date(start + 40_000))).issueIds).toEqual([issueId]);
     expect(enqueueWakeup).toHaveBeenCalledTimes(1);
