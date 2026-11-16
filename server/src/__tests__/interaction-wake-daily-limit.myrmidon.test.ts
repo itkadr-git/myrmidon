@@ -81,9 +81,9 @@ describeEmbedded("interaction wakes and the daily run limit", () => {
   }, 60_000);
 
   afterEach(async () => {
+    await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issueThreadInteractions);
-    await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
