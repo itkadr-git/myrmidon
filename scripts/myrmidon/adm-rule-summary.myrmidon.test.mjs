@@ -2,13 +2,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { buildMigration } from './adm-migrate.mjs';
 
 const fakeCleanScannerPort = () => ({ clean: true, findings: [] });
 
+function scratchRoot() {
+  const base = process.env.PAPERCLIP_RUN_SCRATCH_DIR
+    || process.env.PAPERCLIP_SCRATCH_DIR
+    || homedir();
+  return mkdtempSync(join(base, 'adm-summary-'));
+}
+
 function migrate(kind, content) {
-  const root = mkdtempSync(join(tmpdir(), 'adm-summary-'));
+  const root = scratchRoot();
   try {
     mkdirSync(join(root, 'memory'));
     writeFileSync(join(root, 'CLAUDE.md'), '---\ndescription: Base policy\n---\n# Base\n');
