@@ -70,7 +70,7 @@ test("negative control detects an incorrect expected decision", () => {
     // A nested test runner must not inherit the parent runner's recursion guard.
     const env = { ...process.env };
     delete env.NODE_TEST_CONTEXT;
-    const result = spawnSync(process.execPath, ["--test", "--test-name-pattern=^no verdict before closed$", fixture], { encoding: "utf8", env });
+    const result = spawnSync(process.execPath, ["--test", "--test-reporter=tap", "--test-name-pattern=^no verdict before closed$", fixture], { encoding: "utf8", env });
     assert.equal(result.status, 1, result.stderr);
     assert.match(result.stdout, /not ok 1 - no verdict before closed/);
     assert.match(result.stdout, /no-verdict/);
