@@ -252,9 +252,12 @@ function redactUrl(url: string): string {
   return redactSecrets(url);
 }
 
-/** Replaces `user:token@` in every URL of a text with `<redacted>@`. */
+/** Redacts URL userinfo, authorization bearer values, and Myrmidon keys in text. */
 export function redactSecrets(text: string): string {
-  return text.replace(/\/\/[^/\s]*@/g, "//<redacted>@");
+  return text
+    .replace(/(\bAuthorization\s*:\s*Bearer\s+)[^\s]+/gi, "$1<redacted>")
+    .replace(/\bpcp_[A-Za-z0-9][A-Za-z0-9_-]*/g, "pcp_<redacted>")
+    .replace(/\/\/[^/\s]*@/g, "//<redacted>@");
 }
 
 /** A log-safe message for any thrown value: never the error object itself. */
