@@ -425,11 +425,19 @@ export class FleetOnboardExecutor {
         stepsCompleted,
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      let message = error instanceof Error ? error.message : String(error);
 
-      // If firewall rollback was still armed when failure occurred, ensure rollback
+      // A policy command can fail after changing the firewall; do not hide a failed restore.
       if (firewallRollbackArmed && activeSsh) {
-        await activeSsh.execute("sudo ufw disable").catch(() => {});
+        let restored = false;
+        try {
+          restored = (await activeSsh.execute("sudo ufw disable")).exitCode === 0;
+        } catch {
+          // The timer remains armed if the SSH connection is lost.
+        }
+        if (!restored && !message.includes("firewall rollback failed")) {
+          message += "; firewall rollback failed or could not be confirmed";
+        }
       }
 
       if (currentStep) {
