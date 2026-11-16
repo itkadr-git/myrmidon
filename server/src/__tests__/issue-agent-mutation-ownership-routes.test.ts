@@ -69,6 +69,7 @@ const mockWorkProductService = vi.hoisted(() => ({
   createForIssue: vi.fn(),
   getById: vi.fn(),
   latestRunDiffSummary: vi.fn(),
+  listForIssue: vi.fn(async () => []),
   resolveCommitDiffSummary: vi.fn(),
   remove: vi.fn(),
   update: vi.fn(),
@@ -376,7 +377,7 @@ function createRunContextDb(
     // generic issue fixture here would invent an unrelated replay row.
     if (settledRecoveryQuery) return [];
     const keys = Object.keys(selection);
-    if (keys.includes("entityId")) return [];
+    if (keys.includes("entityId") || keys.includes("name")) return [];
     if (keys.includes("contextSnapshot") || keys.includes("agentCompanyId")) return runRows;
     if (keys.length === 0) {
       const issue = await mockIssueService.getById(issueId);
