@@ -19,6 +19,8 @@ export interface SshConnectionOptions {
   privateKey?: string;
   passphrase?: string;
   timeoutMs?: number;
+  /** Called during the SSH handshake, before authentication. */
+  hostVerifier?: (fingerprint: string) => Promise<boolean>;
 }
 
 /** Execution options for running commands over SSH. */

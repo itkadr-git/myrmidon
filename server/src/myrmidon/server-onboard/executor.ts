@@ -23,6 +23,8 @@ import type {
 import type { OnboardJobClaim } from "./store.js";
 
 export interface ExecutorReporter {
+  /** Atomically persist the first observed fingerprint; reject a conflicting pin. */
+  pinHostKey?(fingerprint: string): Promise<boolean>;
   reportStep(
     step: string,
     result: "ok" | "skipped" | "failed",
@@ -80,6 +82,12 @@ export class FleetOnboardExecutor {
         host: claim.server.hostname,
         port: claim.server.port,
         username: claim.server.username,
+        hostVerifier: async (fingerprint) => {
+          if (discoveredFingerprint) return discoveredFingerprint === fingerprint;
+          if (!reporter.pinHostKey || !(await reporter.pinHostKey(fingerprint))) return false;
+          discoveredFingerprint = fingerprint;
+          return true;
+        },
         ...(claim.secretValues.bootstrapPassword
           ? { password: claim.secretValues.bootstrapPassword }
           : activePrivateKey
@@ -99,18 +107,10 @@ export class FleetOnboardExecutor {
             activeSsh = await this.getSsh(connOptions);
             await activeSsh.connect(connOptions);
 
-            // TOFU host key fingerprint check
-            const hostKeyRes = await activeSsh.execute(
-              "ssh-keygen -l -f /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null || ssh-keygen -l -f /etc/ssh/ssh_host_rsa_key.pub 2>/dev/null || echo 'SHA256:discovered-default'",
-            );
-            const rawOutput = hostKeyRes.stdout.trim();
-            const fpMatch = rawOutput.match(/SHA256:[A-Za-z0-9+/=]+/);
-            discoveredFingerprint = fpMatch ? fpMatch[0] : (discoveredFingerprint ?? `SHA256:${claim.server.hostname}-ed25519`);
-
-            if (claim.server.hostKeyFingerprint && claim.server.hostKeyFingerprint !== discoveredFingerprint) {
-              throw new Error(
-                `TOFU host key verification failed: expected ${claim.server.hostKeyFingerprint}, got ${discoveredFingerprint}`,
-              );
+            // The transport callback runs before credentials are sent. Do not
+            // execute remote commands to discover the host identity.
+            if (!discoveredFingerprint) {
+              throw new Error("SSH transport did not provide a verified host key");
             }
 
             // OS check (Debian or Ubuntu)
@@ -193,6 +193,7 @@ export class FleetOnboardExecutor {
               host: claim.server.hostname,
               port: claim.server.port,
               username: claim.server.username,
+              hostVerifier: connOptions.hostVerifier,
               privateKey: activePrivateKey,
             };
             const verifySsh = await this.getSsh(keyConnOptions);
