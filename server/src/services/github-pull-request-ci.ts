@@ -20,6 +20,7 @@ import {
   isGitHubRateLimited,
   getGitHubRateLimitResetTime,
   formatUtcTime,
+  withGitHubReviewBudget,
   resetGitHubRateLimitForTests,
 } from "./github-rate-limit.js";
 import type { GitHubRequestSource } from "./github-rate-limit.js";
@@ -1000,7 +1001,9 @@ export function createPullRequestCiResolver(
   // (heartbeat), `ui-refresh` for UI-triggered calls (routes); the historical
   // default keeps the pre-OPE-12397 label for callers without a bucket.
   const { source = "run-context", ...resolverOptions } = options;
-  const rawFetch = resolverOptions.fetch ?? fetch;
+  const rawFetch = source === "review-rework"
+    ? withGitHubReviewBudget(db, "review-rework", resolverOptions.fetch ?? fetch)
+    : resolverOptions.fetch ?? fetch;
   const fetchImpl: FetchLike = (input, init) => {
     const timeoutSignal = AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS);
     const signal = init?.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal;

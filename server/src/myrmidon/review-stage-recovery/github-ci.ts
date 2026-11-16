@@ -26,7 +26,7 @@ import { createHash } from "node:crypto";
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { connectionEventDeliveries, issueWorkProducts, type Db } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../../services/git-credentials.js";
-import { getGitHubRateLimitMetrics, isGitHubRateLimited, recordGitHubRequest } from "../../services/github-rate-limit.js";
+import { getGitHubRateLimitMetrics, isGitHubRateLimited, recordGitHubRequest, withGitHubReviewBudget } from "../../services/github-rate-limit.js";
 import { ghFetch, gitHubApiBase } from "../../services/github-fetch.js";
 import { repositoryHasHostedCi } from "../../services/github-hosted-ci.js";
 import { defaultTokenProvider as resolveGitHubReadToken } from "../../services/github-external-object-provider.js";
@@ -555,10 +555,11 @@ export function createReviewPullRequestCiResolver(input: {
   fetch?: FetchLike;
   tokenProvider?: (companyId: string, repository: string) => Promise<string | null>;
 }): ReviewPullRequestCiResolver {
+  const fetchImpl = withGitHubReviewBudget(input.db, "review-recovery", input.fetch ?? ghFetch);
   const tokenProvider =
     input.tokenProvider ??
     ((companyId: string, repository: string) =>
-      resolveGitHubReadToken(input.db, companyId, repository, DEFAULT_GITHUB_TOKEN_SECRET_NAMES, input.fetch));
+      resolveGitHubReadToken(input.db, companyId, repository, DEFAULT_GITHUB_TOKEN_SECRET_NAMES, fetchImpl));
 
   return async ({ companyId, issueId }) => {
     const target = await loadIssuePullRequestTarget(input.db, companyId, issueId);
@@ -577,7 +578,7 @@ export function createReviewPullRequestCiResolver(input: {
       tokenError = true;
     }
     try {
-      const head = await resolvePullRequestHeadCi({ reference, token, fetch: input.fetch });
+      const head = await resolvePullRequestHeadCi({ reference, token, fetch: fetchImpl });
       if (head.state !== "unknown") {
         // myrmidon(OPE-12176): the verdict of the final check travels with the
         // state; review admission tells green from red without a second read.
@@ -676,10 +677,11 @@ export function createReviewHeadFailedChecksResolver(input: {
   fetch?: FetchLike;
   tokenProvider?: (companyId: string, repository: string) => Promise<string | null>;
 }): ReviewHeadFailedChecksResolver {
+  const fetchImpl = withGitHubReviewBudget(input.db, "review-recovery", input.fetch ?? ghFetch);
   const tokenProvider =
     input.tokenProvider ??
     ((companyId: string, repository: string) =>
-      resolveGitHubReadToken(input.db, companyId, repository, DEFAULT_GITHUB_TOKEN_SECRET_NAMES, input.fetch));
+      resolveGitHubReadToken(input.db, companyId, repository, DEFAULT_GITHUB_TOKEN_SECRET_NAMES, fetchImpl));
 
   return async ({ companyId, issueId, headSha }) => {
     const target = await loadIssuePullRequestTarget(input.db, companyId, issueId);
@@ -691,7 +693,7 @@ export function createReviewHeadFailedChecksResolver(input: {
       // Anonymous read: the repository may be public; a failed read answers "unknown" below.
     }
     try {
-      const failed = await resolvePullRequestHeadFailedChecks({ reference: target.reference, token, headSha, fetch: input.fetch });
+      const failed = await resolvePullRequestHeadFailedChecks({ reference: target.reference, token, headSha, fetch: fetchImpl });
       if (failed.state === "unknown") return failed;
       return { state: "ok", headSha, pullRequestUrl: target.pullRequestUrl, failed: failed.failed };
     } catch {

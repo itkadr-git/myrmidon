@@ -17,6 +17,7 @@ import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../../services/git-credential
 import {
   recordGitHubRequest,
   isGitHubRateLimited,
+  withGitHubReviewBudget,
 } from "../../services/github-rate-limit.js";
 import type { ReviewReworkPrState } from "./domain.js";
 
@@ -68,8 +69,9 @@ export function createPullRequestReviewFactsResolver(
   opts: GitHubExternalObjectProviderOptions = {},
 ): ReviewReworkPrResolver {
   let resolverPromise: Promise<ReturnType<typeof pickResolver>> | null = null;
+  const fetchImpl = withGitHubReviewBudget(db, "review-rework", opts.fetch ?? fetch);
   const pickResolver = () =>
-    createGitHubExternalObjectProvider(db, { source: "review-rework", ...opts }).resolvers.find(
+    createGitHubExternalObjectProvider(db, { ...opts, source: "review-rework", fetch: fetchImpl }).resolvers.find(
       (candidate) => candidate.objectType === "pull_request",
     ) ?? null;
 
@@ -120,7 +122,7 @@ export function createPullRequestDiffResolver(
     secretNames?: readonly string[];
   } = {},
 ): ReviewReworkDiffResolver {
-  const fetchImpl: FetchLike = opts.fetch ?? fetch;
+  const fetchImpl: FetchLike = withGitHubReviewBudget(db, "review-rework", opts.fetch ?? fetch);
   const secretNames = opts.secretNames ?? DEFAULT_GITHUB_TOKEN_SECRET_NAMES;
   const diffCache = new Map<string, { diff: string; expiresAt: number }>();
   const DIFF_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes

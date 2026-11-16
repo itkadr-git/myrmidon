@@ -4,6 +4,23 @@ import { logger } from "../middleware/logger.js";
 
 const REVIEW_BUDGET_KEY = "github-review-request-budget";
 
+type ReviewSource = "review-recovery" | "review-rework";
+
+/** Wrap the actual transport so retries and hosted-CI probes each consume a reservation. */
+export function withGitHubReviewBudget(
+  db: Db,
+  source: ReviewSource,
+  fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
+  installationLimit = 5000,
+): (url: string, init?: RequestInit) => Promise<Response> {
+  return async (url, init) => {
+    if (!await reserveGitHubReviewRequest(db, source, installationLimit)) {
+      throw new Error("GitHub review budget exhausted");
+    }
+    return fetchImpl(url, init);
+  };
+}
+
 /** Reserve before each request; both review workers share a rolling one-hour cap. */
 export async function reserveGitHubReviewRequest(
   db: Db,
