@@ -239,6 +239,38 @@ describe("company migration dry run", () => {
     }
   });
 
+  it("rejects rollback of a claimed migration without changing its destination or ledger", async () => {
+    const [source] = await db.insert(companies).values({ name: "Recovery safety source", issuePrefix: "MSS" }).returning();
+    const [destination] = await db.insert(companies).values({ name: "Recovery safety destination", issuePrefix: "MSD" }).returning();
+    const [run] = await db.insert(companyTransferRuns).values({
+      direction: "import", status: "failed", actorKey: "migration-test",
+      idempotencyKey: "migration-recovery-unavailable", companyId: destination!.id,
+      containerRef: { kind: "company_migration", sourceCompanyId: source!.id },
+    }).returning();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+    const beforeCompanies = await db.select().from(companies);
+    const beforeRuns = await db.select().from(companyTransferRuns);
+    const beforeAudit = await db.select().from(activityLog);
+    const filesBefore = await readdir(root, { recursive: true });
+
+    const response = await request(app)
+      .post(`/api/companies/${source!.id}/migrations/${run!.id}/rollback`)
+      .send({ confirm: "recover interrupted pilot" });
+
+    expect(response.status).toBe(404);
+    expect(await db.select().from(companies)).toEqual(beforeCompanies);
+    expect(await db.select().from(companyTransferRuns)).toEqual(beforeRuns);
+    expect(await db.select().from(activityLog)).toEqual(beforeAudit);
+    expect(await readdir(root, { recursive: true })).toEqual(filesBefore);
+  });
+
   it("does not reapply a failed migration after it has claimed a destination", async () => {
     const [source] = await db.insert(companies).values({ name: "Retry safety source", issuePrefix: "MRY" }).returning();
     const [destination] = await db.insert(companies).values({ name: "Retry safety destination", issuePrefix: "MRD" }).returning();
