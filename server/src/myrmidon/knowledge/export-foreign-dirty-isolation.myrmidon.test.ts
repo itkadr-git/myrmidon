@@ -30,10 +30,12 @@ describe("knowledge export foreign dirty isolation", () => {
       const originalDiff = await git("diff", "--", "company-b/sentinel.md");
       expect(originalDiff).toContain("+dirty B");
       const tree: KnowledgeGitTree = { files: [{ path: "page.md", content: "company A\n" }], contentHash: "fixture", pageCount: 1, excludedLifePages: 0 };
-      await expect(commitKnowledgeTreeIfChanged(createSystemGitRunner(10_000), root, "knowledge-export", tree, env, "company-a"))
-        .rejects.toThrow(/knowledge export:.*dirty checkout/i);
-      expect((await git("rev-parse", "HEAD")).trim()).toBe(originalSha);
+      const outcome = await commitKnowledgeTreeIfChanged(createSystemGitRunner(10_000), root, "knowledge-export", tree, env, "company-a")
+        .catch((error: Error) => error);
       expect(await git("show", "HEAD:company-b/sentinel.md")).toBe("original B\n");
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toMatch(/knowledge export:.*dirty checkout/i);
+      expect((await git("rev-parse", "HEAD")).trim()).toBe(originalSha);
       expect(await readFile(sentinel, "utf8")).toBe("dirty B\n");
       expect(await git("diff", "--", "company-b/sentinel.md")).toBe(originalDiff);
       await expect(readFile(path.join(root, "company-a", "page.md"))).rejects.toMatchObject({ code: "ENOENT" });
