@@ -30,6 +30,37 @@ test('compares additions, removals, renames, byte and eager changes deterministi
   assert.deepEqual(JSON.parse(run(cli, base, reordered).stdout), { entry: 'entry.mjs', delta: { modules: 0, eagerModules: 0, totalBytes: 0, eagerBytes: 0 }, added: [], removed: [], changed: [] });
 });
 
+test('reverse comparison returns negative deltas for counts and bytes', t => {
+  const { put } = fixture(t);
+  const smaller = put('small.json', report([mod('shared', 2, true)]));
+  const larger = put('large.json', report([mod('shared', 5, true), mod('extra', 7, true), mod('lazy', 3, false)]));
+  const result = run(cli, larger, smaller);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, '');
+  assert.deepEqual(JSON.parse(result.stdout), {
+    entry: 'entry.mjs',
+    delta: { modules: -2, eagerModules: -1, totalBytes: -13, eagerBytes: -10 },
+    added: [],
+    removed: [mod('extra', 7, true), mod('lazy', 3, false)],
+    changed: [{ path: 'shared', before: { bytes: 5, eager: true }, after: { bytes: 2, eager: true } }],
+  });
+});
+
+test('accepts maximum safe integer totals and negative byte delta', t => {
+  const { put } = fixture(t);
+  const base = put('max.json', report([mod('large', Number.MAX_SAFE_INTEGER, true)]));
+  const current = put('zero.json', report([mod('large', 0, true)]));
+  const result = run(cli, base, current);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, '');
+  assert.deepEqual(JSON.parse(result.stdout), {
+    entry: 'entry.mjs',
+    delta: { modules: 0, eagerModules: 0, totalBytes: -9007199254740991, eagerBytes: -9007199254740991 },
+    added: [], removed: [],
+    changed: [{ path: 'large', before: { bytes: 9007199254740991, eager: true }, after: { bytes: 0, eager: true } }],
+  });
+});
+
 test('rejects malformed reports without disclosing paths', t => {
   const { put } = fixture(t); const good = report([mod('entry.mjs', 1, true)]); const base = put('base.json', good);
   const badReports = [null, {}, { ...good, entry: 'other' }, { ...good, modules: [mod('x', 1, true), mod('x', 1, true)] }, { ...good, modules: [mod('x', -1, true)] }, { ...good, modules: [mod('x', 1.5, true)] }, { ...good, modules: [mod('x', 1, 'yes')] }, { ...good, counts: { ...good.counts, modules: 2 } }, { ...good, bytes: { ...good.bytes, eager: 0 } }, { ...good, modules: [mod('x', Number.MAX_SAFE_INTEGER, true), mod('y', 1, false)] }];
