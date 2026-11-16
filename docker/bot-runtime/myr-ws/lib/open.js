@@ -465,7 +465,7 @@ async function open(request, deps = {}) {
   try {
     const volume = ctx.statfs(volumePath);
     if (volume.blocks > 0 && volume.bavail * 10 < volume.blocks) {
-      throw new MyrWsError(EXIT.quotaExceeded, "disk_budget: less than 10% free on the workspace filesystem; no new copy is created");
+      throw new MyrWsError(EXIT.quotaExceeded, `${QUOTA_PREFIX} disk_budget: less than 10% free on the workspace filesystem; no new copy is created`);
     }
   } catch (error) {
     if (error instanceof MyrWsError) throw error;
