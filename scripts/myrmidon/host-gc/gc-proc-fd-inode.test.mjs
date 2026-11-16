@@ -63,6 +63,37 @@ describe("collectOpenProcInfo", () => {
     assert.ok(!openInodes.has(inode(ignored)));
   }));
 
+  it("continues collecting when an fd disappears after enumeration", (t) => withFixture((root, proc) => {
+    const fd = path.join(proc, "123", "fd");
+    const vanished = path.join(fd, "1");
+    const survivor = path.join(root, "survivor");
+    const goneTarget = path.join(root, "gone-target");
+    fs.mkdirSync(fd, { recursive: true });
+    fs.writeFileSync(survivor, "survivor");
+    fs.writeFileSync(goneTarget, "gone");
+    fs.symlinkSync(goneTarget, vanished);
+    fs.symlinkSync(survivor, path.join(fd, "2"));
+    const readdir = fs.readdirSync;
+    let removed = false;
+    const mock = t.mock.method(fs, "readdirSync", (...args) => {
+      const entries = readdir(...args);
+      if (args[0] === fd) {
+        assert.ok(entries.includes("1"));
+        fs.unlinkSync(vanished);
+        removed = true;
+      }
+      return entries;
+    });
+    try {
+      const { openPaths, openInodes } = collectOpenProcInfo(proc);
+      assert.equal(removed, true);
+      assert.deepEqual(openPaths, new Set([survivor]));
+      assert.deepEqual(openInodes, new Set([inode(survivor)]));
+    } finally {
+      mock.mock.restore();
+    }
+  }));
+
   it("returns empty sets for a missing proc root", () => withFixture((_root, proc) => {
     assert.deepEqual(collectOpenProcInfo(proc), { openPaths: new Set(), openInodes: new Set() });
   }));
