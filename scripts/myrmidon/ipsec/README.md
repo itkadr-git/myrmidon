@@ -85,5 +85,7 @@ The fixtures are hand-authored synthetic examples of the standard human-readable
 counters are invented; no node output or production data was used. The rekey
 fixture models overlapping CHILD SAs. The established fixture includes the
 separate negotiated-algorithm and IKE timing lines from the human-readable
-layout; unrecognized metadata is rejected conservatively. Run the tests with
+layout; unrecognized metadata and truncated or extra record fields are rejected
+conservatively. Only the supported human-readable layouts are accepted; other
+valid swanctl variants may return `unknown`. Run the tests with
 `node --test scripts/myrmidon/ipsec/parse-sas.test.mjs`.
