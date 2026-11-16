@@ -226,7 +226,13 @@ export const companyTransferRunService = {
       .update(companyTransferRuns)
       .set({ status: "applying", error: null, updatedAt: new Date() })
       .where(
-        and(eq(companyTransferRuns.id, runId), inArray(companyTransferRuns.status, RESUMABLE_STATUSES)),
+        and(
+          eq(companyTransferRuns.id, runId),
+          inArray(companyTransferRuns.status, RESUMABLE_STATUSES),
+          // A migration with a claimed destination may have made partial writes.
+          // Recovery must inspect/roll it back rather than replay the importer.
+          sql`not (coalesce(${companyTransferRuns.containerRef}->>'kind' = 'company_migration', false) and ${companyTransferRuns.companyId} is not null)`,
+        ),
       )
       .returning({ id: companyTransferRuns.id });
     return claimed.length > 0;
