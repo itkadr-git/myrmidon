@@ -345,6 +345,7 @@ export async function resolvePullRequestHeadCi(input: {
   /** Null reads anonymously: the repository may be public. */
   token: string | null;
   fetch?: FetchLike;
+  knownHeadSha?: string;
 }): Promise<{
   state: "pending" | "complete" | "unknown" | "not_configured" | "no_pull_request";
   headSha: string | null;
@@ -363,7 +364,7 @@ export async function resolvePullRequestHeadCi(input: {
   const apiBase = gitHubApiBase(input.reference.host);
   const repository = `${encodeURIComponent(input.reference.owner)}/${encodeURIComponent(input.reference.repo)}`;
   const keyBase = `${tokenScope(input.token)}|${repositoryKey(input.reference)}`;
-  const pull = await cachedRead<PullHead>(`pull|${keyBase}#${input.reference.number}`, async (): Promise<LoadedRead<PullHead>> => {
+  const pull: CachedRead<PullHead> = input.knownHeadSha ? { ok: true, value: { open: true, headSha: input.knownHeadSha } } : await cachedRead<PullHead>(`pull|${keyBase}#${input.reference.number}`, async (): Promise<LoadedRead<PullHead>> => {
     const read = await readGitHub(fetchImpl, `${apiBase}/repos/${repository}/pulls/${input.reference.number}`, input.token, "pull");
     if (!read.ok) return read;
     const pullRecord = asRecord(read.json);
@@ -519,7 +520,7 @@ export async function readReviewPullRequestHeadSha(input: {
 /** Only a matching, recent PR head and final check are authoritative together. */
 async function readWebhookCi(db: Db, companyId: string, reference: GitHubPullRequestReference): Promise<{
   state: "complete"; headSha: string; finalCheckConclusion: string;
-} | { state: "pending"; headSha: string } | null> {
+} | { state: "pending" | "head_only"; headSha: string } | null> {
   try {
     const rows = await db.select({
       event: connectionEventDeliveries.event,
@@ -549,7 +550,7 @@ async function readWebhookCi(db: Db, companyId: string, reference: GitHubPullReq
     if (result?.status === "queued" || result?.status === "in_progress" || result?.status === "waiting") {
       return { state: "pending", headSha: payload.headSha };
     }
-    return null;
+    return { state: "head_only", headSha: payload.headSha };
   } catch {
     return null;
   }
@@ -574,7 +575,8 @@ export function createReviewPullRequestCiResolver(input: {
     }
     const { reference, pullRequestUrl } = target;
     const webhook = await readWebhookCi(input.db, companyId, reference);
-    if (webhook && (!target.knownHeadSha || target.knownHeadSha === webhook.headSha)) return { ...webhook, pullRequestUrl };
+    const matchingWebhook = webhook && (!target.knownHeadSha || target.knownHeadSha === webhook.headSha) ? webhook : null;
+    if (matchingWebhook && matchingWebhook.state !== "head_only") return { ...matchingWebhook, pullRequestUrl };
     let token: string | null = null;
     let tokenError = false;
     try {
@@ -583,7 +585,7 @@ export function createReviewPullRequestCiResolver(input: {
       tokenError = true;
     }
     try {
-      const head = await resolvePullRequestHeadCi({ reference, token, fetch: fetchImpl });
+      const head = await resolvePullRequestHeadCi({ reference, token, fetch: fetchImpl, knownHeadSha: matchingWebhook?.headSha });
       if (head.state !== "unknown") {
         // myrmidon(OPE-12176): the verdict of the final check travels with the
         // state; review admission tells green from red without a second read.
