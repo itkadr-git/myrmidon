@@ -148,7 +148,7 @@ export function createBotPartitionThresholdRuntime(
   }
 
   function markUnmeasured(): BotPartitionThresholdState {
-    state = { ...EMPTY_STATE, evaluatedAt: now().toISOString() };
+    state = { ...EMPTY_STATE, criticalNotified: state.criticalNotified, evaluatedAt: now().toISOString() };
     return state;
   }
 
