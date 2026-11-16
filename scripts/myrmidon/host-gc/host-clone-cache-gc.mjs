@@ -86,6 +86,8 @@ const IDLE_OPEN_STATUSES = new Set(["in_review", "blocked", "backlog"]);
 // myrmidon(1.6.9 OPE-13411): a reviewer bot makes a full worktree (about 0.5 GB) for each PR it reviews,
 // about one per 3 minutes per reviewer. After the review the task goes to an engineer or to done, and
 // the reviewer's copy would stay (the idle rule above only matches in_review, blocked and backlog).
+// (1.6.9: the rule is wider now: the copy of ANY agent that is not the task's assignee is freed, so the
+// copies of leads and other non-executors go too; reviewers are such agents.)
 // A reviewer's copy is freed in any task status after REVIEW_CLONE_IDLE_MINUTES, if the reviewer has
 // no run of its own, the copy is clean and its HEAD is on the server.
 const REVIEW_CLONE_IDLE_MINUTES = 10;
@@ -656,6 +658,7 @@ export async function fetchIssueOpenState(identifier, {
     return {
       ok: true,
       status: issue.status,
+      assigneeAgentId: typeof issue.assigneeAgentId === "string" && issue.assigneeAgentId ? issue.assigneeAgentId : null,
       liveRunId: issue.executionRunId || issue.checkoutRunId || null,
       // Both fields apart: they may belong to different agents (the engineer's run and a reviewer's).
       liveRunIds: [issue.executionRunId, issue.checkoutRunId].filter((id, i, all) => typeof id === "string" && id && all.indexOf(id) === i),
@@ -944,8 +947,10 @@ async function reviewerRunLive(state, agentId, fetchRun) {
 }
 
 /**
- * Plans the removal of the copies of a reviewer bot under `root` (the bot's `workspace` directory),
- * in any task status. Not a reviewer (or board does not answer): no items. Items are as in
+ * Plans the removal of the copies of a bot under `root` (the bot's `workspace` directory) of tasks
+ * where the bot is NOT the current assignee (reviewers, leads), in any task status. The assignee's own
+ * copy is kept (the idle-open and closed rules handle it), a task without an assignee is kept
+ * (conservative). Unknown agent or board does not answer: no items. Items are as in
  * scanIdleOpenClones, with action "remove" | "keep".
  */
 export async function scanReviewerClones(root, now, {
@@ -959,7 +964,7 @@ export async function scanReviewerClones(root, now, {
   if (path.basename(path.resolve(root)) !== "workspace") return { items, agent: null };
   const agentRoot = path.dirname(path.resolve(root));
   const agent = await fetchAgent(path.basename(agentRoot));
-  if (!isReviewerAgent(agent)) return { items, agent };
+  if (!agent?.ok || !agent.id) return { items, agent };
   let entries;
   try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return { items, agent }; }
   for (const entry of entries) {
@@ -973,6 +978,8 @@ export async function scanReviewerClones(root, now, {
     const state = await fetchState(identifier);
     if (!state.ok) { keep(state.reason); continue; }
     base.status = state.status;
+    if (!state.assigneeAgentId) { keep("no-assignee"); continue; }
+    if (state.assigneeAgentId === agent.id) { keep("assignee"); continue; }
     const live = await reviewerRunLive(state, agent.id, fetchRun);
     if (live) { keep("live-run", { liveRunId: live }); continue; }
     const dirs = resolveWorktreeGitDirs(clonePath, agentRoot);
@@ -987,7 +994,7 @@ export async function scanReviewerClones(root, now, {
     if (!tree.complete || !tree.roots.every((r) => r === clonePath)) { keep("nested-repo"); continue; }
     const pushed = headIsOnServer(clonePath, env);
     if (!pushed.pushed) { keep(pushed.reason); continue; }
-    items.push({ ...base, ...dirs, sizeBytes: cloneSizeBytes(clonePath), action: "remove", reason: "reviewer-copy-idle" });
+    items.push({ ...base, ...dirs, sizeBytes: cloneSizeBytes(clonePath), action: "remove", reason: "nonassignee-copy-idle", reviewer: isReviewerAgent(agent) });
   }
   for (const item of items) {
     if (item.action === "keep") {
@@ -1013,12 +1020,14 @@ export async function pruneReviewerClones(items, root, journalPath, {
       if (!fs.existsSync(c.path)) { kept(c.status, "already-gone"); continue; }
       const state = await fetchState(c.identifier);
       if (!state.ok) { kept(c.status, state.reason); continue; }
+      if (!state.assigneeAgentId) { kept(state.status, "no-assignee"); continue; }
+      if (state.assigneeAgentId === c.agentId) { kept(state.status, "assignee"); continue; }
       if (await reviewerRunLive(state, c.agentId, fetchRun)) { kept(state.status, "live-run"); continue; }
       if (newestCloneChangeMs(c.path, c.adminDir) > now() - c.thresholdMinutes * MINUTE_MS) { kept(state.status, "fresh"); continue; }
       const sizeBytes = c.sizeBytes ?? null;
       const via = removeWorktreeClone(c, root);
       removed.push(c.path);
-      journalRecord(journalPath, { event: "review-clone-removed", path: c.path, identifier: c.identifier, status: state.status, sizeBytes, ageMinutes: Math.round(c.ageMs / MINUTE_MS), thresholdMinutes: c.thresholdMinutes, via });
+      journalRecord(journalPath, { event: "review-clone-removed", reason: c.reason, reviewer: c.reviewer, path: c.path, identifier: c.identifier, status: state.status, sizeBytes, ageMinutes: Math.round(c.ageMs / MINUTE_MS), thresholdMinutes: c.thresholdMinutes, via });
     } catch (err) {
       journalRecord(journalPath, { event: "review-clone-remove-failed", path: c.path, identifier: c.identifier, error: err.message });
     }
@@ -2640,7 +2649,8 @@ async function main() {
       }
     }
 
-    // 1c. Copies of reviewer bots (OPE-13411): any task status, 10 minutes idle, no run of the reviewer.
+    // 1c. Copies of bots that are not the task's assignee (leads, reviewers; OPE-13411): any task status,
+    // 10 minutes idle, no run of the bot itself.
     {
       const planned = new Set([...plan.clones.map((c) => c.path), ...plan.idleOpenClones.map((c) => c.path)]);
       const review = await scanReviewerClones(root, now, { onEvent: (event) => journalRecord(args.journal, event) });
