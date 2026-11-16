@@ -422,6 +422,29 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(fresh.isConnected()).toBe(false);
   });
 
+  it("reports firewall rollback failure when the rollback command fails", async () => {
+    const initial = new MockSshExecutor();
+    const fresh = new MockSshExecutor();
+    initial.mockResponse("sudo ufw disable", { exitCode: 1, stderr: "permission denied" });
+    fresh.mockResponse('echo "ufw-connectivity-ok"', { exitCode: 1 });
+    const connections = [initial, fresh];
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => {
+      const connection = connections.shift();
+      if (!connection) throw new Error("Unexpected SSH connection");
+      return connection;
+    } });
+    const claim: any = {
+      job: { id: "job-firewall-rollback-failed", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("firewall rollback failed");
+    expect(result.error).not.toContain("rolled back");
+  });
+
   it("rejects a forged firewall connectivity marker", async () => {
     const mockSsh = new MockSshExecutor();
     mockSsh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "not-ufw-connectivity-ok\n", exitCode: 0 });
