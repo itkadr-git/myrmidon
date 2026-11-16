@@ -220,7 +220,11 @@ export const companyTransferRunService = {
         blobCount,
         updatedAt: new Date(),
       })
-      .where(eq(companyTransferRuns.id, runId));
+      .where(and(
+        eq(companyTransferRuns.id, runId),
+        // Migration journals must never persist source manifests or their values.
+        sql`coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration'`,
+      ));
   },
 
   /**
