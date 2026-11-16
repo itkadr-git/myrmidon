@@ -13,9 +13,7 @@ import {
 import { createDockergateDiskClient } from "./dockergate.js";
 import type { HostRootUsage } from "./dockergate.js";
 import {
-  HOST_ROOT_REPEAT_INTERVAL_MS,
   hostRootThresholdRuntimeForTest,
-  type HostRootNotifyInput,
 } from "./root.js";
 
 /**
@@ -69,13 +67,11 @@ function stubDiskAnswer(usedPercent: number, at: string): unknown {
 function runtime(overrides: {
   stored?: unknown;
   env?: Record<string, string | undefined>;
-  notify?: (input: HostRootNotifyInput) => Promise<void>;
   now?: () => Date;
 } = {}) {
   return hostRootThresholdRuntimeForTest({
     getBotDiskSettings: async () => overrides.stored,
     env: overrides.env ?? {},
-    notify: overrides.notify,
     now: overrides.now,
   });
 }
@@ -171,95 +167,34 @@ describe("createDockergateDiskClient readRootUsage", () => {
 });
 
 describe("root threshold runtime (the OPE-12697 service test)", () => {
-  it("80% quiet, 86% one signal, 91% alarm, repeat within the hour not sent", async () => {
+  it("80% quiet, 86% warn, 91% critical; the state only feeds the card", async () => {
     let clock = Date.parse("2026-11-11T10:00:00Z");
-    const sent: HostRootNotifyInput[] = [];
-    const rt = runtime({
-      notify: async (input) => {
-        sent.push(input);
-      },
-      now: () => new Date(clock),
-    });
-
-    // 80 % — quiet.
+    const rt = runtime({ now: () => new Date(clock) });
     await rt.updateFromRoot(rootUsage(80, "2026-11-11T10:00:00Z"));
     expect(rt.current().alertLevel).toBe("none");
-    expect(sent).toHaveLength(0);
-
-    // +5 min: 86 % — the signal appears with the percent and the consumers.
     clock += 5 * 60_000;
     await rt.updateFromRoot(rootUsage(86, "2026-11-11T10:05:00Z"));
     expect(rt.current().alertLevel).toBe("warn");
-    expect(sent).toHaveLength(1);
-    expect(sent[0].level).toBe("warn");
-    expect(sent[0].usage.usedPercent).toBeCloseTo(86, 5);
-    expect(sent[0].settings.rootThresholdPercent).toBe(85);
-
-    // +10 min: still 86 % — the level repeats at most once per hour: silent.
-    clock += 10 * 60_000;
-    await rt.updateFromRoot(rootUsage(86, "2026-11-11T10:15:00Z"));
-    expect(sent).toHaveLength(1);
-
-    // +10 min: 91 % — the level changed, the high alarm fires at once.
-    clock += 10 * 60_000;
-    await rt.updateFromRoot(rootUsage(91, "2026-11-11T10:25:00Z"));
+    expect(rt.current().settings?.rootThresholdPercent).toBe(85);
+    clock += 5 * 60_000;
+    await rt.updateFromRoot(rootUsage(91, "2026-11-11T10:10:00Z"));
     expect(rt.current().alertLevel).toBe("critical");
-    expect(sent).toHaveLength(2);
-    expect(sent[1].level).toBe("critical");
-
-    // +10 min: still 91 % — silent again (once per hour per level).
-    clock += 10 * 60_000;
-    await rt.updateFromRoot(rootUsage(91, "2026-11-11T10:35:00Z"));
-    expect(sent).toHaveLength(2);
-
-    // +35 min: 92 % — 45 min past the critical signal, inside the hour: silent.
-    clock += 35 * 60_000;
-    await rt.updateFromRoot(rootUsage(92, "2026-11-11T11:10:00Z"));
-    expect(sent).toHaveLength(2);
-
-    // +20 min more: 65 min past the critical signal — the repeat fires.
-    clock += 20 * 60_000;
-    await rt.updateFromRoot(rootUsage(92, "2026-11-11T11:30:00Z"));
-    expect(sent).toHaveLength(3);
-    expect(sent[2].level).toBe("critical");
-    expect(clock - Date.parse("2026-11-11T10:25:00Z")).toBeGreaterThanOrEqual(HOST_ROOT_REPEAT_INTERVAL_MS);
+    clock += 5 * 60_000;
+    await rt.updateFromRoot(rootUsage(80, "2026-11-11T10:15:00Z"));
+    expect(rt.current().alertLevel).toBe("none");
   });
 
-  it("re-arms after usage drops below the warn threshold", async () => {
-    let clock = Date.parse("2026-11-11T10:00:00Z");
-    const sent: HostRootNotifyInput[] = [];
-    const rt = runtime({
-      notify: async (input) => {
-        sent.push(input);
-      },
-      now: () => new Date(clock),
-    });
-    await rt.updateFromRoot(rootUsage(86, "2026-11-11T10:00:00Z"));
-    expect(sent).toHaveLength(1);
-    // Drop below the threshold: no signal, the latch clears on the next crossing.
-    clock += 10 * 60_000;
-    await rt.updateFromRoot(rootUsage(80, "2026-11-11T10:10:00Z"));
-    expect(rt.current().alertLevel).toBe("none");
-    expect(sent).toHaveLength(1);
-    // A fresh crossing fires again even within the hour of the old signal.
-    clock += 10 * 60_000;
-    await rt.updateFromRoot(rootUsage(87, "2026-11-11T10:20:00Z"));
-    expect(sent).toHaveLength(2);
+  it("has no owner notification hook", () => {
+    expect(Object.keys(runtime()).sort()).toEqual(["current", "markUnmeasured", "resolveThresholds", "updateFromRoot"]);
   });
 
   it("a stale or inconsistent dockergate sample is not evidence", async () => {
-    const sent: HostRootNotifyInput[] = [];
     // A fixed clock so the sample-age rule is deterministic (an hour-old
     // sample is beyond the 5-minute freshness window at any wall clock).
-    const rt = runtime({
-      notify: async (input) => void sent.push(input),
-      now: () => new Date(Date.parse("2026-11-11T10:00:00Z")),
-    });
-    // A sample dated an hour ago — the sweep could have stalled; not evidence.
+    const rt = runtime({ now: () => new Date(Date.parse("2026-11-11T10:00:00Z")) });
     await rt.updateFromRoot(rootUsage(96, "2026-11-11T09:00:00Z"));
     expect(rt.current().alertLevel).toBeNull();
-    expect(sent).toHaveLength(0);
-    // usedBytes above totalBytes — physically impossible, rejected.
+    // usedBytes above totalBytes - physically impossible, rejected.
     await rt.updateFromRoot({
       mount: "/",
       totalBytes: 100,
@@ -279,16 +214,10 @@ describe("root threshold runtime (the OPE-12697 service test)", () => {
       baseUrl: "http://dockergate.invalid",
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
-    const sent: HostRootNotifyInput[] = [];
-    const rt = runtime({
-      notify: async (input) => void sent.push(input),
-      now: () => new Date(Date.parse("2026-11-11T10:01:00Z")),
-    });
+    const rt = runtime({ now: () => new Date(Date.parse("2026-11-11T10:01:00Z")) });
     const usage = await client.readRootUsage();
     expect(usage).not.toBeNull();
     await rt.updateFromRoot(usage!);
     expect(rt.current().alertLevel).toBe("critical");
-    expect(sent).toHaveLength(1);
-    expect(sent[0].level).toBe("critical");
   });
 });
