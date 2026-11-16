@@ -27,6 +27,25 @@ const validCreateInput = {
 };
 
 describe("createAdmAccessRequestSchema", () => {
+  it("rejects data categories even when requesting a capability", () => {
+    for (const resourceType of ["task", "project", "budget", "memory", "secret"]) {
+      expect(createAdmAccessRequestSchema.safeParse({
+        ...validCreateInput,
+        resourceType,
+        action: "grant_capability",
+      }).success, resourceType).toBe(false);
+    }
+  });
+
+  it("rejects data-reading actions even for otherwise permitted resources", () => {
+    for (const action of ["read_metadata", "query_aggregate", "bounds"]) {
+      expect(createAdmAccessRequestSchema.safeParse({
+        ...validCreateInput,
+        action,
+      }).success, action).toBe(false);
+    }
+  });
+
   it("accepts a clean allowlisted request", () => {
     expect(createAdmAccessRequestSchema.safeParse(validCreateInput).success).toBe(true);
   });
