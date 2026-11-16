@@ -2124,6 +2124,7 @@ registry.registerPath({
       target: z.object({ mode: z.literal("new_company"), newCompanyName: z.string().trim().min(1) }).strict(),
       export: companyPortabilityExportSchema.optional().default({}),
       dryRun: z.literal(true).optional().default(true),
+      collisionStrategy: z.enum(["rename", "skip", "replace"]).optional().default("rename"),
     }).strict()),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },

@@ -17,7 +17,7 @@ export async function getMigrationStatus(db: Db, sourceCompanyId: string, runId:
 
 // This entry point is intentionally read-only; apply and rollback are not yet available.
 export function companyMigrationService(portability: Portability) {
-  async function prepare(companyId: string, input: CompanyPortabilityExport, newCompanyName: string) {
+  async function prepare(companyId: string, input: CompanyPortabilityExport, newCompanyName: string, collisionStrategy: "rename" | "skip" | "replace") {
     const exported = await portability.exportBundle(companyId, input, { preview: true });
     // Export preserves secret binding metadata that is not present in package files.
     const validation = validateMigrationManifest(exported.manifest);
@@ -47,7 +47,7 @@ export function companyMigrationService(portability: Portability) {
       source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
       target: { mode: "new_company", newCompanyName },
       include: input.include,
-      collisionStrategy: "rename",
+      collisionStrategy,
     }, { mode: "board_full" }) : null;
     const report = {
       dryRun: true as const,
@@ -71,8 +71,8 @@ export function companyMigrationService(portability: Portability) {
   }
 
   return {
-    async dryRun(companyId: string, input: CompanyPortabilityExport, newCompanyName: string) {
-      return (await prepare(companyId, input, newCompanyName)).report;
+    async dryRun(companyId: string, input: CompanyPortabilityExport, newCompanyName: string, collisionStrategy: "rename" | "skip" | "replace" = "rename") {
+      return (await prepare(companyId, input, newCompanyName, collisionStrategy)).report;
     },
   };
 }

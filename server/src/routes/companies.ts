@@ -1127,9 +1127,10 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       target: z.object({ mode: z.literal("new_company"), newCompanyName: z.string().trim().min(1) }).strict(),
       export: companyPortabilityExportSchema.optional().default({}),
       dryRun: z.literal(true).optional().default(true),
+      collisionStrategy: z.enum(["rename", "skip", "replace"]).optional().default("rename"),
     }).strict().parse(req.body);
     const result = await companyMigrationService(portability).dryRun(
-      req.params.companyId as string, body.export, body.target.newCompanyName,
+      req.params.companyId as string, body.export, body.target.newCompanyName, body.collisionStrategy,
     );
     res.json(result);
   });
