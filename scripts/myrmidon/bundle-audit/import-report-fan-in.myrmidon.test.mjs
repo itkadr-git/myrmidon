@@ -135,7 +135,7 @@ test('integrates with a real import-budget report', () => {
     writeFileSync(reportPath, budget.stdout);
     const fanIn = spawnSync(process.execPath, [cli, reportPath], { encoding: 'utf8' });
     equal(fanIn.status, 0, fanIn.stderr);
-    deepStrictEqual(JSON.parse(fanIn.stdout).modules.map(module => module.path), ['shared.mjs', 'a.mjs', 'b.mjs', 'entry.mjs']);
+    deepStrictEqual(JSON.parse(fanIn.stdout).modules.map(module => module.path), ['shared.mjs', 'b.mjs', 'a.mjs', 'entry.mjs']);
     deepStrictEqual(JSON.parse(fanIn.stdout).modules[0].importers, ['a.mjs', 'b.mjs']);
     equal(readFileSync(reportPath, 'utf8'), budget.stdout);
   } finally {
