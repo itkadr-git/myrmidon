@@ -210,10 +210,21 @@ export async function publishKnowledgeExport(input: PublishKnowledgeExportInput)
       await git(runner, input.workDir, ["remote", "add", "origin", input.repoUrl], env);
     }
   } else {
-    await git(runner, input.workDir, ["fetch", "origin", input.branch], env).catch(() => {
+    const fetched = await git(runner, input.workDir, ["fetch", "origin", input.branch], env).then(() => true).catch(() => {
       // The branch may not exist yet. A failed fetch must not hide a later
       // push error: we only swallow "no such branch" by continuing to commit.
+      return false;
     });
+    if (fetched) {
+      const localBranchExists = await git(runner, input.workDir, ["show-ref", "--verify", "--quiet", `refs/heads/${input.branch}`], env)
+        .then(() => true).catch(() => false);
+      if (localBranchExists) {
+        await git(runner, input.workDir, ["checkout", input.branch], env);
+        await git(runner, input.workDir, ["merge", "--ff-only", "FETCH_HEAD"], env);
+      } else {
+        await git(runner, input.workDir, ["checkout", "-b", input.branch, "FETCH_HEAD"], env);
+      }
+    }
   }
 
   const { committed, commit } = await commitKnowledgeTreeIfChanged(
