@@ -231,7 +231,7 @@ export class FleetOnboardExecutor {
               if (snapshot.exitCode !== 0) throw new Error("Cannot snapshot password hardening configuration");
               try {
                 const write = await activeSsh.execute(
-                  `sudo mkdir -p /etc/ssh/sshd_config.d && printf 'PasswordAuthentication no\\nKbdInteractiveAuthentication no\\n' | sudo tee ${file}`,
+                  `sudo mkdir -p /etc/ssh/sshd_config.d && printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' | sudo tee ${file}`,
                 );
                 if (write.exitCode !== 0) throw new Error("Password hardening write failed");
                 const sshdTest = await activeSsh.execute("sudo sshd -t");

@@ -313,7 +313,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     };
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("succeeded");
-    expect(ssh.hasExecuted(/printf 'PasswordAuthentication no\\nKbdInteractiveAuthentication no\\n'/)).toBe(true);
+    expect(ssh.hasExecuted(/printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n'/)).toBe(true);
   });
 
   it("does not report password hardening when effective sshd settings still allow passwords", async () => {
