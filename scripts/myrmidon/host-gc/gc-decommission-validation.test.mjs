@@ -10,11 +10,12 @@ const lookup = (body) => fetchAgentDecommissionState(id, {
 
 describe("decommission response validation", () => {
   for (const body of [
-    { status: "", adapterType: "other" },
-    { status: "not-a-status", adapterType: "other" },
+    { status: "", adapterType: "omp_local" },
+    { status: "not-a-status", adapterType: "omp_local" },
     { status: "idle", adapterType: "" },
     { status: "terminated", adapterType: "   " },
     { status: "unknown", adapterType: "hermes_gateway" },
+
   ]) {
     it(`fails closed for ${JSON.stringify(body)}`, async () => {
       assert.deepEqual(await lookup(body), { ok: false, reason: "board-unavailable" });
@@ -24,7 +25,7 @@ describe("decommission response validation", () => {
   for (const status of ["active", "paused", "idle", "running", "error", "pending_approval", "terminated"]) {
     it(`preserves valid status ${status}`, async () => {
       const state = status === "terminated" ? "terminated" : status === "running" ? "running" : "left_hermes_gateway";
-      assert.deepEqual(await lookup({ status, adapterType: "custom_adapter" }), { ok: true, state });
+      assert.deepEqual(await lookup({ status, adapterType: "omp_local" }), { ok: true, state });
     });
   }
 });
