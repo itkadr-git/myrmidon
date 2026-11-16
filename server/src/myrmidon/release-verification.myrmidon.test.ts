@@ -915,6 +915,22 @@ describe("persisted release evidence", () => {
     expect(hasCurrentReleaseVerificationEvidence(comments, scope, "secret", new Date("2026-11-13T12:00:02.000Z"))).toBe(false);
   });
 
+  it("does not revive confirmation after a later failed check of changed release composition", () => {
+    const failed = createReleaseVerificationEvidence({
+      ...scope,
+      members: [...members, member("issue-b:PR#2", SHA_C)],
+      verdict: "failed",
+      checkedAt: "2026-11-13T12:00:01.000Z",
+    }, "secret");
+    const comment = (evidence: typeof record) => ({
+      body: `release-evidence-v1: ${JSON.stringify(evidence)}`,
+      authorType: "system",
+    });
+    const now = new Date("2026-11-13T12:00:02.000Z");
+    expect(hasCurrentReleaseVerificationEvidence([comment(record), comment(failed)], scope, "secret", now)).toBe(false);
+    expect(hasCurrentReleaseVerificationEvidence([comment(failed), comment(record)], scope, "secret", now)).toBe(false);
+  });
+
   it("does not revive an older confirmation after a later check on another deployed build", () => {
     const laterBuild = createReleaseVerificationEvidence({
       ...scope, deployedVersion: SHA_C, verdict: "confirmed", checkedAt: "2026-11-13T12:00:01.000Z",
