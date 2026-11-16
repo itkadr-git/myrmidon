@@ -16,7 +16,9 @@ The existing portability implementation covers companies, agents, projects,
 issues and skills, with partial support for routines, comments, documents and
 attachments. Server-side Hindsight memory, Hermes profile and session memory,
 knowledge corpus, chat endpoints, external integrations and secret values are
-not covered. An inaccessible source or binding is not evidence that it is empty;
+not covered. Custom agent castes are not included in the portable bundle; dry-run
+rejects agents using them rather than silently losing their role definition.
+An inaccessible source or binding is not evidence that it is empty;
 reconcile these exclusions with their owners before scheduling the pilot.
 
 A dry-run is read-only. Actual application and rollback each require explicit

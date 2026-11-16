@@ -94,6 +94,26 @@ describe("company migration dry run", () => {
     }
   });
 
+  it("rejects a source agent with a custom caste before import preview", async () => {
+    const [source] = await db.insert(companies).values({ name: "Custom caste source", issuePrefix: "MCR" }).returning();
+    await db.insert(agents).values({ companyId: source!.id, name: "Worker", role: "private-custom-caste" });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+    const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+      target: { mode: "new_company", newCompanyName: "Destination" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.body.validation.errors).toContain("An agent has a role that cannot be migrated safely.");
+    expect(response.body.validation.importPreviewSkipped).toBe(true);
+    expect(JSON.stringify(response.body)).not.toContain("private-custom-caste");
+  });
+
   it("rejects unknown source agent permissions without leaking permission metadata", async () => {
     const [source] = await db.insert(companies).values({ name: "Unknown ACL source", issuePrefix: "MUA" }).returning();
     const [worker] = await db.insert(agents).values({ companyId: source!.id, name: "Worker" }).returning();

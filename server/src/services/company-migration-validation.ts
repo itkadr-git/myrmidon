@@ -1,9 +1,10 @@
-import { PERMISSION_KEYS } from "@myrmidon/shared";
+import { AGENT_ROLES, PERMISSION_KEYS } from "@myrmidon/shared";
 import type { CompanyPortabilityManifest } from "@myrmidon/shared";
 
 type MigrationManifest = {
   agents: Array<Pick<CompanyPortabilityManifest["agents"][number],
     "slug" | "reportsToSlug" | "reportsToExistingAgentId" | "reportsToExistingAgentSlug" | "skills"> & {
+      role?: string;
       permissionGrants: Array<{ permissionKey: string; scope?: Record<string, unknown> | null }>;
     }>;
   skills: Array<Pick<CompanyPortabilityManifest["skills"][number], "key" | "slug">>;
@@ -41,6 +42,7 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
     }
   }
   const validPermissions: ReadonlySet<string> = new Set(PERMISSION_KEYS);
+  const portableRoles: ReadonlySet<string> = new Set(AGENT_ROLES);
   const managers = new Map(manifest.agents.map((agent) => [agent.slug, agent.reportsToSlug]));
   const checked = new Set<string>();
   for (const agent of manifest.agents) {
@@ -57,6 +59,10 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
     for (const slug of path) checked.add(slug);
   }
   for (const agent of manifest.agents) {
+    // Custom caste definitions are not part of the portability bundle.
+    if (agent.role !== undefined && !portableRoles.has(agent.role)) {
+      errors.push("An agent has a role that cannot be migrated safely.");
+    }
     if (agent.reportsToSlug && !agentSlugs.has(agent.reportsToSlug)) {
       errors.push(`Agent ${agent.slug} references missing manager ${agent.reportsToSlug}.`);
     }
