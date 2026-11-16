@@ -17,7 +17,9 @@ const plan = (r) => r.assignee_agent_id || r.assignee_user_id
 const quiet = () => {};
 
 it("applies partial batch results without updating skipped rows or mutating input", async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "unblock-partial-"));
+  const scratch = process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_SCRATCH_DIR || path.join(os.homedir(), ".cache", "myrmidon-test-scratch");
+  fs.mkdirSync(scratch, { recursive: true });
+  const dir = fs.mkdtempSync(path.join(scratch, "unblock-partial-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const snapshotPath = path.join(dir, "snapshot.json");
   const eligible = Array.from({ length: 21 }, (_, n) => row(n + 1));
