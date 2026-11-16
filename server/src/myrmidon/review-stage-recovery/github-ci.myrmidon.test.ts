@@ -432,6 +432,26 @@ describe("createReviewPullRequestCiResolver", () => {
     expect(tokenProvider).not.toHaveBeenCalled();
   });
 
+  it("uses a fresh webhook head when the final check must be fetched", async () => {
+    const rows = [{ event: "pull_request", createdAt: new Date(), normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } }];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([{ ...openProduct, metadata: { headSha: "abc123" } }]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const calls: Array<{ path: string; headers: Record<string, string> }> = [];
+    const resolver = createReviewPullRequestCiResolver({
+      db, tokenProvider: async () => null,
+      fetch: fakeFetch({ [CHECK_RUNS]: { check_runs: [ciResultOnHead("success")] } }, calls),
+    });
+    await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
+      state: "complete", headSha: "abc123", finalCheckConclusion: "success",
+    });
+    expect(calls.map((call) => call.path)).not.toContain(PULL);
+  });
+
   it("does not trust webhook CI for a head superseded in the work product", async () => {
     const now = new Date();
     const rows = [
