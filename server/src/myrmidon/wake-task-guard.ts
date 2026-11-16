@@ -14,6 +14,7 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueComments,
+  issueWorkProducts,
   issues,
 } from "@myrmidon/db";
 import {
@@ -429,6 +430,30 @@ export function decideIssueCooling(input: {
 }
 
 /**
+ * myrmidon(CI-WAIT-NOT-LOAD): does the task have an open GitHub PR (draft or
+ * ready) whose CI is queued or in_progress on a known head right now? No age
+ * threshold: unlike the load discount of the matcher, "no progress" must not
+ * be declared at all while the PR is waiting for CI.
+ */
+export async function issueWaitsForOwnPrCi(db: Db, companyId: string, issueId: string): Promise<boolean> {
+  const products = await db
+    .select({ status: issueWorkProducts.status, metadata: issueWorkProducts.metadata })
+    .from(issueWorkProducts)
+    .where(and(
+      eq(issueWorkProducts.companyId, companyId),
+      eq(issueWorkProducts.issueId, issueId),
+      eq(issueWorkProducts.type, "pull_request"),
+      eq(issueWorkProducts.provider, "github"),
+    ));
+  return products.some((product) => {
+    if (product.status !== "open") return false;
+    const meta = product.metadata as Record<string, unknown> | null;
+    const ci = meta?.activeCi && typeof meta.activeCi === "object" ? meta.activeCi as Record<string, unknown> : null;
+    return !!ci && (ci.status === "queued" || ci.status === "in_progress") && typeof ci.headSha === "string" && ci.headSha !== "";
+  });
+}
+
+/**
  * Cooling evaluation for one issue (§4.3). Stable port: other swarm branches
  * call it through an adapter. Reads the last automatic terminal runs and the
  * task movement (comments and movement activity by a user or another agent;
@@ -491,7 +516,16 @@ export async function isIssueCoolingDown(
     );
     const moves = await taskMovements(db, companyId, issueId, oldestFinished);
     const runs = await withIssueProgress(db, companyId, issueId, issueRow.status, rows);
-    return decideIssueCooling({ issueStatus: issueRow.status, runs, moves, settings, now });
+    const decision = decideIssueCooling({ issueStatus: issueRow.status, runs, moves, settings, now });
+    // myrmidon(CI-WAIT-NOT-LOAD): a task that went back to todo only because
+    // its own PR waits for CI is not parked. The run left nothing visible
+    // because there was nothing to do until CI ends, and ci_completed wakes
+    // the task by itself. Freezing it hid 8-13 of 14 engineers from the swarm
+    // on 16.11. Other reasons (blocked, failed, ...) keep their cooling.
+    if (decision.cooling && decision.reason === "no_progress" && (await issueWaitsForOwnPrCi(db, companyId, issueId))) {
+      return NOT_COOLING;
+    }
+    return decision;
   } catch {
     return NOT_COOLING;
   }
