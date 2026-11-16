@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { extractImportSpecifiers } from "./check-module-boundaries.mjs";
+import { extractImportSpecifiers } from "../../check-module-boundaries.mjs";
 
 const cases = [
   ["default import", 'import value from "alpha";', ["alpha"]],
