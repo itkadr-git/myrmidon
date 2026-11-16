@@ -30,6 +30,7 @@ describe("company migration dry run", () => {
 
   it("runs the real operator route without database, storage, or audit writes", async () => {
     const [source] = await db.insert(companies).values({ name: "Migration fixture", issuePrefix: "MIG" }).returning();
+    await db.insert(agents).values({ companyId: source!.id, name: "Migration worker" });
     const storage = createStorageService(createLocalDiskStorageProvider(root));
     const insert = vi.spyOn(db, "insert");
     const update = vi.spyOn(db, "update");
