@@ -368,7 +368,7 @@ describe("myr-ws open — physical volume budget", { skip: !hasGit }, () => {
     const statfs = () => ({ blocks: 100, bavail: free });
     const refused = await run(["ABC-901", REPO, "--json"], { statfs });
     assert.equal(refused.exitCode, 3);
-    assert.match(copyOf(refused).error, /disk_budget/);
+    assert.match(copyOf(refused).error, /^BOT_DISK_QUOTA_EXCEEDED:.*disk_budget/);
     assert.equal(ctx.calls.length, 0);
     assert.equal(fs.existsSync(path.join(ctx.workspaceRoot, "ABC-901")), false);
 
