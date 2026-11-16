@@ -398,6 +398,11 @@ export const companyTransferRunService = {
     await db
       .update(companyTransferRuns)
       .set({ status: "cancelled", finishedAt: new Date(), updatedAt: new Date() })
-      .where(and(eq(companyTransferRuns.id, runId), inArray(companyTransferRuns.status, RESUMABLE_STATUSES)));
+      .where(and(
+        eq(companyTransferRuns.id, runId),
+        inArray(companyTransferRuns.status, RESUMABLE_STATUSES),
+        // Keep a partially applied migration discoverable until recovery.
+        sql`not (coalesce(${companyTransferRuns.containerRef}->>'kind' = 'company_migration', false) and ${companyTransferRuns.companyId} is not null)`,
+      ));
   },
 };
