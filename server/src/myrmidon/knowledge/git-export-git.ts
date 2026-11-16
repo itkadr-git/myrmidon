@@ -107,6 +107,17 @@ export async function commitKnowledgeTreeIfChanged(
   pathPrefix?: string,
 ): Promise<{ committed: boolean; commit: string | null }> {
   const prefix = normalizePrefix(pathPrefix);
+  if (prefix) {
+    const status = await git(runner, workDir, ["status", "--porcelain", "-z", "--untracked-files=all"], env);
+    const entries = status.stdout.split("\0").filter(Boolean);
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i]!;
+      const renamed = entry[0] === "R" || entry[0] === "C" || entry[1] === "R" || entry[1] === "C";
+      if (!entry.slice(3).startsWith(prefix) || (renamed && !entries[++i]?.startsWith(prefix))) {
+        throw new Error("knowledge export: dirty checkout outside company; refusing to commit");
+      }
+    }
+  }
   const keep = new Set(tree.files.map((file) => prefix + file.path));
   for (const file of tree.files) {
     if (file.path.includes("..") || path.isAbsolute(file.path)) {
