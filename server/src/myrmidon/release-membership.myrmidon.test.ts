@@ -158,6 +158,15 @@ describe("checkCommitInRef", () => {
     expect(routePullRequestVerdict({ merged: true, releaseLabel: "1.6", membershipVerdict: membership.verdict, inDefaultBranch: true })).toBe("unknown");
   });
 
+  it("keeps membership unknown when one ref is absent and another is inconclusive", async () => {
+    const response = { ok: true, status: 200, json: async () => ({}) } as Response;
+    const membership = await checkCommitMembership({
+      repository: REPO, sha: SHA, releasePrefix: "1.6",
+      fetchImpl: fetchFake({ "myr-v1.6...abc123": compareResponse("ahead", 2), "rel/1.6-fixes...abc123": response }),
+    });
+    expect(membership.verdict).toBe("unknown");
+  });
+
   it("returns unknown for an HTTP 500 response", async () => {
     expect(await checkCommitInRef({
       repository: REPO, ref: { ref: "myr-v1.6", kind: "tag" }, sha: SHA,
@@ -167,7 +176,7 @@ describe("checkCommitInRef", () => {
 
   it("reports membership when the compare against the release ref is behind", async () => {
     const calls: string[] = [];
-    const fetchImpl = fetchFake({ "myr-v1.6...abc123": compareResponse("behind", 3) }, calls);
+    const fetchImpl = fetchFake({ "myr-v1.6...abc123": compareResponse("behind", 0) }, calls);
     const result = await checkCommitInRef({
       repository: REPO,
       ref: { ref: "myr-v1.6", kind: "tag" },
