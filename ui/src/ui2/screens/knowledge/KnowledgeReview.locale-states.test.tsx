@@ -39,7 +39,7 @@ beforeEach(() => {
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); });
 
-describe.each([["en", english, russian], ["ru", russian, english], ["ru-RU", russian, english]])("locale %s", (language, text, other) => {
+describe.each([["en", english, russian], ["ru", russian, english], ["ru-RU", russian, english]] as const)("locale %s", (language, text, other) => {
   beforeEach(() => { mocks.language = language; });
 
   it("shows the company prompt without any request", async () => {
