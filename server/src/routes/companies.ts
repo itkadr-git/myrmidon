@@ -1147,6 +1147,20 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     res.json(status);
   });
 
+  router.post("/:companyId/migrations/:runId/rollback", async (req, _res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    z.object({ confirm: z.string().trim().min(1) }).strict().parse(req.body);
+    const runId = req.params.runId as string;
+    if (!isImportTransferRunId(runId)) throw notFound("Migration not found");
+    const run = await getMigrationStatus(db, companyId, runId);
+    if (!run) throw notFound("Migration not found");
+    if (run.status === "applying") throw conflict("Cannot roll back an active migration.");
+    // Recovery remains unavailable until all imported resources have durable provenance.
+    throw notFound("Migration rollback is not available.");
+  });
+
   router.post("/:companyId/exports/preview", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertSameCompanyCeoAgentOrBoard(req, companyId, "company exports");
