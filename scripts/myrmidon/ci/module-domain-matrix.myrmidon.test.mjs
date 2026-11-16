@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { scanModuleBoundaries } from "./check-module-boundaries.mjs";
+import { scanModuleBoundaries } from "../../check-module-boundaries.mjs";
 
 const databaseReason = "domain cannot import database packages";
 const outerReason = "domain cannot import server services, routes, or adapters";
