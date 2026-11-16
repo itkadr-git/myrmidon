@@ -142,7 +142,9 @@ export async function commitKnowledgeTreeIfChanged(
     if (name.startsWith(prefix) && !keep.has(name)) {
       // Unlink first so a runner that only records argv still leaves a
       // dirty work tree; `git add -A` below stages the deletion.
-      await unlink(path.join(workDir, name)).catch(() => undefined);
+      await unlink(path.join(workDir, name)).catch((err: NodeJS.ErrnoException) => {
+        if (err.code !== "ENOENT") throw err;
+      });
     }
   }
 
