@@ -546,6 +546,16 @@ describe("company migration dry run", () => {
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(false);
   });
 
+  it("does not let an unguarded failure release an active migration apply", async () => {
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "active-source", "active-apply-key");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    await companyTransferRunService.fail(db, run.id, "unrelated failure");
+    expect((await companyTransferRunService.getRun(db, run.id))?.status).toBe("applying");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(false);
+    expect(await companyTransferRunService.releaseApplyClaim(db, run.id, "apply failed")).toBe(true);
+    expect((await companyTransferRunService.getRun(db, run.id))?.status).toBe("failed");
+  });
+
   it("does not reapply a failed migration after it has claimed a destination", async () => {
     const [source] = await db.insert(companies).values({ name: "Retry safety source", issuePrefix: "MRY" }).returning();
     const [destination] = await db.insert(companies).values({ name: "Retry safety destination", issuePrefix: "MRD" }).returning();
