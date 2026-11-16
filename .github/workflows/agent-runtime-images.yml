@@ -11,6 +11,7 @@ on:
     paths:
       - "docker/agent-runtime/**"
       - "docker/bot-runtime/myr-ws/**"
+      - "docker/bot-runtime/devbuild/**"
       - "docker/bot-runtime/botd/**"
       - "tools/agent-shim/**"
       - "scripts/myrmidon/omp-image.test.mjs"
