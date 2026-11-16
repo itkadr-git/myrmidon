@@ -103,6 +103,39 @@ describePostgres.sequential("release composition concurrency", () => {
     expect(rows).toHaveLength(0);
   });
 
+  it("serializes direct candidate updates with release completion", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Direct race", issuePrefix: "DRC" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Release", status: "in_progress" });
+    const [product] = await db.insert(issueWorkProducts).values({
+      companyId, issueId, type: "pull_request", provider: "github", title: "PR", status: "open",
+      externalId: "acme/project#pull/1", metadata: { repo: "acme/project", number: 1 },
+    }).returning();
+    let release!: () => void;
+    let acquired!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const locked = new Promise<void>((resolve) => { acquired = resolve; });
+    const completion = db.transaction(async (tx) => {
+      await tx.select().from(issues).where(eq(issues.id, issueId)).for("update");
+      acquired();
+      await gate;
+    });
+    await locked;
+    // Webhook and PR sync paths update the work product directly, bypassing the service.
+    const update = db.update(issueWorkProducts).set({ status: "merged" })
+      .where(eq(issueWorkProducts.id, product!.id)).then(() => undefined);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const rows = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.id, product!.id));
+      expect(rows[0]?.status).toBe("open");
+    } finally {
+      release();
+      await completion;
+      await update;
+    }
+  });
+
   it("does not change a release candidate while its issue is locked for completion", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
