@@ -18,7 +18,6 @@
 // - one-time secret handoff: the claim response carries values exactly once
 //   and they never touch the step log (maskStepDetail re-masks detail).
 
-import { generateKeyPairSync } from "node:crypto";
 import { parseOwnedFleetResource } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
@@ -30,6 +29,7 @@ import {
   type OnboardJob,
   type OnboardStepLogEntry,
 } from "./domain.js";
+import { defaultGenerateKeyPair } from "./executor.js";
 import { readFleetOnboardSettings, type FleetOnboardSettings } from "./settings.js";
 import type { FleetOnboardStore, OnboardJobClaim } from "./store.js";
 
@@ -401,14 +401,6 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
       }
       return { expired };
     },
-  };
-}
-
-function defaultGenerateKeyPair(): { publicKey: string; privateKey: string } {
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  return {
-    publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
-    privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
   };
 }
 
