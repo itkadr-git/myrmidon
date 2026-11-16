@@ -11,7 +11,6 @@ import { heartbeatService, instanceSettingsService, logActivity } from "../../se
 import { scheduleQueuedResweep } from "../run-admission.js";
 import { runPriorityRoutes } from "./routes.js";
 import { runPriorityService, type RunPriorityServiceDeps } from "./service.js";
-import { applyRunPrioritySettings } from "./state.js";
 import { advanceFocusDeferredRuns, applyStoredRunPriority, startRunPriorityRefresh } from "./sync.js";
 
 export {
