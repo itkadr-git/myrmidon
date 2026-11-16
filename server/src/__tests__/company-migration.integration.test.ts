@@ -780,6 +780,18 @@ describe("company migration dry run", () => {
     expect((await companyTransferRunService.getRun(db, run!.id))?.status).toBe("applying");
   });
 
+  it("rejects storage reservations on export runs even if their metadata resembles a migration", async () => {
+    const [destination] = await db.insert(companies).values({ name: "Export reservation destination", issuePrefix: "MER" }).returning();
+    const [run] = await db.insert(companyTransferRuns).values({
+      direction: "export", status: "applying", actorKey: "migration-test",
+      idempotencyKey: "export-reservation-rejected", companyId: destination!.id,
+      containerRef: { kind: "company_migration", sourceCompanyId: "source" },
+    }).returning();
+    const key = `${destination!.id}/assets/general/2026/11/16/12345678-1234-4123-8123-123456789abc-file`;
+    await expect(companyTransferRunService.reserveMigrationObject(db, run!.id, destination!.id, key)).rejects.toThrow();
+    expect((await companyTransferRunService.getRun(db, run!.id))?.completedParts).toEqual([]);
+  });
+
   it("does not write storage when migration reservation fails", async () => {
     const [destination] = await db.insert(companies).values({ name: "Reservation failure destination", issuePrefix: "MRF" }).returning();
     const storage = createStorageService(createLocalDiskStorageProvider(root));
