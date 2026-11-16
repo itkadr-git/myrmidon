@@ -615,11 +615,6 @@ jobs:
           fi
           echo "$bin" >> "$GITHUB_PATH"
 
-      - name: Checkout latency check script
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-          sparse-checkout: scripts/myrmidon/ci
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -646,7 +641,9 @@ jobs:
             echo "ERROR: Unable to fetch job data from GitHub API after retries" >&2
             exit 1
           fi
-          node scripts/myrmidon/ci/queue-metrics.mjs --verify-latency --file "$jobs_file" --workflow tag
+          # No checkout: it fails on some self-hosted runners. Read the script of this commit through the API.
+          gh api -H "Accept: application/vnd.github.raw" "repos/$REPO/contents/scripts/myrmidon/ci/queue-metrics.mjs?ref=$GITHUB_SHA" > "$RUNNER_TEMP/queue-metrics.mjs"
+          node "$RUNNER_TEMP/queue-metrics.mjs" --verify-latency --file "$jobs_file" --workflow tag
 
       - name: Check lane results
         env:
