@@ -123,12 +123,12 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
     }
   }
   for (const input of manifest.envInputs) {
-    if (input.kind !== "secret") continue;
+    const label = input.kind === "secret" ? "Secret binding" : "Environment input";
     if (input.agentSlug && !agentSlugs.has(input.agentSlug)) {
-      errors.push(`Secret binding ${input.key} references missing agent ${input.agentSlug}.`);
+      errors.push(`${label} ${input.key} references missing agent ${input.agentSlug}.`);
     }
     if (input.projectSlug && !projectSlugs.has(input.projectSlug)) {
-      errors.push(`Secret binding ${input.key} references missing project ${input.projectSlug}.`);
+      errors.push(`${label} ${input.key} references missing project ${input.projectSlug}.`);
     }
   }
   const secretBindings = manifest.envInputs.filter((input) => input.kind === "secret").map((input) => ({
