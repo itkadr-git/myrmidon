@@ -52,7 +52,8 @@ describe("knowledge export clone fail-stop", () => {
       const { runner, calls } = runnerFor(failure);
       const result = publishKnowledgeExport({ workDir, repoUrl, branch, tree, runner });
       await expect(result).rejects.toThrow(failure.replace("synthetic-user:synthetic-password@", "<redacted>@"));
-      const error = await result.catch((err: Error) => err);
+      const error = await result.catch((err: unknown) => err);
+      if (!(error instanceof Error)) throw new Error("Expected clone to reject with an Error");
       expect(error.message).not.toContain("synthetic-user");
       expect(error.message).not.toContain("synthetic-password");
       expect(calls.map((args) => args[0])).toEqual(["ls-remote", "clone"]);
