@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { resolveSwarmClaimSettings } from "@myrmidon/shared";
 import { matchCompany, type SwarmMatcherDeps } from "../myrmidon/swarm-claim/matcher.js";
 import { idlePickupCandidateRows } from "../myrmidon/idle-pickup.js";
+import { runViolatesReleaseFocus } from "../myrmidon/release-focus.js";
 import { applyRunPrioritySettings, currentRunPrioritySettings, resetRunPriorityForTests } from "../myrmidon/run-priority/state.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -84,12 +85,14 @@ suite("company boundaries in dispatch and release focus", () => {
   });
 
   it("does not apply ADM strict focus to another company's assigned work", async () => {
-    await seed("ADM");
+    const adm = await seed("ADM");
     const other = await seed("BBQ");
     const settings = { ...currentRunPrioritySettings({}), currentRelease: "1.7" };
     applyRunPrioritySettings({ ...settings, strictReleaseFocus: false });
     expect((await idlePickupCandidateRows(db, other.companyId, other.agentId)).map((row) => row.id)).toEqual([other.other]);
     applyRunPrioritySettings({ ...settings, strictReleaseFocus: true });
+    expect(await runViolatesReleaseFocus(db, { companyId: adm.companyId, agentId: adm.agentId, issueId: adm.other })).toBe(true);
+    expect(await runViolatesReleaseFocus(db, { companyId: other.companyId, agentId: other.agentId, issueId: other.other })).toBe(false);
     expect((await idlePickupCandidateRows(db, other.companyId, other.agentId)).map((row) => row.id)).toEqual([other.other]);
   });
 });
