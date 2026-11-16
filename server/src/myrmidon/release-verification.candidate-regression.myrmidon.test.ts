@@ -19,7 +19,8 @@ describe("release candidate aggregation regression", () => {
       Object.freeze({ type: "pull_request", status: "merged", metadata: Object.freeze({ number: 8, mergeCommitSha: "c".repeat(40) }) }),
       Object.freeze({ type: "pull_request", status: "draft" }),
     ]);
-    const input = new Map([["OPE-2", first], ["OPE-empty", empty], ["OPE-1", last]]);
+    type WorkProduct = { type: string; status: string; metadata?: unknown };
+    const input = new Map<string, readonly WorkProduct[]>([["OPE-2", first], ["OPE-empty", empty], ["OPE-1", last]]);
     const snapshot = structuredClone([...input]);
     const expected = [
       { id: "OPE-2:PR#42", repository: "alpha/app", mergeCommitSha: "a".repeat(40), merged: true },
@@ -32,7 +33,7 @@ describe("release candidate aggregation regression", () => {
     expect(aggregateReleaseCandidates(input)).toEqual(expected);
     expect(aggregateReleaseCandidates(input)).toEqual(expected);
     expect([...input]).toEqual(snapshot);
-    expect(aggregateReleaseCandidates(new Map([["OPE-1", last], ["OPE-empty", empty], ["OPE-2", first]])))
+    expect(aggregateReleaseCandidates(new Map<string, readonly WorkProduct[]>([["OPE-1", last], ["OPE-empty", empty], ["OPE-2", first]])))
       .toEqual([...expected.slice(2), ...expected.slice(0, 2)]);
   });
 
