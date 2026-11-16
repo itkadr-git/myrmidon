@@ -20,7 +20,13 @@ export function companyMigrationService(portability: Portability) {
       }, { mode: "board_full" }) : null;
       return {
         dryRun: true as const,
-        validation: { ...validation, errors: [...validation.errors, ...(preview?.errors ?? [])] },
+        validation: {
+          ...validation,
+          errors: [...validation.errors, ...(preview?.errors ?? [])],
+          // Raw portability warnings can contain paths or upstream error messages.
+          warningCounts: { export: exported.warnings.length, import: preview?.warnings.length ?? 0 },
+          importPreviewSkipped: preview === null,
+        },
         counts: {
           agents: exported.manifest.agents.length,
           projects: exported.manifest.projects.length,
