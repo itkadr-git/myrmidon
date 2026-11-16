@@ -88,6 +88,15 @@ describe("migration manifest validation", () => {
     ]));
   });
 
+  it("validates a large set of agent skill references, counting a matching key and slug once", () => {
+    const skills = Array.from({ length: 20000 }, (_, index) => ({ key: `skill-${index}`, slug: `skill-${index}` }));
+    const agents = skills.map((skill, index) => ({
+      slug: `agent-${index}`, reportsToSlug: null, reportsToExistingAgentId: null,
+      reportsToExistingAgentSlug: null, skills: [skill.key], permissionGrants: [],
+    }));
+    expect(validateMigrationManifest({ agents, skills, envInputs: [] }).errors).toEqual([]);
+  });
+
   it("rejects cycles in the imported management hierarchy", () => {
     const agent = { slug: "worker", reportsToSlug: "boss", reportsToExistingAgentId: null,
       reportsToExistingAgentSlug: null, skills: [], permissionGrants: [] };

@@ -25,11 +25,17 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
   }
   const skillKeys = new Set<string>();
   const skillSlugs = new Set<string>();
-  for (const skill of manifest.skills) {
+  const skillIdentityOwners = new Map<string, Set<number>>();
+  for (const [index, skill] of manifest.skills.entries()) {
     if (skillKeys.has(skill.key)) errors.push(`Duplicate skill key: ${skill.key}.`);
     if (skillSlugs.has(skill.slug)) errors.push(`Duplicate skill slug: ${skill.slug}.`);
     skillKeys.add(skill.key);
     skillSlugs.add(skill.slug);
+    for (const identity of new Set([skill.key, skill.slug])) {
+      const owners = skillIdentityOwners.get(identity) ?? new Set<number>();
+      owners.add(index);
+      skillIdentityOwners.set(identity, owners);
+    }
   }
   const validPermissions: ReadonlySet<string> = new Set(PERMISSION_KEYS);
   const managers = new Map(manifest.agents.map((agent) => [agent.slug, agent.reportsToSlug]));
@@ -55,8 +61,7 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
       errors.push(`Agent ${agent.slug} references an external agent in a new-company migration.`);
     }
     for (const skill of agent.skills) {
-      const matches = manifest.skills.filter((entry) => entry.key === skill || entry.slug === skill);
-      if (matches.length !== 1) errors.push(`Agent ${agent.slug} references missing or ambiguous skill ${skill}.`);
+      if (skillIdentityOwners.get(skill)?.size !== 1) errors.push(`Agent ${agent.slug} references missing or ambiguous skill ${skill}.`);
     }
     for (const grant of agent.permissionGrants) {
       if (!validPermissions.has(grant.permissionKey)) {
