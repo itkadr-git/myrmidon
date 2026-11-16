@@ -57,12 +57,25 @@ test('module failures precede invalid totals and never emit a partial delta', t 
   const cases = [
     ['duplicate module', [{ path: 'a', bytes: 2, eager: true }, { path: 'a', bytes: 2, eager: true }]],
     ['invalid module', [{ path: 'a', bytes: 2, eager: true }, { path: 'b', bytes: '1', eager: true }]],
-    ['invalid totals', [{ path: 'a', bytes: Number.MAX_SAFE_INTEGER, eager: true }, { path: 'b', bytes: 1, eager: false }]],
   ];
   for (const side of [0, 1]) for (const [category, modules] of cases) {
     const reports = [fixture(), fixture()];
     reports[side].modules = modules;
     rejected(run(...reports), category);
+  }
+});
+
+test('overflowing module sums are rejected even when declared totals agree', t => {
+  const run = runner(t);
+  for (const side of [0, 1]) {
+    const reports = [fixture(), fixture()];
+    reports[side] = {
+      entry: 'entry.mjs',
+      modules: [{ path: 'a', bytes: Number.MAX_SAFE_INTEGER, eager: true }, { path: 'b', bytes: 1, eager: false }],
+      counts: { modules: 2, eagerModules: 1 },
+      bytes: { total: Number.MAX_SAFE_INTEGER + 1, eager: Number.MAX_SAFE_INTEGER },
+    };
+    rejected(run(...reports), 'invalid totals');
   }
 });
 
