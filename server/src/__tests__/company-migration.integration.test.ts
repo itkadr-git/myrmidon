@@ -1125,6 +1125,44 @@ describe("company migration dry run", () => {
     expect(beforeProjects.some((project) => project.id === independent!.id)).toBe(true);
   });
 
+  it("refuses rollback when an independent asset was added to the destination", async () => {
+    const [source] = await db.insert(companies).values({ name: "Rollback asset ownership source", issuePrefix: "MAO" }).returning();
+    const storage = createStorageService(createLocalDiskStorageProvider(root));
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, storage));
+    app.use(errorHandler);
+
+    const applied = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+      target: { mode: "new_company", newCompanyName: "Rollback asset ownership destination" },
+      dryRun: false, apply: true, confirm: "approved pilot",
+    });
+    expect(applied.status).toBe(200);
+    const destination = (await db.select().from(companies)).find((company) => company.name === "Rollback asset ownership destination")!;
+    const stored = await storage.putFile({
+      companyId: destination.id, namespace: "assets/general", originalFilename: "independent.png",
+      contentType: "image/png", body: Buffer.from("independent asset"),
+    });
+    const [independent] = await db.insert(assets).values({ companyId: destination.id, ...stored }).returning();
+    const beforeCompanies = await db.select().from(companies);
+    const beforeAssets = await db.select().from(assets);
+    const beforeRuns = await db.select().from(companyTransferRuns);
+
+    const rollback = await request(app)
+      .post(`/api/companies/${source!.id}/migrations/${applied.body.runId}/rollback`)
+      .send({ confirm: "rollback pilot" });
+    expect(rollback.status).toBe(409);
+    expect(await db.select().from(companies)).toEqual(beforeCompanies);
+    expect(await db.select().from(assets)).toEqual(beforeAssets);
+    expect(await db.select().from(companyTransferRuns)).toEqual(beforeRuns);
+    expect(beforeAssets.some((asset) => asset.id === independent!.id)).toBe(true);
+    expect((await storage.headObject(destination.id, stored.objectKey)).exists).toBe(true);
+  });
+
   it("refuses rollback when a migrated agent was modified after import", async () => {
     const [source] = await db.insert(companies).values({ name: "Modified rollback source", issuePrefix: "MMD" }).returning();
     await db.insert(agents).values({ companyId: source!.id, name: "Original worker" });
