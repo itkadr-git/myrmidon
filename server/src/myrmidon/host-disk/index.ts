@@ -44,12 +44,10 @@ export {
   hostRootThresholdRuntime,
   hostRootThresholdRuntimeForTest,
   resetHostRootThresholdRuntime,
-  HOST_ROOT_REPEAT_INTERVAL_MS,
 } from "./root.js";
 export type {
   HostRootThresholdRuntime,
   HostRootThresholdState,
-  HostRootNotifyInput,
 } from "./root.js";
 
 export interface HostDiskRuntime {
