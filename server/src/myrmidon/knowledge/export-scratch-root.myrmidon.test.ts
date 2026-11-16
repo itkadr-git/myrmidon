@@ -71,10 +71,14 @@ describe("knowledge export scratch root", () => {
       await writeFile(file, "fixture");
       vi.spyOn(os, "tmpdir").mockReturnValue("/tmp");
       const publish = vi.fn();
+      const exportCompany = vi.fn();
+      const warn = vi.fn();
       await expect(runKnowledgeExportPass({} as never, {
         settings, env: { MYRMIDON_RUN_SCRATCH_DIR: path.join(file, "child"), MYRMIDON_SCRATCH_DIR: base },
-        ports: { log, listCompanyIds: async () => ["c1"], publish },
-      })).rejects.toThrow();
+        ports: { log: { ...log, warn }, listCompanyIds: async () => ["c1"], exportCompany, publish },
+      })).resolves.toEqual({ enabled: true, companies: 1, committed: 0, unchanged: 0, failed: 1 });
+      expect(warn).toHaveBeenCalledWith(expect.objectContaining({ companyId: "c1", error: expect.any(String) }), "knowledge export failed for one company");
+      expect(exportCompany).not.toHaveBeenCalled();
       expect(publish).not.toHaveBeenCalled();
     } finally { await rm(base, { recursive: true, force: true }); }
   });
