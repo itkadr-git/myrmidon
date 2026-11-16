@@ -37,6 +37,23 @@ anything warned about it. The BOT-DISK parts are the layered answer:
   becomes terminal, with a short cooldown for copies whose branch is already
   merged.
 
+### Bot volume free-space gate
+
+When the physical bot volume has less than the configured minimum free space,
+queued runs wait in `scheduled_retry` with reason `disk_budget` rather than
+starting or being cancelled. They are checked again after 1, 2, then every 5
+minutes and can start once space is available. User-triggered wakes are not
+held; an unmeasurable volume does not block runs. The board requests host GC
+when a run is deferred. Check available bot-volume space and host GC if runs
+remain deferred.
+
+The default minimum is 5% free. Set `MYRMIDON_DISK_BUDGET_MIN_FREE_PERCENT`
+on the board and in the bot image to a number greater than 0 and at most 50;
+invalid values fall back to 5. `myr-ws open` also refuses a new copy below the
+minimum with `BOT_DISK_QUOTA_EXCEEDED: disk_budget`; reuse of an existing
+copy is not blocked. This gate is separate from the host disk usage alert.
+See the [release change](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/ope-13419-disk-budget.md).
+
 ## Monitoring
 
 ### Optional centralized memory on fleet sites
