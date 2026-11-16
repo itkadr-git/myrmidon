@@ -101,6 +101,18 @@ suite("company boundaries in dispatch and release focus", () => {
     expect((await idlePickupCandidateRows(db, other.companyId, other.agentId)).map((row) => row.id)).toEqual([other.other]);
   });
 
+  it("preserves an existing instance focus for a single-company installation", async () => {
+    const company = await seed("ADM");
+    const service = runPriorityService(db);
+    const actor = { actorType: "user" as const, actorId: "operator", agentId: null, runId: null, agentApiKeyId: null };
+    await service.update({ currentRelease: "1.7", strictReleaseFocus: true }, actor);
+    resetRunPriorityForTests();
+    await syncRunPriorityFromStore(db);
+    expect(await runViolatesReleaseFocus(db, {
+      companyId: company.companyId, agentId: company.agentId, issueId: company.other,
+    })).toBe(true);
+  });
+
   it("preserves both companies' settings when focus updates race", async () => {
     const adm = await seed("ADM");
     const other = await seed("BBQ");
