@@ -23,7 +23,7 @@ export function companyMigrationService(portability: Portability) {
     const validation = validateMigrationManifest(exported.manifest);
     for (const blob of exported.manifest.blobs ?? []) {
       const file = exported.files[`blobs/${blob.sha256}`];
-      if (!/^[a-f0-9]{64}$/.test(blob.sha256) || typeof file !== "object" || file === null || file.encoding !== "base64") {
+      if (!/^[a-f0-9]{64}$/.test(blob.sha256) || typeof file !== "object" || file === null || file.encoding !== "base64" || typeof file.data !== "string") {
         validation.errors.push("A declared blob is missing or invalid.");
         continue;
       }
@@ -36,7 +36,7 @@ export function companyMigrationService(portability: Portability) {
     for (const [path, file] of Object.entries(exported.files)) {
       if (!path.startsWith("blobs/")) continue;
       const sha = path.slice("blobs/".length);
-      if (!/^[a-f0-9]{64}$/.test(sha) || typeof file !== "object" || file === null || file.encoding !== "base64"
+      if (!/^[a-f0-9]{64}$/.test(sha) || typeof file !== "object" || file === null || file.encoding !== "base64" || typeof file.data !== "string"
         || Buffer.from(file.data, "base64").toString("base64") !== file.data
         || createHash("sha256").update(Buffer.from(file.data, "base64")).digest("hex") !== sha) {
         validation.errors.push("An exported blob failed integrity validation.");
