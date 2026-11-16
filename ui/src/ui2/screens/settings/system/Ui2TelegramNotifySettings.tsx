@@ -48,6 +48,7 @@ type Draft = {
   escalations: Partial<TelegramNotifySettings["escalations"]>;
   proactivity: Partial<TelegramNotifySettings["proactivity"]>;
   updates: Partial<TelegramNotifySettings["updates"]>;
+  owner: Partial<TelegramNotifySettings["owner"]>;
 };
 
 const EMPTY_DRAFT: Draft = {
@@ -57,6 +58,7 @@ const EMPTY_DRAFT: Draft = {
   escalations: {},
   proactivity: {},
   updates: {},
+  owner: {},
 };
 
 /** Machine values look machine-made: chat/topic ids and field paths stay monospace. */
