@@ -31,7 +31,7 @@ function report(input) {
     const current = pending.pop();
     if (reachable.has(current)) continue;
     reachable.add(current);
-    pending.push(...(outgoing.get(current) || []));
+    for (const target of outgoing.get(current) || []) pending.push(target);
   }
   for (const [path, item] of modules) if (item.eager !== reachable.has(path)) invalid();
   const importers = new Map([...reachable].map(path => [path, new Set()]));
