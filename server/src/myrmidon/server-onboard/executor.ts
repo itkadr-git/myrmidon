@@ -174,22 +174,19 @@ export class FleetOnboardExecutor {
               await activeSsh.connect(connOptions);
             }
 
-            // Key install
-            let pubKeyToInstall = "";
-            if (activePrivateKey) {
-              pubKeyToInstall = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExistingKey myrmidon-access";
-            } else {
+            // An existing key authenticated the bootstrap connection already; do not
+            // mutate authorized_keys with a public key unrelated to that credential.
+            if (!activePrivateKey) {
               const gen = (this.deps.generateKeyPair ?? defaultGenerateKeyPair)();
               activePrivateKey = gen.privateKey;
-              pubKeyToInstall = gen.publicKey.trim();
-            }
-
-            const installResult = await activeSsh.execute(
-              `mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo "${pubKeyToInstall}" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`,
-              { sudo: false },
-            );
-            if (installResult.exitCode !== 0) {
-              throw new Error("SSH key installation failed");
+              const pubKeyToInstall = gen.publicKey.trim();
+              const installResult = await activeSsh.execute(
+                `mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo "${pubKeyToInstall}" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`,
+                { sudo: false },
+              );
+              if (installResult.exitCode !== 0) {
+                throw new Error("SSH key installation failed");
+              }
             }
 
             // Verify Key Login via a fresh connection
