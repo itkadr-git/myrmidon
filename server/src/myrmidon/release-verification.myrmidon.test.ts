@@ -943,6 +943,18 @@ describe("persisted release evidence", () => {
     )).toBe(true);
   });
 
+  it("ignores a same-scope failure signed with another key at the same timestamp", () => {
+    const wrongKey = createReleaseVerificationEvidence({
+      ...scope, verdict: "failed", checkedAt: record.checkedAt,
+    }, "other-secret");
+    const comment = (evidence: typeof record) => ({
+      body: `release-evidence-v1: ${JSON.stringify(evidence)}`,
+      authorType: "system",
+    });
+    expect(hasCurrentReleaseVerificationEvidence([comment(record), comment(wrongKey)], scope, "secret", NOW())).toBe(true);
+    expect(hasCurrentReleaseVerificationEvidence([comment(wrongKey), comment(record)], scope, "secret", NOW())).toBe(true);
+  });
+
   it("does not let later evidence from another company or release line supersede the current record", () => {
     const foreignCompany = createReleaseVerificationEvidence({
       ...scope, companyId: "company-b", verdict: "failed", checkedAt: "2026-11-13T12:00:01.000Z",
