@@ -27,6 +27,19 @@ describe("bot partition free-space notification", () => {
     expect(notifyOwner).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps the configured critical alert when reserved blocks leave at least 10% free", async () => {
+    const notifyOwner = vi.fn(async () => undefined);
+    const runtime = botPartitionThresholdRuntimeForTest({
+      getBotDiskSettings: async () => ({ partitionThresholdPercent: 70, partitionRefuseOpenPercent: 80, partitionCriticalPercent: 85 }),
+      notifyOwner,
+      env: {},
+      now: () => new Date(at),
+    });
+    await runtime.updateFromPartition({ ...sample(100), usedBytes: 900 });
+    expect(notifyOwner).toHaveBeenCalledTimes(1);
+    expect(runtime.current().alertLevel).toBe("critical");
+  });
+
   it("does not re-arm after an invalid physical measurement", async () => {
     const notifyOwner = vi.fn(async () => undefined);
     const runtime = botPartitionThresholdRuntimeForTest({
