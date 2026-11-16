@@ -76,6 +76,20 @@ test("repeated pages across tabs keep first occurrence order", () => {
   ]);
 });
 
+test("repeated pages across groups and tabs keep first occurrence order", () => {
+  const tabs = [
+    { tab: "First", groups: [
+      { group: "One", pages: ["alpha", "shared"] },
+      { group: "Two", pages: ["shared", "beta", "alpha"] },
+    ] },
+    { tab: "Second", groups: [
+      { group: "Three", pages: ["beta", "gamma"] },
+      { group: "Four", pages: ["shared", "delta", "gamma"] },
+    ] },
+  ];
+  assert.deepEqual(collectNavPages(nav(tabs)), ["alpha", "shared", "beta", "gamma", "delta"]);
+});
+
 test("null page throws", () => {
   assert.throws(() => collectNavPages(nav(pages(null))), /not a string/);
 });
