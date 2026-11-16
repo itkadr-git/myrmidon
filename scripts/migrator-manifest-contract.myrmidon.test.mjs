@@ -104,6 +104,8 @@ test("rejects invalid integrity, digest URL, origin, and extension", () => {
   for (const mutate of [
     (pin) => { pin.integrity = "sha512-not-base64"; },
     (pin) => { pin.integrity = "sha512-" + "A".repeat(86) + "="; },
+    (pin) => { pin.integrity = "sha512-" + "A".repeat(85) + "B=="; },
+    (pin) => { pin.url = manifest.packages.shared.url; },
     (pin) => { pin.url = `${pin.url.slice(0, -4)}.json`; },
     (pin) => { pin.url = pin.url.replace("https://d1p6rlowie26tp.cloudfront.net", "https://evil.invalid"); },
     (pin) => { pin.url = pin.url.replace(/\.[^.]+$/, ""); },
