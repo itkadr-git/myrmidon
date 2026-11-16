@@ -3115,6 +3115,38 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
+  it("rejects an approval when the locked review participant has changed", async () => {
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const nextReviewerId = "44444444-4444-4444-8444-444444444444";
+    const policy = (await normalizePolicy({ stages: [{
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      type: "review",
+      participants: [{ type: "agent", agentId: reviewerAgentId }],
+    }] }))!;
+    const issue = {
+      ...makeIssue("todo"), status: "in_review", executionPolicy: policy,
+      executionState: {
+        status: "pending", currentStageId: policy.stages[0].id, currentStageIndex: 0,
+        currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue({
+      ...issue, executionState: { ...issue.executionState, currentParticipant: { type: "agent", agentId: nextReviewerId } },
+    });
+
+    const res = await request(await installActor(createApp(), {
+      type: "agent", agentId: reviewerAgentId, companyId: "company-1",
+      source: "agent_key", runId: "run-review-participant-race",
+    })).post(`/api/issues/${issue.id}/comments`).send({ body: "## Review: APPROVED" });
+
+    expect(res.status).toBe(409);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
   it("auto-approves a reviewer comment with the APPROVED review marker", async () => {
     const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
     const policy = await normalizePolicy({

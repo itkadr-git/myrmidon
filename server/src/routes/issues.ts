@@ -22258,9 +22258,6 @@ export function issueRoutes(
       const currentExecutionState = parseIssueExecutionState(
         currentIssue.executionState,
       );
-      const currentExecutionPolicy = safeNormalizeIssueExecutionPolicy(
-        currentIssue.executionPolicy ?? null,
-      );
       const shouldAutoApproveReviewComment =
         currentIssue.status === "in_review" &&
         currentExecutionState?.status === "pending" &&
@@ -22276,89 +22273,7 @@ export function issueRoutes(
       let comment: Awaited<ReturnType<typeof svc.addComment>>;
       let goalCommentSteered = false;
       if (shouldAutoApproveReviewComment) {
-        const transition = applyIssueExecutionPolicyTransition({
-          issue: { ...currentIssue, ...await releaseTransitionContext(currentIssue) },
-          policy: currentExecutionPolicy,
-          requestedStatus: "done",
-          requestedAssigneePatch: {},
-          actor: {
-            agentId: actor.agentId ?? null,
-            userId: actor.actorType === "user" ? actor.actorId : null,
-          },
-          commentBody: req.body.body,
-        });
-        const decisionId = transition.decision ? randomUUID() : null;
-        if (transition.escalationMetric) {
-          getTelemetryClient()?.trackDynamic(transition.escalationMetric, {
-            issue_id: currentIssue.id,
-            policy_revision:
-              currentExecutionPolicy?.reviewEscalationPolicy?.policyRevision ?? "unknown",
-            target_type: "user",
-          });
-        }
-        if (decisionId) {
-          const nextExecutionState = transition.patch.executionState;
-          if (!nextExecutionState || typeof nextExecutionState !== "object") {
-            throw new Error(
-              "Execution policy decision patch is missing executionState",
-            );
-          }
-          transition.patch.executionState = withReviewVerdictRecord(
-            {
-              ...nextExecutionState,
-              lastDecisionId: decisionId,
-            },
-            extractReviewVerdictRecord({
-              outcome: transition.decision?.outcome,
-              body: transition.decision?.body,
-            }),
-          );
-        }
-
-        issueBeforeCommentDecision = currentIssue;
-        // myrmidon(OPE-10045): an approval comment on the last stage while the
-        // PR is still open: keep the comment and the decision, complete the
-        // stage and leave the task in review until the PR sync closes it.
-        // Without this the done gate refused the update and rolled back both.
-        const commentApprovalPendingMerge =
-          typeof transition.patch.status !== "string" &&
-          isApprovalRequestingDone({
-            decisionOutcome: transition.decision?.outcome,
-            requestedStatus: "done",
-            existingStatus: currentIssue.status,
-          })
-            ? await findApprovalPendingMergePullRequest(
-                db,
-                currentIssue.companyId,
-                currentIssue.id,
-                async (companyId, repository) => {
-                  const { createGitHubPrHeadResolver } = await import("../myrmidon/review-routing/github.js");
-                  return createGitHubPrHeadResolver({ db }).listOpenPullRequests({ companyId, repository });
-                },
-              )
-            : null;
-        const updatePatch = {
-          ...transition.patch,
-          status:
-            typeof transition.patch.status === "string"
-              ? transition.patch.status
-              : commentApprovalPendingMerge
-                ? currentIssue.status
-                : "done",
-          actorAgentId: actor.agentId ?? null,
-          actorUserId: actor.actorType === "user" ? actor.actorId : null,
-        };
-
-        if (updatePatch.status === "done") {
-          const { assertKnowledgeGateSettled } = await import("../myrmidon/knowledge-gate/guard.js");
-          await assertKnowledgeGateSettled(db, {
-            companyId: currentIssue.companyId,
-            issueId: currentIssue.id,
-            issue: { title: currentIssue.title, description: currentIssue.description },
-            comment: req.body.body,
-          });
-        }
-
+        let transition!: ReturnType<typeof applyIssueExecutionPolicyTransition>;
         const sourceTrust =
           actor.actorType === "agent"
             ? await sourceTrustForActorWrite(currentIssue, actor, true)
@@ -22383,8 +22298,14 @@ export function issueRoutes(
           txResult = await db.transaction(async (tx) => {
             const lockedIssue = await svc.getByIdForUpdate(id, tx);
             if (!lockedIssue) throw new AutoApprovalIssueMissingError();
-            applyIssueExecutionPolicyTransition({
-              issue: { ...lockedIssue, ...await releaseTransitionContext(lockedIssue) },
+            const lockedState = parseIssueExecutionState(lockedIssue.executionState);
+            if (lockedIssue.status !== "in_review" || lockedState?.status !== "pending" ||
+                !actorMatchesExecutionParticipant(actor, lockedState.currentParticipant ?? null)) {
+              throw conflict("Review stage changed while approving; retry the comment");
+            }
+            currentIssue = lockedIssue;
+            transition = applyIssueExecutionPolicyTransition({
+              issue: { ...currentIssue, ...await releaseTransitionContext(currentIssue) },
               policy: safeNormalizeIssueExecutionPolicy(lockedIssue.executionPolicy ?? null),
               requestedStatus: "done",
               requestedAssigneePatch: {},
@@ -22394,6 +22315,78 @@ export function issueRoutes(
               },
               commentBody: req.body.body,
             });
+            const decisionId = transition.decision ? randomUUID() : null;
+            if (transition.escalationMetric) {
+              getTelemetryClient()?.trackDynamic(transition.escalationMetric, {
+                issue_id: currentIssue.id,
+                policy_revision:
+                  safeNormalizeIssueExecutionPolicy(lockedIssue.executionPolicy ?? null)?.reviewEscalationPolicy?.policyRevision ?? "unknown",
+                target_type: "user",
+              });
+            }
+            if (decisionId) {
+              const nextExecutionState = transition.patch.executionState;
+              if (!nextExecutionState || typeof nextExecutionState !== "object") {
+                throw new Error(
+                  "Execution policy decision patch is missing executionState",
+                );
+              }
+              transition.patch.executionState = withReviewVerdictRecord(
+                {
+                  ...nextExecutionState,
+                  lastDecisionId: decisionId,
+                },
+                extractReviewVerdictRecord({
+                  outcome: transition.decision?.outcome,
+                  body: transition.decision?.body,
+                }),
+              );
+            }
+
+            issueBeforeCommentDecision = currentIssue;
+            // myrmidon(OPE-10045): an approval comment on the last stage while the
+            // PR is still open: keep the comment and the decision, complete the
+            // stage and leave the task in review until the PR sync closes it.
+            // Without this the done gate refused the update and rolled back both.
+            const commentApprovalPendingMerge =
+              typeof transition.patch.status !== "string" &&
+              isApprovalRequestingDone({
+                decisionOutcome: transition.decision?.outcome,
+                requestedStatus: "done",
+                existingStatus: currentIssue.status,
+              })
+                ? await findApprovalPendingMergePullRequest(
+                    db,
+                    currentIssue.companyId,
+                    currentIssue.id,
+                    async (companyId, repository) => {
+                      const { createGitHubPrHeadResolver } = await import("../myrmidon/review-routing/github.js");
+                      return createGitHubPrHeadResolver({ db }).listOpenPullRequests({ companyId, repository });
+                    },
+                  )
+                : null;
+            const updatePatch = {
+              ...transition.patch,
+              status:
+                typeof transition.patch.status === "string"
+                  ? transition.patch.status
+                  : commentApprovalPendingMerge
+                    ? currentIssue.status
+                    : "done",
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+            };
+
+            if (updatePatch.status === "done") {
+              const { assertKnowledgeGateSettled } = await import("../myrmidon/knowledge-gate/guard.js");
+              await assertKnowledgeGateSettled(db, {
+                companyId: currentIssue.companyId,
+                issueId: currentIssue.id,
+                issue: { title: currentIssue.title, description: currentIssue.description },
+                comment: req.body.body,
+              });
+            }
+
             const insertedComment = await svc.addComment(
               id,
               req.body.body,
@@ -22541,7 +22534,7 @@ export function issueRoutes(
         }
         commentDecisionStageWakeup = buildExecutionStageWakeup({
           issueId: currentIssue.id,
-          previousState: currentExecutionState,
+          previousState: parseIssueExecutionState(issueBeforeCommentDecision.executionState),
           nextState: parseIssueExecutionState(currentIssue.executionState),
           interruptedRunId,
           requestedByActorType: actor.actorType,
