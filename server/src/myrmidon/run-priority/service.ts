@@ -19,6 +19,8 @@ import { instanceSettingsService, logActivity } from "../../services/index.js";
 import { resolveRunPriority, type RunPriorityView } from "./state.js";
 import type { RunPrioritySettings } from "@myrmidon/shared";
 import { applyStoredRunPriority, releaseFocusChanged } from "./sync.js";
+import { mutateCompanyBehaviorSettings } from "../behavior-settings/store.js";
+import type { CompanyReleaseFocus } from "./state.js";
 
 /** Who changed the settings, for the activity log. */
 export interface RunPriorityActor {
@@ -58,6 +60,7 @@ export interface RunPriorityServiceDeps {
 
 export interface RunPriorityService {
   read(): Promise<RunPriorityView>;
+  updateCompany(companyId: string, patch: CompanyReleaseFocus, actor: RunPriorityActor): Promise<void>;
   /** Persist, audit and apply a patch; returns the settings now in force. */
   update(patch: RunPriorityPatch, actor: RunPriorityActor): Promise<RunPriorityView>;
 }
@@ -92,6 +95,21 @@ export function runPriorityService(
   const env = deps.env ?? process.env;
 
   return {
+    updateCompany: async (companyId, patch, actor) => {
+      await mutateCompanyBehaviorSettings(db, companyId, (current) => ({
+        next: { ...current, releaseFocus: patch }, result: undefined,
+      }));
+      await deps.logActivity({
+        companyId, ...actor, action: "company.release_focus.updated",
+        entityType: "company", entityId: companyId, details: { next: patch },
+      });
+      await deps.publishChanged?.().catch((err: unknown) => {
+        logger.warn({ err }, "release focus saved but process notification failed");
+      });
+      await deps.applyStored();
+      await deps.advanceDeferredRuns?.();
+      deps.scheduleResweep();
+    },
     read: async () => {
       const general = await deps.settings.getGeneral();
       return resolveRunPriority(general.runPriority, env);

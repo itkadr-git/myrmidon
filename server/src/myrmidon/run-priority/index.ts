@@ -74,7 +74,7 @@ export async function startRunPriority(db: Db): Promise<void> {
   try {
     const view = await runPriorityService(db, defaultDeps(db)).read();
     assertRunPriorityQueueInvariant(view.settings);
-    applyRunPrioritySettings(view.settings);
+    await applyStoredRunPriority(db);
     startRunPriorityRefresh(db);
     logger.info(
       { settings: view.settings, source: view.source },

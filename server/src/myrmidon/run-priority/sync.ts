@@ -5,12 +5,31 @@
 // the only carrier of state, the bus message only says "look again".
 
 import { and, eq, sql } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@myrmidon/db";
+import { heartbeatRuns, instanceSettings, type Db } from "@myrmidon/db";
 import type { RunPrioritySettings } from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { RELEASE_FOCUS_DEFERRAL_CONTEXT_KEY } from "../../modules/run-dispatch/domain/wake-context.js";
-import { applyRunPrioritySettings, currentRunPrioritySettings, resolveRunPriority } from "./state.js";
+import { applyCompanyReleaseFocus, applyRunPrioritySettings, currentRunPrioritySettings, resolveRunPriority, type CompanyReleaseFocus } from "./state.js";
+
+/** Load the company snapshots from the preserved behavior-settings area. */
+export async function readCompanyReleaseFocus(db: Db): Promise<Map<string, CompanyReleaseFocus>> {
+  const [row] = await db.select({ general: instanceSettings.general }).from(instanceSettings)
+    .where(eq(instanceSettings.singletonKey, "default"));
+  const area = row?.general?.behaviorSettingsByCompany;
+  const result = new Map<string, CompanyReleaseFocus>();
+  if (!area || typeof area !== "object" || Array.isArray(area)) return result;
+  for (const [companyId, value] of Object.entries(area)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const focus = (value as Record<string, unknown>).releaseFocus;
+    if (!focus || typeof focus !== "object" || Array.isArray(focus)) continue;
+    const record = focus as Record<string, unknown>;
+    if ((record.currentRelease === null || typeof record.currentRelease === "string") && typeof record.strictReleaseFocus === "boolean") {
+      result.set(companyId, { currentRelease: record.currentRelease, strictReleaseFocus: record.strictReleaseFocus });
+    }
+  }
+  return result;
+}
 
 /** The two settings that decide whether strict release focus holds a run. */
 export function releaseFocusChanged(before: RunPrioritySettings, after: RunPrioritySettings): boolean {
@@ -47,7 +66,9 @@ export async function advanceFocusDeferredRuns(db: Db, now: Date = new Date()): 
 export async function applyStoredRunPriority(db: Db): Promise<RunPrioritySettings> {
   const general = await instanceSettingsService(db).getGeneral();
   const next = resolveRunPriority(general.runPriority).settings;
+  const focus = await readCompanyReleaseFocus(db);
   applyRunPrioritySettings(next);
+  applyCompanyReleaseFocus(focus);
   return next;
 }
 
