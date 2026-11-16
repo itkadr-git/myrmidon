@@ -90,6 +90,58 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("done");
   });
 
+  it("writes a head-change row when the PR head moves and none when it stays (myrmidon EMPTY-RUNS-1)", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const connectionId = randomUUID();
+    const grantId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: "GHE" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "worker", role: "engineer" });
+    const [application] = await db.insert(toolApplications).values({
+      companyId, applicationKey: `github-${randomUUID()}`, name: "GitHub", type: "mcp_server", status: "active",
+    }).returning({ id: toolApplications.id });
+    await db.insert(toolConnections).values({
+      id: connectionId, companyId, applicationId: application!.id, name: "GitHub", uid: `github-${randomUUID()}`,
+      transport: "mcp_remote", authKind: "oauth", credentialPolicy: "per_user", status: "active", enabled: true,
+      config: { sourceTemplateKey: "github", oauth: { connectorProfile: "github.code" } }, transportConfig: {},
+    });
+    await db.insert(connectionGrants).values({
+      id: grantId, companyId, connectionId, kind: "agent", subjectAgentId: agentId, status: "active", isDefault: false,
+      providerTenant: { github: { userId: "42", login: "octocat", installationCount: 1, repositoryCount: 1,
+        repositorySelection: "selected", installationIds: ["101"], installationOwnerLogins: ["paperclipai"] } },
+    });
+    await db.insert(issues).values({ id: issueId, companyId, title: "PR task", status: "todo", assigneeAgentId: agentId });
+    const [product] = await db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", externalId: "paperclipai/paperclip#pull/123", title: "PR #123", status: "open", metadata: { repository: "paperclipai/paperclip", number: 123, headSha: "a".repeat(40) } }).returning({ id: issueWorkProducts.id });
+    await db.insert(externalObjects).values({ companyId, providerKey: "github", objectType: "pull_request", externalId: "paperclipai/paperclip#pull/123", statusKey: "open", statusCategory: "open", statusTone: "info", isTerminal: false, data: { provider: "github", owner: "paperclipai", repo: "paperclip", number: 123, state: "open" } });
+    const sync = (id: string, headSha: string) => ({
+      id, provider: "github" as const, event: "pull_request", action: "synchronize", installationId: "101", repositoryId: "99", createdAt: "2026-11-16T12:00:00.000Z", bindingIds: [`${grantId}_101`],
+      payload: { repository: "paperclipai/paperclip", number: 123, state: "open", merged: false, updatedAt: "2026-11-16T12:00:00.000Z", url: "https://github.com/paperclipai/paperclip/pull/123", headRef: "bot/GHE-1", headSha, senderLogin: "bot-eng" },
+    });
+    const queue = [sync("delivery-sync-same", "a".repeat(40)), sync("delivery-sync-new", "b".repeat(40)), sync("delivery-sync-new-again", "b".repeat(40))];
+    const connector = { getCapabilities: vi.fn(async () => ["github.code" as const]), startAuthorization: vi.fn(), claim: vi.fn(), refresh: vi.fn(), revoke: vi.fn(), setWebhookBinding: vi.fn(async () => undefined), leaseEvents: vi.fn(async () => ({ leaseId: randomUUID(), events: [queue.shift()!] })), acknowledgeEvents: vi.fn(async () => 1) } as unknown as PaperclipCloudConnector;
+    let currentTime = new Date("2026-11-16T12:00:05.000Z");
+    const service = githubConnectionEventService(db, { connector, now: () => currentTime });
+    const headRows = () => db.select().from(activityLog).where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.work_product_head_changed")));
+
+    // same head: no row
+    await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, failed: 0 });
+    expect(await headRows()).toHaveLength(0);
+
+    // new head: one row on the task with the old and the new sha
+    currentTime = new Date("2026-11-16T12:00:30.000Z");
+    await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, failed: 0 });
+    const rows = await headRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ actorType: "system", entityType: "issue", runId: null });
+    expect(rows[0]!.details).toMatchObject({ workProductId: product!.id, headShaChanged: true, fromSha: "a".repeat(40), toSha: "b".repeat(40), sender: "bot-eng" });
+
+    // the same new head again: still one row
+    currentTime = new Date("2026-11-16T12:01:00.000Z");
+    await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, failed: 0 });
+    expect(await headRows()).toHaveLength(1);
+  });
+
   it("applies a normalized merged PR once, updates the snapshot, and acknowledges Cloud", async () => {
     const companyId = randomUUID();
     const userId = `github-owner-${randomUUID()}`;

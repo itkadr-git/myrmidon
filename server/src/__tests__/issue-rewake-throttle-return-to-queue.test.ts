@@ -6,7 +6,9 @@
 // 176 such pickups on ten tasks in eight hours.
 import { describe, expect, it } from "vitest";
 import {
+  PR_HEAD_CHANGE_LATE_WINDOW_MS,
   collectRunIdsWithIssueProgress,
+  collectRunIdsWithPrHeadChange,
   evaluateIssueRewakeThrottle,
   isIssueProgressActivity,
   isReturnToQueue,
@@ -228,6 +230,66 @@ describe("rewake throttle on the parked-task loop", () => {
       recentTerminalRuns: succeededRuns(ids),
       runIdsWithIssueProgress: collectRunIdsWithIssueProgress(rows, () => AGENT),
       hasNewIssueInputSinceLastRun: true,
+    })).toEqual({ blocked: false, noProgressStreak: 0 });
+  });
+});
+
+describe("collectRunIdsWithPrHeadChange (myrmidon EMPTY-RUNS-1: a PR head change is the progress of the run that pushed)", () => {
+  const startedAt = new Date("2026-11-13T07:00:00.000Z");
+  const finishedAt = new Date("2026-11-13T07:10:00.000Z");
+  const run = { id: "r1", startedAt, createdAt: startedAt, finishedAt };
+  const at = (ms: number) => new Date(ms);
+
+  it("credits a head change inside the run and in the late window after it", () => {
+    expect([...collectRunIdsWithPrHeadChange([run], [at(startedAt.getTime() + 60_000)])]).toEqual(["r1"]);
+    expect([...collectRunIdsWithPrHeadChange([run], [at(finishedAt.getTime() + PR_HEAD_CHANGE_LATE_WINDOW_MS)])]).toEqual(["r1"]);
+  });
+
+  it("does not credit a head change before the run or later than the window", () => {
+    expect(collectRunIdsWithPrHeadChange([run], [at(startedAt.getTime() - 1)]).size).toBe(0);
+    expect(collectRunIdsWithPrHeadChange([run], [at(finishedAt.getTime() + PR_HEAD_CHANGE_LATE_WINDOW_MS + 1)]).size).toBe(0);
+  });
+
+  it("credits nothing without a head change, and a hand-back stays no progress", () => {
+    expect(collectRunIdsWithPrHeadChange([run], []).size).toBe(0);
+    const rows = [handBack("r1"), parkingNote("r1")];
+    const progress = collectRunIdsWithIssueProgress(rows, () => AGENT);
+    for (const id of collectRunIdsWithPrHeadChange([run], [at(startedAt.getTime() + 60_000)])) progress.add(id);
+    expect([...progress]).toEqual(["r1"]);
+    expect(collectRunIdsWithIssueProgress(rows, () => AGENT).size).toBe(0);
+  });
+
+  it("an unfinished run ends at now, not at infinity", () => {
+    const now = at(startedAt.getTime() + 60 * 60_000);
+    expect([...collectRunIdsWithPrHeadChange([{ id: "r2", startedAt }], [at(startedAt.getTime() + 30 * 60_000)], now)]).toEqual(["r2"]);
+    expect(collectRunIdsWithPrHeadChange([{ id: "r2", startedAt }], [at(now.getTime() + PR_HEAD_CHANGE_LATE_WINDOW_MS + 1)], now).size).toBe(0);
+  });
+
+  it("one head change goes to one run: the run that holds it, else the last one that ended before it", () => {
+    const t = startedAt.getTime();
+    const a = { id: "A", startedAt: at(t), finishedAt: at(t + 10 * 60_000) };
+    const b = { id: "B", startedAt: at(t + 10 * 60_000 + 1_000), finishedAt: at(t + 20 * 60_000) };
+    // inside B: only B, though A's late window covers it too
+    expect([...collectRunIdsWithPrHeadChange([a, b], [at(t + 15 * 60_000)])]).toEqual(["B"]);
+    // between A and B (B not started yet): A, the last one that ended before
+    expect([...collectRunIdsWithPrHeadChange([a, b], [at(t + 10 * 60_000 + 500)])]).toEqual(["A"]);
+    // after both ended: the later one only
+    expect([...collectRunIdsWithPrHeadChange([a, b], [at(t + 25 * 60_000)])]).toEqual(["B"]);
+    // overlapping spans: the later started
+    const c = { id: "C", startedAt: at(t + 5 * 60_000), finishedAt: at(t + 12 * 60_000) };
+    expect([...collectRunIdsWithPrHeadChange([a, c], [at(t + 6 * 60_000)])]).toEqual(["C"]);
+    // two changes, two runs
+    expect([...collectRunIdsWithPrHeadChange([a, b], [at(t + 5 * 60_000), at(t + 15 * 60_000)])].sort()).toEqual(["A", "B"]);
+  });
+
+  it("the streak ends when the throttle counts the head change as progress", () => {
+    const ids = ["r0", "r1", "r2"];
+    const rows = ids.flatMap((id) => [handBack(id), parkingNote(id)]);
+    const progress = collectRunIdsWithIssueProgress(rows, () => AGENT);
+    progress.add("r0");
+    const runs = ids.map((id, i) => ({ id, status: "succeeded", errorCode: null, finishedAt: new Date(NOW.getTime() - (5 + 20 * i) * 60_000) }));
+    expect(evaluateIssueRewakeThrottle({
+      now: NOW, recentTerminalRuns: runs, runIdsWithIssueProgress: progress, hasNewIssueInputSinceLastRun: false,
     })).toEqual({ blocked: false, noProgressStreak: 0 });
   });
 });
