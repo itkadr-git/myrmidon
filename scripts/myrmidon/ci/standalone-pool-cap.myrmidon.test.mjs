@@ -75,6 +75,8 @@ test("pool preserves result identity and input order when work finishes out of o
     completions.push(index);
     return values[index];
   });
+  let settled = false;
+  run.then(() => { settled = true; }, () => { settled = true; });
 
   try {
     await nextTurn();
@@ -86,6 +88,7 @@ test("pool preserves result identity and input order when work finishes out of o
     gates[2].resolve();
     await nextTurn();
     assert.deepEqual(completions, [1, 2]);
+    assert.equal(settled, false, "run must remain pending while worker 0 is blocked");
     gates[0].resolve();
     const results = await run;
     assert.deepEqual(completions, [1, 2, 0]);
