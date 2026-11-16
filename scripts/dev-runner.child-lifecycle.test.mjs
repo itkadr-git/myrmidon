@@ -115,6 +115,15 @@ test("SDK failure prevents server spawn", async () => {
   assert.deepEqual(h.exits, [12]);
 });
 
+test("SDK signal propagates and prevents server spawn", async () => {
+  const h = await loadRunner();
+  const pending = h.runner.startServerChild();
+  h.children[0].child.emit("exit", null, "SIGTERM");
+  await assert.rejects(pending, /process.exit:143/);
+  assert.equal(h.children.length, 1);
+  assert.deepEqual(h.exits, [143]);
+});
+
 test("waiting without child and expected restart clear the child", async () => {
   const h = await loadRunner();
   const empty = await h.runner.waitForChildExit();
