@@ -518,9 +518,13 @@ export async function readReviewPullRequestHeadSha(input: {
 }
 
 /** Only a matching, recent PR head and final check are authoritative together. */
-async function readWebhookCi(db: Db, companyId: string, reference: GitHubPullRequestReference): Promise<{
-  state: "complete"; headSha: string; finalCheckConclusion: string;
-} | { state: "pending" | "head_only"; headSha: string } | null> {
+type WebhookCi = {
+  headSha: string;
+  /** Null: the head is known from webhooks, its final check is not (ask GitHub for the check only). */
+  verdict: { state: "complete"; finalCheckConclusion: string } | { state: "pending" } | null;
+};
+
+async function readWebhookCi(db: Db, companyId: string, reference: GitHubPullRequestReference): Promise<WebhookCi | null> {
   try {
     const rows = await db.select({
       event: connectionEventDeliveries.event,
@@ -536,25 +540,35 @@ async function readWebhookCi(db: Db, companyId: string, reference: GitHubPullReq
       sql`coalesce(${connectionEventDeliveries.normalizedPayload}->>'pullRequestNumber', ${connectionEventDeliveries.normalizedPayload}->>'number') = ${String(reference.number)}`,
     )).orderBy(desc(connectionEventDeliveries.createdAt)).limit(200);
     const sorted = [...rows].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-    const pull = sorted.find((row) => row.event === "pull_request");
+    // Receipt order is not event order: pick the newest pull_request event by the
+    // time GitHub stamped on the PR (updatedAt), falling back to receipt order, so
+    // a delayed `opened` cannot hide a newer `synchronize` (stale head, stale verdict).
+    const stamp = (row: { createdAt: Date; normalizedPayload: unknown }): number => {
+      const updated = Date.parse(String(asRecord(row.normalizedPayload)?.updatedAt ?? ""));
+      return Number.isFinite(updated) ? updated : 0;
+    };
+    const pull = sorted.filter((row) => row.event === "pull_request")
+      .sort((a, b) => stamp(b) - stamp(a) || b.createdAt.getTime() - a.createdAt.getTime())[0];
     const payload = asRecord(pull?.normalizedPayload);
     if (payload?.state !== "open" || typeof payload.headSha !== "string" || !payload.headSha) return null;
+    const headSha = payload.headSha;
     const checks = sorted.filter((row) => {
       const value = asRecord(row.normalizedPayload);
-      return row.event === "check_run" && value !== null && value.headSha === payload.headSha && value.checkName === REVIEW_CI_FINAL_CHECK_NAME;
+      return row.event === "check_run" && value !== null && value.headSha === headSha && value.checkName === REVIEW_CI_FINAL_CHECK_NAME;
     });
     // Receipt order is not run order: a delayed completion from an older run
     // must not override a newer rerun. Ask GitHub when multiple runs are seen.
     const runIds = new Set(checks.map((row) => asRecord(row.normalizedPayload)?.runId).filter((id): id is string => typeof id === "string"));
-    if (runIds.size > 1) return { state: "head_only", headSha: payload.headSha };
-    const result = asRecord(checks[0]?.normalizedPayload);
-    if (result?.status === "completed" && typeof result.conclusion === "string" && !["cancelled", "skipped"].includes(result.conclusion)) {
-      return { state: "complete", headSha: payload.headSha, finalCheckConclusion: result.conclusion };
+    if (runIds.size > 1) return { headSha, verdict: null };
+    // `completed` is terminal for a run: a late `in_progress` must not undo it.
+    const completed = checks.map((row) => asRecord(row.normalizedPayload))
+      .find((value) => value?.status === "completed" && typeof value.conclusion === "string" && !["cancelled", "skipped"].includes(value.conclusion));
+    if (completed) return { headSha, verdict: { state: "complete", finalCheckConclusion: completed.conclusion as string } };
+    const running = asRecord(checks[0]?.normalizedPayload);
+    if (running?.status === "queued" || running?.status === "in_progress" || running?.status === "waiting") {
+      return { headSha, verdict: { state: "pending" } };
     }
-    if (result?.status === "queued" || result?.status === "in_progress" || result?.status === "waiting") {
-      return { state: "pending", headSha: payload.headSha };
-    }
-    return { state: "head_only", headSha: payload.headSha };
+    return { headSha, verdict: null };
   } catch {
     return null;
   }
@@ -580,7 +594,7 @@ export function createReviewPullRequestCiResolver(input: {
     const { reference, pullRequestUrl } = target;
     const webhook = await readWebhookCi(input.db, companyId, reference);
     const matchingWebhook = webhook && (!target.knownHeadSha || target.knownHeadSha === webhook.headSha) ? webhook : null;
-    if (matchingWebhook && matchingWebhook.state !== "head_only") return { ...matchingWebhook, pullRequestUrl };
+    if (matchingWebhook?.verdict) return { ...matchingWebhook.verdict, headSha: matchingWebhook.headSha, pullRequestUrl };
     let token: string | null = null;
     let tokenError = false;
     try {

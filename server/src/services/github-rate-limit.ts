@@ -21,7 +21,11 @@ export function withGitHubReviewBudget(
   };
 }
 
-/** Reserve before each request; both review workers share a rolling one-hour cap. */
+/**
+ * Reserve before each request; both review workers share a rolling one-hour cap.
+ * The row keeps per-minute counters (at most 60 keys), not one entry per request,
+ * so a reservation under the advisory lock reads and writes a few hundred bytes.
+ */
 export async function reserveGitHubReviewRequest(
   db: Db,
   _source: "review-recovery" | "review-rework",
@@ -30,19 +34,28 @@ export async function reserveGitHubReviewRequest(
   try {
     return await db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${REVIEW_BUDGET_KEY}, 0))`);
-      const clock = await tx.execute(sql`select extract(epoch from clock_timestamp()) * 1000 as now_ms`);
-      const now = Number(clock[0]?.now_ms);
-      if (!Number.isFinite(now)) return false;
+      const clock = await tx.execute(sql`select floor(extract(epoch from clock_timestamp()) / 60)::bigint as minute`);
+      const minute = Number(clock[0]?.minute);
+      if (!Number.isFinite(minute)) return false;
       const [row] = await tx.select({ general: instanceSettings.general }).from(instanceSettings)
         .where(eq(instanceSettings.singletonKey, REVIEW_BUDGET_KEY));
-      const entries = Array.isArray(row?.general.requests) ? row.general.requests : [];
-      const recent = entries.filter((value): value is number =>
-        typeof value === "number" && Number.isFinite(value) && value > now - 3_600_000,
-      );
-      if (recent.length >= Math.floor(installationLimit * 0.4)) return false;
-      const general = { requests: [...recent, now] };
+      const stored = row?.general.minutes;
+      const minutes: Record<string, number> = {};
+      let used = 0;
+      if (stored && typeof stored === "object" && !Array.isArray(stored)) {
+        for (const [key, count] of Object.entries(stored as Record<string, unknown>)) {
+          const at = Number(key);
+          if (Number.isInteger(at) && at > minute - 60 && at <= minute && typeof count === "number" && count > 0) {
+            minutes[key] = count;
+            used += count;
+          }
+        }
+      }
+      if (used >= Math.floor(installationLimit * 0.4)) return false;
+      minutes[String(minute)] = (minutes[String(minute)] ?? 0) + 1;
+      const general = { minutes };
       await tx.insert(instanceSettings).values({ singletonKey: REVIEW_BUDGET_KEY, general })
-        .onConflictDoUpdate({ target: instanceSettings.singletonKey, set: { general } });
+        .onConflictDoUpdate({ target: instanceSettings.singletonKey, set: { general, updatedAt: new Date() } });
       return true;
     });
   } catch (error) {
