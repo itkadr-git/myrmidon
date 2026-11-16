@@ -355,6 +355,22 @@ describe("company migration dry run", () => {
     expect(saved?.companyId).toBe(company.id);
   });
 
+  it("does not allow a migration's destination provenance to be replaced", async () => {
+    const [source] = await db.insert(companies).values({ name: "Provenance source", issuePrefix: "MPT" }).returning();
+    const [owned] = await db.insert(companies).values({ name: "Owned destination", issuePrefix: "MPU" }).returning();
+    const [other] = await db.insert(companies).values({ name: "Independent destination", issuePrefix: "MPV" }).returning();
+    const [run] = await db.insert(companyTransferRuns).values({
+      direction: "import", status: "completed", actorKey: "migration-test",
+      idempotencyKey: "immutable-migration-destination", companyId: owned!.id,
+      containerRef: { kind: "company_migration", sourceCompanyId: source!.id },
+    }).returning();
+
+    await expect(companyTransferRunService.attachCompany(db, run!.id, other!.id)).rejects.toThrow();
+    expect((await companyTransferRunService.getRun(db, run!.id))?.companyId).toBe(owned!.id);
+    await companyTransferRunService.attachCompany(db, run!.id, owned!.id);
+    expect((await companyTransferRunService.getRun(db, run!.id))?.companyId).toBe(owned!.id);
+  });
+
   it("does not let a transfer run claim a second destination", async () => {
     const [run] = await db.insert(companyTransferRuns).values({
       direction: "import", status: "applying", actorKey: "migration-test",
