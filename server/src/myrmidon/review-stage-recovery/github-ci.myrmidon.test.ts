@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+vi.mock("../../services/github-review-budget.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../services/github-review-budget.js")>();
+  return { ...actual, withGitHubReviewBudget: (_db: unknown, _source: unknown, fetch: unknown) => fetch };
+});
 import { resetGitHubRateLimitForTests } from "../../services/github-rate-limit.js";
 import {
   createReviewHeadFailedChecksResolver,
@@ -381,6 +385,148 @@ describe("createReviewPullRequestCiResolver", () => {
     isPrimary: true,
     updatedAt: new Date(),
   };
+
+  it("uses fresh matching PR and final-check webhook deliveries without GitHub reads", async () => {
+    const now = new Date();
+    const rows = [
+      { event: "pull_request", createdAt: now, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
+      { event: "check_run", createdAt: now, normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "abc123", checkName: "CI result", status: "completed", conclusion: "success" } },
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const fetch = vi.fn(fakeFetch({}));
+    const tokenProvider = vi.fn(async () => "token");
+    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider });
+    await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toEqual({
+      state: "complete", pullRequestUrl: openProduct.url, headSha: "abc123", finalCheckConclusion: "success",
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(tokenProvider).not.toHaveBeenCalled();
+  });
+
+  it("waits on a fresh running final-check webhook without GitHub reads", async () => {
+    const now = new Date();
+    const rows = [
+      { event: "pull_request", createdAt: now, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
+      { event: "check_run", createdAt: now, normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "abc123", checkName: "CI result", status: "in_progress", conclusion: null } },
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const fetch = vi.fn(fakeFetch({}));
+    const tokenProvider = vi.fn(async () => "token");
+    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider });
+    await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toEqual({
+      state: "pending", pullRequestUrl: openProduct.url, headSha: "abc123",
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(tokenProvider).not.toHaveBeenCalled();
+  });
+
+  it("does not accept a delayed successful webhook over a newer running CI run", async () => {
+    const now = Date.now();
+    const rows = [
+      { event: "pull_request", createdAt: new Date(now - 3000), normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
+      { event: "check_run", createdAt: new Date(now - 2000), normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "abc123", checkName: "CI result", runId: "200", status: "in_progress" } },
+      { event: "check_run", createdAt: new Date(now - 1000), normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "abc123", checkName: "CI result", runId: "100", status: "completed", conclusion: "success" } },
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const resolver = createReviewPullRequestCiResolver({ db, fetch: vi.fn(fakeFetch({})), tokenProvider: async () => null });
+    const result = await resolver({ companyId: "company-1", issueId: "issue-1" });
+    expect(result).not.toMatchObject({ state: "complete", finalCheckConclusion: "success" });
+  });
+
+  it("takes the PR head by GitHub's updatedAt, not by receipt order", async () => {
+    const now = Date.now();
+    const rows = [
+      { event: "pull_request", createdAt: new Date(now - 1000), normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "old111", updatedAt: "2026-11-16T10:00:00Z" } },
+      { event: "pull_request", createdAt: new Date(now - 2000), normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "new222", updatedAt: "2026-11-16T10:05:00Z" } },
+      { event: "check_run", createdAt: new Date(now - 500), normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "old111", checkName: "CI result", runId: "1", status: "completed", conclusion: "success" } },
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const resolver = createReviewPullRequestCiResolver({ db, fetch: vi.fn(fakeFetch({})), tokenProvider: async () => null });
+    const result = await resolver({ companyId: "company-1", issueId: "issue-1" });
+    expect(result).not.toMatchObject({ headSha: "old111", state: "complete" });
+  });
+
+  it("keeps a completed final check when a late in_progress event of the same run arrives after it", async () => {
+    const now = Date.now();
+    const rows = [
+      { event: "pull_request", createdAt: new Date(now - 3000), normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
+      { event: "check_run", createdAt: new Date(now - 1000), normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "abc123", checkName: "CI result", runId: "100", status: "in_progress" } },
+      { event: "check_run", createdAt: new Date(now - 2000), normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "abc123", checkName: "CI result", runId: "100", status: "completed", conclusion: "failure" } },
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const resolver = createReviewPullRequestCiResolver({ db, fetch: vi.fn(fakeFetch({})), tokenProvider: async () => null });
+    await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({ state: "complete", finalCheckConclusion: "failure", headSha: "abc123" });
+  });
+
+  it("uses a fresh webhook head when the final check must be fetched", async () => {
+    const rows = [{ event: "pull_request", createdAt: new Date(), normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } }];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([{ ...openProduct, metadata: { headSha: "abc123" } }]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const calls: Array<{ path: string; headers: Record<string, string> }> = [];
+    const resolver = createReviewPullRequestCiResolver({
+      db, tokenProvider: async () => null,
+      fetch: fakeFetch({ [CHECK_RUNS]: { check_runs: [ciResultOnHead("success")] } }, calls),
+    });
+    await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
+      state: "complete", headSha: "abc123", finalCheckConclusion: "success",
+    });
+    expect(calls.map((call) => call.path)).not.toContain(PULL);
+  });
+
+  it("does not trust webhook CI for a head superseded in the work product", async () => {
+    const now = new Date();
+    const rows = [
+      { event: "pull_request", createdAt: now, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "old" } },
+      { event: "check_run", createdAt: now, normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "old", checkName: "CI result", status: "completed", conclusion: "success" } },
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([{ ...openProduct, metadata: { headSha: "new" } }]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const fetch = vi.fn(fakeFetch({ [PULL]: { state: "open", head: { sha: "new" } } }));
+    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => null });
+    const result = await resolver({ companyId: "company-1", issueId: "issue-1" });
+    expect(fetch).toHaveBeenCalled();
+    expect(result).not.toMatchObject({ state: "complete", headSha: "old" });
+  });
 
   it("answers no_pull_request without a token or network call when the issue has no open PR", async () => {
     let tokenRequested = false;
