@@ -435,6 +435,9 @@ export function decideIssueCooling(input: {
  * threshold: unlike the load discount of the matcher, "no progress" must not
  * be declared at all while the PR is waiting for CI.
  */
+/** An activeCi observation older than this is treated as never closed. */
+const CI_WAIT_COOLING_MAX_AGE_MS = 2 * 3_600_000;
+
 export async function issueWaitsForOwnPrCi(db: Db, companyId: string, issueId: string): Promise<boolean> {
   const products = await db
     .select({ status: issueWorkProducts.status, metadata: issueWorkProducts.metadata })
@@ -449,7 +452,18 @@ export async function issueWaitsForOwnPrCi(db: Db, companyId: string, issueId: s
     if (product.status !== "open") return false;
     const meta = product.metadata as Record<string, unknown> | null;
     const ci = meta?.activeCi && typeof meta.activeCi === "object" ? meta.activeCi as Record<string, unknown> : null;
-    return !!ci && (ci.status === "queued" || ci.status === "in_progress") && typeof ci.headSha === "string" && ci.headSha !== "";
+    if (!ci || !(ci.status === "queued" || ci.status === "in_progress")) return false;
+    const ciHead = typeof ci.headSha === "string" ? ci.headSha.trim().toLowerCase() : "";
+    if (!ciHead) return false;
+    // The CI must belong to the CURRENT head of the PR (same rule as the
+    // matcher): a record left for an older head proves nothing.
+    const currentHead = typeof meta?.headSha === "string" ? meta.headSha.trim().toLowerCase() : "";
+    if (currentHead && currentHead !== ciHead) return false;
+    // A record that no completion event ever closed must not hold the task out
+    // of the cooling for ever: an observation older than the cap is ignored.
+    const observedAt = typeof ci.observedAt === "string" ? Date.parse(ci.observedAt) : NaN;
+    if (Number.isFinite(observedAt) && Date.now() - observedAt > CI_WAIT_COOLING_MAX_AGE_MS) return false;
+    return true;
   });
 }
 

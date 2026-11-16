@@ -378,7 +378,7 @@ describeEmbeddedPostgres("myrmidon(CI-WAIT-NOT-LOAD) a task waiting for CI of it
   });
 
   /** A todo task whose last automatic run succeeded without a visible result, with a PR in the given CI state. */
-  async function seedParkedTask(ciStatus: string | null) {
+  async function seedParkedTask(ciStatus: string | null, ci: { activeHead?: string; prHead?: string; observedAgoMin?: number } = {}) {
     const issueId = randomUUID();
     await db.insert(issues).values({
       id: issueId, companyId, title: `Task ${issueId.slice(0, 4)}`, status: "todo", priority: "high",
@@ -388,7 +388,13 @@ describeEmbeddedPostgres("myrmidon(CI-WAIT-NOT-LOAD) a task waiting for CI of it
       await db.insert(issueWorkProducts).values({
         id: randomUUID(), companyId, issueId, type: "pull_request", provider: "github", title: "PR",
         status: "open", reviewState: "draft", externalId: `itkadr-git/myrmidon#pull/${Math.floor(Math.random() * 1e6)}`,
-        metadata: { repository: "itkadr-git/myrmidon", number: 7, activeCi: { status: ciStatus, headSha: "c".repeat(40) } },
+        metadata: {
+          repository: "itkadr-git/myrmidon", number: 7, headSha: ci.prHead ?? "c".repeat(40),
+          activeCi: {
+            status: ciStatus, headSha: ci.activeHead ?? "c".repeat(40),
+            observedAt: new Date(Date.now() - (ci.observedAgoMin ?? 1) * 60_000).toISOString(),
+          },
+        },
       });
     }
     const at = new Date(Date.now() - 5 * 60_000);
@@ -412,6 +418,15 @@ describeEmbeddedPostgres("myrmidon(CI-WAIT-NOT-LOAD) a task waiting for CI of it
       const issueId = await seedParkedTask(ci);
       expect((await isIssueCoolingDown(db, companyId, issueId, settings, new Date())).cooling).toBe(false);
     }
+  });
+
+  it("a stale activeCi (an old head, or never closed for hours) does not hold the cooling off", async () => {
+    const oldHead = await seedParkedTask("in_progress", { activeHead: "a".repeat(40), prHead: "c".repeat(40) });
+    expect(await isIssueCoolingDown(db, companyId, oldHead, settings, new Date()))
+      .toMatchObject({ cooling: true, reason: "no_progress" });
+    const old = await seedParkedTask("queued", { observedAgoMin: 3 * 60 });
+    expect(await isIssueCoolingDown(db, companyId, old, settings, new Date()))
+      .toMatchObject({ cooling: true, reason: "no_progress" });
   });
 
   it("the same run on a task whose PR has no CI running, or with no PR, still cools it", async () => {
