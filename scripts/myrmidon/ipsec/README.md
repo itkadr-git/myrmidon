@@ -47,4 +47,3 @@ commands, URLs, or credentials in the manifest. References are printed verbatim;
 no generic filter can detect all secrets. Extra fields and references with
 unsupported characters or common secret labels are rejected. Errors never echo
 input. A rejected manifest produces no plan.
-
