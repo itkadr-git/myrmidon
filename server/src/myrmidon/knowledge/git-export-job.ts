@@ -90,9 +90,10 @@ export async function runKnowledgeExportPass(
     || readProductEnv("SCRATCH_DIR", { env })?.trim()
     || os.homedir();
   for (const companyId of companyIds) {
-    await mkdir(scratchRoot, { recursive: true });
-    const workDir = await mkdtemp(path.join(scratchRoot, "knowledge-export-"));
+    let workDir: string | undefined;
     try {
+      await mkdir(scratchRoot, { recursive: true });
+      workDir = await mkdtemp(path.join(scratchRoot, "knowledge-export-"));
       const buf = await ports.exportCompany(db, companyId);
       const doc = parseKnowledgeTree(buf);
       const tree = buildKnowledgeGitTree(doc);
@@ -114,7 +115,7 @@ export async function runKnowledgeExportPass(
       failed += 1;
       ports.log.warn({ error: errorMessage(err), companyId }, "knowledge export failed for one company");
     } finally {
-      await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+      if (workDir) await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
   return { enabled: true, companies: companyIds.length, committed, unchanged, failed };
