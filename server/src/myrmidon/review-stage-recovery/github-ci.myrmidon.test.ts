@@ -382,6 +382,29 @@ describe("createReviewPullRequestCiResolver", () => {
     updatedAt: new Date(),
   };
 
+  it("uses fresh matching PR and final-check webhook deliveries without GitHub reads", async () => {
+    const now = new Date();
+    const rows = [
+      { event: "pull_request", createdAt: now, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
+      { event: "check_run", createdAt: now, normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "abc123", checkName: "CI result", status: "completed", conclusion: "success" } },
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const fetch = vi.fn(fakeFetch({}));
+    const tokenProvider = vi.fn(async () => "token");
+    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider });
+    await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toEqual({
+      state: "complete", pullRequestUrl: openProduct.url, headSha: "abc123", finalCheckConclusion: "success",
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(tokenProvider).not.toHaveBeenCalled();
+  });
+
   it("answers no_pull_request without a token or network call when the issue has no open PR", async () => {
     let tokenRequested = false;
     const resolver = createReviewPullRequestCiResolver({
