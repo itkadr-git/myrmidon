@@ -699,7 +699,9 @@ jobs:
           else
             echo 'Dev runner argv regression test is not present in this checkout.'
           fi
+
       - name: Dev runner child lifecycle tests
+        if: ${{ !cancelled() }}
         run: node --experimental-vm-modules --test scripts/dev-runner.child-lifecycle.test.mjs
 
       - name: Brand release audit (DEBRAND gate)
