@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -10,7 +10,9 @@ const cli = fileURLToPath(new URL('./import-report-lazy-impact.mjs', import.meta
 const scanner = fileURLToPath(new URL('./import-budget.mjs', import.meta.url));
 const spawn = (script, args) => spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', timeout: 10000 });
 function fixture(t) {
-  const dir = mkdtempSync(join(process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || homedir(), 'lazy-impact-'));
+  const root = process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_SCRATCH_DIR || join(homedir(), '.cache', 'lazy-impact-tests');
+  mkdirSync(root, { recursive: true });
+  const dir = mkdtempSync(join(root, 'lazy-impact-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   return dir;
 }
@@ -45,19 +47,56 @@ test('alternate direct path yields zero effect and zero-byte modules count', t =
   success(runReport(dir, report), { ...expected, after: { modules: 5, bytes: 67 }, removedPaths: [], savedBytes: 0 });
 });
 
-test('errors have stable category, no stdout or input leakage', t => {
+test('errors have exact categories, no stdout or input leakage', t => {
   const dir = fixture(t), base = diamond();
-  const invalid = [null, {}, { ...base, entry: 'missing' }, { ...base, modules: [...base.modules, base.modules[0]] }, { ...base, modules: base.modules.map((m, i) => i ? m : { ...m, bytes: -1 }) }, { ...base, modules: base.modules.map((m, i) => i ? m : { ...m, eager: false }) }, { ...base, edges: [...base.edges, base.edges[0]] }, { ...base, edges: [...base.edges, edge('missing', 'x', 'a')] }, { ...base, edges: [...base.edges, edge('entry', 'a', 'b')] }, { ...base, edges: [...base.edges, edge('entry', 'x', 'missing')] }, { ...base, edges: [...base.edges, edge('entry', 'x', null, 'bad')] }];
-  for (const report of invalid) {
-    const r = runReport(dir, report);
-    assert.equal(r.status, 1); assert.equal(r.stdout, ''); assert.match(r.stderr, /^error: (shape|graph|selection)\n$/);
-  }
-  writeFileSync(join(dir, 'report.json'), JSON.stringify(base));
-  for (const args of [[], [join(dir, 'missing'), 'a', 'b'], [join(dir, 'report.json'), 'entry', 'lazy']]) {
-    const r = spawn(cli, args); assert.equal(r.status, 1); assert.equal(r.stdout, ''); assert.match(r.stderr, /^error: (argv|read|selection)\n$/);
-  }
+  const withModule = changes => ({ ...base, modules: base.modules.map((m, i) => i ? m : { ...m, ...changes }) });
+  const withEdge = item => ({ ...base, edges: [...base.edges, item] });
+  const cases = [
+    ['null report', null, 'shape'], ['missing fields', {}, 'shape'],
+    ['missing entry', { ...base, entry: 'missing' }, 'graph'],
+    ['duplicate module', { ...base, modules: [...base.modules, base.modules[0]] }, 'graph'],
+    ...[-1, 0.5, Number.MAX_SAFE_INTEGER + 1, '10'].map(bytes => [`bytes ${bytes}`, withModule({ bytes }), 'shape']),
+    ['empty path', withModule({ path: '' }), 'shape'],
+    ['non-boolean eager', withModule({ eager: 'true' }), 'shape'],
+    ['inconsistent eager', withModule({ eager: false }), 'graph'],
+    ['duplicate edge', withEdge(base.edges[0]), 'graph'],
+    ['missing from', withEdge(edge('missing', 'x', 'a')), 'graph'],
+    ['ambiguous selection', withEdge(edge('entry', 'a', 'b')), 'selection'],
+    ['missing to', withEdge(edge('entry', 'x', 'missing')), 'graph'],
+    ['bad kind', withEdge(edge('entry', 'x', null, 'bad')), 'shape'],
+    ['empty from', withEdge(edge('', 'x', 'a')), 'shape'],
+    ['empty specifier', withEdge(edge('entry', '', 'a')), 'shape'],
+    ['invalid to', withEdge(edge('entry', 'x', 42)), 'shape'],
+  ];
+  const failure = (result, category, label) => {
+    assert.equal(result.status, 1, label);
+    assert.equal(result.stdout, '', label);
+    assert.equal(result.stderr, `error: ${category}\n`, label);
+  };
+  for (const [label, report, category] of cases) failure(runReport(dir, report), category, label);
+  const reportFile = join(dir, 'report.json');
+  writeFileSync(reportFile, JSON.stringify(base));
+  for (const [args, category] of [
+    [[], 'argv'], [[reportFile, '', 'a'], 'argv'],
+    [[join(dir, 'missing'), 'a', 'b'], 'read'],
+    [[reportFile, 'entry', 'lazy'], 'selection'],
+    [[reportFile, 'entry', 'absent'], 'selection'],
+  ]) failure(spawn(cli, args), category, JSON.stringify(args));
   const bad = join(dir, 'bad.json'); writeFileSync(bad, '{');
-  const r = spawn(cli, [bad, 'entry', 'a']); assert.equal(r.status, 1); assert.equal(r.stdout, ''); assert.equal(r.stderr, 'error: json\n');
+  failure(spawn(cli, [bad, 'entry', 'a']), 'json', 'invalid JSON');
+  assert.equal(readFileSync(reportFile, 'utf8'), JSON.stringify(base));
+});
+
+test('accepts unresolved edges and additional fields without changing input', t => {
+  const dir = fixture(t), report = diamond();
+  report.extra = { ignored: true };
+  report.modules[0].extra = 'ignored';
+  report.edges.push({ ...edge('entry', 'unknown', null), extra: true });
+  success(runReport(dir, report), expected);
+  const result = runReport(dir, report, 'entry', 'unknown');
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, 'error: selection\n');
 });
 
 test('accepts a real scanner report and never executes source', t => {
