@@ -128,6 +128,14 @@ describe("migration manifest validation", () => {
     expect(selfParent.errors).toEqual(expect.arrayContaining([expect.stringContaining("parent cycle")]));
   });
 
+  it("validates a long acyclic task parent chain without repeated traversal", () => {
+    const issues = Array.from({ length: 20000 }, (_, index) => ({
+      slug: `task-${index}`, projectSlug: null, assigneeAgentSlug: null,
+      parentSlug: index === 0 ? null : `task-${index - 1}`, blockedBy: [],
+    }));
+    expect(validateMigrationManifest({ agents: [], skills: [], envInputs: [], issues }).errors).toEqual([]);
+  });
+
   it("rejects cycles in imported task blocker relationships", () => {
     const issue = { slug: "first", projectSlug: null, assigneeAgentSlug: null,
       parentSlug: null, blockedBy: ["second"] };

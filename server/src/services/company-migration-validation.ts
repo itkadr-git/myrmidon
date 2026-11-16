@@ -80,6 +80,7 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
     issueSlugs.add(issue.slug);
   }
   const parentByIssue = new Map((manifest.issues ?? []).map((issue) => [issue.slug, issue.parentSlug ?? null]));
+  const checkedParents = new Set<string>();
   for (const issue of manifest.issues ?? []) {
     if (issue.projectSlug && !projectSlugs.has(issue.projectSlug)) errors.push(`Task ${issue.slug} references missing project ${issue.projectSlug}.`);
     if (issue.assigneeAgentSlug && !agentSlugs.has(issue.assigneeAgentSlug)) errors.push(`Task ${issue.slug} references missing agent ${issue.assigneeAgentSlug}.`);
@@ -88,7 +89,7 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
     }
     const path = new Set<string>();
     let current: string | null = issue.slug;
-    while (current) {
+    while (current && !checkedParents.has(current)) {
       if (path.has(current)) {
         errors.push(`Task ${issue.slug} has a parent cycle.`);
         break;
@@ -96,6 +97,7 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
       path.add(current);
       current = parentByIssue.get(current) ?? null;
     }
+    for (const slug of path) checkedParents.add(slug);
   }
   const blockers = new Map((manifest.issues ?? []).map((issue) => [issue.slug, issue.blockedBy ?? []]));
   const visiting = new Set<string>();
