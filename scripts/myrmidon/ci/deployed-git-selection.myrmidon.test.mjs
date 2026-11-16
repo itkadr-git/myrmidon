@@ -35,6 +35,21 @@ function fixture(run) {
   }
 }
 
+if (process.env.MYRMIDON_SELECTION_REPEAT_CHILD !== "1") {
+  test("two consecutive suite runs produce identical passing results", () => {
+    const args = ["--test", "--test-reporter=dot", new URL(import.meta.url).pathname];
+    const options = {
+      encoding: "utf8",
+      env: { ...process.env, MYRMIDON_SELECTION_REPEAT_CHILD: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    };
+    const first = execFileSync(process.execPath, args, options);
+    const second = execFileSync(process.execPath, args, options);
+    assert.equal(first.trim(), "......");
+    assert.equal(second.trim(), first.trim());
+  });
+}
+
 test("diff-only ignores unchanged conflicts and selects added SQL with spaces", () => fixture(({ migrationsDir, commit, check }) => {
   fs.writeFileSync(path.join(migrationsDir, "0427_new migration.sql"), "SELECT 4;\n");
   const result = check(commit("add clean"));
