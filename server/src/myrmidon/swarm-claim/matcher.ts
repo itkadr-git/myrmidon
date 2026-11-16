@@ -103,7 +103,7 @@ import {
 import { projectMemberAgentIds, projectMembershipByProject, projectScopedClaimGate } from "../project-membership.js";
 import { issueService } from "../../services/issues.js";
 import { currentCompanyReleaseFocus } from "../run-priority/state.js";
-import { AUTO_SLICE_DEDUPE_STATUSES, createAutoSlicePolicy, projectQueueShortages, releaseEpicCandidates, runAutoSlicePass } from "./auto-slice-policy.js";
+import { AUTO_SLICE_DEDUPE_STATUSES, AUTO_SLICE_TITLE, createAutoSlicePolicy, projectQueueShortages, releaseEpicCandidates, runAutoSlicePass } from "./auto-slice-policy.js";
 import { unassignedTaskRoutedToRole } from "./queue.js";
 import { insertClaim, releaseClaimsForIssue, revertIdleClaimAssignment } from "./store.js";
 
@@ -734,7 +734,6 @@ async function casteDirectoryOf(
  * that no task was found for, and a closed host field matches nothing at all.
  */
 const autoSlicePolicies = new WeakMap<object, ReturnType<typeof createAutoSlicePolicy>>();
-const AUTO_SLICE_TITLE = "[AUTO-SLICE] Пополнить очередь инженеров";
 
 async function autoSliceCompany(deps: SwarmMatcherDeps, companyId: string, castes: Map<string, SwarmMatcherCaste>): Promise<void> {
   const release = currentCompanyReleaseFocus(companyId).currentRelease;

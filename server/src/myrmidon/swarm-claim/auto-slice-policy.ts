@@ -83,3 +83,5 @@ export const AUTO_SLICE_DEDUPE_STATUSES = ["backlog", "todo", "in_progress"] as 
 export function autoSliceBlocksNext(status: string): boolean {
   return (AUTO_SLICE_DEDUPE_STATUSES as readonly string[]).includes(status);
 }
+
+export const AUTO_SLICE_TITLE = "[AUTO-SLICE] Пополнить очередь инженеров";
