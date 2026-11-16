@@ -31,7 +31,7 @@ function inventory(report) {
 try {
   if (process.argv.length !== 3) fail('argv');
   let source, report;
-  try { source = readFileSync(process.argv[2], 'utf8'); } catch { fail('read'); }
+  try { source = readFileSync(process.argv[2] === '-' ? 0 : process.argv[2], 'utf8'); } catch { fail('read'); }
   try { report = JSON.parse(source); } catch { fail('json'); }
   process.stdout.write(JSON.stringify(inventory(report)) + '\n');
 } catch (category) {
