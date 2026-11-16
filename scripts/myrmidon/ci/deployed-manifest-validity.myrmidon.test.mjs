@@ -72,7 +72,7 @@ test("manifest without migrations array fails", () => {
 });
 
 test("empty migrations array fails", () => {
-  checkConfig({ ...valid, migrations: [] });
+  checkConfig({ migrations: [] });
 });
 
 test("duplicate migration numbers fail", () => {
