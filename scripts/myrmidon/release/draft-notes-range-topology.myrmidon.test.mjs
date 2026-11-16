@@ -141,6 +141,7 @@ test("skips a stable descendant of the source", () => {
 test("uses a side-branch stable merge-base without shipping side-branch work", () => {
   withRepo((dir) => {
     commit(dir, "feat: common shipped (#40)");
+    const base = git(dir, "rev-parse", "--short", "HEAD").trim();
     git(dir, "checkout", "-q", "-b", "candidate");
     commit(dir, "docs: candidate-only release text (#41)");
     tag(dir, "v2026.200.0", true);
@@ -149,7 +150,7 @@ test("uses a side-branch stable merge-base without shipping side-branch work", (
     tag(dir, "beta/v2026.201.0-beta.0");
 
     const { body } = draft(dir, "2026.201.0-beta.0");
-    assert.match(body, /baseline: v2026\.200\.0 \(merge-base /);
+    assert.ok(body.includes(`baseline: v2026.200.0 (merge-base ${base})`));
     assertNotes(body, ["feat: source after candidate split (#42)"], ["feat: common shipped (#40)", "docs: candidate-only release text (#41)"]);
   });
 });
