@@ -318,26 +318,26 @@ function patternMatch(pattern, subpath) {
   return subpath.slice(head.length, subpath.length - tail.length);
 }
 
-function resolveConditions(obj) {
-  // Node picks the first matching condition in object insertion order;
-  // `types` is TypeScript-only and deliberately not a runtime condition.
-  for (const [key, value] of Object.entries(obj)) {
-    if (!RUNTIME_CONDITIONS.has(key)) continue;
-    if (typeof value === "string") return value;
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        const resolved =
-          typeof item === "string" ? item : item && typeof item === "object" ? resolveConditions(item) : null;
-        if (typeof resolved === "string") return resolved;
-      }
-      continue;
+function resolveConditions(value) {
+  if (value === null || typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    let result = null;
+    for (const item of value) {
+      const resolved = resolveConditions(item);
+      if (resolved === undefined) continue;
+      if (resolved !== null) return resolved;
+      result = null;
     }
-    if (value && typeof value === "object") {
-      const resolved = resolveConditions(value);
-      if (typeof resolved === "string") return resolved;
-    }
+    return result;
   }
-  return null;
+  if (typeof value !== "object") return null;
+  // Undefined means no condition matched; null is an explicit block.
+  for (const [key, target] of Object.entries(value)) {
+    if (!RUNTIME_CONDITIONS.has(key)) continue;
+    const resolved = resolveConditions(target);
+    if (resolved !== undefined) return resolved;
+  }
+  return undefined;
 }
 
 /**
@@ -359,32 +359,34 @@ export function matchExportsTarget(exportsField, main, subpath) {
     return subpath === "." ? exportsField : undefined;
   }
   if (Array.isArray(exportsField)) {
-    for (const item of exportsField) {
-      const resolved = matchExportsTarget(item, main, subpath);
-      if (typeof resolved === "string") return resolved;
-    }
-    return null;
+    return subpath === "." ? (resolveConditions(exportsField) ?? null) : undefined;
   }
   const keys = Object.keys(exportsField);
   const isSubpathMap = keys.length > 0 && keys.every((k) => k === "." || k.startsWith("./"));
   if (!isSubpathMap) {
     // Conditions object for the "." entry.
     if (subpath !== ".") return undefined;
-    return resolveConditions(exportsField);
+    return resolveConditions(exportsField) ?? null;
   }
-  const exact = exportsField[subpath];
-  if (exact !== undefined) {
-    return typeof exact === "string" ? exact : resolveConditions(exact);
+  if (Object.hasOwn(exportsField, subpath)) {
+    return resolveConditions(exportsField[subpath]) ?? null;
   }
-  for (const [key, value] of Object.entries(exportsField)) {
-    if (!key.includes("*")) continue;
-    const star = patternMatch(key, subpath);
-    if (star === null) continue;
-    const resolved = typeof value === "string" ? value : resolveConditions(value);
-    if (typeof resolved !== "string") continue;
-    return resolved.includes("*") ? resolved.replaceAll("*", star) : resolved;
+  let bestKey;
+  let bestMatch;
+  for (const key of keys) {
+    const starIndex = key.indexOf("*");
+    if (starIndex === -1 || key.indexOf("*", starIndex + 1) !== -1) continue;
+    const match = patternMatch(key, subpath);
+    if (match === null) continue;
+    const bestStar = bestKey?.indexOf("*") ?? -1;
+    if (bestKey === undefined || starIndex > bestStar || (starIndex === bestStar && key.length > bestKey.length)) {
+      bestKey = key;
+      bestMatch = match;
+    }
   }
-  return undefined;
+  if (bestKey === undefined) return undefined;
+  const target = resolveConditions(exportsField[bestKey]);
+  return typeof target === "string" ? target.replaceAll("*", bestMatch) : null;
 }
 
 function safeRealpath(p) {
