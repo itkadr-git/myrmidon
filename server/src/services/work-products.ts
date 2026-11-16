@@ -279,6 +279,9 @@ export function workProductService(
         }
       }
       const row = await db.transaction(async (tx) => {
+        // Lock before demoting an existing primary, not just before inserting.
+        await tx.select({ id: issues.id }).from(issues)
+          .where(eq(issues.id, issueId)).for("update");
         if (data.isPrimary) {
           await tx
             .update(issueWorkProducts)
