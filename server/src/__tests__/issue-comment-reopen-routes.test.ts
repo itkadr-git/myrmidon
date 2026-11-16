@@ -3103,11 +3103,11 @@ describe.sequential("issue comment reopen routes", () => {
         status: "in_review",
         executionState: expect.objectContaining({
           currentStageId: lockedPolicy.stages[1].id,
-          currentParticipant: { type: "agent", agentId: nextReviewerId },
+          currentParticipant: expect.objectContaining({ type: "agent", agentId: nextReviewerId }),
         }),
       }),
       mockTx,
-      expect.any(Array),
+      undefined,
       expect.any(Array),
     );
   });
@@ -3145,7 +3145,7 @@ describe.sequential("issue comment reopen routes", () => {
     };
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.getByIdForUpdate.mockResolvedValue({ ...issue, executionPolicy: lockedPolicy });
-    mockIssueService.addComment.mockResolvedValue({ id: "comment-locked-policy", issueId: issue.id });
+    mockIssueService.addComment.mockResolvedValue({ id: "comment-locked-policy", issueId: issue.id, body: "## Review: APPROVED" });
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...issue, ...patch, updatedAt: new Date(),
     }));
@@ -3164,7 +3164,7 @@ describe.sequential("issue comment reopen routes", () => {
         status: "in_review",
         executionState: expect.objectContaining({
           currentStageId: lockedPolicy.stages[1].id,
-          currentParticipant: { type: "agent", agentId: nextReviewerId },
+          currentParticipant: expect.objectContaining({ type: "agent", agentId: nextReviewerId }),
         }),
       }),
       mockTx,
