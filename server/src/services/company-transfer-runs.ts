@@ -259,14 +259,14 @@ export const companyTransferRunService = {
   },
 
   async attachCompany(db: Db, runId: string, companyId: string): Promise<void> {
-    // Migration destination provenance is write-once: retries may confirm the
-    // same destination, but must never retarget it to another company.
+    // Only atomic company creation may establish migration ownership; this
+    // helper may confirm that association but cannot claim an existing company.
     const updated = await db
       .update(companyTransferRuns)
       .set({ companyId, updatedAt: new Date() })
       .where(and(
         eq(companyTransferRuns.id, runId),
-        sql`(coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration' or ${companyTransferRuns.companyId} is null or ${companyTransferRuns.companyId} = ${companyId})`,
+        sql`(coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration' or ${companyTransferRuns.companyId} = ${companyId})`,
       ))
       .returning({ id: companyTransferRuns.id });
     if (updated.length !== 1) throw new Error("Transfer run destination provenance is immutable");
