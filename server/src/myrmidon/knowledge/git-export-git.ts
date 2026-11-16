@@ -208,10 +208,8 @@ export async function publishKnowledgeExport(input: PublishKnowledgeExportInput)
       await git(runner, input.workDir, ["remote", "add", "origin", input.repoUrl], env);
     }
   } else {
-    await git(runner, input.workDir, ["fetch", "origin", input.branch], env).catch(() => {
-      // The branch may not exist yet. A failed fetch must not hide a later
-      // push error: we only swallow "no such branch" by continuing to commit.
-    });
+    // Even a missing branch fails closed: an existing checkout may be stale.
+    await git(runner, input.workDir, ["fetch", "origin", input.branch], env);
   }
 
   const { committed, commit } = await commitKnowledgeTreeIfChanged(
