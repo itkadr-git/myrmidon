@@ -126,6 +126,27 @@ describe("migration dry-run warnings", () => {
     expect(previewImport).not.toHaveBeenCalled();
   });
 
+  it("does not pass webhook integrations or their metadata to the import planner", async () => {
+    const manifest = {
+      agents: [], projects: [], skills: [], envInputs: [],
+      issues: [{ slug: "scheduled-task", projectSlug: null, assigneeAgentSlug: null,
+        parentSlug: null, blockedBy: [], recurring: true,
+        routine: { triggers: [{ kind: "webhook", label: "private-webhook-canary" }] } }],
+    };
+    const previewImport = vi.fn();
+    const portability = {
+      exportBundle: vi.fn().mockResolvedValue({ rootPath: "package", files: {}, manifest, warnings: [] }),
+      previewImport,
+    } as unknown as ReturnType<typeof companyPortabilityService>;
+
+    const result = await companyMigrationService(portability).dryRun("source", {}, "destination");
+
+    expect(result.validation.errors).toEqual(expect.arrayContaining([expect.stringContaining("webhook trigger")]));
+    expect(result.validation.importPreviewSkipped).toBe(true);
+    expect(previewImport).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain("private-webhook-canary");
+  });
+
   it("distinguishes skipped import validation from a warning-free preview", async () => {
     const manifest = { agents: [], projects: [], issues: [], skills: [], envInputs: [
       { key: "TOKEN", agentSlug: "missing", projectSlug: null, kind: "secret", requirement: "required" },
