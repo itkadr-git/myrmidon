@@ -362,6 +362,23 @@ describe("myr-ws open — invalid keys", { skip: !hasGit }, () => {
   });
 });
 
+describe("myr-ws open — physical volume budget", { skip: !hasGit }, () => {
+  it("refuses a new copy at 9% free and permits it after recovery to 10%", async () => {
+    let free = 9;
+    const statfs = () => ({ blocks: 100, bavail: free });
+    const refused = await run(["ABC-901", REPO, "--json"], { statfs });
+    assert.equal(refused.exitCode, 3);
+    assert.match(copyOf(refused).error, /disk_budget/);
+    assert.equal(ctx.calls.length, 0);
+    assert.equal(fs.existsSync(path.join(ctx.workspaceRoot, "ABC-901")), false);
+
+    free = 10;
+    const recovered = await run(["ABC-901", REPO, "--json"], { statfs });
+    assert.equal(recovered.exitCode, 0, recovered.stderr);
+    assert.equal(copyOf(recovered).reused, false);
+  });
+});
+
 describe("myr-ws open — disk pressure", { skip: !hasGit }, () => {
   const writeState = (pressure, ageSec = 0) =>
     fs.writeFileSync(
