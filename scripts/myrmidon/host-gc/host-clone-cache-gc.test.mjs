@@ -50,6 +50,11 @@ const {
   scanRunnerUnrecognizedWorkspaceFolders,
   scanIdleOpenClones,
   pruneIdleOpenClones,
+  scanReviewerClones,
+  pruneReviewerClones,
+  isReviewerAgent,
+  fetchBotAgent,
+  fetchRunAgentId,
   fetchIssueOpenState,
   volumeFreePercent,
 } = await import(
@@ -2192,6 +2197,122 @@ describe("idle clones of open tasks (OPE-13411)", () => {
     }
   });
 
+  describe("copies of reviewer bots", () => {
+    const REVIEWER = { ok: true, id: "agent-rev", name: "adm-dev-review-10", role: "qa" };
+    const ENGINEER = { ok: true, id: "agent-eng", name: "adm-dev-eng-3", role: "engineer" };
+    const todo = (extra = {}) => ({ ok: true, status: "todo", liveRunId: null, ...extra });
+    const reviewScan = (bot, map = {}, { agent = REVIEWER, runs = {}, ...opts } = {}) =>
+      scanReviewerClones(bot.workspace, Date.now(), {
+        fetchState: async (id) => map[id] ?? todo(),
+        fetchAgent: async () => agent,
+        fetchRun: async (id) => runs[id] ?? { ok: false, reason: "board-http-404" },
+        ...opts,
+      });
+
+    it("removes a reviewer's copy of a todo task idle for more than 10 minutes, with the journal", async () => {
+      const bot = makeBot();
+      const clone = addClone(bot, "OPE-1", { ageHours: 15 / 60 });
+      const r = await reviewScan(bot);
+      assert.deepEqual(verdicts(r), { "OPE-1": "remove:reviewer-copy-idle" });
+      assert.equal(r.items[0].status, "todo");
+      const journal = path.join(tmpDir, "j.jsonl");
+      const gone = await pruneReviewerClones(r.items, bot.workspace, journal, { fetchState: async () => todo(), fetchRun: async () => ({ ok: false }) });
+      assert.deepEqual(gone, [clone]);
+      assert.equal(fs.existsSync(clone), false);
+      assert.doesNotMatch(git(["--git-dir", bot.base, "worktree", "list"]), /OPE-1\b/);
+      const rec = JSON.parse(fs.readFileSync(journal, "utf8").trim());
+      assert.equal(rec.event, "review-clone-removed");
+      assert.equal(rec.status, "todo");
+      assert.equal(rec.thresholdMinutes, 10);
+    });
+
+    it("keeps a copy younger than 10 minutes", async () => {
+      const bot = makeBot();
+      const clone = addClone(bot, "OPE-1", { ageHours: 3 / 60 });
+      const events = [];
+      const r = await reviewScan(bot, {}, { onEvent: (e) => events.push(e) });
+      assert.deepEqual(verdicts(r), { "OPE-1": "keep:fresh" });
+      assert.equal(events[0].event, "review-clone-kept");
+      assert.equal(await pruneReviewerClones(r.items, bot.workspace, path.join(tmpDir, "j.jsonl"), {}).then((g) => g.length), 0);
+      assert.equal(fs.existsSync(clone), true);
+    });
+
+    it("keeps a copy while the reviewer has a run of its own, also when the engineer's run is on the task", async () => {
+      const bot = makeBot();
+      addClone(bot, "OPE-1", { ageHours: 1 });
+      addClone(bot, "OPE-2", { ageHours: 1 });
+      addClone(bot, "OPE-3", { ageHours: 1 });
+      const r = await reviewScan(bot, {
+        "OPE-1": todo({ liveRunId: "run-rev", liveRunIds: ["run-rev"] }),
+        "OPE-2": todo({ liveRunId: "run-eng", liveRunIds: ["run-eng"] }),
+        "OPE-3": todo({ liveRunId: "run-x", liveRunIds: ["run-x"] }),
+      }, { runs: { "run-rev": { ok: true, agentId: "agent-rev" }, "run-eng": { ok: true, agentId: "agent-eng" } } });
+      assert.deepEqual(verdicts(r), {
+        "OPE-1": "keep:live-run",
+        "OPE-2": "remove:reviewer-copy-idle", // the engineer's run does not use the reviewer's copy
+        "OPE-3": "keep:live-run", // owner of the run unknown: no guess
+      });
+    });
+
+    it("keeps a copy when a run of the reviewer starts between the scan and the removal", async () => {
+      const bot = makeBot();
+      const clone = addClone(bot, "OPE-1", { ageHours: 1 });
+      const r = await reviewScan(bot);
+      const journal = path.join(tmpDir, "j.jsonl");
+      const gone = await pruneReviewerClones(r.items, bot.workspace, journal, {
+        fetchState: async () => todo({ liveRunId: "run-rev", liveRunIds: ["run-rev"] }),
+        fetchRun: async () => ({ ok: true, agentId: "agent-rev" }),
+      });
+      assert.deepEqual(gone, []);
+      assert.equal(fs.existsSync(clone), true);
+      const rec = JSON.parse(fs.readFileSync(journal, "utf8").trim());
+      assert.equal(rec.event, "review-clone-kept");
+      assert.equal(rec.reason, "live-run");
+    });
+
+    it("does not touch an engineer's copy of a todo task (and an unknown agent's)", async () => {
+      const bot = makeBot();
+      const clone = addClone(bot, "OPE-1", { ageHours: 24 });
+      for (const agent of [ENGINEER, { ok: true, id: null }, { ok: false, reason: "board-unavailable" }]) {
+        const r = await reviewScan(bot, {}, { agent });
+        assert.deepEqual(r.items, []);
+      }
+      assert.equal(fs.existsSync(clone), true);
+    });
+
+    it("keeps dirty and unpushed copies of a reviewer", async () => {
+      const bot = makeBot();
+      addClone(bot, "OPE-1", { ageHours: 1, dirty: true });
+      addClone(bot, "OPE-2", { ageHours: 1, pushed: false });
+      assert.deepEqual(verdicts(await reviewScan(bot)), { "OPE-1": "keep:dirty", "OPE-2": "keep:not-pushed" });
+    });
+
+    it("tells a reviewer by role or by the -review- name part", () => {
+      assert.equal(isReviewerAgent(REVIEWER), true);
+      assert.equal(isReviewerAgent({ ok: true, id: "x", name: "other", role: "reviewer" }), true);
+      assert.equal(isReviewerAgent(ENGINEER), false);
+      assert.equal(isReviewerAgent({ ok: true, id: null }), false);
+    });
+
+    it("fetchBotAgent reads an agent by id or by name; fetchRunAgentId reads the run owner", async () => {
+      const urls = [];
+      const respond = (body, status = 200) => async (url) => { urls.push(url); return { ok: status < 400, status, json: async () => body }; };
+      const uuid = "07555686-1111-4222-8333-444455556666";
+      assert.deepEqual(await fetchBotAgent(uuid, { baseUrl: "http://b", fetchImpl: respond({ id: uuid, name: "adm-dev-review-11", role: "qa" }) }), { ok: true, id: uuid, name: "adm-dev-review-11", role: "qa" });
+      assert.equal(urls[0], `http://b/api/agents/${uuid}`);
+      assert.deepEqual(await fetchBotAgent(uuid, { baseUrl: "http://b", fetchImpl: respond({}, 404) }), { ok: true, id: null });
+      process.env.MYRMIDON_COMPANY_ID = "co-1";
+      try {
+        const list = [{ id: "a1", name: "adm-dev-review-100", role: "qa" }, { id: "a2", name: "adm-dev-review-10", role: "qa" }];
+        assert.equal((await fetchBotAgent("adm-dev-review-10", { baseUrl: "http://b", fetchImpl: respond(list) })).id, "a2");
+        assert.equal((await fetchBotAgent("nobody", { baseUrl: "http://b", fetchImpl: respond(list) })).id, null);
+      } finally { delete process.env.MYRMIDON_COMPANY_ID; }
+      assert.equal((await fetchBotAgent("x", { baseUrl: "http://b", fetchImpl: async () => { throw new Error("x"); } })).ok, false);
+      assert.deepEqual(await fetchRunAgentId("run-1", { baseUrl: "http://b", fetchImpl: respond({ agentId: "a1" }) }), { ok: true, agentId: "a1" });
+      assert.equal((await fetchRunAgentId("run-1", { baseUrl: "http://b", fetchImpl: respond({}, 404) })).ok, false);
+    });
+  });
+
   describe("board and CLI", () => {
     let board;
     let boardUrl;
@@ -2211,7 +2332,8 @@ describe("idle clones of open tasks (OPE-13411)", () => {
 
     it("fetchIssueOpenState reports a live run from executionRunId or checkoutRunId", async () => {
       const respond = (body) => async () => ({ ok: true, status: 200, json: async () => body });
-      assert.deepEqual(await fetchIssueOpenState("OPE-1", { baseUrl: "http://b", fetchImpl: respond({ status: "in_review", executionRunId: null, checkoutRunId: null }) }), { ok: true, status: "in_review", liveRunId: null });
+      assert.deepEqual(await fetchIssueOpenState("OPE-1", { baseUrl: "http://b", fetchImpl: respond({ status: "in_review", executionRunId: null, checkoutRunId: null }) }), { ok: true, status: "in_review", liveRunId: null, liveRunIds: [] });
+      assert.deepEqual((await fetchIssueOpenState("OPE-1", { baseUrl: "http://b", fetchImpl: respond({ status: "in_review", executionRunId: "r1", checkoutRunId: "r3" }) })).liveRunIds, ["r1", "r3"]);
       assert.equal((await fetchIssueOpenState("OPE-1", { baseUrl: "http://b", fetchImpl: respond({ status: "in_review", executionRunId: "r1" }) })).liveRunId, "r1");
       assert.equal((await fetchIssueOpenState("OPE-1", { baseUrl: "http://b", fetchImpl: respond({ status: "blocked", checkoutRunId: "r2" }) })).liveRunId, "r2");
       assert.equal((await fetchIssueOpenState("OPE-1", { baseUrl: "http://b", fetchImpl: async () => { throw new Error("x"); } })).reason, "board-unavailable");
