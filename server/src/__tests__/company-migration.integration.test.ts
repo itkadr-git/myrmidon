@@ -269,6 +269,41 @@ describe("company migration dry run", () => {
     }
   });
 
+  it("never writes when dry-run is explicitly combined with a confirmed apply", async () => {
+    const [source] = await db.insert(companies).values({ name: "Dry-run conflict source", issuePrefix: "MDC" }).returning();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+    const beforeCompanies = await db.select().from(companies);
+    const beforeRuns = await db.select().from(companyTransferRuns);
+    const beforeAudit = await db.select().from(activityLog);
+    const filesBefore = await readdir(root, { recursive: true });
+    const insert = vi.spyOn(db, "insert");
+    const update = vi.spyOn(db, "update");
+    const remove = vi.spyOn(db, "delete");
+    try {
+      const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+        target: { mode: "new_company", newCompanyName: "Dry-run conflict destination" },
+        dryRun: true, apply: true, confirm: "approved pilot",
+      });
+      expect(response.status === 400 || (response.status === 200 && response.body.dryRun === true)).toBe(true);
+      expect(insert).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+      expect(remove).not.toHaveBeenCalled();
+      expect(await db.select().from(companies)).toEqual(beforeCompanies);
+      expect(await db.select().from(companyTransferRuns)).toEqual(beforeRuns);
+      expect(await db.select().from(activityLog)).toEqual(beforeAudit);
+      expect(await readdir(root, { recursive: true })).toEqual(filesBefore);
+    } finally {
+      insert.mockRestore(); update.mockRestore(); remove.mockRestore();
+    }
+  });
+
   it("applies a confirmed migration once when the same request is retried", async () => {
     const [source] = await db.insert(companies).values({ name: "Apply retry source", issuePrefix: "MRA" }).returning();
     await db.insert(agents).values({ companyId: source!.id, name: "Apply retry worker" });
