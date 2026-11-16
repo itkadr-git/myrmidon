@@ -31,6 +31,20 @@ test('disconnected root and isolated leaf retain original flags', t => {
   const {file} = fixture(t); success(run(cli,file,'c','eager'),{root:'c',mode:'eager',modules:[m('c',3,false),m('d',4,false)],edges:[e('c','d','eager','d')],unknown:[]});
   success(run(cli,file,'d','all'),{root:'d',mode:'all',modules:[m('d',4,false)],edges:[],unknown:[]});
 });
+test('disconnected diamond keeps extra fields and uses code-unit ordering', t => {
+  const value = {
+    entry: 'entry',
+    modules: [m('entry', 1, true), {...m('root', 2, false), tag: 'preserved'}, m('Z', 3, false), m('a', 4, false), m('end', 5, false)],
+    edges: [e('root', 'z', 'eager', 'a'), e('a', 'end', 'eager', 'end'), e('root', 'A', 'eager', 'Z'), e('Z', 'end', 'eager', 'end'), e('root', 'unknown', 'eager', null)],
+  };
+  const {file} = fixture(t, value);
+  success(run(cli, file, 'root', 'eager'), {
+    root: 'root', mode: 'eager',
+    modules: [m('Z', 3, false), m('a', 4, false), m('end', 5, false), {...m('root', 2, false), tag: 'preserved'}],
+    edges: [e('Z', 'end', 'eager', 'end'), e('a', 'end', 'eager', 'end'), e('root', 'A', 'eager', 'Z'), e('root', 'unknown', 'eager', null), e('root', 'z', 'eager', 'a')],
+    unknown: [e('root', 'unknown', 'eager', null)],
+  });
+});
 test('invalid input fails without leaking values', t => {
   const cases = [null, {}, {...report,entry:'missing'}, {...report,modules:[...report.modules,report.modules[0]]}, {...report,modules:[m('a',-1,true)]}, {...report,modules:report.modules.map(x=>({...x,eager:true}))}, {...report,edges:[...report.edges,report.edges[0]]}, {...report,edges:[e('a','x','eager','missing')]}, {...report,edges:[e('missing','x','eager','a')]}, {...report,edges:[e('a','x','other',null)]}];
   const {file} = fixture(t);
