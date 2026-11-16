@@ -4,6 +4,7 @@ import type { Db } from "@myrmidon/db";
 import type { companyPortabilityService } from "./company-portability.js";
 import { validateMigrationManifest } from "./company-migration-validation.js";
 import { companyTransferRunService } from "./company-transfer-runs.js";
+import { migrationRunKey } from "./company-migration-key.js";
 
 type Portability = ReturnType<typeof companyPortabilityService>;
 
@@ -51,6 +52,7 @@ export function companyMigrationService(portability: Portability) {
     }, { mode: "board_full" }) : null;
     const report = {
       dryRun: true as const,
+      runKey: migrationRunKey({ sourceCompanyId: companyId, targetName: newCompanyName, collisionStrategy, exportOptions: input, files: exported.files }),
       validation: {
         ...validation,
         // Planner messages can contain paths or upstream error details; expose counts only.

@@ -115,6 +115,7 @@ describe("company migration dry run", () => {
     expect(responses.map((response) => response.status)).toEqual([200, 200]);
     expect(responses[0]!.body).toEqual(responses[1]!.body);
     expect(responses[0]!.body.dryRun).toBe(true);
+    expect(responses[0]!.body.runKey).toMatch(/^[a-f0-9]{64}$/);
     expect(await db.select().from(companies)).toEqual(beforeCompanies);
     expect(await db.select().from(agents)).toEqual(beforeAgents);
     expect(await db.select().from(companyTransferRuns)).toEqual(beforeRuns);
