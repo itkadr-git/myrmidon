@@ -3054,6 +3054,64 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+  it("uses the locked policy when another review stage is added before a PATCH approval", async () => {
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const nextReviewerId = "44444444-4444-4444-8444-444444444444";
+    const review = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      type: "review",
+      participants: [{ type: "agent", agentId: reviewerAgentId }],
+    };
+    const policy = (await normalizePolicy({ stages: [review] }))!;
+    const lockedPolicy = (await normalizePolicy({ stages: [review, {
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      type: "review",
+      participants: [{ type: "agent", agentId: nextReviewerId }],
+    }] }))!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+      assigneeAgentId: reviewerAgentId,
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue({ ...issue, executionPolicy: lockedPolicy });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue, ...patch, updatedAt: new Date(),
+    }));
+
+    const res = await request(await installActor(createApp(), {
+      type: "agent", agentId: reviewerAgentId, companyId: "company-1",
+      source: "agent_key", runId: "run-patch-policy-race",
+    })).patch(`/api/issues/${issue.id}`).send({ status: "done", comment: "Approved" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issue.id,
+      expect.objectContaining({
+        status: "in_review",
+        executionState: expect.objectContaining({
+          currentStageId: lockedPolicy.stages[1].id,
+          currentParticipant: { type: "agent", agentId: nextReviewerId },
+        }),
+      }),
+      mockTx,
+      expect.any(Array),
+      expect.any(Array),
+    );
+  });
+
   it("uses the locked policy when another review stage is added before auto-approval", async () => {
     const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
     const nextReviewerId = "44444444-4444-4444-8444-444444444444";
