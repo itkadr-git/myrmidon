@@ -136,6 +136,17 @@ export const companyTransferRunService = {
     return run && run.actorKey === actorKey ? run : null;
   },
 
+  // Migration identity is scoped to the source, not the operator retrying it.
+  async resumeOrCreateMigration(db: Db, sourceCompanyId: string, idempotencyKey: string): Promise<ResumeOrCreateTransferRunResult> {
+    const actorKey = `company_migration:${sourceCompanyId}`;
+    return companyTransferRunService.resumeOrCreate(db, {
+      direction: "import",
+      actorKey,
+      idempotencyKey,
+      containerRef: { kind: "company_migration", sourceCompanyId },
+    });
+  },
+
   /**
    * Find the actor's run for this exact content (same idempotency key and
    * direction) or create a fresh one. A completed prior run is returned with
