@@ -52,6 +52,9 @@ function audit(input) {
     const absolute = resolve(dir, target);
     if (!inside(root, absolute) || isAbsolute(target)) { errors.push(`${field}: target outside root: ${target}`); return; }
     function validate(path) {
+      const rel = relative(dir, path).split(sep).join('/');
+      if (/\.d\.(?:ts|mts|cts)$/.test(rel)) return;
+      if (/(?:^|\/)src\/.*\.(?:ts|mts|cts)$/.test(rel) && target.includes('*')) errors.push(`${field}: source TypeScript target ${rel}`);
       try {
         const actual = realpathSync(path);
         if (!inside(root, actual)) throw new Error('symlink escapes root');
@@ -59,21 +62,24 @@ function audit(input) {
       } catch (error) { errors.push(`${field}: ${target}: ${error.message}`); }
     }
     if (!target.includes('*')) { validate(absolute); return; }
-    const segments = relative(root, absolute).split(sep);
-    let paths = [root];
-    for (const segment of segments) {
-      const matches = [];
-      for (const base of paths) {
-        if (!segment.includes('*')) { matches.push(join(base, segment)); continue; }
-        try {
-          if (!inside(root, realpathSync(base))) throw new Error('symlink escapes root');
-          for (const name of readdirSync(base)) if (glob(segment).test(name)) matches.push(join(base, name));
-        } catch (error) { errors.push(`${field}: ${target}: ${error.message}`); }
-      }
-      paths = matches;
+    const prefix = absolute.slice(0, absolute.indexOf('*'));
+    const base = prefix.slice(0, prefix.lastIndexOf(sep)) || root;
+    const pattern = new RegExp(`^${absolute.split('*').map((part) => part.replace(/[\\^$+.?()|{}[\]]/g, '\\$&')).join('.*')}$`);
+    let count = 0;
+    function scan(path, ancestors) {
+      try {
+        const actual = realpathSync(path);
+        if (!inside(root, actual)) throw new Error('symlink escapes root');
+        const stat = statSync(actual);
+        if (stat.isDirectory()) {
+          if (ancestors.has(actual)) throw new Error('symlink cycle');
+          const next = new Set(ancestors).add(actual);
+          for (const name of readdirSync(path)) scan(join(path, name), next);
+        } else if (pattern.test(path)) { count++; validate(path); }
+      } catch (error) { errors.push(`${field}: ${target}: ${error.message}`); }
     }
-    if (!paths.length) errors.push(`${field}: no matches for ${target}`);
-    for (const path of paths) validate(path);
+    scan(base, new Set());
+    if (!count) errors.push(`${field}: no matches for ${target}`);
   }
   function exportsTargets(dir, field, value) {
     if (value === null) return;
