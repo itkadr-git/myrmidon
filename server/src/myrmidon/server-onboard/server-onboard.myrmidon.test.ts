@@ -1,3 +1,4 @@
+import { createPrivateKey, createPublicKey } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { onboardService, OnboardServiceError } from "./service.js";
 import type { OnboardJob, OnboardJobKind, OnboardStepLogEntry } from "./domain.js";
@@ -182,6 +183,28 @@ function createMocks() {
 }
 
 describe("SERVER-ONBOARD logic", () => {
+  it("returns an OpenSSH public key matching the persisted private key", async () => {
+    const { mockStore, mockSecrets, mockGetServer, secretsStore } = createMocks();
+    const service = onboardService(null as any, {
+      store: mockStore, settings: mockSettings, secrets: mockSecrets,
+      getServer: mockGetServer, logActivity: vi.fn().mockResolvedValue(undefined),
+    });
+    const result = await service.addServer({
+      companyId: "company-1", slug: "node-1", name: "Node 1", hostname: "example.com",
+      port: 22, username: "root", role: "generic", keepPassword: false,
+      auth: { type: "generate-key" }, createdBy: null,
+    });
+    const [algorithm, encoded] = (result.generatedPublicKey ?? "").split(/\s+/);
+    expect(algorithm).toBe("ssh-ed25519");
+    const wire = Buffer.from(encoded ?? "", "base64");
+    expect(wire.readUInt32BE(0)).toBe(11);
+    expect(wire.subarray(4, 15).toString()).toBe("ssh-ed25519");
+    expect(wire.readUInt32BE(15)).toBe(32);
+    const privateKey = Object.values(secretsStore)[0];
+    const publicJwk = createPublicKey(createPrivateKey(privateKey)).export({ format: "jwk" });
+    expect(wire.subarray(19).toString("base64url")).toBe(publicJwk.x);
+  });
+
   it("authenticates ownership reports and derives server scope from the active job", async () => {
     const { mockStore, mockSecrets, mockGetServer, store } = createMocks();
     const companyId = "11111111-1111-4111-8111-111111111111";
