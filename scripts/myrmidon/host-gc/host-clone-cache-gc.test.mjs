@@ -2309,6 +2309,32 @@ describe("idle clones of open tasks (OPE-13411)", () => {
       assert.equal(rec.reason, "nonassignee-copy-idle");
     });
 
+    it("frees a reviewer's copy in_review older than 10 minutes even while the reviewer is the assignee", async () => {
+      const bot = makeBot();
+      const clone = addClone(bot, "OPE-1", { ageHours: 15 / 60 });
+      const inReview = () => todo({ status: "in_review", assigneeAgentId: "agent-rev" });
+      const r = await reviewScan(bot, { "OPE-1": inReview() });
+      assert.deepEqual(verdicts(r), { "OPE-1": "remove:nonassignee-copy-idle" });
+      const gone = await pruneReviewerClones(r.items, bot.workspace, path.join(tmpDir, "j.jsonl"), { fetchState: async () => inReview(), fetchRun: async () => ({ ok: false }) });
+      assert.deepEqual(gone, [clone]);
+      assert.equal(fs.existsSync(clone), false);
+    });
+
+    it("keeps a reviewer-assignee's copy while its own run is live", async () => {
+      const bot = makeBot();
+      addClone(bot, "OPE-1", { ageHours: 15 / 60 });
+      const live = todo({ status: "in_review", assigneeAgentId: "agent-rev", liveRunIds: ["run-1"] });
+      const r = await reviewScan(bot, { "OPE-1": live }, { runs: { "run-1": { ok: true, agentId: "agent-rev" } } });
+      assert.deepEqual(verdicts(r), { "OPE-1": "keep:live-run" });
+    });
+
+    it("keeps a lead-assignee's copy", async () => {
+      const bot = makeBot();
+      addClone(bot, "OPE-1", { ageHours: 15 / 60 });
+      const r = await reviewScan(bot, { "OPE-1": todo({ assigneeAgentId: "agent-lead" }) }, { agent: LEAD });
+      assert.deepEqual(verdicts(r), { "OPE-1": "keep:assignee" });
+    });
+
     it("does not touch the assignee's own copy", async () => {
       const bot = makeBot();
       const clone = addClone(bot, "OPE-1", { ageHours: 24 });

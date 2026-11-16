@@ -86,6 +86,8 @@ const IDLE_OPEN_STATUSES = new Set(["in_review", "blocked", "backlog"]);
 // myrmidon(1.6.9 OPE-13411): a reviewer bot makes a full worktree (about 0.5 GB) for each PR it reviews,
 // about one per 3 minutes per reviewer. After the review the task goes to an engineer or to done, and
 // the reviewer's copy would stay (the idle rule above only matches in_review, blocked and backlog).
+// (1.6.9 NO-COPIES-FOR-REVIEWERS-LEADS: a reviewer's copy is freed even while the reviewer is the
+// task's assignee, which it is during the review stage; its own live run still keeps the copy.)
 // (1.6.9: the rule is wider now: the copy of ANY agent that is not the task's assignee is freed, so the
 // copies of leads and other non-executors go too; reviewers are such agents.)
 // A reviewer's copy is freed in any task status after REVIEW_CLONE_IDLE_MINUTES, if the reviewer has
@@ -979,7 +981,8 @@ export async function scanReviewerClones(root, now, {
     if (!state.ok) { keep(state.reason); continue; }
     base.status = state.status;
     if (!state.assigneeAgentId) { keep("no-assignee"); continue; }
-    if (state.assigneeAgentId === agent.id) { keep("assignee"); continue; }
+    // A reviewer is the assignee during the review stage: its copy is freed all the same.
+    if (state.assigneeAgentId === agent.id && !isReviewerAgent(agent)) { keep("assignee"); continue; }
     const live = await reviewerRunLive(state, agent.id, fetchRun);
     if (live) { keep("live-run", { liveRunId: live }); continue; }
     const dirs = resolveWorktreeGitDirs(clonePath, agentRoot);
@@ -1021,7 +1024,7 @@ export async function pruneReviewerClones(items, root, journalPath, {
       const state = await fetchState(c.identifier);
       if (!state.ok) { kept(c.status, state.reason); continue; }
       if (!state.assigneeAgentId) { kept(state.status, "no-assignee"); continue; }
-      if (state.assigneeAgentId === c.agentId) { kept(state.status, "assignee"); continue; }
+      if (state.assigneeAgentId === c.agentId && !c.reviewer) { kept(state.status, "assignee"); continue; }
       if (await reviewerRunLive(state, c.agentId, fetchRun)) { kept(state.status, "live-run"); continue; }
       if (newestCloneChangeMs(c.path, c.adminDir) > now() - c.thresholdMinutes * MINUTE_MS) { kept(state.status, "fresh"); continue; }
       const sizeBytes = c.sizeBytes ?? null;
