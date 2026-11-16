@@ -943,6 +943,22 @@ describe("persisted release evidence", () => {
     )).toBe(true);
   });
 
+  it("does not let later evidence from another company or release line supersede the current record", () => {
+    const foreignCompany = createReleaseVerificationEvidence({
+      ...scope, companyId: "company-b", verdict: "failed", checkedAt: "2026-11-13T12:00:01.000Z",
+    }, "secret");
+    const foreignRelease = createReleaseVerificationEvidence({
+      ...scope, releasePrefix: "1.7", verdict: "failed", checkedAt: "2026-11-13T12:00:02.000Z",
+    }, "secret");
+    const comments = [record, foreignCompany, foreignRelease].map((evidence) => ({
+      body: `release-evidence-v1: ${JSON.stringify(evidence)}`,
+      authorType: "system",
+    }));
+    expect(hasCurrentReleaseVerificationEvidence(
+      comments, scope, "secret", new Date("2026-11-13T12:00:03.000Z"),
+    )).toBe(true);
+  });
+
   it("rejects expired and future signed evidence", () => {
     expect(validateReleaseVerificationEvidence(record, scope, "secret", new Date("2026-11-14T12:00:00.001Z"))).toBe(false);
     expect(validateReleaseVerificationEvidence(record, scope, "secret", new Date("2026-11-13T11:59:59.999Z"))).toBe(false);
