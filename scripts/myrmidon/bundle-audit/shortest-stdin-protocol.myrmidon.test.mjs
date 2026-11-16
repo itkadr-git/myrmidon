@@ -20,6 +20,20 @@ async function run(chunks, beforeEof = false) {
   try {
     for (const chunk of chunks) {
       if (!child.stdin.write(chunk)) await Promise.race([once(child.stdin, 'drain'), closed.then(() => { throw new Error('child closed before EOF'); })]);
+      if (beforeEof) {
+        // SIOCOUTQ on the pipe's socket is zero only after the child consumes the bytes.
+        const fd = child.stdin._handle.fd;
+        for (;;) {
+          const probe = spawn('python3', ['-c', 'import fcntl,struct; print(struct.unpack("I", fcntl.ioctl(3, 0x5411, bytes(4)))[0])'], { stdio: ['ignore', 'pipe', 'inherit', fd] });
+          const probeClosed = once(probe, 'close');
+          let queued = '';
+          for await (const data of probe.stdout) queued += data;
+          const [status] = await probeClosed;
+          assert.equal(status, 0, 'socket queue probe failed');
+          if (Number(queued) === 0) break;
+          if (timedOut || child.exitCode !== null || child.signalCode !== null) throw new Error('child closed before EOF');
+        }
+      }
     }
     if (beforeEof) {
       // More than the pipe capacity forces the child to consume the complete document.
