@@ -94,8 +94,10 @@ describe.each([["en", english, russian], ["ru", russian, english], ["ru-RU", rus
     const edit = Array.from(host.querySelectorAll("button")).find((button) => button.textContent === text.edit);
     expect(edit).toBeDefined();
     await act(async () => { edit?.click(); });
-    expect(host.querySelector("label")?.textContent).toBe(text.content);
-    expect(host.querySelector("textarea")?.value).toBe("Proposed text");
+    const textarea = host.querySelector("textarea");
+    expect(textarea?.closest("label")?.firstChild?.textContent).toBe(text.content);
+    expect(textarea?.closest("label")?.firstChild?.textContent).not.toBe(other.content);
+    expect(textarea?.value).toBe("Proposed text");
     expect(host.querySelector("input")).toBeNull();
     expect(buttons()).toEqual([text.save, text.cancel]);
     expect(buttons()).not.toContain(other.save);
