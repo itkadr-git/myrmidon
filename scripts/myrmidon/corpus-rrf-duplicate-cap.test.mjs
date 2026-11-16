@@ -46,8 +46,8 @@ test("duplicates before and after kCandidates do not consume full-text slots", (
 
 test("kCandidates one keeps one unique candidate per ranking and combines overlap", () => {
   const results = reciprocalRankFusion(
-    Object.freeze(["shared", "vector-only", "vector-duplicate"]),
-    Object.freeze(["shared", "text-only", "text-duplicate"]),
+    Object.freeze(["shared", "shared", "vector-only", "shared"]),
+    Object.freeze(["shared", "shared", "text-only", "shared"]),
     { k0, kCandidates: 1 },
   );
   const candidates = byId(results);
