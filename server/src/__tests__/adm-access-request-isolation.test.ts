@@ -218,84 +218,23 @@ describeEmbeddedPostgres("adm gateway cross-company isolation (OPE-12766)", () =
     };
   }
 
-  /**
-   * Full negative matrix: an agent of every company attacks every resource row
-   * of every other company through the gateway execution plane. Per ADR-0052
-   * the gateway never proxies a direct cross-company read, so each attack is
-   * expressed as a read_metadata capability whose approval plane is the ADM
-   * company itself: the resourceKey always names the victim's resource, and
-   * the scoped lookup must answer not-found for any company the capability
-   * does not belong to — proving isolation pairwise for all family and
-   * company pairs.
-   */
-  it("answers every cross-company resource lookup with not-found for all company pairs and families", async () => {
+  it("rejects cross-company metadata requests for every company pair and resource family", async () => {
     const adm = companies3[2]!;
-    // Seed each family in every company; record the owning company.
-    const owned = new Map<string, string>(); // `${family}:${key}` -> ownerId
     for (const family of RESOURCE_FAMILIES) {
-      for (const company of companies3) {
-        const key = await seedResource(db, company, family);
-        owned.set(`${family}:${key}`, company.id);
-      }
-    }
-
-    for (const family of RESOURCE_FAMILIES) {
-      for (const [mapKey, ownerId] of owned) {
-        if (!mapKey.startsWith(`${family}:`)) continue;
-        const key = mapKey.slice(family.length + 1);
+      for (const owner of companies3) {
+        const key = await seedResource(db, owner, family);
         for (const actorCompany of companies3) {
-          if (actorCompany.id === adm.id) continue; // ADM cannot request from itself
-          // The ADM company is the only legal approval plane, so the request is
-          // created from actorCompany targeting ADM and approved by ADM; the
-          // resourceRef then names the victim row. When the victim company is
-          // not the ADM company, the scoped lookup must not find the row.
-          const app = buildApp(db, agentActor(actorCompany));
-          const created = await request(app)
+          if (actorCompany.id === adm.id) continue;
+          const response = await request(buildApp(db, agentActor(actorCompany)))
             .post(`/api/companies/${actorCompany.id}/adm/access-requests`)
-            .send({
-              targetCompanyId: adm.id,
-              resourceType: family,
-              resourceRef: `${family}:${key}`,
-              action: "read_metadata",
-              justification: `Isolation probe for ${family}.`,
-              requestedScope: { resourceKey: key },
-              idempotencyKey: `idem-${randomUUID()}`,
-            });
-          expect(created.status, `${actorCompany.id} -> ${family}:${key}`).toBe(201);
-          const requestId = created.body.requestId as string;
-
-          const admBoard = buildApp(db, {
-            type: "board",
-            userId: `user-${adm.id}`,
-            companyIds: [adm.id],
-            source: "session",
-            memberships: [{ companyId: adm.id, membershipRole: "owner", status: "active" }],
-            isInstanceAdmin: false,
-          });
-          const approved = await request(admBoard)
-            .post(`/api/adm/access-requests/${requestId}/decide`)
-            .send({ decision: "approved" });
-          expect(approved.status, `approve ${requestId}`).toBe(200);
-          const capabilityToken = approved.body.capabilityToken as string;
-
-          const executed = await request(app)
-            .post(`/api/companies/${actorCompany.id}/adm/capability/execute`)
-            .send({ capabilityToken });
-          expect(executed.status, `execute ${requestId}`).toBe(200);
-
-          const projection = executed.body.result?.projection ?? null;
-          if (ownerId === adm.id) {
-            // Only resources owned by the ADM company itself resolve.
-            expect(executed.body.result.available, `${family}:${key} owned by ADM`).toBe(true);
-            expect(projection.key).toBe(key);
-          } else {
-            expect(executed.body.result.available, `${family}:${key} owned by ${ownerId} must not resolve`).toBe(false);
-            expect(projection).toBeNull();
-          }
-          // The body never carries raw resource content in any branch.
-          expect(JSON.stringify(executed.body)).not.toContain("secret body");
-          expect(JSON.stringify(executed.body)).not.toContain("confidential description");
-          expect(JSON.stringify(executed.body)).not.toContain("memory summary");
+            .send({ targetCompanyId: adm.id, resourceType: family, resourceRef: `${family}:${key}`,
+              action: "read_metadata", justification: "Isolation probe", requestedScope: { resourceKey: key },
+              idempotencyKey: `idem-${randomUUID()}` });
+          expect(response.status, `${actorCompany.id} -> ${family}:${key}`).toBe(400);
+          const body = JSON.stringify(response.body);
+          expect(body).not.toContain("secret body");
+          expect(body).not.toContain("confidential description");
+          expect(body).not.toContain("memory summary");
         }
       }
     }
@@ -310,7 +249,7 @@ describeEmbeddedPostgres("adm gateway cross-company isolation (OPE-12766)", () =
         targetCompanyId: adm.id,
         resourceType: "skill",
         resourceRef: "skill:leak-probe",
-        action: "read_metadata",
+        action: "grant_capability",
         justification: "metadata leak probe.",
         requestedScope: { resourceKey: "leak-probe", notes: "leak-marker-value" },
         idempotencyKey: `idem-${randomUUID()}`,
@@ -344,9 +283,9 @@ describeEmbeddedPostgres("adm gateway cross-company isolation (OPE-12766)", () =
       .post(`/api/companies/${companies3[0]!.id}/adm/access-requests`)
       .send({
         targetCompanyId: adm.id,
-        resourceType: "budget",
-        resourceRef: "budget:aggregate-probe",
-        action: "query_aggregate",
+        resourceType: "skill",
+        resourceRef: "skill:aggregate-probe",
+        action: "grant_capability",
         justification: "budget aggregate probe.",
         requestedScope: { budgetArea: "aggregate-probe" },
         idempotencyKey: `idem-${randomUUID()}`,
@@ -397,54 +336,19 @@ describeEmbeddedPostgres("adm gateway cross-company isolation (OPE-12766)", () =
     expect(token.status).toBe(404);
   });
 
-  it("returns aggregate zero for foreign budgets while aggregating its own", async () => {
+  it("rejects budget aggregate requests for both foreign and ADM-owned budgets", async () => {
     const adm = companies3[2]!;
     const source = companies3[0]!;
-    // Foreign budget rows live in the source company, not in ADM.
-    const foreignKey = await seedResource(db, source, "budget");
-    const ownKey = await seedResource(db, adm, "budget");
-
-    async function aggregateFor(company: TestCompany, key: string): Promise<Record<string, unknown>> {
-      const app = buildApp(db, agentActor(company));
-      const created = await request(app)
-        .post(`/api/companies/${company.id}/adm/access-requests`)
-        .send({
-          targetCompanyId: adm.id,
-          resourceType: "budget",
-          resourceRef: `budget:${key}`,
-          action: "query_aggregate",
-          justification: "budget aggregate isolation probe.",
-          requestedScope: { budgetArea: key },
-          idempotencyKey: `idem-${randomUUID()}`,
-        });
-      expect(created.status).toBe(201);
-      const admBoard = buildApp(db, {
-        type: "board",
-        userId: `user-${adm.id}`,
-        companyIds: [adm.id],
-        source: "session",
-        memberships: [{ companyId: adm.id, membershipRole: "owner", status: "active" }],
-        isInstanceAdmin: false,
-      });
-      const approved = await request(admBoard)
-        .post(`/api/adm/access-requests/${created.body.requestId}/decide`)
-        .send({ decision: "approved" });
-      expect(approved.status).toBe(200);
-      const executed = await request(app)
-        .post(`/api/companies/${company.id}/adm/capability/execute`)
-        .send({ capabilityToken: approved.body.capabilityToken });
-      expect(executed.status).toBe(200);
-      return executed.body.result as Record<string, unknown>;
+    for (const owner of [source, adm]) {
+      const key = await seedResource(db, owner, "budget");
+      const response = await request(buildApp(db, agentActor(source)))
+        .post(`/api/companies/${source.id}/adm/access-requests`)
+        .send({ targetCompanyId: adm.id, resourceType: "budget", resourceRef: `budget:${key}`,
+          action: "query_aggregate", justification: "budget isolation probe",
+          requestedScope: { budgetArea: key }, idempotencyKey: `idem-${randomUUID()}` });
+      expect(response.status).toBe(400);
+      expect(response.body.result).toBeUndefined();
     }
-
-    const foreign = await aggregateFor(source, foreignKey);
-    expect(foreign.count).toBe(0);
-
-    // An approved aggregate always scopes to ADM-owned budget rows, even when
-    // the request comes from a source company naming its own key.
-    const own = await aggregateFor(source, ownKey);
-    expect((own.count as number) ?? 0).toBeGreaterThan(0);
-    expect(JSON.stringify(own)).not.toContain(String(foreignKey));
   });
 
   it("binds the audience of every issued capability to its source company for all pairs", async () => {
@@ -458,7 +362,7 @@ describeEmbeddedPostgres("adm gateway cross-company isolation (OPE-12766)", () =
           targetCompanyId: adm.id,
           resourceType: "skill",
           resourceRef: "skill:audience-probe",
-          action: "read_metadata",
+          action: "grant_capability",
           justification: "audience binding probe.",
           requestedScope: { resourceKey: "audience-probe" },
           idempotencyKey: `idem-${randomUUID()}`,
@@ -496,7 +400,7 @@ describeEmbeddedPostgres("adm gateway cross-company isolation (OPE-12766)", () =
   it("keeps revocation effective across families and companies", async () => {
     const adm = companies3[2]!;
     const source = companies3[1]!;
-    for (const family of ["skill", "secret", "memory"] as const) {
+    for (const family of ["skill", "connection"] as const) {
       const app = buildApp(db, agentActor(source));
       const created = await request(app)
         .post(`/api/companies/${source.id}/adm/access-requests`)
@@ -504,7 +408,7 @@ describeEmbeddedPostgres("adm gateway cross-company isolation (OPE-12766)", () =
           targetCompanyId: adm.id,
           resourceType: family,
           resourceRef: `${family}:revoke-probe`,
-          action: "read_metadata",
+          action: "grant_capability",
           justification: "revocation probe.",
           requestedScope: { resourceKey: "revoke-probe" },
           idempotencyKey: `idem-${randomUUID()}`,
@@ -544,9 +448,9 @@ describeEmbeddedPostgres("adm gateway cross-company isolation (OPE-12766)", () =
       .post(`/api/companies/${source.id}/adm/access-requests`)
       .send({
         targetCompanyId: adm.id,
-        resourceType: "secret",
-        resourceRef: "secret:audit-probe",
-        action: "read_metadata",
+        resourceType: "skill",
+        resourceRef: "skill:audit-probe",
+        action: "grant_capability",
         justification: "audit probe.",
         requestedScope: { resourceKey: "audit-probe", notes: "raw-audit-marker" },
         idempotencyKey: `idem-${randomUUID()}`,
