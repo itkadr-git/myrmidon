@@ -917,6 +917,21 @@ describe("persisted release evidence", () => {
     expect(hasCurrentReleaseVerificationEvidence([comment(laterBuild), comment(record)], scope, "secret", now)).toBe(false);
   });
 
+  it("ignores later forged and foreign records instead of replacing authentic evidence", () => {
+    const forged = { ...record, verdict: "failed", checkedAt: "2026-11-13T12:00:01.000Z" };
+    const foreign = createReleaseVerificationEvidence({
+      ...scope, issueId: "issue-b", verdict: "failed", checkedAt: "2026-11-13T12:00:02.000Z",
+    }, "secret");
+    const comment = (evidence: unknown) => ({
+      body: `release-evidence-v1: ${JSON.stringify(evidence)}`,
+      authorType: "system",
+    });
+    expect(hasCurrentReleaseVerificationEvidence(
+      [comment(record), comment(forged), comment(foreign)], scope, "secret",
+      new Date("2026-11-13T12:00:03.000Z"),
+    )).toBe(true);
+  });
+
   it("rejects expired and future signed evidence", () => {
     expect(validateReleaseVerificationEvidence(record, scope, "secret", new Date("2026-11-14T12:00:00.001Z"))).toBe(false);
     expect(validateReleaseVerificationEvidence(record, scope, "secret", new Date("2026-11-13T11:59:59.999Z"))).toBe(false);
