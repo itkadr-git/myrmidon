@@ -77,7 +77,7 @@ it("blocks every row while a decision is pending and allows the remaining row af
   http.post.mockImplementationOnce(() => accept.promise);
   await render();
 
-  await act(async () => button("Accept", 0).click());
+  await click("Accept", 0);
   expect(buttons("Accept")).toHaveLength(2);
   expect(buttons("Reject")).toHaveLength(2);
   expect(buttons("Edit")).toHaveLength(2);
