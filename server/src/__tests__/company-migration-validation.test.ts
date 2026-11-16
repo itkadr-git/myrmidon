@@ -134,6 +134,15 @@ describe("migration manifest validation", () => {
       .toEqual(expect.arrayContaining([expect.stringContaining("management cycle")]));
   });
 
+  it("rejects task conversations without exposing their contents", () => {
+    const issue = { slug: "task", projectSlug: null, assigneeAgentSlug: null,
+      parentSlug: null, blockedBy: [], comments: [{ body: "private conversation", authorType: "user" as const,
+        authorAgentSlug: null, authorUserId: null, presentation: null, metadata: null, createdAt: null }] };
+    const result = validateMigrationManifest({ agents: [], skills: [], envInputs: [], issues: [issue] });
+    expect(result.errors).toEqual(expect.arrayContaining([expect.stringContaining("comments that cannot be migrated")]));
+    expect(JSON.stringify(result)).not.toContain("private conversation");
+  });
+
   it("rejects recurring tasks with webhook triggers without exposing trigger metadata", () => {
     const issue = { slug: "scheduled-task", projectSlug: null, assigneeAgentSlug: null,
       parentSlug: null, blockedBy: [], recurring: true,

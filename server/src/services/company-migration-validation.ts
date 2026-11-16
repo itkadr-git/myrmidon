@@ -11,7 +11,7 @@ type MigrationManifest = {
     Partial<Pick<CompanyPortabilityManifest["projects"][number], "ownerAgentSlug" | "leadAgentSlug">>>;
   issues?: Array<Pick<CompanyPortabilityManifest["issues"][number],
     "slug" | "projectSlug" | "assigneeAgentSlug" | "parentSlug" | "blockedBy"> &
-    Partial<Pick<CompanyPortabilityManifest["issues"][number], "recurring" | "routine">>>;
+    Partial<Pick<CompanyPortabilityManifest["issues"][number], "recurring" | "routine" | "comments">>>;
   envInputs: Array<Pick<CompanyPortabilityManifest["envInputs"][number],
     "key" | "agentSlug" | "projectSlug" | "kind" | "requirement">>;
 };
@@ -93,6 +93,10 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
   const parentByIssue = new Map((manifest.issues ?? []).map((issue) => [issue.slug, issue.parentSlug ?? null]));
   const checkedParents = new Set<string>();
   for (const issue of manifest.issues ?? []) {
+    // The portability importer copies issue conversations; migration must not.
+    if ((issue.comments?.length ?? 0) > 0) {
+      errors.push(`Task ${issue.slug} has comments that cannot be migrated.`);
+    }
     // Portability recreates webhook triggers, which are outside migration scope.
     if (issue.recurring && issue.routine?.triggers.some((trigger) => trigger.kind === "webhook")) {
       errors.push(`Task ${issue.slug} has a webhook trigger that cannot be migrated.`);
