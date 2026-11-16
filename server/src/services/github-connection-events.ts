@@ -1364,7 +1364,7 @@ export function githubConnectionEventService(
     ));
     // myrmidon(EMPTY-RUNS-1): a push moves `metadata.headSha` and leaves no other trace on the task; remember
     // the old head to write the head-change row (see recordPrHeadChanges) once the new one is stored.
-    const prWorkProductWhere = and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.provider, "github"), eq(issueWorkProducts.externalId, snapshot.externalId));
+    const prWorkProductWhere = and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.provider, "github"), sql`lower(${issueWorkProducts.externalId}) = lower(${snapshot.externalId})`);
     const headBefore = await db.select({ id: issueWorkProducts.id, issueId: issueWorkProducts.issueId, headSha: sql<string | null>`${issueWorkProducts.metadata} ->> 'headSha'` })
       .from(issueWorkProducts).where(prWorkProductWhere);
     await db.update(issueWorkProducts).set({ metadata: sql`(${issueWorkProducts.metadata} - 'activeCi') || ${JSON.stringify({ repository: snapshot.repository, number: snapshot.number, headSha: snapshot.data.headSha })}::jsonb`, updatedAt: appliedAt })
