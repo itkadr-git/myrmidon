@@ -17,14 +17,20 @@ export type ReleaseMembership = {
   verdict: ReleaseMembershipVerdict;
 };
 
-type CompareResponse = { status?: unknown; ahead_by?: unknown; behind_by?: unknown };
 type MatchingRefsResponse = Array<{ ref?: unknown }>;
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
-function isPresentCompare(body: CompareResponse): boolean {
-  const status = typeof body.status === "string" ? body.status : "";
-  const aheadBy = typeof body.ahead_by === "number" ? body.ahead_by : null;
-  return aheadBy === 0 || status === "identical" || status === "behind";
+function isPresentCompare(body: unknown): boolean | null {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return null;
+  const { status, ahead_by: ahead, behind_by: behind } = body as Record<string, unknown>;
+  if (status !== "identical" && status !== "behind" && status !== "ahead" && status !== "diverged") return null;
+  const validCount = (value: unknown) => value === undefined || (typeof value === "number" && Number.isSafeInteger(value) && value >= 0);
+  if (!validCount(ahead) || !validCount(behind)) return null;
+  const aheadPositive = status === "ahead" || status === "diverged";
+  const behindPositive = status === "behind" || status === "diverged";
+  if (typeof ahead === "number" && (ahead > 0) !== aheadPositive) return null;
+  if (typeof behind === "number" && (behind > 0) !== behindPositive) return null;
+  return !aheadPositive;
 }
 
 /** Matches refs of one release line: "1.6" keeps myr-v1.6.8 / rel/1.6.8-fixes, drops myr-v1.60.1 / myr-v1.7.0. */
@@ -107,7 +113,7 @@ export async function checkCommitInRef(options: {
     const response = await fetchImpl(url, { headers });
     if (response.status === 404) return null;
     if (!response.ok) return null;
-    const body = await response.json() as CompareResponse;
+    const body: unknown = await response.json();
     return isPresentCompare(body);
   } catch {
     return null;
@@ -130,10 +136,9 @@ export async function checkCommitMembership(options: {
     kind: ref.kind,
     inRelease: await checkCommitInRef({ ...options, ref, sha: options.sha! }),
   })));
-  const known = checks.filter((check) => check.inRelease !== null);
-  const verdict: ReleaseMembershipVerdict = known.some((check) => check.inRelease === true)
+  const verdict: ReleaseMembershipVerdict = checks.some((check) => check.inRelease === true)
     ? "present"
-    : known.length > 0 ? "missing_from_release" : "unknown";
+    : checks.every((check) => check.inRelease === false) ? "missing_from_release" : "unknown";
   return { releasePrefix: options.releasePrefix, releaseRefs: candidates, checks, verdict };
 }
 
