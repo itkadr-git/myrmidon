@@ -1,7 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companyTransferRuns, createDb, issueComments, issues, projects } from "@myrmidon/db";
+import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companyTransferRuns, createDb, issueComments, issues, principalPermissionGrants, projects } from "@myrmidon/db";
 
 import { companyRoutes } from "../routes/companies.js";
 import { companyService } from "../services/companies.js";
@@ -91,6 +91,32 @@ describe("company migration dry run", () => {
       insert.mockRestore(); update.mockRestore(); remove.mockRestore();
       putFile.mockRestore(); deleteObject.mockRestore();
     }
+  });
+
+  it("rejects unknown source agent permissions without leaking permission metadata", async () => {
+    const [source] = await db.insert(companies).values({ name: "Unknown ACL source", issuePrefix: "MUA" }).returning();
+    const [worker] = await db.insert(agents).values({ companyId: source!.id, name: "Worker" }).returning();
+    await db.insert(principalPermissionGrants).values({
+      companyId: source!.id, principalType: "agent", principalId: worker!.id,
+      permissionKey: "private-unknown-permission", scope: { secret: "private-scope-value" },
+    });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+    const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+      target: { mode: "new_company", newCompanyName: "ACL destination" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.body.validation.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("unsupported agent permission"),
+    ]));
+    expect(JSON.stringify(response.body)).not.toContain("private-unknown-permission");
+    expect(JSON.stringify(response.body)).not.toContain("private-scope-value");
   });
 
   it("reports source task comments through the real preview without leaking their contents", async () => {
