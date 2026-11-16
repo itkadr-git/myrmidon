@@ -96,7 +96,7 @@ describe("stranded company roster cache", () => {
     assert.deepEqual(f.lookups, [companyA, companyB, companyA, companyB]);
     assert.deepEqual(f.updates, []);
     assert.deepEqual(f.rows, beforeRows);
-    assert.deepEqual(firstRosters[companyA][0], agent(2, "manager"));
+    assert.deepEqual(originalRosters, firstRosters);
     assert.deepEqual(f.rosters, secondRosters);
   });
 });
