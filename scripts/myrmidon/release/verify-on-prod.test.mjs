@@ -134,7 +134,7 @@ test("repeated page fails without accepting an incomplete result", async () => {
     if (++calls > 3) throw new Error("request limit reached");
     return { ok: true, json: async () => [{ id: "a", status: "done" }, { id: "b", status: "done" }] };
   };
-  await assert.rejects(fetchReleaseTasks({ apiUrl: "http://board.test", companyId: "c1", labelId: "l1", pageSize: 2, fetchImpl }), /pagination/i);
+  await assert.rejects(fetchReleaseTasks({ apiUrl: "http://board.test", companyId: "c1", labelId: "l1", pageSize: 2, fetchImpl }), /repeated issue ID/i);
   assert.equal(calls, 2);
 });
 
