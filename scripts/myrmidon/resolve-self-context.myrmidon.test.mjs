@@ -20,7 +20,9 @@ function fixture(root, directory, name, exportsField, target) {
 }
 
 function withFixtures(run) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "self-context-"));
+  const scratch = path.join(os.homedir(), ".cache", "myrmidon-tests");
+  fs.mkdirSync(scratch, { recursive: true });
+  const root = fs.mkdtempSync(path.join(scratch, "self-context-"));
   try {
     run(root);
   } finally {
