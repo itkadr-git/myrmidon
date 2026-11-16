@@ -82,6 +82,40 @@ describe("company migration dry run", () => {
     insert.mockRestore(); update.mockRestore(); remove.mockRestore();
   });
 
+  it("keeps concurrent repeated dry runs read-only", async () => {
+    const [source] = await db.insert(companies).values({ name: "Concurrent dry run source", issuePrefix: "MDR" }).returning();
+    await db.insert(agents).values({ companyId: source!.id, name: "Dry run worker" });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+
+    const beforeCompanies = await db.select().from(companies);
+    const beforeAgents = await db.select().from(agents);
+    const beforeRuns = await db.select().from(companyTransferRuns);
+    const beforeAudit = await db.select().from(activityLog);
+    const filesBefore = await readdir(root, { recursive: true });
+    const endpoint = `/api/companies/${source!.id}/migrations`;
+    const payload = { target: { mode: "new_company", newCompanyName: "Concurrent dry run destination" } };
+    const responses = await Promise.all([
+      request(app).post(endpoint).send(payload),
+      request(app).post(endpoint).send(payload),
+    ]);
+
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    expect(responses[0]!.body).toEqual(responses[1]!.body);
+    expect(responses[0]!.body.dryRun).toBe(true);
+    expect(await db.select().from(companies)).toEqual(beforeCompanies);
+    expect(await db.select().from(agents)).toEqual(beforeAgents);
+    expect(await db.select().from(companyTransferRuns)).toEqual(beforeRuns);
+    expect(await db.select().from(activityLog)).toEqual(beforeAudit);
+    expect(await readdir(root, { recursive: true })).toEqual(filesBefore);
+  });
+
   it("reports secret bindings without revealing source environment values", async () => {
     const [source] = await db.insert(companies).values({ name: "Secret fixture", issuePrefix: "MSC" }).returning();
     await db.insert(agents).values({
