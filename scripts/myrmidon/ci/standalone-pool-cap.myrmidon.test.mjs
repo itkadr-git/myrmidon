@@ -61,6 +61,47 @@ test("pool waits for a slot at limit 2", async () => {
   await exercisePool(2, 2);
 });
 
+test("pool preserves result identity and input order when work finishes out of order", async () => {
+  const items = [{ id: 0 }, { id: 1 }, { id: 2 }];
+  const original = [...items];
+  const values = [{ value: 0 }, { value: 1 }, { value: 2 }];
+  const gates = items.map(() => deferred());
+  const starts = [];
+  const completions = [];
+  const run = runWithConcurrency(items, 2, async (item, index) => {
+    starts.push(index);
+    assert.strictEqual(item, original[index]);
+    await gates[index].promise;
+    completions.push(index);
+    return values[index];
+  });
+
+  try {
+    await nextTurn();
+    assert.deepEqual(starts, [0, 1]);
+    gates[1].resolve();
+    await nextTurn();
+    assert.deepEqual(completions, [1]);
+    assert.deepEqual(starts, [0, 1, 2]);
+    gates[2].resolve();
+    await nextTurn();
+    assert.deepEqual(completions, [1, 2]);
+    gates[0].resolve();
+    const results = await run;
+    assert.deepEqual(completions, [1, 2, 0]);
+    assert.equal(starts.length, items.length);
+    assert.equal(results.length, values.length);
+    for (let index = 0; index < values.length; index += 1) {
+      assert.strictEqual(results[index], values[index]);
+      assert.strictEqual(items[index], original[index]);
+    }
+    assert.equal(items.length, original.length);
+  } finally {
+    gates.forEach((gate) => gate.resolve());
+    await run;
+  }
+});
+
 test("pool clamps zero limit to one worker", async () => {
   await exercisePool(0, 1);
 });
