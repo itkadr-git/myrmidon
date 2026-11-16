@@ -103,7 +103,7 @@ import {
 import { projectMemberAgentIds, projectMembershipByProject, projectScopedClaimGate } from "../project-membership.js";
 import { issueService } from "../../services/issues.js";
 import { currentCompanyReleaseFocus } from "../run-priority/state.js";
-import { createAutoSlicePolicy, projectQueueShortages, releaseEpicCandidates, runAutoSlicePass } from "./auto-slice-policy.js";
+import { AUTO_SLICE_DEDUPE_STATUSES, createAutoSlicePolicy, projectQueueShortages, releaseEpicCandidates, runAutoSlicePass } from "./auto-slice-policy.js";
 import { unassignedTaskRoutedToRole } from "./queue.js";
 import { insertClaim, releaseClaimsForIssue, revertIdleClaimAssignment } from "./store.js";
 
@@ -772,7 +772,7 @@ async function autoSliceCompany(deps: SwarmMatcherDeps, companyId: string, caste
         await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${companyId}), hashtext(${projectId}))`);
         const [existing] = await tx.select({ id: issues.id }).from(issues).where(and(
           eq(issues.companyId, companyId), eq(issues.projectId, projectId), eq(issues.title, AUTO_SLICE_TITLE),
-          isNull(issues.hiddenAt), inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
+          isNull(issues.hiddenAt), inArray(issues.status, [...AUTO_SLICE_DEDUPE_STATUSES]),
         )).limit(1);
         if (existing) return null;
         return issueService(deps.db).create(companyId, {
