@@ -190,6 +190,16 @@ function createMocks() {
 }
 
 describe("SERVER-ONBOARD logic", () => {
+  it("does not replace a verified host pin with a completion report", async () => {
+    const { mockStore, mockSecrets, mockGetServer, store } = createMocks();
+    const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
+    await service.addServer({ companyId: "company-1", slug: "pin-report", name: "Server", hostname: "192.0.2.7", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password", password: "bootstrap" }, createdBy: null });
+    await service.claim("company-1", "valid-executor-token");
+    expect(await service.pinHostKey("valid-executor-token", "company-1", "job-1", "SHA256:first")).toBe(true);
+    await service.report("valid-executor-token", { companyId: "company-1", jobId: "job-1", status: "succeeded", hostKeyFingerprint: "SHA256:changed" });
+    expect(store.servers[0].hostKeyFingerprint).toBe("SHA256:first");
+  });
+
   it("persists the first host identity and rejects a conflicting identity before authentication", async () => {
     const { mockStore, mockSecrets, mockGetServer, store } = createMocks();
     const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
