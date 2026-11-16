@@ -38,4 +38,18 @@ describe("bot partition free-space notification", () => {
     await runtime.updateFromPartition({ ...sample(99), usedBytes: 800 });
     expect(notifyOwner).toHaveBeenCalledTimes(1);
   });
+
+  it("does not re-arm the notification after an unmeasured interval", async () => {
+    const notifyOwner = vi.fn(async () => undefined);
+    const runtime = botPartitionThresholdRuntimeForTest({
+      getBotDiskSettings: async () => undefined,
+      notifyOwner,
+      env: {},
+      now: () => new Date(at),
+    });
+    await runtime.updateFromPartition(sample(99));
+    runtime.markUnmeasured();
+    await runtime.updateFromPartition(sample(99));
+    expect(notifyOwner).toHaveBeenCalledTimes(1);
+  });
 });

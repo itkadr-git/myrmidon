@@ -120,10 +120,10 @@ export function createOwnerTelegramNotifier(
       const text = [
         "🚨 Bot partition is critically full",
         "",
-        `- Partition ${usage.mount} is at ${usage.usedPercent.toFixed(1)}% (critical threshold ${settings.partitionCriticalPercent}%).`,
+        `- Partition ${usage.mount} has less than 10% free space (${(usage.freeBytes / usage.totalBytes * 100).toFixed(1)}% available).`,
         `- Free: ${(usage.freeBytes / (1024 * 1024 * 1024)).toFixed(1)} GiB of ${(usage.totalBytes / (1024 * 1024 * 1024)).toFixed(1)} GiB.`,
         `- myr-ws open refuses new copies from ${settings.partitionRefuseOpenPercent}% (pressure level hard, grace 0).`,
-        "- Free space on the bot host or raise the quotas; the alert clears below the warn threshold.",
+        "- Free space on the bot host; the alert resets when at least 10% is free.",
       ].join("\n");
       const at = usage.at;
       try {
@@ -149,6 +149,7 @@ export function createOwnerTelegramNotifier(
         );
       } catch (err) {
         logger.error({ err, companyId }, "bot partition critical owner notification failed");
+        throw err;
       }
     }
   };
