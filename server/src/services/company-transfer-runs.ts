@@ -254,7 +254,12 @@ export const companyTransferRunService = {
       .update(companyTransferRuns)
       .set({ status: "running", error: null, startedAt: new Date(), finishedAt: null, updatedAt: new Date() })
       .where(
-        and(eq(companyTransferRuns.id, runId), inArray(companyTransferRuns.status, RESUMABLE_STATUSES)),
+        and(
+          eq(companyTransferRuns.id, runId),
+          inArray(companyTransferRuns.status, RESUMABLE_STATUSES),
+          // Do not erase the failure evidence for a partially applied migration.
+          sql`not (coalesce(${companyTransferRuns.containerRef}->>'kind' = 'company_migration', false) and ${companyTransferRuns.companyId} is not null)`,
+        ),
       );
   },
 
