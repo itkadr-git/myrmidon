@@ -123,6 +123,32 @@ describe("company migration dry run", () => {
     expect(await readdir(root, { recursive: true })).toEqual(filesBefore);
   });
 
+  it("changes the dry-run identity when source content changes", async () => {
+    const [source] = await db.insert(companies).values({ name: "Identity source", issuePrefix: "MID" }).returning();
+    const [worker] = await db.insert(agents).values({ companyId: source!.id, name: "Original worker" }).returning();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+    const endpoint = `/api/companies/${source!.id}/migrations`;
+    const payload = { target: { mode: "new_company", newCompanyName: "Identity destination" } };
+    const first = await request(app).post(endpoint).send(payload);
+    expect(first.status).toBe(200);
+    expect(first.body.runKey).toMatch(/^[a-f0-9]{64}$/);
+    const { eq } = await import("drizzle-orm");
+    await db.update(agents).set({ name: "Changed worker" }).where(eq(agents.id, worker!.id));
+    const second = await request(app).post(endpoint).send(payload);
+    expect(second.status).toBe(200);
+    expect(second.body.runKey).not.toBe(first.body.runKey);
+    const third = await request(app).post(endpoint).send(payload);
+    expect(third.status).toBe(200);
+    expect(third.body.runKey).toBe(second.body.runKey);
+  });
+
   it("reports secret bindings without revealing source environment values", async () => {
     const [source] = await db.insert(companies).values({ name: "Secret fixture", issuePrefix: "MSC" }).returning();
     await db.insert(agents).values({
