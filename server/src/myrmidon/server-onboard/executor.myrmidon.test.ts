@@ -221,6 +221,31 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockSsh.hasExecuted(/50-myrmidon-hardening\.conf/)).toBe(false);
   });
 
+  it("closes the bootstrap connection after switching to verified key authentication", async () => {
+    const initial = new MockSshExecutor();
+    const verified = new MockSshExecutor();
+    verified.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
+    const connections = [initial, verified];
+    const executor = new FleetOnboardExecutor({
+      createSshExecutor: () => {
+        const connection = connections.shift();
+        if (!connection) throw new Error("Unexpected SSH connection");
+        return connection;
+      },
+      generateKeyPair: () => ({ publicKey: "ssh-ed25519 test", privateKey: "private-key" }),
+    });
+    const claim: any = {
+      job: { id: "job-bootstrap-disconnect", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["access"], options: { keepPassword: true },
+      secretValues: { bootstrapPassword: "pass" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("succeeded");
+    expect(initial.isConnected()).toBe(false);
+    expect(verified.isConnected()).toBe(false);
+  });
+
   it("closes the fresh SSH connection when key verification fails", async () => {
     const initial = new MockSshExecutor();
     const fresh = new MockSshExecutor();
