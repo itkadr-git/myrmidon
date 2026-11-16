@@ -10,6 +10,7 @@ import {
   suggestedTaskDraftSchema,
   updateIssueSchema,
   upsertIssueDocumentSchema,
+  issueExecutionPolicySchema,
 } from "./issue.js";
 import { createAgentSchema } from "./agent.js";
 
@@ -821,5 +822,38 @@ describe("issue validators", () => {
     });
 
     expect(parsed.success).toBe(false);
+  });
+
+  describe("execution monitor kind (EMPTY-WAKES-CI-UNREADY)", () => {
+    const base = { nextCheckAt: "2026-11-16T12:00:00.000Z" };
+
+    it("takes monitor.kind = ci as external_service and names the service github-ci", () => {
+      const parsed = issueExecutionPolicySchema.parse({ monitor: { ...base, kind: "ci" } });
+      expect(parsed.monitor?.kind).toBe("external_service");
+      expect(parsed.monitor?.serviceName).toBe("github-ci");
+    });
+
+    it("keeps a service name the caller gave", () => {
+      const parsed = issueExecutionPolicySchema.parse({
+        monitor: { ...base, kind: "ci", serviceName: "  review-ci  " },
+      });
+      expect(parsed.monitor?.kind).toBe("external_service");
+      expect(parsed.monitor?.serviceName).toBe("review-ci");
+    });
+
+    it("leaves external_service and an absent kind as they were", () => {
+      const external = issueExecutionPolicySchema.parse({
+        monitor: { ...base, kind: "external_service", serviceName: "x" },
+      });
+      expect(external.monitor?.kind).toBe("external_service");
+      expect(external.monitor?.serviceName).toBe("x");
+      const none = issueExecutionPolicySchema.parse({ monitor: base });
+      expect(none.monitor?.kind).toBeNull();
+      expect(none.monitor?.serviceName).toBeNull();
+    });
+
+    it("still refuses an unknown kind", () => {
+      expect(issueExecutionPolicySchema.safeParse({ monitor: { ...base, kind: "webhook" } }).success).toBe(false);
+    });
   });
 });
