@@ -152,6 +152,18 @@ export async function commitKnowledgeTreeIfChanged(
   const tracked = listed.stdout.split("\0").filter((name) => name.length > 0);
   for (const name of tracked) {
     if (name.startsWith(prefix) && !keep.has(name)) {
+      let current = workDir;
+      for (const component of name.split(path.sep).filter(Boolean).slice(0, -1)) {
+        current = path.join(current, component);
+        try {
+          if ((await lstat(current)).isSymbolicLink()) {
+            throw new Error(`refusing to delete through a symlink: ${name}`);
+          }
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === "ENOENT") break;
+          throw err;
+        }
+      }
       // Unlink first so a runner that only records argv still leaves a
       // dirty work tree; `git add -A` below stages the deletion.
       await unlink(path.join(workDir, name)).catch((err: NodeJS.ErrnoException) => {
