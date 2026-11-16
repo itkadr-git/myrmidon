@@ -23,10 +23,11 @@
 // the largest user of the App's 5000/h budget.
 
 import { createHash } from "node:crypto";
-import { and, eq } from "drizzle-orm";
-import { issueWorkProducts, type Db } from "@myrmidon/db";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { connectionEventDeliveries, issueWorkProducts, type Db } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../../services/git-credentials.js";
 import { getGitHubRateLimitMetrics, isGitHubRateLimited, recordGitHubRequest } from "../../services/github-rate-limit.js";
+import { withGitHubReviewBudget } from "../../services/github-review-budget.js";
 import { ghFetch, gitHubApiBase } from "../../services/github-fetch.js";
 import { repositoryHasHostedCi } from "../../services/github-hosted-ci.js";
 import { defaultTokenProvider as resolveGitHubReadToken } from "../../services/github-external-object-provider.js";
@@ -345,6 +346,7 @@ export async function resolvePullRequestHeadCi(input: {
   /** Null reads anonymously: the repository may be public. */
   token: string | null;
   fetch?: FetchLike;
+  knownHeadSha?: string;
 }): Promise<{
   state: "pending" | "complete" | "unknown" | "not_configured" | "no_pull_request";
   headSha: string | null;
@@ -363,7 +365,7 @@ export async function resolvePullRequestHeadCi(input: {
   const apiBase = gitHubApiBase(input.reference.host);
   const repository = `${encodeURIComponent(input.reference.owner)}/${encodeURIComponent(input.reference.repo)}`;
   const keyBase = `${tokenScope(input.token)}|${repositoryKey(input.reference)}`;
-  const pull = await cachedRead<PullHead>(`pull|${keyBase}#${input.reference.number}`, async (): Promise<LoadedRead<PullHead>> => {
+  const pull: CachedRead<PullHead> = input.knownHeadSha ? { ok: true, value: { open: true, headSha: input.knownHeadSha } } : await cachedRead<PullHead>(`pull|${keyBase}#${input.reference.number}`, async (): Promise<LoadedRead<PullHead>> => {
     const read = await readGitHub(fetchImpl, `${apiBase}/repos/${repository}/pulls/${input.reference.number}`, input.token, "pull");
     if (!read.ok) return read;
     const pullRecord = asRecord(read.json);
@@ -416,7 +418,7 @@ export async function resolvePullRequestHeadCi(input: {
 type IssuePullRequestTarget =
   | { kind: "none" }
   | { kind: "unreadable"; pullRequestUrl: string | null }
-  | { kind: "ok"; pullRequestUrl: string | null; reference: GitHubPullRequestReference };
+  | { kind: "ok"; pullRequestUrl: string | null; reference: GitHubPullRequestReference; knownHeadSha: string | null };
 
 async function loadIssuePullRequestTarget(
   db: Db,
@@ -454,7 +456,8 @@ async function loadIssuePullRequestTarget(
   const effectiveUrl = (product.url !== null && product.url !== "") ? product.url : metadataUrl;
   const reference = extractGitHubPullRequestReferences([effectiveUrl, repo && number ? `${repo}#${number}` : null])[0] ?? null;
   if (!reference) return { kind: "unreadable", pullRequestUrl: effectiveUrl };
-  return { kind: "ok", pullRequestUrl: effectiveUrl, reference };
+  const knownHeadSha = typeof metadata.headSha === "string" && metadata.headSha.trim() ? metadata.headSha.trim() : null;
+  return { kind: "ok", pullRequestUrl: effectiveUrl, reference, knownHeadSha };
 }
 
 /**
@@ -497,15 +500,73 @@ export async function readReviewPullRequestHeadSha(input: {
   }
 }
 
+/** Only a matching, recent PR head and final check are authoritative together. */
+type WebhookCi = {
+  headSha: string;
+  /** Null: the head is known from webhooks, its final check is not (ask GitHub for the check only). */
+  verdict: { state: "complete"; finalCheckConclusion: string } | { state: "pending" } | null;
+};
+
+async function readWebhookCi(db: Db, companyId: string, reference: GitHubPullRequestReference): Promise<WebhookCi | null> {
+  try {
+    const rows = await db.select({
+      event: connectionEventDeliveries.event,
+      createdAt: connectionEventDeliveries.createdAt,
+      normalizedPayload: connectionEventDeliveries.normalizedPayload,
+    }).from(connectionEventDeliveries).where(and(
+      eq(connectionEventDeliveries.companyId, companyId),
+      eq(connectionEventDeliveries.provider, "github"),
+      eq(connectionEventDeliveries.status, "processed"),
+      inArray(connectionEventDeliveries.event, ["pull_request", "check_run"]),
+      gte(connectionEventDeliveries.createdAt, new Date(Date.now() - 30 * 60_000)),
+      sql`lower(${connectionEventDeliveries.normalizedPayload}->>'repository') = lower(${`${reference.owner}/${reference.repo}`})`,
+      sql`coalesce(${connectionEventDeliveries.normalizedPayload}->>'pullRequestNumber', ${connectionEventDeliveries.normalizedPayload}->>'number') = ${String(reference.number)}`,
+    )).orderBy(desc(connectionEventDeliveries.createdAt)).limit(200);
+    const sorted = [...rows].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    // Receipt order is not event order: pick the newest pull_request event by the
+    // time GitHub stamped on the PR (updatedAt), falling back to receipt order, so
+    // a delayed `opened` cannot hide a newer `synchronize` (stale head, stale verdict).
+    const stamp = (row: { createdAt: Date; normalizedPayload: unknown }): number => {
+      const updated = Date.parse(String(asRecord(row.normalizedPayload)?.updatedAt ?? ""));
+      return Number.isFinite(updated) ? updated : 0;
+    };
+    const pull = sorted.filter((row) => row.event === "pull_request")
+      .sort((a, b) => stamp(b) - stamp(a) || b.createdAt.getTime() - a.createdAt.getTime())[0];
+    const payload = asRecord(pull?.normalizedPayload);
+    if (payload?.state !== "open" || typeof payload.headSha !== "string" || !payload.headSha) return null;
+    const headSha = payload.headSha;
+    const checks = sorted.filter((row) => {
+      const value = asRecord(row.normalizedPayload);
+      return row.event === "check_run" && value !== null && value.headSha === headSha && value.checkName === REVIEW_CI_FINAL_CHECK_NAME;
+    });
+    // Receipt order is not run order: a delayed completion from an older run
+    // must not override a newer rerun. Ask GitHub when multiple runs are seen.
+    const runIds = new Set(checks.map((row) => asRecord(row.normalizedPayload)?.runId).filter((id): id is string => typeof id === "string"));
+    if (runIds.size > 1) return { headSha, verdict: null };
+    // `completed` is terminal for a run: a late `in_progress` must not undo it.
+    const completed = checks.map((row) => asRecord(row.normalizedPayload))
+      .find((value) => value?.status === "completed" && typeof value.conclusion === "string" && !["cancelled", "skipped"].includes(value.conclusion));
+    if (completed) return { headSha, verdict: { state: "complete", finalCheckConclusion: completed.conclusion as string } };
+    const running = asRecord(checks[0]?.normalizedPayload);
+    if (running?.status === "queued" || running?.status === "in_progress" || running?.status === "waiting") {
+      return { headSha, verdict: { state: "pending" } };
+    }
+    return { headSha, verdict: null };
+  } catch {
+    return null;
+  }
+}
+
 export function createReviewPullRequestCiResolver(input: {
   db: Db;
   fetch?: FetchLike;
   tokenProvider?: (companyId: string, repository: string) => Promise<string | null>;
 }): ReviewPullRequestCiResolver {
+  const fetchImpl = withGitHubReviewBudget(input.db, "review-recovery", input.fetch ?? ghFetch);
   const tokenProvider =
     input.tokenProvider ??
     ((companyId: string, repository: string) =>
-      resolveGitHubReadToken(input.db, companyId, repository, DEFAULT_GITHUB_TOKEN_SECRET_NAMES, input.fetch));
+      resolveGitHubReadToken(input.db, companyId, repository, DEFAULT_GITHUB_TOKEN_SECRET_NAMES, fetchImpl));
 
   return async ({ companyId, issueId }) => {
     const target = await loadIssuePullRequestTarget(input.db, companyId, issueId);
@@ -514,6 +575,9 @@ export function createReviewPullRequestCiResolver(input: {
       return { state: "unknown", pullRequestUrl: target.pullRequestUrl, headSha: null, reason: "pull_request_reference_unreadable" };
     }
     const { reference, pullRequestUrl } = target;
+    const webhook = await readWebhookCi(input.db, companyId, reference);
+    const matchingWebhook = webhook && (!target.knownHeadSha || target.knownHeadSha === webhook.headSha) ? webhook : null;
+    if (matchingWebhook?.verdict) return { ...matchingWebhook.verdict, headSha: matchingWebhook.headSha, pullRequestUrl };
     let token: string | null = null;
     let tokenError = false;
     try {
@@ -522,7 +586,7 @@ export function createReviewPullRequestCiResolver(input: {
       tokenError = true;
     }
     try {
-      const head = await resolvePullRequestHeadCi({ reference, token, fetch: input.fetch });
+      const head = await resolvePullRequestHeadCi({ reference, token, fetch: fetchImpl, knownHeadSha: matchingWebhook?.headSha });
       if (head.state !== "unknown") {
         // myrmidon(OPE-12176): the verdict of the final check travels with the
         // state; review admission tells green from red without a second read.
@@ -621,10 +685,11 @@ export function createReviewHeadFailedChecksResolver(input: {
   fetch?: FetchLike;
   tokenProvider?: (companyId: string, repository: string) => Promise<string | null>;
 }): ReviewHeadFailedChecksResolver {
+  const fetchImpl = withGitHubReviewBudget(input.db, "review-recovery", input.fetch ?? ghFetch);
   const tokenProvider =
     input.tokenProvider ??
     ((companyId: string, repository: string) =>
-      resolveGitHubReadToken(input.db, companyId, repository, DEFAULT_GITHUB_TOKEN_SECRET_NAMES, input.fetch));
+      resolveGitHubReadToken(input.db, companyId, repository, DEFAULT_GITHUB_TOKEN_SECRET_NAMES, fetchImpl));
 
   return async ({ companyId, issueId, headSha }) => {
     const target = await loadIssuePullRequestTarget(input.db, companyId, issueId);
@@ -636,7 +701,7 @@ export function createReviewHeadFailedChecksResolver(input: {
       // Anonymous read: the repository may be public; a failed read answers "unknown" below.
     }
     try {
-      const failed = await resolvePullRequestHeadFailedChecks({ reference: target.reference, token, headSha, fetch: input.fetch });
+      const failed = await resolvePullRequestHeadFailedChecks({ reference: target.reference, token, headSha, fetch: fetchImpl });
       if (failed.state === "unknown") return failed;
       return { state: "ok", headSha, pullRequestUrl: target.pullRequestUrl, failed: failed.failed };
     } catch {

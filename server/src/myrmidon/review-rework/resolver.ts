@@ -11,6 +11,7 @@ import {
   createGitHubExternalObjectProvider,
   type GitHubExternalObjectProviderOptions,
 } from "../../services/github-external-object-provider.js";
+import { withGitHubReviewBudget } from "../../services/github-review-budget.js";
 import type { ReviewReworkPrState } from "./domain.js";
 
 export interface ReviewReworkPrReference {
@@ -61,8 +62,9 @@ export function createPullRequestReviewFactsResolver(
   opts: GitHubExternalObjectProviderOptions = {},
 ): ReviewReworkPrResolver {
   let resolverPromise: Promise<ReturnType<typeof pickResolver>> | null = null;
+  const fetchImpl = withGitHubReviewBudget(db, "review-rework", opts.fetch ?? fetch);
   const pickResolver = () =>
-    createGitHubExternalObjectProvider(db, { source: "review-rework", ...opts }).resolvers.find(
+    createGitHubExternalObjectProvider(db, { ...opts, source: "review-rework", fetch: fetchImpl }).resolvers.find(
       (candidate) => candidate.objectType === "pull_request",
     ) ?? null;
 
