@@ -83,7 +83,7 @@ test("runPnpm captures streams, exit signal, options and spawn errors", async ()
   call.child.stderr.emit("data", Buffer.from("err"));
   call.child.emit("exit", null, "SIGTERM");
   const result = await promise;
-  assert.deepEqual([result.code, result.signal, result.stdout, result.stderr], [0, "SIGTERM", "out", "err"]);
+  assert.deepEqual([result.code, result.signal, result.stdout, result.stderr], [null, "SIGTERM", "out", "err"]);
   const failed = h.runner.runPnpm([]);
   const error = new Error("spawn failed");
   h.children[1].child.emit("error", error);
