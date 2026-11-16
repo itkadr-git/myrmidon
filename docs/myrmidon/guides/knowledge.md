@@ -111,6 +111,19 @@ Pending knowledge proposals from `/api/myrmidon/companies/:companyId/knowledge/s
 - **Type filter**: the inbox filter popover includes a **Knowledge** category filter, allowing operators to filter the inbox exclusively to knowledge suggestions or combine it with other categories. The category selection is persisted in local storage preferences.
 - **Review routing**: activating a knowledge inbox item (via click or keyboard navigation) routes directly to `/knowledge/review` where the proposal's title, rationale, source references, and proposed content can be inspected, accepted, or declined.
 
+### Cancel after a saved draft
+
+In the review editor, Cancel before a draft is saved closes the editor without a
+POST. If the draft write succeeds but the subsequent accept decision fails,
+Cancel closes the editor but does not undo the server-side draft. Selecting Edit
+again for that suggestion restores the saved content and, for a new page, its
+title and slug. These fields are disabled; submitting again retries only the
+accept decision and does not create another page or draft revision.
+
+The saved-draft receipt and fields live only in the current review screen
+instance for the selected company. Switching companies or reloading the page
+clears that local memory; the server-side draft is not rolled back.
+
 ## Where the code lives
 
 - `server/src/myrmidon/knowledge/routes.ts` — the REST router and its gates.
