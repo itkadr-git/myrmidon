@@ -100,6 +100,51 @@ describe("board project workspace GC", () => {
     const busy = await scanBoardProjectWorkspaces(home, Date.now(), { ...options, gitActive: () => true });
     assert.equal(busy.find((x) => x.path.endsWith("tmp_pack_busy")).action, "keep");
   });
+
+  it("keeps fresh nested files, recent closures, unknown issues and symlinked stores", async () => {
+    const home = path.join(tmpDir, "home");
+    const repo = path.join(home, "instances/default/projects/company/project/myrmidon");
+    const scratch = path.join(repo, ".scratch");
+    const outside = path.join(tmpDir, "outside");
+    const old = new Date(Date.now() - 30 * 3600000);
+    for (const name of ["ope100", "ope101", "ope102", "ope103"]) fs.mkdirSync(path.join(scratch, name), { recursive: true });
+    fs.writeFileSync(path.join(scratch, "ope100", "fresh"), "active");
+    for (const name of ["ope100", "ope101", "ope102", "ope103"]) fs.utimesSync(path.join(scratch, name), old, old);
+    fs.mkdirSync(outside);
+    fs.mkdirSync(path.join(repo, ".paperclip"));
+    fs.symlinkSync(outside, path.join(repo, ".paperclip", "pnpm-store"));
+    const fetchState = async (id) => id === "OPE-102" ? { ok: false } : {
+      ok: true, status: id === "OPE-103" ? "cancelled" : "done",
+      closedAt: id === "OPE-101" ? new Date().toISOString() : old.toISOString(),
+    };
+    const plan = await scanBoardProjectWorkspaces(home, Date.now(), { fetchState, gitActive: () => false });
+    const byName = Object.fromEntries(plan.map((item) => [path.basename(item.path), item]));
+    assert.equal(byName.ope100.reason, "fresh");
+    assert.equal(byName.ope101.reason, "issue-not-old-closed");
+    assert.equal(byName.ope102.reason, "issue-not-old-closed");
+    assert.equal(byName.ope103.action, "remove");
+    assert.equal(byName["pnpm-store"], undefined);
+  });
+
+  it("rechecks issue status and git activity before deleting planned entries", async () => {
+    const home = path.join(tmpDir, "home");
+    const repo = path.join(home, "instances/default/projects/company/project/myrmidon");
+    const scratch = path.join(repo, ".scratch/ope100");
+    const pack = path.join(repo, ".git/objects/pack/tmp_pack_old");
+    fs.mkdirSync(scratch, { recursive: true });
+    fs.mkdirSync(path.dirname(pack), { recursive: true });
+    fs.writeFileSync(pack, "x");
+    const old = new Date(Date.now() - 30 * 3600000);
+    fs.utimesSync(scratch, old, old);
+    fs.utimesSync(pack, old, old);
+    const options = { fetchState: async () => ({ ok: true, status: "done", closedAt: old.toISOString() }), gitActive: () => false };
+    const plan = await scanBoardProjectWorkspaces(home, Date.now(), options);
+    const journal = path.join(tmpDir, "race.jsonl");
+    await pruneBoardProjectWorkspaces(plan, journal, { fetchState: async () => ({ ok: true, status: "in_progress" }), gitActive: () => true });
+    assert.equal(fs.existsSync(scratch), true);
+    assert.equal(fs.existsSync(pack), true);
+    assert.equal(fs.readFileSync(journal, "utf8").trim().split("\n").filter((line) => JSON.parse(line).event === "board-project-kept").length, 2);
+  });
 });
 
 beforeEach(() => {
