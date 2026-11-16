@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import subprocess from "node:child_process";
+import { createServer } from "node:http";
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import { startGitDaemon } from "./git-daemon-fixture.mjs";
 
@@ -47,6 +48,15 @@ const {
   pruneRunnerNpmCaches,
   issueIdentifierFromRunnerFolderName,
   scanRunnerUnrecognizedWorkspaceFolders,
+  scanIdleOpenClones,
+  pruneIdleOpenClones,
+  scanReviewerClones,
+  pruneReviewerClones,
+  isReviewerAgent,
+  fetchBotAgent,
+  fetchRunAgentId,
+  fetchIssueOpenState,
+  volumeFreePercent,
 } = await import(
   path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs")
 );
@@ -1974,5 +1984,406 @@ describe("runner unrecognized workspace folders (OPE-13018)", () => {
     fs.symlinkSync(path.join(outside, "victim"), path.join(runners, "eng8"));
     const items = scanRunnerUnrecognizedWorkspaceFolders(runners, Date.now(), 24);
     assert.deepEqual(items, []);
+  });
+});
+
+describe("idle clones of open tasks (OPE-13411)", () => {
+  const HOUR = 60 * 60 * 1000;
+  const SCRIPT = path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs");
+  const git = (args, cwd) => {
+    const r = subprocess.spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8", env: GIT_ENV });
+    if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+    return r.stdout;
+  };
+  const plenty = () => ({ blocks: 1000, bavail: 500 });
+  const low = () => ({ blocks: 1000, bavail: 50 });
+
+  // A bot: <tmp>/agent/{workspace, hermes/.myrmidon/git-base/o/r.git} and a bare "server" the git-base
+  // fetches from (served over git:// by the test daemon, so it counts as a server and not a local path).
+  const makeBot = () => {
+    const server = path.join(tmpDir, "server.git");
+    git(["init", "-q", "--bare", "-b", "main", server]);
+    const seed = path.join(tmpDir, "seed");
+    git(["init", "-q", "-b", "main", seed]);
+    fs.writeFileSync(path.join(seed, "f.txt"), "one\n");
+    git(["add", "."], seed);
+    git(["commit", "-q", "-m", "one"], seed);
+    git(["push", "-q", server, "main"], seed);
+    const agent = path.join(tmpDir, "agent");
+    const base = path.join(agent, "hermes/.myrmidon/git-base/o/r.git");
+    fs.mkdirSync(path.dirname(base), { recursive: true });
+    git(["clone", "-q", "--bare", server, base]);
+    const workspace = path.join(agent, "workspace");
+    fs.mkdirSync(workspace, { recursive: true });
+    return { server, agent, base, workspace };
+  };
+
+  // A linked worktree of the git-base on its own branch, one commit ahead of main; pushed or not.
+  const addClone = (bot, name, { pushed = true, dirty = false, untracked = null, ageHours = 10 } = {}) => {
+    const dir = path.join(bot.workspace, name);
+    const branch = `task-${name}`;
+    git(["--git-dir", bot.base, "worktree", "add", "-q", "-b", branch, dir, "main"]);
+    fs.writeFileSync(path.join(dir, `${name}.txt`), "work\n");
+    git(["add", "."], dir);
+    git(["commit", "-q", "-m", `work ${name}`], dir);
+    if (pushed) git(["push", "-q", "origin", `${branch}:${branch}`], dir);
+    if (dirty) fs.writeFileSync(path.join(dir, "f.txt"), "changed\n");
+    if (untracked) {
+      fs.mkdirSync(path.join(dir, untracked), { recursive: true });
+      fs.writeFileSync(path.join(dir, untracked, "x"), "x\n");
+    }
+    age(bot, name, ageHours);
+    return dir;
+  };
+
+  // The clone looks untouched for `hours`: directory, its entries and the worktree's own HEAD and reflog.
+  const age = (bot, name, hours) => {
+    const dir = path.join(bot.workspace, name);
+    const admin = path.join(bot.base, "worktrees", name);
+    const t = new Date(Date.now() - hours * HOUR);
+    for (const f of [...fs.readdirSync(dir).filter((e) => e !== ".git").map((e) => path.join(dir, e)), path.join(admin, "HEAD"), path.join(admin, "index"), path.join(admin, "logs", "HEAD")]) {
+      try { fs.utimesSync(f, t, t); } catch { /* absent */ }
+    }
+    fs.utimesSync(dir, t, t);
+  };
+
+  const states = (map) => async (id) => map[id] ?? { ok: true, status: "in_review", liveRunId: null };
+  const scan = (bot, map = {}, opts = {}) =>
+    scanIdleOpenClones(bot.workspace, Date.now(), { fetchState: states(map), statfs: plenty, ...opts });
+  const verdicts = (r) => Object.fromEntries(r.items.map((i) => [i.name, `${i.action}:${i.reason}`]));
+
+  it("removes a clean pushed in_review clone idle for more than 6 hours, and only it", async () => {
+    const bot = makeBot();
+    const clone = addClone(bot, "OPE-1");
+    const other = addClone(bot, "OPE-2", { ageHours: 10 });
+    const r = await scan(bot, { "OPE-2": { ok: true, status: "in_progress", liveRunId: null } });
+    assert.deepEqual(verdicts(r), { "OPE-1": "remove:idle-clean-pushed", "OPE-2": "keep:status-in_progress" });
+    assert.ok(r.items[0].sizeBytes > 0);
+    const journal = path.join(tmpDir, "j.jsonl");
+    const gone = await pruneIdleOpenClones(r.items, bot.workspace, journal, { fetchState: states({}) });
+    assert.deepEqual(gone, [clone]);
+    assert.equal(fs.existsSync(clone), false);
+    assert.equal(fs.existsSync(other), true);
+    assert.doesNotMatch(git(["--git-dir", bot.base, "worktree", "list"]), /OPE-1\b/);
+    assert.match(git(["--git-dir", bot.base, "worktree", "list"]), /OPE-2\b/);
+    const rec = fs.readFileSync(journal, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(rec.length, 1);
+    assert.equal(rec[0].event, "idle-open-clone-removed");
+    assert.equal(rec[0].identifier, "OPE-1");
+    assert.equal(rec[0].status, "in_review");
+    assert.equal(rec[0].ageHours, 10);
+    assert.ok(rec[0].sizeBytes > 0);
+    assert.equal(rec[0].via, "git-worktree-remove");
+  });
+
+  for (const status of ["blocked", "backlog"]) {
+    it(`handles ${status} like in_review`, async () => {
+      const bot = makeBot();
+      addClone(bot, "OPE-1");
+      const r = await scan(bot, { "OPE-1": { ok: true, status, liveRunId: null } });
+      assert.deepEqual(verdicts(r), { "OPE-1": "remove:idle-clean-pushed" });
+    });
+  }
+
+  it("keeps clones that are dirty, unpushed, young, running, or of a todo or in_progress task", async () => {
+    const bot = makeBot();
+    addClone(bot, "OPE-10", { dirty: true });
+    addClone(bot, "OPE-11", { pushed: false });
+    addClone(bot, "OPE-12", { ageHours: 2 });
+    addClone(bot, "OPE-13");
+    addClone(bot, "OPE-14");
+    addClone(bot, "OPE-15");
+    addClone(bot, "OPE-16", { untracked: "notes" });
+    addClone(bot, "OPE-17");
+    const r = await scan(bot, {
+      "OPE-13": { ok: true, status: "in_review", liveRunId: "run-1" },
+      "OPE-14": { ok: true, status: "todo", liveRunId: null },
+      "OPE-15": { ok: true, status: "in_progress", liveRunId: null },
+      "OPE-17": { ok: false, reason: "board-unavailable" },
+    });
+    assert.deepEqual(verdicts(r), {
+      "OPE-10": "keep:dirty",
+      "OPE-11": "keep:not-pushed",
+      "OPE-12": "keep:fresh",
+      "OPE-13": "keep:live-run",
+      "OPE-14": "keep:status-todo",
+      "OPE-15": "keep:status-in_progress",
+      "OPE-16": "keep:dirty",
+      "OPE-17": "keep:board-unavailable",
+    });
+    assert.equal(await pruneIdleOpenClones(r.items, bot.workspace, path.join(tmpDir, "j.jsonl"), { fetchState: states({}) }).then((g) => g.length), 0);
+    for (const n of [10, 11, 12, 13, 14, 15, 16, 17]) assert.equal(fs.existsSync(path.join(bot.workspace, `OPE-${n}`)), true);
+  });
+
+  it("an untracked service directory (node_modules) does not keep a clone", async () => {
+    const bot = makeBot();
+    addClone(bot, "OPE-1", { untracked: "node_modules" });
+    assert.deepEqual(verdicts(await scan(bot)), { "OPE-1": "remove:idle-clean-pushed" });
+  });
+
+  it("leaves closed tasks to the closed-task rule and ignores non-task folders", async () => {
+    const bot = makeBot();
+    addClone(bot, "OPE-1");
+    fs.mkdirSync(path.join(bot.workspace, ".gc-archive"));
+    fs.mkdirSync(path.join(bot.workspace, "scratch"));
+    const r = await scan(bot, { "OPE-1": { ok: true, status: "done", liveRunId: null } });
+    assert.deepEqual(r.items, []);
+  });
+
+  it("keeps a clone when a run starts between the scan and the removal", async () => {
+    const bot = makeBot();
+    const clone = addClone(bot, "OPE-1");
+    const r = await scan(bot);
+    const journal = path.join(tmpDir, "j.jsonl");
+    const gone = await pruneIdleOpenClones(r.items, bot.workspace, journal, { fetchState: states({ "OPE-1": { ok: true, status: "in_review", liveRunId: "run-9" } }) });
+    assert.deepEqual(gone, []);
+    assert.equal(fs.existsSync(clone), true);
+    assert.equal(JSON.parse(fs.readFileSync(journal, "utf8").trim()).reason, "live-run");
+  });
+
+  it("with under 10% of the volume free the idle time is 1 hour", async () => {
+    const bot = makeBot();
+    addClone(bot, "OPE-1", { ageHours: 2 });
+    addClone(bot, "OPE-2", { ageHours: 0.5 });
+    const normal = await scan(bot);
+    assert.equal(normal.thresholdHours, 6);
+    assert.deepEqual(verdicts(normal), { "OPE-1": "keep:fresh", "OPE-2": "keep:fresh" });
+    const tight = await scan(bot, {}, { statfs: low });
+    assert.equal(tight.thresholdHours, 1);
+    assert.deepEqual(verdicts(tight), { "OPE-1": "remove:idle-clean-pushed", "OPE-2": "keep:fresh" });
+    assert.equal(tight.items[0].lowSpace, true);
+  });
+
+  it("volumeFreePercent reads bavail and survives a failing statfs", () => {
+    assert.equal(volumeFreePercent("/x", () => ({ blocks: 200, bavail: 10 })), 5);
+    assert.equal(volumeFreePercent("/x", () => { throw new Error("no"); }), null);
+  });
+
+  it("maps a container gitdir (/bot/...) to the host and removes only its own admin dir", async () => {
+    const bot = makeBot();
+    const clone = addClone(bot, "OPE-1");
+    const sibling = addClone(bot, "OPE-2", { ageHours: 1 });
+    // Both worktrees record container paths, as on the bots volume.
+    for (const name of ["OPE-1", "OPE-2"]) {
+      fs.writeFileSync(path.join(bot.workspace, name, ".git"), `gitdir: /bot/hermes/.myrmidon/git-base/o/r.git/worktrees/${name}\n`);
+      fs.writeFileSync(path.join(bot.base, "worktrees", name, "gitdir"), `/bot/workspace/${name}/.git\n`);
+    }
+    const r = await scan(bot);
+    assert.deepEqual(verdicts(r), { "OPE-1": "remove:idle-clean-pushed", "OPE-2": "keep:fresh" });
+    const gone = await pruneIdleOpenClones(r.items, bot.workspace, path.join(tmpDir, "j.jsonl"), { fetchState: states({}) });
+    assert.deepEqual(gone, [clone]);
+    assert.equal(fs.existsSync(clone), false);
+    assert.equal(fs.existsSync(path.join(bot.base, "worktrees", "OPE-1")), false);
+    assert.equal(fs.existsSync(sibling), true);
+    assert.equal(fs.existsSync(path.join(bot.base, "worktrees", "OPE-2")), true);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(tmpDir, "j.jsonl"), "utf8").trim()).via, "rm-and-admin-dir");
+  });
+
+  it("keeps a clone whose gitdir cannot be mapped or whose push cannot be proven", async () => {
+    const bot = makeBot();
+    addClone(bot, "OPE-1");
+    addClone(bot, "OPE-2");
+    fs.writeFileSync(path.join(bot.workspace, "OPE-1", ".git"), "gitdir: /nonexistent/elsewhere\n");
+    // A remote that is a local path is no server: nothing is proven pushed.
+    git(["--git-dir", bot.base, "remote", "set-url", "origin", bot.server]);
+    const savedCount = process.env.GIT_CONFIG_COUNT;
+    delete process.env.GIT_CONFIG_COUNT;
+    try {
+      const r = await scan(bot);
+      assert.equal(r.items.find((i) => i.name === "OPE-1").reason, "gitdir-missing");
+      assert.match(r.items.find((i) => i.name === "OPE-2").reason, /^push-unverified/);
+    } finally {
+      process.env.GIT_CONFIG_COUNT = savedCount;
+    }
+  });
+
+  describe("copies of reviewer bots", () => {
+    const REVIEWER = { ok: true, id: "agent-rev", name: "adm-dev-review-10", role: "qa" };
+    const ENGINEER = { ok: true, id: "agent-eng", name: "adm-dev-eng-3", role: "engineer" };
+    const todo = (extra = {}) => ({ ok: true, status: "todo", liveRunId: null, ...extra });
+    const reviewScan = (bot, map = {}, { agent = REVIEWER, runs = {}, ...opts } = {}) =>
+      scanReviewerClones(bot.workspace, Date.now(), {
+        fetchState: async (id) => map[id] ?? todo(),
+        fetchAgent: async () => agent,
+        fetchRun: async (id) => runs[id] ?? { ok: false, reason: "board-http-404" },
+        ...opts,
+      });
+
+    it("removes a reviewer's copy of a todo task idle for more than 10 minutes, with the journal", async () => {
+      const bot = makeBot();
+      const clone = addClone(bot, "OPE-1", { ageHours: 15 / 60 });
+      const r = await reviewScan(bot);
+      assert.deepEqual(verdicts(r), { "OPE-1": "remove:reviewer-copy-idle" });
+      assert.equal(r.items[0].status, "todo");
+      const journal = path.join(tmpDir, "j.jsonl");
+      const gone = await pruneReviewerClones(r.items, bot.workspace, journal, { fetchState: async () => todo(), fetchRun: async () => ({ ok: false }) });
+      assert.deepEqual(gone, [clone]);
+      assert.equal(fs.existsSync(clone), false);
+      assert.doesNotMatch(git(["--git-dir", bot.base, "worktree", "list"]), /OPE-1\b/);
+      const rec = JSON.parse(fs.readFileSync(journal, "utf8").trim());
+      assert.equal(rec.event, "review-clone-removed");
+      assert.equal(rec.status, "todo");
+      assert.equal(rec.thresholdMinutes, 10);
+    });
+
+    it("keeps a copy younger than 10 minutes", async () => {
+      const bot = makeBot();
+      const clone = addClone(bot, "OPE-1", { ageHours: 3 / 60 });
+      const events = [];
+      const r = await reviewScan(bot, {}, { onEvent: (e) => events.push(e) });
+      assert.deepEqual(verdicts(r), { "OPE-1": "keep:fresh" });
+      assert.equal(events[0].event, "review-clone-kept");
+      assert.equal(await pruneReviewerClones(r.items, bot.workspace, path.join(tmpDir, "j.jsonl"), {}).then((g) => g.length), 0);
+      assert.equal(fs.existsSync(clone), true);
+    });
+
+    it("keeps a copy while the reviewer has a run of its own, also when the engineer's run is on the task", async () => {
+      const bot = makeBot();
+      addClone(bot, "OPE-1", { ageHours: 1 });
+      addClone(bot, "OPE-2", { ageHours: 1 });
+      addClone(bot, "OPE-3", { ageHours: 1 });
+      const r = await reviewScan(bot, {
+        "OPE-1": todo({ liveRunId: "run-rev", liveRunIds: ["run-rev"] }),
+        "OPE-2": todo({ liveRunId: "run-eng", liveRunIds: ["run-eng"] }),
+        "OPE-3": todo({ liveRunId: "run-x", liveRunIds: ["run-x"] }),
+      }, { runs: { "run-rev": { ok: true, agentId: "agent-rev" }, "run-eng": { ok: true, agentId: "agent-eng" } } });
+      assert.deepEqual(verdicts(r), {
+        "OPE-1": "keep:live-run",
+        "OPE-2": "remove:reviewer-copy-idle", // the engineer's run does not use the reviewer's copy
+        "OPE-3": "keep:live-run", // owner of the run unknown: no guess
+      });
+    });
+
+    it("keeps a copy when a run of the reviewer starts between the scan and the removal", async () => {
+      const bot = makeBot();
+      const clone = addClone(bot, "OPE-1", { ageHours: 1 });
+      const r = await reviewScan(bot);
+      const journal = path.join(tmpDir, "j.jsonl");
+      const gone = await pruneReviewerClones(r.items, bot.workspace, journal, {
+        fetchState: async () => todo({ liveRunId: "run-rev", liveRunIds: ["run-rev"] }),
+        fetchRun: async () => ({ ok: true, agentId: "agent-rev" }),
+      });
+      assert.deepEqual(gone, []);
+      assert.equal(fs.existsSync(clone), true);
+      const rec = JSON.parse(fs.readFileSync(journal, "utf8").trim());
+      assert.equal(rec.event, "review-clone-kept");
+      assert.equal(rec.reason, "live-run");
+    });
+
+    it("does not touch an engineer's copy of a todo task (and an unknown agent's)", async () => {
+      const bot = makeBot();
+      const clone = addClone(bot, "OPE-1", { ageHours: 24 });
+      for (const agent of [ENGINEER, { ok: true, id: null }, { ok: false, reason: "board-unavailable" }]) {
+        const r = await reviewScan(bot, {}, { agent });
+        assert.deepEqual(r.items, []);
+      }
+      assert.equal(fs.existsSync(clone), true);
+    });
+
+    it("keeps dirty and unpushed copies of a reviewer", async () => {
+      const bot = makeBot();
+      addClone(bot, "OPE-1", { ageHours: 1, dirty: true });
+      addClone(bot, "OPE-2", { ageHours: 1, pushed: false });
+      assert.deepEqual(verdicts(await reviewScan(bot)), { "OPE-1": "keep:dirty", "OPE-2": "keep:not-pushed" });
+    });
+
+    it("tells a reviewer by role or by the -review- name part", () => {
+      assert.equal(isReviewerAgent(REVIEWER), true);
+      assert.equal(isReviewerAgent({ ok: true, id: "x", name: "other", role: "reviewer" }), true);
+      assert.equal(isReviewerAgent(ENGINEER), false);
+      assert.equal(isReviewerAgent({ ok: true, id: null }), false);
+    });
+
+    it("fetchBotAgent reads an agent by id or by name; fetchRunAgentId reads the run owner", async () => {
+      const urls = [];
+      const respond = (body, status = 200) => async (url) => { urls.push(url); return { ok: status < 400, status, json: async () => body }; };
+      const uuid = "07555686-1111-4222-8333-444455556666";
+      assert.deepEqual(await fetchBotAgent(uuid, { baseUrl: "http://b", fetchImpl: respond({ id: uuid, name: "adm-dev-review-11", role: "qa" }) }), { ok: true, id: uuid, name: "adm-dev-review-11", role: "qa" });
+      assert.equal(urls[0], `http://b/api/agents/${uuid}`);
+      assert.deepEqual(await fetchBotAgent(uuid, { baseUrl: "http://b", fetchImpl: respond({}, 404) }), { ok: true, id: null });
+      process.env.MYRMIDON_COMPANY_ID = "co-1";
+      try {
+        const list = [{ id: "a1", name: "adm-dev-review-100", role: "qa" }, { id: "a2", name: "adm-dev-review-10", role: "qa" }];
+        assert.equal((await fetchBotAgent("adm-dev-review-10", { baseUrl: "http://b", fetchImpl: respond(list) })).id, "a2");
+        assert.equal((await fetchBotAgent("nobody", { baseUrl: "http://b", fetchImpl: respond(list) })).id, null);
+      } finally { delete process.env.MYRMIDON_COMPANY_ID; }
+      assert.equal((await fetchBotAgent("x", { baseUrl: "http://b", fetchImpl: async () => { throw new Error("x"); } })).ok, false);
+      assert.deepEqual(await fetchRunAgentId("run-1", { baseUrl: "http://b", fetchImpl: respond({ agentId: "a1" }) }), { ok: true, agentId: "a1" });
+      assert.equal((await fetchRunAgentId("run-1", { baseUrl: "http://b", fetchImpl: respond({}, 404) })).ok, false);
+    });
+  });
+
+  describe("board and CLI", () => {
+    let board;
+    let boardUrl;
+    let issueState;
+    before(async () => {
+      board = createServer((req, res) => {
+        const id = decodeURIComponent(req.url.split("/").pop());
+        res.setHeader("content-type", "application/json");
+        res.setHeader("connection", "close");
+        if (!issueState[id]) { res.writeHead(404); res.end(); return; }
+        res.end(JSON.stringify(issueState[id]));
+      });
+      await new Promise((resolve) => board.listen(0, "127.0.0.1", resolve));
+      boardUrl = `http://127.0.0.1:${board.address().port}`;
+    });
+    after(async () => { await new Promise((resolve) => board.close(resolve)); });
+
+    it("fetchIssueOpenState reports a live run from executionRunId or checkoutRunId", async () => {
+      const respond = (body) => async () => ({ ok: true, status: 200, json: async () => body });
+      assert.deepEqual(await fetchIssueOpenState("OPE-1", { baseUrl: "http://b", fetchImpl: respond({ status: "in_review", executionRunId: null, checkoutRunId: null }) }), { ok: true, status: "in_review", liveRunId: null, liveRunIds: [] });
+      assert.deepEqual((await fetchIssueOpenState("OPE-1", { baseUrl: "http://b", fetchImpl: respond({ status: "in_review", executionRunId: "r1", checkoutRunId: "r3" }) })).liveRunIds, ["r1", "r3"]);
+      assert.equal((await fetchIssueOpenState("OPE-1", { baseUrl: "http://b", fetchImpl: respond({ status: "in_review", executionRunId: "r1" }) })).liveRunId, "r1");
+      assert.equal((await fetchIssueOpenState("OPE-1", { baseUrl: "http://b", fetchImpl: respond({ status: "blocked", checkoutRunId: "r2" }) })).liveRunId, "r2");
+      assert.equal((await fetchIssueOpenState("OPE-1", { baseUrl: "http://b", fetchImpl: async () => { throw new Error("x"); } })).reason, "board-unavailable");
+    });
+
+    const run = (args) => new Promise((resolve, reject) => {
+      const child = subprocess.spawn("node", [SCRIPT, ...args, "--lock", path.join(tmpDir, "gc.lock"), "--journal", path.join(tmpDir, "gc.jsonl"), "--env", path.join(tmpDir, "none.env")], {
+        env: { ...process.env, BOARD_API_URL: boardUrl, PAPERCLIP_API_KEY: "", MYRMIDON_HOST_GC_DOCKER: "/nonexistent-docker" },
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.setEncoding("utf8").on("data", (c) => { stdout += c; });
+      child.stderr.setEncoding("utf8").on("data", (c) => { stderr += c; });
+      child.once("error", reject);
+      child.once("close", (status) => resolve({ status, stdout, stderr }));
+    });
+    const journalEvents = () => fs.readFileSync(path.join(tmpDir, "gc.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+
+    it("--dry-run lists what would be removed and removes nothing; --apply removes it", async () => {
+      const bot = makeBot();
+      const idle = addClone(bot, "OPE-1");
+      const busy = addClone(bot, "OPE-2");
+      issueState = {
+        "OPE-1": { status: "blocked" },
+        "OPE-2": { status: "in_review", executionRunId: "run-1" },
+      };
+      const dry = await run(["--dry-run", "--root", bot.workspace]);
+      assert.equal(dry.status, 0, dry.stderr);
+      const plan = JSON.parse(dry.stdout).plan;
+      assert.deepEqual(plan.idleOpenClones.map((i) => i.path), [idle]);
+      assert.equal(fs.existsSync(idle), true);
+      const dryEvents = journalEvents().map((e) => [e.event, e.identifier]);
+      assert.ok(dryEvents.some(([e, id]) => e === "idle-open-clone-would-remove" && id === "OPE-1"));
+      assert.ok(dryEvents.some(([e, id]) => e === "idle-open-clone-kept" && id === "OPE-2"));
+      assert.ok(!dryEvents.some(([e]) => e === "idle-open-clone-removed"));
+
+      const apply = await run(["--apply", "--root", bot.workspace]);
+      assert.equal(apply.status, 0, apply.stderr);
+      assert.equal(fs.existsSync(idle), false);
+      assert.equal(fs.existsSync(busy), true);
+      const removed = journalEvents().find((e) => e.event === "idle-open-clone-removed");
+      assert.equal(removed.identifier, "OPE-1");
+      assert.equal(removed.status, "blocked");
+      assert.ok(removed.sizeBytes > 0);
+      assert.ok(removed.ageHours >= 10);
+    });
+
+    it("--idle-open-hours must be a positive number", async () => {
+      const r = await run(["--dry-run", "--root", path.join(tmpDir, "ws"), "--idle-open-hours", "0"]);
+      assert.equal(r.status, 2);
+    });
   });
 });

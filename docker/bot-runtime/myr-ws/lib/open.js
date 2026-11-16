@@ -19,6 +19,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { MyrWsError } = require("./errors.js");
 const recover = require("./recover.js");
+const sparse = require("./sparse.js");
 
 // --- contract constants (C1/C2); a drift here is caught by the unit test ---
 const EXIT = { ok: 0, usage: 2, quotaExceeded: 3, baseLimit: 4, network: 5, notFound: 6, unpushed: 7 };
@@ -405,10 +406,21 @@ async function open(request, deps = {}) {
   // The reviewer reads the change by refs: git diff origin/main...HEAD, git show HEAD:<path>.
   const review = Boolean(request.review) && !scratch;
   const warn = ctx.warn;
-  const wtAdd = review ? ["-c", "core.hooksPath=/dev/null", "worktree", "add", "--no-checkout"] : ["worktree", "add"];
+  // Task copy (1.6.9, OPE-13410 item 5): created without a checkout, then checked out sparsely:
+  // in packages/db/src/migrations/meta only _journal.json and the latest snapshot (lib/sparse.js).
+  const taskCopy = !review && !scratch;
+  const wtAdd = review
+    ? ["-c", "core.hooksPath=/dev/null", "worktree", "add", "--no-checkout"]
+    : taskCopy ? ["worktree", "add", "--no-checkout"] : ["worktree", "add"];
   const finishReview = (wt) => {
     git(wt, ["sparse-checkout", "set", "--no-cone", "/.myr-ws-review-empty"]);
     git(wt, ["read-tree", "-m", "-u", "HEAD"]);
+  };
+  const finishCopy = (wt) => {
+    if (review) return finishReview(wt);
+    if (!taskCopy) return;
+    const res = sparse.checkoutTaskCopy(git, wt);
+    if (!res.sparse) warn(`${wt}: full checkout (${res.reason})`);
   };
   const baseTarget = request.base ? `refs/remotes/origin/${request.base}` : "refs/remotes/origin/HEAD";
   let recovered = [];
@@ -521,7 +533,7 @@ async function open(request, deps = {}) {
       const existingBranch = git(basePath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { allowFail: true }).status === 0;
       if (existingBranch) git(basePath, [...wtAdd, dir, branch]);
       else git(basePath, [...wtAdd, "--no-track", "-b", branch, dir, target]);
-      if (review) finishReview(dir);
+      finishCopy(dir);
       if (sourceHead && sourceHead !== git(dir, ["rev-parse", "HEAD"])) {
         const recoveryBranch = `myr-ws/recovery/${key}`;
         const recoveryExists = git(basePath, ["rev-parse", "--verify", "--quiet", `refs/heads/${recoveryBranch}`], { allowFail: true }).status === 0;
@@ -591,7 +603,8 @@ async function open(request, deps = {}) {
         finishReview(dir);
       } else if (haveBranch) {
         // A branch left by an earlier copy of this task keeps its commits: reattach it, do not reset it.
-        git(basePath, ["worktree", "add", dir, branch]);
+        git(basePath, [...wtAdd, dir, branch]);
+        finishCopy(dir);
       } else {
         // An explicit --branch (the head branch of the task's pull request) starts from its
         // remote state when the repository has it, otherwise from the base ref.
@@ -602,7 +615,8 @@ async function open(request, deps = {}) {
           if (!has()) git(basePath, ["fetch", "--no-tags", "origin", `+refs/heads/${branch}:${remote}`], { allowFail: true });
           if (has()) from = remote;
         }
-        git(basePath, ["worktree", "add", "--no-track", "-b", branch, dir, from]);
+        git(basePath, [...wtAdd, "--no-track", "-b", branch, dir, from]);
+        finishCopy(dir);
       }
     }
   } else {

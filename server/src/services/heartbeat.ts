@@ -15799,6 +15799,8 @@ export function heartbeatService(
       hasPauseHold: Boolean(pauseHold),
       hasActiveRoutineContinuation: Boolean(activeRoutineContinuation),
       hasOpenPullRequestWaitingForCi: Boolean(hasOpenPullRequestWaitingForCi),
+      // The board wakes an executor's `in_progress` task itself while the in-progress wake is on.
+      hasBoardContinuation: currentRunPrioritySettings().inProgressIdleWakeMinutes > 0,
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
     });

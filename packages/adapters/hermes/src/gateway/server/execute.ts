@@ -648,12 +648,26 @@ function deriveWorkspaceRepoName(repoUrl: string): string | null {
   return WS_REPO_NAME_RE.test(name) ? name : null;
 }
 
+function isReviewerWake(context: Record<string, unknown>): boolean {
+  const wake = parseObject(context.paperclipWake);
+  const stage = parseObject(context.executionStage ?? wake.executionStage);
+  const role = asString(stage.wakeRole, "").trim().toLowerCase();
+  return role === "reviewer" || role === "verifier";
+}
+
 function buildWorkspaceField(
   context: Record<string, unknown>,
 ): { key: string; repo: string; baseRef?: string; branch?: string } | undefined {
   const wake = parseObject(context.paperclipWake);
   const key = asString(parseObject(wake.issue).identifier, "").trim();
   if (!WS_ISSUE_KEY_RE.test(key)) return undefined;
+  // myrmidon(1.6.9, OPE-13410 item 6): a reviewer / verifier wake of an execution stage gets no
+  // task copy by default. Every review run used to open a full worktree (~0.5 GB) before the
+  // model started; the reviewer reads the PR through `gh pr diff`, `gh pr view` and
+  // `gh api repos/<repo>/contents/<path>?ref=<sha>`. A reviewer that really needs files opens a
+  // copy itself (`myr-ws open <KEY> <repo> --review`, or without --review to run tests) and closes it
+  // after the verdict (`myr-ws close <KEY>`).
+  if (isReviewerWake(context)) return undefined;
   // The task's own pull request decides the repository and the branch: the project is only the
   // fallback. A PR of one repository on a project bound to another (OPE-7967: PR #82 of
   // myrmidon-deploy under a project of myrmidon) must open the PR's repository on the PR's

@@ -115,6 +115,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       - name: Setup Node.js

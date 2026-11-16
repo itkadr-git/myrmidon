@@ -71,6 +71,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -125,6 +126,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -205,6 +207,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -261,6 +264,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -306,6 +310,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -366,6 +371,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -489,6 +495,28 @@ jobs:
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
     steps:
+      - name: Repair workspace ownership left by earlier container steps
+        # Self-hosted runner: a previous job's docker step may have left
+        # root-owned files in the reused workspace; checkout then cannot clean
+        # it and every job on this runner fails (OPE-13494). Runs BEFORE checkout.
+        run: |
+          set -euo pipefail
+          ws="${GITHUB_WORKSPACE:?}"
+          [ -d "$ws" ] || exit 0
+          foreign() { find "$ws" -not -user "$(id -u)" 2>/dev/null | head -20 || true; }
+          left="$(foreign)"
+          [ -n "$left" ] || exit 0
+          echo "::warning::workspace $ws holds files not owned by $(id -un); first entries:"
+          echo "$left"
+          docker run --rm --network none --user 0:0 -v "$ws:/w" "$GO_IMAGE" \
+            chown -R "$(id -u):$(id -g)" /w
+          left="$(foreign)"
+          if [ -n "$left" ]; then
+            echo "::error::workspace $ws still holds files not owned by $(id -un) after chown:"
+            echo "$left"
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -506,7 +534,7 @@ jobs:
       - name: gofmt, go vet, go test
         run: |
           set -euo pipefail
-          docker run --rm --network none -v "$PWD/tools/fleetd:/src" -w /src \
+          docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/tools/fleetd:/src" -w /src \
             -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local -e GOCACHE=/tmp/gocache "$GO_IMAGE" sh -euc '
               out="$(gofmt -l .)"
               if [ -n "$out" ]; then echo "gofmt: $out"; exit 1; fi
@@ -523,6 +551,28 @@ jobs:
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
     steps:
+      - name: Repair workspace ownership left by earlier container steps
+        # Self-hosted runner: a previous job's docker step may have left
+        # root-owned files in the reused workspace; checkout then cannot clean
+        # it and every job on this runner fails (OPE-13494). Runs BEFORE checkout.
+        run: |
+          set -euo pipefail
+          ws="${GITHUB_WORKSPACE:?}"
+          [ -d "$ws" ] || exit 0
+          foreign() { find "$ws" -not -user "$(id -u)" 2>/dev/null | head -20 || true; }
+          left="$(foreign)"
+          [ -n "$left" ] || exit 0
+          echo "::warning::workspace $ws holds files not owned by $(id -un); first entries:"
+          echo "$left"
+          docker run --rm --network none --user 0:0 -v "$ws:/w" "$GO_IMAGE" \
+            chown -R "$(id -u):$(id -g)" /w
+          left="$(foreign)"
+          if [ -n "$left" ]; then
+            echo "::error::workspace $ws still holds files not owned by $(id -un) after chown:"
+            echo "$left"
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -540,7 +590,7 @@ jobs:
       - name: gofmt, go vet, go test (checked-in fixtures)
         run: |
           set -euo pipefail
-          docker run --rm --network none -v "$PWD/tools/dockergate:/src" -w /src \
+          docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/tools/dockergate:/src" -w /src \
             -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local -e GOCACHE=/tmp/gocache "$GO_IMAGE" sh -euc '
               out="$(gofmt -l .)"
               if [ -n "$out" ]; then echo "gofmt: $out"; exit 1; fi
@@ -557,6 +607,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -583,7 +634,7 @@ jobs:
           # The static fixtures must equal the checked-in ones; traffic.json
           # carries wall-clock mtimes and is only replayed, not compared.
           diff -r -x traffic.json tools/dockergate/contract/testdata "$out"
-          docker run --rm --network none -v "$PWD/tools/dockergate:/src" -v "$out:/contract:ro" -w /src \
+          docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/tools/dockergate:/src" -v "$out:/contract:ro" -w /src \
             -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local -e GOCACHE=/tmp/gocache \
             -e DOCKERGATE_CONTRACT_DIR=/contract "$GO_IMAGE" go test -count=1 ./...
 
@@ -615,6 +666,11 @@ jobs:
           fi
           echo "$bin" >> "$GITHUB_PATH"
 
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
       - name: Verify queue latency
         shell: bash
         env:
@@ -623,58 +679,22 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          echo "Checking CI result start latency relative to predecessor jobs (fail-closed gate)..."
-          if ! command -v gh >/dev/null || ! command -v jq >/dev/null; then
-            echo "ERROR: gh or jq not available for latency check" >&2
-            exit 1
-          fi
-
-          jobs_data=""
+          echo "Checking CI result start latency relative to predecessor jobs (fail-closed gate; a runner-queue delay is only a warning)..."
+          jobs_file="$RUNNER_TEMP/ci-jobs.json"
           for attempt in 1 2 3; do
-            jobs_data="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" 2>/dev/null || true)"
-            if [ -n "$jobs_data" ] && echo "$jobs_data" | jq -e '.jobs | length > 0' >/dev/null 2>&1; then
+            if gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" > "$jobs_file" 2>/dev/null && jq -e '.jobs | length > 0' "$jobs_file" >/dev/null 2>&1; then
               break
             fi
+            : > "$jobs_file"
             sleep 2
           done
-
-          if [ -z "$jobs_data" ]; then
+          if [ ! -s "$jobs_file" ]; then
             echo "ERROR: Unable to fetch job data from GitHub API after retries" >&2
             exit 1
           fi
-
-          res="$(echo "$jobs_data" | jq -r '
-            .jobs as $all |
-            ([$all[] | select(.name == "CI result" and .started_at != null) | .started_at] | last) as $ci_start |
-            ([$all[] | select(
-              (.name == "typecheck" or
-               .name == "build" or
-               (.name | startswith("tests (")) or
-               .name == "tests (other packages)" or
-               .name == "tests (runner)" or
-               .name == "checks" or
-               .name == "fleetd" or
-               .name == "dockergate") and
-              .completed_at != null
-            ) | .completed_at] | sort | last) as $last_pred_end |
-            if ($ci_start and $last_pred_end) then
-              (($ci_start | fromdateiso8601) - ($last_pred_end | fromdateiso8601))
-            else
-              empty
-            end
-          ')"
-
-          if [ -z "$res" ]; then
-            echo "ERROR: Could not compute start latency: missing start/completion timestamps" >&2
-            exit 1
-          fi
-
-          echo "CI result started ${res}s after the last predecessor job finished."
-          if [ "$res" -gt 120 ]; then
-            echo "ERROR: CI result start latency exceeded threshold: ${res}s > 120s" >&2
-            exit 1
-          fi
-          echo "PASS: CI result started within 2 minutes (${res}s <= 120s)."
+          # No checkout: it fails on some self-hosted runners. Read the script of this commit through the API.
+          gh api -H "Accept: application/vnd.github.raw" "repos/$REPO/contents/scripts/myrmidon/ci/queue-metrics.mjs?ref=$GITHUB_SHA" > "$RUNNER_TEMP/queue-metrics.mjs"
+          node "$RUNNER_TEMP/queue-metrics.mjs" --verify-latency --file "$jobs_file" --workflow tag
 
       - name: Check lane results
         env:
