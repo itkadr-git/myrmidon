@@ -20,6 +20,24 @@ test('sinks follow physical source removal and restoration', t => {
   };
   for (const [name, source] of Object.entries(sources)) writeFileSync(join(root, name), source);
   const bytes = name => Buffer.byteLength(sources[name]);
+  const entryModule = { path: 'entry.mjs', bytes: bytes('entry.mjs'), eager: true };
+  const bridgeModule = { path: 'bridge.mjs', bytes: bytes('bridge.mjs'), eager: true };
+  const leafModule = { path: 'leaf.mjs', bytes: bytes('leaf.mjs'), eager: true };
+  const entryEdge = { from: 'entry.mjs', specifier: './bridge.mjs', kind: 'eager', to: 'bridge.mjs' };
+  const bridgeEdge = { from: 'bridge.mjs', specifier: './leaf.mjs', kind: 'eager', to: 'leaf.mjs' };
+  const unknownEdge = { from: 'entry.mjs', specifier: './bridge.mjs', kind: 'eager', to: null };
+  const total = bytes('entry.mjs') + bytes('bridge.mjs') + bytes('leaf.mjs');
+  const expectedBaseline = {
+    entry: 'entry.mjs', modules: [bridgeModule, entryModule, leafModule],
+    edges: [bridgeEdge, entryEdge], unknown: [],
+    counts: { modules: 3, eagerModules: 3, edges: 2 },
+    bytes: { total, eager: total }, heaviestEager: [entryModule, bridgeModule, leafModule],
+  };
+  const expectedRemoved = {
+    entry: 'entry.mjs', modules: [entryModule], edges: [unknownEdge], unknown: [unknownEdge],
+    counts: { modules: 1, eagerModules: 1, edges: 1 },
+    bytes: { total: bytes('entry.mjs'), eager: bytes('entry.mjs') }, heaviestEager: [entryModule],
+  };
   const run = (cli, args, input) => {
     const result = spawnSync(process.execPath, [cli, ...args], { cwd: process.env.HOME, encoding: 'utf8', input });
     assert.equal(result.error, undefined);
@@ -39,21 +57,20 @@ test('sinks follow physical source removal and restoration', t => {
   };
 
   const baseline = scan();
+  assert.deepEqual(JSON.parse(baseline), expectedBaseline);
   checkConsumer(baseline, 'leaf.mjs');
   unchanged(Object.keys(sources));
 
   unlinkSync(join(root, 'bridge.mjs'));
   const removed = scan();
-  const parsed = JSON.parse(removed);
-  assert.deepEqual(parsed.modules.map(module => module.path), ['entry.mjs']);
-  assert.deepEqual(parsed.unknown, [{ from: 'entry.mjs', specifier: './bridge.mjs', kind: 'eager', to: null }]);
-  assert.deepEqual(parsed.edges, parsed.unknown);
+  assert.deepEqual(JSON.parse(removed), expectedRemoved);
   checkConsumer(removed, 'entry.mjs');
   unchanged(['entry.mjs', 'leaf.mjs']);
   assert.equal(existsSync(join(root, 'bridge.mjs')), false);
 
   writeFileSync(join(root, 'bridge.mjs'), sources['bridge.mjs']);
   const restored = scan();
+  assert.deepEqual(JSON.parse(restored), expectedBaseline);
   assert.deepEqual(JSON.parse(restored), JSON.parse(baseline));
   checkConsumer(restored, 'leaf.mjs');
   unchanged(Object.keys(sources));
