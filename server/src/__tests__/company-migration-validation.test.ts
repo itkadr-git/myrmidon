@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { validateMigrationManifest } from "../services/company-migration-validation.js";
 
 describe("migration manifest validation", () => {
+  it("rejects custom roles that the destination caste directory cannot restore", () => {
+    const agent = { slug: "worker", role: "custom-private-caste", reportsToSlug: null,
+      reportsToExistingAgentId: null, reportsToExistingAgentSlug: null, skills: [], permissionGrants: [] };
+    const result = validateMigrationManifest({ agents: [agent], skills: [], envInputs: [] });
+    expect(result.errors).toContain("An agent has a role that cannot be migrated safely.");
+    expect(JSON.stringify(result)).not.toContain("custom-private-caste");
+    expect(validateMigrationManifest({ agents: [{ ...agent, role: "engineer" }], skills: [], envInputs: [] }).errors).toEqual([]);
+  });
+
   it("reports missing references and invalid permission keys without exposing secret defaults", () => {
     const manifest = {
       agents: [{ slug: "worker", reportsToSlug: "missing", reportsToExistingAgentId: null,
