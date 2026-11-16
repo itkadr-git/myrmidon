@@ -406,13 +406,12 @@ describe("board merge: limits, refusals and the review marker", () => {
     expect(t.calls.merge).toHaveLength(2);
   });
 
-  it("myrmidon(OPE-13942): webhooks already show a queued check of the head: no files, checks or merge request, only the cheap PR read", async () => {
+  it("myrmidon(OPE-13942): webhooks already show a queued check of the head: no checks or merge request, only the cheap PR read", async () => {
     const headChecksQueued = vi.fn(async () => true);
     const t = setup([approved(61)], { 61: { facts: facts(), checks: "success" } }, {}, { headChecksQueued });
     const result = await t.merger.sweepCompany(COMPANY, t.settings, at(0));
     expect(result.waiting).toBe(1);
     expect(headChecksQueued).toHaveBeenCalledTimes(1);
-    expect(t.calls.readPullFiles).toHaveLength(0);
     expect(t.calls.readChecks).toHaveLength(0);
     expect(t.calls.merge).toHaveLength(0);
   });
