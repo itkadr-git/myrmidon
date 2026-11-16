@@ -20,6 +20,7 @@ const GIT_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !
 const {
   parseArgs,
   acquireLock,
+  consumeGcRequest,
   journalRecord,
   safeJoin,
   atomicDrop,
@@ -183,6 +184,28 @@ describe("acquireLock", () => {
     assert.equal(lock2.ok, false);
     assert.equal(lock2.reason, "lock held");
     lock1.release();
+  });
+});
+
+describe("consumeGcRequest (OPE-13419)", () => {
+  it("reads and removes the board's request file", () => {
+    const file = path.join(tmpDir, "request.json");
+    fs.writeFileSync(file, JSON.stringify({ reason: "disk_budget", freePercent: 9.1, requestedAt: "2026-11-16T03:00:00.000Z" }));
+    assert.deepEqual(consumeGcRequest(file), { reason: "disk_budget", freePercent: 9.1, requestedAt: "2026-11-16T03:00:00.000Z" });
+    assert.equal(fs.existsSync(file), false);
+    assert.equal(consumeGcRequest(file), null, "a second pass finds nothing");
+  });
+
+  it("an unreadable request is still a request; no file or no path is none", () => {
+    const file = path.join(tmpDir, "request.json");
+    fs.writeFileSync(file, "{not json");
+    assert.equal(consumeGcRequest(file)?.reason, "unknown");
+    assert.equal(fs.existsSync(file), false);
+    assert.equal(consumeGcRequest(null), null);
+  });
+
+  it("--request-file is parsed", () => {
+    assert.equal(parseArgs(["node", "gc", "--request-file", "/x/r.json"]).requestFile, "/x/r.json");
   });
 });
 

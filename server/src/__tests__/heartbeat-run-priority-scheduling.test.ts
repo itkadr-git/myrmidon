@@ -58,6 +58,8 @@ import { runPriorityService } from "../myrmidon/run-priority/service.js";
 import { advanceFocusDeferredRuns } from "../myrmidon/run-priority/sync.js";
 import { registerSettingsAppliers } from "../myrmidon/settings-appliers/index.js";
 import { strictReleaseFocusRelease } from "../myrmidon/release-focus.js";
+import { createDiskBudgetGate } from "../myrmidon/disk-budget/disk-budget.js";
+import { setDiskBudgetGateForTests } from "../myrmidon/disk-budget/disk-budget-wiring.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -145,6 +147,7 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
 
   afterEach(async () => {
     await heartbeat.drainActiveRunExecutions();
+    setDiskBudgetGateForTests(null);
     runningProcesses.clear();
     resetRunPriorityForTests();
     resetSharedRunAdmissionForTests();
@@ -889,5 +892,71 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
       .where(eq(activityLog.action, "instance.run_priority.updated"))
       .limit(1);
     expect(audit.length).toBeGreaterThan(0);
+  }, 30_000);
+
+  // myrmidon(OPE-13419): disk budget of the physical bot volume at the run-start gate.
+  function pinDiskBudget(state: { freePercent: number; gcOk: boolean; gcCalls: number }) {
+    setDiskBudgetGateForTests(
+      createDiskBudgetGate({
+        measure: async () => ({ freeBytes: state.freePercent * 10, totalBytes: 1000 }),
+        requestGc: async () => {
+          state.gcCalls += 1;
+          if (!state.gcOk) throw new Error("host gc request refused");
+          return true;
+        },
+      }),
+    );
+  }
+
+  it("disk budget: at 4.9% free a run is deferred with reason disk_budget, not failed, and host GC is asked once", async () => {
+    const { agentId, otherIssueId } = await seedFocusScenario(false);
+    const state = { freePercent: 4.9, gcOk: true, gcCalls: 0 };
+    pinDiskBudget(state);
+    const first = await commentWake(agentId, otherIssueId);
+    const second = await commentWake(agentId, otherIssueId);
+    await sweep();
+    for (const run of [first, second]) {
+      const row = await runRow(run.id);
+      if (!row) continue;
+      expect(["scheduled_retry", "cancelled"]).toContain(row.status);
+    }
+    const row = await runRow(first.id);
+    expect(row?.status).toBe("scheduled_retry");
+    expect(row?.scheduledRetryAt).not.toBeNull();
+    const marker = JSON.stringify(row?.contextSnapshot);
+    expect(marker).toContain("diskBudgetDeferral");
+    expect(marker).toContain("disk_budget");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect(state.gcCalls).toBe(1);
+  }, 30_000);
+
+  it("disk budget: the deferred run starts by itself once the volume is back at 5% free", async () => {
+    const { agentId, otherIssueId } = await seedFocusScenario(false);
+    const state = { freePercent: 4.9, gcOk: true, gcCalls: 0 };
+    pinDiskBudget(state);
+    const run = await commentWake(agentId, otherIssueId);
+    await sweep();
+    expect((await runRow(run.id))?.status).toBe("scheduled_retry");
+    state.freePercent = 5;
+    await db.update(heartbeatRuns).set({ scheduledRetryAt: new Date(Date.now() - 1000) }).where(eq(heartbeatRuns.id, run.id));
+    await heartbeat.promoteDueScheduledRetries();
+    await sweep();
+    // The run left the wait and was claimed (whatever the sandbox then does with it).
+    const started = await runRow(run.id);
+    expect(started?.startedAt).not.toBeNull();
+    expect(started?.status).not.toBe("scheduled_retry");
+    expect(started?.status).not.toBe("queued");
+  }, 30_000);
+
+  it("disk budget: a refused cleanup request does not fail the run; it stays deferred", async () => {
+    const { agentId, otherIssueId } = await seedFocusScenario(false);
+    const state = { freePercent: 3, gcOk: false, gcCalls: 0 };
+    pinDiskBudget(state);
+    const run = await commentWake(agentId, otherIssueId);
+    await sweep();
+    const row = await runRow(run.id);
+    expect(row?.status).toBe("scheduled_retry");
+    expect(JSON.stringify(row?.contextSnapshot)).toContain('"hostGc":"failed"');
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
   }, 30_000);
 });

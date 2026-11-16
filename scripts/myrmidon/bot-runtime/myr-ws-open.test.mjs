@@ -403,6 +403,41 @@ describe("myr-ws open — invalid keys", { skip: !hasGit }, () => {
   });
 });
 
+describe("myr-ws open — physical volume budget", { skip: !hasGit }, () => {
+  it("refuses a new copy at 4.9% free and permits it after recovery to 5%", async () => {
+    let free = 49;
+    const statfs = () => ({ blocks: 1000, bavail: free });
+    const refused = await run(["ABC-901", REPO, "--json"], { statfs });
+    assert.equal(refused.exitCode, 3);
+    assert.match(copyOf(refused).error, /^BOT_DISK_QUOTA_EXCEEDED:.*disk_budget/);
+    assert.equal(ctx.calls.length, 0);
+    assert.equal(fs.existsSync(path.join(ctx.workspaceRoot, "ABC-901")), false);
+
+    free = 50;
+    const recovered = await run(["ABC-901", REPO, "--json"], { statfs });
+    assert.equal(recovered.exitCode, 0, recovered.stderr);
+    assert.equal(copyOf(recovered).reused, false);
+  });
+
+  it("reuses an existing copy even when the volume falls below the threshold", async () => {
+    const opened = await run(["ABC-902", REPO, "--json"], { statfs: () => ({ blocks: 1000, bavail: 50 }) });
+    assert.equal(opened.exitCode, 0, opened.stderr);
+    const reused = await run(["ABC-902", REPO, "--json"], { statfs: () => ({ blocks: 1000, bavail: 49 }) });
+    assert.equal(reused.exitCode, 0, reused.stderr);
+    assert.equal(copyOf(reused).reused, true);
+  });
+
+  it("warns and preserves existing admission when the filesystem measurement fails", async () => {
+    const warnings = [];
+    const result = await run(["ABC-903", REPO, "--json"], {
+      statfs: () => { throw new Error("statfs unavailable"); },
+      warn: (message) => warnings.push(message),
+    });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.match(warnings.join("\n"), /physical disk budget measurement failed: statfs unavailable/);
+  });
+});
+
 describe("myr-ws open — disk pressure", { skip: !hasGit }, () => {
   const writeState = (pressure, ageSec = 0) =>
     fs.writeFileSync(
