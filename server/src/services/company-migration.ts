@@ -23,6 +23,15 @@ export function companyMigrationService(portability: Portability) {
           validation.errors.push("A declared blob failed integrity validation.");
         }
       }
+      // The importer checks every blob path, including files omitted from the manifest.
+      for (const [path, file] of Object.entries(exported.files)) {
+        if (!path.startsWith("blobs/")) continue;
+        const sha = path.slice("blobs/".length);
+        if (!/^[a-f0-9]{64}$/.test(sha) || typeof file !== "object" || file === null || file.encoding !== "base64"
+          || createHash("sha256").update(Buffer.from(file.data, "base64")).digest("hex") !== sha) {
+          validation.errors.push("An exported blob failed integrity validation.");
+        }
+      }
       // Invalid references must not reach the import planner.
       const preview = validation.errors.length === 0 ? await portability.previewImport({
         source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
