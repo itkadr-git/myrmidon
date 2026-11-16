@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { scanModuleBoundaries } from "./check-module-boundaries.mjs";
+import { scanModuleBoundaries } from "../../check-module-boundaries.mjs";
 
 const cases = [
   ["services/consumer.ts", "../modules/beta/index.js", null],
