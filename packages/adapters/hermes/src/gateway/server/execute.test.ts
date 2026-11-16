@@ -893,6 +893,23 @@ describe("execute", () => {
     expect(body.workspace).toEqual({ key: "ABC-101", repo: "acme/widgets" });
   });
 
+  it.each(["reviewer", "verifier"])("does not open a task copy for a %s wake of an execution stage (OPE-13410 item 6)", async (wakeRole) => {
+    const ctx = makeCtx(wsBaseConfig);
+    ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets.git", repoRef: "main" };
+    ctx.context.paperclipPullRequest = { repo: "acme/widgets", number: 5, headRef: "bot/ABC-101" };
+    ctx.context.executionStage = { wakeRole, stageType: "review" };
+    expect("workspace" in (await runAndReadBody(ctx))).toBe(false);
+  });
+
+  it("still opens the task copy for an executor wake of an execution stage", async () => {
+    const ctx = makeCtx(wsBaseConfig);
+    ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets.git", repoRef: "main" };
+    ctx.context.executionStage = { wakeRole: "executor", stageType: "review" };
+    expect((await runAndReadBody(ctx)).workspace).toEqual(fixture);
+  });
+
   it("overrides a workspace forged in payloadTemplate, and removes it when the task has no repository", async () => {
     const forged = { key: "EVIL-1", repo: "evil/repo", baseRef: "x" };
     const withRepo = makeCtx(wsBaseConfig);
