@@ -497,6 +497,22 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(ssh.hasExecuted("sudo ufw disable")).toBe(false);
   });
 
+  it("does not overwrite concurrent UFW configuration changes when an allow command fails", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse(/sudo ufw allow/, { exitCode: 1, stderr: "rule partially applied" });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-firewall-concurrent-change", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(ssh.hasExecuted(/cp -a .*\/ufw\/\. \/etc\/ufw\//)).toBe(false);
+    expect(ssh.hasExecuted(/cp -a .*\/ufw-default \/etc\/default\/ufw/)).toBe(false);
+  });
+
   it("attempts firewall restoration when the SSH allow command loses its connection", async () => {
     const ssh = new MockSshExecutor({ timeoutCommands: [/sudo ufw allow/] });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
