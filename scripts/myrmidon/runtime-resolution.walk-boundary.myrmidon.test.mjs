@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { walkJsFiles } from "./check-prod-runtime-resolution.mjs";
 
 test("walkJsFiles respects filesystem and vendor boundaries", () => {
-  const scratch = process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || os.homedir();
+  const scratch = process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR;
+  assert.ok(scratch, "PAPERCLIP_RUN_SCRATCH_DIR, PAPERCLIP_SCRATCH_DIR, or TMPDIR must be set");
   const fixture = mkdtempSync(path.join(scratch, "resolution-walk-"));
   try {
     const dist = path.join(fixture, "dist");
