@@ -407,6 +407,22 @@ describe("company migration dry run", () => {
     expect(await companyTransferRunService.claimApply(db, run!.id)).toBe(false);
   });
 
+  it("does not restart a failed migration with an owned destination", async () => {
+    const [destination] = await db.insert(companies).values({ name: "Restart safety destination", issuePrefix: "MRT" }).returning();
+    const [run] = await db.insert(companyTransferRuns).values({
+      direction: "import", status: "failed", actorKey: "company_migration:restart-source",
+      idempotencyKey: "migration-restart-safety", companyId: destination!.id,
+      containerRef: { kind: "company_migration", sourceCompanyId: "restart-source" },
+      error: "interrupted apply",
+    }).returning();
+
+    await companyTransferRunService.start(db, run!.id);
+    const saved = await companyTransferRunService.getRun(db, run!.id);
+    expect(saved?.status).toBe("failed");
+    expect(saved?.error).toBe("interrupted apply");
+    expect(saved?.companyId).toBe(destination!.id);
+  });
+
   it("does not block a regular import retry merely because it has a destination", async () => {
     const [destination] = await db.insert(companies).values({ name: "Regular retry destination", issuePrefix: "MRG" }).returning();
     const [run] = await db.insert(companyTransferRuns).values({
