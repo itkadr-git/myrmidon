@@ -64,6 +64,20 @@ test("rejects source entries resolving through symlinks outside source", () => f
   assertSafeFailure(f, ["lib/external"]);
 }));
 
+test("rejects an external symlink nested in a copied directory", () => fixture((f) => {
+  symlinkSync(join(f.root, "outside"), join(f.source, "lib", "external"));
+  assertSafeFailure(f, ["lib"]);
+}));
+
+test("rejects overlap through a symlinked destination ancestor", () => fixture((f) => {
+  manifest(f.source, []);
+  symlinkSync(f.source, join(f.root, "alias"));
+  assert.throws(() => prepareBundledPackage(f.source, join(f.root, "alias", "new"), { sourceRoot: f.root }), /overlap/i);
+  assert.equal(readFileSync(join(f.destination, "sentinel"), "utf8"), "destination sentinel\n");
+  assert.equal(readFileSync(join(f.root, "outside"), "utf8"), "external sentinel\n");
+  assert.equal(existsSync(f.marker), false);
+}));
+
 test("rejects overlapping source and destination", () => {
   for (const mode of ["equal", "destination-inside-source", "source-inside-destination"]) {
     fixture((f) => {
