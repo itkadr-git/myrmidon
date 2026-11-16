@@ -81,6 +81,6 @@ it("CLI succeeds when the only failures are inside vendor runner", () => {
     assert.equal(withoutSkip.status, 1, withoutSkip.stderr);
     assert.match(withoutSkip.stderr, /\.\/vendor\.ts/);
     assert.match(withoutSkip.stderr, /\.\/deep\.ts/);
-    assert.equal(withSkip.status, 1, withSkip.stderr);
+    assert.equal(withSkip.status, 0, withSkip.stderr);
   });
 });
