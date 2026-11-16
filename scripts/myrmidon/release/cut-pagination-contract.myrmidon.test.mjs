@@ -50,10 +50,24 @@ test("listReleaseIssues stops after an empty second page", async () => {
   assertCalls(fake.calls, [0, 100]);
 });
 
-for (const failure of [new Error("HTTP 503 board unavailable"), new Error("connection reset")]) {
-  test(`listReleaseIssues rejects instead of returning a partial page on ${failure.message}`, async () => {
-    const fake = board([issues.slice(0, 100), failure]);
-    await assert.rejects(listReleaseIssues(api, "1.7", () => {}, fake.fetchBoard), (error) => error === failure);
-    assertCalls(fake.calls, [0, 100]);
+test("listReleaseIssues rejects instead of returning a partial page on a thrown error", async () => {
+  const failure = new Error("connection reset");
+  const fake = board([issues.slice(0, 100), failure]);
+  await assert.rejects(listReleaseIssues(api, "1.7", () => {}, fake.fetchBoard), (error) => error === failure);
+  assertCalls(fake.calls, [0, 100]);
+});
+
+test("listReleaseIssues rejects instead of returning a partial page on HTTP 503", async (t) => {
+  const calls = [];
+  const httpApi = { ...api, apiUrl: "http://board.invalid", apiKey: "test-only" };
+  t.mock.method(globalThis, "fetch", async (url) => {
+    const pathname = url.slice(httpApi.apiUrl.length);
+    calls.push(pathname);
+    if (pathname === labelPath) return new Response(JSON.stringify([label]));
+    if (calls.length === 2) return new Response(JSON.stringify(issues.slice(0, 100)));
+    assert.equal(calls.length, 3, "unexpected extra page request");
+    return new Response("unavailable", { status: 503 });
   });
-}
+  await assert.rejects(listReleaseIssues(httpApi, "1.7"), /HTTP 503 unavailable/);
+  assertCalls(calls, [0, 100]);
+});
