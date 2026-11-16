@@ -647,7 +647,7 @@ describe("company migration dry run", () => {
   });
 
   it("requires confirmation for rollback and removes only the migrated company", async () => {
-    const [source] = await db.insert(companies).values({ name: "Rollback fixture", issuePrefix: "MRB" }).returning();
+    const [source] = await db.insert(companies).values({ name: "Rollback fixture", issuePrefix: "MRF" }).returning();
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
