@@ -573,6 +573,16 @@ describe("company migration dry run", () => {
     expect(JSON.stringify(failedPending)).not.toContain("other-secret-canary");
   });
 
+  it("does not persist idle sweep error details for migration runs", async () => {
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "idle-redaction-source", "idle-redaction-key");
+    const cancelled = await companyTransferRunService.cancelIfIdle(db, run.id, new Date(Date.now() + 60_000), "idle-secret-canary");
+    expect(cancelled).toBe(true);
+    const saved = await companyTransferRunService.getRun(db, run.id);
+    expect(saved?.status).toBe("cancelled");
+    expect(saved?.error).toBeTruthy();
+    expect(JSON.stringify(saved)).not.toContain("idle-secret-canary");
+  });
+
   it("does not reapply a failed migration after it has claimed a destination", async () => {
     const [source] = await db.insert(companies).values({ name: "Retry safety source", issuePrefix: "MRY" }).returning();
     const [destination] = await db.insert(companies).values({ name: "Retry safety destination", issuePrefix: "MRD" }).returning();
