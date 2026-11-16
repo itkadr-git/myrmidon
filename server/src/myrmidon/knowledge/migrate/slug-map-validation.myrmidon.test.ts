@@ -12,7 +12,7 @@ describe("slug map validation", () => {
     ["null root", null, "Slug map must be a JSON object."],
     ["array root", [], "Slug map must be a JSON object."],
     ["string version", map({ version: "1" }), "Slug map version must be 1."],
-    ...[0, -1, 1.5, "1"].map((value) => ["invalid expectedTotal " + value, map({ expectedTotal: value }), "Slug map expectedTotal must be a positive integer."]),
+    ...[0, -1, 1.5, "1"].map((value): [string, unknown, string] => ["invalid expectedTotal " + value, map({ expectedTotal: value }), "Slug map expectedTotal must be a positive integer."]),
     ["array pages", map({ pages: [] }), "Slug map pages must be an object keyed by source path."],
     ["null page", map({ pages: { "page.md": null } }), 'Slug map page "page.md" must be an object.'],
     ["unknown action", withPage({ action: "invalid" }), 'Slug map page "page.md" has an unknown action.'],
