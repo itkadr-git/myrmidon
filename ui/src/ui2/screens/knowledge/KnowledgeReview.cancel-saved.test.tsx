@@ -74,3 +74,39 @@ it("cancels an untouched edit without writing a draft", async () => {
   await click("Cancel");
   expect(http.post).not.toHaveBeenCalled();
 });
+
+it("preserves a new page draft and its fields without creating the page twice", async () => {
+  pending[0].targetItemId = null;
+  let resolveDraft!: (value: unknown) => void;
+  http.post.mockImplementation((url: string) => url.endsWith("/items")
+    ? new Promise((resolve) => { resolveDraft = resolve; })
+    : Promise.reject(new Error("Forbidden")));
+  await render();
+  await click("Edit");
+  const inputs = host.querySelectorAll("input");
+  const change = async (element: HTMLInputElement | HTMLTextAreaElement, value: string) => {
+    const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(element, value);
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
+  await change(inputs[0], "New title");
+  await change(inputs[1], "new-slug");
+  await change(host.querySelector("textarea")!, "New content");
+  await click("Save and accept");
+  expect(http.post.mock.calls).toEqual([["/myrmidon/companies/c1/knowledge/items", { content: "New content", title: "New title", slug: "new-slug" }]]);
+  await act(async () => resolveDraft({}));
+  await settle();
+  expect(host.textContent).toContain("Forbidden");
+  await click("Cancel");
+  await click("Edit");
+  expect(host.querySelector("textarea")?.value).toBe("New content");
+  expect(Array.from(host.querySelectorAll("input"), (input) => input.value)).toEqual(["New title", "new-slug"]);
+  await click("Save and accept");
+  expect(http.post.mock.calls).toEqual([
+    ["/myrmidon/companies/c1/knowledge/items", { content: "New content", title: "New title", slug: "new-slug" }],
+    ["/myrmidon/companies/c1/knowledge/suggestions/s1/accept", {}],
+    ["/myrmidon/companies/c1/knowledge/suggestions/s1/accept", {}],
+  ]);
+});
