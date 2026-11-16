@@ -28,6 +28,7 @@ function ReviewQueue({ companyId, text }: { companyId: string; text: Messages })
   const [slug, setSlug] = useState("");
   // A successful draft write is not repeated if the later decision fails.
   const [draftSaved, setDraftSaved] = useState(false);
+  const [savedDrafts, setSavedDrafts] = useState<Record<string, { content: string; title: string; slug: string }>>({});
   const decision = useMutation({
     mutationFn: async ({ suggestion, action, edit }: { suggestion: KnowledgeSuggestion; action: "accept" | "decline"; edit?: boolean }) => {
       if (edit && !draftSaved) {
@@ -70,14 +71,18 @@ function ReviewQueue({ companyId, text }: { companyId: string; text: Messages })
               <p className="text-sm text-muted-foreground">{draftSaved ? text.saved : text.draftHint}</p>
               <div className="flex flex-wrap gap-2">
                 <Button type="submit" disabled={decision.isPending || !content.trim() || (!suggestion.targetItemId && (!title.trim() || !slug.trim()))}>{text.save}</Button>
-                <Button type="button" variant="outline" disabled={decision.isPending} onClick={() => { setEditing(null); decision.reset(); }}>{text.cancel}</Button>
+                <Button type="button" variant="outline" disabled={decision.isPending} onClick={() => {
+                  if (draftSaved) setSavedDrafts((drafts) => ({ ...drafts, [suggestion.id]: { content, title, slug } }));
+                  setEditing(null); decision.reset();
+                }}>{text.cancel}</Button>
               </div>
             </form>
           ) : <div className="flex flex-wrap gap-2">
             <Button disabled={decision.isPending || editing !== null} onClick={() => decision.mutate({ suggestion, action: "accept" })}>{text.accept}</Button>
             <Button variant="outline" disabled={decision.isPending || editing !== null} onClick={() => decision.mutate({ suggestion, action: "decline" })}>{text.reject}</Button>
             <Button variant="outline" disabled={decision.isPending || editing !== null} onClick={() => {
-              decision.reset(); setEditing(suggestion); setContent(suggestion.body); setTitle(""); setSlug(""); setDraftSaved(false);
+              const saved = savedDrafts[suggestion.id];
+              decision.reset(); setEditing(suggestion); setContent(saved?.content ?? suggestion.body); setTitle(saved?.title ?? ""); setSlug(saved?.slug ?? ""); setDraftSaved(Boolean(saved));
             }}>{text.edit}</Button>
           </div>}
         </section>
