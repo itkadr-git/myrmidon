@@ -575,7 +575,7 @@ function pluralRu(n, one, few, many) {
 
 function displayPath(file, cwd) {
   const rel = relative(cwd, file);
-  return rel.startsWith("..") ? file : rel;
+  return rel === ".." || rel.startsWith(`..${sep}`) ? file : rel;
 }
 
 export function formatFailures(failures, cwd = process.cwd()) {
