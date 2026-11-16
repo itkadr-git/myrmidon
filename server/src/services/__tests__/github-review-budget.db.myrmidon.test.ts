@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createDb } from "@myrmidon/db";
+import { companies, createDb, instanceSettings, toolGatewayRateLimitCounters } from "@myrmidon/db";
+import { like } from "drizzle-orm";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { reserveGitHubReviewRequest, withGitHubReviewBudget } from "../github-review-budget.js";
 
@@ -13,6 +14,7 @@ describePostgres("shared GitHub review budget", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-github-review-budget-");
     db = createDb(tempDb.connectionString);
+    await db.insert(companies).values({ name: "Budget Test Co", issuePrefix: "BUD" });
   });
   afterAll(async () => { await tempDb?.cleanup(); });
 
@@ -29,6 +31,13 @@ describePostgres("shared GitHub review budget", () => {
     }, 25);
     await expect(fetch("https://api.github.com/test")).rejects.toThrow("review budget exhausted");
     expect(calls).toBe(0);
+  });
+
+  it("OPE-13942: counters live in tool_gateway_rate_limit_counters (one row per source and minute); instance_settings gets no extra row", async () => {
+    const rows = await db.select().from(toolGatewayRateLimitCounters).where(like(toolGatewayRateLimitCounters.counterKey, "github-budget:%"));
+    expect(rows.reduce((sum, row) => sum + row.count, 0)).toBe(10);
+    expect(rows.every((row) => /^github-budget:(review-recovery|review-rework|board-merge):\d+$/.test(row.counterKey) && row.windowMs === 60_000)).toBe(true);
+    expect((await db.select().from(instanceSettings)).filter((row) => row.singletonKey !== "default")).toHaveLength(0);
   });
 
   it("OPE-13942: the board merge is counted in the same hour but keeps going after the review share is gone", async () => {

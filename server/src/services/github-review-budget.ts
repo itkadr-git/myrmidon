@@ -5,8 +5,6 @@
 import type { Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 
-const REVIEW_BUDGET_KEY = "github-review-request-budget";
-
 type ReviewSource = "review-recovery" | "review-rework" | "board-merge";
 
 /** Review traffic may use this share of the hour; the board-side merge may use more, so it is never starved by it. */
@@ -28,10 +26,22 @@ export function withGitHubReviewBudget(
   };
 }
 
+const COUNTER_PREFIX = "github-budget:";
+const MINUTE_MS = 60_000;
+const HOUR_MINUTES = 60;
+
+/** The table is per company (NOT NULL FK); the App's budget is per installation, so the board's first company carries it. */
+let budgetCompanyId: string | null = null;
+
 /**
- * Reserve before each request; the review workers share a rolling one-hour cap (40%), the board-side merge a higher one (90%) over the same counter.
- * The row keeps per-minute counters (at most 60 keys), not one entry per request,
- * so a reservation under the advisory lock reads and writes a few hundred bytes.
+ * Reserve before each request; the review workers share a rolling one-hour cap (40%), the board-side
+ * merge a higher one (90%), over one counter.
+ *
+ * Storage: the shared `tool_gateway_rate_limit_counters` table, one row per source and minute
+ * (`github-budget:<source>:<minute>`), written with insert ... on conflict do update on the table's
+ * unique (company_id, counter_key, window_start_at) index. The check "sum of the hour < cap" and the
+ * increment must be one step, so both run under a transaction advisory lock; the rows are tiny
+ * (at most 3 x 60 live ones) and `instance_settings` is not touched.
  */
 export async function reserveGitHubReviewRequest(
   db: Db,
@@ -39,34 +49,45 @@ export async function reserveGitHubReviewRequest(
   installationLimit = 5000,
 ): Promise<boolean> {
   try {
-    const { instanceSettings } = await import("@myrmidon/db");
-    const { eq, sql } = await import("drizzle-orm");
+    const { companies, toolGatewayRateLimitCounters: counters } = await import("@myrmidon/db");
+    const { and, asc, eq, gt, like, lt, sql } = await import("drizzle-orm");
+    if (!budgetCompanyId) {
+      const [company] = await db.select({ id: companies.id }).from(companies).orderBy(asc(companies.createdAt)).limit(1);
+      if (!company) return false;
+      budgetCompanyId = company.id;
+    }
+    const companyId = budgetCompanyId;
     return await db.transaction(async (tx) => {
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${REVIEW_BUDGET_KEY}, 0))`);
-      const clock = await tx.execute(sql`select floor(extract(epoch from clock_timestamp()) / 60)::bigint as minute`);
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${"github-review-request-budget"}, 0))`);
+      const clock = await tx.execute(sql`select floor(extract(epoch from clock_timestamp()) * 1000 / ${MINUTE_MS})::bigint as minute`);
       const minute = Number(clock[0]?.minute);
       if (!Number.isFinite(minute)) return false;
-      const [row] = await tx.select({ general: instanceSettings.general }).from(instanceSettings)
-        .where(eq(instanceSettings.singletonKey, REVIEW_BUDGET_KEY));
-      const stored = row?.general.minutes;
-      const minutes: Record<string, number> = {};
-      let used = 0;
-      if (stored && typeof stored === "object" && !Array.isArray(stored)) {
-        for (const [key, count] of Object.entries(stored as Record<string, unknown>)) {
-          const at = Number(key);
-          if (Number.isInteger(at) && at > minute - 60 && at <= minute && typeof count === "number" && count > 0) {
-            minutes[key] = count;
-            used += count;
-          }
-        }
+      const windowStart = new Date(minute * MINUTE_MS);
+      const horizon = new Date((minute - HOUR_MINUTES + 1) * MINUTE_MS);
+      const [{ used } = { used: 0 }] = await tx.select({ used: sql<number>`coalesce(sum(${counters.count}), 0)::int` }).from(counters)
+        .where(and(eq(counters.companyId, companyId), like(counters.counterKey, `${COUNTER_PREFIX}%`), gt(counters.windowStartAt, new Date(horizon.getTime() - 1))));
+      const cap = Math.floor(installationLimit * (source === "board-merge" ? BOARD_MERGE_SHARE : REVIEW_SHARE));
+      if (used >= cap) return false;
+      const inserted = await tx.insert(counters).values({
+        companyId,
+        counterKey: `${COUNTER_PREFIX}${source}:${minute}`,
+        windowStartAt: windowStart,
+        windowMs: MINUTE_MS,
+        limit: cap,
+        count: 1,
+        resetAt: new Date(windowStart.getTime() + HOUR_MINUTES * MINUTE_MS),
+      }).onConflictDoUpdate({
+        target: [counters.companyId, counters.counterKey, counters.windowStartAt],
+        set: { count: sql`${counters.count} + 1`, limit: cap, updatedAt: new Date() },
+      }).returning({ count: counters.count });
+      // First reservation of a minute: drop this budget's rows that left the hour.
+      if (inserted[0]?.count === 1) {
+        await tx.delete(counters).where(and(
+          eq(counters.companyId, companyId),
+          like(counters.counterKey, `${COUNTER_PREFIX}%`),
+          lt(counters.windowStartAt, horizon),
+        ));
       }
-      // One counter for all three sources: board-merge spend also uses up the review share.
-      const share = source === "board-merge" ? BOARD_MERGE_SHARE : REVIEW_SHARE;
-      if (used >= Math.floor(installationLimit * share)) return false;
-      minutes[String(minute)] = (minutes[String(minute)] ?? 0) + 1;
-      const general = { minutes };
-      await tx.insert(instanceSettings).values({ singletonKey: REVIEW_BUDGET_KEY, general })
-        .onConflictDoUpdate({ target: instanceSettings.singletonKey, set: { general, updatedAt: new Date() } });
       return true;
     });
   } catch (error) {
@@ -74,4 +95,3 @@ export async function reserveGitHubReviewRequest(
     return false;
   }
 }
-
