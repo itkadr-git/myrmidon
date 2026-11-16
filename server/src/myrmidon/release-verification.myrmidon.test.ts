@@ -70,6 +70,39 @@ describePostgres.sequential("release composition concurrency", () => {
     expect(rows.find((row) => row.isPrimary)?.externalId).toBe("acme/project#pull/2");
   });
 
+  it("does not remove a release candidate while its issue is locked for completion", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Removal race", issuePrefix: "RMR" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Release", status: "in_progress" });
+    const [product] = await db.insert(issueWorkProducts).values({
+      companyId, issueId, type: "pull_request", provider: "github", title: "PR", status: "merged",
+      externalId: "acme/project#pull/1", metadata: { repo: "acme/project", number: 1 },
+    }).returning();
+    let release!: () => void;
+    let acquired!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const locked = new Promise<void>((resolve) => { acquired = resolve; });
+    const completion = db.transaction(async (tx) => {
+      await tx.select().from(issues).where(eq(issues.id, issueId)).for("update");
+      acquired();
+      await gate;
+    });
+    await locked;
+    const removal = workProductService(db).remove(product!.id);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const rows = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, issueId));
+      expect(rows).toHaveLength(1);
+    } finally {
+      release();
+      await completion;
+      await removal;
+    }
+    const rows = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, issueId));
+    expect(rows).toHaveLength(0);
+  });
+
   it("does not change a release candidate while its issue is locked for completion", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
