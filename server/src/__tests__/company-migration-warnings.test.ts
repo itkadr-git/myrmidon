@@ -97,6 +97,24 @@ describe("migration dry-run warnings", () => {
     expect(previewImport).not.toHaveBeenCalled();
   });
 
+  it("rejects blob entries with missing base64 data without throwing", async () => {
+    const sha = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    const manifest = { agents: [], projects: [], issues: [], skills: [], envInputs: [],
+      blobs: [{ sha256: sha, byteSize: 3, contentType: "application/octet-stream" }] };
+    const previewImport = vi.fn();
+    const portability = {
+      exportBundle: vi.fn().mockResolvedValue({
+        rootPath: "package", manifest, warnings: [],
+        files: { [`blobs/${sha}`]: { encoding: "base64" } },
+      }),
+      previewImport,
+    } as unknown as ReturnType<typeof companyPortabilityService>;
+    const result = await companyMigrationService(portability).dryRun("source", {}, "destination");
+    expect(result.validation.errorCount).toBeGreaterThan(0);
+    expect(result.validation.importPreviewSkipped).toBe(true);
+    expect(previewImport).not.toHaveBeenCalled();
+  });
+
   it("distinguishes skipped import validation from a warning-free preview", async () => {
     const manifest = { agents: [], projects: [], issues: [], skills: [], envInputs: [
       { key: "TOKEN", agentSlug: "missing", projectSlug: null, kind: "secret", requirement: "required" },
