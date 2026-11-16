@@ -72,6 +72,20 @@ test('reports exact direct eager fan-in and is independent of input permutations
   equal(second.stdout, first.stdout);
 });
 
+test('handles large eager fan-out without overflowing the call stack', () => {
+  const edges = Array.from({ length: 150000 }, (_, index) => edge('root', String(index), 'eager', 'leaf'));
+  const result = runReport({
+    entry: 'root',
+    modules: [{ path: 'root', bytes: 0, eager: true }, { path: 'leaf', bytes: 1, eager: true }],
+    edges,
+  });
+  equal(result.status, 0, result.stderr);
+  equal(result.stdout, JSON.stringify({ entry: 'root', modules: [
+    { path: 'leaf', bytes: 1, importerCount: 1, importers: ['root'] },
+    { path: 'root', bytes: 0, importerCount: 0, importers: [] },
+  ] }) + '\n');
+});
+
 test('cycle and equal ranks use code-unit path order', () => {
   const result = runReport({
     entry: 'root',
