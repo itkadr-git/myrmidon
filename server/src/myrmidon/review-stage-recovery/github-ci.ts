@@ -519,7 +519,7 @@ export async function readReviewPullRequestHeadSha(input: {
 /** Only a matching, recent PR head and final check are authoritative together. */
 async function readWebhookCi(db: Db, companyId: string, reference: GitHubPullRequestReference): Promise<{
   state: "complete"; headSha: string; finalCheckConclusion: string;
-} | null> {
+} | { state: "pending"; headSha: string } | null> {
   try {
     const rows = await db.select({
       event: connectionEventDeliveries.event,
@@ -543,8 +543,13 @@ async function readWebhookCi(db: Db, companyId: string, reference: GitHubPullReq
       return row.event === "check_run" && value !== null && value.headSha === payload.headSha && value.checkName === REVIEW_CI_FINAL_CHECK_NAME;
     });
     const result = asRecord(check?.normalizedPayload);
-    if (result?.status !== "completed" || typeof result.conclusion !== "string" || ["cancelled", "skipped"].includes(result.conclusion)) return null;
-    return { state: "complete", headSha: payload.headSha, finalCheckConclusion: result.conclusion };
+    if (result?.status === "completed" && typeof result.conclusion === "string" && !["cancelled", "skipped"].includes(result.conclusion)) {
+      return { state: "complete", headSha: payload.headSha, finalCheckConclusion: result.conclusion };
+    }
+    if (result?.status === "queued" || result?.status === "in_progress" || result?.status === "waiting") {
+      return { state: "pending", headSha: payload.headSha };
+    }
+    return null;
   } catch {
     return null;
   }
