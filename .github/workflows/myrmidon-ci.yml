@@ -681,12 +681,8 @@ jobs:
       - name: Shellcheck deploy scripts
         run: shellcheck --version && shellcheck -x scripts/myrmidon/deploy/*.sh
 
-      - name: Script tests (node:test under scripts/myrmidon)
-        run: |
-          set -euo pipefail
-          mapfile -t files < <(find scripts/myrmidon -path scripts/myrmidon/bundle-audit -prune -o -name '*.test.mjs' -type f -print | sort)
-          printf 'Running %s\n' "${files[@]}"
-          node --test "${files[@]}"
+      - name: Script tests (node:test)
+        run: bash scripts/myrmidon/ci/run-script-tests.sh
 
       - name: Bundle audit contracts (node:test)
         run: |

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const runner = fileURLToPath(new URL("./run-script-tests.sh", import.meta.url));
+const runner = fileURLToPath(new URL("./myrmidon/ci/run-script-tests.sh", import.meta.url));
 
 test("script lane executes root Myrmidon tests and existing nested tests only", () => {
   const root = mkdtempSync(join(tmpdir(), "myrmidon-script-discovery-"));
