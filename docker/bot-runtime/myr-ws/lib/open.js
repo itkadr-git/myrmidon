@@ -289,6 +289,28 @@ function isGitCopy(dir) {
   }
 }
 
+// Do not follow symlinks or enter Git metadata. Gitfiles used by submodules and
+// linked worktrees are allowed; only a directory with its own object store is a clone.
+function assertNoNestedClones(root) {
+  const pending = [root];
+  while (pending.length) {
+    const dir = pending.pop();
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === ".git") continue;
+      const child = path.join(dir, entry.name);
+      const metadata = path.join(child, ".git");
+      try {
+        if (fs.lstatSync(metadata).isDirectory() && fs.statSync(path.join(metadata, "objects")).isDirectory()) {
+          throw usage(`nested full clone found at ${child}; preserve its changes and move it outside the workspace before reopening. Nothing was deleted.`);
+        }
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      pending.push(child);
+    }
+  }
+}
+
 function isWorktreeOf(dir) {
   try {
     return fs.statSync(path.join(dir, ".git")).isFile();
@@ -394,6 +416,7 @@ async function open(request, deps = {}) {
   //    /workspace/<KEY>, each further one next to it at /workspace/<KEY>.<name>.
   const reg = readRegistry(ctx);
   const { dir, known } = resolveCopyDir(ctx, reg, { key, repo, scratch, klass });
+  if (!scratch && fs.existsSync(dir) && fs.statSync(dir).isDirectory()) assertNoNestedClones(dir);
   if (known && fs.existsSync(known.path)) {
     if (repo && known.repo && repo !== known.repo) {
       throw usage(`${dir} is already open for ${known.repo}; cannot open ${repo} there`);
