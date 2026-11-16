@@ -211,7 +211,8 @@ export class FleetOnboardExecutor {
               throw error;
             }
 
-            // Key login is verified! We now use this SSH connection.
+            // Release the bootstrap session before switching to verified key authentication.
+            await activeSsh.disconnect().catch(() => {});
             activeSsh = verifySsh;
             connOptions.privateKey = activePrivateKey;
             delete connOptions.password;
