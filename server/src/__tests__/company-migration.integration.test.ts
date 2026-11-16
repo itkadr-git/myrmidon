@@ -1081,6 +1081,44 @@ describe("company migration dry run", () => {
     expect(before.some((agent) => agent.id === independent!.id)).toBe(true);
   });
 
+  it("refuses rollback when an independent membership and grant were added to the destination", async () => {
+    const [source] = await db.insert(companies).values({ name: "Rollback ACL ownership source", issuePrefix: "MAC" }).returning();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+
+    const applied = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+      target: { mode: "new_company", newCompanyName: "Rollback ACL ownership destination" },
+      dryRun: false, apply: true, confirm: "approved pilot",
+    });
+    expect(applied.status).toBe(200);
+    const destination = (await db.select().from(companies)).find((company) => company.name === "Rollback ACL ownership destination")!;
+    await db.insert(companyMemberships).values({
+      companyId: destination.id, principalType: "user", principalId: "independent-user", membershipRole: "member",
+    });
+    await db.insert(principalPermissionGrants).values({
+      companyId: destination.id, principalType: "user", principalId: "independent-user", permissionKey: "tasks:assign",
+    });
+    const beforeCompanies = await db.select().from(companies);
+    const beforeMemberships = await db.select().from(companyMemberships);
+    const beforeGrants = await db.select().from(principalPermissionGrants);
+    const beforeRuns = await db.select().from(companyTransferRuns);
+
+    const rollback = await request(app)
+      .post(`/api/companies/${source!.id}/migrations/${applied.body.runId}/rollback`)
+      .send({ confirm: "rollback pilot" });
+    expect(rollback.status).toBe(409);
+    expect(await db.select().from(companies)).toEqual(beforeCompanies);
+    expect(await db.select().from(companyMemberships)).toEqual(beforeMemberships);
+    expect(await db.select().from(principalPermissionGrants)).toEqual(beforeGrants);
+    expect(await db.select().from(companyTransferRuns)).toEqual(beforeRuns);
+  });
+
   it("refuses rollback when an independent task was created in the destination", async () => {
     const [source] = await db.insert(companies).values({ name: "Rollback task ownership source", issuePrefix: "MTO" }).returning();
     const app = express();
