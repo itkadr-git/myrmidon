@@ -83,6 +83,15 @@ const IDLE_OPEN_CLONE_HOURS = 6;
 const LOW_FREE_PERCENT = 10;
 const LOW_FREE_IDLE_OPEN_CLONE_HOURS = 1;
 const IDLE_OPEN_STATUSES = new Set(["in_review", "blocked", "backlog"]);
+// myrmidon(1.6.9 HOST-GC-OMP-RUNNER-REVIEW-COPIES): an omp runner keeps a full copy (0.7-0.9 GB) of every
+// task it works on under `<runner>/workspace/OPE-<n>`, and a task of that engineer often waits in
+// in_review for hours; the closed-task rule never matches it. The folder of a task in in_review, blocked
+// or backlog gets the closed-task verdict (remove when clean and pushed, else archive first) when no run
+// is live on the task and nothing outside `.git` changed for IDLE_OPEN_RUNNER_FOLDER_MINUTES. It does not
+// wait for the clone TTL. todo and in_progress are never touched.
+const IDLE_OPEN_RUNNER_FOLDER_MINUTES = 30;
+// The runner container sees its own `<runner>/workspace` as /workspace.
+const RUNNER_CONTAINER_ROOT = "/workspace";
 // myrmidon(1.6.9 OPE-13411): a reviewer bot makes a full worktree (about 0.5 GB) for each PR it reviews,
 // about one per 3 minutes per reviewer. After the review the task goes to an engineer or to done, and
 // the reviewer's copy would stay (the idle rule above only matches in_review, blocked and backlog).
@@ -485,18 +494,18 @@ function serverTips(repo, env) {
 
 // { verified, pushed, tips, reason }. `pushed` needs a verified server answer and no local
 // branch, tag or HEAD commit outside it.
-function pushState(repo) {
-  const server = serverTips(repo);
+function pushState(repo, env) {
+  const server = serverTips(repo, env);
   if (!server.verified) return { verified: false, pushed: false, tips: [], reason: server.reason };
   const args = ["rev-list", "HEAD", "--branches", "--tags"];
   if (server.tips.length) args.push("--not", ...server.tips);
-  const r = git(args, repo);
+  const r = git(args, repo, env);
   return { verified: true, pushed: r.status === 0 && r.stdout.trim() === "", tips: server.tips };
 }
 
-function isGitWorktree(dir) {
+function isGitWorktree(dir, env) {
   try {
-    const r = git(["rev-parse", "--is-inside-work-tree"], dir);
+    const r = git(["rev-parse", "--is-inside-work-tree"], dir, env);
     return r.status === 0 && r.stdout.trim() === "true";
   } catch { return false; }
 }
@@ -510,22 +519,22 @@ function isOwnWorktree(dir) {
   } catch { return false; }
 }
 
-function isClean(dir) {
+function isClean(dir, env) {
   try {
-    const r = git(["status", "--porcelain"], dir);
+    const r = git(["status", "--porcelain"], dir, env);
     return r.status === 0 && r.stdout.trim() === "";
   } catch { return false; }
 }
 
-function isPushed(dir) {
+function isPushed(dir, env) {
   try {
-    return pushState(dir).pushed;
+    return pushState(dir, env).pushed;
   } catch { return false; }
 }
 
-function hasStash(dir) {
+function hasStash(dir, env) {
   try {
-    const r = git(["stash", "list"], dir);
+    const r = git(["stash", "list"], dir, env);
     return r.status === 0 && r.stdout.trim() !== "";
   } catch { return false; }
 }
@@ -533,12 +542,15 @@ function hasStash(dir) {
 // `.git` is a directory in a plain clone but a file (`gitdir: <path>`) in a linked worktree or a
 // submodule: the objects, and their alternates file, then live in the real gitdir (and the
 // common dir behind it), so look there.
-function hasAlternates(dir) {
+function hasAlternates(dir, mapped) {
   try {
     const dotGit = path.join(dir, ".git");
     const st = fs.lstatSync(dotGit);
     const gitDirs = [];
-    if (st.isDirectory()) {
+    if (mapped) {
+      // A runner worktree whose gitdir is a container path: the host paths are already resolved.
+      gitDirs.push(mapped.adminDir, mapped.commonDir);
+    } else if (st.isDirectory()) {
       gitDirs.push(dotGit);
     } else if (st.isFile()) {
       const m = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(dotGit, "utf8"));
@@ -680,8 +692,9 @@ export function volumeFreePercent(dir, statfs = fs.statfsSync) {
 
 // The linked worktree's own gitdir (`<git-base>/worktrees/<name>`) and its common dir on the HOST.
 // The `.git` file of a bot's clone says `gitdir: /bot/hermes/...`, a path inside the container, where
-// /bot is `<bots root>/<agentId>`. Returns { adminDir, commonDir, containerPath } or { reason }.
-function resolveWorktreeGitDirs(clonePath, agentRoot) {
+// /bot is `<bots root>/<agentId>`. (An omp runner's container root is /workspace = `<runner>/workspace`:
+// `containerRoot` and `agentRoot` say so.) Returns { adminDir, commonDir, containerPath } or { reason }.
+function resolveWorktreeGitDirs(clonePath, agentRoot, containerRoot = BOT_CONTAINER_ROOT) {
   let text;
   try {
     const st = fs.lstatSync(path.join(clonePath, ".git"));
@@ -692,9 +705,9 @@ function resolveWorktreeGitDirs(clonePath, agentRoot) {
   if (!m) return { reason: "not-a-linked-worktree" };
   let target = m[1].trim();
   let containerPath = false;
-  if (target === BOT_CONTAINER_ROOT || target.startsWith(`${BOT_CONTAINER_ROOT}/`)) {
+  if (target === containerRoot || target.startsWith(`${containerRoot}/`)) {
     if (!agentRoot) return { reason: "gitdir-unmapped" };
-    target = path.resolve(agentRoot, `.${target.slice(BOT_CONTAINER_ROOT.length)}`);
+    target = path.resolve(agentRoot, `.${target.slice(containerRoot.length)}`);
     if (!target.startsWith(path.resolve(agentRoot) + path.sep)) return { reason: "gitdir-unmapped" };
     containerPath = true;
   } else {
@@ -1205,33 +1218,111 @@ function runnerFolderGitDirs(folder) {
   return dirs;
 }
 
+// A linked worktree of a runner whose `.git` file names a path inside the runner container
+// (`gitdir: /workspace/...`). Returns { adminDir, commonDir, env } when the path maps to a git
+// directory under the runner's host `workspace` and has the expected layout; { reason } when it is
+// such a worktree but the host cannot read it (the run copy that held the repository is gone);
+// null for any other layout (a plain clone, a worktree git reads by itself).
+function mapRunnerContainerWorktree(dir, runnerWorkspace) {
+  if (!runnerWorkspace) return null;
+  let text;
+  try {
+    const st = fs.lstatSync(path.join(dir, ".git"));
+    if (!st.isFile()) return null;
+    text = fs.readFileSync(path.join(dir, ".git"), "utf8");
+  } catch { return null; }
+  const m = /^gitdir:\s*(.+)$/m.exec(text);
+  if (!m) return null;
+  const target = m[1].trim();
+  if (target !== RUNNER_CONTAINER_ROOT && !target.startsWith(`${RUNNER_CONTAINER_ROOT}/`)) return null;
+  const dirs = resolveWorktreeGitDirs(dir, runnerWorkspace, RUNNER_CONTAINER_ROOT);
+  if (!dirs.adminDir) return { reason: dirs.reason };
+  return { ...dirs, env: { GIT_DIR: dirs.adminDir, GIT_WORK_TREE: dir, GIT_OPTIONAL_LOCKS: "0" } };
+}
+
+// Newest change time (ms) of a task folder outside `.git`: the folder, its top-level entries and
+// those of each repository folder inside, plus the HEAD and reflog of its git directory (a commit or
+// a checkout touches those). The index is left out: any `git status` refreshes it.
+function newestRunnerFolderChangeMs(folder, gitDirs, runnerWorkspace) {
+  let newest = 0;
+  const take = (p) => { try { newest = Math.max(newest, fs.lstatSync(p).mtimeMs); } catch { /* gone */ } };
+  take(folder);
+  for (const dir of new Set([folder, ...gitDirs])) {
+    take(dir);
+    try {
+      for (const e of fs.readdirSync(dir)) if (e !== ".git") take(path.join(dir, e));
+    } catch { /* unreadable: the git checks keep or archive the folder */ }
+    const mapped = mapRunnerContainerWorktree(dir, runnerWorkspace);
+    const adminDir = mapped?.adminDir ?? path.join(dir, ".git");
+    if (mapped && !mapped.adminDir) continue;
+    for (const f of ["HEAD", path.join("logs", "HEAD")]) take(path.join(adminDir, f));
+  }
+  return newest;
+}
+
 // Verdict for one folder: `remove` (every git repo inside is clean and fully pushed), or
 // `archive-remove` (unpushed work, or a git state the host cannot read — the archive keeps
 // what the host could not inspect). The board status is checked first.
-function judgeRunnerTaskFolder(folder, boardStatus) {
+//
+// done/cancelled: the verdict follows from the git state alone. in_review, blocked and backlog
+// (IDLE_OPEN_STATUSES): the same verdict, but only when no run is live on the task and nothing outside
+// `.git` changed for IDLE_OPEN_RUNNER_FOLDER_MINUTES; otherwise `keep`. Any other status (todo,
+// in_progress, ...) keeps the folder. `options.now` is the time of the pass, `options.runnerWorkspace`
+// the host path the runner container sees as /workspace.
+function judgeRunnerTaskFolder(folder, boardStatus, { now = Date.now(), runnerWorkspace = null, idleMinutes = IDLE_OPEN_RUNNER_FOLDER_MINUTES } = {}) {
+  let idleOpen = false;
   if (boardStatus !== undefined) {
     if (!boardStatus.ok) {
       return { action: "keep", reason: `board-unavailable${boardStatus.statusCode ? `-${boardStatus.statusCode}` : ""}` };
     }
-    if (!["done", "cancelled"].includes(boardStatus.status)) {
+    if (IDLE_OPEN_STATUSES.has(boardStatus.status)) {
+      idleOpen = true;
+      const liveRunIds = boardStatus.liveRunIds ?? (boardStatus.liveRunId ? [boardStatus.liveRunId] : []);
+      if (liveRunIds.length > 0) return { action: "keep", reason: "live-run" };
+    } else if (!["done", "cancelled"].includes(boardStatus.status)) {
       return { action: "keep", reason: `issue-status:${boardStatus.status}` };
     }
   }
   const gitDirs = runnerFolderGitDirs(folder);
-  if (gitDirs === null) return { action: "archive-remove", reason: "unreadable-folder" };
+  if (gitDirs === null) return { action: "archive-remove", reason: "unreadable-folder", idleOpen };
+  if (idleOpen && now - newestRunnerFolderChangeMs(folder, gitDirs, runnerWorkspace) < idleMinutes * MINUTE_MS) {
+    return { action: "keep", reason: "fresh" };
+  }
+  const out = (verdict) => ({ ...verdict, idleOpen });
   // Independent of the depth-limited list above: a `.git` anywhere (skipped directories too) that
   // the list lacks sends the folder to the archive pass, which saves or keeps it.
   const tree = scanGitTree(folder);
   const listed = new Set(gitDirs);
-  if (!tree.complete || tree.roots.some((r) => !listed.has(r))) return { action: "archive-remove", reason: "unlisted-git-repository" };
-  if (gitDirs.length === 0) return { action: "remove", reason: "no-git-repos" };
+  if (!tree.complete || tree.roots.some((r) => !listed.has(r))) return out({ action: "archive-remove", reason: "unlisted-git-repository" });
+  if (gitDirs.length === 0) return out({ action: "remove", reason: "no-git-repos" });
   for (const dir of gitDirs) {
-    const readable = isGitWorktree(dir);
-    if (!readable || !isClean(dir) || !isPushed(dir) || hasStash(dir) || hasAlternates(dir)) {
-      return { action: "archive-remove", reason: "unsafe-archive" };
+    const mapped = mapRunnerContainerWorktree(dir, runnerWorkspace);
+    // A container gitdir the host cannot map (its run copy is gone) proves nothing: archive.
+    if (mapped && !mapped.adminDir) return out({ action: "archive-remove", reason: "unsafe-archive" });
+    const env = mapped?.env;
+    if (!isGitWorktree(dir, env) || !isClean(dir, env) || !isPushed(dir, env) || hasStash(dir, env) || hasAlternates(dir, mapped)) {
+      return out({ action: "archive-remove", reason: "unsafe-archive" });
     }
   }
-  return { action: "remove", reason: "clean-pushed" };
+  return out({ action: "remove", reason: "clean-pushed" });
+}
+
+/**
+ * Before the removal of a folder planned under the idle-open rule: the board is asked again (a run
+ * or a move to todo/in_progress may have come since the scan) and the folder must still be idle.
+ * Returns the reason to keep the folder, or null.
+ */
+export async function runnerFolderKeepReason(item, now, { fetchStatus = fetchIssueOpenState, idleMinutes = IDLE_OPEN_RUNNER_FOLDER_MINUTES } = {}) {
+  if (!item.idleOpen) return null;
+  const state = await fetchStatus(item.identifier);
+  if (!state.ok) return `board-unavailable${state.statusCode ? `-${state.statusCode}` : ""}`;
+  if (!IDLE_OPEN_STATUSES.has(state.status)) return `issue-status:${state.status}`;
+  const liveRunIds = state.liveRunIds ?? (state.liveRunId ? [state.liveRunId] : []);
+  if (liveRunIds.length > 0) return "live-run";
+  const gitDirs = runnerFolderGitDirs(item.path);
+  if (gitDirs === null) return "unreadable-folder";
+  if (now - newestRunnerFolderChangeMs(item.path, gitDirs, item.runnerWorkspace) < idleMinutes * MINUTE_MS) return "fresh";
+  return null;
 }
 
 /**
@@ -1246,7 +1337,7 @@ function judgeRunnerTaskFolder(folder, boardStatus) {
  * the whole `--apply` pass. `fetchStatus` is injectable for tests; the default is the board
  * call the clone pass uses.
  */
-export async function scanRunnerTaskFolders(runnersRoot, now, ttlHours, { onEvent = () => {}, fetchStatus = fetchIssueStatus } = {}) {
+export async function scanRunnerTaskFolders(runnersRoot, now, ttlHours, { onEvent = () => {}, fetchStatus = fetchIssueOpenState, idleOpenMinutes = IDLE_OPEN_RUNNER_FOLDER_MINUTES } = {}) {
   const results = [];
   const ttlMs = ttlHours * HOUR_MS;
   const fail = (extra, err) => {
@@ -1306,11 +1397,23 @@ export async function scanRunnerTaskFolders(runnersRoot, now, ttlHours, { onEven
           action: "keep",
           reason: "retention",
         };
-        if (now - st.mtimeMs >= ttlMs && item.identifier) {
+        // A closed task's folder waits for the clone TTL; a folder of a task in in_review, blocked or
+        // backlog is judged after idleOpenMinutes (the verdict itself keeps any other status).
+        const oldEnough = now - st.mtimeMs >= ttlMs;
+        if ((oldEnough || now - st.mtimeMs >= idleOpenMinutes * MINUTE_MS) && item.identifier) {
           try {
-            const verdict = judgeRunnerTaskFolder(folder, await fetchStatus(item.identifier));
-            item.action = verdict.action;
-            item.reason = verdict.reason;
+            const runnerWorkspace = path.join(runnersRoot, runner.name, "workspace");
+            const board = await fetchStatus(item.identifier);
+            if (oldEnough || (board.ok && IDLE_OPEN_STATUSES.has(board.status))) {
+              const verdict = judgeRunnerTaskFolder(folder, board, { now, runnerWorkspace, idleMinutes: idleOpenMinutes });
+              item.action = verdict.action;
+              item.reason = verdict.reason;
+              if (verdict.idleOpen) {
+                item.idleOpen = true;
+                item.runnerWorkspace = runnerWorkspace;
+                item.status = board.status;
+              }
+            }
           } catch (err) {
             fail({ runner: runner.name, path: folder }, err);
             item.reason = "scan-failed";
@@ -1729,6 +1832,8 @@ export async function fetchAgentDecommissionState(agentId, {
   if (!body || typeof body !== "object" || typeof body.adapterType !== "string" || typeof body.status !== "string") {
     return { ok: false, reason: "board-unavailable" };
   }
+  const validStatuses = new Set(["active", "paused", "idle", "running", "error", "pending_approval", "terminated"]);
+  if (!validStatuses.has(body.status) || !body.adapterType.trim()) return { ok: false, reason: "board-unavailable" };
   if (body.status === "terminated") return { ok: true, state: "terminated" };
   if (body.adapterType === HERMES_GATEWAY_ADAPTER_TYPE) return { ok: true, state: "hermes_gateway" };
   if (body.status === "running") return { ok: true, state: "running" };
@@ -3016,8 +3121,16 @@ async function main() {
       let runnerTaskFoldersRemoved = 0;
       // myrmidon(1.6.8 OPE-12855): archive-then-remove for folders whose git state could not
       // be proven, plain removal for clean closed ones; both guarded against the runner root.
+      // A folder of a task under review (idle-open rule) is judged again just before it goes: the board
+      // is asked once more and the folder must still be idle.
+      const stillIdle = async (f) => {
+        const why = await runnerFolderKeepReason(f, Date.now());
+        if (why) journalRecord(args.journal, { event: "runner-task-folder-skipped", path: f.path, identifier: f.identifier, runner: f.runner, reason: why });
+        return !why;
+      };
       for (const f of plan.runnerTaskFolders.filter((x) => x.action === "archive-remove")) {
         try {
+          if (!(await stillIdle(f))) continue;
           const archivePath = archiveClone(f.path, path.join(f.runnersRoot, ".gc-archive"), args.journal);
           if (!archivePath) {
             atomicDrop(f.path, f.runnersRoot);
@@ -3026,7 +3139,7 @@ async function main() {
             runnerTaskFoldersRemoved++;
             continue;
           }
-          journalRecord(args.journal, { event: "runner-task-folder-archived", path: f.path, archive: archivePath, reason: f.reason });
+          journalRecord(args.journal, { event: "runner-task-folder-archived", path: f.path, archive: archivePath, reason: f.reason, ...(f.idleOpen ? { idleOpenStatus: f.status } : {}) });
           atomicDrop(f.path, f.runnersRoot);
           plan.archived.push({ path: f.path, archive: archivePath });
           journalRecord(args.journal, { event: "runner-task-folder-removed-after-archive", path: f.path, archive: archivePath });
@@ -3037,9 +3150,10 @@ async function main() {
       }
       for (const f of plan.runnerTaskFolders.filter((x) => x.action === "remove")) {
         try {
+          if (!(await stillIdle(f))) continue;
           atomicDrop(f.path, f.runnersRoot);
           plan.removed.push({ path: f.path });
-          journalRecord(args.journal, { event: "runner-task-folder-removed", path: f.path, reason: f.reason, runner: f.runner, ageHours: Math.round(f.ageMs / HOUR_MS) });
+          journalRecord(args.journal, { event: "runner-task-folder-removed", path: f.path, reason: f.reason, runner: f.runner, ageHours: Math.round(f.ageMs / HOUR_MS), ...(f.idleOpen ? { idleOpenStatus: f.status } : {}) });
           runnerTaskFoldersRemoved++;
         } catch (err) {
           journalRecord(args.journal, { event: "runner-task-folder-remove-failed", path: f.path, error: err.message });

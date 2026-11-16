@@ -627,14 +627,14 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
       expect((await idlePickupForAgent(off, { id: plain.agentId, companyId: plain.companyId })).woken).toBe(1);
     });
 
-    it("wakes as before when the head CI cannot be read", async () => {
+    it("does not wake when the head CI cannot be read (EMPTY-WAKES-CI-UNREADY)", async () => {
       const { companyId, agentId } = await seedReviewTask();
       const deps = {
         ...fakeDeps(),
         resolveReviewPullRequestCi: vi.fn(async () => { throw new Error("boom"); }),
         resolveReviewHeadFailedChecks: noFailed,
       };
-      expect((await idlePickupForAgent(deps, { id: agentId, companyId })).woken).toBe(1);
+      expect((await idlePickupForAgent(deps, { id: agentId, companyId })).woken).toBe(0);
     });
   });
 

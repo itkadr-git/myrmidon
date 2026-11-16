@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
@@ -10,6 +11,7 @@ import {
   suggestedTaskDraftSchema,
   updateIssueSchema,
   upsertIssueDocumentSchema,
+  issueExecutionPolicySchema,
 } from "./issue.js";
 import { createAgentSchema } from "./agent.js";
 
@@ -821,5 +823,21 @@ describe("issue validators", () => {
     });
 
     expect(parsed.success).toBe(false);
+  });
+
+  describe("execution monitor kind (EMPTY-WAKES-CI-UNREADY)", () => {
+    const base = { nextCheckAt: "2026-11-16T12:00:00.000Z" };
+
+    it("accepts monitor.kind = ci and external_service, keeps the schema transform-free", () => {
+      for (const kind of ["ci", "external_service"]) {
+        expect(issueExecutionPolicySchema.parse({ monitor: { ...base, kind } }).monitor?.kind).toBe(kind);
+      }
+      // JSON Schema for agent tools cannot represent a transform.
+      expect(() => z.toJSONSchema(issueExecutionPolicySchema)).not.toThrow();
+    });
+
+    it("still refuses an unknown kind", () => {
+      expect(issueExecutionPolicySchema.safeParse({ monitor: { ...base, kind: "webhook" } }).success).toBe(false);
+    });
   });
 });

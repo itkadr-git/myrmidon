@@ -2,9 +2,8 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, companies, createDb, issueLabels, issues, labels } from "@myrmidon/db";
-import { normalizeRunPrioritySettings } from "@myrmidon/shared";
 import { findTopReadyIssueForAgent } from "../myrmidon/idle-pickup.js";
-import { applyRunPrioritySettings, resetRunPriorityForTests } from "../myrmidon/run-priority/state.js";
+import { applyCompanyReleaseFocus, resetRunPriorityForTests } from "../myrmidon/run-priority/state.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -17,7 +16,6 @@ describeDb("release-focused idle-pickup task selection", () => {
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("release-focus-wake-");
     db = createDb(database.connectionString);
-    applyRunPrioritySettings(normalizeRunPrioritySettings({ currentRelease: "1.6.9" }));
   }, 60_000);
 
   afterAll(async () => {
@@ -27,6 +25,7 @@ describeDb("release-focused idle-pickup task selection", () => {
 
   async function seed() {
     const companyId = randomUUID();
+    applyCompanyReleaseFocus(new Map([[companyId, { currentRelease: "1.6.9", strictReleaseFocus: true }]]));
     const agentId = randomUUID();
     const currentId = randomUUID();
     const otherId = randomUUID();
@@ -53,14 +52,14 @@ describeDb("release-focused idle-pickup task selection", () => {
 
   it("strictReleaseFocus=false lifts the selection filter, true restores it, no restart", async () => {
     const { companyId, agentId, currentId } = await seed();
-    const on = normalizeRunPrioritySettings({ currentRelease: "1.6.9", strictReleaseFocus: true });
+    const on = { currentRelease: "1.6.9", strictReleaseFocus: true };
     try {
-      applyRunPrioritySettings({ ...on, strictReleaseFocus: false });
+      applyCompanyReleaseFocus(new Map([[companyId, { ...on, strictReleaseFocus: false }]]));
       expect(await findTopReadyIssueForAgent(db, { id: agentId, companyId })).not.toBeNull();
-      applyRunPrioritySettings(on);
+      applyCompanyReleaseFocus(new Map([[companyId, on]]));
       expect((await findTopReadyIssueForAgent(db, { id: agentId, companyId }))?.id).toBe(currentId);
     } finally {
-      applyRunPrioritySettings(normalizeRunPrioritySettings({ currentRelease: "1.6.9" }));
+      resetRunPriorityForTests();
     }
   });
 });

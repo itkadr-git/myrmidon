@@ -30,6 +30,25 @@ function argValue(text, name) {
 }
 
 describe("omp SSH runner image", () => {
+  it("installs myr-ws with Node 24 and checks it during image build", () => {
+    assert.match(dockerfile, /COPY docker\/bot-runtime\/myr-ws\/ \/opt\/paperclip\/myr-ws\//);
+    assert.match(dockerfile, /COPY docker\/bot-runtime\/botd\/ \/opt\/paperclip\/botd\//);
+    assert.match(dockerfile, /ln -s \/usr\/bin\/node \/opt\/node24\/bin\/node/);
+    assert.match(dockerfile, /ln -s \/usr\/bin\/git \/opt\/paperclip\/libexec\/git/);
+    assert.match(dockerfile, /process\.versions\.node\.split/);
+    assert.match(dockerfile, /myr-ws --help >\/dev\/null/);
+    assert.match(workflow, /docker\/bot-runtime\/myr-ws\/\*\*/);
+  });
+  it("installs rsync and the devbuild client, and the compose template wires the optional key and connection", () => {
+    assert.match(dockerfile, /build-essential python3 rsync/);
+    assert.match(dockerfile, /COPY docker\/bot-runtime\/devbuild\/devbuild \/opt\/paperclip\/bin\/devbuild/);
+    assert.match(dockerfile, /ln -s \/opt\/paperclip\/bin\/devbuild \/usr\/local\/bin\/devbuild/);
+    assert.match(dockerfile, /command -v rsync/);
+    assert.match(dockerfile, /devbuild --help >\/dev\/null/);
+    assert.match(compose, /\$\{OMP_RUNNER_DEVBUILD_KEY:-\/dev\/null\}:\/opt\/devbuild-ssh\/id_ed25519:ro/);
+    for (const v of ["DEVBUILD_HOST", "DEVBUILD_USER", "DEVBUILD_BASE"]) assert.match(compose, new RegExp(`${v}: \\$\\{${v}:-`));
+    assert.match(entrypoint, /omp-runner-devbuild\.sh/);
+  });
   it("builds on agent-runtime-base and pins Bun and omp exactly like the board image", () => {
     assert.match(dockerfile, /^FROM paperclipai\/agent-runtime-base:\$\{BASE_TAG\}$/m);
     for (const name of ["BUN_VERSION", "BUN_SHA256", "OMP_VERSION"]) {

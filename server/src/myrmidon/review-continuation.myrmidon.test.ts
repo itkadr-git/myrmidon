@@ -144,8 +144,7 @@ describe("tryDevReviewContinuationOnRelease integration", () => {
   });
 
   it("signals project lead when queue is empty on release", async () => {
-    const settings = runPriorityState.currentRunPrioritySettings();
-    vi.spyOn(runPriorityState, "currentRunPrioritySettings").mockReturnValue({ ...settings, currentRelease: "1.6.9" });
+    const focus = vi.spyOn(runPriorityState, "currentCompanyReleaseFocus").mockReturnValue({ currentRelease: "1.6.9", strictReleaseFocus: false });
     const mockDb = {
       select: vi.fn().mockImplementation((fields) => ({
         from: vi.fn().mockReturnValue({
@@ -182,6 +181,8 @@ describe("tryDevReviewContinuationOnRelease integration", () => {
       logActivity,
       enabledProjects: new Set(["project-a"]),
     });
+
+    expect(focus).toHaveBeenCalledWith("company-a");
 
     expect(handled).toBe(true);
     expect(enqueueWakeup).toHaveBeenCalledWith(

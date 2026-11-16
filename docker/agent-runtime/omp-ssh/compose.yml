@@ -68,6 +68,19 @@
 # Keep `nodeLinker: isolated` (the default): no node_modules symlinks escape
 # the container into the shared store.
 #
+# Optional variables for the build VPS (devbuild; all three unset = no devbuild
+# connection, the runner behaves as before):
+#   OMP_RUNNER_DEVBUILD_KEY     host path of the devbuild ssh private key, e.g.
+#                               /srv/devbuild-ssh/id_ed25519 (0640 root:10001 is fine: the
+#                               container process is root). Mounted read-only at
+#                               /opt/devbuild-ssh/id_ed25519. Unset: an empty file is mounted
+#                               there and the entrypoint ignores it.
+#   DEVBUILD_HOST, DEVBUILD_USER   address and ssh user of the build VPS (same values as the
+#                               hermes bots). DEVBUILD_BASE (default /srv/devbuild) is the
+#                               directory on the VPS. The entrypoint writes them into
+#                               /etc/profile.d/omp-runner-devbuild.sh, because sshd does not
+#                               pass container environment to the board's SSH sessions.
+#
 # No port is published: the board reaches the runner by container name on the
 # shared network. The host paths mounted are the board's public key
 # (read-only), the four data volumes under OMP_RUNNER_DATA_DIR and the three
@@ -87,6 +100,10 @@ services:
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, SYS_CHROOT, KILL, AUDIT_WRITE]
     security_opt: ["no-new-privileges:true"]
+    environment:
+      DEVBUILD_HOST: ${DEVBUILD_HOST:-}
+      DEVBUILD_USER: ${DEVBUILD_USER:-}
+      DEVBUILD_BASE: ${DEVBUILD_BASE:-/srv/devbuild}
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
@@ -102,6 +119,8 @@ services:
       # host-gc prunes entries older than 24 h (scripts/myrmidon/host-gc/README.md).
       - tmp:/tmp
       - ${OMP_RUNNER_AUTHORIZED_KEYS:?set OMP_RUNNER_AUTHORIZED_KEYS}:/etc/ssh/omp-runner/authorized_keys:ro
+      # Optional devbuild key (see the header); /dev/null when unset, ignored by the entrypoint.
+      - ${OMP_RUNNER_DEVBUILD_KEY:-/dev/null}:/opt/devbuild-ssh/id_ed25519:ro
 
 networks:
   board:
