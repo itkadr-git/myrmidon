@@ -71,11 +71,20 @@ test('large layered DAG has exact count above 2^53', () => {
   }
   modules.push(moduleOf('end'));
   for (const from of prev) edges.push(edge(from, 'end'));
+  // Add one independent route of the same length, making the total unrepresentable as a Number.
+  let chain = 'e';
+  for (let i = 0; i < 54; i++) {
+    const next = `chain${i}`;
+    modules.push(moduleOf(next));
+    edges.push(edge(chain, next));
+    chain = next;
+  }
+  edges.push(edge(chain, 'end'));
   const r = run(JSON.stringify({ entry: 'e', modules, edges }));
   assert.equal(r.status, 0, r.stderr); assert.equal(r.stderr, '');
   const output = JSON.parse(r.stdout);
   assert.equal(r.stdout, `${JSON.stringify(output)}\n`);
-  assert.deepEqual(output.modules.find(m => m.path === 'end'), { path: 'end', depth: 55, shortestPaths: '18014398509481984' });
+  assert.deepEqual(output.modules.find(m => m.path === 'end'), { path: 'end', depth: 55, shortestPaths: '18014398509481985' });
 });
 
 test('CLI errors classify and redact all data including disconnected graph', () => {
