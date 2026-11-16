@@ -29068,6 +29068,9 @@ export function heartbeatService(
         })(),
       };
       context.paperclipWorkspaces = buildRunWorkspaceHints(resolvedWorkspace);
+      // myrmidon(1.6.9 NO-COPIES-FOR-REVIEWERS-LEADS): the agent's role (its caste key) for the
+      // gateway adapter, whose execution context carries only id, name and adapter config of the agent.
+      context.paperclipAgentRole = agent.role ?? "";
       // myrmidon(1.6.5-BOT-DISK-H4b): the instance default repository, the gateway
       // adapter's last-resort source of the run's `workspace.repo` (after the
       // project workspace). Best effort: a settings read failure leaves it unset.

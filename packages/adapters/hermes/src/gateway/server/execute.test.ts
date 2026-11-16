@@ -902,6 +902,34 @@ describe("execute", () => {
     expect("workspace" in (await runAndReadBody(ctx))).toBe(false);
   });
 
+  it.each([
+    ["a reviewer by role on ci_completed without wakeRole", "Hermes", "reviewer", "ci_completed"],
+    ["a reviewer by name (role qa) on ci_completed without wakeRole", "adm-dev-review-8", "qa", "ci_completed"],
+    ["a verifier by role", "Hermes", "verifier", "ci_completed"],
+    ["a lead by name on auto_slice_queue_shortage", "adm-dev-lead-4", "engineer", "auto_slice_queue_shortage"],
+    ["a lead by role", "Hermes", "lead", "auto_slice_queue_shortage"],
+  ])("does not open a task copy for %s (NO-COPIES-FOR-REVIEWERS-LEADS)", async (_label, name, role, wakeReason) => {
+    const ctx = makeCtx(wsBaseConfig);
+    ctx.agent.name = name;
+    ctx.context.paperclipAgentRole = role;
+    ctx.context.wakeReason = wakeReason;
+    ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets.git", repoRef: "main" };
+    expect("workspace" in (await runAndReadBody(ctx))).toBe(false);
+  });
+
+  it("opens the task copy for an engineer on any wake reason (NO-COPIES-FOR-REVIEWERS-LEADS)", async () => {
+    for (const wakeReason of ["ci_completed", "auto_slice_queue_shortage", "issue_assigned"]) {
+      const ctx = makeCtx(wsBaseConfig);
+      ctx.agent.name = "adm-dev-eng-3";
+      ctx.context.paperclipAgentRole = "engineer";
+      ctx.context.wakeReason = wakeReason;
+      ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+      ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets.git", repoRef: "main" };
+      expect((await runAndReadBody(ctx)).workspace).toEqual(fixture);
+    }
+  });
+
   it("still opens the task copy for an executor wake of an execution stage", async () => {
     const ctx = makeCtx(wsBaseConfig);
     ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
