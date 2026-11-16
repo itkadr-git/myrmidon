@@ -1090,6 +1090,37 @@ describe("company migration dry run", () => {
     expect(afterRollback.filter((company) => company.name === "Rollback destination" && company.status !== "archived")).toHaveLength(0);
   });
 
+  it("refuses rollback when destination company settings changed after migration", async () => {
+    const [source] = await db.insert(companies).values({ name: "Rollback company change source", issuePrefix: "MCS" }).returning();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+
+    const applied = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+      target: { mode: "new_company", newCompanyName: "Rollback company change destination" },
+      dryRun: false, apply: true, confirm: "approved pilot",
+    });
+    expect(applied.status).toBe(200);
+    const run = await companyTransferRunService.getRun(db, applied.body.runId);
+    expect(run?.companyId).toBeTruthy();
+    await db.update(companies).set({ description: "independent change", updatedAt: new Date() })
+      .where(eq(companies.id, run!.companyId!));
+    const beforeCompanies = await db.select().from(companies);
+    const beforeRuns = await db.select().from(companyTransferRuns);
+
+    const rollback = await request(app)
+      .post(`/api/companies/${source!.id}/migrations/${run!.id}/rollback`)
+      .send({ confirm: "rollback pilot" });
+    expect(rollback.status).toBe(409);
+    expect(await db.select().from(companies)).toEqual(beforeCompanies);
+    expect(await db.select().from(companyTransferRuns)).toEqual(beforeRuns);
+  });
+
   it("does not remove agents created independently after migration", async () => {
     const [source] = await db.insert(companies).values({ name: "Rollback ownership source", issuePrefix: "MOW" }).returning();
     const app = express();
