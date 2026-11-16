@@ -42,7 +42,7 @@ function boundaries(report) {
 try {
   if (process.argv.length !== 3) fail('argv');
   let input, report;
-  try { input = readFileSync(process.argv[2], 'utf8'); } catch { fail('file'); }
+  try { input = readFileSync(process.argv[2] === '-' ? 0 : process.argv[2], 'utf8'); } catch { fail('file'); }
   try { report = JSON.parse(input); } catch { fail('json'); }
   process.stdout.write(`${JSON.stringify(boundaries(report))}\n`);
 } catch (error) {
