@@ -66,6 +66,26 @@ test("parseShareLine reads the line out of a published release body", () => {
   });
 });
 
+test("parseShareLine accepts the count boundaries", () => {
+  assert.deepEqual(parseShareLine("Vendor-derived files: 0 of 10 (0.00%)"), {
+    inherited: 0, totalFiles: 10, share: 0,
+  });
+  assert.deepEqual(parseShareLine("Vendor-derived files: 10 of 10 (100.00%)"), {
+    inherited: 10, totalFiles: 10, share: 1,
+  });
+  assert.deepEqual(parseShareLine("Vendor-derived files: 9007199254740991 of 9007199254740991 (100%)"), {
+    inherited: 9007199254740991, totalFiles: 9007199254740991, share: 1,
+  });
+});
+
+test("parseShareLine rejects impossible and unsafe counts", () => {
+  assert.equal(parseShareLine("Vendor-derived files: 11 of 10 (110%)"), null);
+  assert.equal(parseShareLine("Vendor-derived files: 0 of 0 (0%)"), null);
+  assert.equal(parseShareLine("Vendor-derived files: 9007199254740992 of 9007199254740992 (100%)"), null);
+  assert.equal(parseShareLine("Vendor-derived files: 1 of 9007199254740992 (0%)"), null);
+  assert.equal(parseShareLine("Vendor-derived files: -1 of 10 (0%)"), null);
+});
+
 test("parseShareLine returns null when the body carries no share line", () => {
   assert.equal(parseShareLine(""), null);
   assert.equal(parseShareLine(undefined), null);
