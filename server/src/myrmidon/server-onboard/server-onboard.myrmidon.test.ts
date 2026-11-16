@@ -183,6 +183,20 @@ function createMocks() {
 }
 
 describe("SERVER-ONBOARD logic", () => {
+  it("persists the first host identity and rejects a conflicting identity before authentication", async () => {
+    const { mockStore, mockSecrets, mockGetServer, store } = createMocks();
+    const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
+    await service.addServer({ companyId: "company-1", slug: "host-pin", name: "Server", hostname: "192.0.2.7", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password", password: "bootstrap" }, createdBy: null });
+    await service.claim("company-1", "valid-executor-token");
+    expect(await service.pinHostKey("valid-executor-token", "company-1", "job-1", "SHA256:first")).toBe(true);
+    expect(store.servers[0].hostKeyFingerprint).toBe("SHA256:first");
+    expect(await service.pinHostKey("valid-executor-token", "company-1", "job-1", "SHA256:first")).toBe(true);
+    expect(await service.pinHostKey("valid-executor-token", "company-1", "job-1", "SHA256:changed")).toBe(false);
+    expect(store.servers[0].hostKeyFingerprint).toBe("SHA256:first");
+    await expect(service.pinHostKey("wrong-token", "company-1", "job-1", "SHA256:first")).rejects.toMatchObject({ status: 401 });
+    await expect(service.pinHostKey("valid-executor-token", "company-2", "job-1", "SHA256:first")).rejects.toMatchObject({ status: 404 });
+  });
+
   it("persists a usable access key for password onboarding before the job is claimed", async () => {
     const { mockStore, mockSecrets, mockGetServer, store } = createMocks();
     const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
