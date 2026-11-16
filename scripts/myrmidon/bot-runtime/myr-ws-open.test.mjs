@@ -196,6 +196,47 @@ describe("myr-ws open — task copy", { skip: !hasGit }, () => {
     assert.equal(third.reused, true);
   });
 
+  it("refuses a nested standalone clone without changing its files", async () => {
+    const first = copyOf(await run(["ABC-126", REPO, "--json"]));
+    const nested = path.join(first.path, "deep", "repo");
+    fs.mkdirSync(path.dirname(nested));
+    git(tmp, "clone", "-q", originDir, nested);
+    fs.writeFileSync(path.join(nested, "untracked.txt"), "keep me\n");
+    const result = await run(["ABC-126", REPO, "--json"]);
+    assert.equal(result.exitCode, 2);
+    assert.match(result.stderr, /nested.*clone/i);
+    assert.ok(result.stderr.includes(nested));
+    assert.equal(fs.readFileSync(path.join(nested, "untracked.txt"), "utf8"), "keep me\n");
+  });
+
+  it("finds a nested clone at depth 1 and ignores one under node_modules", async () => {
+    const first = copyOf(await run(["ABC-128", REPO, "--json"]));
+    const ignored = path.join(first.path, "node_modules", "pkg", "repo");
+    fs.mkdirSync(path.dirname(ignored), { recursive: true });
+    git(tmp, "clone", "-q", originDir, ignored);
+    const ok = await run(["ABC-128", REPO, "--json"]);
+    assert.equal(ok.exitCode, 0, ok.stderr);
+    const nested = path.join(first.path, "repo");
+    git(tmp, "clone", "-q", originDir, nested);
+    const refused = await run(["ABC-128", REPO, "--json"]);
+    assert.equal(refused.exitCode, 2);
+    assert.ok(refused.stderr.includes(nested));
+    assert.ok(fs.existsSync(path.join(ignored, ".git", "objects")));
+  });
+
+  it("allows nested linked worktrees and real submodules with gitfiles", async () => {
+    const first = copyOf(await run(["ABC-127", REPO, "--json"]));
+    const nested = path.join(first.path, "linked");
+    git(first.path, "worktree", "add", "--detach", nested, "HEAD");
+    git(first.path, "-c", "protocol.file.allow=always", "submodule", "add", "-q", originDir, "module");
+    assert.ok(fs.statSync(path.join(first.path, "module", ".git")).isFile());
+    fs.mkdirSync(path.join(first.path, "node_modules", "package"), { recursive: true });
+    fs.writeFileSync(path.join(first.path, "node_modules", "package", "index.js"), "module.exports = 1;\n");
+    const result = await run(["ABC-127", REPO, "--json"]);
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(fs.readFileSync(path.join(first.path, "node_modules", "package", "index.js"), "utf8"), "module.exports = 1;\n");
+  });
+
   it("prints just the path without --json", async () => {
     const r = await run(["ABC-102", REPO]);
     assert.equal(r.exitCode, 0);

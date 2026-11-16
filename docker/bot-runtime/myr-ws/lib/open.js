@@ -290,6 +290,31 @@ function isGitCopy(dir) {
   }
 }
 
+// Bounded scan: at most NESTED_CLONE_MAX_DEPTH levels below the workspace root, no symlinks
+// (lstat-based Dirent), no Git metadata and no dependency/build caches. Gitfiles used by
+// submodules and linked worktrees are allowed; only a directory with its own object store is a clone.
+const NESTED_CLONE_MAX_DEPTH = 3;
+const NESTED_CLONE_SKIP = new Set([".git", "node_modules", ".pnpm-store", "dist", "build", ".turbo", ".cache"]);
+function assertNoNestedClones(root) {
+  const pending = [{ dir: root, depth: 0 }];
+  while (pending.length) {
+    const { dir, depth } = pending.pop();
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isSymbolicLink() || !entry.isDirectory() || NESTED_CLONE_SKIP.has(entry.name)) continue;
+      const child = path.join(dir, entry.name);
+      const metadata = path.join(child, ".git");
+      try {
+        if (fs.lstatSync(metadata).isDirectory() && fs.statSync(path.join(metadata, "objects")).isDirectory()) {
+          throw usage(`nested full clone found at ${child}; preserve its changes and move it outside the workspace before reopening. Nothing was deleted.`);
+        }
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      if (depth + 1 < NESTED_CLONE_MAX_DEPTH) pending.push({ dir: child, depth: depth + 1 });
+    }
+  }
+}
+
 function isWorktreeOf(dir) {
   try {
     return fs.statSync(path.join(dir, ".git")).isFile();
@@ -406,6 +431,7 @@ async function open(request, deps = {}) {
   //    /workspace/<KEY>, each further one next to it at /workspace/<KEY>.<name>.
   const reg = readRegistry(ctx);
   const { dir, known } = resolveCopyDir(ctx, reg, { key, repo, scratch, klass });
+  if (!scratch && fs.existsSync(dir) && fs.statSync(dir).isDirectory()) assertNoNestedClones(dir);
   if (known && fs.existsSync(known.path)) {
     if (repo && known.repo && repo !== known.repo) {
       throw usage(`${dir} is already open for ${known.repo}; cannot open ${repo} there`);
