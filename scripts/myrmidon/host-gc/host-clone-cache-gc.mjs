@@ -15,6 +15,10 @@
 // Policy:
 //   - Task clones (done/cancelled >3h, clean+pushed): remove
 //   - Task clones (done/cancelled >3h, dirty/unpushed): archive first, then remove
+//   - Task clones of open tasks (in_review, blocked, backlog) with no live run, idle for
+//     IDLE_OPEN_CLONE_HOURS (1 h when the bots volume has under 10% free), clean, HEAD on a
+//     server tip: remove the linked worktree (idle-open-clone-removed); anything else is kept
+//     (idle-open-clone-kept, with the reason)
 //   - Active checkouts/worktrees: never touch
 //   - Build caches >72h: LRU eviction by mtime
 //   - SSH runner run copies >4h (by the run directory's mtime, set when the run starts): remove;
@@ -38,6 +42,7 @@
 //   --lock <path>         Override lockfile path (for testing)
 //   --clone-ttl <hours>   Override clone TTL (default 3)
 //   --cache-ttl <hours>   Override cache TTL (default 72)
+//   --idle-open-hours <h> Override the idle time of an open task's clean pushed clone (default 6)
 //   --runner-root <path>  SSH runner root to prune run copies under (repeatable; also
 //                         HOST_GC_RUNNER_ROOTS, colon-separated). No root, no pass.
 //   --run-copy-ttl <hours> Override the run-copy TTL (default 4; finite, at least 3 = longest run timeout)
@@ -65,6 +70,24 @@ const SCRATCH_TTL_HOURS = 6;
 const PRESSURE_PERCENT = 85;
 const CRITICAL_PERCENT = 95;
 const PRESSURE_SCRATCH_TTL_HOURS = 1;
+// myrmidon(1.6.9 OPE-13411): a clone of a task in in_review, blocked or backlog has no end date:
+// the closed-task rule (CLONE_TTL_HOURS) never matches it. On 16.11 the bots volume (230 GB) hit
+// 100% with 234 such clones of 0.5-0.6 GB each and 63 runs failed with "No space left on device".
+// A clone of an open task is freed when no run is live on the issue, nothing in it changed for
+// IDLE_OPEN_CLONE_HOURS, it is clean and its HEAD is on a branch the server advertises. The bot
+// checks the branch out again on its next run, so the cost is one re-checkout.
+// With less than LOW_FREE_PERCENT of the volume free, the idle time drops to
+// LOW_FREE_IDLE_OPEN_CLONE_HOURS: the volume must not fill again before the next pass.
+// Tasks in todo or in_progress are never touched: a bot is about to work, or is working, there.
+const IDLE_OPEN_CLONE_HOURS = 6;
+const LOW_FREE_PERCENT = 10;
+const LOW_FREE_IDLE_OPEN_CLONE_HOURS = 1;
+const IDLE_OPEN_STATUSES = new Set(["in_review", "blocked", "backlog"]);
+// Untracked service directories that never hold work (they are rebuilt); the same names the
+// archive leaves out. An untracked entry of any other name keeps the clone.
+const IDLE_OPEN_JUNK_UNTRACKED = new Set([...ARCHIVE_EXCLUDES, ".helper", ".gc-archive"]);
+// The bot container sees its own data directory as /bot.
+const BOT_CONTAINER_ROOT = "/bot";
 export function diskUsedPercent(dir) {
   try {
     const st = fs.statfsSync(dir);
@@ -233,6 +256,7 @@ export function parseArgs(argv) {
     journal: "/var/log/myrmidon-host-gc.jsonl",
     lock: "/var/run/myrmidon-host-gc.lock",
     cloneTtlHours: CLONE_TTL_HOURS,
+    idleOpenCloneHours: IDLE_OPEN_CLONE_HOURS,
     cacheTtlHours: CACHE_TTL_HOURS,
     scratchTtlHours: defaultScratchTtl,
     pressurePercent: Number(process.env.HOST_GC_PRESSURE_PERCENT) || PRESSURE_PERCENT,
@@ -257,6 +281,7 @@ export function parseArgs(argv) {
     else if (a === "--journal") args.journal = argv[++i];
     else if (a === "--lock") args.lock = argv[++i];
     else if (a === "--clone-ttl") args.cloneTtlHours = Number(argv[++i]);
+    else if (a === "--idle-open-hours") args.idleOpenCloneHours = Number(argv[++i]);
     else if (a === "--cache-ttl") args.cacheTtlHours = Number(argv[++i]);
     else if (a === "--scratch-ttl") args.scratchTtlHours = Number(argv[++i]);
     else if (a === "--pressure-percent") args.pressurePercent = Number(argv[++i]);
@@ -268,9 +293,12 @@ export function parseArgs(argv) {
     else if (a === "--runner-tmp-ttl") args.runnerTmpTtlHours = Number(argv[++i]);
     else if (a === "--env") i++;
     else if (a === "--help") {
-      console.log("Usage: host-clone-cache-gc.mjs [--apply|--dry-run] [--root path] [--scratch-root path] [--journal path] [--lock path] [--clone-ttl h] [--cache-ttl h] [--scratch-ttl h] [--proc-dir path] [--runner-root path] [--run-copy-ttl h (>= 3)] [--runner-tmp-ttl h (>= 3)] [--env path]");
+      console.log("Usage: host-clone-cache-gc.mjs [--apply|--dry-run] [--root path] [--scratch-root path] [--journal path] [--lock path] [--clone-ttl h] [--idle-open-hours h] [--cache-ttl h] [--scratch-ttl h] [--proc-dir path] [--runner-root path] [--run-copy-ttl h (>= 3)] [--runner-tmp-ttl h (>= 3)] [--env path]");
       process.exit(0);
     }
+  }
+  if (!Number.isFinite(args.idleOpenCloneHours) || args.idleOpenCloneHours <= 0) {
+    throw new UsageError(`--idle-open-hours must be a positive number (got ${args.idleOpenCloneHours})`);
   }
   const ttlError = runCopyTtlError(args.runCopyTtlHours);
   if (ttlError) throw new UsageError(ttlError);
@@ -330,8 +358,8 @@ function assertNotSymlink(p, label) {
 // spawnSync's default maxBuffer is 1 MiB: a long `git status` or `ls-files` would end in ENOBUFS.
 const GIT_MAX_BUFFER = 256 * 1024 * 1024;
 
-function git(args, cwd) {
-  return spawnSync("git", args, { cwd, encoding: "utf8", timeout: 30000, maxBuffer: GIT_MAX_BUFFER });
+function git(args, cwd, env) {
+  return spawnSync("git", args, { cwd, encoding: "utf8", timeout: 30000, maxBuffer: GIT_MAX_BUFFER, ...(env ? { env: { ...process.env, ...env } } : {}) });
 }
 
 // --- Server-verified "pushed" (OPE-13218) ------------------------------------
@@ -362,7 +390,7 @@ function isLocalRemote(url) {
   return /^file:/i.test(url) || /^(\/|\.{1,2}\/|~)/.test(url) || (!url.includes("://") && !url.includes(":"));
 }
 
-function askRemote(repo, name, url) {
+function askRemote(repo, name, url, env) {
   const cached = REMOTE_ANSWERS.get(url);
   if (cached) return cached;
   const timeoutS = remoteTimeoutSeconds();
@@ -371,7 +399,7 @@ function askRemote(repo, name, url) {
     encoding: "utf8",
     timeout: (timeoutS + 20) * 1000,
     maxBuffer: GIT_MAX_BUFFER,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || "ssh -o BatchMode=yes" },
+    env: { ...process.env, ...env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || "ssh -o BatchMode=yes" },
   });
   let answer;
   if (r.status !== 0) {
@@ -392,22 +420,23 @@ function askRemote(repo, name, url) {
 // { verified, tips, reason }: `tips` are server tips (commits and tags) that exist locally.
 // `verified` is false when there is no remote, a remote is a local path, or any remote did not
 // answer: nothing is then known to be on the server.
-function serverTips(repo) {
-  const listed = git(["remote"], repo);
+function serverTips(repo, env) {
+  const listed = git(["remote"], repo, env);
   if (listed.status !== 0) return { verified: false, tips: [], reason: "remote listing failed" };
   const names = listed.stdout.split("\n").map((n) => n.trim()).filter(Boolean);
   if (!names.length) return { verified: false, tips: [], reason: "no remote" };
   const advertised = new Set();
   for (const name of names) {
-    const url = git(["remote", "get-url", name], repo).stdout.trim() || name;
+    const url = git(["remote", "get-url", name], repo, env).stdout.trim() || name;
     if (isLocalRemote(url)) return { verified: false, tips: [], reason: `remote ${name} is a local path, not a server` };
-    const answer = askRemote(repo, name, url);
+    const answer = askRemote(repo, name, url, env);
     if (!answer.ok) return { verified: false, tips: [], reason: answer.reason };
     for (const sha of answer.shas) advertised.add(sha);
   }
   if (!advertised.size) return { verified: true, tips: [] };
   const checked = spawnSync("git", ["cat-file", "--batch-check=%(objecttype) %(objectname)"], {
     cwd: repo, input: `${[...advertised].join("\n")}\n`, encoding: "utf8", timeout: 30000, maxBuffer: GIT_MAX_BUFFER,
+    ...(env ? { env: { ...process.env, ...env } } : {}),
   });
   if (checked.status !== 0) return { verified: false, tips: [], reason: "cat-file failed" };
   const tips = [];
@@ -571,6 +600,225 @@ function assessClone(c) {
   c.safeToRemove = c.clean && c.pushed && !c.stash && !c.alternates;
   c.reason = c.safeToRemove ? "clean-pushed" : "unsafe-archive";
   return c;
+}
+
+// --- Idle clones of open tasks (OPE-13411) ----------------------------------
+
+export async function fetchIssueOpenState(identifier, {
+  baseUrl = process.env.BOARD_API_URL || process.env.PAPERCLIP_API_URL || process.env.MYRMIDON_API_URL || "http://127.0.0.1:3100",
+  apiKey = process.env.PAPERCLIP_API_KEY,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  let base = (baseUrl || "").replace(/\/$/, "");
+  if (!base) base = "http://127.0.0.1:3100";
+  if (!base.endsWith("/api")) base += "/api";
+  if (typeof fetchImpl !== "function") return { ok: false, reason: "board-unavailable" };
+  const headers = { Accept: "application/json" };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  try {
+    const response = await fetchImpl(`${base}/issues/${encodeURIComponent(identifier)}`, { headers });
+    if (!response.ok) return { ok: false, reason: "board-unavailable", statusCode: response.status };
+    const issue = await response.json();
+    if (!issue || typeof issue.status !== "string") return { ok: false, reason: "issue-not-found" };
+    // The board sets executionRunId while a run executes on the issue and checkoutRunId while a
+    // run holds the checkout; both are empty otherwise. Either one means a run is live.
+    return {
+      ok: true,
+      status: issue.status,
+      liveRunId: issue.executionRunId || issue.checkoutRunId || null,
+    };
+  } catch {
+    return { ok: false, reason: "board-unavailable" };
+  }
+}
+
+// Free share of the volume in percent, or null when it cannot be read.
+export function volumeFreePercent(dir, statfs = fs.statfsSync) {
+  try {
+    const st = statfs(dir);
+    return st.blocks > 0 ? (Number(st.bavail) / Number(st.blocks)) * 100 : null;
+  } catch { return null; }
+}
+
+// The linked worktree's own gitdir (`<git-base>/worktrees/<name>`) and its common dir on the HOST.
+// The `.git` file of a bot's clone says `gitdir: /bot/hermes/...`, a path inside the container, where
+// /bot is `<bots root>/<agentId>`. Returns { adminDir, commonDir, containerPath } or { reason }.
+function resolveWorktreeGitDirs(clonePath, agentRoot) {
+  let text;
+  try {
+    const st = fs.lstatSync(path.join(clonePath, ".git"));
+    if (!st.isFile()) return { reason: "not-a-linked-worktree" };
+    text = fs.readFileSync(path.join(clonePath, ".git"), "utf8");
+  } catch { return { reason: "not-a-linked-worktree" }; }
+  const m = /^gitdir:\s*(.+)$/m.exec(text);
+  if (!m) return { reason: "not-a-linked-worktree" };
+  let target = m[1].trim();
+  let containerPath = false;
+  if (target === BOT_CONTAINER_ROOT || target.startsWith(`${BOT_CONTAINER_ROOT}/`)) {
+    if (!agentRoot) return { reason: "gitdir-unmapped" };
+    target = path.resolve(agentRoot, `.${target.slice(BOT_CONTAINER_ROOT.length)}`);
+    if (!target.startsWith(path.resolve(agentRoot) + path.sep)) return { reason: "gitdir-unmapped" };
+    containerPath = true;
+  } else {
+    target = path.resolve(clonePath, target);
+  }
+  try {
+    const adminDir = fs.realpathSync(target);
+    const common = fs.readFileSync(path.join(adminDir, "commondir"), "utf8").trim();
+    const commonDir = fs.realpathSync(path.resolve(adminDir, common));
+    if (path.dirname(path.dirname(adminDir)) !== commonDir || path.basename(path.dirname(adminDir)) !== "worktrees") {
+      return { reason: "gitdir-unexpected-layout" };
+    }
+    if (!fs.existsSync(path.join(adminDir, "HEAD"))) return { reason: "gitdir-missing" };
+    return { adminDir, commonDir, containerPath };
+  } catch { return { reason: "gitdir-missing" }; }
+}
+
+// Newest change time of a clone: the directory, its top-level entries and the worktree's own
+// HEAD and reflog (a commit or checkout touches those).
+function newestCloneChangeMs(clonePath, adminDir) {
+  let newest = 0;
+  const take = (p) => { try { newest = Math.max(newest, fs.lstatSync(p).mtimeMs); } catch { /* gone */ } };
+  take(clonePath);
+  try {
+    for (const e of fs.readdirSync(clonePath)) if (e !== ".git") take(path.join(clonePath, e));
+  } catch { /* unreadable: the dirty check will keep the clone */ }
+  // Not the index: any `git status` (the closed-task scan runs one on every clone) refreshes it. A staged
+  // change shows up as dirty anyway.
+  for (const f of ["HEAD", path.join("logs", "HEAD")]) take(path.join(adminDir, f));
+  return newest;
+}
+
+function cloneSizeBytes(dir) {
+  const r = spawnSync("du", ["-sk", "--", dir], { encoding: "utf8", timeout: 120000 });
+  const kb = r.status === 0 ? Number(r.stdout.split(/\s/)[0]) : NaN;
+  return Number.isFinite(kb) ? kb * 1024 : null;
+}
+
+// `git status --porcelain` is empty, not counting untracked service directories.
+function isCleanIgnoringJunk(clonePath, env) {
+  const r = git(["status", "--porcelain", "--untracked-files=normal"], clonePath, env);
+  if (r.status !== 0) return false;
+  for (const line of r.stdout.split("\n")) {
+    if (!line) continue;
+    const m = /^\?\? (.+?)\/?$/.exec(line);
+    if (m && IDLE_OPEN_JUNK_UNTRACKED.has(m[1])) continue;
+    return false;
+  }
+  return true;
+}
+
+// { pushed, reason }: HEAD must be reachable from a tip the server advertises (ls-remote) that is
+// present locally. Nothing is fetched: what cannot be proven keeps the clone.
+function headIsOnServer(clonePath, env) {
+  const server = serverTips(clonePath, env);
+  if (!server.verified) return { pushed: false, reason: `push-unverified: ${server.reason}` };
+  if (!server.tips.length) return { pushed: false, reason: "not-pushed" };
+  const r = git(["rev-list", "-n", "1", "HEAD", "--not", ...server.tips], clonePath, env);
+  if (r.status !== 0) return { pushed: false, reason: "push-unverified: rev-list failed" };
+  return r.stdout.trim() === "" ? { pushed: true } : { pushed: false, reason: "not-pushed" };
+}
+
+/**
+ * Plans the removal of idle clones of open tasks under `root` (a bot's `workspace` directory).
+ * Returns items { name, path, identifier, status, ageMs, action: "remove" | "keep", reason, ... };
+ * clones of tasks the board reports closed are left to the closed-task rule and not listed.
+ */
+export async function scanIdleOpenClones(root, now, {
+  idleHours = IDLE_OPEN_CLONE_HOURS,
+  fetchState = fetchIssueOpenState,
+  statfs = fs.statfsSync,
+  onEvent = () => {},
+} = {}) {
+  const items = [];
+  let entries;
+  try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return { items, thresholdHours: idleHours, freePercent: null }; }
+  const freePercent = volumeFreePercent(root, statfs);
+  const lowSpace = freePercent !== null && freePercent < LOW_FREE_PERCENT;
+  const thresholdHours = lowSpace ? Math.min(idleHours, LOW_FREE_IDLE_OPEN_CLONE_HOURS) : idleHours;
+  const agentRoot = path.basename(path.resolve(root)) === "workspace" ? path.dirname(path.resolve(root)) : null;
+  for (const entry of entries) {
+    if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
+    const identifier = issueIdentifierFromCloneName(entry.name);
+    if (!/^[A-Za-z]+-\d+$/.test(identifier)) continue; // not a task clone (bot folder, .gc-archive, ...)
+    const clonePath = safeJoin(root, entry.name);
+    if (isSymlink(clonePath)) continue;
+    const state = await fetchState(identifier);
+    const base = { name: entry.name, path: clonePath, identifier, thresholdHours, lowSpace };
+    const keep = (reason, extra = {}) => items.push({ ...base, ...extra, action: "keep", reason });
+    if (!state.ok) { keep(state.reason); continue; }
+    if (["done", "cancelled"].includes(state.status)) continue; // the closed-task rule's business
+    base.status = state.status;
+    if (!IDLE_OPEN_STATUSES.has(state.status)) { keep(`status-${state.status}`); continue; }
+    if (state.liveRunId) { keep("live-run", { liveRunId: state.liveRunId }); continue; }
+    const dirs = resolveWorktreeGitDirs(clonePath, agentRoot);
+    if (!dirs.adminDir) { keep(dirs.reason); continue; }
+    const ageMs = now - newestCloneChangeMs(clonePath, dirs.adminDir);
+    base.ageMs = ageMs;
+    if (ageMs < thresholdHours * HOUR_MS) { keep("fresh"); continue; }
+    // GIT_OPTIONAL_LOCKS=0: `git status` must not rewrite the index, or every pass would make the clone look fresh.
+    const env = { GIT_DIR: dirs.adminDir, GIT_WORK_TREE: clonePath, GIT_OPTIONAL_LOCKS: "0" };
+    if (!isCleanIgnoringJunk(clonePath, env)) { keep("dirty"); continue; }
+    const tree = scanGitTree(clonePath);
+    if (!tree.complete || !tree.roots.every((r) => r === clonePath)) { keep("nested-repo"); continue; }
+    const pushed = headIsOnServer(clonePath, env);
+    if (!pushed.pushed) { keep(pushed.reason); continue; }
+    items.push({ ...base, ...dirs, sizeBytes: cloneSizeBytes(clonePath), action: "remove", reason: "idle-clean-pushed" });
+  }
+  for (const item of items) {
+    if (item.action === "keep") {
+      onEvent({ event: "idle-open-clone-kept", path: item.path, identifier: item.identifier, status: item.status, reason: item.reason, ageHours: item.ageMs === undefined ? undefined : Math.round(item.ageMs / HOUR_MS) });
+    }
+  }
+  return { items, thresholdHours, freePercent };
+}
+
+/**
+ * Removes the planned idle clones. Just before the removal the board is asked again (a run may have
+ * started since the scan). Returns the paths removed.
+ */
+export async function pruneIdleOpenClones(items, root, journalPath, { fetchState = fetchIssueOpenState, now = Date.now } = {}) {
+  const removed = [];
+  for (const c of items.filter((x) => x.action === "remove")) {
+    try {
+      const state = await fetchState(c.identifier);
+      if (!state.ok || !IDLE_OPEN_STATUSES.has(state.status) || state.liveRunId) {
+        journalRecord(journalPath, { event: "idle-open-clone-kept", path: c.path, identifier: c.identifier, status: state.status ?? c.status, reason: state.ok ? (state.liveRunId ? "live-run" : `status-${state.status}`) : state.reason });
+        continue;
+      }
+      if (newestCloneChangeMs(c.path, c.adminDir) > now() - c.thresholdHours * HOUR_MS) {
+        journalRecord(journalPath, { event: "idle-open-clone-kept", path: c.path, identifier: c.identifier, status: state.status, reason: "fresh" });
+        continue;
+      }
+      const sizeBytes = c.sizeBytes ?? null;
+      const ageHours = Math.round(c.ageMs / HOUR_MS);
+      let via;
+      // `git worktree remove` finds the worktree by the path in the admin dir's `gitdir` file; when that
+      // is a container path (/bot/...) it does not match on the host: the copy and exactly its own admin
+      // dir are removed instead. No `git worktree prune`: it would also drop the admin dirs of other
+      // tasks of this git-base, whose container paths do not exist on the host either.
+      const registered = (() => {
+        try { return fs.realpathSync(path.dirname(fs.readFileSync(path.join(c.adminDir, "gitdir"), "utf8").trim())) === fs.realpathSync(c.path); } catch { return false; }
+      })();
+      if (registered) {
+        const r = spawnSync("git", ["--git-dir", c.commonDir, "worktree", "remove", "--force", c.path], { encoding: "utf8", timeout: 600000 });
+        if (r.status !== 0) throw new Error(`git worktree remove: ${String(r.stderr).trim().slice(0, 300)}`);
+        via = "git-worktree-remove";
+        if (fs.existsSync(c.path)) atomicDrop(c.path, root);
+      } else {
+        atomicDrop(c.path, root);
+        const worktrees = path.join(c.commonDir, "worktrees");
+        if (path.dirname(c.adminDir) !== worktrees) throw new Error(`unexpected admin dir ${c.adminDir}`);
+        fs.rmSync(c.adminDir, { recursive: true, force: true });
+        via = "rm-and-admin-dir";
+      }
+      removed.push(c.path);
+      journalRecord(journalPath, { event: "idle-open-clone-removed", path: c.path, identifier: c.identifier, status: c.status, sizeBytes, ageHours, thresholdHours: c.thresholdHours, lowSpace: c.lowSpace, via });
+    } catch (err) {
+      journalRecord(journalPath, { event: "idle-open-clone-remove-failed", path: c.path, identifier: c.identifier, error: err.message });
+    }
+  }
+  return removed;
 }
 
 function scanBuildCaches(root, now, ttlHours) {
@@ -2134,7 +2382,7 @@ async function main() {
       }
     }
 
-    const plan = { clones: [], caches: [], scratch: [], botData: [], runCopies: [], staleOmpRunners: [], runnerTaskFolders: [], runnerNpmCaches: [], runnerTmp: [], runnerUnrecognized: [], kept: [], removed: [], archived: [] };
+    const plan = { clones: [], caches: [], scratch: [], botData: [], runCopies: [], staleOmpRunners: [], runnerTaskFolders: [], runnerNpmCaches: [], runnerTmp: [], runnerUnrecognized: [], idleOpenClones: [], kept: [], removed: [], archived: [] };
 
     // 1. Scan task clones
     const clones = scanTaskClones(root, now, args.cloneTtlHours);
@@ -2158,6 +2406,26 @@ async function main() {
         plan.clones.push({ ...c, action: "remove" });
       } else {
         plan.clones.push({ ...c, action: "archive-remove" });
+      }
+    }
+
+    // 1b. Idle clones of open tasks (OPE-13411): in_review, blocked and backlog clones have no end
+    // date; free the clean pushed ones with no live run. Kept ones are journaled with the reason.
+    {
+      const idle = await scanIdleOpenClones(root, now, {
+        idleHours: args.idleOpenCloneHours,
+        onEvent: (event) => journalRecord(args.journal, event),
+      });
+      if (idle.freePercent !== null && idle.freePercent < LOW_FREE_PERCENT) {
+        journalRecord(args.journal, { event: "disk-low-free", freePercent: Math.round(idle.freePercent * 10) / 10, thresholdPercent: LOW_FREE_PERCENT, idleOpenCloneHours: idle.thresholdHours });
+      }
+      for (const item of idle.items) {
+        if (item.action === "remove") {
+          plan.idleOpenClones.push(item);
+          if (args.dryRun) journalRecord(args.journal, { event: "idle-open-clone-would-remove", path: item.path, identifier: item.identifier, status: item.status, sizeBytes: item.sizeBytes, ageHours: Math.round(item.ageMs / HOUR_MS), thresholdHours: item.thresholdHours });
+        } else {
+          plan.kept.push({ path: item.path, action: "keep", reason: `idle-open:${item.reason}` });
+        }
       }
     }
 
@@ -2373,6 +2641,7 @@ async function main() {
         event: "dry-run",
         archiveBytes: plan.archiveBytes,
         clones: plan.clones.length,
+        idleOpenClones: plan.idleOpenClones.length,
         caches: plan.caches.length,
         scratch: plan.scratch.length,
         staleOmpRunners: plan.staleOmpRunners.length,
@@ -2425,6 +2694,8 @@ async function main() {
           journalRecord(args.journal, { event: "clone-remove-failed", path: c.path, error: err.message });
         }
       }
+      const idleOpenGone = await pruneIdleOpenClones(plan.idleOpenClones, root, args.journal);
+      for (const gone of idleOpenGone) plan.removed.push({ path: gone });
       for (const c of plan.caches.filter((x) => x.action === "remove")) {
         try {
           atomicDrop(c.path, path.dirname(c.path));
@@ -2538,6 +2809,7 @@ async function main() {
         event: "apply-complete",
         archiveBytesBeforeCleanup: plan.archiveBytes,
         removed: plan.removed.length,
+        idleOpenClonesRemoved: idleOpenGone.length,
         archived: plan.archived.length,
         scratchPruned: plan.scratch.length,
         botDataRemoved: plan.botData.length,
@@ -2555,6 +2827,7 @@ async function main() {
         dryRun: false,
         archiveBytesBeforeCleanup: plan.archiveBytes,
         removed: plan.removed.length,
+        idleOpenClonesRemoved: idleOpenGone.length,
         archived: plan.archived.length,
         scratchPruned: plan.scratch.length,
         botDataRemoved: plan.botData.length,
