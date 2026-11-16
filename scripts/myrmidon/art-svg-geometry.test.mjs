@@ -38,6 +38,16 @@ for (const [name, source, accepted] of cases) {
   });
 }
 
+test("external href is rejected while a local href is accepted", () => {
+  assert.doesNotThrow(() => validateArtwork(Buffer.from('<svg viewBox="0 0 1 1"><use href="#shape"/></svg>'), "art.svg"));
+  assert.throws(() => validateArtwork(Buffer.from('<svg viewBox="0 0 1 1"><use href="https://example.invalid/art.svg#shape"/></svg>'), "art.svg"), /unsafe SVG feature/);
+});
+
+test("external paint URL is rejected while local paint is accepted", () => {
+  assert.doesNotThrow(() => validateArtwork(Buffer.from('<svg viewBox="0 0 1 1"><path fill="url(#gradient)"/></svg>'), "art.svg"));
+  assert.throws(() => validateArtwork(Buffer.from('<svg viewBox="0 0 1 1"><path fill="url(https://example.invalid/g)"/></svg>'), "art.svg"), /unsafe SVG feature/);
+});
+
 test("SVG geometry is not accepted under another filename extension", () => {
   assert.throws(() => validateArtwork(Buffer.from('<svg viewBox="0 0 1 1"/>'), "art.txt"), /SVG requires/);
 });
