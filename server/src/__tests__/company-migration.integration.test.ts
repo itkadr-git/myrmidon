@@ -698,6 +698,18 @@ describe("company migration dry run", () => {
     expect(retry.run.status).toBe("failed");
   });
 
+  it("does not claim a second destination after the first is deleted while applying", async () => {
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "deleted-active-source", "deleted-active-key");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "First active destination" }, { transferRunId: run.id });
+    await db.delete(companies).where(eq(companies.id, destination.id));
+
+    await expect(companyService(db).create({ name: "Second active destination" }, { transferRunId: run.id }))
+      .rejects.toThrow("Transfer run cannot claim a new company");
+    expect((await db.select().from(companies)).some((company) => company.name === "Second active destination")).toBe(false);
+    expect((await companyTransferRunService.getRun(db, run.id))?.companyId).toBeNull();
+  });
+
   it("does not reapply a failed migration after it has claimed a destination", async () => {
     const [source] = await db.insert(companies).values({ name: "Retry safety source", issuePrefix: "MRY" }).returning();
     const [destination] = await db.insert(companies).values({ name: "Retry safety destination", issuePrefix: "MRD" }).returning();
