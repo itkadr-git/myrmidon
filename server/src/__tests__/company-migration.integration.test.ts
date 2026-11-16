@@ -322,6 +322,14 @@ describe("company migration dry run", () => {
     expect(retry.run.id).toBe(first.run.id);
   });
 
+  it("cannot mark an unclaimed migration as completed", async () => {
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "unclaimed-source", "unclaimed-completion");
+    await companyTransferRunService.complete(db, run.id);
+    const retry = await companyTransferRunService.resumeOrCreateMigration(db, "unclaimed-source", "unclaimed-completion");
+    expect(retry.alreadyCompleted).toBe(false);
+    expect(retry.run.status).toBe("pending");
+  });
+
   it("does not reapply a failed migration after it has claimed a destination", async () => {
     const [source] = await db.insert(companies).values({ name: "Retry safety source", issuePrefix: "MRY" }).returning();
     const [destination] = await db.insert(companies).values({ name: "Retry safety destination", issuePrefix: "MRD" }).returning();
