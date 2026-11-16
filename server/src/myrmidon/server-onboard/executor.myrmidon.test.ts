@@ -401,6 +401,27 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(result.stepsCompleted).not.toContain("harden");
   });
 
+  it("closes the fresh firewall verification connection when connectivity fails", async () => {
+    const initial = new MockSshExecutor();
+    const fresh = new MockSshExecutor();
+    fresh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "incorrect", exitCode: 0 });
+    const connections = [initial, fresh];
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => {
+      const connection = connections.shift();
+      if (!connection) throw new Error("Unexpected SSH connection");
+      return connection;
+    } });
+    const claim: any = {
+      job: { id: "job-firewall-disconnect", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(fresh.isConnected()).toBe(false);
+  });
+
   it("rejects a forged firewall connectivity marker", async () => {
     const mockSsh = new MockSshExecutor();
     mockSsh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "not-ufw-connectivity-ok\n", exitCode: 0 });
