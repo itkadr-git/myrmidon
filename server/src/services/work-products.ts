@@ -390,11 +390,17 @@ export function workProductService(
     },
 
     remove: async (id: string) => {
-      const row = await db
-        .delete(issueWorkProducts)
-        .where(eq(issueWorkProducts.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const row = await db.transaction(async (tx) => {
+        const existing = await tx.select({ issueId: issueWorkProducts.issueId })
+          .from(issueWorkProducts).where(eq(issueWorkProducts.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!existing) return null;
+        await tx.select({ id: issues.id }).from(issues)
+          .where(eq(issues.id, existing.issueId)).for("update");
+        return await tx.delete(issueWorkProducts)
+          .where(eq(issueWorkProducts.id, id)).returning()
+          .then((rows) => rows[0] ?? null);
+      });
       return row ? toIssueWorkProduct(row) : null;
     },
   };
