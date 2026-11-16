@@ -6,6 +6,7 @@ import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path'
 // Tokenize without evaluating source. Non-literal expressions are deliberately ignored.
 function regexAllowed(result) {
   const last = result.at(-1)?.value;
+  if (last === '}' && result.at(-1)?.statementBlock) return true;
   if (!result.length || /^[({[=,:;!?&|+*~<>-]$/.test(last) ||
       ['return', 'throw', 'case', 'delete', 'void', 'typeof', 'yield', 'await', 'in', 'instanceof'].includes(last)) return true;
   if (last !== ')') return false;
@@ -95,10 +96,7 @@ function tokens(source) {
       }
       return false;
     };
-    if (c === '/' && source[i + 1] !== '/' && source[i + 1] !== '*' &&
-        (!result.length || /^[({[=,:;!?&|+*~<>-]$/.test(result.at(-1).value) ||
-         ['return', 'throw', 'case', 'delete', 'void', 'typeof', 'yield', 'await', 'in', 'instanceof'].includes(result.at(-1).value) ||
-         closesControlCondition())) {
+    if (c === '/' && source[i + 1] !== '/' && source[i + 1] !== '*' && regexAllowed(result)) {
       let j = i + 1; let inClass = false; let closed = false;
       while (j < source.length) {
         if (source[j] === '\\') { j += 2; continue; }
@@ -113,6 +111,21 @@ function tokens(source) {
     if (/[A-Za-z_$]/.test(c)) {
       const start = i++; while (i < source.length && /[\w$]/.test(source[i])) i++;
       result.push({ type: 'word', value: source.slice(start, i) }); continue;
+    }
+    if (c === '{') {
+      const previous = result.at(-1)?.value;
+      const statementBlock = !result.length || closesControlCondition() ||
+        ['else', 'try', 'finally', 'do', ';'].includes(previous) ||
+        (previous === '}' && result.at(-1)?.statementBlock);
+      result.push({ type: 'punct', value: c, statementBlock }); i++; continue;
+    }
+    if (c === '}') {
+      let depth = 0, statementBlock = false;
+      for (let j = result.length - 1; j >= 0; j--) {
+        if (result[j].value === '}') depth++;
+        if (result[j].value === '{' && depth-- === 0) { statementBlock = result[j].statementBlock; break; }
+      }
+      result.push({ type: 'punct', value: c, statementBlock }); i++; continue;
     }
     result.push({ type: 'punct', value: c }); i++;
   }
