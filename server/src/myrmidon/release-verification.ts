@@ -540,6 +540,7 @@ export function hasCurrentReleaseVerificationEvidence(
     try {
       const record = JSON.parse(line.slice("release-evidence-v1: ".length)) as ReleaseEvidencePayload & { signature: string };
       if (!key || record.companyId !== scope.companyId || record.issueId !== scope.issueId ||
+          record.releasePrefix !== scope.releasePrefix ||
           typeof record.checkedAt !== "string" || typeof record.signature !== "string" ||
           !/^[a-f0-9]{64}$/.test(record.signature)) continue;
       const checkedAt = Date.parse(record.checkedAt);

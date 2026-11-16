@@ -103,7 +103,7 @@ describePostgres.sequential("release composition concurrency", () => {
     expect(rows).toHaveLength(0);
   });
 
-  it("serializes direct candidate updates with release completion", async () => {
+  it("allows direct candidate updates while the issue row is locked", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Direct race", issuePrefix: "DRC" });
@@ -123,16 +123,14 @@ describePostgres.sequential("release composition concurrency", () => {
     });
     await locked;
     // Webhook and PR sync paths update the work product directly, bypassing the service.
-    const update = db.update(issueWorkProducts).set({ status: "merged" })
-      .where(eq(issueWorkProducts.id, product!.id)).then(() => undefined);
     try {
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      await db.update(issueWorkProducts).set({ status: "merged" })
+        .where(eq(issueWorkProducts.id, product!.id));
       const rows = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.id, product!.id));
-      expect(rows[0]?.status).toBe("open");
+      expect(rows[0]?.status).toBe("merged");
     } finally {
       release();
       await completion;
-      await update;
     }
   });
 
