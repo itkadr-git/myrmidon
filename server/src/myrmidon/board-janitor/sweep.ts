@@ -21,9 +21,11 @@ import {
   labels,
 } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
+import { logActivity as logActivityInTx, publishActivity, type ActivityPublication } from "../../services/activity-log.js";
 import { documentService } from "../../services/documents.js";
 import { notifySwarmIssueEvent } from "../swarm-claim/events.js";
 import {
+  buildJanitorActivityEntry,
   generateJanitorReportMarkdown,
   judgeMergedPrClosure,
   judgeOverdueDeadline,
@@ -273,6 +275,7 @@ export function createBoardJanitorSweep(deps: {
           type: "close_merged_pr",
           issueId: task.id,
           identifier: task.identifier,
+          fromStatus: task.status,
           prNumber: prJudgment.prNumber,
           comment: prJudgment.comment,
         });
@@ -291,6 +294,7 @@ export function createBoardJanitorSweep(deps: {
             type: "unblock_stale",
             issueId: task.id,
             identifier: task.identifier,
+            fromStatus: task.status,
             comment: blockJudgment.comment,
           });
         } else if (blockJudgment?.action === "keep_waiting_question") {
@@ -331,6 +335,7 @@ export function createBoardJanitorSweep(deps: {
           type: "move_stale_to_backlog",
           issueId: task.id,
           identifier: task.identifier,
+          fromStatus: task.status,
           staleDays: staleJudgment.staleDays,
           comment: staleJudgment.comment,
         });
@@ -366,6 +371,7 @@ export function createBoardJanitorSweep(deps: {
 
     // 7. Apply mutations if not dryRun
     if (!options.dryRun && actions.length > 0) {
+      const publications: ActivityPublication[] = [];
       await db.transaction(async (tx) => {
         // Ensure "залежалась" label exists in company
         let [staleLabelRow] = await tx
@@ -386,6 +392,11 @@ export function createBoardJanitorSweep(deps: {
         }
 
         for (const action of actions) {
+          // Every status change by the janitor leaves an activity_log row in the same transaction.
+          const activityEntry = buildJanitorActivityEntry(options.companyId, action);
+          if (activityEntry) {
+            await logActivityInTx(tx as unknown as Db, activityEntry, publications);
+          }
           switch (action.type) {
             case "close_merged_pr": {
               await tx
@@ -429,16 +440,7 @@ export function createBoardJanitorSweep(deps: {
               break;
             }
             case "queue_unassigned_release": {
-              // Ensure status is todo so it's ready for role distribution (DEVFLOW-9678)
-              await tx
-                .update(issues)
-                .set({
-                  status: "todo",
-                  updatedAt: now,
-                  lastActivityAt: now,
-                })
-                .where(eq(issues.id, action.issueId));
-
+              // The task is already todo (policy). No status write: only notify distribution (OPE-13327).
               if (action.comment) {
                 await tx.insert(issueComments).values({
                   companyId: options.companyId,
@@ -525,6 +527,7 @@ export function createBoardJanitorSweep(deps: {
           }
         }
       });
+      for (const publication of publications) publishActivity(publication);
     }
 
     // 8. Generate and save the Report Document on the service ticket
