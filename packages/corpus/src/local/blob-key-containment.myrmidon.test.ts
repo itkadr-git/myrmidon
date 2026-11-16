@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LocalBlobStore } from "./blob-store.js";
@@ -9,8 +10,9 @@ describe("LocalBlobStore lexical key containment", () => {
   let store: LocalBlobStore;
 
   beforeEach(async () => {
-    if (!process.env.TMPDIR) throw new Error("TMPDIR is required for containment fixtures");
-    fixture = await mkdtemp(path.join(process.env.TMPDIR, "blob-containment-"));
+    const scratch = process.env.TMPDIR || path.join(homedir(), ".cache", "myrmidon-blob-tests");
+    await mkdir(scratch, { recursive: true });
+    fixture = await mkdtemp(path.join(scratch, "blob-containment-"));
     root = path.join(fixture, "store");
     await mkdir(root);
     await mkdir(path.join(fixture, "store-sibling"));
