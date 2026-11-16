@@ -263,6 +263,27 @@ describe("company migration dry run", () => {
     expect(destinations.some((company) => company.name === "Second provenance destination")).toBe(false);
   });
 
+  it("allows only one concurrent destination to claim a transfer run", async () => {
+    const [run] = await db.insert(companyTransferRuns).values({
+      direction: "import", status: "applying", actorKey: "migration-test",
+      idempotencyKey: "provenance-concurrent-destination", containerRef: {},
+    }).returning();
+    const service = companyService(db);
+    const results = await Promise.allSettled([
+      service.create({ name: "Concurrent provenance first" }, { transferRunId: run!.id }),
+      service.create({ name: "Concurrent provenance second" }, { transferRunId: run!.id }),
+    ]);
+    const successful = results.filter((result) => result.status === "fulfilled");
+    const failed = results.filter((result) => result.status === "rejected");
+    expect(successful).toHaveLength(1);
+    expect(failed).toHaveLength(1);
+    const saved = (await db.select().from(companyTransferRuns)).find((entry) => entry.id === run!.id);
+    const destinations = (await db.select().from(companies)).filter((company) =>
+      company.name === "Concurrent provenance first" || company.name === "Concurrent provenance second");
+    expect(destinations).toHaveLength(1);
+    expect(saved?.companyId).toBe(destinations[0]!.id);
+  });
+
   it("rolls back company creation when its transfer run cannot be claimed", async () => {
     const [run] = await db.insert(companyTransferRuns).values({
       direction: "import", status: "failed", actorKey: "migration-test",
