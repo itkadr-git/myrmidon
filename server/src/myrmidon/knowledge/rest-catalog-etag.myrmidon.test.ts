@@ -24,7 +24,7 @@ function setup(initial = [first, second]) {
   });
   app.use("/api", knowledgeRoutes(deps));
   app.use(errorHandler);
-  const calls = (count: number, args = { kind: undefined, status: "published", folderPrefix: undefined }) => {
+  const calls = (count: number, args: { kind: string | undefined; status: string; folderPrefix: string | undefined } = { kind: undefined, status: "published", folderPrefix: undefined }) => {
     expect(moduleFor).toHaveBeenCalledTimes(count);
     expect(listItems).toHaveBeenCalledTimes(count);
     for (let i = 1; i <= count; i++) {
