@@ -312,7 +312,11 @@ export const companyTransferRunService = {
     await db
       .update(companyTransferRuns)
       .set({ status: "completed", error: null, finishedAt: new Date(), updatedAt: new Date() })
-      .where(eq(companyTransferRuns.id, runId));
+      .where(and(
+        eq(companyTransferRuns.id, runId),
+        // Migration completion is meaningful only after atomic destination ownership.
+        sql`(coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration' or (${companyTransferRuns.status} = 'applying' and ${companyTransferRuns.companyId} is not null))`,
+      ));
   },
 
   /**

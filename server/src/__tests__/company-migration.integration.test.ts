@@ -316,6 +316,8 @@ describe("company migration dry run", () => {
     const otherSource = await companyTransferRunService.resumeOrCreateMigration(db, "source-two", key);
     expect(otherSource.run.id).not.toBe(first.run.id);
     expect(otherSource.run.containerRef).toMatchObject({ kind: "company_migration", sourceCompanyId: "source-two" });
+    expect(await companyTransferRunService.claimApply(db, first.run.id)).toBe(true);
+    await companyService(db).create({ name: "Ledger completion destination" }, { transferRunId: first.run.id });
     await companyTransferRunService.complete(db, first.run.id);
     const retry = await companyTransferRunService.resumeOrCreateMigration(db, "source-one", key);
     expect(retry.alreadyCompleted).toBe(true);
