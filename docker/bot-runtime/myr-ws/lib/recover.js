@@ -115,7 +115,8 @@ function snapshotCopy(git, dir, key, gitDir, reason) {
   try {
     if (fs.existsSync(path.join(gitDir, "index"))) fs.copyFileSync(path.join(gitDir, "index"), tmpIndex);
     const env = { ...IDENTITY, GIT_INDEX_FILE: tmpIndex };
-    git(dir, ["add", "-A", "--", "."], { env });
+    // --sparse: a new migration snapshot lies outside the sparse patterns of a task copy (1.6.9)
+    git(dir, ["add", "-A", "--sparse", "--", "."], { env });
     const tree = git(dir, ["write-tree"], { env }).stdout;
     const parents = [];
     const head = git(dir, ["rev-parse", "--verify", "--quiet", "HEAD"], { allowFail: true });
