@@ -329,6 +329,7 @@ export const companyTransferRunService = {
     }).where(and(
       eq(companyTransferRuns.id, runId),
       eq(companyTransferRuns.companyId, companyId),
+      eq(companyTransferRuns.direction, "import"),
       eq(companyTransferRuns.status, "applying"),
       sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
     )).returning({ id: companyTransferRuns.id });
