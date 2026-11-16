@@ -25,6 +25,14 @@ afterEach(() => {
 });
 
 describe("startup banner database redaction", () => {
+  it("uses unredacted synthetic password fixtures", () => {
+    expect(cases[0].url).toContain(cases[0].secrets[0]);
+    expect(cases[1].url).toContain(cases[1].secrets[0]);
+    expect(decodeURIComponent(cases[1].url)).toContain(cases[1].secrets[1]);
+    expect(cases[2].url).toContain(cases[2].secrets[0]);
+    expect(cases[3].url).toContain(cases[3].secrets[0]);
+  });
+
   it.each(cases)("redacts $name while retaining useful banner details", ({ url, expected, secrets }) => {
     vi.stubEnv("MYRMIDON_AGENT_JWT_SECRET", "");
     vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "");
