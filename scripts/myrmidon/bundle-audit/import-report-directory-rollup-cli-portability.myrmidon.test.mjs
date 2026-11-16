@@ -23,7 +23,7 @@ function setup(t) {
   const root = mkdtempSync(join(process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_SCRATCH_DIR || homedir(), 'rollup-portability-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const cwd1 = join(root, 'cwd one'), cwd2 = join(root, 'cwd two');
-  const inputDir = join(cwd1, `space # (\u00e9) ${sentinel}`);
+  const inputDir = join(cwd1, `space # (\u0436) ${sentinel}`);
   mkdirSync(inputDir, { recursive: true });
   mkdirSync(cwd2);
   return { root, cwd1, cwd2, inputDir };
