@@ -4,7 +4,7 @@ import { createOwnerTelegramNotifier } from "./owner-notify.js";
 import { resolveTargetConversation } from "../telegram-notify/jobs.js";
 
 const ownerDm = vi.hoisted(() => ({ find: vi.fn() }));
-const updates = vi.hoisted(() => ({ value: { enabled: true, chatId: "owner-chat", topicId: null as string | null } }));
+const updates = vi.hoisted(() => ({ value: { enabled: true, chatId: "owner-chat" as string | null, topicId: null as string | null } }));
 
 vi.mock("../bot-containers/update-notify.js", () => ({
   findActiveOwnerDeliveryConversation: ownerDm.find,
