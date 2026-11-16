@@ -100,6 +100,7 @@ describeEmbedded("interaction wakes and the daily run limit", () => {
     await db.insert(companies).values({
       id: companyId,
       name: "interaction-wakes",
+      defaultResponsibleUserId: "responsible-user",
       issuePrefix: `W${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
