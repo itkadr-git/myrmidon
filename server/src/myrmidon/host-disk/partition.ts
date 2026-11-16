@@ -100,6 +100,7 @@ export function createBotPartitionThresholdRuntime(
   const settingsService = db ? instanceSettingsService(db) : null;
   let state: BotPartitionThresholdState = { ...EMPTY_STATE };
   let lowSpaceNotified = false;
+  let updateQueue: Promise<void> = Promise.resolve();
 
   async function resolveThresholds(): Promise<WsBotDiskPartitionSettings> {
     const botDisk = deps.getBotDiskSettings
@@ -108,7 +109,7 @@ export function createBotPartitionThresholdRuntime(
     return resolveWsBotDiskPartitionSettings({ stored: botDisk, env }).settings;
   }
 
-  async function updateFromPartition(usage: BotPartitionUsage): Promise<BotPartitionThresholdState> {
+  async function evaluatePartition(usage: BotPartitionUsage): Promise<BotPartitionThresholdState> {
     const settings = await resolveThresholds();
     if (!isFreshPhysicalSample(usage, now().getTime())) return markUnmeasured();
     // statfs counts shared reflink extents once. Project quota counters are
@@ -145,6 +146,13 @@ export function createBotPartitionThresholdRuntime(
       }
     }
     return state;
+  }
+
+  function updateFromPartition(usage: BotPartitionUsage): Promise<BotPartitionThresholdState> {
+    // Serialize evaluations so a pending outbox write cannot cause duplicate crossings.
+    const result = updateQueue.then(() => evaluatePartition(usage));
+    updateQueue = result.then(() => undefined, () => undefined);
+    return result;
   }
 
   function markUnmeasured(): BotPartitionThresholdState {
