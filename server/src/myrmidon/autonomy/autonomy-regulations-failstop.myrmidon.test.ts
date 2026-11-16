@@ -117,6 +117,10 @@ describe("regulation facade transaction fail-stop", () => {
           if (op === "update") expect(writes[0]?.values).toMatchObject({ itemId: id, content: "new body", revisionNumber: 2 });
           if (op === "approve") expect(writes[0]?.values).toMatchObject({ status: "approved", approvedBy: actor.id });
           if (op === "restore") expect(writes[0]?.values).toMatchObject({ itemId: id, content: "old body", rolledBackFromRevisionId: "revision-1" });
+          if (op === "create") expect(writes[1]?.values).toMatchObject({ itemId: writes[0]?.values?.id, content: "new body", revisionNumber: 1 });
+          if (op === "update") expect(writes[1]?.values).toMatchObject({ title: "New", currentRevisionNumber: 2, updatedAt: now });
+          if (op === "approve") expect(writes[1]?.values).toMatchObject({ deliveredRevisionId: "revision-1", status: "published", updatedAt: now });
+          if (op === "restore") expect(writes[1]?.values).toMatchObject({ deliveredRevisionId: writes[0]?.values?.id, currentRevisionNumber: 2, status: "published" });
           if (op !== "create") {
             const scope = f.trace.find((entry) => entry.event === "select" && entry.table === knowledgeItems);
             expect(scope?.sql).toContain('"nest_id"');
