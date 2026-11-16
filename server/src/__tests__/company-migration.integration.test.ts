@@ -40,46 +40,49 @@ describe("company migration dry run", () => {
     const insert = vi.spyOn(db, "insert");
     const update = vi.spyOn(db, "update");
     const remove = vi.spyOn(db, "delete");
-    const beforeCompanies = await db.select().from(companies);
-    const beforeAgents = await db.select().from(agents);
-    const beforeProjects = await db.select().from(projects);
-    const beforeIssues = await db.select().from(issues);
-    const beforeRuns = await db.select().from(companyTransferRuns);
-    const beforeAudit = await db.select().from(activityLog);
-    const filesBefore = await readdir(root, { recursive: true });
-    const app = express();
-    app.use(express.json());
-    app.use((req, _res, next) => {
-      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
-      next();
-    });
-    app.use("/api/companies", companyRoutes(db, storage));
-    app.use(errorHandler);
-    const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
-      target: { mode: "new_company", newCompanyName: "Destination" },
-      export: { include: { projects: true, issues: true } },
-    });
-    expect(response.status).toBe(200);
-    expect(response.body.dryRun).toBe(true);
-    expect(response.body.validation.errors).toEqual([]);
-    expect(response.body.counts).toMatchObject({ agents: 1, projects: 1, issues: 1 });
+    try {
+      const beforeCompanies = await db.select().from(companies);
+      const beforeAgents = await db.select().from(agents);
+      const beforeProjects = await db.select().from(projects);
+      const beforeIssues = await db.select().from(issues);
+      const beforeRuns = await db.select().from(companyTransferRuns);
+      const beforeAudit = await db.select().from(activityLog);
+      const filesBefore = await readdir(root, { recursive: true });
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => {
+        req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+        next();
+      });
+      app.use("/api/companies", companyRoutes(db, storage));
+      app.use(errorHandler);
+      const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+        target: { mode: "new_company", newCompanyName: "Destination" },
+        export: { include: { projects: true, issues: true } },
+      });
+      expect(response.status).toBe(200);
+      expect(response.body.dryRun).toBe(true);
+      expect(response.body.validation.errors).toEqual([]);
+      expect(response.body.counts).toMatchObject({ agents: 1, projects: 1, issues: 1 });
 
-    const existingTarget = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
-      target: { mode: "existing_company", companyId: source!.id },
-    });
-    expect(existingTarget.status).toBe(400);
+      const existingTarget = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+        target: { mode: "existing_company", companyId: source!.id },
+      });
+      expect(existingTarget.status).toBe(400);
 
-    expect(insert).not.toHaveBeenCalled();
-    expect(update).not.toHaveBeenCalled();
-    expect(remove).not.toHaveBeenCalled();
-    expect(await db.select().from(companies)).toEqual(beforeCompanies);
-    expect(await db.select().from(agents)).toEqual(beforeAgents);
-    expect(await db.select().from(projects)).toEqual(beforeProjects);
-    expect(await db.select().from(issues)).toEqual(beforeIssues);
-    expect(await db.select().from(companyTransferRuns)).toEqual(beforeRuns);
-    expect(await db.select().from(activityLog)).toEqual(beforeAudit);
-    expect(await readdir(root, { recursive: true })).toEqual(filesBefore);
-    insert.mockRestore(); update.mockRestore(); remove.mockRestore();
+      expect(insert).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+      expect(remove).not.toHaveBeenCalled();
+      expect(await db.select().from(companies)).toEqual(beforeCompanies);
+      expect(await db.select().from(agents)).toEqual(beforeAgents);
+      expect(await db.select().from(projects)).toEqual(beforeProjects);
+      expect(await db.select().from(issues)).toEqual(beforeIssues);
+      expect(await db.select().from(companyTransferRuns)).toEqual(beforeRuns);
+      expect(await db.select().from(activityLog)).toEqual(beforeAudit);
+      expect(await readdir(root, { recursive: true })).toEqual(filesBefore);
+    } finally {
+      insert.mockRestore(); update.mockRestore(); remove.mockRestore();
+    }
   });
 
   it("keeps concurrent repeated dry runs read-only", async () => {
