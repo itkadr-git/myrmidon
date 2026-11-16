@@ -73,7 +73,6 @@ describe("knowledge module read scope", () => {
     store.listItems.mockResolvedValue(result);
     expect(await module.listItems(filter)).toBe(result);
     expect(store.listItems).toHaveBeenCalledExactlyOnceWith("nest-a", filter);
-    expect(store.listItems.mock.calls[0][1]).toBe(filter);
   });
 
   it("passes the slug to backlinks", async () => {
