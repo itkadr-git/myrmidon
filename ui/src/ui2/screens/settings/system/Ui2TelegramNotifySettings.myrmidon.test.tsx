@@ -71,6 +71,7 @@ function defaultSettings(): TelegramNotifySettings {
       chatId: null,
       topicId: null,
     },
+    owner: { agentId: null },
   };
 }
 

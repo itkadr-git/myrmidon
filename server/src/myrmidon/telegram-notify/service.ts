@@ -53,6 +53,7 @@ const SECTION_KEYS = [
   "escalations",
   "proactivity",
   "updates",
+  "owner",
 ] as const;
 
 /**

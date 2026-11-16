@@ -1,6 +1,6 @@
 import type { Db } from "@myrmidon/db";
 import { chatConversations, chatEndpoints, chatPublications, companies } from "@myrmidon/db";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { TelegramNotifySettings } from "@myrmidon/shared";
 import { readTelegramNotifySettingsDocument } from "../telegram-notify/settings-store.js";
 import { resolveTargetConversation } from "../telegram-notify/jobs.js";
@@ -148,10 +148,21 @@ export async function notifyOwnerAboutUpdate(
   return { sent: false, reason: "no_destination_channel" };
 }
 
+/**
+ * The owner's active direct telegram conversation with the DESIGNATED agent
+ * (`telegramNotify.owner.agentId`). Every bot of the company shares the
+ * company, so picking "any" direct chat delivered a disk alert from the shop
+ * bot (16.11). No designated agent, or no conversation with it: null — the
+ * caller falls back to `updates.chatId`, then to the card only. The newest
+ * activity wins when the agent has several.
+ */
 export async function findActiveOwnerDeliveryConversation(
   db: Db,
   companyId: string,
 ): Promise<UpdateNotifyDeliveryRecipient | null> {
+  const { settings } = await readTelegramNotifySettingsDocument(db, companyId);
+  const agentId = settings.owner.agentId;
+  if (!agentId) return null;
   const rows = await db
     .select({
       conversationId: chatConversations.id,
@@ -167,7 +178,12 @@ export async function findActiveOwnerDeliveryConversation(
         inArray(chatConversations.state, ["active", "waiting"]),
         eq(chatEndpoints.provider, "telegram"),
         inArray(chatEndpoints.status, ["active", "verifying"]),
+        eq(chatEndpoints.assignedAgentId, agentId),
       ),
+    )
+    .orderBy(
+      desc(sql`coalesce(${chatConversations.lastActivityAt}, ${chatConversations.updatedAt})`),
+      desc(chatConversations.id),
     )
     .limit(1);
 

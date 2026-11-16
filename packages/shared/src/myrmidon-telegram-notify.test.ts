@@ -34,6 +34,7 @@ const FULL_DEFAULTS = {
   escalations: { enabled: false, hours: 24, channel: "none", chatId: null, topicId: null },
   proactivity: { mode: "only_on_owner_request", rarelyMaxPerDay: 3 },
   updates: { enabled: false, chatId: null, topicId: null },
+  owner: { agentId: null },
 };
 
 describe("myrmidon(OPE-3789): telegramNotify defaults", () => {
@@ -304,5 +305,22 @@ describe("proactivity per-agent override", () => {
     expect(resolveProactivityMode(company, null)).toBe(
       DEFAULT_TELEGRAM_NOTIFY_PROACTIVITY_MODE,
     );
+  });
+});
+
+describe("myrmidon(1.6.9 OWNER-ALERTS-DESIGNATED-BOT): owner.agentId", () => {
+  const agentId = "3f2c1d9e-8a7b-4c6d-9e5f-0a1b2c3d4e5f";
+
+  it("defaults to null, keeps a valid stored uuid, drops an invalid one", () => {
+    expect(parseTelegramNotifyDocument({}).settings.owner).toEqual({ agentId: null });
+    expect(parseTelegramNotifyDocument({ owner: { agentId } }).settings.owner).toEqual({ agentId });
+    expect(parseTelegramNotifyDocument({ owner: { agentId: "not-a-uuid" } }).settings.owner).toEqual({ agentId: null });
+  });
+
+  it("the patch accepts a uuid or null and rejects anything else", () => {
+    expect(telegramNotifySettingsPatchSchema.safeParse({ owner: { agentId } }).success).toBe(true);
+    expect(telegramNotifySettingsPatchSchema.safeParse({ owner: { agentId: null } }).success).toBe(true);
+    expect(telegramNotifySettingsPatchSchema.safeParse({ owner: { agentId: "shop-bot" } }).success).toBe(false);
+    expect(telegramNotifySettingsPatchSchema.safeParse({ owner: { agentId, extra: 1 } }).success).toBe(false);
   });
 });

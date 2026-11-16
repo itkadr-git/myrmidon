@@ -125,6 +125,7 @@ describe("myrmidon(TG-NOTIFY-A): the routes", () => {
         escalations: { enabled: false, hours: 24, channel: "none", chatId: null, topicId: null },
         proactivity: { mode: "only_on_owner_request", rarelyMaxPerDay: 3 },
         updates: { enabled: false, chatId: null, topicId: null },
+        owner: { agentId: null },
       },
       changelog: [],
     });

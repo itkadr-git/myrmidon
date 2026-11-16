@@ -21,6 +21,8 @@ Update notification settings belong to the company-level `telegramNotify` config
 | `chatId` | `string \| null` | `null` | Telegram chat ID for direct delivery (used when no active owner-delivery channel exists). |
 | `topicId` | `string \| null` | `null` | Forum topic thread ID inside a Telegram supergroup. |
 
+The owner-delivery channel below is chosen by a separate setting, `telegramNotify.owner.agentId` (agent uuid, `null` by default). Only an active direct Telegram chat of that agent is used. Set it with `PATCH /api/myrmidon/telegram-notify` and `{"owner": {"agentId": "<agent uuid>"}}`.
+
 ### Reading settings without restart
 
 `telegramNotify.updates` settings are persisted in instance storage (`instance_settings.general.myrmidonTelegramNotifySettings`) and read at the moment an update event occurs. No board or bot process restart is required — changes take effect immediately.
@@ -29,7 +31,7 @@ Update notification settings belong to the company-level `telegramNotify` config
 
 Messages are routed according to the following sequence:
 1. **Active check**: if `updates.enabled === false`, no message is sent and the queue is untouched.
-2. **Owner-delivery (primary channel)**: checks for an active direct owner channel (Telegram DM via user binding or active session). If found, the notification is sent there.
+2. **Owner-delivery (primary channel)**: checks the active direct Telegram chat of the agent designated in `owner.agentId` (newest activity first). With no designated agent, or no chat with it, this step is skipped — an arbitrary bot's chat is never taken. If found, the notification is sent there.
 3. **Direct Telegram send (fallback channel)**: if no active owner-delivery exists, the message is posted to the chat/topic configured in `updates.chatId` and `updates.topicId` via the outbound message queue (`chat_publications`).
 4. If neither channel is configured, nothing is sent and `no_destination_channel` is logged.
 

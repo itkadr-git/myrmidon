@@ -107,6 +107,15 @@ export interface TelegramUpdatesSettings {
   topicId: string | null;
 }
 
+/**
+ * The agent whose chat carries the board's system signals to the owner (disk
+ * alerts, bot update notices). `agentId` null = none designated: the signals
+ * never pick an arbitrary bot's chat, they fall back to `updates.chatId`.
+ */
+export interface TelegramOwnerSettings {
+  agentId: string | null;
+}
+
 /** The settings document every company reads and edits. All fields always present. */
 export interface TelegramNotifySettings {
   digest: TelegramDigestSettings;
@@ -115,6 +124,7 @@ export interface TelegramNotifySettings {
   escalations: TelegramEscalationsSettings;
   proactivity: TelegramProactivitySettings;
   updates: TelegramUpdatesSettings;
+  owner: TelegramOwnerSettings;
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +210,10 @@ export const telegramUpdatesSettingsSchema = z.object({
   topicId: topicIdSchema,
 }).strict();
 
+export const telegramOwnerSettingsSchema = z.object({
+  agentId: z.string().uuid().nullable(),
+}).strict();
+
 export const telegramNotifySettingsSchema = z.object({
   digest: telegramDigestSettingsSchema,
   errors: telegramErrorsSettingsSchema,
@@ -207,6 +221,7 @@ export const telegramNotifySettingsSchema = z.object({
   escalations: telegramEscalationsSettingsSchema,
   proactivity: telegramProactivitySettingsSchema,
   updates: telegramUpdatesSettingsSchema,
+  owner: telegramOwnerSettingsSchema,
 });
 
 export const telegramNotifyChangeLogEntrySchema = z.object({
@@ -231,6 +246,7 @@ export const telegramNotifySettingsPatchSchema = z
     escalations: z.optional(telegramEscalationsSettingsSchema.partial()),
     proactivity: z.optional(telegramProactivitySettingsSchema.partial()),
     updates: z.optional(telegramUpdatesSettingsSchema.partial()),
+    owner: z.optional(telegramOwnerSettingsSchema.partial()),
   })
   .strict()
   .refine(
@@ -240,7 +256,8 @@ export const telegramNotifySettingsPatchSchema = z
       value.inbound !== undefined ||
       value.escalations !== undefined ||
       value.proactivity !== undefined ||
-      value.updates !== undefined,
+      value.updates !== undefined ||
+      value.owner !== undefined,
     { message: "at least one section is required" },
   );
 
@@ -285,6 +302,9 @@ export function defaultTelegramNotifySettings(): TelegramNotifySettings {
       enabled: false,
       chatId: null,
       topicId: null,
+    },
+    owner: {
+      agentId: null,
     },
   };
 }
@@ -347,6 +367,7 @@ export function parseTelegramNotifyDocument(raw: unknown): TelegramNotifyDocumen
   const i = isRecord(raw.inbound) ? raw.inbound : {};
   const s = isRecord(raw.escalations) ? raw.escalations : {};
   const p = isRecord(raw.proactivity) ? raw.proactivity : {};
+  const o = isRecord(raw.owner) ? raw.owner : {};
   const u = isRecord(raw.updates) ? raw.updates : (isRecord(raw.deploys) ? raw.deploys : {});
   const settings: TelegramNotifySettings = {
     digest: {
@@ -388,6 +409,9 @@ export function parseTelegramNotifyDocument(raw: unknown): TelegramNotifyDocumen
       enabled: bool(u.enabled, defaults.updates.enabled),
       chatId: str(u.chatId),
       topicId: str(u.topicId),
+    },
+    owner: {
+      agentId: typeof o.agentId === "string" && z.string().uuid().safeParse(o.agentId).success ? o.agentId : null,
     },
   };
   const changelog = Array.isArray(raw.changelog)

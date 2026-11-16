@@ -21,7 +21,8 @@ import type { BotPartitionNotifyInput } from "./partition.js";
 
 /**
  * The owner's conversation, resolved the way the update notifications do it:
- * the active direct telegram conversation of the owner first, then the
+ * the active direct telegram conversation with the designated agent
+ * (`telegramNotify.owner.agentId`; never an arbitrary bot's chat) first, then the
  * configured `updates` chat/topic. The fixed `escalations` document is empty
  * by default (chatId null), so resolving through it never found a recipient on
  * production and the partition signal of 1.6.7 stayed card-only (OPE-13420).

@@ -68,6 +68,11 @@ export interface TelegramNotifyUpdatesSettings {
   topicId: number | string | null;
 }
 
+export interface TelegramNotifyOwnerSettings {
+  /** Agent whose chat carries system signals to the owner; null = none designated. */
+  agentId: string | null;
+}
+
 export interface TelegramNotifySettings {
   digest: TelegramNotifyDigestSettings;
   errors: TelegramNotifyErrorsSettings;
@@ -75,6 +80,7 @@ export interface TelegramNotifySettings {
   escalations: TelegramNotifyEscalationsSettings;
   proactivity: TelegramNotifyProactivitySettings;
   updates: TelegramNotifyUpdatesSettings;
+  owner: TelegramNotifyOwnerSettings;
 }
 
 /** The all-off document: the exact defaults of the parent's GET contract. */
@@ -108,5 +114,6 @@ export function defaultTelegramNotifySettings(): TelegramNotifySettings {
       chatId: null,
       topicId: null,
     },
+    owner: { agentId: null },
   };
 }
