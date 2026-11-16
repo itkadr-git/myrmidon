@@ -83,5 +83,7 @@ connectivity or current traffic.
 The fixtures are hand-authored synthetic examples of the standard human-readable
 `swanctl --list-sas` layout. Names, documentation addresses, identifiers and
 counters are invented; no node output or production data was used. The rekey
-fixture models overlapping CHILD SAs. Run the tests with
+fixture models overlapping CHILD SAs. The established fixture includes the
+separate negotiated-algorithm and IKE timing lines from the human-readable
+layout; unrecognized metadata is rejected conservatively. Run the tests with
 `node --test scripts/myrmidon/ipsec/parse-sas.test.mjs`.

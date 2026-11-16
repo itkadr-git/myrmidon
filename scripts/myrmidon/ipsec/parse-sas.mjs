@@ -23,7 +23,12 @@ function parse(text) {
       const key = match[1] === 'in' ? 'bytesIn' : 'bytesOut';
       if (child[key] !== null) malformed = true;
       child[key] = match[2];
-    } else if (!ike || !/^\s+(?:local\s|remote\s|installed\s|[A-Z0-9_]+:)/.test(line)) {
+    } else if (!ike || !(
+      /^\s+(?:local|remote)\s+\S/.test(line) ||
+      /^\s+installed \d+s ago(?:, (?:rekeying|expires) in \d+s)*\s*$/.test(line) ||
+      /^\s+established \d+s ago(?:, (?:rekeying|reauthentication) in \d+s)*\s*$/.test(line) ||
+      /^\s+[A-Z0-9_]+(?:-[0-9]+)?(?:\/[A-Z0-9_]+(?:-[0-9]+)?)+\s*$/.test(line)
+    )) {
       malformed = true;
     }
   }
