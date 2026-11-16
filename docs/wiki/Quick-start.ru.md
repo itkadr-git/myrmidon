@@ -6,7 +6,7 @@
 [Системные требования](System-requirements.ru)):
 
 ```sh
-curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.9-rc.9/install.sh | sudo bash
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.9-rc.9/install.sh | sudo bash -s -- --version myr-v1.6.9-rc.9
 ```
 
 Команда закрепляет кандидат выпуска 1.6.9-rc.9 (о выборе версии — в разделе

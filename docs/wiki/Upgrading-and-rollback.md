@@ -8,7 +8,7 @@ On a server installed with the one-line command, updating is the same
 command again:
 
 ```sh
-curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.9-rc.9/install.sh | sudo bash
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.9-rc.9/install.sh | sudo bash -s -- --version myr-v1.6.9-rc.9
 ```
 
 The release candidate is 1.6.9-rc.9 ([operator notes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/releases/1.6.9.md)). The installer is available

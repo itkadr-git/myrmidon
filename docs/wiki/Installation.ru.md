@@ -6,11 +6,11 @@
 Скопируйте её на сервер и запустите — дальше установщик делает всё сам:
 
 ```sh
-curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.9-rc.9/install.sh | sudo bash
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.9-rc.9/install.sh | sudo bash -s -- --version myr-v1.6.9-rc.9
 ```
 
 Команда выше закрепляет кандидат выпуска 1.6.9-rc.9.
-Замените тег на нужный выпуск; постоянная ссылка
+Для другого выпуска замените тег и в URL, и в `--version`; постоянная ссылка
 `releases/latest/download/install.sh` ведёт на последний стабильный выпуск
 и не заменяет зафиксированный тег кандидата. Нужны только интернет на
 сервере и `curl` (на чистой Ubuntu или Debian он ставится командой
