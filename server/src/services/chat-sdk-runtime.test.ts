@@ -438,6 +438,8 @@ describe("Chat SDK endpoint runtime", () => {
       expect(
         Object.keys((captures.chatConfigs[0]?.adapters ?? {}) as object),
       ).toEqual([expectedKey]);
+      const adapters = captures.chatConfigs[0]?.adapters as Record<string, { name?: string }>;
+      expect(adapters[expectedKey]?.name).toBe(expectedKey);
     },
   );
 
