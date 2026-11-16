@@ -805,7 +805,7 @@ describe("company migration dry run", () => {
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
     const destination = await companyService(db).create({ name: "Storage reservation destination" }, { transferRunId: run.id });
     const storage = createStorageService(createLocalDiskStorageProvider(root));
-    const input = { companyId: destination.id, namespace: "migration", originalFilename: "asset.txt", contentType: "text/plain", body: Buffer.from("asset") };
+    const input = { companyId: destination.id, namespace: "assets/general", originalFilename: "asset.txt", contentType: "text/plain", body: Buffer.from("asset") };
     let key = "";
     await storage.putFile({ ...input, beforeWrite: async (objectKey) => {
       key = objectKey;
@@ -830,6 +830,8 @@ describe("company migration dry run", () => {
       `${destination.id}/assets/general/2026/11/16/550e8400-e29b-41d4-a716-446655440000-private-name.txt`,
       `${destination.id}/assets/general/2026/11/16/550e8400-e29b-41d4-a716-446655440000-file/extra`,
       `${destination.id}/assets/general/2026/11/16/550e8400-e29b-41d4-a716-446655440000-file\\extra`,
+      `${destination.id}/private-secret-canary/2026/11/16/550e8400-e29b-41d4-a716-446655440000-file`,
+      `${destination.id}/issues/private-secret-canary/2026/11/16/550e8400-e29b-41d4-a716-446655440000-file`,
     ];
     for (const key of invalidKeys) {
       await expect(companyTransferRunService.reserveMigrationObject(db, run.id, destination.id, key)).rejects.toThrow();
