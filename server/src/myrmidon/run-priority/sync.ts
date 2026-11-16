@@ -62,14 +62,21 @@ export async function advanceFocusDeferredRuns(db: Db, now: Date = new Date()): 
   return rows.length;
 }
 
+// Serialize refreshes so a slow earlier read cannot overwrite a newer snapshot.
+let applyQueue: Promise<void> = Promise.resolve();
+
 /** Re-read the stored row and put it in force in this process (the row, not a patch, is the truth). */
-export async function applyStoredRunPriority(db: Db): Promise<RunPrioritySettings> {
-  const general = await instanceSettingsService(db).getGeneral();
-  const next = resolveRunPriority(general.runPriority).settings;
-  const focus = await readCompanyReleaseFocus(db);
-  applyRunPrioritySettings(next);
-  applyCompanyReleaseFocus(focus);
-  return next;
+export function applyStoredRunPriority(db: Db): Promise<RunPrioritySettings> {
+  const turn = applyQueue.then(async () => {
+    const general = await instanceSettingsService(db).getGeneral();
+    const next = resolveRunPriority(general.runPriority).settings;
+    const focus = await readCompanyReleaseFocus(db);
+    applyRunPrioritySettings(next);
+    applyCompanyReleaseFocus(focus);
+    return next;
+  });
+  applyQueue = turn.then(() => undefined, () => undefined);
+  return turn;
 }
 
 /**
