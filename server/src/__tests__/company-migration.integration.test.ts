@@ -611,6 +611,33 @@ describe("company migration dry run", () => {
     expect((await db.select().from(companies)).filter((company) => company.name === "Concurrent destination")).toHaveLength(1);
   });
 
+  it("does not duplicate a completed migration when a different operator retries it", async () => {
+    const [source] = await db.insert(companies).values({ name: "Operator retry source", issuePrefix: "MOR" }).returning();
+    const app = express();
+    let operator = "first-operator";
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: operator, source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+
+    const endpoint = `/api/companies/${source!.id}/migrations`;
+    const payload = {
+      target: { mode: "new_company", newCompanyName: "Operator retry destination" },
+      dryRun: false, apply: true, confirm: "approved pilot",
+    };
+    const first = await request(app).post(endpoint).send(payload);
+    expect(first.status).toBe(200);
+    operator = "second-operator";
+    const second = await request(app).post(endpoint).send(payload);
+    expect(second.status).toBe(200);
+    expect(second.body.resume).toBe("already_completed");
+    expect(second.body.runId).toBe(first.body.runId);
+    expect((await db.select().from(companies)).filter((company) => company.name === "Operator retry destination")).toHaveLength(1);
+  });
+
   it("applies a confirmed migration once and reuses the completed run", async () => {
     const [source] = await db.insert(companies).values({ name: "Apply fixture", issuePrefix: "MAP" }).returning();
     const [sourceAgent] = await db.insert(agents).values({ companyId: source!.id, name: "Apply worker" }).returning();
