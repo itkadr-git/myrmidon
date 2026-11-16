@@ -21,6 +21,18 @@ describe("migration manifest validation", () => {
     expect(JSON.stringify(result)).not.toContain("never-print-this");
   });
 
+  it("rejects scoped grants without exposing their source identifiers or values", () => {
+    const agent = { slug: "worker", reportsToSlug: null, reportsToExistingAgentId: null,
+      reportsToExistingAgentSlug: null, skills: [],
+      permissionGrants: [{ permissionKey: "tasks:assign", scope: { projectId: "source-private-id" } }] };
+    const result = validateMigrationManifest({ agents: [agent], skills: [], envInputs: [] });
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("scoped permission that cannot be migrated safely"),
+    ]));
+    expect(JSON.stringify(result)).not.toContain("source-private-id");
+    expect(validateMigrationManifest({ agents: [{ ...agent, permissionGrants: [] }], skills: [], envInputs: [] }).errors).toEqual([]);
+  });
+
   it("rejects secret bindings whose agent or project is absent from the bundle", () => {
     const manifest = {
       agents: [], skills: [], projects: [{ slug: "present" }],

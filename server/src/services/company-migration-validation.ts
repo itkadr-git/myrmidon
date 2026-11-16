@@ -4,7 +4,7 @@ import type { CompanyPortabilityManifest } from "@myrmidon/shared";
 type MigrationManifest = {
   agents: Array<Pick<CompanyPortabilityManifest["agents"][number],
     "slug" | "reportsToSlug" | "reportsToExistingAgentId" | "reportsToExistingAgentSlug" | "skills"> & {
-      permissionGrants: Array<{ permissionKey: string }>;
+      permissionGrants: Array<{ permissionKey: string; scope?: Record<string, unknown> | null }>;
     }>;
   skills: Array<Pick<CompanyPortabilityManifest["skills"][number], "key" | "slug">>;
   projects?: Array<Pick<CompanyPortabilityManifest["projects"][number], "slug"> &
@@ -66,6 +66,11 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
     for (const grant of agent.permissionGrants) {
       if (!validPermissions.has(grant.permissionKey)) {
         errors.push(`Agent ${agent.slug} has invalid permission ${grant.permissionKey}.`);
+      }
+      // Grant scopes contain source-company identifiers; importing them unchanged
+      // would either break access or accidentally refer to unrelated resources.
+      if (grant.scope && Object.keys(grant.scope).length > 0) {
+        errors.push(`Agent ${agent.slug} has a scoped permission that cannot be migrated safely.`);
       }
     }
   }
