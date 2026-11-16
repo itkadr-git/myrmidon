@@ -292,6 +292,17 @@ export class FleetOnboardExecutor {
               await activeSsh.connect(connOptions);
             }
 
+            // Preserve the original UFW configuration before the first mutation.
+            // Retain it on failure so an operator can recover while rollback is incomplete.
+            const firewallSnapshot = `/var/tmp/myrmidon-ufw-${randomUUID()}`;
+            const snapshotResult = await activeSsh.execute(
+              `: snapshot-myrmidon-firewall; sudo mkdir -m 700 ${firewallSnapshot} && sudo cp -a /etc/ufw ${firewallSnapshot}/ufw && sudo cp -a /etc/default/ufw ${firewallSnapshot}/ufw-default`,
+            );
+            if (snapshotResult.exitCode !== 0) {
+              await activeSsh.execute(`sudo rm -rf ${firewallSnapshot}`).catch(() => {});
+              throw new Error("Cannot snapshot firewall configuration; refusing firewall changes");
+            }
+
             // Firewall allow-before-deny with rollback timer:
             // 1. Allow SSH port before deny
             const allowResult = await activeSsh.execute(`sudo ufw allow ${claim.server.port}/tcp comment 'myrmidon-ssh'`);
