@@ -391,6 +391,22 @@ describe("company migration dry run", () => {
     expect(await companyTransferRunService.claimApply(db, retry.run.id)).toBe(false);
   });
 
+  it("retains an owned migration when an idle sweep attempts cancellation", async () => {
+    const [destination] = await db.insert(companies).values({ name: "Idle safety destination", issuePrefix: "MIS" }).returning();
+    const [run] = await db.insert(companyTransferRuns).values({
+      direction: "import", status: "running", actorKey: "company_migration:idle-source",
+      idempotencyKey: "migration-idle-safety", companyId: destination!.id,
+      containerRef: { kind: "company_migration", sourceCompanyId: "idle-source" },
+      updatedAt: new Date(0),
+    }).returning();
+
+    expect(await companyTransferRunService.cancelIfIdle(db, run!.id, new Date(), "idle")).toBe(false);
+    const retry = await companyTransferRunService.resumeOrCreateMigration(db, "idle-source", "migration-idle-safety");
+    expect(retry.run.id).toBe(run!.id);
+    expect(retry.run.companyId).toBe(destination!.id);
+    expect(await companyTransferRunService.claimApply(db, run!.id)).toBe(false);
+  });
+
   it("does not block a regular import retry merely because it has a destination", async () => {
     const [destination] = await db.insert(companies).values({ name: "Regular retry destination", issuePrefix: "MRG" }).returning();
     const [run] = await db.insert(companyTransferRuns).values({
