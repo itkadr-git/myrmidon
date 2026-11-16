@@ -84,7 +84,8 @@ describe("stranded company roster cache", () => {
   it("refreshes rosters for each run on the same port", async () => {
     const f = fixture();
     const beforeRows = structuredClone(f.rows);
-    const firstRosters = structuredClone(f.rosters);
+    const originalRosters = { ...f.rosters };
+    const firstRosters = structuredClone(originalRosters);
     const first = await run({ port: f.port, apply: false, now, log: () => {} });
     assertPlans(first.plans);
     f.rosters[companyA] = [agent(22, "manager"), agent(3, "worker", id(22)), agent(4, "worker", id(22))];
