@@ -397,6 +397,20 @@ describe("company migration dry run", () => {
     expect(retry.run.status).toBe("pending");
   });
 
+  it("does not reopen a completed migration when a late failure is recorded", async () => {
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "late-failure-source", "late-failure-key");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    await companyService(db).create({ name: "Late failure destination" }, { transferRunId: run.id });
+    await companyTransferRunService.complete(db, run.id);
+
+    await companyTransferRunService.fail(db, run.id, "late cleanup failure");
+    const retry = await companyTransferRunService.resumeOrCreateMigration(db, "late-failure-source", "late-failure-key");
+    expect(retry.run.id).toBe(run.id);
+    expect(retry.run.status).toBe("completed");
+    expect(retry.alreadyCompleted).toBe(true);
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(false);
+  });
+
   it("does not reapply a failed migration after it has claimed a destination", async () => {
     const [source] = await db.insert(companies).values({ name: "Retry safety source", issuePrefix: "MRY" }).returning();
     const [destination] = await db.insert(companies).values({ name: "Retry safety destination", issuePrefix: "MRD" }).returning();
