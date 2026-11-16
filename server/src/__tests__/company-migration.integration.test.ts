@@ -820,6 +820,23 @@ describe("company migration dry run", () => {
     expect((await companyTransferRunService.getRun(db, run.id))?.completedParts).toEqual([key]);
   });
 
+  it("rejects storage reservations that are not generated migration object keys", async () => {
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "reservation-validation-source", "reservation-validation");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Reservation validation destination" }, { transferRunId: run.id });
+    const invalidKeys = [
+      `${destination.id}/assets/general/private-name.txt`,
+      `${destination.id}/assets/general/2026/11/16/not-a-uuid-file`,
+      `${destination.id}/assets/general/2026/11/16/550e8400-e29b-41d4-a716-446655440000-private-name.txt`,
+      `${destination.id}/assets/general/2026/11/16/550e8400-e29b-41d4-a716-446655440000-file/extra`,
+      `${destination.id}/assets/general/2026/11/16/550e8400-e29b-41d4-a716-446655440000-file\\extra`,
+    ];
+    for (const key of invalidKeys) {
+      await expect(companyTransferRunService.reserveMigrationObject(db, run.id, destination.id, key)).rejects.toThrow();
+    }
+    expect((await companyTransferRunService.getRun(db, run.id))?.completedParts).toEqual([]);
+  });
+
   it("atomically associates a created company with an applying transfer run", async () => {
     const [run] = await db.insert(companyTransferRuns).values({
       direction: "import", status: "applying", actorKey: "migration-test",
