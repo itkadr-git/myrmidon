@@ -293,8 +293,11 @@ export class FleetOnboardExecutor {
               if (testPing.exitCode !== 0 || testPing.stdout.trim() !== "ufw-connectivity-ok") {
                 throw new Error("Connectivity test failed after firewall enablement");
               }
-              // Disarm rollback timer
-              await activeSsh.execute("sudo pkill -f 'sleep 300 && sudo ufw disable' || true");
+              // A timer that remains armed can undo a seemingly successful hardening.
+              const disarmResult = await activeSsh.execute("sudo pkill -f 'sleep 300 && sudo ufw disable'");
+              if (disarmResult.exitCode !== 0) {
+                throw new Error("Firewall rollback timer could not be disarmed");
+              }
               firewallRollbackArmed = false;
             } catch (err) {
               // Rollback immediately
