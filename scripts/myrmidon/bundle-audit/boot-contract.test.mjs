@@ -20,7 +20,7 @@ test('accepts bare node and retains a permitted memory option', () => {
 });
 
 test('never executes shell-like input', () => {
-  const marker = join(process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR, `boot-contract-${process.pid}`);
+  const marker = join(process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || process.env.RUNNER_TEMP || process.cwd(), `boot-contract-${process.pid}`);
   const m = good(); m.argv = `node server/dist/index.js; touch ${marker}`;
   assert.notEqual(audit(m).status, 0);
   assert.equal(existsSync(marker), false);
