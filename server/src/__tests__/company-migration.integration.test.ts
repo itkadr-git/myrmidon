@@ -248,6 +248,21 @@ describe("company migration dry run", () => {
     expect(saved?.companyId).toBe(company.id);
   });
 
+  it("does not let a transfer run claim a second destination", async () => {
+    const [run] = await db.insert(companyTransferRuns).values({
+      direction: "import", status: "applying", actorKey: "migration-test",
+      idempotencyKey: "provenance-single-destination", containerRef: {},
+    }).returning();
+    const first = await companyService(db).create({ name: "First provenance destination" }, { transferRunId: run!.id });
+    await expect(companyService(db).create({ name: "Second provenance destination" }, { transferRunId: run!.id }))
+      .rejects.toThrow("Transfer run cannot claim a new company");
+    const saved = (await db.select().from(companyTransferRuns)).find((entry) => entry.id === run!.id);
+    const destinations = await db.select().from(companies);
+    expect(saved?.companyId).toBe(first.id);
+    expect(destinations.some((company) => company.id === first.id)).toBe(true);
+    expect(destinations.some((company) => company.name === "Second provenance destination")).toBe(false);
+  });
+
   it("rolls back company creation when its transfer run cannot be claimed", async () => {
     const [run] = await db.insert(companyTransferRuns).values({
       direction: "import", status: "failed", actorKey: "migration-test",
