@@ -539,11 +539,15 @@ async function readWebhookCi(db: Db, companyId: string, reference: GitHubPullReq
     const pull = sorted.find((row) => row.event === "pull_request");
     const payload = asRecord(pull?.normalizedPayload);
     if (payload?.state !== "open" || typeof payload.headSha !== "string" || !payload.headSha) return null;
-    const check = sorted.find((row) => {
+    const checks = sorted.filter((row) => {
       const value = asRecord(row.normalizedPayload);
       return row.event === "check_run" && value !== null && value.headSha === payload.headSha && value.checkName === REVIEW_CI_FINAL_CHECK_NAME;
     });
-    const result = asRecord(check?.normalizedPayload);
+    // Receipt order is not run order: a delayed completion from an older run
+    // must not override a newer rerun. Ask GitHub when multiple runs are seen.
+    const runIds = new Set(checks.map((row) => asRecord(row.normalizedPayload)?.runId).filter((id): id is string => typeof id === "string"));
+    if (runIds.size > 1) return { state: "head_only", headSha: payload.headSha };
+    const result = asRecord(checks[0]?.normalizedPayload);
     if (result?.status === "completed" && typeof result.conclusion === "string" && !["cancelled", "skipped"].includes(result.conclusion)) {
       return { state: "complete", headSha: payload.headSha, finalCheckConclusion: result.conclusion };
     }
