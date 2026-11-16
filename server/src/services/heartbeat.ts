@@ -1135,6 +1135,11 @@ import {
   buildOwnerViaBotPromptBlock,
 } from "../myrmidon/owner-delivery/owner-message.js";
 import {
+  interactionWakeBypassesDailyRunLimit,
+  readInteractionPendingWakeCardId,
+  resolveInteractionWakeBypassCap,
+} from "../myrmidon/interaction-wake-daily-limit.js";
+import {
   looksLikeOwnerExplainWake,
   looksLikePendingInteractionAddresseeWake,
   PENDING_INTERACTION_WAKE_REASON,
@@ -19810,6 +19815,37 @@ export function heartbeatService(
     return null;
   }
 
+  // myrmidon(INTERACTION-WAKES-DAILY-LIMIT): the daily cap verdict for one wake.
+  // A wake that announces a pending question card to its addressee passes the
+  // daily RUN limit (bounded per day, see interaction-wake-daily-limit.ts); every
+  // other wake, and the cost limit, are judged exactly as before.
+  async function getDailyCapBlockForWake(
+    agent: typeof agents.$inferSelect,
+    policy: ReturnType<typeof parseHeartbeatPolicy>,
+    wake: {
+      reason?: string | null;
+      contextSnapshot?: Record<string, unknown> | null;
+      payload?: Record<string, unknown> | null;
+    },
+    client: Pick<Db, "select"> = db,
+    excludeRunId: string | null = null,
+  ) {
+    const block = await getHeartbeatDailyCapBlock(agent, policy, { excludeRunId }, client);
+    if (!block || block.reason !== DAILY_RUN_LIMIT_RETRY_REASON) return block;
+    const cardId = readInteractionPendingWakeCardId(wake);
+    if (!cardId) return block;
+    const bypass = await interactionWakeBypassesDailyRunLimit(client, {
+      companyId: agent.companyId,
+      agentId: agent.id,
+      cardId,
+      cap: resolveInteractionWakeBypassCap(parseObject(parseObject(agent.runtimeConfig).heartbeat)),
+      window: currentUtcDayWindow(),
+      excludeRunId,
+    });
+    if (!bypass) return block;
+    return getHeartbeatDailyCapBlock(agent, policy, { checkRunCap: false, excludeRunId }, client);
+  }
+
   // myrmidon(OPE-11947): idle pickup asks for the cap verdict of one agent before it
   // offers the agent any task, instead of letting every offer end as a `skipped`
   // receipt row. It is the gate's own function over the agent's own policy.
@@ -20838,14 +20874,12 @@ export function heartbeatService(
       return null;
     }
 
-    const dailyCapBlock = await getHeartbeatDailyCapBlock(
+    const dailyCapBlock = await getDailyCapBlockForWake(
       agent,
       parseHeartbeatPolicy(agent),
-      {
-        excludeRunId: run.id,
-        checkRunCap: true,
-        checkCostCap: true,
-      },
+      { contextSnapshot: context },
+      db,
+      run.id,
     );
     if (dailyCapBlock) {
       // myrmidon(OPE-11718): the daily run limit defers the run to the reset.
@@ -36639,10 +36673,10 @@ export function heartbeatService(
 
           const dailyCapBlock = opts.manualUserWake
             ? null
-            : await getHeartbeatDailyCapBlock(
+            : await getDailyCapBlockForWake(
               agent,
               policy,
-              {},
+              { reason, contextSnapshot: enrichedContextSnapshot, payload },
               tx,
             );
           if (dailyCapBlock) {
@@ -37150,10 +37184,10 @@ export function heartbeatService(
 
       const dailyCapBlock = opts.manualUserWake
         ? null
-        : await getHeartbeatDailyCapBlock(
+        : await getDailyCapBlockForWake(
           agent,
           policy,
-          {},
+          { reason, contextSnapshot: enrichedContextSnapshot, payload },
           tx,
         );
       if (dailyCapBlock) {
