@@ -5,7 +5,6 @@ import {
   type WsBotDiskPartitionSettings,
   type WsDiskPressureLevel,
 } from "@myrmidon/shared";
-import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService } from "../../services/index.js";
 import type { Db } from "@myrmidon/db";
 import type { BotPartitionUsage, DockergateDiskClient } from "./dockergate.js";
@@ -16,8 +15,8 @@ import type { BotPartitionUsage, DockergateDiskClient } from "./dockergate.js";
  * One process-wide runtime. The host-disk sweep calls `updateFromPartition`
  * with the dockergate measurement; the attention feed reads the last result
  * for the `host_disk_alert` card; the desired-state stub reads it for the
- * `pressure` block; `notifyCritical` sends the owner a Telegram card through
- * the existing telegram-notify outbox.
+ * `pressure` block; the board never sends the owner a Telegram
+ * message for it (the alert channel is monitoring).
  *
  * Dedup contract: a warn/critical card refreshes the same feed row while the
  * partition stays over its threshold (the feed dedup key is constant), and
@@ -36,20 +35,11 @@ export interface BotPartitionThresholdState {
   /** Pressure level the desired state reports: none/hard. */
   pressureLevel: WsDiskPressureLevel;
   /** True while a critical notification has been sent and not yet reset. */
-  criticalNotified: boolean;
   /** ISO timestamp of the last evaluation. */
   evaluatedAt: string | null;
 }
 
-export interface BotPartitionNotifyInput {
-  usage: BotPartitionUsage;
-  settings: WsBotDiskPartitionSettings;
-  level: "warn" | "critical";
-}
-
 export interface BotPartitionThresholdDeps {
-  /** Telegram card enqueue; injected so tests need no chat tables. */
-  notifyOwner?: (input: BotPartitionNotifyInput) => Promise<void>;
   /**
    * Settings reader; injected so tests need no database. Production wiring
    * passes nothing and the runtime reads `instance_settings.general.botDisk`.
@@ -87,7 +77,6 @@ const EMPTY_STATE: BotPartitionThresholdState = {
   settings: null,
   alertLevel: null,
   pressureLevel: "none",
-  criticalNotified: false,
   evaluatedAt: null,
 };
 
@@ -99,6 +88,7 @@ export function createBotPartitionThresholdRuntime(
   const now = deps.now ?? (() => new Date());
   const settingsService = db ? instanceSettingsService(db) : null;
   let state: BotPartitionThresholdState = { ...EMPTY_STATE };
+  let updateQueue: Promise<void> = Promise.resolve();
 
   async function resolveThresholds(): Promise<WsBotDiskPartitionSettings> {
     const botDisk = deps.getBotDiskSettings
@@ -107,7 +97,7 @@ export function createBotPartitionThresholdRuntime(
     return resolveWsBotDiskPartitionSettings({ stored: botDisk, env }).settings;
   }
 
-  async function updateFromPartition(usage: BotPartitionUsage): Promise<BotPartitionThresholdState> {
+  async function evaluatePartition(usage: BotPartitionUsage): Promise<BotPartitionThresholdState> {
     const settings = await resolveThresholds();
     if (!isFreshPhysicalSample(usage, now().getTime())) return markUnmeasured();
     // statfs counts shared reflink extents once. Project quota counters are
@@ -121,24 +111,16 @@ export function createBotPartitionThresholdRuntime(
       settings,
       alertLevel: alert,
       pressureLevel: pressure,
-      // The latch holds until the partition drops below the warn threshold;
-      // a warn->critical crossing while still over the warn threshold keeps
-      // the previous warn notification but arms a fresh critical one.
-      criticalNotified:
-        usage.usedPercent < settings.partitionThresholdPercent
-          ? false
-          : state.criticalNotified && alert === "critical",
       evaluatedAt: now().toISOString(),
     };
-    if (alert === "critical" && !state.criticalNotified && deps.notifyOwner) {
-      try {
-        await deps.notifyOwner({ usage, settings, level: "critical" });
-        state = { ...state, criticalNotified: true };
-      } catch (err) {
-        logger.error({ err }, "bot partition critical notification failed");
-      }
-    }
     return state;
+  }
+
+  function updateFromPartition(usage: BotPartitionUsage): Promise<BotPartitionThresholdState> {
+    // Serialize evaluations so state updates apply in measurement order.
+    const result = updateQueue.then(() => evaluatePartition(usage));
+    updateQueue = result.then(() => undefined, () => undefined);
+    return result;
   }
 
   function markUnmeasured(): BotPartitionThresholdState {

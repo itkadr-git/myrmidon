@@ -166,6 +166,7 @@ function runGate(sandbox, args = []) {
       GITHUB_REPOSITORY: REPO,
       GITHUB_TOKEN: "mock-token",
       BASE_BRANCH: "main",
+      MAIN_GREEN_MAX_AGE_HOURS: process.env.TEST_MAX_AGE_HOURS ?? "999999",
     },
     encoding: "utf8",
   });
@@ -179,6 +180,7 @@ function runRerun(sandbox, args = []) {
       GITHUB_REPOSITORY: REPO,
       GITHUB_TOKEN: "mock-token",
       MAIN_GREEN_CHECK: GATE_SCRIPT,
+      MAIN_GREEN_MAX_AGE_HOURS: "999999",
     },
     encoding: "utf8",
   });
@@ -543,6 +545,126 @@ describe("main-green-gate.sh (OPE-10789)", () => {
     const res = runGate(sandbox, ["--check"]);
     assert.equal(res.status, 1, "gate must be red when main CI run failed");
     assert.match(res.stderr, /MAIN BRANCH CI IS RED.*latest completed run #41949314014 concluded with failure/i);
+  });
+});
+
+describe("main-green-gate.sh cancelled runs give no verdict (OPE-13461)", () => {
+  const run = (id, sha, status, conclusion, created_at) => ({
+    id, name: "Myrmidon CI", path: ".github/workflows/myrmidon-ci.yml",
+    head_branch: "main", event: "push", head_sha: sha, status, conclusion, created_at,
+  });
+
+  it("is GREEN when the latest completed runs are cancelled and the last real result is success", () => {
+    const sandbox = makeSandbox({
+      headSha: NEW_SHA,
+      runs: { workflow_runs: [
+        run(5003, NEW_SHA, "completed", "cancelled", "2026-11-16T01:12:00Z"),
+        run(5002, RED_SHA, "completed", "cancelled", "2026-11-16T01:08:00Z"),
+        run(5001, GREEN_SHA, "completed", "success", "2026-11-16T00:40:00Z"),
+      ] },
+    });
+    const res = runGate(sandbox, ["--check"]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stderr, /GREEN \(latest completed success run #5001/);
+  });
+
+  it("--status is green and ignores skipped runs as well", () => {
+    const sandbox = makeSandbox({
+      headSha: GREEN_SHA,
+      runs: { workflow_runs: [
+        run(5012, GREEN_SHA, "completed", "skipped", "2026-11-16T01:12:00Z"),
+        run(5011, GREEN_SHA, "completed", "success", "2026-11-16T01:00:00Z"),
+      ] },
+    });
+    const res = runGate(sandbox, ["--status"]);
+    assert.equal(res.stdout.trim(), "green");
+  });
+
+  it("is RED when the latest completed runs are cancelled and the last real result is failure", () => {
+    const sandbox = makeSandbox({
+      headSha: NEW_SHA,
+      runs: { workflow_runs: [
+        run(5023, NEW_SHA, "completed", "cancelled", "2026-11-16T01:12:00Z"),
+        run(5022, RED_SHA, "completed", "cancelled", "2026-11-16T01:08:00Z"),
+        run(5021, RED_SHA, "completed", "failure", "2026-11-16T00:40:00Z"),
+      ] },
+    });
+    const res = runGate(sandbox, ["--check"]);
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /MAIN BRANCH CI IS RED.*run #5021 concluded with failure/);
+    const st = runGate(sandbox, ["--status"]);
+    assert.match(st.stdout, /^red:latest completed run #5021 concluded with failure/);
+  });
+
+  it("is RED when the last real result is startup_failure behind cancelled runs", () => {
+    const sandbox = makeSandbox({
+      runs: { workflow_runs: [
+        run(5033, NEW_SHA, "completed", "cancelled", "2026-11-16T01:12:00Z"),
+        run(5031, RED_SHA, "completed", "startup_failure", "2026-11-16T00:40:00Z"),
+      ] },
+    });
+    const res = runGate(sandbox, ["--check"]);
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /startup_failure/);
+  });
+
+  it("is RED when a main-red issue is open even though the verdict run is success", () => {
+    const sandbox = makeSandbox({
+      issues: [{ number: 4242, title: "main red" }],
+      runs: { workflow_runs: [
+        run(5042, GREEN_SHA, "completed", "cancelled", "2026-11-16T01:12:00Z"),
+        run(5041, GREEN_SHA, "completed", "success", "2026-11-16T00:40:00Z"),
+      ] },
+    });
+    const res = runGate(sandbox, ["--check"]);
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /open main-red issue/i);
+  });
+
+  it("is RED (fail closed) with a clear reason when there is no non-cancelled completed run", () => {
+    const sandbox = makeSandbox({
+      headSha: NEW_SHA,
+      runs: { workflow_runs: [
+        run(5052, NEW_SHA, "completed", "cancelled", "2026-11-16T01:12:00Z"),
+        run(5051, RED_SHA, "completed", "cancelled", "2026-11-16T01:08:00Z"),
+      ] },
+    });
+    const res = runGate(sandbox, ["--check"]);
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /no non-cancelled completed/i);
+    const st = runGate(sandbox, ["--status"]);
+    assert.match(st.stdout, /^red:no non-cancelled completed/);
+  });
+
+  it("keeps stale-green protection: HEAD moved past success and its newest run failed", () => {
+    const sandbox = makeSandbox({
+      headSha: NEW_SHA,
+      runs: { workflow_runs: [
+        run(5063, NEW_SHA, "completed", "failure", "2026-11-16T01:12:00Z"),
+        run(5062, RED_SHA, "completed", "cancelled", "2026-11-16T01:08:00Z"),
+        run(5061, GREEN_SHA, "completed", "success", "2026-11-16T00:40:00Z"),
+      ] },
+    });
+    const res = runGate(sandbox, ["--check"]);
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /MAIN BRANCH CI IS RED.*run #5063 concluded with failure/);
+  });
+
+  it("ignores verdict runs older than MAIN_GREEN_MAX_AGE_HOURS (fail closed)", () => {
+    const sandbox = makeSandbox({
+      headSha: GREEN_SHA,
+      runs: { workflow_runs: [
+        run(5071, GREEN_SHA, "completed", "success", "2026-11-03T00:40:00Z"),
+      ] },
+    });
+    process.env.TEST_MAX_AGE_HOURS = "24";
+    try {
+      const res = runGate(sandbox, ["--check"]);
+      assert.equal(res.status, 1);
+      assert.match(res.stderr, /no non-cancelled completed/i);
+    } finally {
+      delete process.env.TEST_MAX_AGE_HOURS;
+    }
   });
 });
 

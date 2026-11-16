@@ -24,8 +24,8 @@
 // `dist`), 3 package or backup state errors.
 // No dependencies: Node built-ins only.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Fields a publish substitutes from `publishConfig` (minus `bin`, see above). */
@@ -394,16 +394,52 @@ function commandApply(root, entry, dryRun, log) {
   return 0;
 }
 
+function restoreRecords(root, doc) {
+  const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  if (!object(doc) || doc.version !== 1 || !object(doc.packages)) throw new Error("Invalid backup schema or version");
+  const realRoot = realpathSync(root);
+  const inside = (base, target) => {
+    const rel = relative(base, target);
+    return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+  };
+  return Object.keys(doc.packages).sort().map((name) => {
+    const record = doc.packages[name];
+    if (!object(record) || typeof record.packageFile !== "string" || !record.packageFile ||
+        typeof record.originalText !== "string" || !object(record.originalFields) ||
+        !Array.isArray(record.appliedFields) || !record.appliedFields.every((field) => PUBLISH_KEYS.includes(field))) {
+      throw new Error(`Invalid backup record: ${name}`);
+    }
+    const path = record.packageFile;
+    if (isAbsolute(path) || win32.isAbsolute(path) || path.split(/[\\/]/).includes("..")) {
+      throw new Error(`Invalid backup path: ${path}`);
+    }
+    const file = resolve(root, path);
+    if (!inside(root, file)) throw new Error(`Backup path outside root: ${path}`);
+    // Resolve every existing component, including dangling symlinks, before any write.
+    let component = root;
+    for (const part of relative(root, file).split(sep)) {
+      component = join(component, part);
+      try {
+        lstatSync(component);
+      } catch (error) {
+        if (error.code === "ENOENT") break;
+        throw error;
+      }
+      if (!inside(realRoot, realpathSync(component))) throw new Error(`Backup path escapes root: ${path}`);
+    }
+    return { name, record, file };
+  });
+}
+
 function commandRestore(root, log) {
   const backup = loadBackup(root);
   if (backup === null) {
     log.log("no backup: nothing to restore");
     return 0;
   }
+  const records = restoreRecords(root, backup.doc);
   let restored = 0;
-  for (const name of Object.keys(backup.doc.packages).sort()) {
-    const record = backup.doc.packages[name];
-    const file = resolve(root, record.packageFile);
+  for (const { name, record, file } of records) {
     if (!existsSync(file)) {
       log.log(`not restored (file gone): ${name} (${record.packageFile})`);
       continue;

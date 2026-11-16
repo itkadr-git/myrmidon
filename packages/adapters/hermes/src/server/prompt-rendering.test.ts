@@ -99,7 +99,12 @@ test("renders scoped planning wake authority before the Hermes default workflow"
   expect(prompt).toContain("The harness already checked out this issue for the current run.");
   expect(prompt).toContain("Issue description:\n```text\nUse the wake payload as runtime authority.\n```");
   expect(prompt).toContain("clear final disposition");
-  expect(prompt).toContain("keep `in_progress` only when a live continuation path exists");
+  expect(prompt).toContain("leave the issue `in_progress`: the board resumes a task in progress by itself");
+  expect(prompt).toContain("`todo` puts the issue back into the queue, so set it only when you stop working on it");
+  expect(prompt).toContain("set `blocked` with a named unblock owner/action, not `in_progress`");
+  expect(prompt).toContain("Open the pull request at your first push on the task, at once: a draft while the work is not finished");
+  expect(prompt).toContain("run `gh pr ready` and move the task to `in_review` with a reviewer");
+  expect(prompt).not.toContain("only when a live continuation path exists");
   expect(prompt).not.toContain("check for unassigned issues");
   expect(prompt).not.toContain("status=backlog");
 });

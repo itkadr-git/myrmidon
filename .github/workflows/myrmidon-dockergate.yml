@@ -52,7 +52,7 @@ jobs:
       - name: go vet and go test
         run: |
           set -euo pipefail
-          docker run --rm --network none -v "$PWD/tools/dockergate:/src" -w /src \
+          docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/tools/dockergate:/src" -w /src \
             -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local -e GOCACHE=/tmp/gocache "$GO_IMAGE" \
             sh -euc 'go vet ./... && go test -count=1 ./...'
 

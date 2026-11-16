@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import { heartbeatRunEvents, issueWorkProducts, workspaceRuntimeServices } from "@myrmidon/db";
 import type { IssueWorkProduct } from "@myrmidon/shared";
@@ -22,6 +22,74 @@ export interface WorkProductDiffSummary {
   additions: number | null;
   deletions: number | null;
   changedFiles: number;
+}
+
+type GithubPullRequestRef = { repository: string; number: number };
+
+const GITHUB_PULL_REQUEST_URL_RE = /^https?:\/\/(?:www\.)?github\.com\/([^/\s?#]+)\/([^/\s?#]+)\/pull\/(\d+)(?:[/?#].*)?$/i;
+const GITHUB_PULL_REQUEST_EXTERNAL_ID_RE = /^([^/\s#]+\/[^/\s#]+)#pull\/(\d+)$/i;
+
+function positivePullNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+/**
+ * myrmidon(AGENT-PR-WP-NORMALIZE): the GitHub webhook finds pull_request work
+ * products only by `external_id = <owner>/<repo>#pull/<N>` (see
+ * github-connection-events.ts). Agents register the PR by url alone, so derive
+ * the webhook-format reference from the url, the external id or the metadata.
+ */
+export function parseGithubPullRequestRef(input: {
+  url?: string | null;
+  externalId?: string | null;
+  metadata?: Record<string, unknown> | null;
+}): GithubPullRequestRef | null {
+  const metadata = input.metadata ?? {};
+  const idMatch = input.externalId ? GITHUB_PULL_REQUEST_EXTERNAL_ID_RE.exec(input.externalId.trim()) : null;
+  if (idMatch) return { repository: idMatch[1]!, number: Number(idMatch[2]) };
+  const repository = typeof metadata.repo === "string" ? metadata.repo
+    : typeof metadata.repository === "string" ? metadata.repository
+    : null;
+  const number = positivePullNumber(metadata.number);
+  if (repository && repository.includes("/") && number) return { repository, number };
+  const metadataUrl = typeof metadata.url === "string" ? metadata.url.trim() : "";
+  for (const candidate of [input.url?.trim(), metadataUrl]) {
+    const match = candidate ? GITHUB_PULL_REQUEST_URL_RE.exec(candidate) : null;
+    if (match) return { repository: `${match[1]}/${match[2]}`, number: Number(match[3]) };
+  }
+  return null;
+}
+
+/** Drops the PR reference keys so a new url re-derives them instead of keeping the old PR's. */
+function withoutPullRequestRef(metadata: unknown): Record<string, unknown> | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const { repo: _repo, repository: _repository, number: _number, url: _url, ...rest } = metadata as Record<string, unknown>;
+  return rest;
+}
+
+/** Fills externalId and metadata repo/repository/number for a github pull_request; other rows pass through. */
+export function normalizeGithubPullRequestWorkProduct<T extends {
+  type?: string | null;
+  provider?: string | null;
+  url?: string | null;
+  externalId?: string | null;
+  metadata?: unknown;
+}>(data: T): T {
+  if (data.type !== "pull_request" || data.provider?.toLowerCase() !== "github") return data;
+  const metadata = (data.metadata && typeof data.metadata === "object" && !Array.isArray(data.metadata)
+    ? data.metadata : {}) as Record<string, unknown>;
+  const ref = parseGithubPullRequestRef({ url: data.url, externalId: data.externalId, metadata });
+  if (!ref) return data;
+  return {
+    ...data,
+    externalId: data.externalId || `${ref.repository}#pull/${ref.number}`,
+    metadata: {
+      ...metadata,
+      repo: typeof metadata.repo === "string" ? metadata.repo : ref.repository,
+      repository: typeof metadata.repository === "string" ? metadata.repository : ref.repository,
+      number: positivePullNumber(metadata.number) ?? ref.number,
+    },
+  };
 }
 
 function nonNegativeInteger(value: unknown): number | null {
@@ -274,11 +342,46 @@ export function workProductService(
             data = { ...data, url: `https://github.com/${repo}/pull/${number}` };
           }
         }
-        if (!data.externalId && repo && number) {
-          data = { ...data, externalId: `${repo}#pull/${number}` };
-        }
+        data = normalizeGithubPullRequestWorkProduct(data);
       }
       const row = await db.transaction(async (tx) => {
+        // myrmidon(AGENT-PR-WP-NORMALIZE): one record per PR and task. A repeated
+        // registration (same external id or url) updates the existing record.
+        const duplicate = data.type === "pull_request" && data.provider.toLowerCase() === "github" && (data.externalId || data.url)
+          ? await tx
+              .select()
+              .from(issueWorkProducts)
+              .where(and(
+                eq(issueWorkProducts.companyId, companyId),
+                eq(issueWorkProducts.issueId, issueId),
+                eq(issueWorkProducts.type, "pull_request"),
+                eq(issueWorkProducts.provider, data.provider),
+                or(
+                  ...(data.externalId ? [sql`lower(${issueWorkProducts.externalId}) = lower(${data.externalId})`] : []),
+                  ...(data.url ? [eq(issueWorkProducts.url, data.url)] : []),
+                ),
+              ))
+              .limit(1)
+              .then((rows) => rows[0] ?? null)
+          : null;
+        if (duplicate) {
+          // The stored record owns status, review state, primary flag and PR state (headSha, merged, ...), which
+          // the webhook keeps current. A repeated registration only fills what is missing.
+          const incomingMetadata = (data.metadata as Record<string, unknown> | null) ?? {};
+          return await tx
+            .update(issueWorkProducts)
+            .set({
+              externalId: duplicate.externalId ?? data.externalId ?? null,
+              url: duplicate.url ?? data.url ?? null,
+              title: duplicate.title || data.title,
+              summary: duplicate.summary ?? data.summary ?? null,
+              metadata: { ...incomingMetadata, ...((duplicate.metadata as Record<string, unknown> | null) ?? {}) },
+              updatedAt: new Date(),
+            })
+            .where(eq(issueWorkProducts.id, duplicate.id))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+        }
         if (data.isPrimary) {
           await tx
             .update(issueWorkProducts)
@@ -326,6 +429,22 @@ export function workProductService(
             );
         }
 
+        // myrmidon(AGENT-PR-WP-NORMALIZE): keep the webhook-format external id and
+        // repo/number metadata on github pull_request records after a PATCH.
+        const urlChanged = typeof patch.url === "string" && patch.url !== existing.url;
+        const merged = normalizeGithubPullRequestWorkProduct({
+          type: patch.type ?? existing.type,
+          provider: patch.provider ?? existing.provider,
+          url: patch.url ?? existing.url,
+          externalId: patch.externalId ?? (urlChanged ? null : existing.externalId),
+          metadata: patch.metadata ?? (urlChanged ? withoutPullRequestRef(existing.metadata) : existing.metadata),
+        });
+        if (merged.externalId && merged.externalId !== (patch.externalId ?? existing.externalId)) {
+          patch = { ...patch, externalId: merged.externalId };
+        }
+        if (merged.metadata && merged.metadata !== (patch.metadata ?? existing.metadata)) {
+          patch = { ...patch, metadata: merged.metadata as Record<string, unknown> };
+        }
         return await tx
           .update(issueWorkProducts)
           .set({ ...patch, updatedAt: new Date() })

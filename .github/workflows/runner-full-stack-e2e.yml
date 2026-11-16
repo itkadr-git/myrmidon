@@ -172,6 +172,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       - name: Resolve target lockfile without lifecycle scripts
@@ -250,6 +251,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -530,6 +532,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -661,6 +664,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       - if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
@@ -818,6 +822,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       # This job receives provider credentials only in the final paid-test
@@ -1053,6 +1058,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -1200,6 +1206,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       - run: pnpm install --frozen-lockfile

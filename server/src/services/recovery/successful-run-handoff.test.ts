@@ -70,6 +70,24 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
 }
 
 describe("successful run handoff decision", () => {
+  it("accepts an advanced run that leaves the task in_progress when the board continues it", () => {
+    const decision = decide({ hasBoardContinuation: true });
+    expect(decision).toEqual({ kind: "skip", reason: "in-progress task of the executor has a board continuation" });
+    expect(isSuccessfulRunHandoffValidPathSkip(decision)).toBe(true);
+  });
+
+  it("still requires a disposition without a board continuation, or when the run is not advanced, or the task is not the agent's", () => {
+    expect(decide({ hasBoardContinuation: false }).kind).toBe("enqueue");
+    expect(decide().kind).toBe("enqueue");
+    expect(decide({ hasBoardContinuation: true, livenessState: "completed" }).kind).toBe("enqueue");
+    expect(
+      decide({ hasBoardContinuation: true, issue: { ...issue, assigneeAgentId: "agent-2" } }).kind,
+    ).toBe("skip");
+    expect(
+      decide({ hasBoardContinuation: true, issue: { ...issue, assigneeAgentId: null } }),
+    ).toEqual({ kind: "skip", reason: "issue is no longer assigned to the source run agent" });
+  });
+
   it("queues one normal-model corrective wake to the original agent when a successful run has no disposition", () => {
     const decision = decide();
 
