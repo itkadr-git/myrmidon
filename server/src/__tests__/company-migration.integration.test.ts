@@ -10,7 +10,7 @@ import { errorHandler } from "../middleware/index.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -37,6 +37,8 @@ describe("company migration dry run", () => {
       companyId: source!.id, projectId: project!.id, assigneeAgentId: worker!.id, title: "Migration task",
     });
     const storage = createStorageService(createLocalDiskStorageProvider(root));
+    const sentinelPath = path.join(root, "migration-dry-run-sentinel");
+    await writeFile(sentinelPath, "unchanged storage content");
     const insert = vi.spyOn(db, "insert");
     const update = vi.spyOn(db, "update");
     const remove = vi.spyOn(db, "delete");
@@ -80,6 +82,7 @@ describe("company migration dry run", () => {
       expect(await db.select().from(companyTransferRuns)).toEqual(beforeRuns);
       expect(await db.select().from(activityLog)).toEqual(beforeAudit);
       expect(await readdir(root, { recursive: true })).toEqual(filesBefore);
+      expect(await readFile(sentinelPath, "utf8")).toBe("unchanged storage content");
     } finally {
       insert.mockRestore(); update.mockRestore(); remove.mockRestore();
     }
