@@ -2924,7 +2924,8 @@ async function main() {
 
     const plan = { clones: [], caches: [], scratch: [], botData: [], runCopies: [], staleOmpRunners: [], runnerTaskFolders: [], runnerNpmCaches: [], runnerTmp: [], runnerUnrecognized: [], idleOpenClones: [], reviewClones: [], kept: [], removed: [], archived: [], boardProjects: [] };
 
-    const boardHome = process.env.MYRMIDON_HOME || process.env.PAPERCLIP_HOME;
+    const boardHome = process.env.PAPERCLIP_HOME || process.env.MYRMIDON_HOME;
+    if (!boardHome) journalRecord(args.journal, { event: "board-project-home-missing", reason: "PAPERCLIP_HOME is not configured on the host" });
     plan.boardProjects = await scanBoardProjectWorkspaces(boardHome, now, {
       gitActive: () => boardGitActive(args.procDir),
       onEvent: (event) => journalRecord(args.journal, event),
