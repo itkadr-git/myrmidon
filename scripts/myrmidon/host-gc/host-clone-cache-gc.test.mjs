@@ -70,6 +70,34 @@ const {
 let tmpDir;
 
 describe("board project workspace GC", () => {
+  it("runs the board pass from the host env file and journals removals", () => {
+    const home = path.join(tmpDir, "board-home");
+    const repo = path.join(home, "instances/default/projects/company/project/myrmidon");
+    const pack = path.join(repo, ".git/objects/pack/tmp_pack_old");
+    const store = path.join(repo, ".paperclip/pnpm-store");
+    const root = path.join(tmpDir, "bots");
+    const proc = path.join(tmpDir, "proc");
+    const envFile = path.join(tmpDir, "gc.env");
+    const journal = path.join(tmpDir, "gc.jsonl");
+    for (const dir of [path.dirname(pack), store, root, proc]) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(pack, "old pack");
+    const old = new Date(Date.now() - 30 * 3600000);
+    for (const entry of [pack, store]) fs.utimesSync(entry, old, old);
+    fs.writeFileSync(envFile, `MYRMIDON_HOME=${home}\n`);
+    const env = { ...process.env, HOST_GC_RUNNER_ROOTS: "" };
+    delete env.MYRMIDON_HOME;
+    delete env.PAPERCLIP_HOME;
+    const res = subprocess.spawnSync(process.execPath, [
+      path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs"), "--apply", "--env", envFile,
+      "--root", root, "--journal", journal, "--lock", path.join(tmpDir, "gc.lock"), "--proc-dir", proc,
+    ], { encoding: "utf8", env, timeout: 60000 });
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.existsSync(pack), false);
+    assert.equal(fs.existsSync(store), false);
+    const removed = fs.readFileSync(journal, "utf8").trim().split("\n").map(JSON.parse).filter((e) => e.event === "board-project-removed");
+    assert.deepEqual(new Set(removed.map((e) => e.path)), new Set([pack, store]));
+  });
+
   it("removes old packs, closed scratch and pnpm cache; keeps open and live git", async () => {
     const home = path.join(tmpDir, "home");
     const repo = path.join(home, "instances/default/projects/company/project/myrmidon");
