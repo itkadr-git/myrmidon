@@ -572,7 +572,7 @@ export function isReviewPendingWaitingForCi(params: {
  * lost: the sweep looks at the task again, and the CI result of the head wakes
  * the stage anyway. The stored-state check above reads only what the webhook
  * kept; this one asks for the head as it is now. A critical issue and a task
- * without a pull request are admitted; a failed read admits (old behaviour).
+ * without a pull request are admitted; a failed read defers (EMPTY-WAKES-CI-UNREADY).
  */
 export async function reviewCiDefersIdlePickup(
   deps: Pick<IdlePickupDeps, "db" | "env" | "resolveReviewPullRequestCi" | "resolveReviewHeadFailedChecks">,
@@ -601,8 +601,10 @@ export async function reviewCiDefersIdlePickup(
     });
     return decision !== "admit";
   } catch (err) {
-    logger.warn({ err, issueId: candidate.id }, "myrmidon.idle_pickup: the CI of the review head could not be read; waking as before");
-    return false;
+    // EMPTY-WAKES-CI-UNREADY: an unreadable CI defers the wake like an unfinished one; the
+    // sweep asks again, and the wake gate in `enqueueWakeupInner` holds the same line.
+    logger.warn({ err, issueId: candidate.id }, "myrmidon.idle_pickup: the CI of the review head could not be read; wake deferred");
+    return true;
   }
 }
 
