@@ -2,6 +2,7 @@ import { chatPublications, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { projectSafeChatPublication } from "../../services/chat-publication-projection.js";
 import { defaultTelegramNotifySettings } from "../telegram-notify/settings.js";
+import { readTelegramNotifySettingsDocument } from "../telegram-notify/settings-store.js";
 import { resolveTargetConversation } from "../telegram-notify/jobs.js";
 import type { BotPartitionNotifyInput } from "./partition.js";
 
@@ -100,16 +101,17 @@ export function createOwnerTelegramNotifier(
       return;
     }
     const { usage, settings } = input as BotPartitionNotifyInput;
-    const channel = defaultTelegramNotifySettings().escalations;
     const companyIds = await deps.listCompanyIds();
     for (const companyId of companyIds) {
-      // The part-A settings routes are not merged; until they are, the
-      // channel comes from the fixed document. An operator with no telegram
-      // endpoint configured gets no card — the attention feed row remains.
+      const notifySettings = (await readTelegramNotifySettingsDocument(db, companyId)).settings;
+      if (!notifySettings.updates.enabled) {
+        logger.info({ companyId }, "bot partition critical: owner notifications disabled");
+        continue;
+      }
       const conversation = await resolveTargetConversation(db, {
         companyId,
-        chatId: channel.chatId,
-        topicId: channel.topicId,
+        chatId: notifySettings.updates.chatId,
+        topicId: notifySettings.updates.topicId,
       });
       if (!conversation) {
         logger.info({ companyId }, "bot partition critical: no owner telegram channel, card only");
@@ -123,7 +125,7 @@ export function createOwnerTelegramNotifier(
         `- myr-ws open refuses new copies from ${settings.partitionRefuseOpenPercent}% (pressure level hard, grace 0).`,
         "- Free space on the bot host or raise the quotas; the alert clears below the warn threshold.",
       ].join("\n");
-      const at = now().toISOString().slice(0, 10);
+      const at = usage.at;
       try {
         await db
           .insert(chatPublications)

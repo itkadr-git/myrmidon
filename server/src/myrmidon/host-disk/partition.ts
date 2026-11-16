@@ -99,6 +99,7 @@ export function createBotPartitionThresholdRuntime(
   const now = deps.now ?? (() => new Date());
   const settingsService = db ? instanceSettingsService(db) : null;
   let state: BotPartitionThresholdState = { ...EMPTY_STATE };
+  let lowSpaceNotified = false;
 
   async function resolveThresholds(): Promise<WsBotDiskPartitionSettings> {
     const botDisk = deps.getBotDiskSettings
@@ -130,12 +131,17 @@ export function createBotPartitionThresholdRuntime(
           : state.criticalNotified && alert === "critical",
       evaluatedAt: now().toISOString(),
     };
-    if (alert === "critical" && !state.criticalNotified && deps.notifyOwner) {
+    // Available bytes exclude reserved blocks; exactly 10% is not low space.
+    const lowSpace = usage.freeBytes / usage.totalBytes < 0.1;
+    if (!lowSpace) lowSpaceNotified = false;
+    if (lowSpace && !lowSpaceNotified && deps.notifyOwner) {
+      lowSpaceNotified = true;
       try {
         await deps.notifyOwner({ usage, settings, level: "critical" });
         state = { ...state, criticalNotified: true };
       } catch (err) {
-        logger.error({ err }, "bot partition critical notification failed");
+        lowSpaceNotified = false;
+        logger.error({ err }, "bot partition low-space notification failed");
       }
     }
     return state;
