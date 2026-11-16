@@ -30,6 +30,14 @@ function argValue(text, name) {
 }
 
 describe("omp SSH runner image", () => {
+  it("installs myr-ws with Node 24 and checks it during image build", () => {
+    assert.match(dockerfile, /COPY docker\/bot-runtime\/myr-ws\/ \/opt\/paperclip\/myr-ws\//);
+    assert.match(dockerfile, /COPY docker\/bot-runtime\/botd\/ \/opt\/paperclip\/botd\//);
+    assert.match(dockerfile, /ln -s \/usr\/bin\/node \/opt\/node24\/bin\/node/);
+    assert.match(dockerfile, /process\.versions\.node\.split/);
+    assert.match(dockerfile, /myr-ws --help >\/dev\/null/);
+    assert.match(workflow, /docker\/bot-runtime\/myr-ws\/\*\*/);
+  });
   it("builds on agent-runtime-base and pins Bun and omp exactly like the board image", () => {
     assert.match(dockerfile, /^FROM paperclipai\/agent-runtime-base:\$\{BASE_TAG\}$/m);
     for (const name of ["BUN_VERSION", "BUN_SHA256", "OMP_VERSION"]) {
