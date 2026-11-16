@@ -289,14 +289,17 @@ function isGitCopy(dir) {
   }
 }
 
-// Do not follow symlinks or enter Git metadata. Gitfiles used by submodules and
-// linked worktrees are allowed; only a directory with its own object store is a clone.
+// Bounded scan: at most NESTED_CLONE_MAX_DEPTH levels below the workspace root, no symlinks
+// (lstat-based Dirent), no Git metadata and no dependency/build caches. Gitfiles used by
+// submodules and linked worktrees are allowed; only a directory with its own object store is a clone.
+const NESTED_CLONE_MAX_DEPTH = 3;
+const NESTED_CLONE_SKIP = new Set([".git", "node_modules", ".pnpm-store", "dist", "build", ".turbo", ".cache"]);
 function assertNoNestedClones(root) {
-  const pending = [root];
+  const pending = [{ dir: root, depth: 0 }];
   while (pending.length) {
-    const dir = pending.pop();
+    const { dir, depth } = pending.pop();
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.name === ".git") continue;
+      if (entry.isSymbolicLink() || !entry.isDirectory() || NESTED_CLONE_SKIP.has(entry.name)) continue;
       const child = path.join(dir, entry.name);
       const metadata = path.join(child, ".git");
       try {
@@ -306,7 +309,7 @@ function assertNoNestedClones(root) {
       } catch (error) {
         if (error.code !== "ENOENT") throw error;
       }
-      pending.push(child);
+      if (depth + 1 < NESTED_CLONE_MAX_DEPTH) pending.push({ dir: child, depth: depth + 1 });
     }
   }
 }

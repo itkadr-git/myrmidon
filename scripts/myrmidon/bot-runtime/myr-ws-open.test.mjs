@@ -209,6 +209,21 @@ describe("myr-ws open — task copy", { skip: !hasGit }, () => {
     assert.equal(fs.readFileSync(path.join(nested, "untracked.txt"), "utf8"), "keep me\n");
   });
 
+  it("finds a nested clone at depth 1 and ignores one under node_modules", async () => {
+    const first = copyOf(await run(["ABC-128", REPO, "--json"]));
+    const ignored = path.join(first.path, "node_modules", "pkg", "repo");
+    fs.mkdirSync(path.dirname(ignored), { recursive: true });
+    git(tmp, "clone", "-q", originDir, ignored);
+    const ok = await run(["ABC-128", REPO, "--json"]);
+    assert.equal(ok.exitCode, 0, ok.stderr);
+    const nested = path.join(first.path, "repo");
+    git(tmp, "clone", "-q", originDir, nested);
+    const refused = await run(["ABC-128", REPO, "--json"]);
+    assert.equal(refused.exitCode, 2);
+    assert.ok(refused.stderr.includes(nested));
+    assert.ok(fs.existsSync(path.join(ignored, ".git", "objects")));
+  });
+
   it("allows nested linked worktrees and real submodules with gitfiles", async () => {
     const first = copyOf(await run(["ABC-127", REPO, "--json"]));
     const nested = path.join(first.path, "linked");
