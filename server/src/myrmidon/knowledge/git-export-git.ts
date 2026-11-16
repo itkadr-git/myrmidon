@@ -118,6 +118,9 @@ export async function commitKnowledgeTreeIfChanged(
   }
   // Validate the entire requested shape and existing components before any write.
   const targets = new Set(tree.files.map((file) => path.resolve(workDir, prefix + file.path)));
+  if ((await lstat(workDir)).isSymbolicLink()) {
+    throw new Error("refusing to write through a symlink checkout root");
+  }
   for (const file of tree.files) {
     const components = (prefix + file.path).split(path.sep).filter((part) => part && part !== ".");
     let current = workDir;
