@@ -1,4 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { companies, createDb, issueWorkProducts, issues } from "@myrmidon/db";
+import { eq } from "drizzle-orm";
+import { workProductService } from "../services/work-products.js";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 
 import {
   aggregateReleaseCandidates,
@@ -11,6 +16,54 @@ import {
   verifyReleaseComposition,
   type ReleaseCandidateMember,
 } from "./release-verification.js";
+
+const postgresSupport = await getEmbeddedPostgresTestSupport();
+const describePostgres = postgresSupport.supported ? describe : describe.skip;
+
+describePostgres.sequential("release composition concurrency", () => {
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let db: ReturnType<typeof createDb>;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("release-composition-race-");
+    db = createDb(tempDb.connectionString);
+  }, 60_000);
+
+  afterAll(async () => { await tempDb?.cleanup(); });
+
+  it("does not change a release candidate while its issue is locked for completion", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Race", issuePrefix: "RCE" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Release", status: "in_progress" });
+    const [product] = await db.insert(issueWorkProducts).values({
+      companyId, issueId, type: "pull_request", provider: "github", title: "PR", status: "open",
+      externalId: "acme/project#pull/1", metadata: { repo: "acme/project", number: 1 },
+    }).returning();
+    let release!: () => void;
+    let acquired!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const locked = new Promise<void>((resolve) => { acquired = resolve; });
+    const completion = db.transaction(async (tx) => {
+      await tx.select().from(issues).where(eq(issues.id, issueId)).for("update");
+      acquired();
+      await gate;
+    });
+    await locked;
+    const update = workProductService(db).update(product!.id, { status: "merged" });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const rows = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, issueId));
+      expect(rows[0]?.status).toBe("open");
+    } finally {
+      release();
+      await completion;
+      await update;
+    }
+    const rows = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, issueId));
+    expect(rows[0]?.status).toBe("merged");
+  });
+});
 
 const REPO = "acme/project";
 const SHA_A = "aaa111aaa111aaa111aaa111aaa111aaa111aaa1";
