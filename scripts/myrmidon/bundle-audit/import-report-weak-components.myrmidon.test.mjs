@@ -32,6 +32,15 @@ test('safe byte limit and overflow', () => {
   failure(run(JSON.stringify({...value,modules:[m('a',Number.MAX_SAFE_INTEGER),m('b',1)]})), 'graph');
 });
 
+test('rejects invalid byte values and edge field types', () => {
+  for (const bytes of [Number.MAX_SAFE_INTEGER + 1, 1.5, '1', null]) {
+    failure(run(JSON.stringify({entry:'a', modules:[m('a', bytes)], edges:[]})), 'shape');
+  }
+  for (const edge of [e(1,'x','eager','a'), e('a',1,'eager','a'), e('a','x','eager',1)]) {
+    failure(run(JSON.stringify({entry:'a', modules:[m('a', 0)], edges:[edge]})), 'shape');
+  }
+});
+
 test('error categories and channels do not disclose input', () => {
   const secret = 'synthetic-secret-sentinel';
   failure(run('{'+secret), 'json');

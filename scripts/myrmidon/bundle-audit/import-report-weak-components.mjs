@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+// Usage: node /absolute/path/import-report-weak-components.mjs eager|all < report.json
+// stdin: {entry, modules: [{path, bytes, eager}], edges: [{from, specifier, kind, to}]}.
+// stdout: {entry, components: [{id, paths, bytes}]}; eager excludes lazy edges,
+// all includes them, and null destinations do not add vertices.
+// Errors exit 1 with empty stdout and one stderr category: argv, json, shape, or graph.
 import { readFileSync } from 'node:fs';
 
 const fail = category => { throw category; };
