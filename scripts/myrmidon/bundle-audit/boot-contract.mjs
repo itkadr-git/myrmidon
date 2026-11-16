@@ -21,6 +21,7 @@ function optionsTokens(text) {
 
 function audit(manifest) {
   const errors = [];
+  const memoryLimits = [];
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return { errors: ['manifest must be an object'] };
   const { argv, env } = manifest;
   if (!Array.isArray(argv) || argv.some((arg) => typeof arg !== 'string')) {
@@ -28,14 +29,16 @@ function audit(manifest) {
   } else {
     if (argv.length !== 2 || argv[0] !== 'node' || argv[1] !== 'server/dist/index.js') errors.push('argv must be exactly node server/dist/index.js');
     for (const arg of argv) {
-      if (/(?:^|[/\\@])(?:tsx|ts-node)(?:$|[/\\@=.-])/i.test(arg) || /^--(?:experimental[-_])?loader(?:=|$)|^--import(?:=|$)/i.test(arg)) errors.push(`argv contains forbidden runtime option: ${arg}`);
+      if (/^--(?:experimental[-_])?loader(?:=|$)/i.test(arg)) errors.push('argv contains forbidden runtime option: loader');
+      else if (/^--import(?:=|$)/i.test(arg)) errors.push('argv contains forbidden runtime option: import');
+      else if (/(?:^|[/\\@])(?:tsx|ts-node)(?:$|[/\\@=.-])/i.test(arg)) errors.push('argv contains forbidden runtime option: TypeScript runtime');
     }
   }
   if (!env || typeof env !== 'object' || Array.isArray(env)) {
     errors.push('env must be an object');
   } else {
-    for (const [key, value] of Object.entries(env)) {
-      if (typeof value !== 'string') errors.push(`env.${key} must be a string`);
+    for (const value of Object.values(env)) {
+      if (typeof value !== 'string') errors.push('env values must be strings');
     }
     for (const name of ['VERSION', 'COMMIT']) {
       const value = env[`MYRMIDON_BUILD_${name}`];
@@ -43,13 +46,22 @@ function audit(manifest) {
     }
     if (env.NODE_OPTIONS !== undefined && typeof env.NODE_OPTIONS === 'string') {
       try {
-        for (const token of optionsTokens(env.NODE_OPTIONS)) {
-          if (/^--(?:experimental[-_])?loader(?:=|$)|^--import(?:=|$)/i.test(token) || /(?:^|[/\\@])(?:tsx|ts-node)(?:$|[/\\@=.-])/i.test(token)) errors.push(`NODE_OPTIONS contains forbidden runtime option: ${token}`);
+        const tokens = optionsTokens(env.NODE_OPTIONS);
+        for (let i = 0; i < tokens.length; i++) {
+          const token = tokens[i];
+          if (/^--(?:experimental[-_])?loader(?:=|$)/i.test(token)) errors.push('NODE_OPTIONS contains forbidden runtime option: loader');
+          else if (/^--import(?:=|$)/i.test(token)) errors.push('NODE_OPTIONS contains forbidden runtime option: import');
+          else if (/(?:^|[/\\@])(?:tsx|ts-node)(?:$|[/\\@=.-])/i.test(token)) errors.push('NODE_OPTIONS contains forbidden runtime option: TypeScript runtime');
+          else if (token === '--max-old-space-size' || token.startsWith('--max-old-space-size=')) {
+            const value = token === '--max-old-space-size' ? tokens[++i] : token.slice('--max-old-space-size='.length);
+            if (value && /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) > 0) memoryLimits.push(Number(value));
+            else errors.push('NODE_OPTIONS has invalid max-old-space-size');
+          } else errors.push('NODE_OPTIONS contains an unsupported option');
         }
       } catch (error) { errors.push(error.message); }
     }
   }
-  return { errors, nodeOptions: env && typeof env.NODE_OPTIONS === 'string' ? env.NODE_OPTIONS : '' };
+  return { errors, memoryLimits };
 }
 
 try {
@@ -59,9 +71,10 @@ try {
     for (const error of report.errors) console.error(`FAIL: ${error}`);
     process.exitCode = 1;
   } else {
-    console.log(`PASS: boot contract; NODE_OPTIONS=${JSON.stringify(report.nodeOptions)}`);
+    const limits = report.memoryLimits.map((value) => `--max-old-space-size=${value}`).join(' ');
+    console.log(`PASS: boot contract; NODE_OPTIONS=${limits}`);
   }
 } catch (error) {
-  console.error(`FAIL: ${error.message}`);
+  console.error('FAIL: invalid input or invocation');
   process.exitCode = 1;
 }
