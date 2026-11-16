@@ -1,0 +1,9 @@
+# BBQ company split: offline preparation
+
+This is a synthetic planning prototype, not a migration, export, or real-board result. The company migration contract is under development in the Life pilot. This fixture uses a temporary local shape and is not compatible with that contract. The prototype does not invoke the existing portability service or the migration service; no claim is made about their side effects.
+
+Run `node scripts/myrmidon/company-boundaries/bbq-dry-run.mjs` to print the built-in fictional fixture report. The CLI rejects arguments and does not read files, connect to a database, contact storage, or issue audit events. Do not put real entities, secrets, exports, or identifiers in the fixture. Run `node --test scripts/myrmidon/company-boundaries/bbq-dry-run.test.mjs` for the focused tests.
+
+The sample shows owner and project links, a target identifier collision, unknown attributions, uncovered entity classes, and unavailable rollback. Unknown ownership is not evidence of BBQ ownership. The report is never authorization to migrate. The sample checks only explicit IDs; it is not an inventory, ACL check, slug collision check, or reconciliation.
+
+Before an operator considers a real split, complete the Life pilot and adopt its reviewed migration contract. Produce a separately authorized snapshot and mapping, including ambiguous entities and cross-company links. Verify secret binding metadata without exposing values; cover budgets, ACL, memory, corpus, integrations and all other exclusions. Establish a tested backup, restore and provenance-based rollback, name the operator and agree a separate migration window. Follow ADR-0052: stop writes and revoke capabilities before restore; never broadly delete, and do not roll back without snapshot and provenance. The operator alone executes an approved migration after the pilot; this prototype cannot apply or roll back anything.
