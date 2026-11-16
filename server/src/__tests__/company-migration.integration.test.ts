@@ -1,7 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, companyMemberships, companyTransferRuns, createDb, issueComments, issues, projects } from "@myrmidon/db";
+import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companyTransferRuns, createDb, issueComments, issues, projects } from "@myrmidon/db";
 
 import { companyRoutes } from "../routes/companies.js";
 import { companyService } from "../services/companies.js";
@@ -806,6 +806,59 @@ describe("company migration dry run", () => {
     expect(remainingAgents.some((agent) => agent.companyId === destination!.id)).toBe(false);
     expect(remainingAgents.some((agent) => agent.id === worker!.id && agent.companyId === source!.id)).toBe(true);
     expect((await db.select().from(projects)).some((project) => project.companyId === source!.id)).toBe(true);
+  });
+
+  it("removes imported logo storage after a partial failure without touching the source logo", async () => {
+    const [source] = await db.insert(companies).values({ name: "Logo recovery source", issuePrefix: "MLR" }).returning();
+    await db.insert(projects).values({ companyId: source!.id, name: "Logo recovery project" });
+    const storage = createStorageService(createLocalDiskStorageProvider(root));
+    const original = await storage.putFile({
+      companyId: source!.id, namespace: "assets/companies", originalFilename: "logo.png",
+      contentType: "image/png", body: Buffer.from("source-logo"),
+    });
+    const [asset] = await db.insert(assets).values({ companyId: source!.id, ...original }).returning();
+    await db.insert(companyLogos).values({ companyId: source!.id, assetId: asset!.id });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, storage));
+    app.use(errorHandler);
+
+    const originalInsert = db.insert.bind(db);
+    const insert = vi.spyOn(db, "insert").mockImplementation(((table: Parameters<typeof db.insert>[0]) => {
+      if (table === projects) throw new Error("injected project failure after logo import");
+      return originalInsert(table);
+    }) as typeof db.insert);
+    const putFile = vi.spyOn(storage, "putFile");
+    try {
+      const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+        target: { mode: "new_company", newCompanyName: "Logo recovery destination" },
+        export: { include: { projects: true } },
+        dryRun: false, apply: true, confirm: "approved pilot",
+      });
+      expect(response.status).toBeGreaterThanOrEqual(400);
+    } finally {
+      insert.mockRestore();
+    }
+
+    expect(putFile).toHaveBeenCalledTimes(1);
+    const imported = await putFile.mock.results[0]!.value;
+    putFile.mockRestore();
+    const destination = (await db.select().from(companies)).find((company) => company.name === "Logo recovery destination");
+    expect(destination).toBeDefined();
+    const run = (await db.select().from(companyTransferRuns)).find((entry) => entry.companyId === destination!.id);
+    expect(run?.status).toBe("failed");
+    expect((await storage.headObject(destination!.id, imported.objectKey)).exists).toBe(true);
+    const rollback = await request(app)
+      .post(`/api/companies/${source!.id}/migrations/${run!.id}/rollback`)
+      .send({ confirm: "recover partial logo import" });
+    expect(rollback.status).toBe(200);
+    expect((await storage.headObject(destination!.id, imported.objectKey)).exists).toBe(false);
+    expect((await storage.headObject(source!.id, original.objectKey)).exists).toBe(true);
+    expect((await db.select().from(assets)).some((entry) => entry.id === asset!.id)).toBe(true);
   });
 
   it("requires confirmation for rollback and removes only the migrated company", async () => {
