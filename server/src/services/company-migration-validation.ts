@@ -159,7 +159,12 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
       }
     }
   }
+  const envIdentities = new Set<string>();
   for (const input of manifest.envInputs) {
+    // The portability parser deduplicates names case-insensitively per scope.
+    const identity = JSON.stringify([input.agentSlug ?? "", input.projectSlug ?? "", input.key.toUpperCase()]);
+    if (envIdentities.has(identity)) errors.push("Duplicate environment binding in the same scope.");
+    envIdentities.add(identity);
     const label = input.kind === "secret" ? "Secret binding" : "Environment input";
     if (input.agentSlug && input.projectSlug) {
       errors.push(`${label} ${input.key} has ambiguous scope.`);

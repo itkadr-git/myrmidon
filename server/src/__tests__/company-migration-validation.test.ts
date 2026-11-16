@@ -61,6 +61,18 @@ describe("migration manifest validation", () => {
     ]));
   });
 
+  it("rejects case-insensitive environment binding collisions in the same scope", () => {
+    const input = { key: "API_KEY", agentSlug: "worker", projectSlug: null,
+      kind: "secret" as const, requirement: "required" as const };
+    const agent = { slug: "worker", reportsToSlug: null, reportsToExistingAgentId: null,
+      reportsToExistingAgentSlug: null, skills: [], permissionGrants: [] };
+    const manifest = { agents: [agent], skills: [], envInputs: [input, { ...input, key: "api_key" }] };
+    expect(validateMigrationManifest(manifest).errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("Duplicate environment binding"),
+    ]));
+    expect(validateMigrationManifest({ ...manifest, envInputs: [input, { ...input, agentSlug: null }] }).errors).toEqual([]);
+  });
+
   it("rejects dangling non-secret environment input references", () => {
     const result = validateMigrationManifest({
       agents: [], skills: [], projects: [],
