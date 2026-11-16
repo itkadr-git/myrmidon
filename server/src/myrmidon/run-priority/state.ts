@@ -35,6 +35,19 @@ export function resolveRunPriority(
 
 let inForce: RunPrioritySettings | null = null;
 
+export type CompanyReleaseFocus = Pick<RunPrioritySettings, "currentRelease" | "strictReleaseFocus">;
+let companyReleaseFocus = new Map<string, CompanyReleaseFocus>();
+
+/** Replace the entire snapshot after re-reading the shared settings store. */
+export function applyCompanyReleaseFocus(settings: ReadonlyMap<string, CompanyReleaseFocus>): void {
+  companyReleaseFocus = new Map(settings);
+}
+
+/** A company without an explicit focus is not restricted by another company. */
+export function currentCompanyReleaseFocus(companyId: string): CompanyReleaseFocus {
+  return companyReleaseFocus.get(companyId) ?? { currentRelease: null, strictReleaseFocus: false };
+}
+
 /** Put settings in force for the live queue sweeps. */
 export function applyRunPrioritySettings(settings: RunPrioritySettings): void {
   inForce = settings;
@@ -60,4 +73,5 @@ export function currentRunPrioritySettings(
 /** Test hook: drop the in-force settings so the next read falls back again. */
 export function resetRunPriorityForTests(): void {
   inForce = null;
+  companyReleaseFocus.clear();
 }

@@ -1232,7 +1232,7 @@ export async function findTopReadyIssueForAgent(
   if (candidates.length === 0) return null;
   const liveIssueIds = await loadAgentLiveIssueIds(db, agent);
   let ordered = orderIdlePickupCandidates(candidates);
-  const currentRelease = strictReleaseFocusRelease();
+  const currentRelease = strictReleaseFocusRelease(agent.companyId);
   if (currentRelease) {
     const releaseRows = await db
       .select({ issueId: issues.id, label: labels.name })
