@@ -68,10 +68,16 @@ test("--report rejects a nonexistent parent instead of reporting a successful wr
 
 test("without --report main prints text and creates no report file", async () => withScratch(async (dir) => {
   const before = fs.readdirSync(dir);
-  const { code, output } = await runMain(args);
-  assert.equal(code, 0);
-  assert.match(output, /^# VERIFY-ON-PROD 1\.7\.0\n/);
-  assert.match(output, /Result: PASS/);
-  assert.throws(() => JSON.parse(output), SyntaxError);
-  assert.deepEqual(fs.readdirSync(dir), before);
+  const originalCwd = process.cwd();
+  try {
+    process.chdir(dir);
+    const { code, output } = await runMain(args);
+    assert.equal(code, 0);
+    assert.match(output, /^# VERIFY-ON-PROD 1\.7\.0\n/);
+    assert.match(output, /Result: PASS/);
+    assert.throws(() => JSON.parse(output), SyntaxError);
+    assert.deepEqual(fs.readdirSync(dir), before);
+  } finally {
+    process.chdir(originalCwd);
+  }
 }));
