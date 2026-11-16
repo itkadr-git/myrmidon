@@ -49,8 +49,17 @@ export interface ExecutorExecutionResult {
 
 export function defaultGenerateKeyPair(): { publicKey: string; privateKey: string } {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const rawKey = publicKey.export({ format: "jwk" }).x;
+  if (!rawKey) throw new Error("Generated Ed25519 public key is missing key material");
+  const algorithm = Buffer.from("ssh-ed25519");
+  const keyBytes = Buffer.from(rawKey, "base64url");
+  const wire = Buffer.alloc(4 + algorithm.length + 4 + keyBytes.length);
+  wire.writeUInt32BE(algorithm.length, 0);
+  algorithm.copy(wire, 4);
+  wire.writeUInt32BE(keyBytes.length, 4 + algorithm.length);
+  keyBytes.copy(wire, 8 + algorithm.length);
   return {
-    publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
+    publicKey: `ssh-ed25519 ${wire.toString("base64")}`,
     privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
   };
 }
