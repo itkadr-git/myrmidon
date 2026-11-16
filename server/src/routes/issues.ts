@@ -13750,6 +13750,10 @@ export function issueRoutes(
         }
         createLabelNames = existingLabels.map((r) => r.name);
       }
+      if (req.actor.type === "agent") {
+        const { assertAutoSliceChildHasReleaseLabel } = await import("../myrmidon/swarm-claim/auto-slice-children.js");
+        assertAutoSliceChildHasReleaseLabel({ parentTitle: createParent?.title, labelNames: createLabelNames });
+      }
       if (
         !watchdogProductBugFollowUp &&
         !(await assertTaskWatchdogCreateIssueAllowed(
