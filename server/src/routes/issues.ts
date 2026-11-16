@@ -15660,8 +15660,8 @@ export function issueRoutes(
         req.body.executionPolicy !== undefined && monitorChanged,
       );
 
-      const transitionIssue: IssueRouteSnapshot & {
-        labels?: string[];
+      const transitionIssue: Omit<IssueRouteSnapshot, "labels"> & {
+        labels?: readonly (string | { name: string })[];
         workProducts?: Awaited<ReturnType<typeof workProductsSvc.listForIssue>>;
         hasCurrentReleaseEvidence?: boolean;
         assigneeAgentRole?: string | null;
@@ -22381,6 +22381,19 @@ export function issueRoutes(
         const postCommitIssueActions: IssuePostCommitAction[] = [];
         try {
           txResult = await db.transaction(async (tx) => {
+            const lockedIssue = await svc.getByIdForUpdate(id, tx);
+            if (!lockedIssue) throw new AutoApprovalIssueMissingError();
+            applyIssueExecutionPolicyTransition({
+              issue: { ...lockedIssue, ...await releaseTransitionContext(lockedIssue) },
+              policy: safeNormalizeIssueExecutionPolicy(lockedIssue.executionPolicy ?? null),
+              requestedStatus: "done",
+              requestedAssigneePatch: {},
+              actor: {
+                agentId: actor.agentId ?? null,
+                userId: actor.actorType === "user" ? actor.actorId : null,
+              },
+              commentBody: req.body.body,
+            });
             const insertedComment = await svc.addComment(
               id,
               req.body.body,

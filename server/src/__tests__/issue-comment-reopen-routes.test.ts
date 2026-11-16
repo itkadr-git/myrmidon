@@ -3047,7 +3047,7 @@ describe.sequential("issue comment reopen routes", () => {
       source: "agent_key", runId: "run-review-race",
     }))
       .post(`/api/issues/${issue.id}/comments`)
-      .send({ body: "APPROVED" });
+      .send({ body: "## Review: APPROVED" });
 
     expect(res.status).toBe(422);
     expect(mockIssueService.update).not.toHaveBeenCalled();

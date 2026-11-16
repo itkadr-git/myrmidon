@@ -2774,7 +2774,7 @@ describe("verify execution stages", () => {
       const issue = {
         ...pendingIssue(policy),
         title: "Release without numeric prefix",
-        labels: ["1.6.6"],
+        labels: ["1.6"],
         workProducts: [{ type: "pull_request", status: "merged" }],
       };
       expect(() => applyIssueExecutionPolicyTransition({

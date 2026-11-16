@@ -24,7 +24,7 @@ type IssueLike = AssigneeLike & {
   id?: string;
   status: string;
   title?: string | null;
-  labels?: string[];
+  labels?: readonly (string | { name: string })[];
   workProducts?: readonly { type: string; status: string }[];
   hasCurrentReleaseEvidence?: boolean;
   projectId?: string | null;
@@ -1161,7 +1161,9 @@ function requestChangesOrphanedPendingReviewStage(
 function applyIssueExecutionStageTransition(input: TransitionInput): TransitionResult {
   const patch: Record<string, unknown> = {};
   const isRelease = isReleaseTask(input.issue.title ?? null) ||
-    (input.issue.labels ?? []).some((label) => normaliseReleasePrefix(label) !== null);
+    (input.issue.labels ?? []).some((label) =>
+      normaliseReleasePrefix(typeof label === "string" ? label : label.name) !== null,
+    );
   const assertReleaseEvidence = () => {
     if (isRelease && input.issue.workProducts?.some((product) =>
       product.type === "pull_request" && product.status === "merged",
