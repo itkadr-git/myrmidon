@@ -48,6 +48,7 @@ export interface PutFileInput {
   originalFilename: string | null;
   contentType: string;
   body: Buffer;
+  beforeWrite?: (objectKey: string) => Promise<void>;
 }
 
 export interface PutFileResult {

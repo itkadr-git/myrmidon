@@ -96,6 +96,8 @@ export function createStorageService(provider: StorageProvider): StorageService 
       const objectKey = buildObjectKey(input.companyId, input.namespace, input.originalFilename);
       const byteSize = input.body.length;
       const contentType = input.contentType.trim().toLowerCase();
+      // Callers can durably record the generated key before any storage side effect.
+      await input.beforeWrite?.(objectKey);
       await provider.putObject({
         objectKey,
         body: input.body,
