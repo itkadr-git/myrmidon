@@ -82,4 +82,3 @@ The manifest must describe the effective runtime argv and environment; this tool
 cannot verify their source or inspect a built image.
 
 Test in CI with `node --test scripts/myrmidon/bundle-audit/boot-contract.test.mjs`.
-
