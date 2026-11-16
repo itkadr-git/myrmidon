@@ -405,6 +405,26 @@ describe("createReviewPullRequestCiResolver", () => {
     expect(tokenProvider).not.toHaveBeenCalled();
   });
 
+  it("does not trust webhook CI for a head superseded in the work product", async () => {
+    const now = new Date();
+    const rows = [
+      { event: "pull_request", createdAt: now, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "old" } },
+      { event: "check_run", createdAt: now, normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "old", checkName: "CI result", status: "completed", conclusion: "success" } },
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([{ ...openProduct, metadata: { headSha: "new" } }]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const fetch = vi.fn(fakeFetch({ [PULL]: { state: "open", head: { sha: "new" } } }));
+    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => null });
+    const result = await resolver({ companyId: "company-1", issueId: "issue-1" });
+    expect(fetch).toHaveBeenCalled();
+    expect(result).not.toMatchObject({ state: "complete", headSha: "old" });
+  });
+
   it("answers no_pull_request without a token or network call when the issue has no open PR", async () => {
     let tokenRequested = false;
     const resolver = createReviewPullRequestCiResolver({
