@@ -377,6 +377,24 @@ describe("myr-ws open — physical volume budget", { skip: !hasGit }, () => {
     assert.equal(recovered.exitCode, 0, recovered.stderr);
     assert.equal(copyOf(recovered).reused, false);
   });
+
+  it("reuses an existing copy even when the volume falls below the threshold", async () => {
+    const opened = await run(["ABC-902", REPO, "--json"], { statfs: () => ({ blocks: 100, bavail: 10 }) });
+    assert.equal(opened.exitCode, 0, opened.stderr);
+    const reused = await run(["ABC-902", REPO, "--json"], { statfs: () => ({ blocks: 100, bavail: 9 }) });
+    assert.equal(reused.exitCode, 0, reused.stderr);
+    assert.equal(copyOf(reused).reused, true);
+  });
+
+  it("warns and preserves existing admission when the filesystem measurement fails", async () => {
+    const warnings = [];
+    const result = await run(["ABC-903", REPO, "--json"], {
+      statfs: () => { throw new Error("statfs unavailable"); },
+      warn: (message) => warnings.push(message),
+    });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.match(warnings.join("\n"), /physical disk budget measurement failed: statfs unavailable/);
+  });
 });
 
 describe("myr-ws open — disk pressure", { skip: !hasGit }, () => {
