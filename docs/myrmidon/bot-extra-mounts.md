@@ -26,7 +26,9 @@ absolute paths:
 MYRMIDON_BOT_MOUNT_SOURCES=/srv/shared/sources,/srv/shared/tools
 ```
 
-* Unset or empty means **no extra mount is allowed** (fail-closed).
+* The UI-saved `bot_mount_sources` list takes precedence over the environment
+  value; the lists are not combined. An empty saved list allows no extra mounts.
+  If no UI value is saved, an unset or empty environment value allows none.
 * A card can only name a directory from this list, and only by its exact path —
   there is no prefix rule, so naming `/srv/shared` does not allow
   `/srv/shared/sources`.
@@ -52,8 +54,8 @@ MYRMIDON_BOT_MOUNT_SOURCES=/srv/shared/sources,/srv/shared/tools
 }
 ```
 
-* `source` — an absolute host directory; it must be listed in
-  `MYRMIDON_BOT_MOUNT_SOURCES`.
+* `source` — an absolute host directory; it must be in the effective list
+  described above.
 * `path` — the absolute mount point inside the container.
 * `readOnly` — optional, defaults to `true`. `false` is refused: a shared
   directory is never mounted writable.
@@ -96,7 +98,7 @@ are in
 
 | Rule | Reason |
 |---|---|
-| source is not in `MYRMIDON_BOT_MOUNT_SOURCES` | the card must not reach a host directory the operator did not name |
+| source is not in the effective mount source list | the card must not reach a host directory the operator did not name |
 | source is relative, has `..`, `//`, a trailing `/`, a backslash, a control character, or is `/` | two spellings of one directory would compare unequal, and `/` would hand over the host |
 | `readOnly` is `false` | extra mounts are read-only by design |
 | `path` is relative, unsafe, or is `/workspace`, `/scratch`, `/tmp`, `/bot`, `/data/hermes` itself, or a path inside one of them | the driver's own mounts and the image's tmpfs must not be shadowed (`/bot` is reserved by the image contract, see bot-disk-cache.md) — the three owner-data subtrees of `/data/hermes` are the exception above |
