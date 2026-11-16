@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, companies, companyMemberships, companyTransferRuns, createDb, issues, projects } from "@myrmidon/db";
 
 import { companyRoutes } from "../routes/companies.js";
+import { companyService } from "../services/companies.js";
 import { errorHandler } from "../middleware/index.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
@@ -105,6 +106,28 @@ describe("company migration dry run", () => {
     } finally {
       insert.mockRestore(); update.mockRestore(); remove.mockRestore();
     }
+  });
+
+  it("atomically associates a created company with an applying transfer run", async () => {
+    const [run] = await db.insert(companyTransferRuns).values({
+      direction: "import", status: "applying", actorKey: "migration-test",
+      idempotencyKey: "provenance-success", containerRef: {},
+    }).returning();
+    const company = await companyService(db).create({ name: "Provenance destination" }, { transferRunId: run!.id });
+    const saved = (await db.select().from(companyTransferRuns)).find((entry) => entry.id === run!.id);
+    expect(saved?.companyId).toBe(company.id);
+  });
+
+  it("rolls back company creation when its transfer run cannot be claimed", async () => {
+    const [run] = await db.insert(companyTransferRuns).values({
+      direction: "import", status: "failed", actorKey: "migration-test",
+      idempotencyKey: "provenance-rejected", containerRef: {},
+    }).returning();
+    await expect(companyService(db).create({ name: "Unclaimable destination" }, { transferRunId: run!.id }))
+      .rejects.toThrow("Transfer run cannot claim a new company");
+    expect((await db.select().from(companies)).some((company) => company.name === "Unclaimable destination")).toBe(false);
+    const saved = (await db.select().from(companyTransferRuns)).find((entry) => entry.id === run!.id);
+    expect(saved?.companyId).toBeNull();
   });
 
   it("records destination provenance before a failure creating its owner membership", async () => {
