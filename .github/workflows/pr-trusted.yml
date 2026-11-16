@@ -354,7 +354,12 @@ jobs:
         run: node --test ./scripts/__tests__/e2e-shard.test.mjs
 
       - name: Test release verify workflow wiring
-        run: node --test ./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/cloud-source-verification.test.mjs
+        run: |
+          files=(./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/cloud-source-verification.test.mjs)
+          if [[ -f ./scripts/source-jobs-bound.myrmidon.test.mjs ]]; then
+            files+=(./scripts/source-jobs-bound.myrmidon.test.mjs)
+          fi
+          node --test "${files[@]}"
 
       - name: Test standalone package build concurrency
         run: node --test ./scripts/__tests__/build-standalone-concurrency.test.mjs
