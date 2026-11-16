@@ -145,6 +145,7 @@ import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/
 import { createPullRequestMergeDetailsResolver } from "../services/github-pull-request-merge.js";
 import { resolveGitHubRepositoryToken } from "../services/github-external-object-provider.js";
 import { checkCommitMembership, normaliseReleasePrefix, resolveReleaseRefs, routePullRequestVerdict } from "../myrmidon/release-membership.js";
+import { isReleaseTask } from "../myrmidon/task-pr-sync/policy.js";
 import { verifyReleaseComposition, aggregateReleaseCandidates, createReleaseVerificationEvidence, hasCurrentReleaseVerificationEvidence, signReleaseVerificationVerdict } from "../myrmidon/release-verification.js";
 import { readBuildCommit } from "../build-commit.js";
 import { readProductEnv } from "@myrmidon/shared/env-alias";
@@ -15677,6 +15678,11 @@ export function issueRoutes(
       } = { ...existing };
       if (updateFields.status === "done") {
         Object.assign(transitionIssue, await releaseTransitionContext(existing));
+        // A single PATCH must not hide either the old or the requested title
+        // from release classification while completing the issue.
+        if (typeof updateFields.title === "string" && isReleaseTask(updateFields.title)) {
+          transitionIssue.title = updateFields.title;
+        }
       }
       Object.assign(
         transitionIssue,
@@ -17061,6 +17067,9 @@ export function issueRoutes(
             const lockedTransitionIssue: typeof transitionIssue = {
               ...existing,
               ...lockedExisting,
+              title: typeof updateFields.title === "string" && isReleaseTask(updateFields.title)
+                ? updateFields.title
+                : lockedExisting.title,
               ...(req.body.status === "done"
                 ? await releaseTransitionContext(lockedExisting)
                 : {
