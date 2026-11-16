@@ -199,7 +199,9 @@ export async function commitKnowledgeTreeIfChanged(
     authorEnv,
   );
   const head = await git(runner, workDir, ["rev-parse", "HEAD"], authorEnv);
-  return { committed: true, commit: head.stdout.trim() || null };
+  const commit = head.stdout.trim();
+  if (!commit) throw new Error("knowledge export: empty HEAD after commit");
+  return { committed: true, commit };
 }
 
 /**
