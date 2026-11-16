@@ -134,13 +134,13 @@ export function createBotPartitionThresholdRuntime(
     // Available bytes exclude reserved blocks; exactly 10% is not low space.
     const lowSpace = usage.freeBytes / usage.totalBytes < 0.1;
     if (!lowSpace) lowSpaceNotified = false;
-    if (lowSpace && !lowSpaceNotified && deps.notifyOwner) {
-      lowSpaceNotified = true;
+    const criticalNeedsNotification = alert === "critical" && !state.criticalNotified;
+    if (((lowSpace && !lowSpaceNotified) || criticalNeedsNotification) && deps.notifyOwner) {
       try {
         await deps.notifyOwner({ usage, settings, level: "critical" });
-        state = { ...state, criticalNotified: true };
+        if (lowSpace) lowSpaceNotified = true;
+        if (alert === "critical") state = { ...state, criticalNotified: true };
       } catch (err) {
-        lowSpaceNotified = false;
         logger.error({ err }, "bot partition low-space notification failed");
       }
     }
