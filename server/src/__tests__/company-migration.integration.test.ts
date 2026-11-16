@@ -260,6 +260,18 @@ describe("company migration dry run", () => {
     expect(saved?.companyId).toBeNull();
   });
 
+  it("does not attach a new destination to an export transfer run", async () => {
+    const [run] = await db.insert(companyTransferRuns).values({
+      direction: "export", status: "applying", actorKey: "migration-test",
+      idempotencyKey: "provenance-export-rejected", containerRef: {},
+    }).returning();
+    await expect(companyService(db).create({ name: "Export provenance destination" }, { transferRunId: run!.id }))
+      .rejects.toThrow("Transfer run cannot claim a new company");
+    expect((await db.select().from(companies)).some((company) => company.name === "Export provenance destination")).toBe(false);
+    const saved = (await db.select().from(companyTransferRuns)).find((entry) => entry.id === run!.id);
+    expect(saved?.companyId).toBeNull();
+  });
+
   it("records destination provenance before a failure creating its owner membership", async () => {
     const [source] = await db.insert(companies).values({ name: "Interrupted fixture", issuePrefix: "MIF" }).returning();
     const app = express();
