@@ -466,6 +466,33 @@ describe("issue execution policy routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("rejects completion when the same update changes the title to a release", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "Ordinary task",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockReleaseProducts.mockResolvedValue([{ type: "pull_request", status: "merged" }]);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue, ...patch, updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "done", title: "1.7 Release" });
+
+    expect(res.status).toBe(422);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("reauthorizes a terminal verdict against the review policy held under the update lock", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
