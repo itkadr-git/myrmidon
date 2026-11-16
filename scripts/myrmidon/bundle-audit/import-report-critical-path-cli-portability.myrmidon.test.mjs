@@ -68,14 +68,27 @@ test('split UTF-8 stdin completes on EOF with exact output and no writes', async
   const split = input.indexOf(Buffer.from('\u00e9')) + 1;
   assert.ok(split > 1);
   const child = spawn(process.execPath, [cli], { ...options(cwd, root), stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill(); });
   let stdout = '', stderr = '', error;
+  child.stdin.on('error', err => { error = err; });
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   child.stdout.on('data', chunk => { stdout += chunk; if (Buffer.byteLength(stdout) > 1024 * 1024) child.kill(); });
   child.stderr.on('data', chunk => { stderr += chunk; if (Buffer.byteLength(stderr) > 1024 * 1024) child.kill(); });
   child.on('error', err => { error = err; });
   const closed = new Promise(resolve => child.on('close', (status, signal) => resolve({ status, signal })));
+  const assertWaiting = async stage => {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal(error, undefined, `${stage}: subprocess error`);
+    assert.equal(child.exitCode, null, `${stage}: exited before EOF`);
+    assert.equal(child.signalCode, null, `${stage}: signalled before EOF`);
+    assert.equal(stdout, '', `${stage}: stdout before EOF`);
+    assert.equal(stderr, '', `${stage}: stderr before EOF`);
+  };
   child.stdin.write(input.subarray(0, split));
-  child.stdin.end(input.subarray(split));
+  await assertWaiting('split UTF-8');
+  child.stdin.write(input.subarray(split));
+  await assertWaiting('complete JSON');
+  child.stdin.end();
   const result = await closed;
   check({ ...result, error, stdout, stderr }, 0, '{"entry":"\u00e9","paths":["\u00e9"],"bytes":3}\n', '');
   assert.deepEqual(snapshot(root), before);
