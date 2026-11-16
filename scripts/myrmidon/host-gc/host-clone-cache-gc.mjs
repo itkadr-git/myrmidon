@@ -232,6 +232,7 @@ export function parseArgs(argv) {
     scratchRoots: [],
     journal: "/var/log/myrmidon-host-gc.jsonl",
     lock: "/var/run/myrmidon-host-gc.lock",
+    requestFile: process.env.HOST_GC_REQUEST_FILE || null,
     cloneTtlHours: CLONE_TTL_HOURS,
     cacheTtlHours: CACHE_TTL_HOURS,
     scratchTtlHours: defaultScratchTtl,
@@ -256,6 +257,7 @@ export function parseArgs(argv) {
     else if (a === "--scratch-root") args.scratchRoots.push(argv[++i]);
     else if (a === "--journal") args.journal = argv[++i];
     else if (a === "--lock") args.lock = argv[++i];
+    else if (a === "--request-file") args.requestFile = argv[++i];
     else if (a === "--clone-ttl") args.cloneTtlHours = Number(argv[++i]);
     else if (a === "--cache-ttl") args.cacheTtlHours = Number(argv[++i]);
     else if (a === "--scratch-ttl") args.scratchTtlHours = Number(argv[++i]);
@@ -296,6 +298,27 @@ export function acquireLock(lockPath) {
     if (err.code === "EEXIST") return { ok: false, reason: "lock held" };
     throw err;
   }
+}
+
+// --- Extraordinary pass request (OPE-13419) ---------------------------------
+// The board defers runs while the bot volume has less than 10% free and asks for a cleanup by
+// writing one small JSON file (MYRMIDON_HOST_GC_REQUEST_FILE on the board, HOST_GC_REQUEST_FILE /
+// --request-file here; a systemd .path unit starts this service when the file changes). The file
+// is removed when a pass starts, before the lock is taken: a pass that is already running serves
+// the request, and the next request is a new file. The request only starts a pass and puts it in
+// the existing disk-pressure mode (short scratch TTL); it never widens what may be deleted.
+export function consumeGcRequest(requestPath) {
+  if (!requestPath) return null;
+  let raw;
+  try { raw = fs.readFileSync(requestPath, "utf8"); } catch { return null; }
+  try { fs.unlinkSync(requestPath); } catch { /* another pass took it */ }
+  let parsed = {};
+  try { parsed = JSON.parse(raw); } catch { /* an unreadable request is still a request */ }
+  return {
+    reason: typeof parsed.reason === "string" ? parsed.reason : "unknown",
+    freePercent: Number.isFinite(parsed.freePercent) ? parsed.freePercent : null,
+    requestedAt: typeof parsed.requestedAt === "string" ? parsed.requestedAt : null,
+  };
 }
 
 // --- Journal ----------------------------------------------------------------
@@ -2115,6 +2138,9 @@ async function main() {
     journalRecord(args.journal, { event: "test-hook-ignored", level: "warn", variable: "HOST_GC_TEST_ALLOW_LOCAL_REMOTES", reason: "ignored under --apply" });
   }
 
+  const gcRequest = applyMode ? consumeGcRequest(args.requestFile) : null;
+  if (gcRequest) journalRecord(args.journal, { event: "gc-request", ...gcRequest });
+
   const lock = acquireLock(args.lock);
   if (!lock.ok) {
     console.error(JSON.stringify({ ok: false, reason: lock.reason }));
@@ -2126,6 +2152,9 @@ async function main() {
     const cloneTtlMs = args.cloneTtlHours * HOUR_MS;
     const cacheTtlMs = args.cacheTtlHours * HOUR_MS;
     const usedPercent = diskUsedPercent(root);
+    if (gcRequest && (usedPercent === null || usedPercent < args.pressurePercent)) {
+      args.scratchTtlHours = Math.min(args.scratchTtlHours, PRESSURE_SCRATCH_TTL_HOURS);
+    }
     if (usedPercent !== null && usedPercent >= args.pressurePercent) {
       args.scratchTtlHours = Math.min(args.scratchTtlHours, PRESSURE_SCRATCH_TTL_HOURS);
       journalRecord(args.journal, { event: "disk-pressure", usedPercent, thresholdPercent: args.pressurePercent, scratchTtlHours: args.scratchTtlHours });
