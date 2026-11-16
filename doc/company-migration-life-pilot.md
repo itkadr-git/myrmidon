@@ -67,7 +67,9 @@ serialize competing applies, and prove recovery after interruption. A completed
 transfer ledger entry or a list assembled only after import returns is not enough
 for retry or rollback after a partial failure.
 
-The current export-preview unit test uses mocked services. It is not proof that a
-migration dry-run leaves database rows, storage and audit unchanged. Verify those
-boundaries against the actual migration entry point in integration tests before
-claiming the read-only gate is satisfied.
+The export-preview unit test uses mocked services and is not proof of the
+read-only gate. `server/src/__tests__/company-migration.integration.test.ts`
+exercises the migration route against a database and local storage, comparing
+company, agent, project, issue, transfer-run and audit rows and storage files
+before and after a dry run. The gate is satisfied only when that integration
+test actually executes successfully in CI; a skipped test is not evidence.
