@@ -265,7 +265,10 @@ export class FleetOnboardExecutor {
                 } catch {
                   // A lost SSH session leaves restoration unconfirmed.
                 }
-                if (!restored) throw new Error("Password hardening failed and configuration restoration failed");
+                if (!restored) {
+                  const cause = error instanceof Error ? error.message : String(error);
+                  throw new Error(`Password hardening failed: ${cause}; configuration restoration failed`);
+                }
                 throw error;
               }
               await activeSsh.execute(`sudo rm -rf ${backup}`);
