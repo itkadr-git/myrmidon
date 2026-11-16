@@ -24,6 +24,19 @@ test('unknown metadata inside an otherwise healthy snapshot is not healthy', () 
   assert.notEqual(run(input + '  UNKNOWN: garbage\n').status, 'healthy');
 });
 
+test('truncated records and corrupted tails inside healthy snapshots are unknown', () => {
+  const input = readFileSync(fixture('established'), 'utf8');
+  for (const [original, replacement] of [
+    ['INSTALLED, TUNNEL, ESP:AES_GCM_16_128', 'INSTALLED,'],
+    ['ESTABLISHED, IKEv2', 'ESTABLISHED, IKEv2 garbage'],
+    ['INSTALLED, TUNNEL, ESP:AES_GCM_16_128', 'INSTALLED, TUNNEL, ESP:AES_GCM_16_128 garbage'],
+    ['1024 bytes, 12 packets, 1s ago', '1024 bytes, garbage'],
+    ["local  'local.example' @ 192.0.2.1[500]", 'local  garbage'],
+  ]) {
+    assert.equal(run(input.replace(original, replacement)).status, 'unknown', replacement);
+  }
+});
+
 test('IKE without CHILD is not healthy even when named established', () => {
   assert.notEqual(run('office: #1, ESTABLISHED, IKEv2\n').status, 'healthy');
   assert.notEqual(run('office\n').status, 'healthy');
