@@ -240,7 +240,11 @@ describe.sequential("company route cross-company authorization", () => {
       manifest: { ...exported.manifest, envInputs: [{ key: "TOKEN", agentSlug: "missing", projectSlug: null,
         kind: "secret", requirement: "required" }] },
     });
-    const app = await createApp(boardActor({ userId: "owner-a", companyIds: [companyAId] }));
+    const app = await createApp(boardActor({
+      userId: "owner-a",
+      companyIds: [companyAId],
+      memberships: [{ companyId: companyAId, membershipRole: "owner", status: "active" }],
+    }));
     const response = await request(app).post(`/api/companies/${companyAId}/migrations`).send({
       target: { mode: "new_company", newCompanyName: "Destination" },
     }).expect(200);
