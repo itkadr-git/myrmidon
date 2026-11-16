@@ -17042,8 +17042,14 @@ export function issueRoutes(
           issue = await db.transaction(async (tx) => {
             const lockedExisting = await svc.getByIdForUpdate(id, tx);
             if (!lockedExisting) return null;
-            const lockedReviewParticipants = nextExecutionPolicy
-              ? summarizeExecutionParticipants(nextExecutionPolicy, "review").flatMap(
+            const lockedPreviousExecutionPolicy = safeNormalizeIssueExecutionPolicy(
+              lockedExisting.executionPolicy ?? null,
+            );
+            const lockedNextExecutionPolicy = req.body.executionPolicy !== undefined
+              ? nextExecutionPolicy
+              : lockedPreviousExecutionPolicy;
+            const lockedReviewParticipants = lockedNextExecutionPolicy
+              ? summarizeExecutionParticipants(lockedNextExecutionPolicy, "review").flatMap(
                   (participant) => participant.type === "agent" && participant.agentId ? [participant.agentId] : [],
                 )
               : [];
@@ -17061,7 +17067,7 @@ export function issueRoutes(
               executionReviewParticipantAgentIds: lockedReviewParticipants,
             };
             if (
-              nextExecutionPolicy === null &&
+              lockedNextExecutionPolicy === null &&
               lockedExisting.assigneeAgentId &&
               (lockedExisting.status === "in_review" || updateFields.status === "in_review")
             ) {
@@ -17070,8 +17076,8 @@ export function issueRoutes(
             }
             const lockedTransition = applyIssueExecutionPolicyTransition({
               issue: lockedTransitionIssue,
-              policy: nextExecutionPolicy,
-              previousPolicy: previousExecutionPolicy,
+              policy: lockedNextExecutionPolicy,
+              previousPolicy: lockedPreviousExecutionPolicy,
               // myrmidon(OPE-10045): re-check a pre-merge approval as the
               // approval it is, so a stage that changed under the lock refuses it.
               requestedStatus: reviewApprovalPendingMerge ? "done" : updateFields.status,
