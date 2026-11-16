@@ -3,6 +3,21 @@ import { companyMigrationService } from "../services/company-migration.js";
 import type { companyPortabilityService } from "../services/company-portability.js";
 
 describe("migration dry-run warnings", () => {
+  it("changes the run key when secret binding metadata changes even if package files do not", async () => {
+    const manifest = { agents: [], projects: [], issues: [], skills: [], envInputs: [
+      { key: "TOKEN", agentSlug: null, projectSlug: null, kind: "secret", requirement: "required" },
+    ] };
+    const portability = {
+      exportBundle: vi.fn().mockResolvedValue({ rootPath: "package", files: {}, manifest, warnings: [] }),
+      previewImport: vi.fn().mockResolvedValue({ errors: [], warnings: [] }),
+    } as unknown as ReturnType<typeof companyPortabilityService>;
+    const service = companyMigrationService(portability);
+    const first = await service.dryRun("source", {}, "destination");
+    manifest.envInputs[0]!.requirement = "optional";
+    const second = await service.dryRun("source", {}, "destination");
+    expect(first.runKey).not.toBe(second.runKey);
+  });
+
   it("forwards the requested collision strategy to the import planner", async () => {
     const manifest = { agents: [], projects: [], issues: [], skills: [], envInputs: [] };
     const previewImport = vi.fn().mockResolvedValue({ errors: [], warnings: [] });
