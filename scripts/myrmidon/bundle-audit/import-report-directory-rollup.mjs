@@ -51,7 +51,7 @@ function rollup(report) {
 try {
   if (process.argv.length !== 3) fail('argv');
   let input;
-  try { input = readFileSync(process.argv[2], 'utf8'); } catch { fail('file'); }
+  try { input = readFileSync(process.argv[2] === '-' ? 0 : process.argv[2], 'utf8'); } catch { fail('file'); }
   let report;
   try { report = JSON.parse(input); } catch { fail('json'); }
   process.stdout.write(JSON.stringify(rollup(report)) + '\n');
