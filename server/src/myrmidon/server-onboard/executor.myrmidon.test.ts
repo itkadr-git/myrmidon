@@ -462,6 +462,21 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockReporter.completion?.status).toBe("failed");
   });
 
+  it("refuses firewall changes when the timer launch returns without confirming a running timer", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse(/nohup sh -c 'sleep 300/, { exitCode: 0, stdout: "" });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-unconfirmed-timer", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(ssh.hasExecuted(/sudo ufw allow|sudo ufw default/)).toBe(false);
+  });
+
   it("does not add an SSH rule when the rollback timer cannot start", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse(/nohup sh -c 'sleep 300/, { exitCode: 1, stderr: "timer unavailable" });
