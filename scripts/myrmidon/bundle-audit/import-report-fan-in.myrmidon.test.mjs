@@ -1,6 +1,6 @@
 import { deepStrictEqual, equal, match, ok } from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +9,7 @@ import test from 'node:test';
 const here = dirname(fileURLToPath(import.meta.url));
 const cli = join(here, 'import-report-fan-in.mjs');
 const importBudget = join(here, 'import-budget.mjs');
-const scratchRoot = process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_SCRATCH_DIR || tmpdir();
+const scratchRoot = process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_SCRATCH_DIR || homedir();
 
 function runReport(report) {
   const dir = mkdtempSync(join(scratchRoot, 'fan-in-'));
@@ -72,6 +72,27 @@ test('reports exact direct eager fan-in and is independent of input permutations
   equal(second.stdout, first.stdout);
 });
 
+test('cycle and equal ranks use code-unit path order', () => {
+  const result = runReport({
+    entry: 'root',
+    modules: [
+      { path: 'root', bytes: 1, eager: true },
+      { path: 'z', bytes: 5, eager: true },
+      { path: 'A', bytes: 5, eager: true },
+      { path: 'consumer', bytes: 1, eager: false },
+    ],
+    edges: [edge('root', 'z', 'eager', 'z'), edge('root', 'A', 'eager', 'A'),
+      edge('z', 'root', 'eager', 'root'), edge('consumer', 'A', 'eager', 'A'),
+      edge('root', 'consumer', 'lazy', 'consumer')],
+  });
+  equal(result.status, 0, result.stderr);
+  equal(result.stdout, JSON.stringify({ entry: 'root', modules: [
+    { path: 'A', bytes: 5, importerCount: 1, importers: ['root'] },
+    { path: 'z', bytes: 5, importerCount: 1, importers: ['root'] },
+    { path: 'root', bytes: 1, importerCount: 1, importers: ['z'] },
+  ] }) + '\n');
+});
+
 test('accepts additional fields and preserves zero-importer entry only', () => {
   const report = runReport({
     ...graph,
@@ -99,12 +120,12 @@ test('rejects malformed reports without stdout or echoed input', () => {
 });
 
 test('rejects argv, read, and JSON errors with stable category', () => {
-  const noArg = spawnSync(process.execPath, [cli], { encoding: 'utf8' });
+  const noArg = spawnSync(process.execPath, [cli], { encoding: 'utf8', timeout: 5000 });
   equal(noArg.status, 1);
   equal(noArg.stdout, '');
   equal(noArg.stderr, 'fan-in report: invalid input\n');
 
-  const missing = spawnSync(process.execPath, [cli, '/host/private/report.json'], { encoding: 'utf8' });
+  const missing = spawnSync(process.execPath, [cli, '/host/private/report.json'], { encoding: 'utf8', timeout: 5000 });
   equal(missing.status, 1);
   equal(missing.stdout, '');
   equal(missing.stderr, 'fan-in report: invalid input\n');
@@ -113,7 +134,7 @@ test('rejects argv, read, and JSON errors with stable category', () => {
   try {
     const input = join(dir, 'bad.json');
     writeFileSync(input, '{not json');
-    const badJson = spawnSync(process.execPath, [cli, input], { encoding: 'utf8' });
+    const badJson = spawnSync(process.execPath, [cli, input], { encoding: 'utf8', timeout: 5000 });
     equal(badJson.status, 1);
     equal(badJson.stdout, '');
     equal(badJson.stderr, 'fan-in report: invalid input\n');
@@ -129,11 +150,11 @@ test('integrates with a real import-budget report', () => {
     writeFileSync(join(dir, 'a.mjs'), "export { value } from './shared.mjs';");
     writeFileSync(join(dir, 'b.mjs'), "export { value as other } from './shared.mjs';");
     writeFileSync(join(dir, 'shared.mjs'), 'export const value = 1;');
-    const budget = spawnSync(process.execPath, [importBudget, join(dir, 'entry.mjs')], { encoding: 'utf8' });
+    const budget = spawnSync(process.execPath, [importBudget, join(dir, 'entry.mjs')], { encoding: 'utf8', timeout: 5000 });
     equal(budget.status, 0, budget.stderr);
     const reportPath = join(dir, 'report.json');
     writeFileSync(reportPath, budget.stdout);
-    const fanIn = spawnSync(process.execPath, [cli, reportPath], { encoding: 'utf8' });
+    const fanIn = spawnSync(process.execPath, [cli, reportPath], { encoding: 'utf8', timeout: 5000 });
     equal(fanIn.status, 0, fanIn.stderr);
     deepStrictEqual(JSON.parse(fanIn.stdout).modules.map(module => module.path), ['shared.mjs', 'b.mjs', 'a.mjs', 'entry.mjs']);
     deepStrictEqual(JSON.parse(fanIn.stdout).modules[0].importers, ['a.mjs', 'b.mjs']);
