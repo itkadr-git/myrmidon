@@ -48,6 +48,32 @@ test('invalid input fails closed', t => {
   for (const args of [[path,'z'],[path,'missing'],[],[path,'b','extra'],[join(root,'missing'),'b']]) { const r=run(...args); assert.equal(r.status,1); assert.equal(r.stdout,''); assert.match(r.stderr,/^[a-z ]+\n$/); }
   writeFileSync(path,'{'); const r=run(path,'b'); assert.equal(r.status,1); assert.equal(r.stdout,''); assert.match(r.stderr,/^[a-z ]+\n$/);
 });
+test('validates detailed report shape, graph references and error categories', t => {
+  const root = fixture(t), path = join(root, 'report.json');
+  const base = report(['a', 'b'], [edge('a', 'b')]);
+  const invalid = [
+    [{...base, entry:'missing'}, 'graph'],
+    [{...base, modules:[{path:'a', bytes:-1, eager:true}]}, 'shape'],
+    [{...base, modules:[{path:'a', bytes:1.5, eager:true}]}, 'shape'],
+    [{...base, modules:base.modules.map(m => ({...m, eager:'true'}))}, 'shape'],
+    [{...base, modules:[{path:'', bytes:0, eager:true}]}, 'shape'],
+    [{...base, edges:[{...edge('a','b'), specifier:''}]}, 'shape'],
+    [{...base, edges:[{...edge('a','b'), to:42}]}, 'shape'],
+    [{...base, modules:[{path:'a', bytes:Number.MAX_SAFE_INTEGER, eager:true}, {path:'b', bytes:1, eager:true}]}, 'shape'],
+    [{...base, modules:base.modules.map(m => ({...m, eager:false}))}, 'graph'],
+  ];
+  for (const [input, category] of invalid) {
+    writeFileSync(path, JSON.stringify(input));
+    const result = run(path, 'b');
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, '');
+    assert.equal(result.stderr, `${category}\n`);
+  }
+  writeFileSync(path, JSON.stringify({...base, edges:[...base.edges, {...edge('a', null), specifier:'external'}]}));
+  const result = run(path, 'b');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, JSON.stringify({entry:'a',target:'b',dominators:['a','b']}) + '\n');
+});
 test('integrates with actual import-budget scanner without executing input', t => {
   const root=fixture(t), entry=join(root,'entry.mjs');
   writeFileSync(entry,"import './middle.mjs';\nthrow new Error('must not execute');\n");
