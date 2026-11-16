@@ -84,6 +84,6 @@ describe("docker entrypoint non-root exec", () => {
   it("detects argument splitting in a scratch-copy negative control", async () => {
     const test = cases[0];
     const actual = await run(test, true);
-    expect(() => check(test, actual)).toThrow();
+    expect(() => expect(actual.stdout).toBe(JSON.stringify(args))).toThrow();
   });
 });
