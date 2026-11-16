@@ -41,6 +41,9 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
       skillIdentityOwners.set(identity, owners);
     }
   }
+  for (const owners of skillIdentityOwners.values()) {
+    if (owners.size > 1) errors.push("Package has an ambiguous skill identity.");
+  }
   const validPermissions: ReadonlySet<string> = new Set(PERMISSION_KEYS);
   const portableRoles: ReadonlySet<string> = new Set(AGENT_ROLES);
   const managers = new Map(manifest.agents.map((agent) => [agent.slug, agent.reportsToSlug]));
