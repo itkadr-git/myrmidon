@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import http from "node:http";
+import { EventEmitter } from "node:events";
 import process from "node:process";
 import { describe, it } from "node:test";
 import {
@@ -121,6 +122,63 @@ describe("buildResult", () => {
     const result = JSON.stringify(buildResult(opts, [{ index: 1, elapsedMs: 1500, cold: true }], { min: 1500, median: 1500, max: 1500 }));
     assert.ok(result.includes("SECRET_TOKEN"));
     assert.ok(!result.includes("super-secret-value"));
+  });
+});
+
+describe("measureRun poll lifecycle", () => {
+  it("aborts a hung fetch at the overall timeout without overlapping probes", async () => {
+    const child = new EventEmitter();
+    let calls = 0;
+    let aborted = false;
+    const result = measureRun({
+      command: "fake", cwd: HERE, port: 1, timeoutMs: 80, pollIntervalMs: 40,
+      spawnImpl: () => child,
+      fetchImpl: (_url, { signal }) => {
+        calls += 1;
+        return new Promise((_resolve, reject) => signal.addEventListener("abort", () => {
+          aborted = true;
+          reject(new Error("aborted"));
+        }, { once: true }));
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    child.emit("close", null, "SIGTERM");
+    await assert.rejects(result, (error) => error.kind === "timeout");
+    assert.equal(aborted, true);
+    assert.equal(calls, 1);
+  });
+
+  it("aborts an outstanding fetch when the child crashes", async () => {
+    const child = new EventEmitter();
+    let signal;
+    const result = measureRun({
+      command: "fake", cwd: HERE, port: 1, timeoutMs: 1000,
+      spawnImpl: () => child,
+      fetchImpl: (_url, opts) => {
+        signal = opts.signal;
+        return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    child.emit("close", 7, null);
+    await assert.rejects(result, (error) => error.kind === "crashed");
+    assert.equal(signal.aborted, true);
+  });
+
+  it("stops polling immediately on success while awaiting child close", async () => {
+    const child = new EventEmitter();
+    let calls = 0;
+    let signal;
+    const result = measureRun({
+      command: "fake", cwd: HERE, port: 1, timeoutMs: 80, pollIntervalMs: 10,
+      spawnImpl: () => child,
+      fetchImpl: async (_url, opts) => { calls += 1; signal = opts.signal; return { status: 200 }; },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    child.emit("close", 0, null);
+    assert.ok((await result).elapsedMs >= 0);
+    assert.equal(calls, 1);
+    assert.equal(signal.aborted, true);
   });
 });
 

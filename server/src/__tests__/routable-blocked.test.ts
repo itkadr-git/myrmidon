@@ -74,3 +74,79 @@ describe("routable blocked notifications", () => {
     });
   });
 });
+
+describe("unblock request self-wake and throttle", () => {
+  const ownerId = "00000000-0000-4000-8000-000000000001";
+  const otherId = "00000000-0000-4000-8000-000000000003";
+  const base = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 1);
+  const T0 = new Date("2026-11-16T10:00:00.000Z");
+  const min = (n: number) => new Date(T0.getTime() + n * 60_000);
+
+  function deliver(input: {
+    assignee: string;
+    now: Date;
+    lastWake?: Date | null;
+    external?: Date | null;
+    nextCheckAt?: string | null;
+    escalation?: string | null;
+  }) {
+    const wakeup = vi.fn(async () => undefined);
+    const onOutcome = vi.fn();
+    return {
+      wakeup,
+      onOutcome,
+      done: deliverAgentUnblockNotification({
+        issue: { ...blockedIssue(), assigneeAgentId: input.assignee, blockedTransitionAt: base },
+        wakeup,
+        markNotified: async () => undefined,
+        now: () => input.now,
+        nextCheckAt: input.nextCheckAt ?? null,
+        lastWakeAt: async () => input.lastWake ?? null,
+        lastExternalEventAt: async () => input.external ?? null,
+        resolveEscalationAgentId: async () => input.escalation ?? null,
+        onOutcome,
+      }),
+    };
+  }
+
+  it("does not wake the assignee when it owns its own block, and only logs without escalation", async () => {
+    const r = deliver({ assignee: agentId, now: T0 });
+    await expect(r.done).resolves.toBe(false);
+    expect(r.wakeup).not.toHaveBeenCalled();
+    expect(r.onOutcome).toHaveBeenCalledWith("self_owner_logged", expect.anything());
+  });
+
+  it("escalates a self-owned block to the lead instead of waking the assignee", async () => {
+    const r = deliver({ assignee: agentId, now: T0, escalation: otherId });
+    await expect(r.done).resolves.toBe(true);
+    expect(r.wakeup).toHaveBeenCalledTimes(1);
+    expect(r.wakeup.mock.calls[0]?.[0]).toBe(otherId);
+    expect(r.onOutcome).toHaveBeenCalledWith("self_owner_escalated", expect.anything());
+  });
+
+  it("wakes another agent owner once, then only after nextCheckAt or 30 minutes", async () => {
+    const first = deliver({ assignee: otherId, now: T0 });
+    await expect(first.done).resolves.toBe(true);
+    expect(first.wakeup).toHaveBeenCalledTimes(1);
+
+    const early = deliver({ assignee: otherId, now: min(2), lastWake: T0 });
+    await expect(early.done).resolves.toBe(false);
+    expect(early.wakeup).not.toHaveBeenCalled();
+
+    const defaultDue = deliver({ assignee: otherId, now: min(30), lastWake: T0 });
+    await expect(defaultDue.done).resolves.toBe(true);
+
+    const beforeNextCheck = deliver({ assignee: otherId, now: min(40), lastWake: T0, nextCheckAt: min(60).toISOString() });
+    await expect(beforeNextCheck.done).resolves.toBe(false);
+    const afterNextCheck = deliver({ assignee: otherId, now: min(61), lastWake: T0, nextCheckAt: min(60).toISOString() });
+    await expect(afterNextCheck.done).resolves.toBe(true);
+  });
+
+  it("wakes at once after a new external event", async () => {
+    const r = deliver({ assignee: otherId, now: min(2), lastWake: T0, external: min(1) });
+    await expect(r.done).resolves.toBe(true);
+    expect(r.wakeup).toHaveBeenCalledTimes(1);
+    const old = deliver({ assignee: otherId, now: min(2), lastWake: T0, external: min(-5) });
+    await expect(old.done).resolves.toBe(false);
+  });
+});
