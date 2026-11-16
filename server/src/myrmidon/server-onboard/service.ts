@@ -370,7 +370,6 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
         await deps.store.updateServerOnboard(job.companyId, job.serverId, {
           onboardState: nextState,
           lastCheckOk: job.kind !== "decommission",
-          ...(input.hostKeyFingerprint ? { hostKeyFingerprint: input.hostKeyFingerprint } : {}),
         });
       } else if (isFailed) {
         await deps.store.updateServerOnboard(job.companyId, job.serverId, { onboardState: "needs_attention" });

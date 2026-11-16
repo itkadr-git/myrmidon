@@ -362,7 +362,7 @@ describe("SERVER-ONBOARD logic", () => {
 
     expect(finalJob?.status).toBe("succeeded");
     expect(store.servers[0].onboardState).toBe("ready");
-    expect(store.servers[0].hostKeyFingerprint).toBe("SHA256:fingerprint");
+    expect(store.servers[0].hostKeyFingerprint).toBeNull();
   });
 
   it("claims only the requested company and consumes a claim secret once", async () => {
