@@ -12,11 +12,12 @@ function renderedQuery(query: Parameters<Db["execute"]>[0]) {
 }
 
 function fixture() {
-  const execute = vi.fn<Db["execute"]>().mockResolvedValue([
+  const execute = vi.fn(async (_query: Parameters<Db["execute"]>[0]) => [
     { item_id: "item-1", slug: "guide", title: "Guide" },
   ]);
-  const db: Pick<Db, "execute"> = { execute };
-  return { execute, index: createPgKnowledgeSearchIndex(db as Db) };
+  // The adapter only awaits execute; the real driver adds metadata to its rows.
+  const db = { execute } as unknown as Db;
+  return { execute, index: createPgKnowledgeSearchIndex(db) };
 }
 
 describe("PostgreSQL knowledge search scope", () => {
