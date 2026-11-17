@@ -62,14 +62,14 @@ describe("PostgreSQL delivered knowledge search transitions", () => {
 
   it("keeps the delivered revision searchable while a new draft exists", async () => {
     await mod.publish("page", actor);
-    await mod.draft("page", { content: v2 }, actor);
+    await mod.draft("page", { content: `${v2} describes a complete updated document.` }, actor);
     await expectHits(v1, [page]);
     await expectHits(v2, []);
   });
 
   it("replaces the indexed revision after publication", async () => {
     await mod.publish("page", actor);
-    await mod.draft("page", { content: v2 }, actor);
+    await mod.draft("page", { content: `${v2} describes a complete updated document.` }, actor);
     await mod.publish("page", actor);
     await expectHits(v1, []);
     await expectHits(v2, [page]);
@@ -78,7 +78,7 @@ describe("PostgreSQL delivered knowledge search transitions", () => {
   it("restores the first revision after rollback", async () => {
     const published = await mod.publish("page", actor);
     if (!published.deliveredRevisionId) throw new Error("First publication has no delivered revision");
-    await mod.draft("page", { content: v2 }, actor);
+    await mod.draft("page", { content: `${v2} describes a complete updated document.` }, actor);
     await mod.publish("page", actor);
     await mod.rollback("page", actor, { targetRevisionId: published.deliveredRevisionId });
     await expectHits(v1, [page]);
