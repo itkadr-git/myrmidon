@@ -43,11 +43,14 @@ for (const changed of ['cut.mjs', 'child.mjs', 'shared.mjs', 'lazy.mjs']) {
     const dir = mkdtempSync(join(scratch, 'cut-refresh-'));
     try {
       let initialOutput;
-      for (const [index, suffix] of ['', 'ascii padding', '\u00e9\u6f22\nsecond line', ''].entries()) {
+      for (const [index, suffix] of ['', 'ascii padding', '\u00e9\u6f22\n// second line', ''].entries()) {
         const sources = Object.fromEntries(Object.entries(imports).map(([name, statements]) => [name,
           `${statements}throw new Error('fixture must not execute');\n// ${name === changed ? suffix : ''}\n`,
         ]));
-        for (const [name, source] of Object.entries(sources)) writeFileSync(join(dir, name), source);
+        for (const [name, source] of Object.entries(sources)) {
+          writeFileSync(join(dir, name), source);
+          assert.equal(run(['--check', join(dir, name)]), '');
+        }
         const scan = run([scanner, join(dir, 'entry.mjs')]);
         const report = JSON.parse(scan);
         assert.equal(report.entry, topology.entry);
