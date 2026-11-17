@@ -36745,6 +36745,25 @@ export function heartbeatService(
               )) {
                 runIdsWithIssueProgress.add(runId);
               }
+              // myrmidon(OPE-14746): the streak the rewake throttle counts is
+              // streaks of runs that left nothing but their own words. A run
+              // whose only trace is its own comment ("waiting for ADM to
+              // restart CI", "disk quota") parked the task in place; it must
+              // not reset the throttle, or automatic continuations re-run the
+              // same parked task every minute. Everything the full progress
+              // read counts except `issue.comment_added` is substantive.
+              const runIdsWithNonCommentProgress = collectRunIdsWithIssueProgress(
+                progressActivityRows.filter((row) => row.action !== "issue.comment_added"),
+                () => agentId,
+              );
+              for (const runId of await readRunIdsWithPrHeadChange(
+                tx,
+                agent.companyId,
+                issue.id,
+                recentTerminalRuns,
+              )) {
+                runIdsWithNonCommentProgress.add(runId);
+              }
               const lastRunFinishedAt =
                 recentTerminalRuns[0]?.finishedAt ?? null;
               const latestRevision = readNonEmptyString(
@@ -36781,6 +36800,7 @@ export function heartbeatService(
                 freezeThreshold,
                 recentTerminalRuns,
                 runIdsWithIssueProgress,
+                runIdsWithNonCommentProgress,
                 // For an agent comment wake, the query excludes agent-authored
                 // activity while preserving genuinely new user/system input.
                 // Presentation/author metadata therefore cannot smuggle human
