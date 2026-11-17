@@ -144,7 +144,14 @@ function CompanyKnowledgeSettings({ selectedCompanyId }: { selectedCompanyId: st
     return <p data-testid="knowledge-settings-no-company">{t("knowledgeSettings.noCompany")}</p>;
   }
   if (query.isError) {
-    return <p data-testid="knowledge-settings-error">{t("knowledgeSettings.loadError")}</p>;
+    return (
+      <div>
+        <p data-testid="knowledge-settings-error">{t("knowledgeSettings.loadError")}</p>
+        {!query.data && <Button type="button" disabled={query.isFetching} onClick={() => void query.refetch()}>
+          {t("common.retry")}
+        </Button>}
+      </div>
+    );
   }
   if (!query.data || !draft) {
     return <p data-testid="knowledge-settings-loading">{t("knowledgeSettings.loading")}</p>;
