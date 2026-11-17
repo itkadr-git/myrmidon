@@ -48,7 +48,7 @@ function ReviewQueue({ companyId, text }: { companyId: string; text: Messages })
     },
   });
   return (
-    <main className="mx-auto w-full max-w-4xl space-y-4 p-4 sm:p-6">
+    <main aria-busy={decision.isPending} className="mx-auto w-full max-w-4xl space-y-4 p-4 sm:p-6">
       <h1 className="text-2xl font-semibold">{text.heading}</h1>
       {queue.isPending && <p role="status">{text.loading}</p>}
       {queue.error && <div role="alert"><p>{text.loadFailed}</p><Button onClick={() => void queue.refetch()}>{text.retry}</Button></div>}
