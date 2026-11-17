@@ -326,6 +326,32 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     });
   });
 
+  it("preserves a monitor rescheduled while its previous wake is enqueued", async () => {
+    const { issueId, nextCheckAt } = await seedFixture();
+    const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_reschedule_monitor() RETURNS trigger AS $$
+      BEGIN
+        UPDATE issues SET monitor_next_check_at = '${rescheduledAt.toISOString()}'::timestamptz,
+          execution_policy = jsonb_set(execution_policy, '{monitor,nextCheckAt}', to_jsonb('${rescheduledAt.toISOString()}'::text)),
+          execution_state = jsonb_set(execution_state, '{monitor,nextCheckAt}', to_jsonb('${rescheduledAt.toISOString()}'::text))
+        WHERE id = '${issueId}'::uuid;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_reschedule_monitor AFTER INSERT ON agent_wakeup_requests
+      FOR EACH ROW EXECUTE FUNCTION test_reschedule_monitor();
+    `));
+    try {
+      await heartbeatService(db, { executesRuns: false }).tickTimers(nextCheckAt);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(after!.monitorNextCheckAt?.toISOString()).toBe(rescheduledAt.toISOString());
+      expect(normalizeIssueExecutionPolicy(after!.executionPolicy)?.monitor?.nextCheckAt).toBe(rescheduledAt.toISOString());
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER test_reschedule_monitor ON agent_wakeup_requests; DROP FUNCTION test_reschedule_monitor();"));
+      await db.delete(heartbeatRuns);
+    }
+  });
+
   it("hands a queued monitor wake to the reviewer selected before admission", async () => {
     const { companyId, issueId, agentId, nextCheckAt } = await seedFixture({ issueStatus: "in_review" });
     const oldReviewer = randomUUID();
