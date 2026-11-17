@@ -574,8 +574,11 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       await waitForHeartbeatSideEffectsSettled();
       expect((await executor.tickTimers(new Date(nextCheckAt.getTime() + 60_000))).enqueued).toBe(0);
       const runs = await db.select().from(heartbeatRuns);
-      expect(runs.filter((run) => run.agentId === newReviewer)).toHaveLength(1);
-      expect(runs.filter((run) => run.status === "succeeded").map((run) => run.agentId)).toEqual([newReviewer]);
+      // The no-op test adapter can trigger the independent missing-comment retry.
+      expect(runs.filter((run) => run.agentId === newReviewer && !run.retryOfRunId)).toHaveLength(1);
+      expect(runs.filter((run) => run.agentId === newReviewer && !run.retryOfRunId).map((run) => run.status)).toEqual(["succeeded"]);
+      const wakes = await db.select().from(agentWakeupRequests);
+      expect(wakes.filter((wake) => wake.idempotencyKey?.startsWith("issue-monitor-handoff:"))).toHaveLength(0);
       const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
       expect(parseIssueExecutionState(after!.executionState)).toMatchObject({
         currentParticipant: { type: "agent", agentId: newReviewer }, returnAssignee,
