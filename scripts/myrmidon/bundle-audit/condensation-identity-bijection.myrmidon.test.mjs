@@ -91,12 +91,78 @@ test('identity bijections preserve the complete eager and all condensation repor
   assert.equal(JSON.stringify(fixture), original);
 });
 
+// A transitive-closure model computes mutual reachability without copying the CLI traversal.
+function model(report, mode) {
+  const paths = report.modules.map(m => m.path).sort(cmp);
+  const reach = paths.map((_, i) => paths.map((__, j) => i === j));
+  for (const e of report.edges) {
+    if (e.to !== null && (mode === 'all' || e.kind === 'eager')) reach[paths.indexOf(e.from)][paths.indexOf(e.to)] = true;
+  }
+  for (let k = 0; k < paths.length; k++) for (let i = 0; i < paths.length; i++) for (let j = 0; j < paths.length; j++) {
+    reach[i][j] ||= reach[i][k] && reach[k][j];
+  }
+  const groups = [];
+  for (let i = 0; i < paths.length; i++) {
+    if (!groups.some(g => g.includes(paths[i]))) groups.push(paths.filter((_, j) => reach[i][j] && reach[j][i]));
+  }
+  const owner = path => groups.find(g => g.includes(path))[0];
+  const components = groups.map(paths => ({ id: paths[0], paths, bytes: paths.reduce((n, path) => n + report.modules.find(m => m.path === path).bytes, 0) }));
+  const edges = [];
+  for (const e of report.edges) {
+    if (e.to === null || (mode === 'eager' && e.kind !== 'eager')) continue;
+    const from = owner(e.from), to = owner(e.to);
+    if (from !== to && !edges.some(e => e.from === from && e.to === to)) edges.push({ from, to });
+  }
+  edges.sort((a, b) => cmp(a.from, b.from) || cmp(a.to, b.to));
+  return { entry: report.entry, components, edges };
+}
+function assertExact(result, report, mode) {
+  assert.equal(result.signal, null);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, '');
+  assert.equal(result.stdout, `${JSON.stringify(model(report, mode))}\n`);
+}
+const m = (path, bytes, eager) => ({ path, bytes, eager });
+const e = (from, to, kind, specifier) => ({ from, to, kind, specifier });
+const mixed = [
+  fixture,
+  { entry: 'a', modules: [m('a', 2, true), m('b', 3, false), m('c', 5, true)], edges: [e('a', 'b', 'eager', 'ab'), e('b', 'a', 'lazy', 'ba'), e('b', 'c', 'eager', 'bc'), e('c', null, 'lazy', 'external')] },
+  { entry: 'a', modules: [m('a', 0, false), m('b', 6, true), m('c', 4, true), m('d', 1, false)], edges: [e('a', 'b', 'lazy', 'ab'), e('b', 'c', 'eager', 'bc'), e('c', 'a', 'eager', 'ca'), e('d', 'c', 'eager', 'dc')] },
+  { entry: 'a', modules: [m('a', 1, true), m('b', 9, false), m('c', 4, true), m('d', 2, false)], edges: [e('a', 'b', 'eager', 'ab'), e('b', 'a', 'eager', 'ba'), e('c', 'd', 'lazy', 'cd'), e('d', 'c', 'eager', 'dc'), e('b', 'c', 'eager', 'bc'), e('a', 'd', 'eager', 'ad')] },
+];
+const literalNames = [
+  ['z space', '../alpha', '\u96ea!', 'punct:?#', 'isolated'],
+  ['../first', 'middle space', 'z\u03bb', '!last', 'other'],
+];
+test('mixed graphs match an independent mutual-reachability model after bijections', () => {
+  for (const original of mixed) for (const mode of ['eager', 'all']) {
+    const variants = literalNames.map(names => {
+      const map = Object.fromEntries(original.modules.map((m, i) => [m.path, names[i]]));
+      assert.equal(new Set(Object.values(map)).size, original.modules.length);
+      return rename(original, map);
+    });
+    for (const report of [original, ...variants]) assertExact(run(report, mode), report, mode);
+  }
+  const reordered = rename(fixture, Object.fromEntries(fixture.modules.map((m, i) => [m.path, literalNames[0][i]])));
+  assert.equal(model(reordered, 'eager').components.find(c => c.paths.includes('z space')).id, '../alpha');
+});
+test('exact assertion rejects corrupted outputs', () => {
+  const result = run(fixture, 'all');
+  assertExact(result, fixture, 'all');
+  for (const stdout of ['{}\n', JSON.stringify({ ...model(fixture, 'all'), edges: [] }) + '\n']) {
+    assert.throws(() => assertExact({ ...result, stdout }, fixture, 'all'));
+  }
+});
+
 test('colliding renames are rejected by the CLI', () => {
-  const report = rename(fixture, { ...maps[0], b: maps[0].a });
+  const sentinel = 'SENTINEL_private_identity';
+  const report = rename(fixture, { ...maps[0], a: sentinel, b: sentinel });
   for (const mode of ['eager', 'all']) {
     const result = run(report, mode);
-    assert.notEqual(result.status, 0);
+    assert.equal(result.signal, null);
+    assert.equal(result.status, 1);
     assert.equal(result.stdout, '');
     assert.equal(result.stderr, 'graph\n');
+    assert.ok(!result.stderr.includes(sentinel));
   }
 });
