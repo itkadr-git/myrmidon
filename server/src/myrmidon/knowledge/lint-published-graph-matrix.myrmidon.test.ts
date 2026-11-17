@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { lintKnowledgePages, type KnowledgeLintPage, type KnowledgeLintReport } from "./lint.js";
+import { lintKnowledgePages, type KnowledgeLintFinding, type KnowledgeLintPage, type KnowledgeLintReport } from "./lint.js";
 
 const statuses = ["draft", "in_review", "archived", "superseded"] as const;
 const source = { kind: "document", ref: "spec" };
 const page = (slug: string, content: string, status: KnowledgeLintPage["status"] = "published", sources: KnowledgeLintPage["sources"] = [source]): KnowledgeLintPage => ({ slug, content, status, sources });
-const orphan = (slug: string) => ({ kind: "orphan", slug, suggestion: "Add an inbound [[link]] from a related page or mark this page archived." });
-const unresolved = (slug: string, target: string) => ({ kind: "unresolved_link", slug, target, suggestion: `Create a published page for [[${target}]] or remove the link.` });
+const orphan = (slug: string): KnowledgeLintFinding => ({ kind: "orphan", slug, suggestion: "Add an inbound [[link]] from a related page or mark this page archived." });
+const unresolved = (slug: string, target: string): KnowledgeLintFinding => ({ kind: "unresolved_link", slug, target, suggestion: `Create a published page for [[${target}]] or remove the link.` });
 
 function checkFrozenPermutations(pages: KnowledgeLintPage[], expected: KnowledgeLintReport) {
   for (const item of pages) {
