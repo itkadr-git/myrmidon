@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -111,6 +111,7 @@ test("CLI emits exact original and renamed JSON without changing snapshots", t =
     writeFileSync(first, originalA); writeFileSync(second, originalB);
     const run = spawnSync(process.execPath, [fileURLToPath(new URL("./diff.mjs", import.meta.url)), first, second], { cwd: dir, encoding: "utf8" });
     assert.equal(run.status, 1, run.stderr); assert.deepEqual(JSON.parse(run.stdout), result);
+    assert.equal(readFileSync(first, "utf8"), originalA); assert.equal(readFileSync(second, "utf8"), originalB);
     assert.equal(JSON.stringify(a), originalA); assert.equal(JSON.stringify(b), originalB);
   }
 });
