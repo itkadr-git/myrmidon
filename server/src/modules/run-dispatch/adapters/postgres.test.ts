@@ -543,6 +543,26 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
         reason: "issue_monitor_due", payload: { issueId, wakeReason: "issue_monitor_due" } }]);
     });
 
+    it("does not duplicate a deferred reviewer wake when cancelling a stale monitor", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const reviewer = randomUUID();
+      await seedAgent({ id: reviewer, companyId, name: "Current reviewer" });
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_review", assigneeAgentId: agentId,
+        executionState: { status: "pending", currentStageId: randomUUID(), currentStageIndex: 0,
+          currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewer, userId: null },
+          returnAssignee: { type: "agent", agentId, userId: null }, reviewRequest: null,
+          completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null } });
+      await db.insert(agentWakeupRequests).values({ companyId, agentId: reviewer, source: "automation",
+        triggerDetail: "system", reason: "execution_review_requested", status: "deferred_issue_execution",
+        payload: { issueId } });
+      const runId = await seedRun({ companyId, agentId, contextSnapshot: { issueId, wakeReason: "issue_monitor_due" } });
+      expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        companyId, runId, expectedStatus: "queued", now: new Date(),
+      })).toMatchObject({ outcome: "cancelled", errorCode: "issue_review_participant_changed" });
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+    });
+
     it.each([
       { label: "chat source", source: "chat:slack", expected: "chat:slack" },
       {
