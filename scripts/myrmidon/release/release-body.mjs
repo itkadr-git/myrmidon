@@ -74,7 +74,7 @@ export function extractChangelogSection(markdown, version) {
   if (start < 0) return null;
   const out = [];
   for (let i = start + 1; i < lines.length; i += 1) {
-    if (/^## /.test(lines[i])) break;
+    if (/^ {0,3}##[ \t]/.test(lines[i])) break;
     out.push(lines[i]);
   }
   const section = out.join("\n").trim();
