@@ -54,7 +54,10 @@ it("blocks edits and duplicate saves until the pending PATCH completes", async (
   expect(patchMock).toHaveBeenCalledWith("company-1", { maxItems: "7000" });
   expect(save.disabled).toBe(true);
   expect(bytes.matches(":disabled")).toBe(true);
-  await act(async () => { save.click(); });
+  for (const control of container.querySelectorAll("input, select, button")) {
+    expect(control.matches(":disabled")).toBe(true);
+  }
+  await act(async () => { bytes.click(); save.click(); });
   expect(patchMock).toHaveBeenCalledTimes(1);
   expect(bytes.value).toBe("262144");
   await act(async () => { resolvePatch({ ...view, maxItems: { value: 7000, source: "ui" } }); });
