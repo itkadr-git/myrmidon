@@ -370,6 +370,37 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     }
   });
 
+  it("preserves a concurrent reschedule when an old monitor is deferred for CI", async () => {
+    const { companyId, issueId, nextCheckAt } = await seedFixture();
+    const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
+    await db.insert(issueWorkProducts).values({
+      id: randomUUID(), companyId, issueId, type: "pull_request", provider: "github",
+      title: "PR #123", status: "open", metadata: { activeCi: { status: "in_progress" } },
+    });
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_reschedule_on_claim() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_next_check_at = '${rescheduledAt.toISOString()}'::timestamptz,
+            execution_policy = jsonb_set(execution_policy, '{monitor,nextCheckAt}', to_jsonb('${rescheduledAt.toISOString()}'::text)),
+            execution_state = jsonb_set(execution_state, '{monitor,nextCheckAt}', to_jsonb('${rescheduledAt.toISOString()}'::text))
+          WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_reschedule_on_claim AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_reschedule_on_claim();
+    `));
+    try {
+      await heartbeatService(db, { executesRuns: false }).tickTimers(nextCheckAt);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(after!.monitorNextCheckAt?.toISOString()).toBe(rescheduledAt.toISOString());
+      expect(normalizeIssueExecutionPolicy(after!.executionPolicy)?.monitor?.nextCheckAt).toBe(rescheduledAt.toISOString());
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER test_reschedule_on_claim ON issues; DROP FUNCTION test_reschedule_on_claim();"));
+    }
+  });
+
   it("preserves a monitor rescheduled while its previous wake is enqueued", async () => {
     const { issueId, nextCheckAt } = await seedFixture();
     const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
