@@ -78,7 +78,7 @@ describe("knowledge export unsafe prefix preflight", () => {
         [`checkout/${prefix}/nested/`]: "directory",
         [`checkout/${prefix}/nested/page.md`]: Buffer.from("exported content\n").toString("hex"),
       });
-      expect(calls).toEqual(["ls-files", "add", "status", "commit", "rev-parse"]);
+      expect(calls).toEqual([...(prefix ? ["status"] : []), "ls-files", "add", "status", "commit", "rev-parse"]);
     });
   });
 });

@@ -71,7 +71,7 @@ describe("knowledge export NUL path preflight", () => {
       const result = await commitKnowledgeTreeIfChanged(runner, checkout, "knowledge-export", tree([{ path: "caf\u00e9/\u6587.md", content }]), undefined, prefix);
       expect(await readFile(path.join(checkout, prefix ?? "", "caf\u00e9/\u6587.md"))).toEqual(Buffer.from(content));
       expect(result).toEqual({ committed: true, commit: "a".repeat(40) });
-      expect(calls).toEqual(["ls-files", "add", "status", "commit", "rev-parse"]);
+      expect(calls).toEqual([...(prefix ? ["status"] : []), "ls-files", "add", "status", "commit", "rev-parse"]);
     });
   });
 });
