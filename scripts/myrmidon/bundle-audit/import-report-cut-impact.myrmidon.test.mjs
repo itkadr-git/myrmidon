@@ -21,6 +21,9 @@ test('diamond retains nodes reachable by an alternative eager path', () => {
   const diamond = {...report,edges:[...report.edges,e('entry','alternative','eager','Z')]};
   ok(run(['b'],JSON.stringify(diamond)),'b',['b'],2);
 });
+test('empty modules is a shape error', () => {
+  bad(run(['entry'], JSON.stringify({entry:'entry', modules:[], edges:[]})), 'shape');
+});
 test('errors have exact channels and never leak input', () => {
   const secret = 'synthetic-secret-sentinel';
   bad(run([]),'argv'); bad(run(['b','extra']),'argv'); bad(run(['missing']),'argv');
