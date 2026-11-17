@@ -115,6 +115,12 @@ On the review screen, the accessible names of Accept, Reject, and Edit include
 the stable suggestion ID after the localized action label, so screen readers can
 distinguish actions for different suggestions. The visible EN/RU labels do not change.
 
+## Company knowledge settings
+
+If the initial settings load fails, use Retry on the screen without reloading
+the page. Retry is unavailable while the request is pending, becomes available
+again after another failure, and a successful response restores the form.
+
 ## Where the code lives
 
 - `server/src/myrmidon/knowledge/routes.ts` — the REST router and its gates.
