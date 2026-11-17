@@ -469,6 +469,56 @@ describe("host-clone-cache-gc e2e", () => {
     }
   });
 
+  it("apply removes a done bot worktree whose .git names a container path, admin dir included", async () => {
+    // Bot layout: <tmp>/agent/{workspace, hermes/.myrmidon/git-base/o/r.git}. In the container the
+    // bot root is /bot, so the clone's `.git` and the admin dir's `gitdir` record /bot paths the
+    // host cannot read: the closed scan must map them and free the clone plus its own admin dir.
+    const agent = path.join(tmpDir, "agent");
+    const workspace = path.join(agent, "workspace");
+    const base = path.join(agent, "hermes/.myrmidon/git-base/o/r.git");
+    fs.mkdirSync(path.dirname(base), { recursive: true });
+    fs.mkdirSync(workspace, { recursive: true });
+    const git = (args, cwd) => {
+      const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+      return r.stdout;
+    };
+    const server = path.join(tmpDir, "server.git");
+    git(["init", "-q", "--bare", "-b", "main", server]);
+    const seed = path.join(tmpDir, "seed");
+    git(["init", "-q", "-b", "main", seed]);
+    fs.writeFileSync(path.join(seed, "f.txt"), "one\n");
+    git(["add", "."], seed);
+    git(["commit", "-q", "-m", "one"], seed);
+    git(["push", "-q", server, "main"], seed);
+    git(["clone", "-q", "--bare", server, base]);
+    const dir = path.join(workspace, "OPE-32100");
+    git(["--git-dir", base, "worktree", "add", "-q", "-b", "task-OPE-32100", dir, "main"]);
+    fs.writeFileSync(path.join(dir, "w.txt"), "work\n");
+    git(["add", "."], dir);
+    git(["commit", "-q", "-m", "work"], dir);
+    git(["push", "-q", "origin", "task-OPE-32100:task-OPE-32100"], dir);
+    fs.writeFileSync(path.join(dir, ".git"), "gitdir: /bot/hermes/.myrmidon/git-base/o/r.git/worktrees/OPE-32100\n");
+    fs.writeFileSync(path.join(base, "worktrees/OPE-32100/gitdir"), "/bot/workspace/OPE-32100/.git\n");
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    for (const f of fs.readdirSync(dir).filter((e) => e !== ".git").map((e) => path.join(dir, e))) fs.utimesSync(f, old, old);
+    for (const f of ["HEAD", "index", path.join("logs", "HEAD")]) {
+      try { fs.utimesSync(path.join(base, "worktrees/OPE-32100", f), old, old); } catch { /* absent */ }
+    }
+    fs.utimesSync(dir, old, old);
+
+    const lock = path.join(tmpDir, "test.lock");
+    const journal = path.join(tmpDir, "journal.jsonl");
+    const r = await runScript(["--root", workspace, "--lock", lock, "--journal", journal, "--apply"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(fs.existsSync(dir), false, "clone removed");
+    assert.equal(fs.existsSync(path.join(base, "worktrees", "OPE-32100")), false, "own admin dir removed");
+    const rec = fs.readFileSync(journal, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.event === "clone-removed");
+    assert.ok(rec, "clone-removed journaled");
+    assert.equal(rec.path, dir);
+    assert.equal(rec.reason, "clean-pushed");
+  });
+
   it("fails when lock is held", async () => {
     const root = path.join(tmpDir, "root");
     fs.mkdirSync(root);

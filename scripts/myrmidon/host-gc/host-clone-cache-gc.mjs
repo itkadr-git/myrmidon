@@ -598,11 +598,16 @@ function scanGitTree(top) {
 
 // --- Scanning ---------------------------------------------------------------
 
-function scanTaskClones(root, now, ttlHours) {
+export function scanTaskClones(root, now, ttlHours) {
   const results = [];
   const ttlMs = ttlHours * HOUR_MS;
   let entries;
   try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return results; }
+  // A bot clone's `.git` may name a container path (`gitdir: /bot/...`) that does not exist on
+  // the host: plain `git` then rejects the clone and the closed-task rule never sees it, so
+  // done/cancelled copies are never freed. Map it through the same resolver the idle and review
+  // rules use (root is the bot's `workspace`, its parent the bot dir the container calls /bot).
+  const agentRoot = path.basename(path.resolve(root)) === "workspace" ? path.dirname(path.resolve(root)) : null;
 
   for (const entry of entries) {
     if (entry.isSymbolicLink()) continue;
@@ -612,28 +617,41 @@ function scanTaskClones(root, now, ttlHours) {
     if (isSymlink(fullPath)) continue;
 
     const st = fs.statSync(fullPath);
-    const ageMs = now - st.mtimeMs;
+
+    let mapped = null;
+    let env = null;
+    if (!isGitWorktree(fullPath)) {
+      const dirs = resolveWorktreeGitDirs(fullPath, agentRoot);
+      if (!dirs.adminDir) continue; // not a git clone the host can read, skip
+      mapped = dirs;
+      // GIT_OPTIONAL_LOCKS=0: `git status` must not rewrite the index, or every pass would make the clone look fresh.
+      env = { GIT_DIR: dirs.adminDir, GIT_WORK_TREE: fullPath, GIT_OPTIONAL_LOCKS: "0" };
+      if (!isGitWorktree(fullPath, env)) continue;
+    }
+
+    // A linked worktree's own HEAD and reflog live in the admin dir: the directory mtime alone
+    // can sit older than the newest real change (newestCloneChangeMs, as in the idle rule).
+    const mtimeMs = mapped ? newestCloneChangeMs(fullPath, mapped.adminDir) : st.mtimeMs;
+    const ageMs = now - mtimeMs;
     if (ageMs < ttlMs) continue; // too fresh
 
-    const isGit = isGitWorktree(fullPath);
-    if (!isGit) continue; // not a git clone, skip
-
-    const clean = isClean(fullPath);
+    const clean = isClean(fullPath, env ?? undefined);
     // `pushed` asks the server (ls-remote): left to assessClone, which main runs only for clones the
     // board reports closed. Open tasks are never touched and need no network round trip.
-    const stash = hasStash(fullPath);
-    const alternates = hasAlternates(fullPath);
+    const stash = hasStash(fullPath, env ?? undefined);
+    const alternates = hasAlternates(fullPath, mapped ?? undefined);
 
     results.push({
       name,
       path: fullPath,
       ageMs,
-      mtimeMs: st.mtimeMs,
+      mtimeMs,
       isGit: true,
       clean,
       pushed: null,
       stash,
       alternates,
+      ...(mapped ? { adminDir: mapped.adminDir, commonDir: mapped.commonDir, containerPath: mapped.containerPath } : {}),
       safeToRemove: false,
       reason: "unassessed",
     });
@@ -642,8 +660,11 @@ function scanTaskClones(root, now, ttlHours) {
 }
 
 // Fills in `pushed` (checked against the server) and the removal verdict of a scanned clone.
-function assessClone(c) {
-  c.pushed = c.clean && !c.stash && !c.alternates ? isPushed(c.path) : false;
+export function assessClone(c) {
+  // A linked worktree's `.git` names a container path the host cannot read: the mapped env of
+  // the idle/review rules. A plain clone reads fine on its own.
+  const env = c.adminDir ? { GIT_DIR: c.adminDir, GIT_WORK_TREE: c.path, GIT_OPTIONAL_LOCKS: "0" } : undefined;
+  c.pushed = c.clean && !c.stash && !c.alternates ? isPushed(c.path, env) : false;
   c.safeToRemove = c.clean && c.pushed && !c.stash && !c.alternates;
   c.reason = c.safeToRemove ? "clean-pushed" : "unsafe-archive";
   return c;
@@ -3028,7 +3049,10 @@ async function main() {
       }
       for (const c of plan.clones.filter((x) => x.action === "remove")) {
         try {
-          atomicDrop(c.path, root);
+          // A mapped linked worktree also leaves its own admin dir under the git-base: freeing
+          // only the checkout would strand it (removeWorktreeClone drops exactly it).
+          if (c.adminDir) removeWorktreeClone(c, root);
+          else atomicDrop(c.path, root);
           plan.removed.push({ path: c.path });
           journalRecord(args.journal, { event: "clone-removed", path: c.path, reason: c.reason });
         } catch (err) {
