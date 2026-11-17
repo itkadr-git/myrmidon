@@ -302,9 +302,21 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     };
     await db.update(issues).set({ executionState: state }).where(eq(issues.id, issueId));
 
+    const previousSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
+    process.env.MYRMIDON_AGENT_JWT_SECRET = "issue-monitor-test-secret";
     const heartbeat = heartbeatService(db);
-    expect((await heartbeat.tickTimers(nextCheckAt)).enqueued).toBe(1);
-    expect((await heartbeat.tickTimers(new Date(nextCheckAt.getTime() + 60_000))).enqueued).toBe(0);
+    try {
+      expect((await heartbeat.tickTimers(nextCheckAt)).enqueued).toBe(1);
+      expect((await heartbeat.tickTimers(new Date(nextCheckAt.getTime() + 60_000))).enqueued).toBe(0);
+      await heartbeat.resumeQueuedRuns();
+      await waitForHeartbeatIdle();
+    } finally {
+      if (previousSecret === undefined) delete process.env.MYRMIDON_AGENT_JWT_SECRET;
+      else process.env.MYRMIDON_AGENT_JWT_SECRET = previousSecret;
+    }
+    const runs = await db.select().from(heartbeatRuns);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ agentId: reviewerId, status: "succeeded" });
     const wakes = await db.select().from(agentWakeupRequests);
     expect(wakes).toHaveLength(1);
     expect(wakes[0]).toMatchObject({ agentId: reviewerId });
