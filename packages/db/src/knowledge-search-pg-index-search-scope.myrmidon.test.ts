@@ -1,5 +1,7 @@
 import { PgDialect } from "drizzle-orm/pg-core";
-import { SQL } from "drizzle-orm";
+import { SQL, sql } from "drizzle-orm";
+import { PgRaw } from "drizzle-orm/pg-core/query-builders/raw";
+import type { RowList } from "postgres";
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "./client.js";
 import { createPgKnowledgeSearchIndex } from "./knowledge-search.js";
@@ -12,12 +14,24 @@ function renderedQuery(query: Parameters<Db["execute"]>[0]) {
 }
 
 function fixture() {
-  const execute = vi.fn(async (_query: Parameters<Db["execute"]>[0]) => [
-    { item_id: "item-1", slug: "guide", title: "Guide" },
-  ]);
-  // The adapter only awaits execute; the real driver adds metadata to its rows.
-  const db = { execute } as unknown as Db;
-  return { execute, index: createPgKnowledgeSearchIndex(db) };
+  const execute = vi.fn((_query: Parameters<Db["execute"]>[0]) => {});
+  const rows = [{ item_id: "item-1", slug: "guide", title: "Guide" }];
+  const port: Pick<Db, "execute"> = {
+    execute<TRow extends Record<string, unknown> = Record<string, unknown>>(
+      query: Parameters<Db["execute"]>[0],
+    ): PgRaw<RowList<TRow[]>> {
+      execute(query);
+      const statement = typeof query === "string" ? sql.raw(query) : query.getSQL();
+      return new PgRaw<RowList<TRow[]>>(
+        // Fixed driver rows omit metadata; this adapter only awaits and maps them.
+        async () => rows as unknown as RowList<TRow[]>,
+        statement,
+        dialect.sqlToQuery(statement),
+        (result) => result,
+      );
+    },
+  };
+  return { execute, index: createPgKnowledgeSearchIndex(port as Db) };
 }
 
 describe("PostgreSQL knowledge search scope", () => {
