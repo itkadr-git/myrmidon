@@ -60,10 +60,10 @@ describe("verifyReleaseComposition mixed failure precedence", () => {
         expect(result.members.map((entry) => entry.id)).toEqual(members.map((entry) => entry.id));
         if (scenario.named) expect(result.reason).toContain(scenario.named);
         expect(calls.sort()).toEqual([...scenario.calls].sort());
-        if (scenario.calls.includes(UNKNOWN_SHA)) {
+        if ((scenario.calls as readonly string[]).includes(UNKNOWN_SHA)) {
           expect(result.members.find((entry) => entry.id === "unknown")?.membership).toBe("unknown");
         }
-        if (scenario.calls.includes(MISSING_SHA)) {
+        if ((scenario.calls as readonly string[]).includes(MISSING_SHA)) {
           expect(result.members.find((entry) => entry.id === "missing")?.membership).toBe("missing_from_release");
         }
       }
