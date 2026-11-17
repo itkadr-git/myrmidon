@@ -10,8 +10,9 @@
 //   agent ∈ project ⇔ projects.lead_agent_id = agent.id
 //                     ∨ exists project_memberships(company_id, project_id,
 //                           user_id = agent.id, state = 'joined')
+//                     ∨ no agent_nests rows for agent.id
 //                     ∨ exists agent_nests(company_id, project_id,
-//                           agent_id = agent.id)       -- nest (decision 18.10)
+//                           agent_id = agent.id)
 //
 // `project_memberships.user_id` is polymorphic. For an agent, membership
 // counts only when that ID resolves to an agent in the same company; this
