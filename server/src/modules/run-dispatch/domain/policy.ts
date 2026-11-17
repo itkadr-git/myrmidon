@@ -639,6 +639,19 @@ export function decideQueuedRunStaleness(
     };
   }
 
+  // Monitor wakes belong to the review participant, not the return assignee.
+  if (facts.wakeReason === "issue_monitor_due" &&
+      decideReviewParticipant({ ...facts.reviewParticipant, runAgentId: facts.runAgentId,
+        bypass: facts.wakeCommentIdPresent }) === "participant_changed") {
+    return {
+      stale: true,
+      errorCode: "issue_review_participant_changed",
+      reason: "Cancelled because the in-review participant changed before the queued run could start",
+      details: { issueId: facts.issueId, currentStageType: facts.reviewParticipant.currentStageType,
+        currentParticipant: facts.reviewParticipant.currentParticipant },
+    };
+  }
+
   const ownership = decideIssueOwnership({
     runAgentId: facts.runAgentId,
     issueAssigneeAgentId: facts.issueAssigneeAgentId,
