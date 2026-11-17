@@ -108,8 +108,12 @@ function SourceBadge({ source }: { source: KnowledgeSettingSource }) {
 }
 
 export function KnowledgeSettingsScreen() {
-  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
+  return <CompanyKnowledgeSettings key={selectedCompanyId ?? ""} selectedCompanyId={selectedCompanyId} />;
+}
+
+function CompanyKnowledgeSettings({ selectedCompanyId }: { selectedCompanyId: string | null }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const queryKey = ["knowledge-settings", selectedCompanyId] as const;
 
