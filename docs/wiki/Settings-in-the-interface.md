@@ -6,6 +6,12 @@ Where day-to-day setup happens in the board UI. The UI 2.0 company-settings side
 currently lists General, Members, Access, Secrets, Budgets, Autonomy, and
 Agent castes, alongside the sections implemented in the UI 2.0 route table.
 
+## Knowledge settings
+
+In Company Settings → Knowledge, the form fields and actions are disabled while
+a save request is pending. Editing is available again when the request finishes,
+whether it succeeds or fails; a second save cannot start while it is pending.
+
 ## Injection guardrail settings
 
 Company Settings → Guardrails stores `guardrailModes.injectionConfig` (`enabled`,

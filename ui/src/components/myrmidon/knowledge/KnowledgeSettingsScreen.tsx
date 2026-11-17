@@ -183,6 +183,7 @@ function CompanyKnowledgeSettings({ selectedCompanyId }: { selectedCompanyId: st
         <p>{t("knowledgeSettings.intro")}</p>
       </header>
 
+      <fieldset disabled={mutation.isPending} style={{ display: "contents" }}>
       <div>
         <Label htmlFor="knowledge-max-items">
           {t("knowledgeSettings.maxItems")} <SourceBadge source={view.maxItems.source} />
@@ -190,6 +191,8 @@ function CompanyKnowledgeSettings({ selectedCompanyId }: { selectedCompanyId: st
         <Input
           id="knowledge-max-items"
           data-testid="knowledge-max-items"
+          aria-invalid={fieldErrors.includes("maxItems") || undefined}
+          aria-describedby={fieldErrors.includes("maxItems") ? "knowledge-max-items-error" : undefined}
           inputMode="numeric"
           value={draft.maxItems}
           onChange={(event) => {
@@ -204,7 +207,7 @@ function CompanyKnowledgeSettings({ selectedCompanyId }: { selectedCompanyId: st
             fallback: KNOWLEDGE_MAX_ITEMS_DEFAULT,
           })}
         </p>
-        {fieldErrors.includes("maxItems") ? <p role="alert">{t("knowledgeSettings.invalidNumber")}</p> : null}
+        {fieldErrors.includes("maxItems") ? <p id="knowledge-max-items-error" role="alert">{t("knowledgeSettings.invalidNumber")}</p> : null}
       </div>
 
       <div>
@@ -214,6 +217,8 @@ function CompanyKnowledgeSettings({ selectedCompanyId }: { selectedCompanyId: st
         <Input
           id="knowledge-max-bytes"
           data-testid="knowledge-max-bytes"
+          aria-invalid={fieldErrors.includes("maxRevisionBytes") || undefined}
+          aria-describedby={fieldErrors.includes("maxRevisionBytes") ? "knowledge-max-bytes-error" : undefined}
           inputMode="numeric"
           value={draft.maxRevisionBytes}
           onChange={(event) => {
@@ -230,7 +235,7 @@ function CompanyKnowledgeSettings({ selectedCompanyId }: { selectedCompanyId: st
         </p>
         {parseKnowledgeBoundedInt(draft.maxRevisionBytes, KNOWLEDGE_MAX_REVISION_BYTES_MIN, KNOWLEDGE_MAX_REVISION_BYTES_MAX) ===
           null && fieldErrors.includes("maxRevisionBytes") ? (
-          <p role="alert">{t("knowledgeSettings.invalidNumber")}</p>
+          <p id="knowledge-max-bytes-error" role="alert">{t("knowledgeSettings.invalidNumber")}</p>
         ) : null}
       </div>
 
@@ -258,6 +263,8 @@ function CompanyKnowledgeSettings({ selectedCompanyId }: { selectedCompanyId: st
         <Input
           id="knowledge-confidence"
           data-testid="knowledge-confidence"
+          aria-invalid={fieldErrors.includes("autoAcceptMinConfidence") || undefined}
+          aria-describedby={fieldErrors.includes("autoAcceptMinConfidence") ? "knowledge-confidence-error" : undefined}
           value={draft.autoAcceptMinConfidence}
           onChange={(event) => {
             setDraft({ ...draft, autoAcceptMinConfidence: event.target.value });
@@ -267,7 +274,7 @@ function CompanyKnowledgeSettings({ selectedCompanyId }: { selectedCompanyId: st
         <p>{t("knowledgeSettings.minConfidenceHint", { fallback: KNOWLEDGE_AUTO_ACCEPT_MIN_CONFIDENCE_DEFAULT })}</p>
         {parseKnowledgeConfidence(draft.autoAcceptMinConfidence) === null &&
         fieldErrors.includes("autoAcceptMinConfidence") ? (
-          <p role="alert">{t("knowledgeSettings.invalidConfidence")}</p>
+          <p id="knowledge-confidence-error" role="alert">{t("knowledgeSettings.invalidConfidence")}</p>
         ) : null}
       </div>
 
@@ -278,6 +285,8 @@ function CompanyKnowledgeSettings({ selectedCompanyId }: { selectedCompanyId: st
         <Input
           id="knowledge-schedule"
           data-testid="knowledge-schedule"
+          aria-invalid={fieldErrors.includes("schedule") || undefined}
+          aria-describedby={fieldErrors.includes("schedule") ? "knowledge-schedule-error" : undefined}
           value={draft.schedule}
           onChange={(event) => {
             setDraft({ ...draft, schedule: event.target.value });
@@ -286,7 +295,7 @@ function CompanyKnowledgeSettings({ selectedCompanyId }: { selectedCompanyId: st
         />
         <p>{t("knowledgeSettings.scheduleHint", { fallback: KNOWLEDGE_SCHEDULE_DEFAULT })}</p>
         {!knowledgeScheduleOk(draft.schedule) && fieldErrors.includes("schedule") ? (
-          <p role="alert">{t("knowledgeSettings.invalidSchedule")}</p>
+          <p id="knowledge-schedule-error" role="alert">{t("knowledgeSettings.invalidSchedule")}</p>
         ) : null}
       </div>
 
@@ -355,6 +364,7 @@ function CompanyKnowledgeSettings({ selectedCompanyId }: { selectedCompanyId: st
         {saved ? <p data-testid="knowledge-settings-saved">{t("knowledgeSettings.saved")}</p> : null}
         {mutation.isError ? <p role="alert">{t("knowledgeSettings.saveError")}</p> : null}
       </div>
+      </fieldset>
     </section>
   );
 }
