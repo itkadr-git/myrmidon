@@ -797,28 +797,43 @@ function armCommondirRestore() {
   commondirRestoreArmed = true;
   const restore = () => {
     for (const [adminDir, original] of repairedCommondirs) {
-      try { fs.writeFileSync(path.join(adminDir, "commondir"), original); } catch { /* best effort */ }
+      writeAdminFileAtomic(path.join(adminDir, "commondir"), original.text, original.stat);
     }
     repairedCommondirs.clear();
   };
   process.once("exit", restore);
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, () => { restore(); process.kill(process.pid, signal); });
 }
+// Atomic same-directory write that keeps the owner and mode of the file it replaces.
+function writeAdminFileAtomic(file, content, stat) {
+  const tmp = path.join(path.dirname(file), `.myr-gc-${process.pid}-${Date.now()}.tmp`);
+  try {
+    fs.writeFileSync(tmp, content, { mode: stat.mode & 0o777 });
+    try { fs.chownSync(tmp, stat.uid, stat.gid); } catch { /* best effort */ }
+    fs.renameSync(tmp, file);
+  } catch {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
+  }
+}
+
 function repairCommondirForHost(adminDir, commonDir) {
   const file = path.join(adminDir, "commondir");
+  // Never follow a symlink or touch anything but a regular file: a bot-created symlink
+  // must not redirect a root write elsewhere. Anything unusual fails closed through git.
+  let st;
+  try { st = fs.lstatSync(file); } catch { return; }
+  if (st.isSymbolicLink() || !st.isFile()) return;
   let text;
-  try { text = fs.readFileSync(file, "utf8"); } catch { return; } // no commondir: not a linked layout
+  try { text = fs.readFileSync(file, "utf8"); } catch { return; }
   const target = text.trim();
   if (!target) return;
   try { if (fs.existsSync(path.resolve(adminDir, target))) return; } catch { /* unreadable: repair below */ }
   // The recorded path does not resolve on the host (a container path): point the file at the
   // host common dir for this pass. Closed clones have no live runs; the idle and review rules
   // admit a clone only when the board reports no live run on the task.
-  if (!repairedCommondirs.has(adminDir)) {
-    repairedCommondirs.set(adminDir, text);
-    armCommondirRestore();
-  }
-  try { fs.writeFileSync(file, `${commonDir}\n`); } catch { /* the git call will fail closed */ }
+  if (!repairedCommondirs.has(adminDir)) repairedCommondirs.set(adminDir, { text, stat: st });
+  armCommondirRestore();
+  writeAdminFileAtomic(file, `${commonDir}\n`, st);
 }
 
 // The mapped env every git call uses for a bot or runner linked worktree.
