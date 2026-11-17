@@ -2789,6 +2789,54 @@ describe("closed-task scan: bot linked worktrees with container gitdirs (OPE-149
     assert.equal(c.reason, "unsafe-archive");
   });
 
+  it("keeps mapped paths through the production-like git wrapper, plan, archive and removal", async () => {
+    const bot = makeBot();
+    const clean = addLinkedClone(bot, "OPE-1");
+    const dirty = addLinkedClone(bot, "OPE-2", { dirty: true });
+    const bin = path.join(tmpDir, "bin");
+    fs.mkdirSync(bin);
+    // Like the deployed launcher, map the cwd's container gitfile even without caller env.
+    fs.writeFileSync(path.join(bin, "git"), `#!/bin/sh\nif [ -z "$GIT_DIR" ] && [ -f "$PWD/.git" ]; then\n  IFS= read -r pointer < "$PWD/.git"\n  case "$pointer" in 'gitdir: /bot/'*) export GIT_DIR="$TEST_AGENT_ROOT/\${pointer#gitdir: /bot/}" GIT_WORK_TREE="$PWD";; esac\nfi\nexec /usr/bin/git "$@"\n`, { mode: 0o755 });
+    const board = createServer((req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ status: "done" }));
+    });
+    await new Promise((resolve) => board.listen(0, "127.0.0.1", resolve));
+    const run = (mode) => new Promise((resolve, reject) => {
+      const child = subprocess.spawn(process.execPath, [path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs"), mode, "--root", bot.workspace, "--lock", path.join(tmpDir, "lock"), "--journal", path.join(tmpDir, "journal"), "--env", path.join(tmpDir, "none"), "--archive-root", path.join(tmpDir, "archives")], {
+        env: { ...GIT_ENV, PATH: `${bin}:${process.env.PATH}`, TEST_AGENT_ROOT: bot.agent, BOARD_API_URL: `http://127.0.0.1:${board.address().port}`, PAPERCLIP_API_KEY: "", MYRMIDON_HOST_GC_DOCKER: "/nonexistent-docker" },
+      });
+      let stdout = "", stderr = "";
+      child.stdout.on("data", (s) => { stdout += s; });
+      child.stderr.on("data", (s) => { stderr += s; });
+      child.on("error", reject);
+      child.on("close", (status) => resolve({ status, stdout, stderr }));
+    });
+    try {
+      const dry = await run("--dry-run");
+      assert.equal(dry.status, 0, dry.stderr);
+      const clones = JSON.parse(dry.stdout).plan.clones;
+      for (const [name, action] of [["OPE-1", "remove"], ["OPE-2", "archive-remove"]]) {
+        const item = clones.find((c) => c.name === name);
+        assert.ok(item, `missing ${name}`);
+        assert.equal(item.adminDir, path.join(bot.base, "worktrees", name));
+        assert.equal(item.commonDir, bot.base);
+        assert.equal(item.action, action);
+      }
+      assert.ok(fs.existsSync(clean) && fs.existsSync(dirty));
+      const apply = await run("--apply");
+      assert.equal(apply.status, 0, apply.stderr);
+      const plan = JSON.parse(apply.stdout).plan;
+      assert.ok(plan.archived.some((item) => item.path === dirty), JSON.stringify(plan));
+      assert.equal(fs.existsSync(clean), false);
+      assert.equal(fs.existsSync(dirty), false);
+      assert.equal(fs.existsSync(path.join(bot.base, "worktrees", "OPE-1")), false);
+      assert.equal(fs.existsSync(path.join(bot.base, "worktrees", "OPE-2")), false);
+    } finally {
+      await new Promise((resolve) => board.close(resolve));
+    }
+  });
+
   it("enters the closed-task pipeline for done and cancelled issues", async () => {
     const bot = makeBot();
     addLinkedClone(bot, "OPE-1");
