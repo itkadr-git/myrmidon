@@ -99,7 +99,7 @@ return `503 centralized_memory_disabled` and make no upstream request.
 `--check-config` rejects missing banks, non-HTTP(S) URLs and URLs containing
 credentials. The client uses only HTTP(S), not a host path or Docker socket.
 These routes require fleetd's normal bearer authentication. See the
-[fleetd change note](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/fleetd-centralized-memory-client.md).
+[fleetd change note](https://github.com/itkadr-git/myrmidon/blob/e3232d40472aba02bd79a79f63c4bac645cda502/docs/myrmidon/changes/fleetd-centralized-memory-client.md).
 
 ## Instructions with history
 
@@ -114,7 +114,7 @@ change instructions at all or only with an approval.
 
 The **Configuration** tab of the agent card shows typed controls for the
 agent's adapter instead of raw `adapterConfig` JSON
-([agent settings UI](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/1-6-6-ope-11239-adapter-config-ui.md)):
+([agent settings UI](https://github.com/itkadr-git/myrmidon/blob/e3232d40472aba02bd79a79f63c4bac645cda502/docs/myrmidon/changes/1-6-6-ope-11239-adapter-config-ui.md)):
 
 - **Hermes gateway** — status poll interval, run-create timeout, liveness by
   gateway events, raw debug events, runtime MCP URL rewrite and internal base
@@ -151,7 +151,7 @@ single entry or clear the bank.
 
 Every tool schema is sent on every model call, so unused tools cost tokens on
 each request. The fleet cuts them two ways
-([role tool diet](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/token-burn-k-role-tool-diet.md)):
+([role tool diet](https://github.com/itkadr-git/myrmidon/blob/e3232d40472aba02bd79a79f63c4bac645cda502/docs/myrmidon/changes/token-burn-k-role-tool-diet.md)):
 
 - the fleet list `MYRMIDON_BOT_DISABLED_TOOLS` always holds `clarify` (the
   bots run behind the Hermes API server, which wires no clarify callback) and

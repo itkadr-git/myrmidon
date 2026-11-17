@@ -123,4 +123,4 @@ WIP-лимита и runtime-настроек STT).
 превысил сумму, — с причиной, где названы уровень, расход и лимит; soft-лимиты
 при допуске не отказывают (soft ведёт машина пауз). Поднятие лимита через
 экран или API освобождает уже следующий допуск — кэша и рестарта нет:
-[changes/1-7-budget-limits-admission.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/changes/1-7-budget-limits-admission.md).
+[changes/1-7-budget-limits-admission.md](https://github.com/itkadr-git/myrmidon/blob/e3232d40472aba02bd79a79f63c4bac645cda502/docs/myrmidon/changes/1-7-budget-limits-admission.md).

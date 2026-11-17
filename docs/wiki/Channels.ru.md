@@ -29,7 +29,7 @@ Telegram, и вопросы, решения и дневные сводки пр�
 мс); пустое, неверное или неположительное значение сохраняет умолчание.
 Переходы считаются в `myrmidon_adapter_fallback_total` на `/metrics`.
 Подробнее: [настройки коннектора](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.ru.md)
-и [описание изменения CH-CONNECTOR G](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/1.6.6-ch-connector-g-bridge-fallback.md).
+и [описание изменения CH-CONNECTOR G](https://github.com/itkadr-git/myrmidon/blob/e3232d40472aba02bd79a79f63c4bac645cda502/docs/myrmidon/changes/1.6.6-ch-connector-g-bridge-fallback.md).
 
 ## Карточки решений в Telegram
 

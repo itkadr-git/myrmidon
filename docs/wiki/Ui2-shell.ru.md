@@ -102,7 +102,7 @@ preference). Пока он выключен (по умолчанию) — нич
 
 Маршруты страниц плагинов загружают UI-вклад напрямую: для открытия URL плагина
 из новой сессии UI2 не нужно сначала заходить в боковую панель. Описание
-реализации и проверки: [1-6-6-ui2-plugin-nav.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/1-6-6-ui2-plugin-nav.md).
+реализации и проверки: [1-6-6-ui2-plugin-nav.md](https://github.com/itkadr-git/myrmidon/blob/e3232d40472aba02bd79a79f63c4bac645cda502/docs/myrmidon/changes/1-6-6-ui2-plugin-nav.md).
 
 Две части оболочки пока честные заглушки:
 

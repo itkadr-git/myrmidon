@@ -69,7 +69,7 @@ For task-level spend queries, the company costs API provides
 events by task, orders by spend descending, and returns task identifiers,
 titles, token totals, and distinct run counts. The default limit is 20 and the
 maximum is 100; higher values return HTTP 400. See the
-[cost endpoint change note](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/1-7-costs-by-issue.md).
+[cost endpoint change note](https://github.com/itkadr-git/myrmidon/blob/e3232d40472aba02bd79a79f63c4bac645cda502/docs/myrmidon/changes/1-7-costs-by-issue.md).
 
 ## LiteLLM virtual key budgets and spend
 

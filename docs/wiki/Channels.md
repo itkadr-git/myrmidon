@@ -27,7 +27,7 @@ fallback and uses the legacy bridge symbol once. The per-call timeout is
 invalid, or non-positive value keeps that default. Fallbacks are counted in
 `myrmidon_adapter_fallback_total` on `/metrics`. See the
 [connector settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md)
-and [CH-CONNECTOR G change note](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/1.6.6-ch-connector-g-bridge-fallback.md).
+and [CH-CONNECTOR G change note](https://github.com/itkadr-git/myrmidon/blob/e3232d40472aba02bd79a79f63c4bac645cda502/docs/myrmidon/changes/1.6.6-ch-connector-g-bridge-fallback.md).
 
 ## Decision cards in Telegram
 

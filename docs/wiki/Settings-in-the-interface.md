@@ -18,7 +18,7 @@ Company Settings → Guardrails stores `guardrailModes.injectionConfig` (`enable
 `scoreThreshold`) and shows effective values with provenance. Environment
 overrides take precedence over the UI setting, then defaults (threshold default
 `0.6`, range 0–1); explicit environment `false` is honored. See the
-[injection guardrail change note](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/ope-8319-injection-config.md).
+[injection guardrail change note](https://github.com/itkadr-git/myrmidon/blob/e3232d40472aba02bd79a79f63c4bac645cda502/docs/myrmidon/changes/ope-8319-injection-config.md).
 
 [README](https://github.com/itkadr-git/myrmidon/blob/main/README.md)
 configuration section and the operator guides under
