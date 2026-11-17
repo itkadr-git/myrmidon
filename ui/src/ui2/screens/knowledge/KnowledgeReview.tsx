@@ -79,9 +79,9 @@ function ReviewQueue({ companyId, text }: { companyId: string; text: Messages })
               </div>
             </form>
           ) : <div className="flex flex-wrap gap-2">
-            <Button disabled={decision.isPending || editing !== null} onClick={() => decision.mutate({ suggestion, action: "accept" })}>{text.accept}</Button>
-            <Button variant="outline" disabled={decision.isPending || editing !== null} onClick={() => decision.mutate({ suggestion, action: "decline" })}>{text.reject}</Button>
-            <Button variant="outline" disabled={decision.isPending || editing !== null} onClick={() => {
+            <Button aria-label={`${text.accept} ${suggestion.id}`} disabled={decision.isPending || editing !== null} onClick={() => decision.mutate({ suggestion, action: "accept" })}>{text.accept}</Button>
+            <Button aria-label={`${text.reject} ${suggestion.id}`} variant="outline" disabled={decision.isPending || editing !== null} onClick={() => decision.mutate({ suggestion, action: "decline" })}>{text.reject}</Button>
+            <Button aria-label={`${text.edit} ${suggestion.id}`} variant="outline" disabled={decision.isPending || editing !== null} onClick={() => {
               const saved = savedDrafts[suggestion.id];
               decision.reset(); setEditing(suggestion); setContent(saved?.content ?? suggestion.body); setTitle(saved?.title ?? ""); setSlug(saved?.slug ?? ""); setDraftSaved(Boolean(saved));
             }}>{text.edit}</Button>
