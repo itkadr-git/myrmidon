@@ -68,6 +68,20 @@ test('fresh source bytes flow through scanner and lazy impact across A B C A', (
     assert.equal(outputs[2].before.bytes - outputs[1].before.bytes, sharedGrowth);
     assert.equal(outputs[2].after.bytes - outputs[1].after.bytes, sharedGrowth);
     assert.equal(outputs[2].savedBytes, outputs[1].savedBytes);
+    const lazyOnly = sources('longer ascii removed', 'a', '\u2603\nnew line');
+    for (const [name, text] of Object.entries(lazyOnly)) writeFileSync(join(dir, name), text);
+    const lazyScan = run(scanner, [join(dir, 'entry.mjs')]);
+    assert.equal(lazyScan.status, 0, lazyScan.stderr);
+    assert.equal(lazyScan.stderr, '');
+    const lazyReport = JSON.parse(lazyScan.stdout);
+    assert.deepEqual({ entry: lazyReport.entry, edges: lazyReport.edges, modules: lazyReport.modules.map(({ path, eager }) => ({ path, eager })) }, topology);
+    assert.deepEqual(lazyReport.modules.map(({ path, bytes }) => [path, bytes]), Object.keys(lazyOnly).sort().map(path => [path, Buffer.byteLength(lazyOnly[path])]));
+    const lazyReportFile = join(dir, 'report-lazy-only.json');
+    writeFileSync(lazyReportFile, lazyScan.stdout);
+    const lazyResult = run(consumer, [lazyReportFile, 'entry.mjs', './removed.mjs']);
+    assert.equal(lazyResult.status, 0, lazyResult.stderr);
+    assert.equal(lazyResult.stderr, '');
+    assert.equal(lazyResult.stdout, JSON.stringify(outputs[1]) + '\n');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
