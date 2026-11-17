@@ -14,7 +14,7 @@ const report = {
   modules: ['src/entry.js', 'src/a.js', 'src/b.js', target, 'src/lazy.js'].map(mod),
   edges: [
     edge('src/entry.js', 'src/a.js'), edge('src/entry.js', 'src/b.js'),
-    edge('src/a.js', target), edge('src/b.js', target),
+    edge('src/b.js', target), edge('src/a.js', target),
     edge(target, 'src/a.js'), edge('src/entry.js', 'src/lazy.js'),
     edge('src/lazy.js', target, 'lazy'),
   ],
