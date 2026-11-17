@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 const cli = name => fileURLToPath(new URL(`./import-report-${name}.mjs`, import.meta.url));
 const cmp = (a, b) => a < b ? -1 : a > b ? 1 : 0;
@@ -80,6 +83,44 @@ function permutations(report) {
   return [report, { ...report, modules: [...report.modules].reverse(), edges: [...report.edges].reverse() }];
 }
 
+function without(report, removed) {
+  if (report.entry === removed) return new Set();
+  return reachable(report.entry, report.edges.filter(e => e.from !== removed && e.to !== removed), 'eager');
+}
+function cutOracle(report, removed, k, c) {
+  const before = reachable(report.entry, report.edges, 'eager'), after = without(report, removed);
+  const lostPaths = [...before].filter(path => !after.has(path)).sort(cmp);
+  const sum = report.modules.filter(m => lostPaths.includes(m.path)).reduce((n, m) => n + m.bytes, 0);
+  return { entry: report.entry, removed, lostPaths, lostBytes: k * sum + c * lostPaths.length };
+}
+function lazyOracle(report, selected, k, c) {
+  const before = reachable(report.entry, report.edges, 'eager');
+  const after = reachable(report.entry, report.edges.filter(e => e !== selected), 'eager');
+  const totals = paths => ({ modules: paths.size, bytes: report.modules.filter(m => paths.has(m.path)).reduce((n, m) => n + k * m.bytes + c, 0) });
+  const beforeTotals = totals(before), afterTotals = totals(after);
+  return { entry: report.entry, selected: { from: selected.from, specifier: selected.specifier, to: selected.to }, before: beforeTotals, after: afterTotals, removedPaths: [...before].filter(path => !after.has(path)).sort(cmp), savedBytes: beforeTotals.bytes - afterTotals.bytes };
+}
+function dominatorsOracle(report, target) {
+  const nodes = [...reachable(report.entry, report.edges, 'eager')].sort(cmp);
+  return { entry: report.entry, target, dominators: nodes.filter(node => !without(report, node).has(target)) };
+}
+function reverseOracle(report, target) {
+  const importers = [];
+  for (const module of report.modules) {
+    if (module.path === target) continue;
+    let frontier = new Set([module.path]), seen = new Set(frontier), distance = 0;
+    while (frontier.size && !frontier.has(target)) {
+      const next = new Set();
+      for (const e of report.edges) if (e.kind === 'eager' && e.to !== null && frontier.has(e.from) && !seen.has(e.to)) next.add(e.to);
+      for (const path of next) seen.add(path);
+      frontier = next; distance++;
+    }
+    if (frontier.has(target)) importers.push({ path: module.path, distance });
+  }
+  importers.sort((a, b) => a.distance - b.distance || cmp(a.path, b.path));
+  return { entry: report.entry, target, importers };
+}
+
 test('SCC identities and affine component weights match mutual reachability', () => {
   for (const graph of graphs) for (const mode of ['eager', 'all']) for (const k of [0, 1, 3]) for (const c of [0, 2, 11]) {
     const expected = condensationOracle(graph, mode, k, c);
@@ -96,6 +137,23 @@ test('critical path scales on DAGs and zero weights choose the entry alone', () 
   }
 });
 
+test('cut costs and topology-only dominators and importers are weight invariant', t => {
+  const dir = mkdtempSync(join(process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || homedir(), 'affine-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, 'report.json');
+  for (const graph of graphs) for (const k of [0, 1, 3]) for (const c of [0, 2, 11]) {
+    const target = 'b';
+    for (const input of permutations(transformed(graph, k, c))) {
+      run('cut-impact', input, cutOracle(graph, target, k, c), [target]);
+      const selected = graph.edges[0];
+      writeFileSync(file, JSON.stringify(input));
+      run('lazy-impact', input, lazyOracle(graph, selected, k, c), [file, selected.from, selected.specifier]);
+      run('dominators', input, dominatorsOracle(graph, target), ['-', target]);
+      run('reverse-impact', input, reverseOracle(graph, target), ['-', target]);
+    }
+  }
+});
+
 test('assertion rejects a wrong byte count and empty output', () => {
   const expected = condensationOracle(graphs[1], 'all', 3, 2);
   const wrong = structuredClone(expected);
@@ -104,4 +162,12 @@ test('assertion rejects a wrong byte count and empty output', () => {
   assert.throws(() => assertOutput({}, expected), assert.AssertionError);
   const path = criticalOracle(graphs[1], 3);
   assert.throws(() => assertOutput({ ...path, bytes: path.bytes + 1 }, path), assert.AssertionError);
+  const cut = cutOracle(graphs[1], 'b', 3, 2);
+  assert.throws(() => assertOutput({ ...cut, lostBytes: cut.lostBytes + 1 }, cut), assert.AssertionError);
+  const lazy = lazyOracle(graphs[1], graphs[1].edges[0], 3, 2);
+  assert.throws(() => assertOutput({ ...lazy, savedBytes: lazy.savedBytes + 1 }, lazy), assert.AssertionError);
+  const dom = dominatorsOracle(graphs[1], 'b');
+  assert.throws(() => assertOutput({ ...dom, dominators: dom.dominators.slice(1) }, dom), assert.AssertionError);
+  const reverse = reverseOracle(graphs[1], 'b');
+  assert.throws(() => assertOutput({ ...reverse, importers: [] }, reverse), assert.AssertionError);
 });
