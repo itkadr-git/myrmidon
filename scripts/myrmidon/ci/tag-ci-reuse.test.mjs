@@ -39,8 +39,19 @@ describe("classifyRuns", () => {
   it("an in-progress run is pending, a red one is failed, red plus green is success", () => {
     assert.equal(classifyRuns([run({ status: "in_progress", conclusion: null })], SHA), "pending");
     assert.equal(classifyRuns([run({ conclusion: "failure" })], SHA), "failed");
-    assert.equal(classifyRuns([run({ conclusion: "cancelled" })], SHA), "failed");
     assert.equal(classifyRuns([run({ conclusion: "failure" }), run()], SHA), "success");
+  });
+  it("a cancelled run is not a red verdict: it is its own state", () => {
+    assert.equal(classifyRuns([run({ conclusion: "cancelled" })], SHA), "cancelled");
+  });
+  it("a cancelled run while another attempt is pending is pending", () => {
+    assert.equal(classifyRuns([run({ conclusion: "cancelled" }), run({ status: "in_progress", conclusion: null })], SHA), "pending");
+  });
+  it("a cancelled run plus a green re-run is success", () => {
+    assert.equal(classifyRuns([run({ conclusion: "cancelled" }), run()], SHA), "success");
+  });
+  it("a cancelled run plus a red one is failed (a red verdict exists)", () => {
+    assert.equal(classifyRuns([run({ conclusion: "cancelled" }), run({ conclusion: "failure" })], SHA), "failed");
   });
 });
 
@@ -55,6 +66,37 @@ describe("decide", () => {
     const r = await decide(opts(async () => [n++ < 3 ? run({ status: "in_progress", conclusion: null }) : run()]));
     assert.equal(r.mode, "reuse");
     assert.equal(n, 4);
+  });
+
+  it("waits for the re-run of a cancelled branch run and reuses it when it turns green (rc.12/rc.13 of 1.6.9)", async () => {
+    let n = 0;
+    // The first poll sees the cancelled attempt (the state at the tag cut on
+    // 16.11); the re-run then starts and goes green.
+    const r = await decide(opts(async () => {
+      n++;
+      if (n === 1) return [run({ conclusion: "cancelled" })];
+      if (n < 4) return [run({ status: "in_progress", conclusion: null })];
+      return [run()];
+    }));
+    assert.equal(r.mode, "reuse");
+    assert.ok(n > 1, "polled past the cancelled state instead of falling to the full pipeline");
+  });
+
+  it("waits for the re-run of a cancelled branch run and goes full when the re-run is red", async () => {
+    let n = 0;
+    const r = await decide(opts(async () => {
+      n++;
+      return n === 1 ? [run({ conclusion: "cancelled" })] : [run({ conclusion: "failure" })];
+    }));
+    assert.equal(r.mode, "full");
+    assert.match(r.reason, /did not succeed/);
+  });
+
+  it("runs the full pipeline when the cancelled branch run is never re-run within the timeout", async () => {
+    const r = await decide(opts(async () => [run({ conclusion: "cancelled" })], { timeoutMs: 120_000 }));
+    assert.equal(r.mode, "full");
+    assert.match(r.reason, /timed out/);
+    assert.match(r.reason, /cancelled/);
   });
 
   it("runs the full pipeline when the waited run turns red", async () => {
