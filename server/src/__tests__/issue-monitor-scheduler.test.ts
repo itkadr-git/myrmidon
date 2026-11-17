@@ -326,6 +326,52 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     });
   });
 
+  it("hands a queued monitor wake to the reviewer selected before admission", async () => {
+    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture({ issueStatus: "in_review" });
+    const oldReviewer = randomUUID();
+    const newReviewer = randomUUID();
+    for (const id of [oldReviewer, newReviewer]) {
+      await db.insert(agents).values({
+        id, companyId, name: `Reviewer ${id}`, role: "reviewer", status: "active",
+        adapterType: "process", adapterConfig: { command: process.execPath, args: ["-e", ""], cwd: process.cwd() },
+        runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } }, permissions: {},
+      });
+    }
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const state = {
+      status: "pending", currentStageId: randomUUID(), currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: oldReviewer, userId: null },
+      returnAssignee: { type: "agent", agentId, userId: null },
+      reviewRequest: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+      monitor: parseIssueExecutionState(before!.executionState)?.monitor,
+    };
+    await db.update(issues).set({ executionState: state }).where(eq(issues.id, issueId));
+    const previousSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
+    process.env.MYRMIDON_AGENT_JWT_SECRET = "issue-monitor-test-secret";
+    try {
+      const scheduler = heartbeatService(db, { executesRuns: false });
+      expect((await scheduler.tickTimers(nextCheckAt)).enqueued).toBe(1);
+      const [queued] = await db.select().from(heartbeatRuns);
+      expect(queued).toMatchObject({ agentId: oldReviewer, status: "queued" });
+      await db.update(issues).set({
+        executionState: sql`jsonb_set(${issues.executionState}, '{currentParticipant}', ${JSON.stringify({ type: "agent", agentId: newReviewer, userId: null })}::jsonb)`,
+      }).where(eq(issues.id, issueId));
+      const executor = heartbeatService(db);
+      await executor.resumeQueuedRuns();
+      await waitForHeartbeatIdle();
+      expect((await executor.tickTimers(new Date(nextCheckAt.getTime() + 60_000))).enqueued).toBe(0);
+      const runs = await db.select().from(heartbeatRuns);
+      expect(runs.filter((run) => run.status === "succeeded").map((run) => run.agentId)).toEqual([newReviewer]);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(parseIssueExecutionState(after!.executionState)).toMatchObject({
+        currentParticipant: { type: "agent", agentId: newReviewer }, returnAssignee: state.returnAssignee,
+      });
+    } finally {
+      if (previousSecret === undefined) delete process.env.MYRMIDON_AGENT_JWT_SECRET;
+      else process.env.MYRMIDON_AGENT_JWT_SECRET = previousSecret;
+    }
+  });
+
   it("triggers due issue monitors once and clears the one-shot schedule", async () => {
     const { issueId, agentId } = await seedFixture();
     const heartbeat = heartbeatService(db);
