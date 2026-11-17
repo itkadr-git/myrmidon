@@ -111,6 +111,12 @@ Pending knowledge proposals from `/api/myrmidon/companies/:companyId/knowledge/s
 - **Type filter**: the inbox filter popover includes a **Knowledge** category filter, allowing operators to filter the inbox exclusively to knowledge suggestions or combine it with other categories. The category selection is persisted in local storage preferences.
 - **Review routing**: activating a knowledge inbox item (via click or keyboard navigation) routes directly to `/knowledge/review` where the proposal's title, rationale, source references, and proposed content can be inspected, accepted, or declined.
 
+## Company knowledge settings
+
+If the initial settings load fails, use Retry on the screen without reloading
+the page. Retry is unavailable while the request is pending, becomes available
+again after another failure, and a successful response restores the form.
+
 ## Where the code lives
 
 - `server/src/myrmidon/knowledge/routes.ts` — the REST router and its gates.

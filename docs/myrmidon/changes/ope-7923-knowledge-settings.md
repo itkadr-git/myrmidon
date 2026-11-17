@@ -8,6 +8,9 @@
 - Wire surface: `GET`/`PATCH /api/myrmidon/companies/:companyId/knowledge/settings`;
   reads require company access, writes additionally require an instance admin and
   are journaled as `knowledge.settings_updated`.
+- If the initial settings load fails, retry on the screen without reloading the
+  page. Retry is unavailable while the request is pending; after another failure
+  it is available again, and a successful response restores the settings form.
 - Every field resolves UI → env → default, the same precedence rule the corpus
   module uses: a value saved from the screen wins, otherwise the matching
   environment variable, otherwise the default. The screen badges the winning layer
