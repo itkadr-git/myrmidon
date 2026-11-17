@@ -684,7 +684,18 @@ jobs:
       - name: Script tests (node:test under scripts/myrmidon)
         run: |
           set -euo pipefail
-          mapfile -t files < <(find scripts/myrmidon -name '*.test.mjs' -type f | sort)
+          mapfile -t files < <(find scripts/myrmidon -path scripts/myrmidon/bundle-audit -prune -o -name '*.test.mjs' -type f -print | sort)
+          printf 'Running %s\n' "${files[@]}"
+          node --test "${files[@]}"
+
+      - name: Bundle audit contracts (node:test)
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find scripts/myrmidon/bundle-audit -name '*.test.mjs' -type f | sort)
+          if (( ${#files[@]} == 0 )); then
+            echo 'No bundle audit tests found' >&2
+            exit 1
+          fi
           printf 'Running %s\n' "${files[@]}"
           node --test "${files[@]}"
 
