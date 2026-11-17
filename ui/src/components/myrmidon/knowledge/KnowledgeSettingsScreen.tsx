@@ -176,6 +176,7 @@ export function KnowledgeSettingsScreen() {
         <p>{t("knowledgeSettings.intro")}</p>
       </header>
 
+      <fieldset disabled={mutation.isPending} style={{ display: "contents" }}>
       <div>
         <Label htmlFor="knowledge-max-items">
           {t("knowledgeSettings.maxItems")} <SourceBadge source={view.maxItems.source} />
@@ -348,6 +349,7 @@ export function KnowledgeSettingsScreen() {
         {saved ? <p data-testid="knowledge-settings-saved">{t("knowledgeSettings.saved")}</p> : null}
         {mutation.isError ? <p role="alert">{t("knowledgeSettings.saveError")}</p> : null}
       </div>
+      </fieldset>
     </section>
   );
 }
