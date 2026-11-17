@@ -160,6 +160,22 @@ describeEmbeddedPostgres("project-scoped automatic claim", () => {
     return eq(issues.id, issueId);
   }
 
+  it("matches an unrestricted agent and excludes an agent nested in another project", async () => {
+    const companyId = await seedCompany();
+    await seedAgent(companyId, OUTSIDER_ID, "other-nest-eng");
+    await seedAgent(companyId, MEMBER_ID, "unrestricted-eng");
+    const projectId = await seedProject(companyId);
+    const otherProjectId = await seedProject(companyId);
+    await nest(companyId, otherProjectId, OUTSIDER_ID);
+    const issueId = await seedTask(companyId, "TASK-EMPTY-NEST", projectId);
+
+    const byAgent = await listAgentProjectIds(db, companyId);
+    expect(new Set(byAgent.get(MEMBER_ID))).toEqual(new Set([projectId, otherProjectId]));
+    expect(byAgent.get(OUTSIDER_ID)).toEqual([otherProjectId]);
+    expect((await matchIssue(matcher(), issueId))?.agentId).toBe(MEMBER_ID);
+    expect(await assigneeOf(issueId)).toBe(MEMBER_ID);
+  });
+
   it("hands a project task to a joined member, never to the non-member that sorts first", async () => {
     const companyId = await seedCompany();
     await seedAgent(companyId, OUTSIDER_ID, "outsider-eng");
