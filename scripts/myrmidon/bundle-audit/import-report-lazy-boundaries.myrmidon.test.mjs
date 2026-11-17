@@ -32,6 +32,16 @@ test('startup boundaries exclude alternate eager paths and lazy sources', t => {
   writeFileSync(path, JSON.stringify({ ...fixture, modules: [...fixture.modules].reverse(), edges: [...fixture.edges].reverse(), counts: 'ignored' }));
   check(path, expected);
 });
+test('boundary bytes include the lazy-only eager closure once', t => {
+  const dir = scratch(t), path = join(dir, 'report.json');
+  const report = {
+    entry: 'entry',
+    modules: [mod('entry', 100, true), mod('shared', 50, true), mod('intermediate', 3, false), mod('left', 2, false), mod('right', 5, false), mod('target', 7, false), mod('nested', 11, false)],
+    edges: [edge('entry', 'shared', 'eager', 'shared'), edge('entry', 'load', 'lazy', 'intermediate'), edge('intermediate', 'left', 'eager', 'left'), edge('intermediate', 'right', 'eager', 'right'), edge('left', 'target', 'eager', 'target'), edge('right', 'target', 'eager', 'target'), edge('target', 'left', 'eager', 'left'), edge('target', 'shared', 'eager', 'shared'), edge('intermediate', 'nested', 'lazy', 'nested')],
+  };
+  writeFileSync(path, JSON.stringify(report));
+  check(path, { entry: 'entry', boundaries: [{ from: 'entry', specifier: 'load', to: 'intermediate', bytes: 17 }] });
+});
 test('invalid argv, file, JSON, shape and graph fail closed', t => {
   const dir = scratch(t), path = join(dir, 'report.json');
   for (const args of [[], [path, 'extra']]) {
