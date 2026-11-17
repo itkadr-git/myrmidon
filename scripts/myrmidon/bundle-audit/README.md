@@ -36,6 +36,15 @@ sorted for the same files and Node.js built-in module list.
   eager subset. `heaviestEager` lists up to ten eager module records, sorted by
   descending bytes and then path.
 
+## Lazy boundaries
+
+Run `node scripts/myrmidon/bundle-audit/import-report-lazy-boundaries.mjs report.json`
+against a scanner report. Each startup lazy boundary reports the total source
+bytes of its target and all modules reachable from it through eager edges,
+excluding modules already eagerly reachable from the entry. Each module counts
+once per boundary, including when paths converge or contain cycles. Nested lazy
+edges are not followed. Different boundaries can include the same module.
+
 ## Resolution and limitations
 
 Relative and absolute specifiers are resolved from the importing file. The CLI

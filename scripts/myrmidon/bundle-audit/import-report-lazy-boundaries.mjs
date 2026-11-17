@@ -33,8 +33,23 @@ function boundaries(report) {
     }
   }
   for (const mod of modules.values()) if (mod.eager !== eager.has(mod.path)) fail('graph');
+  const closureBytes = new Map();
+  function bytesFor(target) {
+    if (closureBytes.has(target)) return closureBytes.get(target);
+    const seen = new Set([target]), pending = [target];
+    let bytes = 0;
+    for (let i = 0; i < pending.length; i++) {
+      const path = pending[i];
+      bytes += modules.get(path).bytes;
+      for (const to of outgoing.get(path) ?? []) {
+        if (!eager.has(to) && !seen.has(to)) { seen.add(to); pending.push(to); }
+      }
+    }
+    closureBytes.set(target, bytes);
+    return bytes;
+  }
   const result = report.edges.filter(edge => edge.kind === 'lazy' && edge.to !== null && eager.has(edge.from) && !eager.has(edge.to))
-    .map(edge => ({ from: edge.from, specifier: edge.specifier, to: edge.to, bytes: modules.get(edge.to).bytes }));
+    .map(edge => ({ from: edge.from, specifier: edge.specifier, to: edge.to, bytes: bytesFor(edge.to) }));
   result.sort((a, b) => cmp(a.from, b.from) || cmp(a.specifier, b.specifier) || cmp(a.to, b.to));
   return { entry: report.entry, boundaries: result };
 }
