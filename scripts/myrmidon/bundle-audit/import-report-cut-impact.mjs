@@ -6,7 +6,7 @@ const object = value => value !== null && typeof value === 'object' && !Array.is
 const string = value => typeof value === 'string' && value.length > 0;
 
 function parseReport(report) {
-  if (!object(report) || !string(report.entry) || !Array.isArray(report.modules) || !Array.isArray(report.edges)) fail('shape');
+  if (!object(report) || !string(report.entry) || !Array.isArray(report.modules) || report.modules.length === 0 || !Array.isArray(report.edges)) fail('shape');
   const modules = new Map();
   for (const module of report.modules) {
     if (!object(module) || !string(module.path) || !Number.isSafeInteger(module.bytes) || module.bytes < 0 || typeof module.eager !== 'boolean') fail('shape');
