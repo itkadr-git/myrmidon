@@ -13849,11 +13849,21 @@ export function heartbeatService(
           sql`${issues.assigneeAgentId} is not null`,
           inArray(issues.status, ["in_progress", "in_review", "blocked"]),
           // A human review participant must not be replaced by the assignee.
+          // A provider-quota monitor kept only in execution_state names no
+          // persisted source run; the server-owned quota recovery cannot
+          // dispatch it, so the due set leaves it alone instead of waking the
+          // reviewer as an ordinary monitor.
           sql`not (
             ${issues.status} = 'in_review'
             and ${issues.executionState} ->> 'status' = 'pending'
             and ${issues.executionState} ->> 'currentStageType' = 'review'
-            and coalesce(${issues.executionState} -> 'currentParticipant' ->> 'type', '') = 'user'
+            and (
+              coalesce(${issues.executionState} -> 'currentParticipant' ->> 'type', '') = 'user'
+              or (
+                coalesce(${issues.executionState} -> 'monitor' ->> 'serviceName', '') = ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+                and ${issues.executionPolicy} -> 'monitor' ->> 'serviceName' is distinct from ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+              )
+            )
           )`,
           or(
             isNull(issues.monitorWakeRequestedAt),
@@ -13883,11 +13893,22 @@ export function heartbeatService(
               isNull(issues.assigneeUserId),
               sql`${issues.assigneeAgentId} is not null`,
               inArray(issues.status, ["in_progress", "in_review", "blocked"]),
+              // A human review participant must not be replaced by the assignee.
+              // A provider-quota monitor kept only in execution_state names no
+              // persisted source run; the server-owned quota recovery cannot
+              // dispatch it, so the due set leaves it alone instead of waking the
+              // reviewer as an ordinary monitor.
               sql`not (
                 ${issues.status} = 'in_review'
                 and ${issues.executionState} ->> 'status' = 'pending'
                 and ${issues.executionState} ->> 'currentStageType' = 'review'
-                and coalesce(${issues.executionState} -> 'currentParticipant' ->> 'type', '') = 'user'
+                and (
+                  coalesce(${issues.executionState} -> 'currentParticipant' ->> 'type', '') = 'user'
+                  or (
+                    coalesce(${issues.executionState} -> 'monitor' ->> 'serviceName', '') = ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+                    and ${issues.executionPolicy} -> 'monitor' ->> 'serviceName' is distinct from ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+                  )
+                )
               )`,
               or(
                 isNull(issues.monitorWakeRequestedAt),
