@@ -24,7 +24,7 @@ vi.mock("@/i18n", () => {
   } }) };
 });
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const view: KnowledgeSettingsView = {
   maxItems: { value: 5000, source: "env" },
@@ -67,9 +67,7 @@ describe("Knowledge settings provenance", () => {
   });
 
   async function settle() {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    setTimeout(resolve, 20);
-    await act(async () => { await promise; });
+    await act(async () => { await new Promise<void>((resolve) => setTimeout(resolve, 20)); });
   }
 
   async function render() {
@@ -96,8 +94,9 @@ describe("Knowledge settings provenance", () => {
   });
 
   it("keeps server provenance during a save and uses the returned view after success", async () => {
-    const pending = Promise.withResolvers<KnowledgeSettingsView>();
-    mocks.patch.mockReturnValue(pending.promise);
+    let resolvePatch: (value: KnowledgeSettingsView) => void = () => { throw new Error("Patch promise not initialized"); };
+    const pending = new Promise<KnowledgeSettingsView>((resolve) => { resolvePatch = resolve; });
+    mocks.patch.mockReturnValue(pending);
     await render();
     const input = container.querySelector<HTMLInputElement>('[data-testid="knowledge-max-items"]');
     expect(input).not.toBeNull();
@@ -113,7 +112,7 @@ describe("Knowledge settings provenance", () => {
     expect(mocks.patch).toHaveBeenCalledWith("company-1", { maxItems: "7000" });
     expectSources(view, en);
     const updated: KnowledgeSettingsView = { ...view, maxItems: { value: 7000, source: "ui" } };
-    await act(async () => { pending.resolve(updated); });
+    await act(async () => { resolvePatch(updated); });
     await settle();
     expectSources(updated, en);
   });
