@@ -28,7 +28,7 @@ const compact = JSON.stringify(fixture);
 const representations = [
   compact,
   ` \t\r\n${JSON.stringify(fixture, null, 2).replaceAll('\n', '\r\n')}\r\n `,
-  compact.replace('"entry":', '"\\u0065ntry":').replaceAll('/', '\\/').replace('🚀', '\\ud83d\\ude80'),
+  compact.replace('"entry":', '"\\u0065ntry":').replaceAll('/', '\\/').replace('\u{1f680}', '\\ud83d\\ude80'),
   compact.replace('"bytes":2,', '"bytes":2.0,').replace('"bytes":2,', '"bytes":2e0,'),
   compact,
 ];
