@@ -1128,7 +1128,14 @@ export function createPostgresRunDispatchAdapter(
             inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
             sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
           )).limit(1);
-          if (!existing) {
+          const [pending] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+            eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, reviewerId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+            sql`${agentWakeupRequests.payload}->'executionWait' is null`,
+            sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
+          )).limit(1);
+          if (!existing && !pending) {
             const context = { ...parseObject(run.contextSnapshot), issueId, wakeReason: "issue_monitor_due" };
             await tx.insert(agentWakeupRequests).values({
               companyId: run.companyId, agentId: reviewerId, source: "automation", triggerDetail: "system",
