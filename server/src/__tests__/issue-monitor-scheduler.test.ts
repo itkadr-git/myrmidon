@@ -284,6 +284,36 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(issue.monitorNextCheckAt?.getTime()).toBe(nextCheckAt.getTime());
   });
 
+  it("routes an ordinary due monitor to the current reviewer, not the return assignee", async () => {
+    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture({ issueStatus: "in_review" });
+    const reviewerId = randomUUID();
+    await db.insert(agents).values({
+      id: reviewerId, companyId, name: "Reviewer", role: "reviewer", status: "active",
+      adapterType: "process", adapterConfig: { command: process.execPath, args: ["-e", ""], cwd: process.cwd() },
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } }, permissions: {},
+    });
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const state = {
+      status: "pending", currentStageId: randomUUID(), currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: reviewerId, userId: null },
+      returnAssignee: { type: "agent", agentId, userId: null },
+      reviewRequest: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+      monitor: parseIssueExecutionState(before!.executionState)?.monitor,
+    };
+    await db.update(issues).set({ executionState: state }).where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    expect((await heartbeat.tickTimers(nextCheckAt)).enqueued).toBe(1);
+    expect((await heartbeat.tickTimers(new Date(nextCheckAt.getTime() + 60_000))).enqueued).toBe(0);
+    const wakes = await db.select().from(agentWakeupRequests);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ agentId: reviewerId });
+    const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(parseIssueExecutionState(after!.executionState)).toMatchObject({
+      currentParticipant: state.currentParticipant, returnAssignee: state.returnAssignee,
+    });
+  });
+
   it("triggers due issue monitors once and clears the one-shot schedule", async () => {
     const { issueId, agentId } = await seedFixture();
     const heartbeat = heartbeatService(db);
