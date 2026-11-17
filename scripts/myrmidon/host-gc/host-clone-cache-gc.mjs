@@ -512,9 +512,9 @@ function isGitWorktree(dir, env) {
 
 // A `.git` that is empty or broken is skipped by git, which then finds the parent repository:
 // such a directory is no worktree of its own.
-function isOwnWorktree(dir) {
+function isOwnWorktree(dir, env) {
   try {
-    const r = git(["rev-parse", "--show-toplevel"], dir);
+    const r = git(["rev-parse", "--show-toplevel"], dir, env);
     return r.status === 0 && fs.realpathSync(r.stdout.trim()) === fs.realpathSync(dir);
   } catch { return false; }
 }
@@ -2453,14 +2453,16 @@ function archiveRepos(clonePath) {
 // tar `--exclude` arguments: exact member paths (`<clone name>/<path>`) that git reports as ignored
 // and whose last segment is in ARCHIVE_EXCLUDES. A git failure or a non-repo gives no excludes:
 // the archive is whole, the safe default.
-function archiveExcludes(clonePath) {
+function archiveExcludes(clonePath, env) {
   const name = path.basename(clonePath);
   const out = new Set();
   const allRepos = archiveRepos(clonePath);
   for (const repo of allRepos) {
     let r;
     try {
-      r = git(["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], repo);
+      // The clone's own root may be a mapped linked worktree (its `.git` names a container
+      // path): only the mapped env reads it. Nested repos are plain and read on their own.
+      r = git(["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], repo, repo === clonePath ? env : undefined);
     } catch {
       continue;
     }
@@ -2503,13 +2505,13 @@ function runArchiveTool(cmd, args, what, extra = {}) {
 // Why a checkout cannot be archived compactly (bundle + patches). `{ keep: true }` means no
 // safe archive of any kind exists (a full copy would lack the borrowed objects): the checkout
 // stays. Otherwise the reason is journaled and the previous full archive is used.
-function compactBlocker(clonePath, repos) {
+function compactBlocker(clonePath, repos, envFor = () => undefined, mappedFor = () => undefined) {
   if (!repos.length) return { reason: "no-git-repository" };
   for (const repo of repos) {
-    if (hasAlternates(repo)) return { keep: true, reason: `alternate-objects: ${repo}` };
+    if (hasAlternates(repo, mappedFor(repo))) return { keep: true, reason: `alternate-objects: ${repo}` };
   }
   for (const repo of repos) {
-    if (!isOwnWorktree(repo)) {
+    if (!isOwnWorktree(repo, envFor(repo))) {
       // The full archive leaves out git-ignored build and dependency directories: a broken
       // repository inside one would be lost with the copy. Keep the copy then.
       const skipped = path.relative(clonePath, repo).split(path.sep).some((seg) => ARCHIVE_EXCLUDES.includes(seg) || BOT_SCAN_SKIP_NAMES.has(seg));
@@ -2543,14 +2545,17 @@ function compactBlocker(clonePath, repos) {
 // Compact recovery of one git root into `dest`: unpublished commits (git bundle), staged and
 // unstaged changes (patches), untracked files. Returns the member names written (empty when
 // everything is already on the remote).
-function compactRepo(repo, dest, nestedRepos, journalPath, clonePath) {
+function compactRepo(repo, dest, nestedRepos, journalPath, clonePath, env) {
   fs.mkdirSync(dest, { recursive: true });
+  // A mapped linked worktree's `.git` names a container path: every git call needs the mapped
+  // env, exactly as the scan and assessment use it.
+  const toolEnv = env ? { ...process.env, ...env } : undefined;
   const members = [];
-  const stashes = git(["stash", "list", "--format=%H"], repo);
+  const stashes = git(["stash", "list", "--format=%H"], repo, env);
   if (stashes.status !== 0) throw new Error(`stash listing failed: ${stashes.stderr}`);
   const stashCount = stashes.stdout.trim().split("\n").filter(Boolean).length;
   if (stashCount > 1) throw new Error("multiple stash entries require reflog preservation; keeping checkout");
-  const state = pushState(repo);
+  const state = pushState(repo, env);
   if (!state.verified && journalPath) {
     journalRecord(journalPath, { event: "remote-unverified", path: repo, clone: clonePath, reason: state.reason });
   }
@@ -2559,8 +2564,8 @@ function compactRepo(repo, dest, nestedRepos, journalPath, clonePath) {
     // A bundle includes stashes as well as unpublished branches and tags. Only commits the server
     // itself advertised (and that exist here) are left out; without a verified answer nothing is.
     const exclude = state.verified && state.tips.length ? ["--not", ...state.tips] : [];
-    runArchiveTool("git", ["-C", repo, "bundle", "create", bundle, "HEAD", "--all", ...exclude], "bundle creation");
-    runArchiveTool("git", ["-C", repo, "bundle", "verify", bundle], "bundle verification");
+    runArchiveTool("git", ["-C", repo, "bundle", "create", bundle, "HEAD", "--all", ...exclude], "bundle creation", { env: toolEnv });
+    runArchiveTool("git", ["-C", repo, "bundle", "verify", bundle], "bundle verification", { env: toolEnv });
     members.push("unpublished.bundle");
   }
   // Patches are bytes: the diff goes straight to the file, nothing is decoded or buffered.
@@ -2571,14 +2576,14 @@ function compactRepo(repo, dest, nestedRepos, journalPath, clonePath) {
     const file = path.join(dest, name);
     const fd = fs.openSync(file, "w");
     try {
-      runArchiveTool("git", ["-C", repo, ...diffArgs], `${name} diff`, { stdio: ["ignore", fd, "pipe"] });
+      runArchiveTool("git", ["-C", repo, ...diffArgs], `${name} diff`, { stdio: ["ignore", fd, "pipe"], env: toolEnv });
     } finally {
       fs.closeSync(fd);
     }
     if (fs.statSync(file).size > 0) members.push(name);
     else fs.rmSync(file, { force: true });
   }
-  const listed = runArchiveTool("git", ["-C", repo, "ls-files", "--others", "--exclude-standard", "-z"], "untracked listing");
+  const listed = runArchiveTool("git", ["-C", repo, "ls-files", "--others", "--exclude-standard", "-z"], "untracked listing", { env: toolEnv });
   // A nested repository is archived by its own pass; the parent lists it as one directory. Names are
   // handled as latin1 so non-UTF-8 bytes survive the round trip to tar unchanged.
   const nestedRel = nestedRepos.map((r) => Buffer.from(path.relative(repo, r), "utf8").toString("latin1"));
@@ -2599,12 +2604,17 @@ function compactRepo(repo, dest, nestedRepos, journalPath, clonePath) {
 // or null when everything is already pushed (nothing worth keeping). Where a compact archive is
 // impossible the previous full archive is made and the reason journaled; a checkout whose Git
 // state cannot be recovered by either way stays in place (throws).
-function archiveClone(clonePath, archiveRoot, journalPath) {
+function archiveClone(clonePath, archiveRoot, journalPath, mapped = null) {
   const tree = scanGitTree(clonePath);
   // A directory that cannot be read may hide a repository: nothing can be proven, keep the copy.
   if (!tree.complete) throw new Error(`cannot safely archive ${clonePath}: unreadable or oversized tree; keeping checkout`);
   const repos = tree.roots;
-  const blocker = compactBlocker(clonePath, repos);
+  // A mapped linked worktree's `.git` names a container path the host cannot read: the blocker,
+  // the compact recovery and the exclude checks need the same mapped env as the scan.
+  const env = mapped ? { GIT_DIR: mapped.adminDir, GIT_WORK_TREE: clonePath, GIT_OPTIONAL_LOCKS: "0" } : undefined;
+  const envFor = (repo) => (mapped && repo === clonePath ? env : undefined);
+  const mappedFor = (repo) => (mapped && repo === clonePath ? mapped : undefined);
+  const blocker = compactBlocker(clonePath, repos, envFor, mappedFor);
   if (blocker?.keep) throw new Error(`cannot safely archive ${clonePath}: ${blocker.reason}; keeping checkout`);
   if (blocker) {
     // The full archive leaves out git-ignored build and dependency directories. A repository inside
@@ -2612,7 +2622,7 @@ function archiveClone(clonePath, archiveRoot, journalPath) {
     const hidden = repos.find((r) => r !== clonePath && path.relative(clonePath, r).split(path.sep).some((seg) => ARCHIVE_EXCLUDES.includes(seg) || BOT_SCAN_SKIP_NAMES.has(seg)));
     if (hidden) throw new Error(`cannot safely archive ${clonePath}: repository in a skipped directory (${hidden}) cannot go into the full archive; keeping checkout`);
     if (journalPath) journalRecord(journalPath, { event: "archive-full-fallback", path: clonePath, reason: blocker.reason });
-    return archiveCloneFull(clonePath, archiveRoot);
+    return archiveCloneFull(clonePath, archiveRoot, env);
   }
   const stage = fs.mkdtempSync(path.join(fs.existsSync(archiveRoot) ? archiveRoot : (fs.mkdirSync(archiveRoot, { recursive: true }), archiveRoot), ".bundle-"));
   const archivePath = path.join(archiveRoot, `${path.basename(clonePath)}-${crypto.randomUUID()}.tar.gz`);
@@ -2622,7 +2632,7 @@ function archiveClone(clonePath, archiveRoot, journalPath) {
       const rel = path.relative(clonePath, repo);
       const nested = repos.filter((r) => r !== repo && r.startsWith(`${repo}${path.sep}`));
       // The checkout's own repository keeps flat member names; inner ones go under repos/<path>.
-      const members = compactRepo(repo, rel ? path.join(stage, "repos", rel) : stage, nested, journalPath, clonePath);
+      const members = compactRepo(repo, rel ? path.join(stage, "repos", rel) : stage, nested, journalPath, clonePath, envFor(repo));
       if (members.length) manifest.push({ path: rel || ".", members });
     }
     if (!manifest.length) {
@@ -2643,7 +2653,7 @@ function archiveClone(clonePath, archiveRoot, journalPath) {
 
 // Previous full archive (the whole checkout, minus git-ignored build output). Used only where the
 // compact archive is impossible; archiveClone journals why.
-function archiveCloneFull(clonePath, archiveRoot) {
+function archiveCloneFull(clonePath, archiveRoot, env) {
   if (!fs.existsSync(archiveRoot)) fs.mkdirSync(archiveRoot, { recursive: true });
   const name = path.basename(clonePath);
   const ts = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-").slice(0, 15);
@@ -2655,7 +2665,7 @@ function archiveCloneFull(clonePath, archiveRoot) {
   // Only build and dependency dirs that git reports as ignored are left out, as exact paths
   // (--anchored, --no-wildcards: a name with `*` or `[` matches literally, nowhere else).
   // Unpushed commits (.git), working files and anything git does not ignore stay in.
-  const excludes = ["--no-wildcards", "--anchored", ...archiveExcludes(clonePath)];
+  const excludes = ["--no-wildcards", "--anchored", ...archiveExcludes(clonePath, env)];
   // Per-archive limit, 10 min by default. The test hook is the env var (finite, > 0).
   const envTimeoutS = Number(process.env.HOST_GC_ARCHIVE_TIMEOUT_SECONDS);
   const timeoutS = Number.isFinite(envTimeoutS) && envTimeoutS > 0 ? envTimeoutS : 600;
@@ -3031,16 +3041,19 @@ async function main() {
       const archiveRoot = path.join(root, ".gc-archive");
       for (const c of plan.clones.filter((x) => x.action === "archive-remove")) {
         try {
-          const archivePath = archiveClone(c.path, archiveRoot, args.journal);
+          const archivePath = archiveClone(c.path, archiveRoot, args.journal, c.adminDir ? { adminDir: c.adminDir, commonDir: c.commonDir } : null);
+          // A mapped linked worktree also leaves its own admin dir under the git-base: the drop
+          // frees the copy and exactly that admin dir (removeWorktreeClone), never the common dir.
+          const drop = () => (c.adminDir ? removeWorktreeClone(c, root) : atomicDrop(c.path, root));
           if (!archivePath) {
             // Everything is pushed (every git root): nothing to keep.
-            atomicDrop(c.path, root);
+            drop();
             plan.removed.push({ path: c.path });
             journalRecord(args.journal, { event: "clone-removed", path: c.path, reason: "all-pushed" });
             continue;
           }
           journalRecord(args.journal, { event: "clone-archived", path: c.path, archive: archivePath, sizeBytes: c.sizeBytes });
-          atomicDrop(c.path, root);
+          drop();
           plan.archived.push({ path: c.path, archive: archivePath });
           journalRecord(args.journal, { event: "clone-removed-after-archive", path: c.path, archive: archivePath });
         } catch (err) {
