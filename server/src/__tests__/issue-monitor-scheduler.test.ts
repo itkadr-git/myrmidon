@@ -28,6 +28,8 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.ts";
+import { createPgReviewRoutingStore } from "../myrmidon/review-routing/store.js";
+import { buildReviewRoutingReassignPatch, readPendingAgentReview } from "../myrmidon/review-routing/policy.js";
 import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -521,6 +523,62 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
       expect(parseIssueExecutionState(after!.executionState)).toMatchObject({
         currentParticipant: { type: "agent", agentId: newReviewer }, returnAssignee: state.returnAssignee,
+      });
+    } finally {
+      if (previousSecret === undefined) delete process.env.MYRMIDON_AGENT_JWT_SECRET;
+      else process.env.MYRMIDON_AGENT_JWT_SECRET = previousSecret;
+    }
+  });
+
+  it("coalesces the routing reassignment wake with a queued monitor handoff", async () => {
+    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture({ issueStatus: "in_review" });
+    const [oldReviewer, newReviewer, stageId] = [randomUUID(), randomUUID(), randomUUID()];
+    for (const id of [oldReviewer, newReviewer]) {
+      await db.insert(agents).values({
+        id, companyId, name: `Reviewer ${id}`, role: "reviewer", status: "active",
+        adapterType: "process", adapterConfig: { command: process.execPath, args: ["-e", ""], cwd: process.cwd() },
+        runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } }, permissions: {},
+      });
+    }
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const returnAssignee = { type: "agent", agentId, userId: null };
+    await db.update(issues).set({
+      assigneeAgentId: oldReviewer,
+      executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", approvalsNeeded: 1,
+        participants: [{ type: "agent", agentId: oldReviewer }] }],
+        monitor: normalizeIssueExecutionPolicy(before!.executionPolicy)?.monitor },
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: oldReviewer, userId: null }, returnAssignee,
+        reviewRequest: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+        monitor: parseIssueExecutionState(before!.executionState)?.monitor },
+    }).where(eq(issues.id, issueId));
+    const previousSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
+    process.env.MYRMIDON_AGENT_JWT_SECRET = "issue-monitor-test-secret";
+    try {
+      const scheduler = heartbeatService(db, { executesRuns: false });
+      expect((await scheduler.tickTimers(nextCheckAt)).enqueued).toBe(1);
+      const store = createPgReviewRoutingStore(db);
+      const applied = await store.applyPatch({
+        issueId, companyId,
+        guard: (fresh) => readPendingAgentReview(fresh)?.reviewerAgentId === oldReviewer,
+        build: (fresh) => buildReviewRoutingReassignPatch({ issue: fresh, newReviewerAgentId: newReviewer }),
+      });
+      expect(applied).not.toBeNull();
+      await scheduler.wakeup(newReviewer, {
+        source: "assignment", triggerDetail: "system", reason: "execution_review_requested",
+        payload: { issueId, mutation: "myrmidon_review_routing_reassign", executionStage: applied!.executionState },
+        contextSnapshot: { issueId, taskId: issueId, wakeReason: "execution_review_requested", source: "myrmidon.review_routing" },
+      });
+      const executor = heartbeatService(db);
+      await executor.resumeQueuedRuns();
+      await waitForHeartbeatSideEffectsSettled();
+      expect((await executor.tickTimers(new Date(nextCheckAt.getTime() + 60_000))).enqueued).toBe(0);
+      const runs = await db.select().from(heartbeatRuns);
+      expect(runs.filter((run) => run.agentId === newReviewer)).toHaveLength(1);
+      expect(runs.filter((run) => run.status === "succeeded").map((run) => run.agentId)).toEqual([newReviewer]);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(parseIssueExecutionState(after!.executionState)).toMatchObject({
+        currentParticipant: { type: "agent", agentId: newReviewer }, returnAssignee,
       });
     } finally {
       if (previousSecret === undefined) delete process.env.MYRMIDON_AGENT_JWT_SECRET;
