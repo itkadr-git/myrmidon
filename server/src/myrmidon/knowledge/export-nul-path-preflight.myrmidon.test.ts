@@ -35,7 +35,7 @@ function recordingRunner() {
   const runner: GitExportRunner = {
     async git(_cwd, args) {
       calls.push(args[0]!);
-      return { stdout: args[0] === "status" ? " M valid.md\n" : args[0] === "rev-parse" ? `${"a".repeat(40)}\n` : "", stderr: "" };
+      return { stdout: args[0] === "status" ? (args.includes("-z") ? "" : " M valid.md\n") : args[0] === "rev-parse" ? `${"a".repeat(40)}\n` : "", stderr: "" };
     },
   };
   return { runner, calls };
