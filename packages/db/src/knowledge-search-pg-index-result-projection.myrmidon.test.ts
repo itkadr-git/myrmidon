@@ -10,9 +10,9 @@ const rowC = { item_id: "item-c", slug: "charlie", title: "Charlie", rank: 0.5 }
 type Row = typeof rowA;
 
 function fixture(...responses: Row[][]) {
-  const execute = vi.fn<Db["execute"]>();
-  for (const rows of responses) execute.mockResolvedValueOnce(rows as never);
-  const port: Pick<Db, "execute"> = { execute };
+  const execute = vi.fn<(query: Parameters<Db["execute"]>[0]) => Promise<Row[]>>();
+  for (const rows of responses) execute.mockResolvedValueOnce(rows);
+  const port: Pick<Db, "execute"> = { execute: (query) => execute(query) as never };
   return { execute, index: createPgKnowledgeSearchIndex(port as Db) };
 }
 
