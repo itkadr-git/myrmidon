@@ -149,6 +149,9 @@ export function KnowledgeSettingsScreen() {
   const view = query.data;
   const patch = patchFromDraft(view, draft);
   const fieldErrors = knowledgeSettingsPatchErrors(patch);
+  if (draft.sectionReviewers.some((reviewer) => reviewer.section.trim() === "" && reviewer.reviewerId.trim() !== "")) {
+    if (!fieldErrors.includes("sectionReviewers")) fieldErrors.push("sectionReviewers");
+  }
   const canSave = Object.keys(patch).length > 0 && fieldErrors.length === 0 && !mutation.isPending;
 
   function save() {
