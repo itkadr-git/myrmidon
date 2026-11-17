@@ -654,7 +654,7 @@ export function scanTaskClones(root, now, ttlHours) {
       if (!dirs.adminDir) continue; // not a git clone the host can read, skip
       mapped = dirs;
       // GIT_OPTIONAL_LOCKS=0: `git status` must not rewrite the index, or every pass would make the clone look fresh.
-      env = { GIT_DIR: dirs.adminDir, GIT_WORK_TREE: fullPath, GIT_OPTIONAL_LOCKS: "0" };
+      env = mappedGitEnv(dirs, fullPath);
       if (!isGitWorktree(fullPath, env)) continue;
     }
 
@@ -692,7 +692,7 @@ export function scanTaskClones(root, now, ttlHours) {
 export function assessClone(c) {
   // A linked worktree's `.git` names a container path the host cannot read: the mapped env of
   // the idle/review rules. A plain clone reads fine on its own.
-  const env = c.adminDir ? { GIT_DIR: c.adminDir, GIT_WORK_TREE: c.path, GIT_OPTIONAL_LOCKS: "0" } : undefined;
+  const env = c.adminDir ? mappedGitEnv(c, c.path) : undefined;
   c.pushed = c.clean && !c.stash && !c.alternates ? isPushed(c.path, env) : false;
   c.safeToRemove = c.clean && c.pushed && !c.stash && !c.alternates;
   c.reason = c.safeToRemove ? "clean-pushed" : "unsafe-archive";
@@ -765,14 +765,66 @@ function resolveWorktreeGitDirs(clonePath, agentRoot, containerRoot = BOT_CONTAI
   }
   try {
     const adminDir = fs.realpathSync(target);
-    const common = fs.readFileSync(path.join(adminDir, "commondir"), "utf8").trim();
-    const commonDir = fs.realpathSync(path.resolve(adminDir, common));
+    // The commondir file may name the CONTAINER path of the git base (`/bot/...`), which does
+    // not exist on the host. The layout below still pins the real common dir, so an
+    // unresolvable commondir content falls back to it (mappedGitEnv repairs the file for the
+    // git calls of this pass and restores it on exit).
+    let commonDir = null;
+    try {
+      const common = fs.readFileSync(path.join(adminDir, "commondir"), "utf8").trim();
+      if (common) commonDir = fs.realpathSync(path.resolve(adminDir, common));
+    } catch { /* unresolvable commondir: the layout check pins the common dir */ }
+    if (!commonDir) commonDir = fs.realpathSync(path.dirname(path.dirname(adminDir)));
     if (path.dirname(path.dirname(adminDir)) !== commonDir || path.basename(path.dirname(adminDir)) !== "worktrees") {
       return { reason: "gitdir-unexpected-layout" };
     }
     if (!fs.existsSync(path.join(adminDir, "HEAD"))) return { reason: "gitdir-missing" };
     return { adminDir, commonDir, containerPath };
   } catch { return { reason: "gitdir-missing" }; }
+}
+
+// The admin dir's `commondir` file records the CONTAINER path of the git base (`/bot/...`),
+// which does not exist on the host: bundle/HEAD/objects reads die with "fatal: not a git
+// repository: /bot/...". GIT_COMMON_DIR and `core.commondir` do NOT override the file (git
+// 2.47, verified on the build host), and a host `/bot` symlink cannot map every agent root,
+// so the first mapped git use of an admin dir repoints its commondir file at the host common
+// dir for the duration of the pass and restores the original content on exit. Plain clones
+// pass no env and read their own `.git` directory.
+const repairedCommondirs = new Map(); // adminDir -> original commondir content
+let commondirRestoreArmed = false;
+function armCommondirRestore() {
+  if (commondirRestoreArmed) return;
+  commondirRestoreArmed = true;
+  const restore = () => {
+    for (const [adminDir, original] of repairedCommondirs) {
+      try { fs.writeFileSync(path.join(adminDir, "commondir"), original); } catch { /* best effort */ }
+    }
+    repairedCommondirs.clear();
+  };
+  process.once("exit", restore);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, () => { restore(); process.kill(process.pid, signal); });
+}
+function repairCommondirForHost(adminDir, commonDir) {
+  const file = path.join(adminDir, "commondir");
+  let text;
+  try { text = fs.readFileSync(file, "utf8"); } catch { return; } // no commondir: not a linked layout
+  const target = text.trim();
+  if (!target) return;
+  try { if (fs.existsSync(path.resolve(adminDir, target))) return; } catch { /* unreadable: repair below */ }
+  // The recorded path does not resolve on the host (a container path): point the file at the
+  // host common dir for this pass. Closed clones have no live runs; the idle and review rules
+  // admit a clone only when the board reports no live run on the task.
+  if (!repairedCommondirs.has(adminDir)) {
+    repairedCommondirs.set(adminDir, text);
+    armCommondirRestore();
+  }
+  try { fs.writeFileSync(file, `${commonDir}\n`); } catch { /* the git call will fail closed */ }
+}
+
+// The mapped env every git call uses for a bot or runner linked worktree.
+function mappedGitEnv(dirs, workTree) {
+  repairCommondirForHost(dirs.adminDir, dirs.commonDir);
+  return { GIT_DIR: dirs.adminDir, GIT_WORK_TREE: workTree, GIT_COMMON_DIR: dirs.commonDir, GIT_OPTIONAL_LOCKS: "0" };
 }
 
 // Newest change time of a clone: the directory, its top-level entries and the worktree's own
@@ -858,7 +910,7 @@ export async function scanIdleOpenClones(root, now, {
     base.ageMs = ageMs;
     if (ageMs < thresholdHours * HOUR_MS) { keep("fresh"); continue; }
     // GIT_OPTIONAL_LOCKS=0: `git status` must not rewrite the index, or every pass would make the clone look fresh.
-    const env = { GIT_DIR: dirs.adminDir, GIT_WORK_TREE: clonePath, GIT_OPTIONAL_LOCKS: "0" };
+    const env = mappedGitEnv(dirs, clonePath);
     if (!isCleanIgnoringJunk(clonePath, env)) { keep("dirty"); continue; }
     const tree = scanGitTree(clonePath);
     if (!tree.complete || !tree.roots.every((r) => r === clonePath)) { keep("nested-repo"); continue; }
@@ -1053,7 +1105,7 @@ export async function scanReviewerClones(root, now, {
     const ageMs = now - newestCloneChangeMs(clonePath, dirs.adminDir);
     base.ageMs = ageMs;
     if (ageMs < idleMinutes * MINUTE_MS) { keep("fresh"); continue; }
-    const env = { GIT_DIR: dirs.adminDir, GIT_WORK_TREE: clonePath, GIT_OPTIONAL_LOCKS: "0" };
+    const env = mappedGitEnv(dirs, clonePath);
     // Clean means `git status` is empty, as for the idle rule (untracked service directories are junk).
     if (!isCleanIgnoringJunk(clonePath, env)) { keep("dirty"); continue; }
     const tree = scanGitTree(clonePath);
@@ -1287,7 +1339,7 @@ function mapRunnerContainerWorktree(dir, runnerWorkspace) {
   if (target !== RUNNER_CONTAINER_ROOT && !target.startsWith(`${RUNNER_CONTAINER_ROOT}/`)) return null;
   const dirs = resolveWorktreeGitDirs(dir, runnerWorkspace, RUNNER_CONTAINER_ROOT);
   if (!dirs.adminDir) return { reason: dirs.reason };
-  return { ...dirs, env: { GIT_DIR: dirs.adminDir, GIT_WORK_TREE: dir, GIT_OPTIONAL_LOCKS: "0" } };
+  return { ...dirs, env: mappedGitEnv(dirs, dir) };
 }
 
 // Newest change time (ms) of a task folder outside `.git`: the folder, its top-level entries and
@@ -2644,7 +2696,7 @@ function archiveClone(clonePath, archiveRoot, journalPath, mapped = null) {
   const repos = tree.roots;
   // A mapped linked worktree's `.git` names a container path the host cannot read: the blocker,
   // the compact recovery and the exclude checks need the same mapped env as the scan.
-  const env = mapped ? { GIT_DIR: mapped.adminDir, GIT_WORK_TREE: clonePath, GIT_OPTIONAL_LOCKS: "0" } : undefined;
+  const env = mapped ? mappedGitEnv(mapped, clonePath) : undefined;
   const envFor = (repo) => (mapped && repo === clonePath ? env : undefined);
   const mappedFor = (repo) => (mapped && repo === clonePath ? mapped : undefined);
   const blocker = compactBlocker(clonePath, repos, envFor, mappedFor);

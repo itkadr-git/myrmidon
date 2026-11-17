@@ -739,6 +739,82 @@ describe("host-clone-cache-gc e2e", () => {
     });
   });
 
+  describe("admin dirs whose commondir names a container path (OPE-14907)", () => {
+    const git = (args, cwd) => {
+      const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+      return r.stdout;
+    };
+    const makeBot = () => {
+      const agent = path.join(tmpDir, "agent");
+      const workspace = path.join(agent, "workspace");
+      const base = path.join(agent, "hermes/.myrmidon/git-base/o/r.git");
+      fs.mkdirSync(path.dirname(base), { recursive: true });
+      fs.mkdirSync(workspace, { recursive: true });
+      const server = path.join(tmpDir, "server.git");
+      git(["init", "-q", "--bare", "-b", "main", server]);
+      const seed = path.join(tmpDir, "seed");
+      git(["init", "-q", "-b", "main", seed]);
+      fs.writeFileSync(path.join(seed, "f.txt"), "one\n");
+      git(["add", "."], seed);
+      git(["commit", "-q", "-m", "one"], seed);
+      git(["push", "-q", server, "main"], seed);
+      git(["clone", "-q", "--bare", server, base]);
+      return { agent, workspace, base, server };
+    };
+    // The bots volume records container paths everywhere: the clone .git file AND the admin
+    // dir's commondir both name /bot, which does not exist on the host.
+    const addMappedClone = (bot, name, { dirty = false, ageHours = 25 } = {}) => {
+      const dir = path.join(bot.workspace, name);
+      const branch = `task-${name}`;
+      git(["--git-dir", bot.base, "worktree", "add", "-q", "-b", branch, dir, "main"]);
+      fs.writeFileSync(path.join(dir, "w.txt"), "work\n");
+      git(["add", "."], dir);
+      git(["commit", "-q", "-m", `work ${name}`], dir);
+      if (dirty) fs.writeFileSync(path.join(dir, "f.txt"), "changed\n");
+      fs.writeFileSync(path.join(dir, ".git"), `gitdir: /bot/hermes/.myrmidon/git-base/o/r.git/worktrees/${name}\n`);
+      fs.writeFileSync(path.join(bot.base, "worktrees", name, "gitdir"), `/bot/workspace/${name}/.git\n`);
+      fs.writeFileSync(path.join(bot.base, "worktrees", name, "commondir"), "/bot/hermes/.myrmidon/git-base/o/r.git\n");
+      const old = new Date(Date.now() - ageHours * 60 * 60 * 1000);
+      for (const f of fs.readdirSync(dir).filter((e) => e !== ".git").map((e) => path.join(dir, e))) fs.utimesSync(f, old, old);
+      for (const f of ["HEAD", "index", path.join("logs", "HEAD")]) {
+        try { fs.utimesSync(path.join(bot.base, "worktrees", name, f), old, old); } catch { /* absent */ }
+      }
+      fs.utimesSync(dir, old, old);
+      return dir;
+    };
+    const apply = (root) => runScript(["--root", root, "--lock", path.join(tmpDir, "gc.lock"), "--journal", path.join(tmpDir, "gc.jsonl"), "--apply"]);
+    const journalEvents = () => fs.readFileSync(path.join(tmpDir, "gc.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const archives = (root) => {
+      const dir = path.join(root, ".gc-archive");
+      return fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => n.endsWith(".tar.gz")) : [];
+    };
+    const archiveMembers = (root, name) => {
+      const r = spawnSync("tar", ["-tzf", path.join(root, ".gc-archive", name)], { encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`tar -tzf: ${r.stderr}`);
+      return r.stdout;
+    };
+
+    it("archives a dirty unpushed mapped worktree whose admin commondir names a container path", async () => {
+      const bot = makeBot();
+      const dir = addMappedClone(bot, "OPE-35001", { dirty: true });
+      const admin = path.join(bot.base, "worktrees", "OPE-35001");
+      const mirror = path.join(tmpDir, "mirror-objects");
+      fs.mkdirSync(mirror, { recursive: true });
+      fs.writeFileSync(path.join(bot.base, "objects", "info", "alternates"), `${mirror}\n`);
+      const r = await apply(bot.workspace);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(fs.existsSync(dir), false, "clone removed");
+      assert.equal(fs.existsSync(admin), false, "exactly its own admin dir removed");
+      const names = archives(bot.workspace);
+      assert.equal(names.length, 1, `one archive expected: ${JSON.stringify(names)}`);
+      const listing = archiveMembers(bot.workspace, names[0]);
+      assert.ok(listing.includes("unpublished.bundle"), `the bundle was created through the mapped common dir:\n${listing}`);
+      assert.ok(listing.includes("changes.patch"), `the dirty diff is patched:\n${listing}`);
+      assert.ok(journalEvents().some((e) => e.event === "clone-removed-after-archive" && e.path === dir), "clone-removed-after-archive journaled");
+    });
+  });
+
   it("fails when lock is held", async () => {
     const root = path.join(tmpDir, "root");
     fs.mkdirSync(root);
