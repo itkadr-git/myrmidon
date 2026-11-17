@@ -181,6 +181,7 @@ describeEmbeddedPostgres("project-scoped automatic claim", () => {
     await seedAgent(companyId, OUTSIDER_ID, "outsider-eng");
     await seedAgent(companyId, MEMBER_ID, "member-eng");
     const projectId = await seedProject(companyId);
+    await nest(companyId, await seedProject(companyId), OUTSIDER_ID);
     await join(companyId, projectId, MEMBER_ID);
     const issueId = await seedTask(companyId, "TASK-1", projectId);
 
@@ -194,6 +195,7 @@ describeEmbeddedPostgres("project-scoped automatic claim", () => {
     const companyId = await seedCompany();
     await seedAgent(companyId, OUTSIDER_ID, "outsider-eng");
     const projectId = await seedProject(companyId);
+    await nest(companyId, await seedProject(companyId), OUTSIDER_ID);
     const issueId = await seedTask(companyId, "TASK-1", projectId);
 
     expect(await matchIssue(matcher(), issueId)).toBeNull();
@@ -205,6 +207,7 @@ describeEmbeddedPostgres("project-scoped automatic claim", () => {
     await seedAgent(companyId, OUTSIDER_ID, "outsider-eng");
     await seedAgent(companyId, MEMBER_ID, "lead-eng");
     const projectId = await seedProject(companyId, MEMBER_ID);
+    await nest(companyId, await seedProject(companyId), OUTSIDER_ID);
     await join(companyId, projectId, OUTSIDER_ID, "left");
     const issueId = await seedTask(companyId, "TASK-1", projectId);
 
@@ -217,6 +220,7 @@ describeEmbeddedPostgres("project-scoped automatic claim", () => {
     const companyId = await seedCompany();
     await seedAgent(companyId, OUTSIDER_ID, "outsider-eng");
     const projectId = await seedProject(companyId);
+    await nest(companyId, await seedProject(companyId), OUTSIDER_ID);
     const scoped = await seedTask(companyId, "TASK-SCOPED", projectId);
     const open = await seedTask(companyId, "TASK-OPEN", null);
     // The project task is the older one, so without the scope it would win.
@@ -244,6 +248,7 @@ describeEmbeddedPostgres("project-scoped automatic claim", () => {
     await seedAgent(companyId, OUTSIDER_ID, "outsider-eng");
     await seedAgent(companyId, MEMBER_ID, "member-eng");
     const projectId = await seedProject(companyId);
+    await nest(companyId, await seedProject(companyId), OUTSIDER_ID);
     await join(companyId, projectId, MEMBER_ID);
     const scoped = await seedTask(companyId, "TASK-SCOPED", projectId);
     const open = await seedTask(companyId, "TASK-OPEN", null);
@@ -286,6 +291,8 @@ describeEmbeddedPostgres("project-scoped automatic claim", () => {
     await seedAgent(companyId, MEMBER_ID, "member-eng");
     const ledProject = await seedProject(companyId, OUTSIDER_ID);
     const joinedProject = await seedProject(companyId);
+    await nest(companyId, ledProject, OUTSIDER_ID);
+    await nest(companyId, joinedProject, MEMBER_ID);
     await join(companyId, joinedProject, MEMBER_ID);
     await join(companyId, joinedProject, "human-user-1");
     await join(companyId, ledProject, MEMBER_ID, "left");
@@ -302,6 +309,7 @@ describeEmbeddedPostgres("project-scoped automatic claim", () => {
     await seedAgent(companyId, OUTSIDER_ID, "outsider-eng");
     await seedAgent(companyId, MEMBER_ID, "nested-eng");
     const projectId = await seedProject(companyId);
+    await nest(companyId, await seedProject(companyId), OUTSIDER_ID);
     await nest(companyId, projectId, MEMBER_ID);
     const scoped = await seedTask(companyId, "TASK-SCOPED", projectId);
 
@@ -314,7 +322,7 @@ describeEmbeddedPostgres("project-scoped automatic claim", () => {
     // roster projectIds
     const byAgent = await listAgentProjectIds(db, companyId);
     expect(byAgent.get(MEMBER_ID)).toEqual([projectId]);
-    expect(byAgent.has(OUTSIDER_ID)).toBe(false);
+    expect(byAgent.get(OUTSIDER_ID)).not.toContain(projectId);
 
     // matcher: the nested agent wins over the outsider that sorts first
     const pair = await matchIssue(matcher(), scoped);
