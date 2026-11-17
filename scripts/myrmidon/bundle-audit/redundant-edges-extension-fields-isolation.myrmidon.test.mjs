@@ -18,12 +18,12 @@ const graphs = [
   },
 ];
 
-function decorate(report, level) {
+function decorate(report, level, extras = annotation) {
   return {
     ...report,
-    ...(level === 'report' || level === 'all' ? annotation : {}),
-    modules: report.modules.map(mod => ({ ...mod, ...(level === 'module' || level === 'all' ? annotation : {}) })),
-    edges: report.edges.map(item => ({ ...item, ...(level === 'edge' || level === 'all' ? annotation : {}) })),
+    ...(level === 'report' || level === 'all' ? extras : {}),
+    modules: report.modules.map(mod => ({ ...mod, ...(level === 'module' || level === 'all' ? extras : {}) })),
+    edges: report.edges.map(item => ({ ...item, ...(level === 'edge' || level === 'all' ? extras : {}) })),
   };
 }
 function run(report) {
@@ -33,17 +33,19 @@ function run(report) {
 test('unknown annotations do not affect the complete redundant-edge report', () => {
   for (const { report, expected } of graphs) {
     for (const level of ['base', 'report', 'module', 'edge', 'all']) {
-      const fixture = decorate(report, level);
-      for (const reverse of [false, true]) {
-        const input = reverse ? { ...fixture, modules: [...fixture.modules].reverse(), edges: [...fixture.edges].reverse() } : fixture;
-        const before = JSON.stringify(input);
-        for (let repeat = 0; repeat < 2; repeat++) {
-          const result = run(input);
-          assert.equal(result.status, 0, result.stderr);
-          assert.equal(result.stderr, '');
-          assert.equal(result.stdout, expected);
-          assert.ok(!result.stdout.includes(sentinel));
-          assert.equal(JSON.stringify(input), before);
+      for (const extras of [annotation, { ...annotation, x_meta: null, x_note: true }]) {
+        const fixture = decorate(report, level, extras);
+        for (const reverse of [false, true]) {
+          const input = reverse ? { ...fixture, modules: [...fixture.modules].reverse(), edges: [...fixture.edges].reverse() } : fixture;
+          const before = JSON.stringify(input);
+          for (let repeat = 0; repeat < 2; repeat++) {
+            const result = run(input);
+            assert.equal(result.status, 0, result.stderr);
+            assert.equal(result.stderr, '');
+            assert.equal(result.stdout, expected);
+            assert.ok(!result.stdout.includes(sentinel));
+            assert.equal(JSON.stringify(input), before);
+          }
         }
       }
     }
