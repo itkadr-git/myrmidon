@@ -12781,9 +12781,7 @@ export function heartbeatService(
       Boolean(reviewParticipantAgentId);
     const isReviewRecoveryMonitor =
       isProviderQuotaReviewMonitor || isReviewCiWaitMonitor;
-    const targetAgentId = isReviewRecoveryMonitor
-      ? reviewParticipantAgentId
-      : claimed.assigneeAgentId;
+    const targetAgentId = reviewParticipantAgentId ?? claimed.assigneeAgentId;
     if (!targetAgentId) {
       throw conflict("Issue monitor has no agent target");
     }
