@@ -83,6 +83,19 @@ describe("KnowledgeSettingsScreen company switch", () => {
     expect(element("knowledge-settings-saved")).toBeNull();
   });
 
+  it("ignores a late A save after switching to B", async () => {
+    let resolveSave!: (value: KnowledgeSettingsView) => void;
+    mocks.fetch.mockImplementation(async (id: string) => view(id === "A" ? 5000 : 6000));
+    mocks.patch.mockImplementation(() => new Promise<KnowledgeSettingsView>((resolve) => { resolveSave = resolve; }));
+    await render("A"); await edit("5500"); await clickSave();
+    expect(mocks.patch).toHaveBeenCalledWith("A", { maxItems: "5500" });
+    await render("B"); await edit("6500");
+    resolveSave(view(5500)); await settle();
+    expect(input().value).toBe("6500");
+    expect(element("knowledge-settings-saved")).toBeNull();
+    expect(save().disabled).toBe(false);
+  });
+
   it("handles no company and ignores a late A fetch after switching to B", async () => {
     let resolveA!: (value: KnowledgeSettingsView) => void;
     mocks.fetch.mockImplementation((id: string) => id === "A" ? new Promise<KnowledgeSettingsView>((resolve) => { resolveA = resolve; }) : Promise.resolve(view(6000)));
