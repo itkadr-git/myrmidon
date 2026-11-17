@@ -16,7 +16,7 @@ function source(chunks: Uint8Array[], contentLength?: number) {
     },
     cancel,
   }, { highWaterMark: 0 });
-  const headers = contentLength === undefined ? {} : { "content-length": String(contentLength) };
+  const headers: Record<string, string> = contentLength === undefined ? {} : { "content-length": String(contentLength) };
   const fetchUrl = createCorpusUrlFetcher({
     limiter: createDownloadLimiter(1, 0),
     transport: async () => new Response(stream, { headers }),
