@@ -21097,6 +21097,23 @@ export function heartbeatService(
       });
       if (staleness.outcome === "cancelled") {
         applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
+        if (staleness.errorCode === "issue_review_participant_changed" &&
+            readNonEmptyString(context.wakeReason) === "issue_monitor_due") {
+          const [issue] = await db.select({ status: issues.status, executionState: issues.executionState })
+            .from(issues)
+            .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
+          const state = issue?.status === "in_review" ? parseIssueExecutionState(issue.executionState) : null;
+          const participant = state?.status === "pending" ? state.currentParticipant : null;
+          if (participant?.type === "agent" && participant.agentId && participant.agentId !== run.agentId) {
+            await enqueueWakeup(participant.agentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_monitor_due",
+              idempotencyKey: `issue-monitor-handoff:${run.id}:${participant.agentId}`,
+              contextSnapshot: { ...context, issueId, wakeReason: "issue_monitor_due" },
+            });
+          }
+        }
         logger.info(
           { runId: run.id, issueId, errorCode: staleness.errorCode },
           "claimQueuedRun: cancelled stale queued run",
