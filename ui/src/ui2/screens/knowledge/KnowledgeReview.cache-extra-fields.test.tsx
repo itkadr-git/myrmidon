@@ -50,7 +50,7 @@ it("retains the envelope and leaves the previous snapshot unchanged after a succ
   expect(host.textContent).toContain("Second suggestion");
   expect(client.getQueryData(key)).not.toBe(snapshot);
   expect(snapshot).toEqual({ suggestions: [s1, s2], requestId: "fixture", total: 2, extension: { cursor: "fixture" } });
-  expect(http.get.mock.calls).toEqual([[endpoint]]);
+  expect(http.get.mock.calls).toEqual([[endpoint], [endpoint]]);
   expect(http.post.mock.calls).toEqual([["/myrmidon/companies/c1/knowledge/suggestions/s1/accept", {}]]);
 });
 
