@@ -370,6 +370,33 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     }
   });
 
+  it("preserves a concurrent reschedule when a review CI monitor has no reviewer", async () => {
+    const { issueId, nextCheckAt } = await seedFixture({ monitor: { serviceName: "Review CI wait" } });
+    const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_reschedule_review_wait() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_next_check_at = '${rescheduledAt.toISOString()}'::timestamptz,
+            execution_policy = jsonb_set(execution_policy, '{monitor,nextCheckAt}', to_jsonb('${rescheduledAt.toISOString()}'::text)),
+            execution_state = jsonb_set(execution_state, '{monitor,nextCheckAt}', to_jsonb('${rescheduledAt.toISOString()}'::text))
+          WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_reschedule_review_wait AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_reschedule_review_wait();
+    `));
+    try {
+      await heartbeatService(db, { executesRuns: false }).tickTimers(nextCheckAt);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(after!.monitorNextCheckAt?.toISOString()).toBe(rescheduledAt.toISOString());
+      expect(normalizeIssueExecutionPolicy(after!.executionPolicy)?.monitor?.nextCheckAt).toBe(rescheduledAt.toISOString());
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER test_reschedule_review_wait ON issues; DROP FUNCTION test_reschedule_review_wait();"));
+    }
+  });
+
   it("preserves a concurrent reschedule when an old monitor is deferred for CI", async () => {
     const { companyId, issueId, nextCheckAt } = await seedFixture();
     const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
