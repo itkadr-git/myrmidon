@@ -542,7 +542,10 @@ function hasStash(dir, env) {
 // `.git` is a directory in a plain clone but a file (`gitdir: <path>`) in a linked worktree or a
 // submodule: the objects, and their alternates file, then live in the real gitdir (and the
 // common dir behind it), so look there.
-function hasAlternates(dir, mapped) {
+// The object stores a repo borrows from: every entry of the `objects/info/alternates` files of
+// its gitdirs (a linked worktree's admin dir and the common dir behind it).
+function alternateStores(dir, mapped) {
+  const stores = [];
   try {
     const dotGit = path.join(dir, ".git");
     const st = fs.lstatSync(dotGit);
@@ -562,8 +565,34 @@ function hasAlternates(dir, mapped) {
         if (common) gitDirs.push(path.resolve(gd, common));
       } catch { /* no commondir: the gitdir is the common dir */ }
     }
-    return gitDirs.some((gd) => fs.existsSync(path.join(gd, "objects", "info", "alternates")));
-  } catch { return false; }
+    for (const gd of gitDirs) {
+      let text;
+      try { text = fs.readFileSync(path.join(gd, "objects", "info", "alternates"), "utf8"); } catch { continue; }
+      for (const line of text.split("\n")) {
+        const entry = line.trim();
+        if (entry && !entry.startsWith("#")) stores.push(path.resolve(gd, "objects", entry));
+      }
+    }
+  } catch { /* unreadable: the caller treats it as no store */ }
+  return stores;
+}
+
+function hasAlternates(dir, mapped) {
+  return alternateStores(dir, mapped).length > 0;
+}
+
+// The bot git-bases borrow objects from the shared mirror through `objects/info/alternates`.
+// When the named store exists, is readable and git still reaches HEAD through the alternates
+// chain, a compact archive is safe: `git bundle create` copies the borrowed objects into the
+// bundle, so the archive recovers the copy on its own. When the store is missing or git cannot
+// read the objects, nothing can prove recovery: the copy stays (fail closed).
+function alternatesAccessible(repo, mapped, env) {
+  for (const store of alternateStores(repo, mapped)) {
+    try { fs.accessSync(store, fs.constants.R_OK); } catch { return false; }
+  }
+  const head = git(["cat-file", "-e", "HEAD"], repo, env);
+  if (head.status !== 0) return false;
+  return git(["ls-tree", "--name-only", "HEAD"], repo, env).status === 0;
 }
 
 // Every directory under `top` (itself included) holding a `.git` entry, directory or file, at
@@ -2510,7 +2539,9 @@ function runArchiveTool(cmd, args, what, extra = {}) {
 function compactBlocker(clonePath, repos, envFor = () => undefined, mappedFor = () => undefined) {
   if (!repos.length) return { reason: "no-git-repository" };
   for (const repo of repos) {
-    if (hasAlternates(repo, mappedFor(repo))) return { keep: true, reason: `alternate-objects: ${repo}` };
+    if (hasAlternates(repo, mappedFor(repo)) && !alternatesAccessible(repo, mappedFor(repo), envFor(repo))) {
+      return { keep: true, reason: `alternate-objects inaccessible: ${repo}` };
+    }
   }
   for (const repo of repos) {
     if (!isOwnWorktree(repo, envFor(repo))) {
