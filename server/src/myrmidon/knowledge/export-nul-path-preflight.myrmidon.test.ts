@@ -35,7 +35,7 @@ function recordingRunner() {
   const runner: GitExportRunner = {
     async git(_cwd, args) {
       calls.push(args[0]!);
-      return { stdout: args[0] === "status" ? " M valid.md\n" : args[0] === "rev-parse" ? `${"a".repeat(40)}\n` : "", stderr: "" };
+      return { stdout: args[0] === "status" ? (args.includes("-z") ? "" : " M valid.md\n") : args[0] === "rev-parse" ? `${"a".repeat(40)}\n` : "", stderr: "" };
     },
   };
   return { runner, calls };
@@ -71,7 +71,7 @@ describe("knowledge export NUL path preflight", () => {
       const result = await commitKnowledgeTreeIfChanged(runner, checkout, "knowledge-export", tree([{ path: "caf\u00e9/\u6587.md", content }]), undefined, prefix);
       expect(await readFile(path.join(checkout, prefix ?? "", "caf\u00e9/\u6587.md"))).toEqual(Buffer.from(content));
       expect(result).toEqual({ committed: true, commit: "a".repeat(40) });
-      expect(calls).toEqual(["ls-files", "add", "status", "commit", "rev-parse"]);
+      expect(calls).toEqual([...(prefix ? ["status"] : []), "ls-files", "add", "status", "commit", "rev-parse"]);
     });
   });
 });

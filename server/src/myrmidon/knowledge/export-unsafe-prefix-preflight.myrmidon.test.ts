@@ -45,7 +45,7 @@ function recordingRunner() {
   const runner: GitExportRunner = {
     async git(_cwd, args) {
       calls.push(args[0]!);
-      return { stdout: args[0] === "status" ? "?? page.md\n" : args[0] === "rev-parse" ? `${"a".repeat(40)}\n` : "", stderr: "" };
+      return { stdout: args[0] === "status" ? (args.includes("-z") ? "" : "?? page.md\n") : args[0] === "rev-parse" ? `${"a".repeat(40)}\n` : "", stderr: "" };
     },
   };
   return { runner, calls };
@@ -78,7 +78,7 @@ describe("knowledge export unsafe prefix preflight", () => {
         [`checkout/${prefix}/nested/`]: "directory",
         [`checkout/${prefix}/nested/page.md`]: Buffer.from("exported content\n").toString("hex"),
       });
-      expect(calls).toEqual(["ls-files", "add", "status", "commit", "rev-parse"]);
+      expect(calls).toEqual([...(prefix ? ["status"] : []), "ls-files", "add", "status", "commit", "rev-parse"]);
     });
   });
 });
