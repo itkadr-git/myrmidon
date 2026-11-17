@@ -2,6 +2,8 @@
 
 > Русская версия: [Installation.ru](Installation.ru)
 
+> rc.14 is in preparation and is not published. The pinned rc.13 command below remains valid until a new candidate is published. See the [operator notes](../myrmidon/releases/1.6.9.md).
+
 One command brings a clean server to a working Myrmidon board. Copy it onto
 the server and run it — the installer does the rest itself:
 

@@ -2,6 +2,8 @@
 
 > Русская версия: [Quick-start.ru](Quick-start.ru)
 
+> rc.14 is in preparation and is not published. The pinned rc.13 command below remains valid until a new candidate is published. See the [operator notes](../myrmidon/releases/1.6.9.md).
+
 The shortest path to a running board. One command on a fresh server (see
 [System requirements](System-requirements)):
 

@@ -2,6 +2,8 @@
 
 > Русская версия: [Upgrading-and-rollback.ru](Upgrading-and-rollback.ru)
 
+> rc.14 is in preparation and is not published. The pinned rc.13 command below remains valid until a new candidate is published. See the [operator notes](../myrmidon/releases/1.6.9.md).
+
 ## Upgrading with the installer (the usual way)
 
 On a server installed with the one-line command, updating is the same
