@@ -527,6 +527,62 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     }
   });
 
+  it("follows a second reviewer change during the durable monitor handoff", async () => {
+    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture({ issueStatus: "in_review" });
+    const [oldReviewer, intermediateReviewer, finalReviewer] = [randomUUID(), randomUUID(), randomUUID()];
+    for (const id of [oldReviewer, intermediateReviewer, finalReviewer]) {
+      await db.insert(agents).values({
+        id, companyId, name: `Reviewer ${id}`, role: "reviewer", status: "active",
+        adapterType: "process", adapterConfig: { command: process.execPath, args: ["-e", ""], cwd: process.cwd() },
+        runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } }, permissions: {},
+      });
+    }
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const state = {
+      status: "pending", currentStageId: randomUUID(), currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: oldReviewer, userId: null },
+      returnAssignee: { type: "agent", agentId, userId: null },
+      reviewRequest: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+      monitor: parseIssueExecutionState(before!.executionState)?.monitor,
+    };
+    await db.update(issues).set({ executionState: state }).where(eq(issues.id, issueId));
+    const previousSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
+    process.env.MYRMIDON_AGENT_JWT_SECRET = "issue-monitor-test-secret";
+    try {
+      const scheduler = heartbeatService(db, { executesRuns: false });
+      expect((await scheduler.tickTimers(nextCheckAt)).enqueued).toBe(1);
+      await db.update(issues).set({
+        executionState: sql`jsonb_set(${issues.executionState}, '{currentParticipant}', ${JSON.stringify({ type: "agent", agentId: intermediateReviewer, userId: null })}::jsonb)`,
+      }).where(eq(issues.id, issueId));
+      await db.execute(sql.raw(`
+        CREATE FUNCTION test_second_review_change() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.agent_id = '${intermediateReviewer}'::uuid AND NEW.reason = 'issue_monitor_due' THEN
+            UPDATE issues SET execution_state = jsonb_set(execution_state, '{currentParticipant}',
+              '{"type":"agent","agentId":"${finalReviewer}","userId":null}'::jsonb) WHERE id = '${issueId}'::uuid;
+          END IF;
+          RETURN NEW;
+        END; $$ LANGUAGE plpgsql;
+        CREATE TRIGGER test_second_review_change AFTER INSERT ON agent_wakeup_requests
+        FOR EACH ROW EXECUTE FUNCTION test_second_review_change();
+      `));
+      const executor = heartbeatService(db);
+      await executor.resumeQueuedRuns();
+      await waitForHeartbeatIdle();
+      expect((await executor.tickTimers(new Date(nextCheckAt.getTime() + 60_000))).enqueued).toBe(0);
+      const runs = await db.select().from(heartbeatRuns);
+      expect(runs.filter((run) => run.status === "succeeded").map((run) => run.agentId)).toEqual([finalReviewer]);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(parseIssueExecutionState(after!.executionState)).toMatchObject({
+        currentParticipant: { type: "agent", agentId: finalReviewer }, returnAssignee: state.returnAssignee,
+      });
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_second_review_change ON agent_wakeup_requests; DROP FUNCTION IF EXISTS test_second_review_change();"));
+      if (previousSecret === undefined) delete process.env.MYRMIDON_AGENT_JWT_SECRET;
+      else process.env.MYRMIDON_AGENT_JWT_SECRET = previousSecret;
+    }
+  });
+
   it("triggers due issue monitors once and clears the one-shot schedule", async () => {
     const { issueId, agentId } = await seedFixture();
     const heartbeat = heartbeatService(db);
