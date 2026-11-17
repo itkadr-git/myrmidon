@@ -18,7 +18,7 @@ const resolved = (agentId: string, displayName: string) => ({
 
 describe("computed alias membership reload", () => {
   it("reallocates both handles when an owner leaves and returns without mutating rows", async () => {
-    let rows: readonly typeof alpha[] = both;
+    let rows: readonly (typeof alpha | typeof beta)[] = both;
     let reads = 0;
     const chain = {
       select() { return chain; },
