@@ -1,17 +1,22 @@
 import { PgDialect } from "drizzle-orm/pg-core";
-import type { SQL } from "drizzle-orm";
+import { SQL } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "./client.js";
 import { createPgKnowledgeSearchIndex } from "./knowledge-search.js";
 
 const dialect = new PgDialect();
 
+function renderedQuery(query: Parameters<Db["execute"]>[0]) {
+  if (!(query instanceof SQL)) throw new Error("Expected SQL query");
+  return dialect.sqlToQuery(query);
+}
+
 function fixture() {
-  const execute = vi.fn(async (_query: SQL) => [
+  const execute = vi.fn<Db["execute"]>().mockResolvedValue([
     { item_id: "item-1", slug: "guide", title: "Guide" },
   ]);
-  const db = { execute } as unknown as Db;
-  return { execute, index: createPgKnowledgeSearchIndex(db) };
+  const db: Pick<Db, "execute"> = { execute };
+  return { execute, index: createPgKnowledgeSearchIndex(db as Db) };
 }
 
 describe("PostgreSQL knowledge search scope", () => {
@@ -30,7 +35,7 @@ describe("PostgreSQL knowledge search scope", () => {
       { itemId: "item-1", slug: "guide", title: "Guide" },
     ]);
     expect(execute).toHaveBeenCalledTimes(1);
-    const rendered = dialect.sqlToQuery(execute.mock.calls[0][0]);
+    const rendered = renderedQuery(execute.mock.calls[0][0]);
     expect(rendered.params).toEqual([
       "alpha  beta", "nest-a", "alpha  beta", "alpha  beta", "alpha  beta",
       "nest-a", "alpha  beta", "alpha  beta", "alpha  beta", 5,
@@ -45,7 +50,7 @@ describe("PostgreSQL knowledge search scope", () => {
       { itemId: "item-1", slug: "guide", title: "Guide" },
     ]);
     expect(execute).toHaveBeenCalledTimes(1);
-    const rendered = dialect.sqlToQuery(execute.mock.calls[0][0]);
+    const rendered = renderedQuery(execute.mock.calls[0][0]);
     expect(rendered.params).toEqual([
       query, "nest-b", query, query, query, "nest-b", query, query, query, 3,
     ]);
@@ -61,8 +66,8 @@ describe("PostgreSQL knowledge search scope", () => {
       { itemId: "item-1", slug: "guide", title: "Guide" },
     ]);
     expect(execute).toHaveBeenCalledTimes(2);
-    const first = dialect.sqlToQuery(execute.mock.calls[0][0]);
-    const second = dialect.sqlToQuery(execute.mock.calls[1][0]);
+    const first = renderedQuery(execute.mock.calls[0][0]);
+    const second = renderedQuery(execute.mock.calls[1][0]);
     for (const rendered of [first, second]) {
       expect(rendered.sql).toMatch(/with lex as \([\s\S]*?where "nest_id" = \$2[\s\S]*?\),\s*trg as \([\s\S]*?where "nest_id" = \$6/);
       expect(rendered.sql).toMatch(/limit \$10\s*$/);
