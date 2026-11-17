@@ -39,6 +39,7 @@ function ReviewQueue({ companyId, text }: { companyId: string; text: Messages })
     },
     onSuccess: (_response, { suggestion }) => {
       client.setQueryData<{ suggestions: KnowledgeSuggestion[] }>(queryKey, (old) => old && ({
+        ...old,
         suggestions: old.suggestions.filter((row) => row.id !== suggestion.id),
       }));
       setEditing(null);
