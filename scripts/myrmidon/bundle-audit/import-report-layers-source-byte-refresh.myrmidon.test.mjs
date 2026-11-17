@@ -47,8 +47,9 @@ const expected = (sources) => {
 test('refreshes layer bytes for unchanged diamond imports across A B C A', () => {
   const dir = mkdtempSync(join(process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_SCRATCH_DIR || homedir(), 'layers-refresh-'));
   try {
-    let topology, firstOutput;
-    for (const sources of [states[0], states[1], states[2], states[0]]) {
+    let topology, firstOutput, firstReport;
+    const lazyOnly = source({ 'lazy.mjs': '// ASCII lazy-only growth\n' });
+    for (const sources of [states[0], states[1], lazyOnly, states[2], states[0]]) {
       for (const [path, content] of Object.entries(sources)) writeFileSync(join(dir, path), content);
       const reportText = run(scanner, [join(dir, 'entry.mjs')]);
       const report = JSON.parse(reportText);
@@ -58,8 +59,15 @@ test('refreshes layer bytes for unchanged diamond imports across A B C A', () =>
       assert.deepEqual(report.modules.map(({ path, bytes }) => [path, bytes]), Object.keys(sources).sort().map(path => [path, Buffer.byteLength(sources[path], 'utf8')]));
       const output = run(consumer, [], reportText);
       assert.equal(output, `${JSON.stringify(expected(sources))}\n`);
-      if (firstOutput === undefined) firstOutput = output;
-      else if (sources === states[0]) assert.equal(output, firstOutput);
+      if (firstOutput === undefined) {
+        firstOutput = output;
+        firstReport = reportText;
+      } else if (sources === states[1]) {
+        assert.equal(run(consumer, [], firstReport), firstOutput);
+        assert.notEqual(output, firstOutput);
+      } else if (sources === lazyOnly || sources === states[0]) {
+        assert.equal(output, firstOutput);
+      }
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
