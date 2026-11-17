@@ -398,6 +398,21 @@ describe("decideQueuedRunStaleness", () => {
     expect(decision).toMatchObject({ errorCode });
   });
 
+  it("classifies an obsolete monitor reviewer as a participant change, not an assignee change", () => {
+    const decision = decideQueuedRunStaleness({
+      ...baseStalenessFacts(),
+      issueStatus: "in_review",
+      issueAssigneeAgentId: "executor",
+      wakeReason: "issue_monitor_due",
+      reviewParticipant: {
+        isInReview: true, hasParticipant: true, participantIsAgent: true,
+        participantAgentId: "new-reviewer", currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "new-reviewer" },
+      },
+    }, NOW);
+    expect(decision).toMatchObject({ stale: true, errorCode: "issue_review_participant_changed" });
+  });
+
   it("keeps a hidden todo queued (Summarizer pattern)", () => {
     const facts = {
       ...baseStalenessFacts(),

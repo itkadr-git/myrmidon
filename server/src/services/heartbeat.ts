@@ -12670,18 +12670,28 @@ export function heartbeatService(
     runId: string | null;
     activitySource: "manual" | "scheduled";
   }) {
-    await db
+    if (!input.claimed.monitorNextCheckAt) return { outcome: "skipped" as const, reason: "monitor_changed" };
+    const clearedPatch = buildIssueMonitorClearedPatch({
+      issue: input.claimed,
+      policy: input.policy,
+      clearReason: input.clearReason,
+      clearedAt: input.now,
+    });
+    const [cleared] = await db
       .update(issues)
       .set({
-        ...buildIssueMonitorClearedPatch({
-          issue: input.claimed,
-          policy: input.policy,
-          clearReason: input.clearReason,
-          clearedAt: input.now,
-        }),
+        ...clearedPatch,
+        executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(clearedPatch.executionState?.monitor ?? null)}::jsonb, true)`,
+        executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
         updatedAt: input.now,
       })
-      .where(eq(issues.id, input.claimed.id));
+      .where(and(
+        eq(issues.id, input.claimed.id),
+        eq(issues.monitorNextCheckAt, input.claimed.monitorNextCheckAt),
+        eq(issues.monitorWakeRequestedAt, input.now),
+      ))
+      .returning({ id: issues.id });
+    if (!cleared) return { outcome: "skipped" as const, reason: "monitor_changed" };
 
     await logActivity(db, {
       companyId: input.claimed.companyId,
@@ -12781,9 +12791,7 @@ export function heartbeatService(
       Boolean(reviewParticipantAgentId);
     const isReviewRecoveryMonitor =
       isProviderQuotaReviewMonitor || isReviewCiWaitMonitor;
-    const targetAgentId = isReviewRecoveryMonitor
-      ? reviewParticipantAgentId
-      : claimed.assigneeAgentId;
+    const targetAgentId = reviewParticipantAgentId ?? claimed.assigneeAgentId;
     if (!targetAgentId) {
       throw conflict("Issue monitor has no agent target");
     }
@@ -12840,18 +12848,26 @@ export function heartbeatService(
       limitMonitor?.serviceName === REVIEW_CI_WAIT_MONITOR_SERVICE_NAME &&
       !reviewParticipantAgentId
     ) {
-      await db
+      const clearedPatch = buildIssueMonitorClearedPatch({
+        issue: claimed,
+        policy,
+        clearReason: "dispatch_skipped",
+        clearedAt: input.now,
+      });
+      const [cleared] = await db
         .update(issues)
         .set({
-          ...buildIssueMonitorClearedPatch({
-            issue: claimed,
-            policy,
-            clearReason: "dispatch_skipped",
-            clearedAt: input.now,
-          }),
+          ...clearedPatch,
+          executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(clearedPatch.executionState?.monitor ?? null)}::jsonb, true)`,
+          executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
           updatedAt: input.now,
         })
-        .where(eq(issues.id, claimed.id));
+        .where(and(
+          eq(issues.id, claimed.id),
+          eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+          eq(issues.monitorWakeRequestedAt, input.now),
+        )).returning({ id: issues.id });
+      if (!cleared) return { outcome: "skipped" as const, reason: "monitor_changed" };
       await logActivity(db, {
         companyId: claimed.companyId,
         actorType: input.actorType,
@@ -13226,12 +13242,17 @@ export function heartbeatService(
           const backoffMs = Math.min(10 * 60_000, 30_000 * Math.pow(2, Math.min(attempt, 4)));
           const nextCheckAt = new Date(input.now.getTime() + backoffMs);
 
-          await db.update(issues).set({
+          const [deferred] = await db.update(issues).set({
             monitorNextCheckAt: nextCheckAt,
             monitorAttemptCount: nextAttemptCount,
             monitorWakeRequestedAt: null,
             updatedAt: input.now,
-          }).where(eq(issues.id, claimed.id));
+          }).where(and(
+            eq(issues.id, claimed.id),
+            eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+            eq(issues.monitorWakeRequestedAt, input.now),
+          )).returning({ id: issues.id });
+          if (!deferred) return { outcome: "skipped" as const, reason: "monitor_changed" };
 
           await logActivity(db, {
             companyId: claimed.companyId,
@@ -13432,17 +13453,25 @@ export function heartbeatService(
         });
       }
 
+      const triggeredPatch = buildIssueMonitorTriggeredPatch({
+        issue: claimed,
+        policy,
+        triggeredAt: input.now,
+      });
       await db
         .update(issues)
         .set({
-          ...buildIssueMonitorTriggeredPatch({
-            issue: claimed,
-            policy,
-            triggeredAt: input.now,
-          }),
+          ...triggeredPatch,
+          // A reassignment may have changed the review participant since claim.
+          executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(triggeredPatch.executionState?.monitor ?? null)}::jsonb, true)`,
+          executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
           updatedAt: new Date(),
         })
-        .where(eq(issues.id, claimed.id));
+        .where(and(
+          eq(issues.id, claimed.id),
+          eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+          eq(issues.monitorWakeRequestedAt, input.now),
+        ));
 
       await logActivity(db, {
         companyId: claimed.companyId,
@@ -13469,18 +13498,26 @@ export function heartbeatService(
     } catch (err) {
       if (err instanceof HttpError && err.status >= 400 && err.status < 500) {
         if (input.clearOnClientError) {
-          await db
+          const clearedPatch = buildIssueMonitorClearedPatch({
+            issue: claimed,
+            policy,
+            clearReason: "dispatch_skipped",
+            clearedAt: input.now,
+          });
+          const [cleared] = await db
             .update(issues)
             .set({
-              ...buildIssueMonitorClearedPatch({
-                issue: claimed,
-                policy,
-                clearReason: "dispatch_skipped",
-                clearedAt: input.now,
-              }),
+              ...clearedPatch,
+              executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(clearedPatch.executionState?.monitor ?? null)}::jsonb, true)`,
+              executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
               updatedAt: new Date(),
             })
-            .where(eq(issues.id, claimed.id));
+            .where(and(
+              eq(issues.id, claimed.id),
+              eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+              eq(issues.monitorWakeRequestedAt, input.now),
+            )).returning({ id: issues.id });
+          if (!cleared) return { outcome: "skipped" as const, reason: "monitor_changed" };
 
           await logActivity(db, {
             companyId: claimed.companyId,
@@ -13902,16 +13939,12 @@ export function heartbeatService(
           isNull(issues.assigneeUserId),
           sql`${issues.assigneeAgentId} is not null`,
           inArray(issues.status, ["in_progress", "in_review", "blocked"]),
-          // A review-stage monitor belongs to the active review participant;
-          // monitors on other statuses must not wake the returned assignee.
+          // A human review participant must not be replaced by the assignee.
           sql`not (
             ${issues.status} = 'in_review'
             and ${issues.executionState} ->> 'status' = 'pending'
             and ${issues.executionState} ->> 'currentStageType' = 'review'
-            and coalesce(${issues.executionPolicy} -> 'monitor' ->> 'serviceName', case when ${issues.executionState} -> 'monitor' ->> 'serviceName' = ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME} then ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME} end, '') not in (
-              ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME},
-              ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
-            )
+            and coalesce(${issues.executionState} -> 'currentParticipant' ->> 'type', '') = 'user'
           )`,
           or(
             isNull(issues.monitorWakeRequestedAt),
@@ -13945,10 +13978,7 @@ export function heartbeatService(
                 ${issues.status} = 'in_review'
                 and ${issues.executionState} ->> 'status' = 'pending'
                 and ${issues.executionState} ->> 'currentStageType' = 'review'
-                and coalesce(${issues.executionPolicy} -> 'monitor' ->> 'serviceName', case when ${issues.executionState} -> 'monitor' ->> 'serviceName' = ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME} then ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME} end, '') not in (
-                  ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME},
-                  ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
-                )
+                and coalesce(${issues.executionState} -> 'currentParticipant' ->> 'type', '') = 'user'
               )`,
               or(
                 isNull(issues.monitorWakeRequestedAt),
@@ -21102,6 +21132,12 @@ export function heartbeatService(
       });
       if (staleness.outcome === "cancelled") {
         applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
+        if (staleness.errorCode === "issue_review_participant_changed" &&
+            readNonEmptyString(context.wakeReason) === "issue_monitor_due") {
+          // The cancellation transaction parked the handoff; drain that same
+          // durable intent instead of creating a second post-commit wake.
+          await releaseIssueExecutionAndPromote(run, { suppressImmediateRecovery: true });
+        }
         logger.info(
           { runId: run.id, issueId, errorCode: staleness.errorCode },
           "claimQueuedRun: cancelled stale queued run",
