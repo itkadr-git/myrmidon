@@ -34,7 +34,7 @@ While the company has an open, visible task with the current-release label (bloc
 
 Exceptions: a task the board owner assigned (the latest assignment record is by a board user and names the agent, with no later swarm claim; an old assignment without such a record does not count and must be made again), a review the agent is the current participant of, a wake made by a user (manual wake), and a run without a task. Swarm matching and idle pickup use the same predicate and leave out tasks of other releases. Runs already running are not stopped.
 
-See [settings](../myrmidon/SETTINGS.md#release-focus-for-wake-admission).
+See the [settings reference](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md).
 
 ## Role queues
 
