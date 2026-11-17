@@ -81,3 +81,26 @@ test('transposing internal edges preserves exact eager and all cycle components'
     for (const stdin of [false, true]) assertCycles(run(t, candidate, stdin), expected);
   }
 });
+
+test('a different graph rejects a constant cycle report across transposition and ordering', t => {
+  const paths = ['p', 'q', 'r', 's', 't', 'u'];
+  const tuples = [
+    ['p', 'q', 'eager'], ['q', 'p', 'eager'],
+    ['r', 's', 'eager'], ['s', 't', 'lazy'], ['t', 'r', 'eager'],
+    ['u', null, 'lazy'],
+  ];
+  const report = {
+    entry: 'p',
+    modules: paths.map((path, index) => ({ path, bytes: index + 1, eager: false })),
+    edges: tuples.map(([from, to, kind], index) => ({ from, to, kind, specifier: `second-edge-${index}` })),
+  };
+  const expected = { entry: 'p', eagerCycles: [['p', 'q']], allCycles: [['p', 'q'], ['r', 's', 't']] };
+  const constant = { entry: 'z', eagerCycles: [['C', 'b'], ['d'], ['e', 'f']], allCycles: [['C', 'b'], ['a', 'z'], ['d'], ['e', 'f']] };
+  assert.throws(() => assertCycles(constant, expected), assert.AssertionError);
+  const incomplete = structuredClone(expected); incomplete.allCycles.pop();
+  assert.throws(() => assertCycles(incomplete, expected), assert.AssertionError);
+  for (const candidate of [report, permute(report), transpose(report), permute(transpose(report))]) {
+    assertCycles({ entry: candidate.entry, eagerCycles: oracle(candidate, true), allCycles: oracle(candidate, false) }, expected);
+    for (const stdin of [false, true]) assertCycles(run(t, candidate, stdin), expected);
+  }
+});
