@@ -22,7 +22,7 @@ test('fresh scanner bytes preserve cycle output across A B C A', t => {
     'left.mjs': `import './leaf.mjs';\nimport './right.mjs';\nconst text = '${scc}';\n`,
     'right.mjs': "import './leaf.mjs';\nimport './left.mjs';\n",
     'leaf.mjs': "export const leaf = true;\n",
-    'lazy.mjs': `// ${lazy}\nexport const lazy = true;\n`,
+    'lazy.mjs': `/* ${lazy} */\nexport const lazy = true;\n`,
   });
   const expectedEdges = [
     ['entry.mjs', './lazy.mjs', 'lazy', 'lazy.mjs'],
