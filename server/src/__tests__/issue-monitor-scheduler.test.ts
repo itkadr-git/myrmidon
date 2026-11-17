@@ -326,6 +326,50 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     });
   });
 
+  it("preserves a reassigned reviewer when an exhausted monitor is cleared", async () => {
+    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture({
+      issueStatus: "in_review", monitorAttemptCount: 1, monitor: { maxAttempts: 1 },
+    });
+    const reviewerId = randomUUID();
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    await db.update(issues).set({ executionState: {
+      status: "pending", currentStageId: randomUUID(), currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId, userId: null },
+      returnAssignee: { type: "agent", agentId, userId: null },
+      reviewRequest: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+      monitor: parseIssueExecutionState(before!.executionState)?.monitor,
+    } }).where(eq(issues.id, issueId));
+    await db.insert(agents).values({
+      id: reviewerId, companyId, name: "New reviewer", role: "reviewer", status: "active",
+      adapterType: "process", adapterConfig: { command: process.execPath, args: ["-e", ""], cwd: process.cwd() },
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } }, permissions: {},
+    });
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_reassign_on_monitor_claim() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET execution_state = jsonb_set(execution_state, '{currentParticipant}',
+            '{"type":"agent","agentId":"${reviewerId}","userId":null}'::jsonb) WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_reassign_on_monitor_claim AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_reassign_on_monitor_claim();
+    `));
+    try {
+      await heartbeatService(db, { executesRuns: false }).tickTimers(nextCheckAt);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(parseIssueExecutionState(after!.executionState)).toMatchObject({
+        currentParticipant: { type: "agent", agentId: reviewerId },
+        returnAssignee: { type: "agent", agentId },
+        monitor: { status: "cleared" },
+      });
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER test_reassign_on_monitor_claim ON issues; DROP FUNCTION test_reassign_on_monitor_claim();"));
+      await db.delete(heartbeatRuns);
+    }
+  });
+
   it("preserves a monitor rescheduled while its previous wake is enqueued", async () => {
     const { issueId, nextCheckAt } = await seedFixture();
     const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
