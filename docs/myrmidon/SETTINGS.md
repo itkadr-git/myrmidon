@@ -23,6 +23,12 @@ A track writes only into its own section. A row is added in the same PR as the s
 - **What it does** — in one phrase.
 - **How to disable / special** — for example, "`0` — no limit".
 
+## Knowledge settings in the interface
+
+In Company Settings → Knowledge, the form fields and actions are disabled while
+a save request is pending. Editing is available again when the request finishes,
+whether it succeeds or fails; a second save cannot start while it is pending.
+
 ## Behavior settings API
 
 The runtime behavior-settings API exposes the effective values and their definitions without a restart. All routes are under `/api/myrmidon/behavior-settings`:
