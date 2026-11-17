@@ -647,16 +647,14 @@ export function scanTaskClones(root, now, ttlHours) {
 
     const st = fs.statSync(fullPath);
 
-    let mapped = null;
-    let env = null;
-    if (!isGitWorktree(fullPath)) {
-      const dirs = resolveWorktreeGitDirs(fullPath, agentRoot);
-      if (!dirs.adminDir) continue; // not a git clone the host can read, skip
-      mapped = dirs;
-      // GIT_OPTIONAL_LOCKS=0: `git status` must not rewrite the index, or every pass would make the clone look fresh.
-      env = mappedGitEnv(dirs, fullPath);
-      if (!isGitWorktree(fullPath, env)) continue;
-    }
+    // Resolve container gitfiles before probing git: the deployed git wrapper can make the
+    // unmapped probe succeed while later archive/removal still needs the host admin paths.
+    const dirs = resolveWorktreeGitDirs(fullPath, agentRoot);
+    const mapped = dirs.adminDir ? dirs : null;
+    // Fail closed for a container pointer that cannot be mapped, even if a wrapper accepts it.
+    if (!mapped && dirs.reason !== "not-a-linked-worktree") continue;
+    const env = mapped ? mappedGitEnv(mapped, fullPath) : undefined;
+    if (!isGitWorktree(fullPath, env)) continue;
 
     // A linked worktree's own HEAD and reflog live in the admin dir: the directory mtime alone
     // can sit older than the newest real change (newestCloneChangeMs, as in the idle rule).

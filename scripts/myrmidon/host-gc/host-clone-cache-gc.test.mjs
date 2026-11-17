@@ -2826,8 +2826,8 @@ describe("closed-task scan: bot linked worktrees with container gitdirs (OPE-149
       assert.ok(fs.existsSync(clean) && fs.existsSync(dirty));
       const apply = await run("--apply");
       assert.equal(apply.status, 0, apply.stderr);
-      const plan = JSON.parse(apply.stdout).plan;
-      assert.ok(plan.archived.some((item) => item.path === dirty), JSON.stringify(plan));
+      const events = fs.readFileSync(path.join(tmpDir, "journal"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      assert.ok(events.some((item) => item.event === "clone-archived" && item.path === dirty), JSON.stringify(events));
       assert.equal(fs.existsSync(clean), false);
       assert.equal(fs.existsSync(dirty), false);
       assert.equal(fs.existsSync(path.join(bot.base, "worktrees", "OPE-1")), false);
