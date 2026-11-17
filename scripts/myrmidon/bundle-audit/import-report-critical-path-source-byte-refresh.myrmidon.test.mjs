@@ -31,6 +31,9 @@ test('fresh source bytes change the critical path without changing the graph', t
     { a: base + '// xxxxxxxxxxxxxxxx\n', b: base + '// x\n', winner: 'a' },
     { a: base + '// \u00e9\u00e9\n\n', b: base + '// xxxx\n\n', winner: 'a' },
   ];
+  assert.ok(bytes(states[0].a) < bytes(states[0].b));
+  assert.ok(bytes(states[1].a) > bytes(states[1].b));
+  assert.equal(bytes(states[2].a), bytes(states[2].b));
   const edges = [
     { from: 'a.mjs', specifier: './leaf.mjs', kind: 'eager', to: 'leaf.mjs' },
     { from: 'b.mjs', specifier: './leaf.mjs', kind: 'eager', to: 'leaf.mjs' },
