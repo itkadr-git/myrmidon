@@ -36,6 +36,23 @@ Exceptions: a task the board owner assigned (the latest assignment record is by 
 
 See [settings](../myrmidon/SETTINGS.md#release-focus-for-wake-admission).
 
+## Pending cards and agent wake limits
+
+A pending question card addressed to an agent can trigger an
+`interaction_pending` wake even after its daily run limit is reached. The
+bypass is capped at 50 wakes per agent per UTC day by default; the agent's
+`runtimeConfig.heartbeat.maxDailyInteractionWakes` changes the cap, and zero
+disables the bypass. The daily cost limit still applies. If the card remains
+pending for 30 minutes and its addressee has neither a live run on the task nor
+a wake for that card in flight, the scheduler can wake it again, at most once
+per card per 30 minutes.
+
+An unfinished task may also receive an in-progress safety wake. After an
+`advanced` run that moved the PR head during that run, the short delay is at
+most two minutes; otherwise the configured idle window applies. CI in progress,
+blockers, holds and other wake guards still apply. Setting
+`runPriority.inProgressIdleWakeMinutes` to zero disables this safety wake.
+
 ## Role queues
 
 With the role-queue pilot, a free agent claims the top task of its role's
