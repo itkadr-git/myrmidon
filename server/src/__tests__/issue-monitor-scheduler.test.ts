@@ -27,6 +27,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.ts";
 import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -520,6 +521,56 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
       expect(parseIssueExecutionState(after!.executionState)).toMatchObject({
         currentParticipant: { type: "agent", agentId: newReviewer }, returnAssignee: state.returnAssignee,
+      });
+    } finally {
+      if (previousSecret === undefined) delete process.env.MYRMIDON_AGENT_JWT_SECRET;
+      else process.env.MYRMIDON_AGENT_JWT_SECRET = previousSecret;
+    }
+  });
+
+  it("recovers a monitor handoff after a crash immediately following cancellation", async () => {
+    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture({ issueStatus: "in_review" });
+    const [oldReviewer, newReviewer] = [randomUUID(), randomUUID()];
+    for (const id of [oldReviewer, newReviewer]) {
+      await db.insert(agents).values({
+        id, companyId, name: `Reviewer ${id}`, role: "reviewer", status: "active",
+        adapterType: "process", adapterConfig: { command: process.execPath, args: ["-e", ""], cwd: process.cwd() },
+        runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } }, permissions: {},
+      });
+    }
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const returnAssignee = { type: "agent", agentId, userId: null };
+    await db.update(issues).set({ executionState: {
+      status: "pending", currentStageId: randomUUID(), currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: oldReviewer, userId: null }, returnAssignee,
+      reviewRequest: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+      monitor: parseIssueExecutionState(before!.executionState)?.monitor,
+    } }).where(eq(issues.id, issueId));
+    const previousSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
+    process.env.MYRMIDON_AGENT_JWT_SECRET = "issue-monitor-test-secret";
+    try {
+      expect((await heartbeatService(db, { executesRuns: false }).tickTimers(nextCheckAt)).enqueued).toBe(1);
+      const [queued] = await db.select().from(heartbeatRuns);
+      await db.update(issues).set({
+        executionState: sql`jsonb_set(${issues.executionState}, '{currentParticipant}', ${JSON.stringify({ type: "agent", agentId: newReviewer, userId: null })}::jsonb)`,
+      }).where(eq(issues.id, issueId));
+      expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        companyId, runId: queued!.id, expectedStatus: "queued", now: new Date(),
+      })).toMatchObject({ outcome: "cancelled", errorCode: "issue_review_participant_changed" });
+      // Restart after the cancellation transaction but before its post-commit drain.
+      const old = new Date(Date.now() - 11 * 60_000);
+      await db.update(heartbeatRuns).set({ finishedAt: old }).where(eq(heartbeatRuns.id, queued!.id));
+      await db.update(agentWakeupRequests).set({ requestedAt: old, createdAt: old, updatedAt: old })
+        .where(eq(agentWakeupRequests.status, "deferred_issue_execution"));
+      const executor = heartbeatService(db);
+      await executor.resumeQueuedRuns();
+      await waitForHeartbeatIdle();
+      const runs = await db.select().from(heartbeatRuns);
+      expect(runs.filter((run) => run.status === "succeeded").map((run) => run.agentId)).toEqual([newReviewer]);
+      expect((await executor.tickTimers(new Date(nextCheckAt.getTime() + 60_000))).enqueued).toBe(0);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(parseIssueExecutionState(after!.executionState)).toMatchObject({
+        currentParticipant: { type: "agent", agentId: newReviewer }, returnAssignee,
       });
     } finally {
       if (previousSecret === undefined) delete process.env.MYRMIDON_AGENT_JWT_SECRET;
