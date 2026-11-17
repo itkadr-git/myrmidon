@@ -36,9 +36,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 async function settle() {
   await act(async () => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    setTimeout(resolve, 0);
-    await promise;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
   });
 }
 
@@ -124,7 +122,8 @@ describe("KnowledgeSettingsScreen without a selected company", () => {
   });
 
   it("clears the form on deselection and ignores a late response", async () => {
-    const { promise: pendingA, resolve: resolveA } = Promise.withResolvers<KnowledgeSettingsView>();
+    let resolveA: (value: KnowledgeSettingsView) => void;
+    const pendingA = new Promise<KnowledgeSettingsView>((resolve) => { resolveA = resolve; });
     fetchMock.mockReturnValueOnce(pendingA);
 
     await renderScreen();
