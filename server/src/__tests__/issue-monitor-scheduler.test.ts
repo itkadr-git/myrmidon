@@ -259,7 +259,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(wakeup?.payload).toMatchObject({ issueId, nextCheckAt: nextCheckAt.toISOString() });
   });
 
-  it("does not wake the assignee for a due monitor while an issue is in an active review stage", async () => {
+  it("does not wake the assignee for a due monitor while a human review is pending", async () => {
     const { issueId, agentId, nextCheckAt } = await seedFixture({ issueStatus: "in_review" });
     await db.update(issues).set({
       executionState: {
@@ -267,7 +267,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
         currentStageId: randomUUID(),
         currentStageIndex: 0,
         currentStageType: "review",
-        currentParticipant: { type: "agent", agentId: randomUUID() },
+        currentParticipant: { type: "user", userId: "reviewer" },
         returnAssignee: { type: "agent", agentId },
         completedStageIds: [],
         lastDecisionId: null,

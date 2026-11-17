@@ -13430,14 +13430,18 @@ export function heartbeatService(
         });
       }
 
+      const triggeredPatch = buildIssueMonitorTriggeredPatch({
+        issue: claimed,
+        policy,
+        triggeredAt: input.now,
+      });
       await db
         .update(issues)
         .set({
-          ...buildIssueMonitorTriggeredPatch({
-            issue: claimed,
-            policy,
-            triggeredAt: input.now,
-          }),
+          ...triggeredPatch,
+          // A reassignment may have changed the review participant since claim.
+          executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(triggeredPatch.executionState?.monitor ?? null)}::jsonb, true)`,
+          executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, claimed.id));
@@ -13900,16 +13904,12 @@ export function heartbeatService(
           isNull(issues.assigneeUserId),
           sql`${issues.assigneeAgentId} is not null`,
           inArray(issues.status, ["in_progress", "in_review", "blocked"]),
-          // A review-stage monitor belongs to the active review participant;
-          // monitors on other statuses must not wake the returned assignee.
+          // A human review participant must not be replaced by the assignee.
           sql`not (
             ${issues.status} = 'in_review'
             and ${issues.executionState} ->> 'status' = 'pending'
             and ${issues.executionState} ->> 'currentStageType' = 'review'
-            and coalesce(${issues.executionPolicy} -> 'monitor' ->> 'serviceName', case when ${issues.executionState} -> 'monitor' ->> 'serviceName' = ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME} then ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME} end, '') not in (
-              ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME},
-              ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
-            )
+            and coalesce(${issues.executionState} -> 'currentParticipant' ->> 'type', '') = 'user'
           )`,
           or(
             isNull(issues.monitorWakeRequestedAt),
@@ -13943,10 +13943,7 @@ export function heartbeatService(
                 ${issues.status} = 'in_review'
                 and ${issues.executionState} ->> 'status' = 'pending'
                 and ${issues.executionState} ->> 'currentStageType' = 'review'
-                and coalesce(${issues.executionPolicy} -> 'monitor' ->> 'serviceName', case when ${issues.executionState} -> 'monitor' ->> 'serviceName' = ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME} then ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME} end, '') not in (
-                  ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME},
-                  ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
-                )
+                and coalesce(${issues.executionState} -> 'currentParticipant' ->> 'type', '') = 'user'
               )`,
               or(
                 isNull(issues.monitorWakeRequestedAt),
