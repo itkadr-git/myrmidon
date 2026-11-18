@@ -27,7 +27,7 @@
 //   (OPE-12928) directly and the 30-day admissibility check there stays the
 //   second, independent gate.
 
-import { and, desc, eq, gt, isNull, lt, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, lt, or, type SQL } from "drizzle-orm";
 import {
   issueExecutionDecisions,
   issues,
@@ -165,7 +165,7 @@ export async function queryApprovedReviewOutcomes(
       or(
         lt(issueExecutionDecisions.createdAt, cursor.createdAt),
         and(
-          sql`${issueExecutionDecisions.createdAt} = ${cursor.createdAt}`,
+          eq(issueExecutionDecisions.createdAt, cursor.createdAt),
           lt(issueExecutionDecisions.id, cursor.id),
         ),
       )!,
