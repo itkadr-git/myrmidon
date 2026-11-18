@@ -92,7 +92,7 @@ test("initial guards prevent any health or restart side effects", async () => {
 
 test("health failures and unsafe health never stop the child and release the gate", async () => {
   const cases = [
-    async () => { throw new Error("network"); }, async () => response({}, false),
+    async () => { throw new Error("network"); }, async () => response(healthy, false),
     async () => response({}), async () => response({ devServer: { enabled: false, autoRestartEnabled: true } }),
     async () => response({ devServer: { enabled: true, autoRestartEnabled: false } }),
     async () => response({ devServer: { enabled: true, autoRestartEnabled: 1 } }),
