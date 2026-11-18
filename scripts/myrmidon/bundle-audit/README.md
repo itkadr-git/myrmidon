@@ -92,6 +92,14 @@ cannot verify their source or inspect a built image.
 
 Test in CI with `node --test scripts/myrmidon/bundle-audit/boot-contract.test.mjs`.
 
+# Prepared artifact runtime audit
+
+Run `node scripts/myrmidon/bundle-audit/artifact-audit.mjs <artifact-root>` against an already prepared workspace tree containing `pnpm-workspace.yaml`. The command is read-only and does not build or resolve imports.
+
+It inspects workspace package manifests matched by that file and checks runtime `main`, `exports` (including conditional and nested wildcard targets), and `bin` entries. Type declarations and `types` conditions are not runtime entries. Missing files, source TypeScript targets, root escapes and dangling or escaping symlinks cause a nonzero exit; a successful audit prints `PASS`. Invalid or empty workspace discovery also fails closed.
+
+This is a standalone tool, not a release pipeline step. Test with `node --test scripts/myrmidon/bundle-audit/artifact-audit.test.mjs`.
+
 ---
 
 # Startup benchmark comparison
