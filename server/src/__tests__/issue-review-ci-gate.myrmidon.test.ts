@@ -133,7 +133,7 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
 
     await ctx.db.insert(connectionEventDeliveries).values([
       { companyId, provider: "github", providerDeliveryId: "moved-pr", event: "pull_request", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "b".repeat(40) } },
-      { companyId, provider: "github", providerDeliveryId: "moved-check", event: "check_run", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, headSha: "b".repeat(40), checkName: "CI result", status: "completed", conclusion: "success" } },
+      { companyId, provider: "github", providerDeliveryId: "moved-check", event: "check_run", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, headSha: "b".repeat(40), checkName: "CI result", status: "completed", conclusion: "failure" } },
     ]);
     const movedResult = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
     expect(movedResult.status, JSON.stringify(movedResult.body)).toBe(422);
@@ -142,7 +142,7 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     await ctx.db.delete(connectionEventDeliveries).where(sql`${connectionEventDeliveries.companyId} = ${companyId}`);
     await ctx.db.insert(connectionEventDeliveries).values([
       { companyId, provider: "github", providerDeliveryId: "synthetic-pr", event: "pull_request", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha } },
-      { companyId, provider: "github", providerDeliveryId: "synthetic-check", event: "check_run", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, headSha, checkName: "CI result", status: "completed", conclusion: "success" } },
+      { companyId, provider: "github", providerDeliveryId: "synthetic-check", event: "check_run", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, headSha, checkName: "CI result", status: "completed", conclusion: "failure" } },
     ]);
     const accepted = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
     await drainHeartbeatRunsToQuiescence(ctx.db, heartbeatService(ctx.db));
