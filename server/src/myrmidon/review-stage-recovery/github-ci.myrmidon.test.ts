@@ -3,6 +3,7 @@ vi.mock("../../services/github-review-budget.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../services/github-review-budget.js")>();
   return { ...actual, withGitHubReviewBudget: (_db: unknown, _source: unknown, fetch: unknown) => fetch };
 });
+import { createPullRequestCiResolver, clearCiCacheForTests, invalidateCiCacheForHead } from "../../services/github-pull-request-ci.js";
 import { resetGitHubRateLimitForTests } from "../../services/github-rate-limit.js";
 import {
   createReviewHeadFailedChecksResolver,
@@ -427,6 +428,22 @@ describe("createReviewPullRequestCiResolver", () => {
     isPrimary: true,
     updatedAt: new Date(),
   };
+
+  it("uses server-fetched exact-head failure when the review transport is unavailable, but not after invalidation", async () => {
+    clearCiCacheForTests();
+    const wake = createPullRequestCiResolver({ select: vi.fn() } as never, {
+      source: "run-context", tokenProvider: async () => "token",
+      prResolver: async () => ({ headSha: "abc123", headRef: "branch" }),
+      fetch: fakeFetch({ ["/repos/acme/app/commits/abc123/check-runs?per_page=100&page=1&filter=latest"]: { total_count: 1, check_runs: [{ id: 1, ...ciResultOnHead("failure"), html_url: "https://github.com/acme/app/runs/1", started_at: "2026-11-14T08:00:00Z", completed_at: "2026-11-14T08:01:00Z" }] } }),
+    });
+    expect(await wake.resolveForPullRequest("company-1", reference)).toMatchObject({ authoritative: true, status: "completed", conclusion: "failure" });
+    const fetch = vi.fn(async () => { throw new Error("connection reset"); });
+    const review = createReviewPullRequestCiResolver({ db: fakeDb([openProduct]), tokenProvider: async () => null, fetch });
+    expect(await review({ companyId: "company-1", issueId: "issue-1" })).toMatchObject({ state: "complete", headSha: "abc123", finalCheckConclusion: "failure" });
+    expect(fetch).not.toHaveBeenCalled();
+    invalidateCiCacheForHead("company-1", "acme/app", "abc123");
+    expect(await review({ companyId: "company-1", issueId: "issue-1" })).toMatchObject({ state: "unknown", reason: "pull:network_error (anonymous)" });
+  });
 
   it("preserves a budget denial from the token provider when anonymous transport also fails", async () => {
     const { GitHubReviewBudgetError } = await import("../../services/github-review-budget.js");

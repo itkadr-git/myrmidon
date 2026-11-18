@@ -1917,6 +1917,7 @@ describe("createPullRequestCiResolver", () => {
     });
   });
   it("shares a fresh authoritative exact-head failure with review without another GitHub read", async () => {
+    clearCiCacheForTests();
     const mockFetch = vi.fn(async () => ({ ok: true, status: 200, headers: new Headers(), json: async () => ({ total_count: 1, check_runs: [{ id: 1, name: "CI result", status: "completed", conclusion: "failure", html_url: "https://github.com/acme/app/runs/1", started_at: "2026-11-14T08:00:00Z", completed_at: "2026-11-14T08:01:00Z" }] }) }));
     const resolver = createPullRequestCiResolver({ select: vi.fn() } as never, {
       source: "run-context", fetch: mockFetch as never, tokenProvider: async () => "token",

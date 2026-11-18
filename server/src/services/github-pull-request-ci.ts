@@ -948,6 +948,29 @@ interface CacheEntry {
 
 const ciCache = new Map<string, CacheEntry>();
 
+/** Read only recent server-fetched final-check evidence bound to this company, PR and head. */
+export function readFreshReviewCiSnapshot(
+  companyId: string,
+  reference: GitHubPullRequestReference,
+  knownHeadSha: string | null,
+): { state: "complete"; headSha: string; finalCheckConclusion: string } | null {
+  if (!knownHeadSha || reference.host !== "github.com") return null;
+  const repository = `${reference.owner}/${reference.repo}`.toLowerCase();
+  const head = prHeadCache.get(`${repository}#${reference.number}`);
+  if (!head?.headSha || head.expiresAt <= Date.now() || head.headSha !== knownHeadSha) return null;
+  const entry = ciCache.get(`${companyId}:${repository}@${knownHeadSha.toLowerCase()}`);
+  const result = entry?.result;
+  const checked = result ? Date.parse(result.checkedAt) : NaN;
+  if (!entry || entry.expiresAt <= Date.now() || !result || !result.authoritative ||
+      result.repository.toLowerCase() !== repository || result.pullNumber !== reference.number ||
+      result.headSha !== knownHeadSha || result.status !== "completed" ||
+      !Number.isFinite(checked) || checked > Date.now() || Date.now() - checked > PR_HEAD_CACHE_TTL_MS) return null;
+  const checks = result.runs.filter((run) => run.name === "CI result");
+  if (checks.length !== 1 || checks[0].status !== "completed" ||
+      !checks[0].conclusion || ["cancelled", "skipped", "neutral"].includes(checks[0].conclusion)) return null;
+  return { state: "complete", headSha: knownHeadSha, finalCheckConclusion: checks[0].conclusion };
+}
+
 interface PrHeadCacheEntry {
   headSha: string | null;
   headRef: string | null;

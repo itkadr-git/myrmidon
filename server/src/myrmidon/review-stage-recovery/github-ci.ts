@@ -23,6 +23,7 @@
 // the largest user of the App's 5000/h budget.
 
 import { createHash } from "node:crypto";
+import { readFreshReviewCiSnapshot } from "../../services/github-pull-request-ci.js";
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { connectionEventDeliveries, issueWorkProducts, type Db } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../../services/git-credentials.js";
@@ -617,6 +618,9 @@ export function createReviewPullRequestCiResolver(input: {
     const webhook = await readWebhookCi(input.db, companyId, reference);
     const matchingWebhook = webhook && target.knownHeadSha && target.knownHeadSha === webhook.headSha ? webhook : null;
     if (matchingWebhook?.verdict) return { ...matchingWebhook.verdict, headSha: matchingWebhook.headSha, pullRequestUrl };
+    // Reuse the board's recent exact-head read; never trust a wake/comment payload.
+    const snapshot = readFreshReviewCiSnapshot(companyId, reference, target.knownHeadSha);
+    if (snapshot && !webhook) return { ...snapshot, pullRequestUrl };
     let token: string | null = null;
     let tokenError: string | null = null;
     try {
