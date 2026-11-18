@@ -369,6 +369,15 @@ describe("resolvePullRequestHeadCi: read cache", () => {
 });
 
 describe("resolvePullRequestHeadCi: rate limit", () => {
+  it("does not treat an expired PR head as current when GitHub becomes unavailable", async () => {
+    const fetch = completeGithub();
+    expect(await readCi(fetch)).toMatchObject({ state: "complete", headSha: "abc123" });
+    at(61);
+    setGitHubRateLimitForTests(START_SEC + 600, 0);
+    expect(await readCi(fetch)).toMatchObject({ state: "unknown", headSha: null, reason: "pull:skipped_rate_limited" });
+    expect(paths(fetch)).toEqual([pullPath(7), WORKFLOWS, finalCheckPath("abc123")]);
+  });
+
   const limited = { remaining: 0, limit: null, resetEpochSeconds: START_SEC + 600 };
 
   function exhaust(untilSeconds = 600) {
