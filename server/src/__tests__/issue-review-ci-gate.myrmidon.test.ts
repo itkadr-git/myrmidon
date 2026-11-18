@@ -89,6 +89,22 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     expect(diagnostic.mock.calls.some(([fields]) => typeof fields === "object" && fields !== null &&
       "reason" in fields && fields.reason === "network_error")).toBe(true);
     expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, rejected.body, networkFailure.body])).not.toContain(canary);
+
+    // One reservation can read the PR head, but cannot complete the subsequent CI reads.
+    transport.mockClear();
+    diagnostic.mockClear();
+    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
+    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 1999, resetAt: new Date(start.getTime() + 3_600_000) });
+    transport.mockImplementationOnce(async (url) => {
+      expect(url).toBe("https://api.github.com/repos/acme/app/pulls/7");
+      return Response.json({ state: "open", head: { sha: headSha } });
+    });
+    const partial = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
+    expect(partial.status).toBe(422);
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(diagnostic.mock.calls.some(([fields]) => typeof fields === "object" && fields !== null &&
+      "reason" in fields && fields.reason === "budget_exhausted")).toBe(true);
+    expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, partial.body])).not.toContain(canary);
     diagnostic.mockRestore();
     warning.mockRestore();
     error.mockRestore();
