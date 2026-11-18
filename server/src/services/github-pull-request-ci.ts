@@ -4,7 +4,7 @@ import { issueWorkProducts, issues, issueComments } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { repositoryHasHostedCi, NO_HOSTED_CI_SUMMARY } from "./github-hosted-ci.js";
 import type { FetchLike } from "./github-external-object-provider.js";
-import { withGitHubReviewBudget } from "./github-review-budget.js";
+import { GitHubReviewBudgetError, withGitHubReviewBudget } from "./github-review-budget.js";
 import {
   resetGitHubObjectCacheForTests,
   resolveGitHubRepositoryToken,
@@ -720,6 +720,7 @@ export async function fetchCommitCheckRuns(
   let page = 1;
   let totalCount: number | null = null;
   let fetchFailed = false;
+  let fetchFailureReason = "network_error";
   let failStatus: number | null = null;
   let rateLimitResetAt: number | undefined;
   let rateLimited = false;
@@ -743,7 +744,8 @@ export async function fetchCommitCheckRuns(
     try {
       res = await fetchImpl(url, { headers });
       recordGitHubRequest(options.source ?? "ci-resolver", res);
-    } catch {
+    } catch (error) {
+      if (error instanceof GitHubReviewBudgetError) fetchFailureReason = error.reason;
       fetchFailed = true;
       break;
     }
@@ -874,7 +876,9 @@ export async function fetchCommitCheckRuns(
     } else {
       result.status = "unavailable";
       result.conclusion = "unavailable";
-      result.summary = `checks unavailable (HTTP ${failStatus ?? "network_error"})`;
+      result.summary = failStatus === null
+        ? `checks unavailable (${fetchFailureReason})`
+        : `checks unavailable (HTTP ${failStatus})`;
     }
   } else if (fetchFailed || (totalCount !== null && allRuns.length < totalCount)) {
     result.authoritative = false;
