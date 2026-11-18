@@ -145,6 +145,7 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
       { companyId, provider: "github", providerDeliveryId: "synthetic-check", event: "check_run", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, headSha, checkName: "CI result", status: "completed", conclusion: "success" } },
     ]);
     const accepted = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
+    await drainHeartbeatRunsToQuiescence(ctx.db, heartbeatService(ctx.db));
     expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
     expect(accepted.body.status).toBe("in_progress");
     expect(transport).not.toHaveBeenCalled();
@@ -157,12 +158,15 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     transport.mockImplementationOnce(async () => Response.json({ state: "open", head: { sha: headSha } }));
     transport.mockImplementationOnce(async () => Response.json([{ name: "ci.yml" }]));
     transport.mockImplementationOnce(async () => Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "success", head_sha: headSha }] }));
+    transport.mockImplementationOnce(async () => Response.json({ check_runs: [] }));
     const success = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI passed" });
+    await drainHeartbeatRunsToQuiescence(ctx.db, heartbeatService(ctx.db));
     const checkUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?check_name=CI%20result&filter=all&per_page=100`;
     expect(success.status, JSON.stringify(success.body)).toBe(200);
     const workflowUrl = "https://api.github.com/repos/acme/app/contents/.github/workflows";
-    expect(transport.mock.calls.map(([url]) => url)).toEqual([pullUrl, workflowUrl, checkUrl]);
-    expect(unexpectedCalls(transport.mock.calls, [pullUrl, workflowUrl, checkUrl])).toEqual([]);
+    const heartbeatCheckUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?filter=latest&per_page=100`;
+    expect(transport.mock.calls.map(([url]) => url)).toEqual([pullUrl, workflowUrl, checkUrl, heartbeatCheckUrl]);
+    expect(unexpectedCalls(transport.mock.calls, [pullUrl, workflowUrl, checkUrl, heartbeatCheckUrl])).toEqual([]);
     expect(diagnostic.mock.calls.some(([fields]) => typeof fields === "object" && fields !== null &&
       "transportCalls" in fields && fields.transportCalls === 3 &&
       "budget" in fields && JSON.stringify(fields.budget) === JSON.stringify({ used: 3, cap: 2000, windowMinutes: 60 }))).toBe(true);
