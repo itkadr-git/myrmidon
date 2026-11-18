@@ -491,7 +491,7 @@ describe("createReviewPullRequestCiResolver: read cache", () => {
     updatedAt: new Date(),
   };
 
-  it("serves the next sweep of the same review stage from memory", async () => {
+  it("reads GitHub afresh for every admission sweep of the same review stage", async () => {
     const fetch = completeGithub();
     const resolver = createReviewPullRequestCiResolver({
       db: fakeDb([openProduct]),
@@ -503,9 +503,11 @@ describe("createReviewPullRequestCiResolver: read cache", () => {
     at(30);
     const second = await resolver({ companyId: "company-1", issueId: "issue-1" });
 
+    // OPE-15114: admission never serves from the read cache; a sweep must see
+    // the current head, not a remembered one.
     expect(first).toEqual({ state: "complete", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "abc123", finalCheckConclusion: "success" });
     expect(second).toEqual(first);
-    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch).toHaveBeenCalledTimes(6);
   });
 
   it("hands the reason and the time to come back to the recovery while the budget is gone", async () => {
