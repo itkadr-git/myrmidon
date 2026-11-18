@@ -135,6 +135,7 @@ export function createGuardReturnSweep(deps: GuardReturnSweepDeps) {
         companyId: agents.companyId,
         status: agents.status,
         pausedAt: agents.pausedAt,
+        metadata: agents.metadata,
       })
       .from(agents)
       .where(
@@ -205,7 +206,7 @@ export function createGuardReturnSweep(deps: GuardReturnSweepDeps) {
     }
 
     const agentsList = await deps.db
-      .select({ id: agents.id, name: agents.name, role: agents.role, status: agents.status, pausedAt: agents.pausedAt })
+      .select({ id: agents.id, name: agents.name, role: agents.role, status: agents.status, pausedAt: agents.pausedAt, metadata: agents.metadata })
       .from(agents)
       .where(inArray(agents.id, Array.from(neededAgentIds)));
     const agentMap = new Map<string, AgentSummary>(agentsList.map((a) => [a.id, a]));
@@ -260,6 +261,9 @@ export function createGuardReturnSweep(deps: GuardReturnSweepDeps) {
       const activeEngineers = engineersByCompany.get(row.companyId) ?? [];
       const decision = decideGuardReturn(candidate, agentMap, runAgentMap, activeEngineers);
 
+      if (decision.action === "skip" && decision.reason.includes("eligible available engineer")) {
+        logger.warn({ issueId: candidate.issueId, identifier: candidate.identifier, reason: decision.reason }, "guard-return sweep skipped issue");
+      }
       if (decision.action === "return" && decision.targetAssigneeAgentId) {
         try {
           // 1. Update the issue: status -> in_progress, assignee -> targetAssigneeAgentId
