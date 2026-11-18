@@ -217,6 +217,12 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     const [budgetCompany] = await ctx.db.select({ id: companies.id }).from(companies).orderBy(companies.createdAt).limit(1);
     await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: budgetCompany.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
     const app = routeApp(ctx.db, { type: "agent", agentId: reviewer, companyId, source: "agent_key", runId } as never, issueRoutes);
+    for (const otherHead of ["d".repeat(40), null]) {
+      await ctx.db.update(issueWorkProducts).set({ metadata: { repo: "acme/app", number: 7, headSha: otherHead } }).where(sql`${issueWorkProducts.issueId} = ${issueId}`);
+      const rejected = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI failed" });
+      expect(rejected.status, JSON.stringify(rejected.body)).toBe(422);
+    }
+    await ctx.db.update(issueWorkProducts).set({ metadata: { repo: "acme/app", number: 7, headSha } }).where(sql`${issueWorkProducts.issueId} = ${issueId}`);
     const response = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI failed" });
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(response.body.status).toBe("in_progress");
