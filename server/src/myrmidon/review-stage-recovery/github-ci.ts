@@ -587,7 +587,7 @@ export function createReviewPullRequestCiResolver(input: {
     const budgetedFetch = withGitHubReviewBudget(input.db, "review-recovery", async (url, init) => {
       transportCalls += 1;
       return (input.fetch ?? ghFetch)(url, init);
-    });
+    }, 5000, (snapshot) => { budget = snapshot; });
     const fetchImpl: FetchLike = async (url, init) => {
       try {
         return await budgetedFetch(url, init);

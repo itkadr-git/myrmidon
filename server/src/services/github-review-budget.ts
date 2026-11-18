@@ -27,9 +27,13 @@ export function withGitHubReviewBudget(
   source: ReviewSource,
   fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
   installationLimit = 5000,
+  onReservation?: (budget: ReviewBudgetSnapshot) => void,
 ): (url: string, init?: RequestInit) => Promise<Response> {
   return async (url, init) => {
     const reservation = await reserveGitHubReviewRequestResult(db, source, installationLimit);
+    if ("budget" in reservation) {
+      try { onReservation?.(reservation.budget); } catch { /* Diagnostics must not affect transport. */ }
+    }
     if (reservation.status !== "reserved") throw new GitHubReviewBudgetError(reservation.status, "budget" in reservation ? reservation.budget : undefined);
     return fetchImpl(url, init);
   };

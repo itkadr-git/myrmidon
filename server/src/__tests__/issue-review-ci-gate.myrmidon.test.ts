@@ -15,6 +15,14 @@ const transport = vi.hoisted(() => vi.fn(async (_url: string, _init?: RequestIni
   throw new Error("Unexpected external transport");
 }));
 const canary = "synthetic-secret-do-not-log-15043";
+const pullUrl = "https://api.github.com/repos/acme/app/pulls/7";
+function unexpectedCalls(calls: Array<[string, RequestInit?]>, allowed: string[]) {
+  return calls.filter(([url, init]) => !allowed.includes(url) || !JSON.stringify(init?.headers).includes(canary));
+}
+it("detects unexpected URLs and missing credentials outside the resolver", () => {
+  expect(unexpectedCalls([["https://unexpected.invalid", { headers: { Authorization: canary } }]], [pullUrl])).toHaveLength(1);
+  expect(unexpectedCalls([[pullUrl, { headers: {} }]], [pullUrl])).toHaveLength(1);
+});
 vi.mock("../services/github-fetch.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../services/github-fetch.js")>(),
   ghFetch: transport,
@@ -80,16 +88,17 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     expect(unchanged?.status).toBe("in_review");
 
     await ctx.db.update(toolGatewayRateLimitCounters).set({ count: 1999 }).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
-    transport.mockImplementationOnce(async (url, init) => {
-      expect(url).toBe("https://api.github.com/repos/acme/app/pulls/7");
-      expect(JSON.stringify(init?.headers)).toContain(canary);
+    transport.mockImplementationOnce(async () => {
       throw new Error(`synthetic transport failure ${canary}`);
     });
     const networkFailure = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
     expect(networkFailure.status).toBe(422);
     expect(transport).toHaveBeenCalledTimes(1);
+    expect(transport.mock.calls.map(([url]) => url)).toEqual([pullUrl]);
+    expect(unexpectedCalls(transport.mock.calls, [pullUrl])).toEqual([]);
     expect(diagnostic.mock.calls.some(([fields]) => typeof fields === "object" && fields !== null &&
-      "reason" in fields && fields.reason === "network_error")).toBe(true);
+      "reason" in fields && fields.reason === "network_error" &&
+      "budget" in fields && JSON.stringify(fields.budget) === JSON.stringify({ used: 2000, cap: 2000, windowMinutes: 60 }))).toBe(true);
     expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, rejected.body, networkFailure.body])).not.toContain(canary);
 
     // One reservation can read the PR head, but cannot complete the subsequent CI reads.
@@ -97,18 +106,40 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     diagnostic.mockClear();
     await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
     await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 1999, resetAt: new Date(start.getTime() + 3_600_000) });
-    transport.mockImplementationOnce(async (url) => {
-      expect(url).toBe("https://api.github.com/repos/acme/app/pulls/7");
+    transport.mockImplementationOnce(async () => {
       return Response.json({ state: "open", head: { sha: headSha } });
     });
     const partial = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
     expect(partial.status).toBe(422);
     expect(transport).toHaveBeenCalledTimes(1);
+    expect(transport.mock.calls.map(([url]) => url)).toEqual([pullUrl]);
+    expect(unexpectedCalls(transport.mock.calls, [pullUrl])).toEqual([]);
     expect(diagnostic.mock.calls.some(([fields]) => typeof fields === "object" && fields !== null &&
       "reason" in fields && fields.reason === "budget_exhausted" &&
       "transportCalls" in fields && fields.transportCalls === 1 &&
       "budget" in fields && JSON.stringify(fields.budget) === JSON.stringify({ used: 2000, cap: 2000, windowMinutes: 60 }))).toBe(true);
     expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, partial.body])).not.toContain(canary);
+
+    transport.mockClear();
+    diagnostic.mockClear();
+    resetReviewCiCacheForTests();
+    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
+    transport.mockImplementationOnce(async () => Response.json({ state: "open", head: { sha: headSha } }));
+    transport.mockImplementationOnce(async () => Response.json([{ name: "ci.yml" }]));
+    transport.mockImplementationOnce(async () => Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "success", head_sha: headSha }] }));
+    const success = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI passed" });
+    const checkUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?check_name=CI%20result&filter=all&per_page=100`;
+    expect(success.status, JSON.stringify(success.body)).toBe(200);
+    const workflowUrl = "https://api.github.com/repos/acme/app/contents/.github/workflows";
+    expect(transport.mock.calls.map(([url]) => url)).toEqual([pullUrl, workflowUrl, checkUrl]);
+    expect(unexpectedCalls(transport.mock.calls, [pullUrl, workflowUrl, checkUrl])).toEqual([]);
+    expect(diagnostic.mock.calls.some(([fields]) => typeof fields === "object" && fields !== null &&
+      "transportCalls" in fields && fields.transportCalls === 3 &&
+      "budget" in fields && JSON.stringify(fields.budget) === JSON.stringify({ used: 3, cap: 2000, windowMinutes: 60 }))).toBe(true);
+    expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, success.body])).not.toContain(canary);
+    await ctx.db.update(issues).set({ status: "in_review", executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewer, userId: null }, returnAssignee: { type: "agent", agentId: author, userId: null }, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null } }).where(sql`${issues.id} = ${issueId}`);
+    await ctx.db.update(toolGatewayRateLimitCounters).set({ count: 2000 }).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
+    resetReviewCiCacheForTests();
     diagnostic.mockRestore();
     warning.mockRestore();
     error.mockRestore();
