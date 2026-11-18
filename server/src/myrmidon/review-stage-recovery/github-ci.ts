@@ -23,6 +23,7 @@
 // the largest user of the App's 5000/h budget.
 
 import { createHash } from "node:crypto";
+import { readFreshReviewCiSnapshot } from "../../services/github-pull-request-ci.js";
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { connectionEventDeliveries, issueWorkProducts, type Db } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../../services/git-credentials.js";
@@ -172,9 +173,8 @@ async function readGitHub(
 // 0 for both turns the cache off (the stop while the rate limit is exhausted stays). An error is
 // never stored, a result read with one token is never served to a caller with another (the key
 // holds a hash of the token), reads of one key that run at the same time share one request, and
-// at most REVIEW_CI_CACHE_MAX_ENTRIES entries are kept, the oldest leave first. While the shared
-// rate-limit state says the budget is gone an entry is served even after it expired: the
-// alternative is "unknown" for every review stage.
+// at most REVIEW_CI_CACHE_MAX_ENTRIES entries are kept, the oldest leave first. Expired entries
+// are never authoritative during rate limits: the PR head or CI rerun may have changed.
 const PULL_CACHE_TTL_ENV = "MYRMIDON_REVIEW_CI_PULL_CACHE_TTL_SEC";
 const COMPLETE_CACHE_TTL_ENV = "MYRMIDON_REVIEW_CI_COMPLETE_CACHE_TTL_SEC";
 const DEFAULT_PULL_CACHE_TTL_SECONDS = 60;
@@ -235,7 +235,7 @@ function rememberRead(key: string, value: unknown, ttlMs: number): void {
 function cachedRead<T>(key: string, load: () => Promise<LoadedRead<T>>): Promise<CachedRead<T>> {
   if (pullTtlMs() === 0 && completeTtlMs() === 0) return load();
   const entry = readCache.get(key);
-  if (entry && (entry.expiresAt > Date.now() || isGitHubRateLimited())) {
+  if (entry && entry.expiresAt > Date.now()) {
     return Promise.resolve<CachedRead<T>>({ ok: true, value: entry.value as T });
   }
   const running = readsInFlight.get(key);
@@ -301,8 +301,12 @@ async function readHeadCi(input: {
     `?check_name=${encodeURIComponent(REVIEW_CI_FINAL_CHECK_NAME)}&filter=all&per_page=100`;
   const checkRuns = await readGitHub(fetchImpl, checkRunsUrl, input.token, "check_runs");
   if (!checkRuns.ok) return checkRuns;
-  const runs = asRecord(checkRuns.json)?.check_runs;
+  const checkPayload = asRecord(checkRuns.json);
+  const runs = checkPayload?.check_runs;
   if (!Array.isArray(runs)) return { ok: false, reason: "check_runs:unreadable_payload" };
+  if (typeof checkPayload?.total_count === "number" && checkPayload.total_count > runs.length) {
+    return { ok: false, reason: "check_runs:more_than_one_page" };
+  }
   const stateFromFinalCheck = pullRequestHeadCiStateFromChecks({ checkRuns: runs, headSha });
   if (stateFromFinalCheck === "complete") {
     return settledHeadCi({ state: "complete", finalCheckConclusion: pullRequestHeadFinalCheckConclusion({ checkRuns: runs, headSha }) });
@@ -522,6 +526,8 @@ async function readWebhookCi(db: Db, companyId: string, reference: GitHubPullReq
       sql`lower(${connectionEventDeliveries.normalizedPayload}->>'repository') = lower(${`${reference.owner}/${reference.repo}`})`,
       sql`coalesce(${connectionEventDeliveries.normalizedPayload}->>'pullRequestNumber', ${connectionEventDeliveries.normalizedPayload}->>'number') = ${String(reference.number)}`,
     )).orderBy(desc(connectionEventDeliveries.createdAt)).limit(200);
+    // A truncated window may omit a later run delivered out of order.
+    if (rows.length >= 200) return null;
     const sorted = [...rows].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
     // Receipt order is not event order: pick the newest pull_request event by the
     // time GitHub stamped on the PR (updatedAt), falling back to receipt order, so
@@ -541,8 +547,12 @@ async function readWebhookCi(db: Db, companyId: string, reference: GitHubPullReq
     });
     // Receipt order is not run order: a delayed completion from an older run
     // must not override a newer rerun. Ask GitHub when multiple runs are seen.
-    const runIds = new Set(checks.map((row) => asRecord(row.normalizedPayload)?.runId).filter((id): id is string => typeof id === "string"));
-    if (runIds.size > 1) return { headSha, verdict: null };
+    const runIds = new Set(checks.map((row) => asRecord(row.normalizedPayload)?.runId).filter((id): id is string => typeof id === "string" && id.length > 0));
+    // Without identities, multiple deliveries may belong to different reruns.
+    if (runIds.size > 1 || (checks.length > 1 && checks.some((row) => {
+      const id = asRecord(row.normalizedPayload)?.runId;
+      return typeof id !== "string" || !id;
+    }))) return { headSha, verdict: null };
     // `completed` is terminal for a run: a late `in_progress` must not undo it.
     const completed = checks.map((row) => asRecord(row.normalizedPayload))
       .find((value) => value?.status === "completed" && typeof value.conclusion === "string" && !["cancelled", "skipped"].includes(value.conclusion));
@@ -588,14 +598,17 @@ export function createReviewPullRequestCiResolver(input: {
     }
     const { reference, pullRequestUrl } = target;
     const webhook = await readWebhookCi(input.db, companyId, reference);
-    const matchingWebhook = webhook && (!target.knownHeadSha || target.knownHeadSha === webhook.headSha) ? webhook : null;
+    const matchingWebhook = webhook && target.knownHeadSha && target.knownHeadSha === webhook.headSha ? webhook : null;
     if (matchingWebhook?.verdict) return { ...matchingWebhook.verdict, headSha: matchingWebhook.headSha, pullRequestUrl };
+    // Reuse the board's recent exact-head read; never trust a wake/comment payload.
+    const snapshot = readFreshReviewCiSnapshot(companyId, reference, target.knownHeadSha);
+    if (snapshot && !webhook) return { ...snapshot, pullRequestUrl };
     let token: string | null = null;
-    let tokenError = false;
+    let tokenError: string | null = null;
     try {
       token = (await tokenProvider(companyId, `${reference.owner}/${reference.repo}`))?.trim() || null;
-    } catch {
-      tokenError = true;
+    } catch (error) {
+      tokenError = error instanceof GitHubReviewBudgetError ? `token_provider:${error.reason}` : "token provider failed";
     }
     try {
       const head = await resolvePullRequestHeadCi({ reference, token, fetch: fetchImpl, knownHeadSha: matchingWebhook?.headSha });
@@ -613,7 +626,7 @@ export function createReviewPullRequestCiResolver(input: {
         state: "unknown",
         pullRequestUrl,
         headSha: head.headSha,
-        reason: `${head.reason ?? "read_failed"}${tokenError ? "; token provider failed" : ""}`,
+        reason: `${head.reason ?? "read_failed"}${tokenError ? `; ${tokenError}` : ""}`,
         ...(head.rateLimit ? { rateLimit: head.rateLimit } : {}),
       };
     } catch {
