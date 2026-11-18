@@ -301,8 +301,12 @@ async function readHeadCi(input: {
     `?check_name=${encodeURIComponent(REVIEW_CI_FINAL_CHECK_NAME)}&filter=all&per_page=100`;
   const checkRuns = await readGitHub(fetchImpl, checkRunsUrl, input.token, "check_runs");
   if (!checkRuns.ok) return checkRuns;
-  const runs = asRecord(checkRuns.json)?.check_runs;
+  const checkPayload = asRecord(checkRuns.json);
+  const runs = checkPayload?.check_runs;
   if (!Array.isArray(runs)) return { ok: false, reason: "check_runs:unreadable_payload" };
+  if (typeof checkPayload?.total_count === "number" && checkPayload.total_count > runs.length) {
+    return { ok: false, reason: "check_runs:more_than_one_page" };
+  }
   const stateFromFinalCheck = pullRequestHeadCiStateFromChecks({ checkRuns: runs, headSha });
   if (stateFromFinalCheck === "complete") {
     return settledHeadCi({ state: "complete", finalCheckConclusion: pullRequestHeadFinalCheckConclusion({ checkRuns: runs, headSha }) });
