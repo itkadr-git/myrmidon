@@ -64,7 +64,6 @@ import { decideReviewReturnWake, recordSuppressedReviewReturn } from "../myrmido
 import {
   readReviewInfraCheckNames,
   readReviewReturnGuardEnabled,
-  reviewCommentReferencesCode,
   withChangesRequestedHeadSha,
 } from "../myrmidon/review-return-guard/policy.js";
 // myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): the review verdict is recorded as
@@ -3813,6 +3812,12 @@ function logIssueListRequest(input: {
       "safe authenticated GET observed",
     );
   });
+}
+
+function logReviewWriteCi(input: { issueId: string; runId: string | null | undefined; ci: Awaited<ReturnType<ReviewPullRequestCiResolver>>; diagnostic: { transportCalls: number; budget: { used: number; cap: number; windowMinutes: number } | null } | null }): void {
+  const reason = input.ci.reason?.match(/(?:budget_exhausted|budget_store_unavailable|network_error|http_401|http_403_rate_limited|http_403|http_429_rate_limited|skipped_rate_limited)/)?.[0] ?? null;
+  const headSha = input.ci.headSha && /^[a-f0-9]{40}$/i.test(input.ci.headSha) ? input.ci.headSha : null;
+  logger.info({ issueId: input.issueId, runId: input.runId ?? null, headSha, source: "review-recovery", state: input.ci.state, reason, transportCalls: input.diagnostic?.transportCalls ?? null, budget: input.diagnostic?.budget ?? null }, "review_write_ci_gate");
 }
 
 export function issueRoutes(
@@ -15391,11 +15396,13 @@ export function issueRoutes(
         }
       }
       if (transition.decision?.outcome === "changes_requested") {
-        const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+        let diagnostic: Parameters<NonNullable<Parameters<typeof createReviewPullRequestCiResolver>[0]["onDiagnostic"]>>[0] | null = null;
+        const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, onDiagnostic: (value) => { diagnostic = value; } }))({
           companyId: existing.companyId,
           issueId: existing.id,
         });
-        if ((ci.state === "pending" || ci.state === "unknown") && !reviewCommentReferencesCode(transition.decision?.body)) {
+        logReviewWriteCi({ issueId: existing.id, runId: actor.runId, ci, diagnostic });
+        if (ci.state === "pending" || ci.state === "unknown") {
           throw unprocessable(
             ci.state === "pending"
               ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
@@ -16528,11 +16535,13 @@ export function issueRoutes(
             Object.assign(updateFields, lockedTransition.patch);
             Object.assign(issueUpdateData, lockedTransition.patch);
             if (lockedTransition.decision?.outcome === "changes_requested") {
-              const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+              let diagnostic: Parameters<NonNullable<Parameters<typeof createReviewPullRequestCiResolver>[0]["onDiagnostic"]>>[0] | null = null;
+              const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, onDiagnostic: (value) => { diagnostic = value; } }))({
                 companyId: lockedExisting.companyId,
                 issueId: lockedExisting.id,
               });
-              if ((ci.state === "pending" || ci.state === "unknown") && !reviewCommentReferencesCode(lockedTransition.decision?.body)) {
+              logReviewWriteCi({ issueId: lockedExisting.id, runId: actor.runId, ci, diagnostic });
+              if (ci.state === "pending" || ci.state === "unknown") {
                 throw unprocessable(
                   ci.state === "pending"
                     ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."

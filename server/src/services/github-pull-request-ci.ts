@@ -4,7 +4,7 @@ import { issueWorkProducts, issues, issueComments } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { repositoryHasHostedCi, NO_HOSTED_CI_SUMMARY } from "./github-hosted-ci.js";
 import type { FetchLike } from "./github-external-object-provider.js";
-import { withGitHubReviewBudget } from "./github-review-budget.js";
+import { GitHubReviewBudgetError, withGitHubReviewBudget } from "./github-review-budget.js";
 import {
   resetGitHubObjectCacheForTests,
   resolveGitHubRepositoryToken,
@@ -647,6 +647,7 @@ export async function fetchCommitCheckRuns(
   let page = 1;
   let totalCount: number | null = null;
   let fetchFailed = false;
+  let fetchFailureReason = "network_error";
   let failStatus: number | null = null;
   let rateLimitResetAt: number | undefined;
   let rateLimited = false;
@@ -670,7 +671,8 @@ export async function fetchCommitCheckRuns(
     try {
       res = await fetchImpl(url, { headers });
       recordGitHubRequest(options.source ?? "ci-resolver", res);
-    } catch {
+    } catch (error) {
+      if (error instanceof GitHubReviewBudgetError) fetchFailureReason = error.reason;
       fetchFailed = true;
       break;
     }
@@ -801,7 +803,9 @@ export async function fetchCommitCheckRuns(
     } else {
       result.status = "unavailable";
       result.conclusion = "unavailable";
-      result.summary = `checks unavailable (HTTP ${failStatus ?? "network_error"})`;
+      result.summary = failStatus === null
+        ? `checks unavailable (${fetchFailureReason})`
+        : `checks unavailable (HTTP ${failStatus})`;
     }
   } else if (fetchFailed || (totalCount !== null && allRuns.length < totalCount)) {
     result.authoritative = false;
@@ -870,6 +874,29 @@ interface CacheEntry {
 }
 
 const ciCache = new Map<string, CacheEntry>();
+
+/** Read only recent server-fetched final-check evidence bound to this company, PR and head. */
+export function readFreshReviewCiSnapshot(
+  companyId: string,
+  reference: GitHubPullRequestReference,
+  knownHeadSha: string | null,
+): { state: "complete"; headSha: string; finalCheckConclusion: string } | null {
+  if (!knownHeadSha || reference.host !== "github.com") return null;
+  const repository = `${reference.owner}/${reference.repo}`.toLowerCase();
+  const head = prHeadCache.get(`${repository}#${reference.number}`);
+  if (!head?.headSha || head.expiresAt <= Date.now() || head.headSha !== knownHeadSha) return null;
+  const entry = ciCache.get(`${companyId}:${repository}@${knownHeadSha.toLowerCase()}`);
+  const result = entry?.result;
+  const checked = result ? Date.parse(result.checkedAt) : NaN;
+  if (!entry || entry.expiresAt <= Date.now() || !result || !result.authoritative ||
+      result.repository.toLowerCase() !== repository || result.pullNumber !== reference.number ||
+      result.headSha !== knownHeadSha || result.status !== "completed" ||
+      !Number.isFinite(checked) || checked > Date.now() || Date.now() - checked > PR_HEAD_CACHE_TTL_MS) return null;
+  const checks = result.runs.filter((run) => run.name === "CI result");
+  if (checks.length !== 1 || checks[0].status !== "completed" ||
+      !checks[0].conclusion || ["cancelled", "skipped", "neutral"].includes(checks[0].conclusion)) return null;
+  return { state: "complete", headSha: knownHeadSha, finalCheckConclusion: checks[0].conclusion };
+}
 
 interface PrHeadCacheEntry {
   headSha: string | null;
