@@ -56,6 +56,7 @@ test("CLI reports a version change", () => {
   const result = runDiff(report(), report([task("OPE-1")], "1.7.1"), 1);
   assert.equal(result.status, "changed");
   assert.deepEqual(result.version, { before: "1.7.0", after: "1.7.1" });
+  assert.deepEqual(result.added, []);
   assert.deepEqual(result.regressions, []);
 });
 
