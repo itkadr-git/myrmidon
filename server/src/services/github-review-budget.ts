@@ -46,6 +46,11 @@ const HOUR_MINUTES = 60;
 /** The table is per company (NOT NULL FK); the App's budget is per installation, so the board's first company carries it. */
 let budgetCompanyId: string | null = null;
 
+/** Test hook: the carrier is the first company seen, which suites may delete between tests. */
+export function resetGitHubReviewBudgetForTests(): void {
+  budgetCompanyId = null;
+}
+
 /**
  * Reserve before each request; the review workers share a rolling one-hour cap (40%), the board-side
  * merge a higher one (90%), over one counter.
