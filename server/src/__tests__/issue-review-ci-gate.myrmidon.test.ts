@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
-import { agents, connectionEventDeliveries, heartbeatRuns, issueWorkProducts, issues, toolGatewayRateLimitCounters } from "@myrmidon/db";
+import { agents, companies, connectionEventDeliveries, heartbeatRuns, issueWorkProducts, issues, toolGatewayRateLimitCounters } from "@myrmidon/db";
 import { describeEmbeddedPostgres, routeApp, seedCompanyWithBoardAccess, useEmbeddedPostgres } from "./helpers/route-test-harness.js";
 import { issueRoutes } from "../routes/issues.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
@@ -10,6 +10,7 @@ import { heartbeatService } from "../services/heartbeat.js";
 import { resetReviewCiCacheForTests } from "../myrmidon/review-stage-recovery/github-ci.js";
 import { resetGitHubRateLimitForTests } from "../services/github-rate-limit.js";
 import { logger } from "../middleware/logger.js";
+import { clearCiCacheForTests, createPullRequestCiResolver } from "../services/github-pull-request-ci.js";
 
 const transport = vi.hoisted(() => vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> => {
   throw new Error("Unexpected external transport");
@@ -38,11 +39,13 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
   beforeEach(() => {
     transport.mockClear();
     resetReviewCiCacheForTests();
+    clearCiCacheForTests();
     resetGitHubRateLimitForTests();
   });
 
   afterEach(async () => {
     await drainHeartbeatRunsToQuiescence(ctx.db, heartbeatService(ctx.db));
+    await ctx.db.delete(toolGatewayRateLimitCounters);
   });
 
   it("rejects unavailable CI at 2000 without a GitHub call and accepts matching fresh success", async () => {
@@ -182,5 +185,41 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
       "transportCalls" in fields && fields.transportCalls === 3 &&
       "budget" in fields && JSON.stringify(fields.budget) === JSON.stringify({ used: 3, cap: 2000, windowMinutes: 60 }))).toBe(true);
     expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, success.body])).not.toContain(canary);
+  });
+  it("uses fresh authoritative wake evidence for a same-head failure when review budget is exhausted", async () => {
+    const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Shared wake evidence");
+    const author = randomUUID(), reviewer = randomUUID(), issueId = randomUUID(), runId = randomUUID(), stageId = randomUUID();
+    const headSha = "c".repeat(40);
+    const base = { companyId, status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} };
+    await ctx.db.insert(agents).values([
+      { ...base, id: author, name: "Author", role: "engineer" },
+      { ...base, id: reviewer, name: "Reviewer", role: "reviewer" },
+    ]);
+    await ctx.db.insert(issues).values({
+      id: issueId, companyId, title: "Shared evidence gate", status: "in_review", priority: "medium",
+      createdByAgentId: author, assigneeAgentId: author,
+      executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewer, userId: null }] }] },
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewer, userId: null }, returnAssignee: { type: "agent", agentId: author, userId: null }, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null },
+    });
+    await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewer, status: "succeeded", contextSnapshot: { issueId } });
+    await ctx.db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", title: "Synthetic PR", url: "https://github.com/acme/app/pull/7", status: "open", isPrimary: true, metadata: { repo: "acme/app", number: 7, headSha } });
+    const wakeFetch = vi.fn(async (url: string) => {
+      if (url.includes("/pulls/7")) return Response.json({ state: "open", head: { sha: headSha, ref: "branch" } });
+      if (url.includes("/check-runs")) return Response.json({ total_count: 1, check_runs: [{ id: 1, name: "CI result", status: "completed", conclusion: "failure", head_sha: headSha, html_url: "https://github.com/acme/app/actions/runs/1", started_at: new Date().toISOString(), completed_at: new Date().toISOString() }] });
+      return new Response(null, { status: 404 });
+    });
+    const wake = createPullRequestCiResolver(ctx.db, { source: "run-context", fetch: wakeFetch, tokenProvider: async () => canary });
+    const evidence = await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
+    expect(evidence).toMatchObject({ authoritative: true, status: "completed", headSha });
+    const [clock] = await ctx.db.execute(sql`select floor(extract(epoch from clock_timestamp()) / 60)::bigint as minute`);
+    const minute = Number(clock?.minute), start = new Date(minute * 60_000);
+    // The installation-wide review budget is carried by the oldest company.
+    const [budgetCompany] = await ctx.db.select({ id: companies.id }).from(companies).orderBy(companies.createdAt).limit(1);
+    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: budgetCompany.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
+    const app = routeApp(ctx.db, { type: "agent", agentId: reviewer, companyId, source: "agent_key", runId } as never, issueRoutes);
+    const response = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI failed" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.status).toBe("in_progress");
+    expect(transport).not.toHaveBeenCalled();
   });
 });
