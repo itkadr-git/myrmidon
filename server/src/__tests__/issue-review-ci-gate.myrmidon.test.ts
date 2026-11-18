@@ -127,7 +127,7 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
       { companyId, provider: "github", providerDeliveryId: "stale-pr", event: "pull_request", status: "processed", createdAt: stale, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha } },
       { companyId, provider: "github", providerDeliveryId: "stale-check", event: "check_run", status: "processed", createdAt: stale, normalizedPayload: { repository: "acme/app", number: 7, headSha, checkName: "CI result", status: "completed", conclusion: "success" } },
     ]);
-    const staleResult = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
+    const staleResult = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: server/src/routes/issues.ts:42 is broken" });
     expect(staleResult.status, JSON.stringify(staleResult.body)).toBe(422);
     expect(transport).not.toHaveBeenCalled();
 
