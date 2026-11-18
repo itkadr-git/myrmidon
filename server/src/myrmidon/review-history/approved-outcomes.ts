@@ -56,7 +56,7 @@ export interface ApprovedReviewOutcomeQueryInput {
   companyId: string;
   /** Reference "now"; defaults to the wall clock. Injectable for tests. */
   now?: Date;
-  /** Lookback window; defaults to the shared 30-day LEARN window. */
+  /** Lookback window; capped at the shared 30-day LEARN window. */
   windowMs?: number;
   /**
    * Requested page size. Values above `REVIEW_HISTORY_MAX_PAGE_SIZE` are
@@ -142,7 +142,7 @@ export async function queryApprovedReviewOutcomes(
     return { records: [], nextCursor: null };
   }
 
-  const since = new Date(now.getTime() - windowMs);
+  const since = new Date(now.getTime() - Math.min(windowMs, REVIEW_HISTORY_WINDOW_MS));
 
   const filters: SQL[] = [
     eq(issueExecutionDecisions.companyId, input.companyId),

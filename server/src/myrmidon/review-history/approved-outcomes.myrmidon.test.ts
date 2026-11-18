@@ -140,6 +140,10 @@ describeEmbeddedPostgres("queryApprovedReviewOutcomes — bounded review-history
     await makeDecision({ issueId: issue, body: "changes requested: fix the gate", createdAt: new Date(NOW.getTime() - 2 * DAY_MS), outcome: "changes_requested" });
     await makeDecision({ issueId: issue, body: "approved at execution stage", createdAt: new Date(NOW.getTime() - 3 * DAY_MS), stageType: "execution" });
     await makeDecision({ issueId: issue, body: "approved", createdAt: new Date(NOW.getTime() - 4 * DAY_MS), forCompanyId: otherCompanyId });
+    const hidden = await makeIssue("OPE-B2");
+    await attachPullRequest(hidden, 202);
+    await db!.update(issues).set({ hiddenAt: NOW }).where(eq(issues.id, hidden));
+    await makeDecision({ issueId: hidden, body: "private hidden verdict", createdAt: new Date(NOW.getTime() - DAY_MS) });
 
     const result = await queryApprovedReviewOutcomes(db!, { companyId, now: NOW });
     expect(result.records).toEqual([]);
