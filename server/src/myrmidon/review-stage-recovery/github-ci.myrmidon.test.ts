@@ -576,6 +576,23 @@ describe("createReviewPullRequestCiResolver", () => {
     expect(calls.map((call) => call.path)).not.toContain(PULL);
   });
 
+  it("does not use a webhook verdict when the work product has no current head", async () => {
+    const now = new Date();
+    const rows = [
+      { event: "pull_request", createdAt: now, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "old" } },
+      { event: "check_run", createdAt: now, normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "old", checkName: "CI result", status: "completed", conclusion: "failure" } },
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const resolver = createReviewPullRequestCiResolver({ db, fetch: async () => { throw new Error("transport unavailable"); }, tokenProvider: async () => null });
+    await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({ state: "unknown" });
+  });
+
   it("does not trust webhook CI for a head superseded in the work product", async () => {
     const now = new Date();
     const rows = [
