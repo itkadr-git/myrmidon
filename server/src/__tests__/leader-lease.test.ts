@@ -180,6 +180,39 @@ describeDb("leader-lease protocol (PROCS-1.7)", () => {
     expect(selfEvents[1].epoch).toBe(2);
   });
 
+  it("overlapping acquisition passes emit a single acquisition notification", async () => {
+    await cleanLeases();
+    const svc = leaderLeaseService(db, { ttlMs: 60_000, renewIntervalMs: 30 });
+    const seen: number[] = [];
+    const acquired: number[] = [];
+    const lease = svc.lease("scheduler", {
+      onLeaderChanged: (_holder, epoch) => seen.push(epoch),
+      onAcquired: (epoch) => acquired.push(epoch),
+    });
+    let unlock!: () => void;
+    let locked!: () => void;
+    const ready = new Promise<void>((resolve) => { locked = resolve; });
+    const gate = new Promise<void>((resolve) => { unlock = resolve; });
+    const blocker = db.transaction(async (tx) => {
+      await tx.execute(sql`LOCK TABLE board_leases IN ACCESS EXCLUSIVE MODE`);
+      locked();
+      await gate;
+    });
+    await ready;
+    try {
+      lease.start();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    } finally {
+      lease.stop();
+      unlock();
+      await blocker;
+    }
+    await until(() => expect(lease.isLeader()).toBe(true));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(acquired).toEqual([1]);
+    expect(seen).toEqual([1]);
+  });
+
   it("renew before expiry: same holder keeps epoch, no extra notification", async () => {
     await cleanLeases();
     const svc = leaderLeaseService(db, { ttlMs: 5_000, renewIntervalMs: 100 });
