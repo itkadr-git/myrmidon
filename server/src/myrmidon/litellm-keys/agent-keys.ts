@@ -9,6 +9,7 @@ import {
 } from "@myrmidon/shared";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../../errors.js";
 import { secretService } from "../../services/index.js";
+import { getConfiguredSecretProvider } from "../../secrets/configured-provider.js";
 import { readBudgetProjectionSettings } from "../litellm-budget-sync/settings.js";
 import { keyBudgetUsage, type KeyBudgetLimitView, type KeyBudgetUsageView } from "./key-budget-adapter.js";
 import { AGENT_SPEND_WINDOW_MS, readAgentSpendWindows, type AgentSpendWindow } from "./key-spend.js";
@@ -747,10 +748,11 @@ export function defaultAgentGatewayKeyDeps(
         {
           name: input.name,
           key: input.name,
+          provider: getConfiguredSecretProvider(),
           value: input.value,
           description: input.description,
           expiresAt: input.expiresAt,
-        } as never,
+        },
         { userId: null, agentId: null },
       )) as { id: string };
       return { id: created.id };

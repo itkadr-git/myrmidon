@@ -19,9 +19,9 @@ describeDb("run key with the real secret service", () => {
   let originalKeyFile: string | undefined;
 
   beforeAll(async () => {
-    originalKeyFile = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+    originalKeyFile = process.env.MYRMIDON_SECRETS_MASTER_KEY_FILE;
     directory = await mkdtemp(join(tmpdir(), "run-key-store-"));
-    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = join(directory, "master.key");
+    process.env.MYRMIDON_SECRETS_MASTER_KEY_FILE = join(directory, "master.key");
     database = await startEmbeddedPostgresTestDatabase("run-key-store-");
     db = createDb(database.connectionString);
   }, 90_000);
@@ -30,8 +30,8 @@ describeDb("run key with the real secret service", () => {
     vi.unstubAllGlobals();
     await db?.$client.end({ timeout: 0 });
     await database?.cleanup();
-    if (originalKeyFile === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
-    else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = originalKeyFile;
+    if (originalKeyFile === undefined) delete process.env.MYRMIDON_SECRETS_MASTER_KEY_FILE;
+    else process.env.MYRMIDON_SECRETS_MASTER_KEY_FILE = originalKeyFile;
     if (directory) await rm(directory, { recursive: true, force: true });
   });
 
@@ -45,7 +45,7 @@ describeDb("run key with the real secret service", () => {
       const body = JSON.parse(String(init.body));
       if (url.endsWith("/key/generate")) active.set(body.key_alias, body.key);
       else if (url.endsWith("/key/delete")) {
-        for (const [alias, value] of active) if (body.keys.includes(value)) active.delete(alias);
+        for (const alias of body.key_aliases) active.delete(alias);
       }
       return new Response(JSON.stringify(url.endsWith("/key/list") ? { keys: [...active.keys()] } : {}), { status: 200 });
     }));
