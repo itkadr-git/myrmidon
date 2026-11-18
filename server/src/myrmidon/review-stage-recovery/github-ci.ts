@@ -559,8 +559,12 @@ async function readWebhookCi(db: Db, companyId: string, reference: GitHubPullReq
     });
     // Receipt order is not run order: a delayed completion from an older run
     // must not override a newer rerun. Ask GitHub when multiple runs are seen.
-    const runIds = new Set(checks.map((row) => asRecord(row.normalizedPayload)?.runId).filter((id): id is string => typeof id === "string"));
-    if (runIds.size > 1) return { headSha, verdict: null };
+    const runIds = new Set(checks.map((row) => asRecord(row.normalizedPayload)?.runId).filter((id): id is string => typeof id === "string" && id.length > 0));
+    // Without identities, multiple deliveries may belong to different reruns.
+    if (runIds.size > 1 || (checks.length > 1 && checks.some((row) => {
+      const id = asRecord(row.normalizedPayload)?.runId;
+      return typeof id !== "string" || !id;
+    }))) return { headSha, verdict: null };
     // `completed` is terminal for a run: a late `in_progress` must not undo it.
     const completed = checks.map((row) => asRecord(row.normalizedPayload))
       .find((value) => value?.status === "completed" && typeof value.conclusion === "string" && !["cancelled", "skipped"].includes(value.conclusion));
