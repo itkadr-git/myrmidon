@@ -60,6 +60,9 @@ case "$1" in
       exit 0 ;;
     esac
     case "$*" in *pg_restore*)
+      case "$*" in *--jobs*)
+        [ -f "$SANDBOX/copied-dump" ] && [[ "$*" == *' /tmp/myrmidon-predeploy.dump' ]] || { echo 'pg_restore: parallel restore requires a regular archive file' >&2; exit 1; } ;;
+      esac
       # myrmidon(PREDEPLOY-NO-ACL): models a dump with GRANTs to production-only
       # roles. Such a dump restores only when pg_restore skips privileges:
       # without --no-acl the restore aborts on the missing role, exactly like
