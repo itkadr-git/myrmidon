@@ -411,7 +411,7 @@ describe("createReviewPullRequestCiResolver", () => {
     type: "pull_request",
     status: "open",
     url: "https://github.com/acme/app/pull/7",
-    metadata: null,
+    metadata: { headSha: "abc123" },
     isPrimary: true,
     updatedAt: new Date(),
   };
@@ -585,7 +585,7 @@ describe("createReviewPullRequestCiResolver", () => {
     let selects = 0;
     const db = {
       select: () => ({ from: () => ({ where: () => {
-        if (selects++ === 0) return Promise.resolve([openProduct]);
+        if (selects++ === 0) return Promise.resolve([{ ...openProduct, metadata: null }]);
         return { orderBy: () => ({ limit: async () => rows }) };
       } }) }),
     } as never;

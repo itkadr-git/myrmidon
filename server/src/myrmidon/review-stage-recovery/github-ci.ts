@@ -612,7 +612,7 @@ export function createReviewPullRequestCiResolver(input: {
     }
     const { reference, pullRequestUrl } = target;
     const webhook = await readWebhookCi(input.db, companyId, reference);
-    const matchingWebhook = webhook && (!target.knownHeadSha || target.knownHeadSha === webhook.headSha) ? webhook : null;
+    const matchingWebhook = webhook && target.knownHeadSha && target.knownHeadSha === webhook.headSha ? webhook : null;
     if (matchingWebhook?.verdict) return { ...matchingWebhook.verdict, headSha: matchingWebhook.headSha, pullRequestUrl };
     let token: string | null = null;
     let tokenError = false;
