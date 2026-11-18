@@ -298,7 +298,7 @@ export function addDefaultAliases<T extends AgentAliasCard>(cards: readonly T[])
  * characters (letters, digits, underscore, and hyphen). Matching requires the
  * entire token, including for explicit and computed aliases.
  */
-const MENTION_PATTERN = /@([\p{L}\p{N}_-]+)/gu;
+const MENTION_PATTERN = /(?<![\p{L}\p{N}\p{M}_@.%+\-])@([\p{L}\p{N}_-]+)/gu;
 
 /**
  * myrmidon(X9b): removes the leading @-token (with surrounding whitespace)
