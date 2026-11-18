@@ -11,6 +11,13 @@ type ReviewSource = "review-recovery" | "review-rework" | "board-merge";
 const REVIEW_SHARE = 0.4;
 const BOARD_MERGE_SHARE = 0.9;
 
+export class GitHubReviewBudgetError extends Error {
+  constructor(readonly reason: "budget_exhausted" | "budget_store_unavailable") {
+    super(reason === "budget_exhausted" ? "GitHub review budget exhausted" : "GitHub review budget unavailable");
+    this.name = "GitHubReviewBudgetError";
+  }
+}
+
 /** Wrap the actual transport so retries and hosted-CI probes each consume a reservation. */
 export function withGitHubReviewBudget(
   db: Db,
@@ -19,9 +26,8 @@ export function withGitHubReviewBudget(
   installationLimit = 5000,
 ): (url: string, init?: RequestInit) => Promise<Response> {
   return async (url, init) => {
-    if (!await reserveGitHubReviewRequest(db, source, installationLimit)) {
-      throw new Error("GitHub review budget exhausted");
-    }
+    const reservation = await reserveGitHubReviewRequestResult(db, source, installationLimit);
+    if (reservation !== "reserved") throw new GitHubReviewBudgetError(reservation);
     return fetchImpl(url, init);
   };
 }
@@ -48,12 +54,20 @@ export async function reserveGitHubReviewRequest(
   source: ReviewSource,
   installationLimit = 5000,
 ): Promise<boolean> {
+  return (await reserveGitHubReviewRequestResult(db, source, installationLimit)) === "reserved";
+}
+
+async function reserveGitHubReviewRequestResult(
+  db: Db,
+  source: ReviewSource,
+  installationLimit: number,
+): Promise<"reserved" | "budget_exhausted" | "budget_store_unavailable"> {
   try {
     const { companies, toolGatewayRateLimitCounters: counters } = await import("@myrmidon/db");
     const { and, asc, eq, gt, like, lt, sql } = await import("drizzle-orm");
     if (!budgetCompanyId) {
       const [company] = await db.select({ id: companies.id }).from(companies).orderBy(asc(companies.createdAt)).limit(1);
-      if (!company) return false;
+      if (!company) return "budget_store_unavailable";
       budgetCompanyId = company.id;
     }
     const companyId = budgetCompanyId;
@@ -61,13 +75,13 @@ export async function reserveGitHubReviewRequest(
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${"github-review-request-budget"}, 0))`);
       const clock = await tx.execute(sql`select floor(extract(epoch from clock_timestamp()) * 1000 / ${MINUTE_MS})::bigint as minute`);
       const minute = Number(clock[0]?.minute);
-      if (!Number.isFinite(minute)) return false;
+      if (!Number.isFinite(minute)) return "budget_store_unavailable";
       const windowStart = new Date(minute * MINUTE_MS);
       const horizon = new Date((minute - HOUR_MINUTES + 1) * MINUTE_MS);
       const [{ used } = { used: 0 }] = await tx.select({ used: sql<number>`coalesce(sum(${counters.count}), 0)::int` }).from(counters)
         .where(and(eq(counters.companyId, companyId), like(counters.counterKey, `${COUNTER_PREFIX}%`), gt(counters.windowStartAt, new Date(horizon.getTime() - 1))));
       const cap = Math.floor(installationLimit * (source === "board-merge" ? BOARD_MERGE_SHARE : REVIEW_SHARE));
-      if (used >= cap) return false;
+      if (used >= cap) return "budget_exhausted";
       const inserted = await tx.insert(counters).values({
         companyId,
         counterKey: `${COUNTER_PREFIX}${source}:${minute}`,
@@ -88,10 +102,10 @@ export async function reserveGitHubReviewRequest(
           lt(counters.windowStartAt, horizon),
         ));
       }
-      return true;
+      return "reserved";
     });
-  } catch (error) {
-    logger.warn({ err: error }, "GitHub review budget unavailable; skipping request");
-    return false;
+  } catch {
+    logger.warn("GitHub review budget unavailable; skipping request");
+    return "budget_store_unavailable";
   }
 }

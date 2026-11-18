@@ -27,7 +27,7 @@ import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { connectionEventDeliveries, issueWorkProducts, type Db } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../../services/git-credentials.js";
 import { getGitHubRateLimitMetrics, isGitHubRateLimited, recordGitHubRequest } from "../../services/github-rate-limit.js";
-import { withGitHubReviewBudget } from "../../services/github-review-budget.js";
+import { GitHubReviewBudgetError, withGitHubReviewBudget } from "../../services/github-review-budget.js";
 import { ghFetch, gitHubApiBase } from "../../services/github-fetch.js";
 import { repositoryHasHostedCi } from "../../services/github-hosted-ci.js";
 import { defaultTokenProvider as resolveGitHubReadToken } from "../../services/github-external-object-provider.js";
@@ -109,8 +109,8 @@ async function readJson(fetchImpl: FetchLike, url: string, token: string | null)
   try {
     response = await fetchImpl(url, { headers: headers(token), signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
     recordGitHubRequest("review-recovery", response);
-  } catch {
-    return { ok: false, code: "network_error", status: null };
+  } catch (error) {
+    return { ok: false, code: error instanceof GitHubReviewBudgetError ? error.reason : "network_error", status: null };
   }
   if (!response.ok) {
     const rateLimited = response.status === 429 ||
