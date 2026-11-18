@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { logger } from "../../middleware/logger.js";
 import { companies, createDb, instanceSettings, issueWorkProducts, issues, toolGatewayRateLimitCounters } from "@myrmidon/db";
 import { createReviewPullRequestCiResolver, resetReviewCiCacheForTests } from "../../myrmidon/review-stage-recovery/github-ci.js";
 import { resetGitHubRateLimitForTests } from "../github-rate-limit.js";
@@ -133,6 +134,30 @@ describePostgres("shared GitHub review budget", () => {
     expect(result.state).toBe("unknown");
     expect(result.reason).toContain("budget_exhausted");
     expect(result.reason).not.toContain("network_error");
+  });
+
+  it("fails closed on a budget store exception without exposing its contents", async () => {
+    const canary = "synthetic-secret-canary-OPE-15043";
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => logger);
+    let calls = 0;
+    try {
+      const brokenDb = { ...db, transaction: async () => { throw new Error(canary); } } as typeof db;
+      const transport = withGitHubReviewBudget(brokenDb, "review-recovery", async () => {
+        calls++;
+        return new Response("ok");
+      });
+      let caught: unknown;
+      try {
+        await transport("https://api.github.com/test");
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toMatchObject({ reason: "budget_store_unavailable" });
+      expect(calls).toBe(0);
+      expect(JSON.stringify({ error: String(caught), logs: warn.mock.calls })).not.toContain(canary);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("excludes expired buckets and sums all three sources in the rolling window", async () => {
