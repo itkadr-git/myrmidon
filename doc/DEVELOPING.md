@@ -15,6 +15,12 @@ Current implementation status:
 - Node.js 24.11+
 - pnpm 9+
 
+## Production Runtime Resolution
+
+The production runtime resolution check ignores JavaScript comments when it
+identifies import specifiers, including comments before unrelated strings.
+Run it with `node scripts/myrmidon/check-prod-runtime-resolution.mjs --dist server/dist`.
+
 ## Dependency Lockfile Policy
 
 GitHub Actions owns `pnpm-lock.yaml`.
