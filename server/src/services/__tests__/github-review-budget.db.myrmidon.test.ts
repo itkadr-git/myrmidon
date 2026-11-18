@@ -78,4 +78,34 @@ describePostgres("shared GitHub review budget", () => {
     expect(merges.filter(Boolean)).toHaveLength(12);
     expect(await reserveGitHubReviewRequest(db, "board-merge", 25)).toBe(false);
   });
+
+  it("excludes expired buckets and sums all three sources in the rolling window", async () => {
+    await db.delete(toolGatewayRateLimitCounters).where(like(toolGatewayRateLimitCounters.counterKey, "github-budget:%"));
+    const [company] = await db.select().from(companies).limit(1);
+    if (!company) throw new Error("Budget test company missing");
+    const [clock] = await db.execute(sql`select floor(extract(epoch from clock_timestamp()) / 60)::bigint as minute`);
+    const minute = Number(clock?.minute);
+    const bucket = (source: string, age: number, count: number) => {
+      const start = new Date((minute - age) * 60_000);
+      return { companyId: company.id, counterKey: `github-budget:${source}:${minute - age}`, windowStartAt: start,
+        windowMs: 60_000, limit: 2000, count, resetAt: new Date(start.getTime() + 3_600_000) };
+    };
+    await db.insert(toolGatewayRateLimitCounters).values([
+      bucket("review-recovery", 0, 700),
+      bucket("review-rework", 1, 699),
+      bucket("board-merge", 2, 600),
+      bucket("board-merge", 61, 2000),
+    ]);
+    let calls = 0;
+    const transport = withGitHubReviewBudget(db, "review-recovery", async () => {
+      calls++;
+      return new Response("ok");
+    });
+    await expect(transport("https://api.github.com/test")).resolves.toHaveProperty("status", 200);
+    await expect(transport("https://api.github.com/test")).rejects.toThrow("review budget exhausted");
+    expect(calls).toBe(1);
+    const rows = await db.select().from(toolGatewayRateLimitCounters).where(like(toolGatewayRateLimitCounters.counterKey, "github-budget:%"));
+    expect(rows.filter((row) => row.windowStartAt.getTime() >= (minute - 59) * 60_000)
+      .reduce((sum, row) => sum + row.count, 0)).toBe(2000);
+  });
 });
