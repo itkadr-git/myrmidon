@@ -2,7 +2,7 @@
 
 > Русская версия: [Upgrading-and-rollback.ru](Upgrading-and-rollback.ru)
 
-> The pinned command below stays on rc.13 until a newer release is promoted. The rc.20 candidate (tag `myr-v1.6.9-rc.20`) is published with green pipelines; production still runs rc.19 and the rc.20 deploy is in progress — not a stable release. See the [operator notes](../myrmidon/releases/1.6.9.md).
+> The pinned command below stays on rc.13 until a newer release is promoted. The rc.20 candidate (tag `myr-v1.6.9-rc.20`) is the deployed candidate — production health answers commit `2c9ebcf1` — and it is not a stable release; the final candidate is not chosen yet. See the [operator notes](../myrmidon/releases/1.6.9.md).
 
 ## Upgrading with the installer (the usual way)
 
