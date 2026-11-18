@@ -68,6 +68,36 @@ function status(code: number, headers: Record<string, string> = {}) {
 }
 
 describe("resolvePullRequestHeadCi", () => {
+  it.each(["timeout", "reset"])("keeps a synthetic %s transport failure distinct from budget exhaustion", async (failure) => {
+    const canary = "synthetic-secret-canary-OPE-15043";
+    let calls = 0;
+    const result = await resolvePullRequestHeadCi({
+      reference,
+      token: canary,
+      fetch: async (url) => {
+        calls++;
+        expect(url).toBe(`https://api.github.com${PULL}`);
+        throw new Error(`${failure}: ${canary}`);
+      },
+    });
+    expect(calls).toBe(1);
+    expect(result).toMatchObject({ state: "unknown", reason: "pull:network_error" });
+    expect(JSON.stringify(result)).not.toContain(canary);
+  });
+
+  it.each([401, 403])("preserves authenticated and anonymous access failures for HTTP %i", async (statusCode) => {
+    const canary = "synthetic-secret-canary-OPE-15043";
+    const calls: Array<{ path: string; headers: Record<string, string> }> = [];
+    const result = await resolvePullRequestHeadCi({
+      reference,
+      token: canary,
+      fetch: fakeFetch({ [PULL]: status(statusCode) }, calls),
+    });
+    expect(calls.map((call) => call.path)).toEqual([PULL, PULL]);
+    expect(result).toMatchObject({ state: "unknown", reason: `pull:http_${statusCode}+anonymous:http_${statusCode}` });
+    expect(JSON.stringify(result)).not.toContain(canary);
+  });
+
   it("recognizes a repository without workflows even if Checks is forbidden", async () => {
     const calls: Array<{ path: string; headers: Record<string, string> }> = [];
     const result = await resolvePullRequestHeadCi({
