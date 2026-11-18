@@ -61,7 +61,10 @@ describe("knowledge export page write fail-stop", () => {
       fault.error = Object.assign(new Error(`injected ${code}`), { code });
       await expect(publishKnowledgeExport(input(checkout, runner))).rejects.toBe(fault.error);
       expect(fault.attempts).toBe(1);
-      expect(calls.map((args) => args[0])).toEqual(["fetch"]);
+      expect(calls.map((args) => args[0])).toEqual(["fetch", "show-ref", "checkout", "merge"]);
+      expect(calls[1]).toEqual(["show-ref", "--verify", "--quiet", "refs/heads/knowledge-export"]);
+      expect(calls[2]).toEqual(["checkout", "knowledge-export"]);
+      expect(calls[3]).toEqual(["merge", "--ff-only", "FETCH_HEAD"]);
       expect(await readFile(path.join(checkout, "sentinel.md"))).toEqual(Buffer.from([0, 255, 10]));
     });
   });
@@ -71,7 +74,10 @@ describe("knowledge export page write fail-stop", () => {
       const result = await publishKnowledgeExport(input(checkout, runner));
       expect(await readFile(path.join(checkout, "pages", "page.md"))).toEqual(Buffer.from(content, "utf8"));
       expect(result).toEqual({ committed: true, commit: "a".repeat(40), contentHash: tree.contentHash, pageCount: 1 });
-      expect(calls.map((args) => args[0])).toEqual(["fetch", "ls-files", "add", "status", "commit", "rev-parse", "push"]);
+      expect(calls.map((args) => args[0])).toEqual(["fetch", "show-ref", "checkout", "merge", "ls-files", "add", "status", "commit", "rev-parse", "push"]);
+      expect(calls[1]).toEqual(["show-ref", "--verify", "--quiet", "refs/heads/knowledge-export"]);
+      expect(calls[2]).toEqual(["checkout", "knowledge-export"]);
+      expect(calls[3]).toEqual(["merge", "--ff-only", "FETCH_HEAD"]);
       expect(calls.at(-1)).toEqual(["push", "origin", "HEAD:knowledge-export"]);
     });
   });
