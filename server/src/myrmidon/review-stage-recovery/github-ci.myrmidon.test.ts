@@ -429,7 +429,7 @@ describe("createReviewPullRequestCiResolver", () => {
     updatedAt: new Date(),
   };
 
-  it("uses server-fetched exact-head failure when the review transport is unavailable, but not after invalidation", async () => {
+  it("fails closed when GitHub cannot be read, even with a stored snapshot of the head", async () => {
     clearCiCacheForTests();
     const wake = createPullRequestCiResolver({ select: vi.fn() } as never, {
       source: "run-context", tokenProvider: async () => "token",
@@ -437,12 +437,14 @@ describe("createReviewPullRequestCiResolver", () => {
       fetch: fakeFetch({ ["/repos/acme/app/commits/abc123/check-runs?per_page=100&page=1&filter=latest"]: { total_count: 1, check_runs: [{ id: 1, ...ciResultOnHead("failure"), html_url: "https://github.com/acme/app/runs/1", started_at: "2026-11-14T08:00:00Z", completed_at: "2026-11-14T08:01:00Z" }] } }),
     });
     expect(await wake.resolveForPullRequest("company-1", reference)).toMatchObject({ authoritative: true, status: "completed", conclusion: "failure" });
+    // OPE-15114: a stored wake snapshot is not a current-head confirmation.
+    // Admission must read GitHub fresh and fail closed when it cannot.
     const fetch = vi.fn(async () => { throw new Error("connection reset"); });
     const review = createReviewPullRequestCiResolver({ db: fakeDb([openProduct]), tokenProvider: async () => null, fetch });
-    expect(await review({ companyId: "company-1", issueId: "issue-1" })).toMatchObject({ state: "complete", headSha: "abc123", finalCheckConclusion: "failure" });
-    expect(fetch).not.toHaveBeenCalled();
+    expect(await review({ companyId: "company-1", issueId: "issue-1" })).toMatchObject({ state: "unknown" });
+    expect(fetch).toHaveBeenCalled();
     invalidateCiCacheForHead("company-1", "acme/app", "abc123");
-    expect(await review({ companyId: "company-1", issueId: "issue-1" })).toMatchObject({ state: "unknown", reason: "pull:network_error (anonymous)" });
+    expect(await review({ companyId: "company-1", issueId: "issue-1" })).toMatchObject({ state: "unknown" });
   });
 
   it("rejects an expired wake snapshot when GitHub denies permission", async () => {
@@ -720,6 +722,87 @@ describe("createReviewPullRequestCiResolver", () => {
       } }) }),
     } as never;
     const resolver = createReviewPullRequestCiResolver({ db, fetch: async () => { throw new Error("transport unavailable"); }, tokenProvider: async () => "token" });
+    await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
+      state: "unknown", headSha: null,
+    });
+  });
+
+  it("does not accept a matching verdict from a warm cached head after a push (OPE-15114)", async () => {
+    // A non-admission read warms the cache with head A; then head B is pushed
+    // and its synchronize webhook is lost. The admission read must be fresh.
+    vi.stubEnv("MYRMIDON_REVIEW_CI_PULL_CACHE_TTL_SEC", "60");
+    vi.stubEnv("MYRMIDON_REVIEW_CI_COMPLETE_CACHE_TTL_SEC", "600");
+    resetReviewCiCacheForTests();
+    await resolvePullRequestHeadCi({
+      reference, token: "token",
+      fetch: fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [ciResultOnHead("success")] }, [ALL_CHECK_RUNS]: { check_runs: [ciResultOnHead("success")] } }),
+    });
+    const now = new Date();
+    const rows = [
+      { event: "pull_request", createdAt: now, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
+      { event: "check_run", createdAt: now, normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "abc123", checkName: "CI result", status: "completed", conclusion: "success" } },
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const fetch = fakeFetch({
+      [PULL]: { state: "open", head: { sha: "def456" } },
+      ["/repos/acme/app/commits/def456/check-runs?check_name=CI%20result&filter=all&per_page=100"]: { total_count: 1, check_runs: [{ id: 2, name: "CI result", status: "in_progress", conclusion: null, head_sha: "def456" }] },
+    });
+    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => "token" });
+    await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
+      state: "pending", headSha: "def456",
+    });
+  });
+
+  it("fails closed on a network failure even when the cache holds a matching head (OPE-15114)", async () => {
+    vi.stubEnv("MYRMIDON_REVIEW_CI_PULL_CACHE_TTL_SEC", "60");
+    vi.stubEnv("MYRMIDON_REVIEW_CI_COMPLETE_CACHE_TTL_SEC", "600");
+    resetReviewCiCacheForTests();
+    await resolvePullRequestHeadCi({
+      reference, token: "token",
+      fetch: fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [ciResultOnHead("success")] }, [ALL_CHECK_RUNS]: { check_runs: [ciResultOnHead("success")] } }),
+    });
+    const now = new Date();
+    const rows = [
+      { event: "pull_request", createdAt: now, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
+      { event: "check_run", createdAt: now, normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "abc123", checkName: "CI result", status: "completed", conclusion: "success" } },
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const resolver = createReviewPullRequestCiResolver({ db, fetch: async () => { throw new Error("transport unavailable"); }, tokenProvider: async () => "token" });
+    await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
+      state: "unknown", headSha: null,
+    });
+  });
+
+  it("does not answer complete from a stored snapshot without a fresh confirmation (OPE-15114)", async () => {
+    clearCiCacheForTests();
+    const wake = createPullRequestCiResolver({ select: vi.fn() } as never, {
+      source: "run-context", tokenProvider: async () => "token",
+      prResolver: async () => ({ headSha: "abc123", headRef: "branch" }),
+      fetch: fakeFetch({ ["/repos/acme/app/commits/abc123/check-runs?per_page=100&page=1&filter=latest"]: { total_count: 1, check_runs: [{ id: 1, ...ciResultOnHead("success"), html_url: "https://github.com/acme/app/runs/1", started_at: "2026-11-14T08:00:00Z", completed_at: "2026-11-14T08:01:00Z" }] } }),
+    });
+    expect(await wake.resolveForPullRequest("company-1", reference)).toMatchObject({ authoritative: true, status: "completed", conclusion: "success" });
+    // No webhook, GitHub unreadable: a stored snapshot must not stand in for
+    // the current head.
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => [] }) };
+      } }) }),
+    } as never;
+    const resolver = createReviewPullRequestCiResolver({ db, fetch: async () => { throw new Error("transport unavailable"); }, tokenProvider: async () => null });
     await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
       state: "unknown", headSha: null,
     });

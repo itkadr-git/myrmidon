@@ -158,14 +158,22 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
       { companyId, provider: "github", providerDeliveryId: "synthetic-pr", event: "pull_request", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha } },
       { companyId, provider: "github", providerDeliveryId: "synthetic-check", event: "check_run", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, headSha, checkName: "CI result", status: "completed", conclusion: "failure" } },
     ]);
+    // OPE-15114: the matching verdict stands only after a fresh head
+    // confirmation; the CI read itself stays on the webhook evidence. The gate
+    // evaluates the resolver for the unlocked and the locked transition.
+    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
+    transport.mockImplementationOnce(async () => Response.json({ state: "open", head: { sha: headSha } }));
+    transport.mockImplementationOnce(async () => Response.json({ state: "open", head: { sha: headSha } }));
     const accepted = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
     await drainHeartbeatRunsToQuiescence(ctx.db, heartbeatService(ctx.db));
     expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
     expect(accepted.body.status).toBe("in_progress");
-    expect(transport).not.toHaveBeenCalled();
+    // The admission read GitHub fresh, starting with the current head.
+    expect(transport).toHaveBeenCalled();
+    expect(transport.mock.calls[0]?.[0]).toBe(pullUrl);
     await ctx.db.update(issues).set({ status: "in_review", executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewer, userId: null }, returnAssignee: { type: "agent", agentId: author, userId: null }, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null } }).where(sql`${issues.id} = ${issueId}`);
     await ctx.db.delete(connectionEventDeliveries).where(sql`${connectionEventDeliveries.companyId} = ${companyId}`);
-    transport.mockClear();
+    transport.mockReset();
     diagnostic.mockClear();
     resetReviewCiCacheForTests();
     await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
@@ -178,15 +186,16 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     const checkUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?check_name=CI%20result&filter=all&per_page=100`;
     expect(success.status, JSON.stringify(success.body)).toBe(200);
     const workflowUrl = "https://api.github.com/repos/acme/app/contents/.github/workflows";
-    const heartbeatCheckUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?filter=latest&per_page=100`;
-    expect(transport.mock.calls.map(([url]) => url)).toEqual([pullUrl, workflowUrl, checkUrl, heartbeatCheckUrl]);
-    expect(unexpectedCalls(transport.mock.calls, [pullUrl, workflowUrl, checkUrl, heartbeatCheckUrl])).toEqual([]);
+    // OPE-15114: every admission reads GitHub afresh; the sweep that follows
+    // the PATCH may read again, so only the admission's own read order is pinned.
+    expect(transport.mock.calls.slice(0, 3).map(([url]) => url)).toEqual([pullUrl, workflowUrl, checkUrl]);
+    expect(unexpectedCalls(transport.mock.calls, [pullUrl, workflowUrl, checkUrl])).toEqual([]);
     expect(diagnostic.mock.calls.some(([fields]) => typeof fields === "object" && fields !== null &&
       "transportCalls" in fields && fields.transportCalls === 3 &&
       "budget" in fields && JSON.stringify(fields.budget) === JSON.stringify({ used: 3, cap: 2000, windowMinutes: 60 }))).toBe(true);
     expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, success.body])).not.toContain(canary);
   });
-  it("uses fresh authoritative wake evidence for a same-head failure when review budget is exhausted", async () => {
+  it("rejects a verdict on stored wake evidence alone when the review budget is exhausted (OPE-15114)", async () => {
     const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Shared wake evidence");
     const author = randomUUID(), reviewer = randomUUID(), issueId = randomUUID(), runId = randomUUID(), stageId = randomUUID();
     const headSha = "c".repeat(40);
@@ -240,9 +249,11 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     transport.mockReset();
     await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: budgetCompany.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
     await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
+    // OPE-15114: stored wake evidence is not an admission-grade read. With the
+    // budget exhausted the gate cannot confirm the current head, so it fails
+    // closed instead of returning the task on a remembered verdict.
     const response = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI failed" });
-    expect(response.status, JSON.stringify(response.body)).toBe(200);
-    expect(response.body.status).toBe("in_progress");
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
     expect(transport).not.toHaveBeenCalled();
   });
 });

@@ -23,7 +23,6 @@
 // the largest user of the App's 5000/h budget.
 
 import { createHash } from "node:crypto";
-import { readFreshReviewCiSnapshot } from "../../services/github-pull-request-ci.js";
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { connectionEventDeliveries, issueWorkProducts, type Db } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../../services/git-credentials.js";
@@ -232,24 +231,27 @@ function rememberRead(key: string, value: unknown, ttlMs: number): void {
   readCache.set(key, { value, expiresAt: Date.now() + ttlMs });
 }
 
-function cachedRead<T>(key: string, load: () => Promise<LoadedRead<T>>): Promise<CachedRead<T>> {
+function cachedRead<T>(key: string, load: () => Promise<LoadedRead<T>>, fresh = false): Promise<CachedRead<T>> {
   if (pullTtlMs() === 0 && completeTtlMs() === 0) return load();
-  const entry = readCache.get(key);
-  if (entry && entry.expiresAt > Date.now()) {
-    return Promise.resolve<CachedRead<T>>({ ok: true, value: entry.value as T });
+  if (!fresh) {
+    const entry = readCache.get(key);
+    if (entry && entry.expiresAt > Date.now()) {
+      return Promise.resolve<CachedRead<T>>({ ok: true, value: entry.value as T });
+    }
+    const running = readsInFlight.get(key);
+    if (running) return running as Promise<CachedRead<T>>;
   }
-  const running = readsInFlight.get(key);
-  if (running) return running as Promise<CachedRead<T>>;
   const epoch = readCacheEpoch;
   const read: Promise<CachedRead<T>> = load()
     .then((loaded) => {
+      // Fresh reads still warm the cache for non-admission consumers.
       if (loaded.ok && loaded.ttlMs > 0 && epoch === readCacheEpoch) rememberRead(key, loaded.value, loaded.ttlMs);
       return loaded;
     })
     .finally(() => {
       if (readsInFlight.get(key) === read) readsInFlight.delete(key);
     });
-  readsInFlight.set(key, read);
+  if (!fresh) readsInFlight.set(key, read);
   return read;
 }
 
@@ -350,6 +352,8 @@ async function resolvePullRequestCurrentHead(input: {
   /** Null reads anonymously: the repository may be public. */
   token: string | null;
   fetch?: FetchLike;
+  /** Admission reads pass fresh: skip the cache, always ask GitHub. */
+  fresh?: boolean;
 }): Promise<
   | { state: "ok"; headSha: string }
   | { state: "closed"; headSha: string | null }
@@ -370,7 +374,7 @@ async function resolvePullRequestCurrentHead(input: {
       value: { open: pullRecord.state === "open", headSha: typeof headRecord?.sha === "string" ? headRecord.sha : null },
       ttlMs: pullTtlMs(),
     };
-  });
+  }, input.fresh);
   if (!pull.ok) return { state: "unknown", reason: pull.reason, ...(pull.rateLimit ? { rateLimit: pull.rateLimit } : {}) };
   if (!pull.value.open) return { state: "closed", headSha: pull.value.headSha };
   if (!pull.value.headSha) return { state: "unknown", reason: "pull:no_head_sha" };
@@ -383,6 +387,8 @@ export async function resolvePullRequestHeadCi(input: {
   /** Null reads anonymously: the repository may be public. */
   token: string | null;
   fetch?: FetchLike;
+  /** Admission reads pass fresh: skip the cache, always ask GitHub. */
+  fresh?: boolean;
 }): Promise<{
   state: "pending" | "complete" | "unknown" | "not_configured" | "no_pull_request";
   headSha: string | null;
@@ -413,8 +419,10 @@ export async function resolvePullRequestHeadCi(input: {
   const apiBase = gitHubApiBase(input.reference.host);
   const repository = `${encodeURIComponent(input.reference.owner)}/${encodeURIComponent(input.reference.repo)}`;
   const keyBase = `${tokenScope(input.token)}|${repositoryKey(input.reference)}`;
-  const ci = await cachedRead<HeadCiOutcome>(`ci|${keyBase}@${headSha}`, () =>
-    readHeadCi({ fetchImpl, reference: input.reference, token: input.token, headSha, apiBase, repository }),
+  const ci = await cachedRead<HeadCiOutcome>(
+    `ci|${keyBase}@${headSha}`,
+    () => readHeadCi({ fetchImpl, reference: input.reference, token: input.token, headSha, apiBase, repository }),
+    input.fresh,
   );
   if (!ci.ok) {
     return {
@@ -647,11 +655,13 @@ export function createReviewPullRequestCiResolver(input: {
     if (matchingWebhook?.verdict) {
       // myrmidon(OPE-15114): a webhook/work-product verdict is evidence only for
       // the head it names. A lost or delayed `synchronize` leaves both records
-      // on the old head, so the verdict is accepted only after an authoritative
-      // read confirms that this head is still the current one.
+      // on the old head, so the verdict is accepted only after a fresh
+      // authoritative read confirms that this head is still the current one.
+      // Admission never serves from the read cache: a warm cached head is
+      // exactly how a lost synchronize would otherwise stay invisible.
       let head: Awaited<ReturnType<typeof resolvePullRequestCurrentHead>>;
       try {
-        head = await resolvePullRequestCurrentHead({ reference, token, fetch: fetchImpl });
+        head = await resolvePullRequestCurrentHead({ reference, token, fetch: fetchImpl, fresh: true });
       } catch {
         head = { state: "unknown", reason: "read_failed" };
       }
@@ -672,11 +682,8 @@ export function createReviewPullRequestCiResolver(input: {
       // The head moved on or the PR closed: the authoritative resolver below
       // re-reads the current state and supersedes the local verdict.
     }
-    // Reuse the board's recent exact-head read; never trust a wake/comment payload.
-    const snapshot = readFreshReviewCiSnapshot(companyId, reference, target.knownHeadSha);
-    if (snapshot && !webhook) return { ...snapshot, pullRequestUrl };
     try {
-      const head = await resolvePullRequestHeadCi({ reference, token, fetch: fetchImpl });
+      const head = await resolvePullRequestHeadCi({ reference, token, fetch: fetchImpl, fresh: true });
       if (head.state !== "unknown") {
         // myrmidon(OPE-12176): the verdict of the final check travels with the
         // state; review admission tells green from red without a second read.
