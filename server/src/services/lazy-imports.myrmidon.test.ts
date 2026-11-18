@@ -49,13 +49,13 @@ describe("lazy imports for jsdom and @chat-adapter/discord", () => {
 
   it("contains dynamic import() for jsdom or @chat-adapter/discord in the respective files", () => {
     const assetsContent = fs.readFileSync(path.join(SERVER_SRC, "routes/assets.ts"), "utf8");
-    expect(assetsContent).toMatch(/await\s+import\(["']jsdom["']\)/);
+    expect(assetsContent).toMatch(/await\s+Promise\.all\(\[[\s\S]*?import\(["']jsdom["']\)/);
 
     const announcementContent = fs.readFileSync(
       path.join(SERVER_SRC, "services/announcement-animation.ts"),
       "utf8",
     );
-    expect(announcementContent).toMatch(/await\s+import\(["']jsdom["']\)/);
+    expect(announcementContent).toMatch(/await\s+Promise\.all\(\[[\s\S]*?import\(["']jsdom["']\)/);
 
     const githubAttachmentsContent = fs.readFileSync(
       path.join(SERVER_SRC, "services/chat-github-attachments.ts"),
