@@ -35,7 +35,7 @@ ENV BUN_INSTALL=/usr/local
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
-       openssh-server unzip jq fd-find build-essential python3 \
+       openssh-server unzip jq fd-find build-essential python3 rsync \
   && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
   && rm -rf /var/lib/apt/lists/* \
   && rm -f /etc/ssh/ssh_host_*
@@ -85,12 +85,31 @@ COPY docker/agent-runtime/omp-ssh/run-reap /usr/local/bin/run-reap
 # RUNS the wrapper (a `git --version` through it, and a probe that the wrapper,
 # not /usr/bin/git, answered) and fails the build if it cannot.
 COPY docker/agent-runtime/omp-ssh/git-reference/git /usr/local/bin/git
+COPY docker/bot-runtime/myr-ws/ /opt/paperclip/myr-ws/
+COPY docker/bot-runtime/botd/ /opt/paperclip/botd/
+# myrmidon(OMP-RUNNER-DEVBUILD): the same devbuild client the hermes bots run
+# (docker/bot-runtime/devbuild/devbuild: rsync + ssh to the build VPS). The
+# connection (DEVBUILD_HOST/USER/BASE) and the key arrive at run time through the
+# operator compose template; nothing about the build host is baked in.
+COPY docker/bot-runtime/devbuild/devbuild /opt/paperclip/bin/devbuild
 
 # The account must not be locked: with UsePAM off, sshd refuses every login of
 # a locked account ("!" in /etc/shadow), key authentication included. "*" is
 # "no usable password", not "locked".
 RUN set -eu \
   && chmod 0755 /usr/local/bin/omp-runner-entrypoint /usr/local/bin/git /usr/local/bin/run-reap \
+  && mkdir -p /opt/node24/bin \
+  && ln -s /usr/bin/node /opt/node24/bin/node \
+  && mkdir -p /opt/paperclip/libexec \
+  && ln -s /usr/bin/git /opt/paperclip/libexec/git \
+  && chmod 0755 /opt/paperclip/myr-ws/myr-ws \
+  && ln -s /opt/paperclip/myr-ws/myr-ws /usr/local/bin/myr-ws \
+  && node -e 'if (process.versions.node.split(".")[0] !== "24") process.exit(1)' \
+  && myr-ws --help >/dev/null \
+  && chmod 0755 /opt/paperclip/bin/devbuild \
+  && ln -s /opt/paperclip/bin/devbuild /usr/local/bin/devbuild \
+  && command -v rsync \
+  && devbuild --help >/dev/null \
   && chmod 0644 /etc/ssh/omp-runner/sshd_config \
   && test -x /usr/local/bin/run-reap \
   && node --check /usr/local/bin/git \

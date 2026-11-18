@@ -191,4 +191,102 @@ describe("github-rate-limit service", () => {
     expect(metrics.limit).toBe(5000);
     expect(metrics.sources["task-pr-sync"]).toBe(1);
   });
+
+  describe("limit answer after the window reset", () => {
+    const now = 1730000000000;
+    const nowSec = Math.floor(now / 1000);
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(now));
+    });
+
+    it("window in the past pauses for 60 seconds, not an hour", () => {
+      recordGitHubRequest("ci-resolver", {
+        status: 403,
+        headers: {
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-reset": String(nowSec - 30),
+        },
+      });
+
+      expect(isGitHubRateLimited()).toBe(true);
+      expect(getGitHubRateLimitResetEpochSeconds()).toBe(nowSec + 60);
+
+      vi.advanceTimersByTime(61 * 1000);
+      expect(isGitHubRateLimited()).toBe(false);
+    });
+
+    it("window in the past from an earlier response also pauses for 60 seconds", () => {
+      recordGitHubRequest("ci-resolver", {
+        status: 200,
+        headers: {
+          "x-ratelimit-remaining": "10",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-reset": String(nowSec - 5),
+        },
+      });
+      recordGitHubRequest("ci-resolver", {
+        status: 429,
+        headers: {},
+      });
+
+      expect(getGitHubRateLimitResetEpochSeconds()).toBe(nowSec + 60);
+    });
+
+    it("window in the future limits until the window", () => {
+      const resetEpoch = nowSec + 900;
+      recordGitHubRequest("ci-resolver", {
+        status: 403,
+        headers: {
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-reset": String(resetEpoch),
+        },
+      });
+
+      expect(isGitHubRateLimited()).toBe(true);
+      expect(getGitHubRateLimitResetEpochSeconds()).toBe(resetEpoch);
+    });
+
+    it("retry-after wins over a window in the past", () => {
+      recordGitHubRequest("ci-resolver", {
+        status: 403,
+        headers: {
+          "retry-after": "300",
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-reset": String(nowSec - 30),
+        },
+      });
+
+      expect(getGitHubRateLimitResetEpochSeconds()).toBe(nowSec + 300);
+    });
+
+    it("a successful answer with remaining>0 after the pause is not rate limited", () => {
+      recordGitHubRequest("ci-resolver", {
+        status: 403,
+        headers: {
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-reset": String(nowSec - 30),
+        },
+      });
+      expect(isGitHubRateLimited()).toBe(true);
+
+      vi.advanceTimersByTime(61 * 1000);
+      recordGitHubRequest("ci-resolver", {
+        status: 200,
+        headers: {
+          "x-ratelimit-remaining": "4387",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-reset": String(nowSec + 3000),
+        },
+      });
+
+      expect(isGitHubRateLimited()).toBe(false);
+      expect(getGitHubRateLimitMetrics().remaining).toBe(4387);
+    });
+  });
 });

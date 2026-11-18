@@ -8,8 +8,7 @@
  * postgresql-18-pgvector package (pgvector 0.8.7 — the pilot-proven version),
  * extracts `vector.so` and the extension SQL/control files into the
  * embedded-postgres native tree ($libdir and the extension dir), and returns
- * a cleanup handle. The deb's files are cached under the OS temp dir so
- * repeated runs are offline. Tests skip with a clear reason when the shim
+ * a cleanup handle. Installed files remain in the native tree for reuse. Tests skip with a clear reason when the shim
  * cannot run (non-linux host, no network).
  *
  * The archive tools run with `LD_LIBRARY_PATH` stripped (`extractionEnv`): the embedded-postgres
@@ -20,12 +19,12 @@
  * Production databases run a pgvector-enabled PostgreSQL 18 image (pilot
  * OPE-5004), so this shim exists only for the test environment.
  */
-import { cp, mkdir, readdir, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { createWriteStream, existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
 
@@ -38,7 +37,7 @@ const PGVECTOR_DEB_URL = `https://deb.debian.org/debian/pool/main/p/pgvector/pos
 export type PgvectorInstall = {
   ok: boolean;
   reason?: string;
-  /** Removes the copied files from the cluster tree (cache is kept). */
+  /** Releases this handle; shared native files stay available to other workers. */
   cleanup(): Promise<void>;
 };
 
@@ -123,26 +122,20 @@ async function ensurePgvectorDeb(cacheDir: string): Promise<string | null> {
   }
 }
 
-let activeInstalls = 0;
+// Installed files are shared by all workers using this native runtime. Never remove
+// them on cleanup: another worker may already be starting its PostgreSQL cluster.
+export async function cleanupPgvectorFromEmbeddedCluster(): Promise<void> {}
 
-export async function cleanupPgvectorFromEmbeddedCluster(): Promise<void> {
-  const nativeRoot = embeddedPostgresNativeRoot();
-  if (!nativeRoot) return;
-  const libDir = path.join(nativeRoot, "lib", "postgresql");
-  const extDir = path.join(nativeRoot, "share", "postgresql", "extension");
-  try {
-    await rm(path.join(libDir, "vector.so"), { force: true });
-    if (existsSync(extDir)) {
-      const entries = await readdir(extDir);
-      for (const entry of entries) {
-        if (entry.startsWith("vector")) {
-          await rm(path.join(extDir, entry), { force: true });
-        }
-      }
-    }
-  } catch {
-    // Ignore cleanup failures
-  }
+async function acquireInstallLock(nativeRoot: string): Promise<() => void> {
+  const child = spawn("flock", ["-x", path.join(nativeRoot, ".pgvector-install.lock"), "sh", "-c", "printf ready; cat >/dev/null"], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  await new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code) => reject(new Error(`pgvector install lock exited: ${code}`)));
+    child.stdout.once("data", () => resolve());
+  });
+  return () => child.stdin.end();
 }
 
 export async function installPgvectorIntoEmbeddedCluster(): Promise<PgvectorInstall> {
@@ -154,96 +147,100 @@ export async function installPgvectorIntoEmbeddedCluster(): Promise<PgvectorInst
   if (!nativeRoot || !existsSync(nativeRoot)) {
     return { ok: false, reason: "embedded-postgres native runtime not found", cleanup: noop };
   }
+  let release: () => void;
+  try {
+    release = await acquireInstallLock(nativeRoot);
+  } catch (error) {
+    return { ok: false, reason: `pgvector install lock failed: ${childProcessErrorDetail(error)}`, cleanup: noop };
+  }
+  try {
+    return await installLocked(nativeRoot);
+  } finally {
+    release();
+  }
+}
 
-  activeInstalls += 1;
-  let cleaned = false;
-  const cleanup = async () => {
-    if (cleaned) return;
-    cleaned = true;
-    activeInstalls = Math.max(0, activeInstalls - 1);
-    if (activeInstalls === 0) {
-      await cleanupPgvectorFromEmbeddedCluster();
-    }
-  };
-
+async function installLocked(nativeRoot: string): Promise<PgvectorInstall> {
+  const noop = async () => {};
+  const cleanup = noop;
   const libDir = path.join(nativeRoot, "lib", "postgresql");
   const extDir = path.join(nativeRoot, "share", "postgresql", "extension");
   if (existsSync(path.join(libDir, "vector.so")) && existsSync(path.join(extDir, "vector.control"))) {
     return { ok: true, cleanup };
   }
 
-  const cacheDir = path.join(os.tmpdir(), "corpus-pgvector-cache");
-  const deb = await ensurePgvectorDeb(cacheDir);
-  if (!deb) {
-    activeInstalls = Math.max(0, activeInstalls - 1);
-    return {
-      ok: false,
-      reason: `pgvector deb unavailable (${PGVECTOR_DEB_URL})`,
-      cleanup: noop,
-    };
-  }
-
-  const extractDir = path.join(cacheDir, "extract");
-  await rm(extractDir, { recursive: true, force: true });
-  await mkdir(extractDir, { recursive: true });
-  // Archive tools run on a copy of the environment with the loader paths removed: an inherited
-  // `LD_LIBRARY_PATH` makes `xz` load the embedded-postgres copy of `liblzma` and fail.
-  const toolEnv = extractionEnv(process.env);
-  let dataMember: string;
+  const cacheDir = await mkdtemp(path.join(os.tmpdir(), "corpus-pgvector-"));
   try {
-    const listing = await execFileAsync("ar", ["t", deb], { env: toolEnv });
-    const member = pickDebDataMember(String(listing.stdout));
-    if (member === null) {
-      activeInstalls = Math.max(0, activeInstalls - 1);
+    const deb = await ensurePgvectorDeb(cacheDir);
+    if (!deb) {
       return {
         ok: false,
-        reason: `pgvector deb has no data.tar member: ${String(listing.stdout).trim().replace(/\s+/g, " ")}`,
+        reason: `pgvector deb unavailable (${PGVECTOR_DEB_URL})`,
         cleanup: noop,
       };
     }
-    dataMember = member;
-  } catch (error) {
-    activeInstalls = Math.max(0, activeInstalls - 1);
-    return { ok: false, reason: `pgvector deb listing failed: ${childProcessErrorDetail(error)}`, cleanup: noop };
-  }
-  const tarFlags = tarFlagsForDataMember(dataMember);
-  if (tarFlags === null) {
-    activeInstalls = Math.max(0, activeInstalls - 1);
+
+    const extractDir = path.join(cacheDir, "extract");
+    await rm(extractDir, { recursive: true, force: true });
+    await mkdir(extractDir, { recursive: true });
+    // Archive tools run on a copy of the environment with the loader paths removed: an inherited
+    // `LD_LIBRARY_PATH` makes `xz` load the embedded-postgres copy of `liblzma` and fail.
+    const toolEnv = extractionEnv(process.env);
+    let dataMember: string;
+    try {
+      const listing = await execFileAsync("ar", ["t", deb], { env: toolEnv });
+      const member = pickDebDataMember(String(listing.stdout));
+      if (member === null) {
+        return {
+          ok: false,
+          reason: `pgvector deb has no data.tar member: ${String(listing.stdout).trim().replace(/\s+/g, " ")}`,
+          cleanup: noop,
+        };
+      }
+      dataMember = member;
+    } catch (error) {
+      return { ok: false, reason: `pgvector deb listing failed: ${childProcessErrorDetail(error)}`, cleanup: noop };
+    }
+    const tarFlags = tarFlagsForDataMember(dataMember);
+    if (tarFlags === null) {
+      return {
+        ok: false,
+        reason: `pgvector deb data member ${dataMember} uses an unsupported compression`,
+        cleanup: noop,
+      };
+    }
+    try {
+      await execFileAsync("ar", ["x", deb, dataMember], { cwd: extractDir, env: toolEnv });
+      await execFileAsync("tar", [...tarFlags, path.join(extractDir, dataMember), "-C", extractDir], {
+        env: toolEnv,
+      });
+    } catch (error) {
+      return { ok: false, reason: `pgvector deb extract failed: ${childProcessErrorDetail(error)}`, cleanup: noop };
+    }
+
+    const debLibDir = path.join(extractDir, "usr", "lib", "postgresql", "18", "lib");
+    const debExtDir = path.join(extractDir, "usr", "share", "postgresql", "18", "extension");
+    if (!existsSync(path.join(debLibDir, "vector.so")) || !existsSync(path.join(debExtDir, "vector.control"))) {
+      return { ok: false, reason: "pgvector deb layout unexpected", cleanup: noop };
+    }
+
+    await mkdir(libDir, { recursive: true });
+    await mkdir(extDir, { recursive: true });
+    const vectorSo = path.join(libDir, "vector.so");
+    await cp(path.join(debLibDir, "vector.so"), vectorSo);
+    for (const entry of await readdir(debExtDir)) {
+      if (!entry.startsWith("vector") || entry === "vector.control") continue;
+      const dst = path.join(extDir, entry);
+      await cp(path.join(debExtDir, entry), dst);
+    }
+
+    // Publish the control file last; it is the completion marker for subsequent workers.
+    await cp(path.join(debExtDir, "vector.control"), path.join(extDir, "vector.control"));
     return {
-      ok: false,
-      reason: `pgvector deb data member ${dataMember} uses an unsupported compression`,
-      cleanup: noop,
+      ok: true,
+      cleanup,
     };
+  } finally {
+    await rm(cacheDir, { recursive: true, force: true });
   }
-  try {
-    await execFileAsync("ar", ["x", deb, dataMember], { cwd: extractDir, env: toolEnv });
-    await execFileAsync("tar", [...tarFlags, path.join(extractDir, dataMember), "-C", extractDir], {
-      env: toolEnv,
-    });
-  } catch (error) {
-    activeInstalls = Math.max(0, activeInstalls - 1);
-    return { ok: false, reason: `pgvector deb extract failed: ${childProcessErrorDetail(error)}`, cleanup: noop };
-  }
-
-  const debLibDir = path.join(extractDir, "usr", "lib", "postgresql", "18", "lib");
-  const debExtDir = path.join(extractDir, "usr", "share", "postgresql", "18", "extension");
-  if (!existsSync(path.join(debLibDir, "vector.so")) || !existsSync(path.join(debExtDir, "vector.control"))) {
-    activeInstalls = Math.max(0, activeInstalls - 1);
-    return { ok: false, reason: "pgvector deb layout unexpected", cleanup: noop };
-  }
-
-  await mkdir(libDir, { recursive: true });
-  await mkdir(extDir, { recursive: true });
-  const vectorSo = path.join(libDir, "vector.so");
-  await cp(path.join(debLibDir, "vector.so"), vectorSo);
-  for (const entry of await readdir(debExtDir)) {
-    if (!entry.startsWith("vector")) continue;
-    const dst = path.join(extDir, entry);
-    await cp(path.join(debExtDir, entry), dst);
-  }
-
-  return {
-    ok: true,
-    cleanup,
-  };
 }

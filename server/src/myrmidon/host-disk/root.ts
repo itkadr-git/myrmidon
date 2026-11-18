@@ -3,7 +3,6 @@ import {
   resolveWsRootDiskSettings,
   type WsRootDiskSettings,
 } from "@myrmidon/shared";
-import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService } from "../../services/index.js";
 import type { Db } from "@myrmidon/db";
 import type { HostRootUsage } from "./dockergate.js";
@@ -16,19 +15,12 @@ import type { HostRootUsage } from "./dockergate.js";
  * sees only its own volume, a statfs inside the container says nothing
  * about the host's `/`. The host-disk sweep feeds every measurement into
  * this runtime; the attention feed reads the last result for the
- * `host_disk_alert` card; `notify` sends the owner a Telegram card through
- * the same outbox the bot-partition critical path uses.
+ * `host_disk_alert` card. The board never sends the owner a Telegram
+ * message for it: the alert channel is monitoring (Zabbix).
  *
  * Thresholds (contract in `myrmidon-host-root-disk.ts`): warn > 85 %,
  * critical (high-level alarm) > 90 %, both stored in
  * `instance_settings.general.botDisk` next to the bot-partition keys.
- *
- * Dedup contract (the OPE-12697 acceptance rule): a Telegram notification
- * repeats at most once per hour per level. The runtime latches per level;
- * a level re-arms only after the usage drops below the warn threshold.
- * Unlike the bot-partition latch (exactly once per crossing), an hour of
- * sustained 90 %+ keeps reminding the owner — the acceptance test pins
- * "a repeat within the hour is not sent".
  */
 
 export interface HostRootThresholdState {
@@ -42,17 +34,7 @@ export interface HostRootThresholdState {
   evaluatedAt: string | null;
 }
 
-export interface HostRootNotifyInput {
-  usage: HostRootUsage;
-  settings: WsRootDiskSettings;
-  level: "warn" | "critical";
-}
-
 export interface HostRootThresholdDeps {
-  /** Telegram card enqueue; injected so tests need no chat tables. */
-  notify?: (input: HostRootNotifyInput) => Promise<void>;
-  /** Repeat window of one level: the acceptance rule is once per hour. */
-  repeatIntervalMs?: number;
   /**
    * Settings reader; injected so tests need no database. Production wiring
    * passes nothing and the runtime reads `instance_settings.general.botDisk`.
@@ -76,9 +58,6 @@ export interface HostRootThresholdRuntime {
 /** A replayed or stale gate answer is not evidence about the disk now. */
 export const HOST_ROOT_SAMPLE_MAX_AGE_MS = 5 * 60 * 1000;
 
-/** The acceptance rule: a signal repeats at most once per hour per level. */
-export const HOST_ROOT_REPEAT_INTERVAL_MS = 60 * 60 * 1000;
-
 const EMPTY_STATE: HostRootThresholdState = {
   root: null,
   settings: null,
@@ -92,15 +71,8 @@ export function createHostRootThresholdRuntime(
 ): HostRootThresholdRuntime {
   const env = deps.env ?? process.env;
   const now = deps.now ?? (() => new Date());
-  const repeatIntervalMs = deps.repeatIntervalMs ?? HOST_ROOT_REPEAT_INTERVAL_MS;
   const settingsService = db ? instanceSettingsService(db) : null;
   let state: HostRootThresholdState = { ...EMPTY_STATE };
-  // Per-level latch: the wall clock of the last notification per level.
-  // A missing entry = never notified at this level (the first crossing
-  // fires at once). Cleared when usage drops back to the none level, so a
-  // renewed crossing re-fires without waiting out the repeat window.
-  let notified: Partial<Record<"warn" | "critical", number>> = {};
-
   async function resolveThresholds(): Promise<WsRootDiskSettings> {
     const botDisk = deps.getBotDiskSettings
       ? await deps.getBotDiskSettings()
@@ -130,25 +102,6 @@ export function createHostRootThresholdRuntime(
       alertLevel: alert,
       evaluatedAt: now().toISOString(),
     };
-    if (alert === "none") {
-      // Back below the warn threshold: re-arm both levels at once.
-      notified = {};
-    } else if (deps.notify) {
-      const atMs = now().getTime();
-      const lastAt = notified[alert];
-      // A level fires at most once per repeat window (acceptance: no
-      // repeat within an hour); the other level stays independent so a
-      // warn→critical escalation still escalates immediately.
-      const due = lastAt === undefined || atMs - lastAt >= repeatIntervalMs;
-      if (due) {
-        try {
-          await deps.notify({ usage, settings, level: alert });
-          notified[alert] = atMs;
-        } catch (err) {
-          logger.error({ err }, "host root notification failed");
-        }
-      }
-    }
     return state;
   }
 

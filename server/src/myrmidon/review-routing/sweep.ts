@@ -165,6 +165,8 @@ export interface ReviewRoutingSweepDeps {
    * step stays inert; with it, `boardMerge.enabled` (default on) decides.
    */
   boardMerge?: BoardMergeClient;
+  /** OPE-13942: webhooks show a check of the head still queued (the board merge would be refused). */
+  headChecksQueued?: (input: { companyId: string; repository: string; number: number; headSha: string }) => Promise<boolean>;
   /** PR approval propagator (propagates board review approvals to GitHub PR). */
   approvalPropagator?: (input: {
     companyId: string;
@@ -254,6 +256,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     ? createBoardMerger({
         store: deps.store,
         client: deps.boardMerge,
+        headChecksQueued: deps.headChecksQueued,
         addComment: deps.addComment,
         wakeAgent: (agentId, wake) => deps.wakeReviewer(agentId, wake),
         logActivity: deps.logActivity,
@@ -1440,6 +1443,13 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     },
     async mergeOnEvent(event) {
       if (!boardMerger) return null;
+      // A completed check matters only for a pull request the merger parked: no settings read otherwise.
+      if (
+        event.source === "check_completed" &&
+        !(event.repository && event.number && boardMerger.isParked(event.companyId, { repository: event.repository, number: event.number }))
+      ) {
+        return null;
+      }
       if (deps.isUnderMaintenance && (await deps.isUnderMaintenance())) return null;
       const settings = await deps.readSettings();
       const now = (deps.now ?? (() => new Date()))();
@@ -1447,7 +1457,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       if (event.repository && event.number) {
         return boardMerger.mergePullRequest(
           event.companyId,
-          { repository: event.repository, number: event.number },
+          { repository: event.repository, number: event.number, headSha: event.headSha ?? null, checkCompleted: event.source !== "review_approved" },
           settings,
           now,
         );

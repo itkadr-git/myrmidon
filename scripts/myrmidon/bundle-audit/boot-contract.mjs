@@ -9,7 +9,7 @@ function optionsTokens(text) {
   let active = false;
   for (const char of text) {
     if (char === '"') { quoted = !quoted; active = true; }
-    else if (/\s/.test(char) && !quoted) {
+    else if (/[ \t\n\r\v\f]/.test(char) && !quoted) {
       if (active) tokens.push(token);
       token = ''; active = false;
     } else { token += char; active = true; }
@@ -37,8 +37,10 @@ function audit(manifest) {
   if (!env || typeof env !== 'object' || Array.isArray(env)) {
     errors.push('env must be an object');
   } else {
-    for (const value of Object.values(env)) {
+    for (const [name, value] of Object.entries(env)) {
+      if (!name || name.includes('=') || name.includes('\u0000')) errors.push('env name is invalid');
       if (typeof value !== 'string') errors.push('env values must be strings');
+      else if (value.includes('\u0000')) errors.push('env value contains NUL');
     }
     for (const name of ['VERSION', 'COMMIT']) {
       const value = env[`MYRMIDON_BUILD_${name}`];

@@ -38,6 +38,7 @@ import {
 } from "@myrmidon/db";
 import { and, eq } from "drizzle-orm";
 import { githubConnectionEventService } from "../services/github-connection-events.js";
+import { createReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
 import type { PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 import type { CiReturnFacts } from "../myrmidon/review-return-guard/ci-failure-return.js";
 import {
@@ -237,6 +238,52 @@ describeEmbeddedPostgres.sequential("CI deliveries by the final result of the he
   }
 
   describe("the monitor and the wake of a task that waits for CI", () => {
+    it("resolves a fresh processed PR and CI webhook from PostgreSQL without a GitHub request", async () => {
+      const seeded = await seedTask({ executing: true, productHeadSha: HEAD });
+      await db.insert(connectionEventDeliveries).values({
+        companyId: seeded.companyId,
+        provider: "github",
+        providerDeliveryId: `pr-${randomUUID()}`,
+        event: "pull_request",
+        status: "processed",
+        normalizedPayload: { repository: REPO, number: 123, state: "open", headSha: HEAD },
+      });
+      const service = startService({ readHead: () => GREEN_HEAD });
+      await expect(service.deliver([ciEvent(seeded, "check_run", "success", "CI result")]))
+        .resolves.toMatchObject({ processed: 1, failed: 0 });
+
+      const fetch = vi.fn(async () => new Response("unexpected", { status: 500 }));
+      const tokenProvider = vi.fn(async () => null);
+      const resolve = createReviewPullRequestCiResolver({ db, fetch, tokenProvider });
+      await expect(resolve({ companyId: seeded.companyId, issueId: seeded.issueId })).resolves.toMatchObject({
+        state: "complete", headSha: HEAD, finalCheckConclusion: "success",
+      });
+      expect(fetch).not.toHaveBeenCalled();
+      expect(tokenProvider).not.toHaveBeenCalled();
+    });
+
+    it("does not use a PR webhook older than 30 minutes for the CI verdict", async () => {
+      const seeded = await seedTask({ executing: true, productHeadSha: HEAD });
+      await db.insert(connectionEventDeliveries).values({
+        companyId: seeded.companyId,
+        provider: "github",
+        providerDeliveryId: `pr-stale-${randomUUID()}`,
+        event: "pull_request",
+        status: "processed",
+        createdAt: new Date(Date.now() - 31 * 60_000),
+        normalizedPayload: { repository: REPO, number: 123, state: "open", headSha: HEAD },
+      });
+      const service = startService({ readHead: () => GREEN_HEAD });
+      await expect(service.deliver([ciEvent(seeded, "check_run", "success", "CI result")]))
+        .resolves.toMatchObject({ processed: 1, failed: 0 });
+
+      const fetch = vi.fn(async () => new Response("unavailable", { status: 503 }));
+      const resolve = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => null });
+      await expect(resolve({ companyId: seeded.companyId, issueId: seeded.issueId }))
+        .resolves.toMatchObject({ state: "unknown" });
+      expect(fetch).toHaveBeenCalled();
+    });
+
     it("leaves the task alone on finished jobs and wakes its assignee once on the final result", async () => {
       const seeded = await seedTask({ executing: true });
       const service = startService({ readHead: () => GREEN_HEAD });

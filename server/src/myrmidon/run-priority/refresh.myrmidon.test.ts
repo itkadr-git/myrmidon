@@ -12,7 +12,10 @@ import { startRunPriorityRefresh } from "./sync.js";
 import { registerSettingsAppliers } from "../settings-appliers/index.js";
 
 const updated: unknown[] = [];
+let companySettings: Record<string, unknown> = {};
 const db = {
+  execute: async () => undefined,
+  select: () => ({ from: () => ({ where: async () => [{ general: { behaviorSettingsByCompany: companySettings } }] }) }),
   update: () => ({ set: (v: unknown) => ({ where: () => ({ returning: async () => { updated.push(v); return []; } }) }) }),
 } as unknown as Db;
 
@@ -21,6 +24,7 @@ describe("run priority self-healing", () => {
     vi.useFakeTimers();
     resetRunPriorityForTests();
     updated.length = 0;
+    companySettings = {};
     getGeneral.mockReset().mockResolvedValue({
       runPriority: normalizeRunPrioritySettings({ currentRelease: "1.6.9", strictReleaseFocus: true }),
     });
@@ -55,6 +59,16 @@ describe("run priority self-healing", () => {
     await vi.advanceTimersByTimeAsync(1100);
     await vi.advanceTimersByTimeAsync(1100);
     expect(currentRunPrioritySettings().currentRelease).toBe("1.6.9");
+    stop();
+  });
+
+  it("advances deferred runs when a company focus changes without a notification", async () => {
+    const stop = startRunPriorityRefresh(db, 1000);
+    await vi.advanceTimersByTimeAsync(1100);
+    updated.length = 0;
+    companySettings = { companyA: { releaseFocus: { currentRelease: "1.7", strictReleaseFocus: true } } };
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(updated.length).toBeGreaterThan(0);
     stop();
   });
 

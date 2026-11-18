@@ -145,6 +145,26 @@ describe("myr-ws open — contract constants", () => {
 });
 
 describe("myr-ws open — task copy", { skip: !hasGit }, () => {
+  it("creates its real git base under MYRMIDON_WS_HOME", async () => {
+    const originRoot = path.join(tmp, `local-origin-${n}`);
+    const repoOrigin = path.join(originRoot, "acme", "widgets.git");
+    fs.mkdirSync(path.dirname(repoOrigin), { recursive: true });
+    git(tmp, "clone", "-q", "--bare", originDir, repoOrigin);
+    const env = {
+      ...ctx.env,
+      MYRMIDON_WS_HOME: ctx.home,
+      MYRMIDON_WS_REMOTE_BASE: `file://${originRoot}`,
+    };
+    const result = await run(["ABC-100", REPO, "--json"], { env, ensureBase: null });
+    assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+    const out = copyOf(result);
+    const base = path.join(ctx.home, "git-base", "acme", "widgets.git");
+    assert.equal(git(base, "rev-parse", "--is-bare-repository"), "true");
+    const common = git(out.path, "rev-parse", "--git-common-dir");
+    assert.equal(fs.realpathSync(path.resolve(out.path, common)), fs.realpathSync(base));
+    assert.equal(fs.readFileSync(path.join(out.path, "README.md"), "utf8"), "# widgets\n");
+  });
+
   it("creates a worktree of the base on bot/<KEY> without an object store", async () => {
     const r = await run(["ABC-101", REPO, "--json"]);
     assert.equal(r.exitCode, 0, r.stderr);
@@ -194,6 +214,47 @@ describe("myr-ws open — task copy", { skip: !hasGit }, () => {
     const third = copyOf(await run(["ABC-101", "--json"]));
     assert.equal(third.path, first.path);
     assert.equal(third.reused, true);
+  });
+
+  it("refuses a nested standalone clone without changing its files", async () => {
+    const first = copyOf(await run(["ABC-126", REPO, "--json"]));
+    const nested = path.join(first.path, "deep", "repo");
+    fs.mkdirSync(path.dirname(nested));
+    git(tmp, "clone", "-q", originDir, nested);
+    fs.writeFileSync(path.join(nested, "untracked.txt"), "keep me\n");
+    const result = await run(["ABC-126", REPO, "--json"]);
+    assert.equal(result.exitCode, 2);
+    assert.match(result.stderr, /nested.*clone/i);
+    assert.ok(result.stderr.includes(nested));
+    assert.equal(fs.readFileSync(path.join(nested, "untracked.txt"), "utf8"), "keep me\n");
+  });
+
+  it("finds a nested clone at depth 1 and ignores one under node_modules", async () => {
+    const first = copyOf(await run(["ABC-128", REPO, "--json"]));
+    const ignored = path.join(first.path, "node_modules", "pkg", "repo");
+    fs.mkdirSync(path.dirname(ignored), { recursive: true });
+    git(tmp, "clone", "-q", originDir, ignored);
+    const ok = await run(["ABC-128", REPO, "--json"]);
+    assert.equal(ok.exitCode, 0, ok.stderr);
+    const nested = path.join(first.path, "repo");
+    git(tmp, "clone", "-q", originDir, nested);
+    const refused = await run(["ABC-128", REPO, "--json"]);
+    assert.equal(refused.exitCode, 2);
+    assert.ok(refused.stderr.includes(nested));
+    assert.ok(fs.existsSync(path.join(ignored, ".git", "objects")));
+  });
+
+  it("allows nested linked worktrees and real submodules with gitfiles", async () => {
+    const first = copyOf(await run(["ABC-127", REPO, "--json"]));
+    const nested = path.join(first.path, "linked");
+    git(first.path, "worktree", "add", "--detach", nested, "HEAD");
+    git(first.path, "-c", "protocol.file.allow=always", "submodule", "add", "-q", originDir, "module");
+    assert.ok(fs.statSync(path.join(first.path, "module", ".git")).isFile());
+    fs.mkdirSync(path.join(first.path, "node_modules", "package"), { recursive: true });
+    fs.writeFileSync(path.join(first.path, "node_modules", "package", "index.js"), "module.exports = 1;\n");
+    const result = await run(["ABC-127", REPO, "--json"]);
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(fs.readFileSync(path.join(first.path, "node_modules", "package", "index.js"), "utf8"), "module.exports = 1;\n");
   });
 
   it("prints just the path without --json", async () => {
@@ -359,6 +420,41 @@ describe("myr-ws open — invalid keys", { skip: !hasGit }, () => {
 
   it("rejects unknown options", async () => {
     assert.equal((await run(["ABC-1", REPO, "--wat"])).exitCode, 2);
+  });
+});
+
+describe("myr-ws open — physical volume budget", { skip: !hasGit }, () => {
+  it("refuses a new copy at 4.9% free and permits it after recovery to 5%", async () => {
+    let free = 49;
+    const statfs = () => ({ blocks: 1000, bavail: free });
+    const refused = await run(["ABC-901", REPO, "--json"], { statfs });
+    assert.equal(refused.exitCode, 3);
+    assert.match(copyOf(refused).error, /^BOT_DISK_QUOTA_EXCEEDED:.*disk_budget/);
+    assert.equal(ctx.calls.length, 0);
+    assert.equal(fs.existsSync(path.join(ctx.workspaceRoot, "ABC-901")), false);
+
+    free = 50;
+    const recovered = await run(["ABC-901", REPO, "--json"], { statfs });
+    assert.equal(recovered.exitCode, 0, recovered.stderr);
+    assert.equal(copyOf(recovered).reused, false);
+  });
+
+  it("reuses an existing copy even when the volume falls below the threshold", async () => {
+    const opened = await run(["ABC-902", REPO, "--json"], { statfs: () => ({ blocks: 1000, bavail: 50 }) });
+    assert.equal(opened.exitCode, 0, opened.stderr);
+    const reused = await run(["ABC-902", REPO, "--json"], { statfs: () => ({ blocks: 1000, bavail: 49 }) });
+    assert.equal(reused.exitCode, 0, reused.stderr);
+    assert.equal(copyOf(reused).reused, true);
+  });
+
+  it("warns and preserves existing admission when the filesystem measurement fails", async () => {
+    const warnings = [];
+    const result = await run(["ABC-903", REPO, "--json"], {
+      statfs: () => { throw new Error("statfs unavailable"); },
+      warn: (message) => warnings.push(message),
+    });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.match(warnings.join("\n"), /physical disk budget measurement failed: statfs unavailable/);
   });
 });
 

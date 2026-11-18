@@ -292,12 +292,10 @@ runs_of() {
 
 run_verdict() {
   local workflow_file="$1" branches verdict
-  # TAG-CI (the 1.6.4 incident): the release green comes ONLY from the tag's
-  # own runs (head_branch == the tag). A green main-branch run of the same
-  # commit used to satisfy the CI gate (myrmidon-ci.yml had no tag trigger);
-  # myrmidon-ci-tag.yml now runs the full pipeline on the tag itself, so the
-  # main fallback is gone — and a push to main can no longer cancel the
-  # tag's run (own concurrency group, cancel-in-progress: false).
+  # TAG-CI (the 1.6.4 incident): the tag's own run (head_branch == the tag) is
+  # un-cancellable by pushes to main (own concurrency group). Since 16.11 a
+  # green push/dispatch run of myrmidon-ci.yml of the same commit on any branch
+  # is accepted too, see branch_ci_green below.
   branches="$(branch_match_expr "$tag")"
   verdict="$(runs_of "$workflow_file" "$branches" \
     | jq "[.[] | select(.status == \"completed\")]
@@ -392,9 +390,28 @@ refuse_if_cancelled() {
   fi
 }
 
+# CI-TAG-REUSE-BRANCH-RUN (16.11): the release tag is cut on the head of a rel
+# branch whose full Myrmidon CI (myrmidon-ci.yml, a push or a manual dispatch;
+# never a pull_request run, which is the fast tier) already ran on this very
+# commit. A completed green run of it on ANY branch is the same rule the
+# freeze gate applies, and it satisfies the CI gate without a second full run
+# on the tag. Otherwise the tag's own run (myrmidon-ci-tag.yml) is awaited.
+branch_ci_green() {
+  local n
+  n="$(runs_of ".github/workflows/myrmidon-ci.yml" '(.event == "push" or .event == "workflow_dispatch")' \
+    | jq '[.[] | select(.status == "completed" and .conclusion == "success")] | length' 2>/dev/null)" || n=0
+  n="${n//\"/}"
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  ((n > 0))
+}
+
 log "gate: Myrmidon CI (tag) on $sha"
-refuse_if_cancelled ".github/workflows/myrmidon-ci-tag.yml" "Myrmidon CI (tag)"
-wait_for ".github/workflows/myrmidon-ci-tag.yml" must "Myrmidon CI (tag)"
+if branch_ci_green; then
+  log "gate: Myrmidon CI (branch run of the same commit) success for $sha"
+else
+  refuse_if_cancelled ".github/workflows/myrmidon-ci-tag.yml" "Myrmidon CI (tag)"
+  wait_for ".github/workflows/myrmidon-ci-tag.yml" must "Myrmidon CI (tag)"
+fi
 log "gate: Myrmidon image (board) on $sha"
 wait_for ".github/workflows/myrmidon-image.yml" must "Myrmidon image (board)"
 log "gate: Myrmidon dockergate image on $sha"

@@ -11812,6 +11812,10 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        if (existing.status !== "done" && updated.status === "done") {
+          const { moveAutoSliceChildrenToEpic } = await import("../myrmidon/swarm-claim/auto-slice-children.js");
+          await moveAutoSliceChildrenToEpic(tx, updated);
+        }
         if (updated.assigneeAgentId !== existing.assigneeAgentId || updated.assigneeUserId !== existing.assigneeUserId) {
           const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
           await issueThreadInteractionService(tx).expireConnectionIntentsForOwnershipChange(updated);

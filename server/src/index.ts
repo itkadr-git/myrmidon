@@ -244,6 +244,7 @@ import {
   createPendingInteractionWakeSweep,
   readPendingInteractionWakeContextSnapshot,
 } from "./myrmidon/pending-interaction-wake-sweep.js"; // myrmidon(P12)
+import { createStaleInteractionRewakeSweep } from "./myrmidon/stale-interaction-rewake-sweep.js"; // myrmidon(INTERACTION-WAKES-DAILY-LIMIT)
 import { createInteractionEscalationSweep } from "./myrmidon/interaction-escalation/index.js"; // myrmidon(P1.8)
 // myrmidon(P11): database backup catch-up
 import { BACKUP_CATCHUP_WINDOW_ENV, readBackupCatchUpSettings, startBackupCatchUp } from "./myrmidon/backup-catch-up.js";
@@ -1933,8 +1934,33 @@ async function startServerWithDatabaseTeardown(
       });
     },
   });
+  // myrmidon(INTERACTION-WAKES-DAILY-LIMIT): a card still pending for its addressee
+  // after 30 minutes, with no live run and no recent wake, wakes the addressee
+  // again (at most once per card per 30 minutes).
+  const staleInteractionRewakeSweep = createStaleInteractionRewakeSweep({
+    db: db as any,
+    rewake: async (wake) => {
+      await backgroundHeartbeat.wakeup(wake.agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "interaction_pending",
+        payload: wake.payload,
+        contextSnapshot: wake.contextSnapshot,
+        idempotencyKey: wake.idempotencyKey,
+        requestedByActorType: "system",
+        requestedByActorId: "stale-interaction-rewake",
+      });
+    },
+  });
   const schedulePendingInteractionWakeSweep = () => {
     if (heartbeatSchedulerStopped) return;
+    trackHeartbeatSchedulerWork(staleInteractionRewakeSweep().then((result) => {
+      if (result.rewoken > 0) {
+        logger.info(result, "stale interaction re-wake sweep woke addressees of unanswered cards");
+      }
+    }).catch((err) => {
+      logger.error({ err }, "stale interaction re-wake sweep failed");
+    }));
     trackHeartbeatSchedulerWork(pendingInteractionWakeSweep().then((result) => {
       if (result.reAdmitted > 0 || result.cancelled > 0) {
         logger.info(result, "pending interaction wake sweep settled parked addressee wakes");

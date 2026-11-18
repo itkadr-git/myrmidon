@@ -82,6 +82,11 @@ export interface BoardMergeDeps {
     issueId: string;
     details: Record<string, unknown>;
   }) => Promise<void>;
+  /**
+   * myrmidon(OPE-13942): true when webhooks already show a check of this head still queued /
+   * waiting. A merge would be refused (405), so it is not asked for. Unset: no such knowledge.
+   */
+  headChecksQueued?: (input: { companyId: string; repository: string; number: number; headSha: string }) => Promise<boolean>;
   now?: () => Date;
   log?: Pick<Logger, "info" | "warn">;
 }
@@ -105,10 +110,12 @@ export interface BoardMerger {
   /** The event path of a completed CI run: one pull request. */
   mergePullRequest(
     companyId: string,
-    pullRequest: { repository: string; number: number },
+    pullRequest: { repository: string; number: number; headSha?: string | null; checkCompleted?: boolean },
     settings: ReviewRoutingSettings,
     now?: Date,
   ): Promise<BoardMergePassResult>;
+  /** True while a refused-as-queued pull request waits for a completed check of its head. */
+  isParked(companyId: string, pullRequest: { repository: string; number: number }): boolean;
   resetForTest(): void;
 }
 
@@ -116,6 +123,13 @@ export interface BoardMerger {
 export const BOARD_MERGE_COOLDOWN_MS = 2 * 60 * 1000;
 /** After GitHub refused the merge (required checks, protection): the next look is later. */
 export const BOARD_MERGE_REFUSED_COOLDOWN_MS = 5 * 60 * 1000;
+/** myrmidon(OPE-13942): after GitHub refused a merge because a required check is queued / expected, no new try for this long unless a check of the head completes. */
+export const BOARD_MERGE_QUEUED_PARK_MS = 10 * 60 * 1000;
+/** GitHub's wording of a merge refused for a check that has not finished. */
+export function isQueuedChecksRefusal(message: string | null | undefined): boolean {
+  return /required status check.*\b(queued|expected|pending|waiting|in progress)\b/i.test(message ?? "")
+    || /\b(is|are) (queued|expected|pending)\b/i.test(message ?? "");
+}
 /** A repository the board has no write identity for is not asked again for this long. */
 export const BOARD_MERGE_NO_IDENTITY_COOLDOWN_MS = 10 * 60 * 1000;
 /** A merged pull request is closed; the sweep does not even read it again for this long. */
@@ -190,6 +204,8 @@ interface PassContext {
   ignoreCooldown: boolean;
   /** GitHub's budget is gone: nothing more is asked in this call. */
   stop: boolean;
+  /** The head whose check just completed (event path): frees a parked pull request of that head. */
+  releaseHeadSha?: string | null;
 }
 
 export function createBoardMerger(deps: BoardMergeDeps): BoardMerger {
@@ -199,6 +215,8 @@ export function createBoardMerger(deps: BoardMergeDeps): BoardMerger {
   const inFlight = new Set<string>();
   /** key -> epoch ms before which the sweep leaves the pull request alone. */
   const notBefore = new Map<string, number>();
+  /** myrmidon(OPE-13942): key -> head refused as "check queued" and the time of the park's end. Only a completed check of that head (or the end) frees it. */
+  const parked = new Map<string, { headSha: string; until: number }>();
   const warned = new Map<string, number>();
   /**
    * myrmidon(OPE-13136): pull request key -> when this head was first seen BLOCKED with the review
@@ -290,6 +308,11 @@ export function createBoardMerger(deps: BoardMergeDeps): BoardMerger {
     const key = `${companyId}|${pr.toLowerCase()}`;
     if (inFlight.has(key)) return;
     if (!ctx.ignoreCooldown && (notBefore.get(key) ?? 0) > now.getTime()) return;
+    const park = parked.get(key);
+    if (park) {
+      if (park.until <= now.getTime() || ctx.releaseHeadSha === park.headSha) parked.delete(key);
+      else return; // an event other than a completed check of the parked head does not free it
+    }
     inFlight.add(key);
     try {
       const pull = await deps.client.readPull({ companyId, repository: row.repository, number: row.number });
@@ -307,6 +330,22 @@ export function createBoardMerger(deps: BoardMergeDeps): BoardMerger {
       }
       result.evaluated += 1;
       const facts = pull.facts;
+
+      // myrmidon(OPE-13942): webhooks already say a check of this head is queued: GitHub would
+      // refuse the merge (405), and files / checks / merge are several requests for nothing.
+      if (facts.open && facts.headSha && deps.headChecksQueued) {
+        let queued = false;
+        try {
+          queued = await deps.headChecksQueued({ companyId, repository: row.repository, number: row.number, headSha: facts.headSha });
+        } catch {
+          queued = false;
+        }
+        if (queued) {
+          result.waiting += 1;
+          rest(key, now, BOARD_MERGE_COOLDOWN_MS);
+          return;
+        }
+      }
 
       let files: readonly string[] | null = null;
       if (deps.client.readPullFiles) {
@@ -498,6 +537,7 @@ export function createBoardMerger(deps: BoardMergeDeps): BoardMerger {
             result.waiting += 1;
             rest(key, now, BOARD_MERGE_REFUSED_COOLDOWN_MS);
             const message = outcome.message ?? null;
+            if (isQueuedChecksRefusal(message)) parked.set(key, { headSha, until: now.getTime() + BOARD_MERGE_QUEUED_PARK_MS });
             log.info({ pr, httpStatus: outcome.httpStatus, message }, "board merge: GitHub does not merge the pull request as it stands");
             // myrmidon(OPE-13136): GitHub's refusal text is the only clue, put it on the task (throttled like the warning).
             if (throttleOpen(`refused:${key}`, now)) {
@@ -575,14 +615,16 @@ export function createBoardMerger(deps: BoardMergeDeps): BoardMerger {
     settings: ReviewRoutingSettings,
     now: Date,
     ignoreCooldown: boolean,
+    releaseHeadSha: string | null = null,
   ): Promise<BoardMergePassResult> {
     const result = emptyResult();
     // Resting entries that ran out are dropped, so the maps hold only what is still waiting.
     for (const [key, until] of notBefore) if (until <= now.getTime()) notBefore.delete(key);
+    for (const [key, park] of parked) if (park.until <= now.getTime()) parked.delete(key);
     for (const [key, at] of warned) if (now.getTime() - at >= WARN_THROTTLE_MS) warned.delete(key);
     // myrmidon(OPE-13136): a blocked spell of a PR nobody has looked at for a day is gone (merged, closed, unapproved).
     for (const [key, entry] of blockedSince) if (now.getTime() - entry.seen >= 24 * 60 * 60 * 1000) blockedSince.delete(key);
-    const ctx: PassContext = { mergesLeft: settings.boardMerge.maxMergesPerPass, ignoreCooldown, stop: false };
+    const ctx: PassContext = { mergesLeft: settings.boardMerge.maxMergesPerPass, ignoreCooldown, stop: false, releaseHeadSha };
     for (const row of rows) {
       if (ctx.stop) break;
       try {
@@ -603,6 +645,7 @@ export function createBoardMerger(deps: BoardMergeDeps): BoardMerger {
     resetForTest() {
       inFlight.clear();
       notBefore.clear();
+      parked.clear();
       warned.clear();
       blockedSince.clear();
     },
@@ -624,7 +667,11 @@ export function createBoardMerger(deps: BoardMergeDeps): BoardMerger {
       const rows = (await deps.store.listApprovedPrIssues(companyId, { limit: BOARD_MERGE_PAGE_SIZE })).filter(
         (row) => row.number === pullRequest.number && row.repository.toLowerCase() === pullRequest.repository.toLowerCase(),
       );
-      return run(companyId, rows, settings, now, true);
+      return run(companyId, rows, settings, now, true, pullRequest.checkCompleted ? (pullRequest.headSha ?? null) : null);
+    },
+
+    isParked(companyId, pullRequest) {
+      return parked.has(`${companyId}|${pullRequest.repository}#${pullRequest.number}`.toLowerCase());
     },
   };
 }

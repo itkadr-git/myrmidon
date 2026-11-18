@@ -580,6 +580,11 @@ How a bot gets its task copy now, per the interface contract
   `--filter`, `--depth`, `--mirror` and `--bare` are ignored with a message —
   the objects are already in the base. The real git lives at
   `/opt/paperclip/libexec/git` outside PATH.
+- Do not create full clones inside a task workspace. Use `myr-ws open` for each
+  repository; additional repositories are placed beside the first workspace.
+  On reopening, a nested standalone clone with its own object store causes a
+  diagnostic refusal. Preserve its changes and move it outside the workspace;
+  the command never deletes it. Gitfile-based submodules and worktrees are allowed.
 - `myr-ws open <KEY> <owner/repo> --review [--branch <PR branch>]` opens a
   review copy: a worktree without a working directory (only the `.git` file,
   kilobytes), no dependency install, git hooks off; the branch is fetched from

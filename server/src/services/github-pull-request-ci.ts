@@ -4,6 +4,7 @@ import { issueWorkProducts, issues, issueComments } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { repositoryHasHostedCi, NO_HOSTED_CI_SUMMARY } from "./github-hosted-ci.js";
 import type { FetchLike } from "./github-external-object-provider.js";
+import { withGitHubReviewBudget } from "./github-review-budget.js";
 import {
   resetGitHubObjectCacheForTests,
   resolveGitHubRepositoryToken,
@@ -1000,7 +1001,9 @@ export function createPullRequestCiResolver(
   // (heartbeat), `ui-refresh` for UI-triggered calls (routes); the historical
   // default keeps the pre-OPE-12397 label for callers without a bucket.
   const { source = "run-context", ...resolverOptions } = options;
-  const rawFetch = resolverOptions.fetch ?? fetch;
+  const rawFetch = source === "review-rework"
+    ? withGitHubReviewBudget(db, "review-rework", resolverOptions.fetch ?? fetch)
+    : resolverOptions.fetch ?? fetch;
   const fetchImpl: FetchLike = (input, init) => {
     const timeoutSignal = AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS);
     const signal = init?.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal;

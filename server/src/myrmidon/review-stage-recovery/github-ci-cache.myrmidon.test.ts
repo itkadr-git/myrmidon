@@ -6,6 +6,10 @@
 // GitHub while the shared rate-limit state says the budget is gone.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+vi.mock("../../services/github-review-budget.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../services/github-review-budget.js")>();
+  return { ...actual, withGitHubReviewBudget: (_db: unknown, _source: unknown, fetch: unknown) => fetch };
+});
 import { resetGitHubRateLimitForTests, setGitHubRateLimitForTests } from "../../services/github-rate-limit.js";
 import {
   REVIEW_CI_CACHE_MAX_ENTRIES,

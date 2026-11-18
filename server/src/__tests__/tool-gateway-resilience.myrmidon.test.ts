@@ -948,11 +948,15 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
       expect(await connectionToolNames()).toEqual(allNames);
 
       // After the cooldown the next call is the probe; the refused call was never
-      // recorded, so the same arguments really run (no idempotent replay).
+      // recorded, so the same arguments really run (no idempotent replay). The
+      // probe must reach the recovered server: exactly one new hit, however many
+      // of the timed-out calls the loaded server handled before their clients
+      // aborted.
       clock += 61_000;
       slowToolRecovered = true;
+      const receivedBeforeProbe = slowCallsReceived;
       await expect(call(4, 5_000)).resolves.toMatchObject({ status: "completed" });
-      expect(slowCallsReceived).toBe(4);
+      expect(slowCallsReceived).toBe(receivedBeforeProbe + 1);
       await expect(call(5, 5_000)).resolves.toMatchObject({ status: "completed" });
     } finally {
       await fake.close();

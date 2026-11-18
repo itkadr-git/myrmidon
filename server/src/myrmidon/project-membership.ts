@@ -10,8 +10,9 @@
 //   agent ∈ project ⇔ projects.lead_agent_id = agent.id
 //                     ∨ exists project_memberships(company_id, project_id,
 //                           user_id = agent.id, state = 'joined')
+//                     ∨ no agent_nests rows for agent.id
 //                     ∨ exists agent_nests(company_id, project_id,
-//                           agent_id = agent.id)       -- nest (decision 18.10)
+//                           agent_id = agent.id)
 //
 // `project_memberships.user_id` is polymorphic. For an agent, membership
 // counts only when that ID resolves to an agent in the same company; this
@@ -56,6 +57,9 @@ export function projectScopedClaimGate(agentId: string): SQL {
               and pm.state = 'joined'
               and a.id = ${agentRef}
           )
+          or not exists (
+            select 1 from agent_nests n where n.agent_id = ${agentRef}
+          )
           or exists (
             select 1
             from agent_nests n
@@ -77,7 +81,7 @@ export async function projectMembershipByProject(
   db: Db,
   companyId: string,
 ): Promise<Map<string, Set<string>>> {
-  const [ledRows, joinedRows, nestRows] = await Promise.all([
+  const [ledRows, joinedRows, nestRows, projectRows, unrestrictedRows] = await Promise.all([
     db
       .select({ projectId: projects.id, leadAgentId: projects.leadAgentId })
       .from(projects)
@@ -105,6 +109,11 @@ export async function projectMembershipByProject(
       .select({ projectId: agentNests.projectId, agentId: agentNests.agentId })
       .from(agentNests)
       .where(eq(agentNests.companyId, companyId)),
+    db.select({ id: projects.id }).from(projects).where(eq(projects.companyId, companyId)),
+    db.select({ id: agents.id }).from(agents).where(and(
+      eq(agents.companyId, companyId),
+      sql`not exists (select 1 from agent_nests n where n.agent_id = ${agents.id})`,
+    )),
   ]);
   const byProject = new Map<string, Set<string>>();
   const add = (projectId: string, agentId: string | null) => {
@@ -116,6 +125,9 @@ export async function projectMembershipByProject(
   for (const row of ledRows) add(row.projectId, row.leadAgentId);
   for (const row of joinedRows) add(row.projectId, row.userId);
   for (const row of nestRows) add(row.projectId, row.agentId);
+  for (const project of projectRows) {
+    for (const agent of unrestrictedRows) add(project.id, agent.id);
+  }
   return byProject;
 }
 
@@ -128,7 +140,7 @@ export async function projectMemberAgentIds(
   companyId: string,
   projectId: string,
 ): Promise<Set<string>> {
-  const [ledRows, joinedRows, nestRows] = await Promise.all([
+  const [ledRows, joinedRows, nestRows, unrestrictedRows] = await Promise.all([
     db
       .select({ leadAgentId: projects.leadAgentId })
       .from(projects)
@@ -154,8 +166,14 @@ export async function projectMemberAgentIds(
       .select({ agentId: agentNests.agentId })
       .from(agentNests)
       .where(and(eq(agentNests.companyId, companyId), eq(agentNests.projectId, projectId))),
+    db.select({ id: agents.id }).from(agents).where(and(
+      eq(agents.companyId, companyId),
+      sql`not exists (select 1 from agent_nests n where n.agent_id = ${agents.id})`,
+    )),
   ]);
   const members = new Set<string>();
+  if (ledRows.length === 0) return members;
+  for (const row of unrestrictedRows) members.add(row.id);
   for (const row of ledRows) if (row.leadAgentId) members.add(row.leadAgentId);
   for (const row of joinedRows) members.add(row.userId);
   for (const row of nestRows) members.add(row.agentId);

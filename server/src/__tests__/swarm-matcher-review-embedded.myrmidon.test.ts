@@ -40,7 +40,7 @@ import { createCasteDirectoryReader } from "../myrmidon/castes/directory.js";
 import { matchFreedAgent } from "../myrmidon/swarm-claim/index.js";
 import { listIdleRolePairs, matchAgent, matchCompany, type SwarmMatcherDeps } from "../myrmidon/swarm-claim/matcher.js";
 import { tryDevReviewContinuationOnRelease } from "../myrmidon/review-continuation.js";
-import { applyRunPrioritySettings, currentRunPrioritySettings, resetRunPriorityForTests } from "../myrmidon/run-priority/state.js";
+import { applyCompanyReleaseFocus, resetRunPriorityForTests } from "../myrmidon/run-priority/state.js";
 import { createSwarmClaimSweeper, type SwarmClaimSweeperDeps } from "../myrmidon/swarm-claim/sweep.js";
 import type { HostCpuGate, HostMemoryGate } from "../myrmidon/run-admission.js";
 
@@ -120,8 +120,8 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
   });
 
   it("creates one assigned auto-slice task after a sustained empty engineer queue", async () => {
-    applyRunPrioritySettings({ ...currentRunPrioritySettings(), currentRelease: "1.6.9" });
     const companyId = await seedCompany();
+    applyCompanyReleaseFocus(new Map([[companyId, { currentRelease: "1.6.9", strictReleaseFocus: false }]]));
     const leadId = await seedAgent(companyId, "lead");
     await db.update(agents).set({ role: "lead" }).where(eq(agents.id, leadId));
     const projectId = randomUUID();
