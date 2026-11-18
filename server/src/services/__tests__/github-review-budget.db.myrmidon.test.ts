@@ -136,6 +136,31 @@ describePostgres("shared GitHub review budget", () => {
     expect(result.reason).not.toContain("network_error");
   });
 
+  it("does not call transport when the real resolver starts at used 2000", async () => {
+    await db.delete(toolGatewayRateLimitCounters).where(like(toolGatewayRateLimitCounters.counterKey, "github-budget:%"));
+    resetReviewCiCacheForTests();
+    resetGitHubRateLimitForTests();
+    const [company] = await db.select().from(companies).limit(1);
+    if (!company) throw new Error("Budget test company missing");
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Exhausted resolver", status: "in_progress", priority: "medium" }).returning();
+    if (!issue) throw new Error("Budget test issue missing");
+    const headSha = "b".repeat(40);
+    await db.insert(issueWorkProducts).values({ companyId: company.id, issueId: issue.id, type: "pull_request", provider: "github", title: "Synthetic PR", url: "https://github.com/acme/app/pull/7", status: "open", isPrimary: true, metadata: { repo: "acme/app", number: 7, headSha } });
+    const [clock] = await db.execute(sql`select floor(extract(epoch from clock_timestamp()) / 60)::bigint as minute`);
+    const minute = Number(clock?.minute);
+    const windowStart = new Date(minute * 60_000);
+    await db.insert(toolGatewayRateLimitCounters).values({ companyId: company.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: windowStart, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(windowStart.getTime() + 3_600_000) });
+    let calls = 0;
+    const resolve = createReviewPullRequestCiResolver({ db, tokenProvider: async () => null, fetch: async () => {
+      calls++;
+      throw new Error("Unexpected synthetic transport call");
+    } });
+    const result = await resolve({ companyId: company.id, issueId: issue.id });
+    expect(calls).toBe(0);
+    expect(result).toMatchObject({ state: "unknown", reason: expect.stringContaining("budget_exhausted") });
+    expect(result.reason).not.toContain("network_error");
+  });
+
   it("fails closed on a budget store exception without exposing its contents", async () => {
     const canary = "synthetic-secret-canary-OPE-15043";
     const warn = vi.spyOn(logger, "warn").mockImplementation(() => logger);
