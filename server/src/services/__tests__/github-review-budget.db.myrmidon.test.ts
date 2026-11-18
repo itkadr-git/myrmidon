@@ -208,7 +208,8 @@ describePostgres("shared GitHub review budget", () => {
     const warn = vi.spyOn(logger, "warn").mockImplementation(() => logger);
     let calls = 0;
     try {
-      const brokenDb = { ...db, transaction: async () => { throw new Error(canary); } } as typeof db;
+      const brokenDb = Object.create(db) as typeof db;
+      brokenDb.transaction = async () => { throw new Error(canary); };
       const transport = withGitHubReviewBudget(brokenDb, "review-recovery", async () => {
         calls++;
         return new Response("ok");
