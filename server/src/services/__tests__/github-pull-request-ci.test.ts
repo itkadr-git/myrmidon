@@ -7,6 +7,7 @@ import {
   createPullRequestCiResolver,
   withCiResolveDeadline,
   clearCiCacheForTests,
+  readFreshReviewCiSnapshot,
   invalidateCiCacheForHead,
   summarizeHeadLaneEvidence,
   resolveCiFailureTails,
@@ -1915,6 +1916,21 @@ describe("createPullRequestCiResolver", () => {
       expect(markdown).toContain("Job lint (eslint) (id: 54321) log unavailable: token lacks actions:read permission or access denied (403)");
     });
   });
+  it("shares a fresh authoritative exact-head failure with review without another GitHub read", async () => {
+    const mockFetch = vi.fn(async () => ({ ok: true, status: 200, headers: new Headers(), json: async () => ({ total_count: 1, check_runs: [{ id: 1, name: "CI result", status: "completed", conclusion: "failure", html_url: "https://github.com/acme/app/runs/1", started_at: "2026-11-14T08:00:00Z", completed_at: "2026-11-14T08:01:00Z" }] }) }));
+    const resolver = createPullRequestCiResolver({ select: vi.fn() } as never, {
+      source: "run-context", fetch: mockFetch as never, tokenProvider: async () => "token",
+      prResolver: async () => ({ headSha: "exact-head", headRef: "branch" }),
+    });
+    const reference = { host: "github.com" as const, owner: "acme", repo: "app", number: 42 };
+    await resolver.resolveForPullRequest("company-1", reference);
+    expect(readFreshReviewCiSnapshot("company-1", reference, "exact-head")).toEqual({ state: "complete", headSha: "exact-head", finalCheckConclusion: "failure" });
+    expect(readFreshReviewCiSnapshot("company-1", reference, "changed-head")).toBeNull();
+    expect(readFreshReviewCiSnapshot("company-2", reference, "exact-head")).toBeNull();
+    invalidateCiCacheForHead("company-1", "acme/app", "exact-head");
+    expect(readFreshReviewCiSnapshot("company-1", reference, "exact-head")).toBeNull();
+  });
+
   it("invalidates a failed completed result when the retried check_run webhook arrives", async () => {
     const mockDb = { select: vi.fn() };
     let conclusion = "failure";
