@@ -686,8 +686,9 @@ export function createReviewPullRequestCiResolver(input: {
         // the current head.
         return { state: "unknown", pullRequestUrl, headSha: head.headSha, reason: "head_moved" };
       }
-      // A closed PR falls through: the authoritative resolver below answers
-      // no_pull_request with the closed head.
+      // Closed, as the first authoritative read established it: answer now,
+      // with no second read that a reopened PR or a lost budget could steer.
+      return { state: "no_pull_request", pullRequestUrl, headSha: head.headSha };
     }
     try {
       const head = await resolvePullRequestHeadCi({ reference, token, fetch: fetchImpl, fresh: true });

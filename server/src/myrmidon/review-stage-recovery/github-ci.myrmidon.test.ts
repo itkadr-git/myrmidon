@@ -727,6 +727,35 @@ describe("createReviewPullRequestCiResolver", () => {
     });
   });
 
+  it("answers no_pull_request from the first fresh read when the PR is closed (OPE-15119)", async () => {
+    // The first authoritative read already established the closed state: the
+    // answer must not wait on a second read that a reopened PR or a lost
+    // budget could steer.
+    const now = new Date();
+    const rows = [
+      { event: "pull_request", createdAt: now, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
+      { event: "check_run", createdAt: now, normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "abc123", checkName: "CI result", status: "completed", conclusion: "success" } },
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const calls: string[] = [];
+    const fetch = async (url: string) => {
+      calls.push(url);
+      if (calls.length > 1) throw new Error("no second read expected");
+      return new Response(JSON.stringify({ state: "closed", merged: true, head: { sha: "abc123" } }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => "token" });
+    await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toEqual({
+      state: "no_pull_request", pullRequestUrl: openProduct.url, headSha: "abc123",
+    });
+    expect(calls).toEqual([`https://api.github.com${PULL}`]);
+  });
+
   it("does not carry a matching verdict onto a fully green new head (OPE-15114)", async () => {
     // The verdict was made on head A; head B is pushed and fully green. The
     // new head's CI must not admit the old verdict: moved head => unknown.
