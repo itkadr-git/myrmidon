@@ -233,6 +233,10 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     const forbidden = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI failed" });
     expect(forbidden.status, JSON.stringify(forbidden.body)).toBe(422);
     expect(transport).toHaveBeenCalled();
+    transport.mockImplementation(async () => { throw new Error("connection reset"); });
+    const disconnected = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI failed" });
+    expect(disconnected.status, JSON.stringify(disconnected.body)).toBe(422);
+    expect(disconnected.body.error).toContain("CI status for the current pull request head is unavailable");
     transport.mockReset();
     await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: budgetCompany.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
     await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
