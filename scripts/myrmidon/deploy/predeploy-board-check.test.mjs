@@ -44,6 +44,9 @@ case "$1" in
     fi
     echo "0123456789ab"
     exit 0 ;;
+  cp)
+    cp "$2" "$SANDBOX/copied-dump"
+    exit $? ;;
   exec)
     case "$*" in *psql*ANALYZE*)
       [ -e "$SANDBOX/analyze-fails" ] && { echo "psql: error: analyze failed" >&2; exit 1; }

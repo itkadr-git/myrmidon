@@ -130,7 +130,12 @@ if ! [[ "$restore_jobs" =~ ^[0-9]+$ ]] || ((restore_jobs < 1 || restore_jobs > 1
   die "MYRMIDON_PREDEPLOY_RESTORE_JOBS must be a positive integer in 1..16 (got: '$restore_jobs'); nothing was changed"
 fi
 # shellcheck disable=SC2016  # the quotes are part of the command the operator overrides
-[[ -n "$restore_command" ]] || restore_command='docker exec -i -e PGPASSWORD="$MYR_PREDEPLOY_DB_PASSWORD" "$MYR_PREDEPLOY_DB_CONTAINER" pg_restore -U "$MYR_PREDEPLOY_DB_USER" -d "$MYR_PREDEPLOY_DB_NAME" --jobs "$MYR_PREDEPLOY_RESTORE_JOBS" --no-owner --no-acl < "$DUMP_FILE"'
+if [[ -z "$restore_command" ]]; then
+  restore_command='docker cp "$DUMP_FILE" "$MYR_PREDEPLOY_DB_CONTAINER:/tmp/myrmidon-predeploy.dump" && docker exec -e PGPASSWORD="$MYR_PREDEPLOY_DB_PASSWORD" "$MYR_PREDEPLOY_DB_CONTAINER" pg_restore -U "$MYR_PREDEPLOY_DB_USER" -d "$MYR_PREDEPLOY_DB_NAME" --jobs "$MYR_PREDEPLOY_RESTORE_JOBS" --no-owner --no-acl /tmp/myrmidon-predeploy.dump'
+  default_restore=1
+else
+  default_restore=0
+fi
 
 # myrmidon(PREDEPLOY-ANALYZE): pg_restore loads rows but not planner statistics,
 # so the planner of a fresh copy works on default estimates. The issues list
@@ -275,6 +280,9 @@ log "PREDEPLOY-DB-CHECK: proving $board_ref against a copy of the production dat
 # interrupt alike.
 cleanup() {
   local names=() n
+  if [[ "$default_restore" == 1 ]]; then
+    docker exec "$db_ctr" rm -f /tmp/myrmidon-predeploy.dump >/dev/null 2>&1 || true
+  fi
   for n in "$board_ctr" "$dg_ctr" "$db_ctr"; do [[ -n "$n" ]] && names+=("$n"); done
   if [[ "$keep" == "1" ]]; then
     log "PREDEPLOY-DB-CHECK: keeping the throwaway stack (MYRMIDON_PREDEPLOY_KEEP=1): network=$network db=$db_ctr dockergate=${dg_ctr:-<none>} board=$board_ctr (port $board_port) volume=$db_vol"
