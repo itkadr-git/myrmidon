@@ -14,13 +14,14 @@ import { logger } from "../middleware/logger.js";
 const transport = vi.hoisted(() => vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> => {
   throw new Error("Unexpected external transport");
 }));
+const canary = "synthetic-secret-do-not-log-15043";
 vi.mock("../services/github-fetch.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../services/github-fetch.js")>(),
   ghFetch: transport,
 }));
 vi.mock("../services/github-external-object-provider.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../services/github-external-object-provider.js")>(),
-  defaultTokenProvider: async () => null,
+  defaultTokenProvider: async () => canary,
 }));
 
 const ctx = useEmbeddedPostgres("myrmidon-review-ci-gate-");
@@ -64,16 +65,34 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     const actor = { type: "agent", agentId: reviewer, companyId, source: "agent_key", runId };
     const app = routeApp(ctx.db, actor as never, issueRoutes);
     const diagnostic = vi.spyOn(logger, "info");
+    const warning = vi.spyOn(logger, "warn");
+    const error = vi.spyOn(logger, "error");
     const rejected = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
     expect(diagnostic.mock.calls.some(([fields]) => typeof fields === "object" && fields !== null &&
       "issueId" in fields && fields.issueId === issueId && "runId" in fields && fields.runId === runId &&
       "reason" in fields && fields.reason === "budget_exhausted")).toBe(true);
-    diagnostic.mockRestore();
     expect(rejected.status, JSON.stringify(rejected.body)).toBe(422);
     expect(JSON.stringify(rejected.body)).toContain("CI status for the current pull request head is unavailable");
     expect(transport).not.toHaveBeenCalled();
     const [unchanged] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
     expect(unchanged?.status).toBe("in_review");
+
+    await ctx.db.update(toolGatewayRateLimitCounters).set({ count: 1999 }).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
+    transport.mockImplementationOnce(async (url, init) => {
+      expect(url).toBe("https://api.github.com/repos/acme/app/pulls/7");
+      expect(JSON.stringify(init?.headers)).toContain(canary);
+      throw new Error(`synthetic transport failure ${canary}`);
+    });
+    const networkFailure = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
+    expect(networkFailure.status).toBe(422);
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(diagnostic.mock.calls.some(([fields]) => typeof fields === "object" && fields !== null &&
+      "reason" in fields && fields.reason === "network_error")).toBe(true);
+    expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, rejected.body, networkFailure.body])).not.toContain(canary);
+    diagnostic.mockRestore();
+    warning.mockRestore();
+    error.mockRestore();
+    transport.mockClear();
 
     const stale = new Date(Date.now() - 31 * 60_000);
     await ctx.db.insert(connectionEventDeliveries).values([
