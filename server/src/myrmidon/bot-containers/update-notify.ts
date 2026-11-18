@@ -1,6 +1,5 @@
 import type { Db } from "@myrmidon/db";
-import { chatConversations, chatEndpoints, chatPublications, companies } from "@myrmidon/db";
-import { and, eq, inArray } from "drizzle-orm";
+import { chatPublications, companies } from "@myrmidon/db";
 import type { TelegramNotifySettings } from "@myrmidon/shared";
 import { readTelegramNotifySettingsDocument } from "../telegram-notify/settings-store.js";
 import { resolveTargetConversation } from "../telegram-notify/jobs.js";
@@ -75,9 +74,6 @@ export interface UpdateNotifyDeliveryRecipient {
 
 export interface UpdateNotifyPorts {
   readSettings(companyId: string): Promise<TelegramNotifySettings>;
-  findOwnerDeliveryRecipient(
-    companyId: string,
-  ): Promise<UpdateNotifyDeliveryRecipient | null>;
   resolveDirectConversation(
     companyId: string,
     chatId: string | null,
@@ -99,7 +95,7 @@ export async function notifyOwnerAboutUpdate(
   event: UpdateEventPayload,
 ): Promise<{
   sent: boolean;
-  channel?: "owner_delivery" | "telegram_direct";
+  channel?: "telegram_direct";
   reason?: string;
 }> {
   const settings = await ports.readSettings(event.companyId);
@@ -113,24 +109,20 @@ export async function notifyOwnerAboutUpdate(
     .toISOString()
     .slice(0, 13)}`;
 
-  // 1. Try owner-delivery / active channel if available
-  const ownerRecipient = await ports.findOwnerDeliveryRecipient(event.companyId);
-  if (ownerRecipient) {
-    await ports.enqueuePublication({
-      companyId: event.companyId,
-      endpointId: ownerRecipient.endpointId,
-      conversationId: ownerRecipient.conversationId,
-      issueId: ownerRecipient.issueId,
-      idempotencyKey,
-      text: messageText,
-    });
-    return { sent: true, channel: "owner_delivery" };
+  // The only recipient is the explicitly configured `updates.chatId`/`topicId`.
+  // No random direct conversation of any bot is used: without a configured
+  // target the event stays in the log (alerts go through monitoring).
+  const configuredChatId = settings.updates.chatId?.trim() ?? "";
+  if (configuredChatId === "") {
+    logger.info(
+      { companyId: event.companyId, eventType: event.eventType },
+      "update notification skipped: updates.chatId is not configured",
+    );
+    return { sent: false, reason: "no_destination_channel" };
   }
-
-  // 2. Otherwise fall back to direct Telegram target
   const directRecipient = await ports.resolveDirectConversation(
     event.companyId,
-    settings.updates.chatId,
+    configuredChatId,
     settings.updates.topicId,
   );
   if (directRecipient) {
@@ -148,47 +140,11 @@ export async function notifyOwnerAboutUpdate(
   return { sent: false, reason: "no_destination_channel" };
 }
 
-export async function findActiveOwnerDeliveryConversation(
-  db: Db,
-  companyId: string,
-): Promise<UpdateNotifyDeliveryRecipient | null> {
-  const rows = await db
-    .select({
-      conversationId: chatConversations.id,
-      endpointId: chatConversations.endpointId,
-      issueId: chatConversations.issueId,
-    })
-    .from(chatConversations)
-    .innerJoin(chatEndpoints, eq(chatConversations.endpointId, chatEndpoints.id))
-    .where(
-      and(
-        eq(chatConversations.companyId, companyId),
-        eq(chatConversations.isDirectMessage, true),
-        inArray(chatConversations.state, ["active", "waiting"]),
-        eq(chatEndpoints.provider, "telegram"),
-        inArray(chatEndpoints.status, ["active", "verifying"]),
-      ),
-    )
-    .limit(1);
-
-  if (rows.length > 0 && rows[0].issueId) {
-    return {
-      conversationId: rows[0].conversationId,
-      endpointId: rows[0].endpointId,
-      issueId: rows[0].issueId,
-    };
-  }
-  return null;
-}
-
 export function createDbUpdateNotifyPorts(db: Db): UpdateNotifyPorts {
   return {
     async readSettings(companyId: string) {
       const doc = await readTelegramNotifySettingsDocument(db, companyId);
       return doc.settings;
-    },
-    async findOwnerDeliveryRecipient(companyId: string) {
-      return findActiveOwnerDeliveryConversation(db, companyId);
     },
     async resolveDirectConversation(
       companyId: string,

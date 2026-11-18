@@ -27,6 +27,9 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.ts";
+import { createPgReviewRoutingStore } from "../myrmidon/review-routing/store.js";
+import { buildReviewRoutingReassignPatch, readPendingAgentReview } from "../myrmidon/review-routing/policy.js";
 import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -259,7 +262,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(wakeup?.payload).toMatchObject({ issueId, nextCheckAt: nextCheckAt.toISOString() });
   });
 
-  it("does not wake the assignee for a due monitor while an issue is in an active review stage", async () => {
+  it("does not wake the assignee for a due monitor while a human review is pending", async () => {
     const { issueId, agentId, nextCheckAt } = await seedFixture({ issueStatus: "in_review" });
     await db.update(issues).set({
       executionState: {
@@ -267,7 +270,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
         currentStageId: randomUUID(),
         currentStageIndex: 0,
         currentStageType: "review",
-        currentParticipant: { type: "agent", agentId: randomUUID() },
+        currentParticipant: { type: "user", userId: "reviewer" },
         returnAssignee: { type: "agent", agentId },
         completedStageIds: [],
         lastDecisionId: null,
@@ -282,6 +285,414 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(issue.monitorNextCheckAt?.getTime()).toBe(nextCheckAt.getTime());
+  });
+
+  it("routes an ordinary due monitor to the current reviewer, not the return assignee", async () => {
+    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture({ issueStatus: "in_review" });
+    const reviewerId = randomUUID();
+    await db.insert(agents).values({
+      id: reviewerId, companyId, name: "Reviewer", role: "reviewer", status: "active",
+      adapterType: "process", adapterConfig: { command: process.execPath, args: ["-e", ""], cwd: process.cwd() },
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } }, permissions: {},
+    });
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const state = {
+      status: "pending", currentStageId: randomUUID(), currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: reviewerId, userId: null },
+      returnAssignee: { type: "agent", agentId, userId: null },
+      reviewRequest: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+      monitor: parseIssueExecutionState(before!.executionState)?.monitor,
+    };
+    await db.update(issues).set({ executionState: state }).where(eq(issues.id, issueId));
+
+    const previousSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
+    process.env.MYRMIDON_AGENT_JWT_SECRET = "issue-monitor-test-secret";
+    const heartbeat = heartbeatService(db);
+    try {
+      expect((await heartbeat.tickTimers(nextCheckAt)).enqueued).toBe(1);
+      expect((await heartbeat.tickTimers(new Date(nextCheckAt.getTime() + 60_000))).enqueued).toBe(0);
+      await heartbeat.resumeQueuedRuns();
+      await waitForHeartbeatIdle();
+    } finally {
+      if (previousSecret === undefined) delete process.env.MYRMIDON_AGENT_JWT_SECRET;
+      else process.env.MYRMIDON_AGENT_JWT_SECRET = previousSecret;
+    }
+    const runs = await db.select().from(heartbeatRuns);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ agentId: reviewerId, status: "succeeded" });
+    const wakes = await db.select().from(agentWakeupRequests);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ agentId: reviewerId });
+    const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(parseIssueExecutionState(after!.executionState)).toMatchObject({
+      currentParticipant: state.currentParticipant, returnAssignee: state.returnAssignee,
+    });
+  });
+
+  it("preserves a reassigned reviewer when an exhausted monitor is cleared", async () => {
+    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture({
+      issueStatus: "in_review", monitorAttemptCount: 1, monitor: { maxAttempts: 1 },
+    });
+    const reviewerId = randomUUID();
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    await db.update(issues).set({ executionState: {
+      status: "pending", currentStageId: randomUUID(), currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId, userId: null },
+      returnAssignee: { type: "agent", agentId, userId: null },
+      reviewRequest: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+      monitor: parseIssueExecutionState(before!.executionState)?.monitor,
+    } }).where(eq(issues.id, issueId));
+    await db.insert(agents).values({
+      id: reviewerId, companyId, name: "New reviewer", role: "reviewer", status: "active",
+      adapterType: "process", adapterConfig: { command: process.execPath, args: ["-e", ""], cwd: process.cwd() },
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } }, permissions: {},
+    });
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_reassign_on_monitor_claim() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET execution_state = jsonb_set(execution_state, '{currentParticipant}',
+            '{"type":"agent","agentId":"${reviewerId}","userId":null}'::jsonb) WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_reassign_on_monitor_claim AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_reassign_on_monitor_claim();
+    `));
+    try {
+      await heartbeatService(db, { executesRuns: false }).tickTimers(nextCheckAt);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(parseIssueExecutionState(after!.executionState)).toMatchObject({
+        currentParticipant: { type: "agent", agentId: reviewerId },
+        returnAssignee: { type: "agent", agentId },
+        monitor: { status: "cleared" },
+      });
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER test_reassign_on_monitor_claim ON issues; DROP FUNCTION test_reassign_on_monitor_claim();"));
+      await db.delete(heartbeatRuns);
+    }
+  });
+
+  it("preserves a concurrent reschedule when a review CI monitor has no reviewer", async () => {
+    const { issueId, nextCheckAt } = await seedFixture({ monitor: { serviceName: "Review CI wait" } });
+    const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_reschedule_review_wait() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_next_check_at = '${rescheduledAt.toISOString()}'::timestamptz,
+            execution_policy = jsonb_set(execution_policy, '{monitor,nextCheckAt}', to_jsonb('${rescheduledAt.toISOString()}'::text)),
+            execution_state = jsonb_set(execution_state, '{monitor,nextCheckAt}', to_jsonb('${rescheduledAt.toISOString()}'::text))
+          WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_reschedule_review_wait AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_reschedule_review_wait();
+    `));
+    try {
+      await heartbeatService(db, { executesRuns: false }).tickTimers(nextCheckAt);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(after!.monitorNextCheckAt?.toISOString()).toBe(rescheduledAt.toISOString());
+      expect(normalizeIssueExecutionPolicy(after!.executionPolicy)?.monitor?.nextCheckAt).toBe(rescheduledAt.toISOString());
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER test_reschedule_review_wait ON issues; DROP FUNCTION test_reschedule_review_wait();"));
+    }
+  });
+
+  it("preserves a concurrent reschedule when an old monitor is deferred for CI", async () => {
+    const { companyId, issueId, nextCheckAt } = await seedFixture();
+    const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
+    await db.insert(issueWorkProducts).values({
+      id: randomUUID(), companyId, issueId, type: "pull_request", provider: "github",
+      title: "PR #123", status: "open", metadata: { activeCi: { status: "in_progress" } },
+    });
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_reschedule_on_claim() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_next_check_at = '${rescheduledAt.toISOString()}'::timestamptz,
+            execution_policy = jsonb_set(execution_policy, '{monitor,nextCheckAt}', to_jsonb('${rescheduledAt.toISOString()}'::text)),
+            execution_state = jsonb_set(execution_state, '{monitor,nextCheckAt}', to_jsonb('${rescheduledAt.toISOString()}'::text))
+          WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_reschedule_on_claim AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_reschedule_on_claim();
+    `));
+    try {
+      await heartbeatService(db, { executesRuns: false }).tickTimers(nextCheckAt);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(after!.monitorNextCheckAt?.toISOString()).toBe(rescheduledAt.toISOString());
+      expect(normalizeIssueExecutionPolicy(after!.executionPolicy)?.monitor?.nextCheckAt).toBe(rescheduledAt.toISOString());
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER test_reschedule_on_claim ON issues; DROP FUNCTION test_reschedule_on_claim();"));
+    }
+  });
+
+  it("preserves a concurrent reschedule when an old monitor cannot wake a paused agent", async () => {
+    const { issueId, nextCheckAt } = await seedFixture({ agentStatus: "paused" });
+    const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_reschedule_before_failed_wake() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_next_check_at = '${rescheduledAt.toISOString()}'::timestamptz,
+            execution_policy = jsonb_set(execution_policy, '{monitor,nextCheckAt}', to_jsonb('${rescheduledAt.toISOString()}'::text)),
+            execution_state = jsonb_set(execution_state, '{monitor,nextCheckAt}', to_jsonb('${rescheduledAt.toISOString()}'::text))
+          WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_reschedule_before_failed_wake AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_reschedule_before_failed_wake();
+    `));
+    try {
+      await heartbeatService(db, { executesRuns: false }).tickTimers(nextCheckAt);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(after!.monitorNextCheckAt?.toISOString()).toBe(rescheduledAt.toISOString());
+      expect(normalizeIssueExecutionPolicy(after!.executionPolicy)?.monitor?.nextCheckAt).toBe(rescheduledAt.toISOString());
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER test_reschedule_before_failed_wake ON issues; DROP FUNCTION test_reschedule_before_failed_wake();"));
+    }
+  });
+
+  it("preserves a monitor rescheduled while its previous wake is enqueued", async () => {
+    const { issueId, nextCheckAt } = await seedFixture();
+    const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_reschedule_monitor() RETURNS trigger AS $$
+      BEGIN
+        UPDATE issues SET monitor_next_check_at = '${rescheduledAt.toISOString()}'::timestamptz,
+          execution_policy = jsonb_set(execution_policy, '{monitor,nextCheckAt}', to_jsonb('${rescheduledAt.toISOString()}'::text)),
+          execution_state = jsonb_set(execution_state, '{monitor,nextCheckAt}', to_jsonb('${rescheduledAt.toISOString()}'::text))
+        WHERE id = '${issueId}'::uuid;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_reschedule_monitor AFTER INSERT ON agent_wakeup_requests
+      FOR EACH ROW EXECUTE FUNCTION test_reschedule_monitor();
+    `));
+    try {
+      await heartbeatService(db, { executesRuns: false }).tickTimers(nextCheckAt);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(after!.monitorNextCheckAt?.toISOString()).toBe(rescheduledAt.toISOString());
+      expect(normalizeIssueExecutionPolicy(after!.executionPolicy)?.monitor?.nextCheckAt).toBe(rescheduledAt.toISOString());
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER test_reschedule_monitor ON agent_wakeup_requests; DROP FUNCTION test_reschedule_monitor();"));
+      await db.delete(heartbeatRuns);
+    }
+  });
+
+  it("hands a queued monitor wake to the reviewer selected before admission", async () => {
+    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture({ issueStatus: "in_review" });
+    const oldReviewer = randomUUID();
+    const newReviewer = randomUUID();
+    for (const id of [oldReviewer, newReviewer]) {
+      await db.insert(agents).values({
+        id, companyId, name: `Reviewer ${id}`, role: "reviewer", status: "active",
+        adapterType: "process", adapterConfig: { command: process.execPath, args: ["-e", ""], cwd: process.cwd() },
+        runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } }, permissions: {},
+      });
+    }
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const state = {
+      status: "pending", currentStageId: randomUUID(), currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: oldReviewer, userId: null },
+      returnAssignee: { type: "agent", agentId, userId: null },
+      reviewRequest: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+      monitor: parseIssueExecutionState(before!.executionState)?.monitor,
+    };
+    await db.update(issues).set({ executionState: state }).where(eq(issues.id, issueId));
+    const previousSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
+    process.env.MYRMIDON_AGENT_JWT_SECRET = "issue-monitor-test-secret";
+    try {
+      const scheduler = heartbeatService(db, { executesRuns: false });
+      expect((await scheduler.tickTimers(nextCheckAt)).enqueued).toBe(1);
+      const [queued] = await db.select().from(heartbeatRuns);
+      expect(queued).toMatchObject({ agentId: oldReviewer, status: "queued" });
+      await db.update(issues).set({
+        executionState: sql`jsonb_set(${issues.executionState}, '{currentParticipant}', ${JSON.stringify({ type: "agent", agentId: newReviewer, userId: null })}::jsonb)`,
+      }).where(eq(issues.id, issueId));
+      const executor = heartbeatService(db);
+      await executor.resumeQueuedRuns();
+      await waitForHeartbeatIdle();
+      expect((await executor.tickTimers(new Date(nextCheckAt.getTime() + 60_000))).enqueued).toBe(0);
+      const runs = await db.select().from(heartbeatRuns);
+      expect(runs.filter((run) => run.status === "succeeded").map((run) => run.agentId)).toEqual([newReviewer]);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(parseIssueExecutionState(after!.executionState)).toMatchObject({
+        currentParticipant: { type: "agent", agentId: newReviewer }, returnAssignee: state.returnAssignee,
+      });
+    } finally {
+      if (previousSecret === undefined) delete process.env.MYRMIDON_AGENT_JWT_SECRET;
+      else process.env.MYRMIDON_AGENT_JWT_SECRET = previousSecret;
+    }
+  });
+
+  it("coalesces the routing reassignment wake with a queued monitor handoff", async () => {
+    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture({ issueStatus: "in_review" });
+    const [oldReviewer, newReviewer, stageId] = [randomUUID(), randomUUID(), randomUUID()];
+    for (const id of [oldReviewer, newReviewer]) {
+      await db.insert(agents).values({
+        id, companyId, name: `Reviewer ${id}`, role: "reviewer", status: "active",
+        adapterType: "process", adapterConfig: { command: process.execPath, args: ["-e", ""], cwd: process.cwd() },
+        runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } }, permissions: {},
+      });
+    }
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const returnAssignee = { type: "agent", agentId, userId: null };
+    await db.update(issues).set({
+      assigneeAgentId: oldReviewer,
+      executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", approvalsNeeded: 1,
+        participants: [{ type: "agent", agentId: oldReviewer }] }],
+        monitor: normalizeIssueExecutionPolicy(before!.executionPolicy)?.monitor },
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: oldReviewer, userId: null }, returnAssignee,
+        reviewRequest: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+        monitor: parseIssueExecutionState(before!.executionState)?.monitor },
+    }).where(eq(issues.id, issueId));
+    const previousSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
+    process.env.MYRMIDON_AGENT_JWT_SECRET = "issue-monitor-test-secret";
+    try {
+      const scheduler = heartbeatService(db, { executesRuns: false });
+      expect((await scheduler.tickTimers(nextCheckAt)).enqueued).toBe(1);
+      const store = createPgReviewRoutingStore(db);
+      const applied = await store.applyPatch({
+        issueId, companyId,
+        guard: (fresh) => readPendingAgentReview(fresh)?.reviewerAgentId === oldReviewer,
+        build: (fresh) => buildReviewRoutingReassignPatch({ issue: fresh, newReviewerAgentId: newReviewer }),
+      });
+      expect(applied).not.toBeNull();
+      await scheduler.wakeup(newReviewer, {
+        source: "assignment", triggerDetail: "system", reason: "execution_review_requested",
+        payload: { issueId, mutation: "myrmidon_review_routing_reassign", executionStage: applied!.executionState },
+        contextSnapshot: { issueId, taskId: issueId, wakeReason: "execution_review_requested", source: "myrmidon.review_routing" },
+      });
+      const executor = heartbeatService(db);
+      await executor.resumeQueuedRuns();
+      await waitForHeartbeatSideEffectsSettled();
+      expect((await executor.tickTimers(new Date(nextCheckAt.getTime() + 60_000))).enqueued).toBe(0);
+      const runs = await db.select().from(heartbeatRuns);
+      // The no-op test adapter can trigger the independent missing-comment retry.
+      expect(runs.filter((run) => run.agentId === newReviewer && !run.retryOfRunId)).toHaveLength(1);
+      expect(runs.filter((run) => run.agentId === newReviewer && !run.retryOfRunId).map((run) => run.status)).toEqual(["succeeded"]);
+      const wakes = await db.select().from(agentWakeupRequests);
+      expect(wakes.filter((wake) => wake.idempotencyKey?.startsWith("issue-monitor-handoff:"))).toHaveLength(0);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(parseIssueExecutionState(after!.executionState)).toMatchObject({
+        currentParticipant: { type: "agent", agentId: newReviewer }, returnAssignee,
+      });
+    } finally {
+      if (previousSecret === undefined) delete process.env.MYRMIDON_AGENT_JWT_SECRET;
+      else process.env.MYRMIDON_AGENT_JWT_SECRET = previousSecret;
+    }
+  });
+
+  it("recovers a monitor handoff after a crash immediately following cancellation", async () => {
+    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture({ issueStatus: "in_review" });
+    const [oldReviewer, newReviewer] = [randomUUID(), randomUUID()];
+    for (const id of [oldReviewer, newReviewer]) {
+      await db.insert(agents).values({
+        id, companyId, name: `Reviewer ${id}`, role: "reviewer", status: "active",
+        adapterType: "process", adapterConfig: { command: process.execPath, args: ["-e", ""], cwd: process.cwd() },
+        runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } }, permissions: {},
+      });
+    }
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const returnAssignee = { type: "agent", agentId, userId: null };
+    await db.update(issues).set({ executionState: {
+      status: "pending", currentStageId: randomUUID(), currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: oldReviewer, userId: null }, returnAssignee,
+      reviewRequest: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+      monitor: parseIssueExecutionState(before!.executionState)?.monitor,
+    } }).where(eq(issues.id, issueId));
+    const previousSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
+    process.env.MYRMIDON_AGENT_JWT_SECRET = "issue-monitor-test-secret";
+    try {
+      expect((await heartbeatService(db, { executesRuns: false }).tickTimers(nextCheckAt)).enqueued).toBe(1);
+      const [queued] = await db.select().from(heartbeatRuns);
+      await db.update(issues).set({
+        executionState: sql`jsonb_set(${issues.executionState}, '{currentParticipant}', ${JSON.stringify({ type: "agent", agentId: newReviewer, userId: null })}::jsonb)`,
+      }).where(eq(issues.id, issueId));
+      expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        companyId, runId: queued!.id, expectedStatus: "queued", now: new Date(),
+      })).toMatchObject({ outcome: "cancelled", errorCode: "issue_review_participant_changed" });
+      // Restart after the cancellation transaction but before its post-commit drain.
+      const old = new Date(Date.now() - 11 * 60_000);
+      await db.update(heartbeatRuns).set({ finishedAt: old }).where(eq(heartbeatRuns.id, queued!.id));
+      await db.update(agentWakeupRequests).set({ requestedAt: old, createdAt: old, updatedAt: old })
+        .where(eq(agentWakeupRequests.status, "deferred_issue_execution"));
+      const executor = heartbeatService(db);
+      await executor.resumeQueuedRuns();
+      await waitForHeartbeatIdle();
+      const runs = await db.select().from(heartbeatRuns);
+      expect(runs.filter((run) => run.status === "succeeded").map((run) => run.agentId)).toEqual([newReviewer]);
+      expect((await executor.tickTimers(new Date(nextCheckAt.getTime() + 60_000))).enqueued).toBe(0);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(parseIssueExecutionState(after!.executionState)).toMatchObject({
+        currentParticipant: { type: "agent", agentId: newReviewer }, returnAssignee,
+      });
+    } finally {
+      if (previousSecret === undefined) delete process.env.MYRMIDON_AGENT_JWT_SECRET;
+      else process.env.MYRMIDON_AGENT_JWT_SECRET = previousSecret;
+    }
+  });
+
+  it("follows a second reviewer change during the durable monitor handoff", async () => {
+    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture({ issueStatus: "in_review" });
+    const [oldReviewer, intermediateReviewer, finalReviewer] = [randomUUID(), randomUUID(), randomUUID()];
+    for (const id of [oldReviewer, intermediateReviewer, finalReviewer]) {
+      await db.insert(agents).values({
+        id, companyId, name: `Reviewer ${id}`, role: "reviewer", status: "active",
+        adapterType: "process", adapterConfig: { command: process.execPath, args: ["-e", ""], cwd: process.cwd() },
+        runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } }, permissions: {},
+      });
+    }
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const state = {
+      status: "pending", currentStageId: randomUUID(), currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: oldReviewer, userId: null },
+      returnAssignee: { type: "agent", agentId, userId: null },
+      reviewRequest: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+      monitor: parseIssueExecutionState(before!.executionState)?.monitor,
+    };
+    await db.update(issues).set({ executionState: state }).where(eq(issues.id, issueId));
+    const previousSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
+    process.env.MYRMIDON_AGENT_JWT_SECRET = "issue-monitor-test-secret";
+    try {
+      const scheduler = heartbeatService(db, { executesRuns: false });
+      expect((await scheduler.tickTimers(nextCheckAt)).enqueued).toBe(1);
+      await db.update(issues).set({
+        executionState: sql`jsonb_set(${issues.executionState}, '{currentParticipant}', ${JSON.stringify({ type: "agent", agentId: intermediateReviewer, userId: null })}::jsonb)`,
+      }).where(eq(issues.id, issueId));
+      await db.execute(sql.raw(`
+        CREATE FUNCTION test_second_review_change() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.agent_id = '${intermediateReviewer}'::uuid AND NEW.reason = 'issue_monitor_due' THEN
+            UPDATE issues SET execution_state = jsonb_set(execution_state, '{currentParticipant}',
+              '{"type":"agent","agentId":"${finalReviewer}","userId":null}'::jsonb) WHERE id = '${issueId}'::uuid;
+          END IF;
+          RETURN NEW;
+        END; $$ LANGUAGE plpgsql;
+        CREATE TRIGGER test_second_review_change AFTER INSERT ON agent_wakeup_requests
+        FOR EACH ROW EXECUTE FUNCTION test_second_review_change();
+      `));
+      const executor = heartbeatService(db);
+      await executor.resumeQueuedRuns();
+      await waitForHeartbeatIdle();
+      expect((await executor.tickTimers(new Date(nextCheckAt.getTime() + 60_000))).enqueued).toBe(0);
+      const runs = await db.select().from(heartbeatRuns);
+      expect(runs.filter((run) => run.status === "succeeded").map((run) => run.agentId)).toEqual([finalReviewer]);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(parseIssueExecutionState(after!.executionState)).toMatchObject({
+        currentParticipant: { type: "agent", agentId: finalReviewer }, returnAssignee: state.returnAssignee,
+      });
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_second_review_change ON agent_wakeup_requests; DROP FUNCTION IF EXISTS test_second_review_change();"));
+      if (previousSecret === undefined) delete process.env.MYRMIDON_AGENT_JWT_SECRET;
+      else process.env.MYRMIDON_AGENT_JWT_SECRET = previousSecret;
+    }
   });
 
   it("triggers due issue monitors once and clears the one-shot schedule", async () => {

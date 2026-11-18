@@ -109,6 +109,30 @@ PROFILE
   fi
 fi
 
+# myrmidon(OMP-RUNNER-DEVBUILD): devbuild connection for SSH sessions, same
+# reason as above (no container env in logins). Written only when the compose
+# file passes DEVBUILD_HOST and DEVBUILD_USER; otherwise the file is removed and
+# the runner behaves as before. The key is the optional read-only mount at
+# /opt/devbuild-ssh/id_ed25519 (an empty file means "not configured").
+rm -f /etc/profile.d/omp-runner-devbuild.sh /root/.ssh/devbuild_ed25519
+if [ -n "${DEVBUILD_HOST:-}" ] && [ -n "${DEVBUILD_USER:-}" ]; then
+  if [ -s /opt/devbuild-ssh/id_ed25519 ]; then
+    install -d -m 0700 /root/.ssh
+    install -m 0600 /opt/devbuild-ssh/id_ed25519 /root/.ssh/devbuild_ed25519
+    cat > /etc/profile.d/omp-runner-devbuild.sh <<PROFILE
+# Written by the omp-runner entrypoint (OMP-RUNNER-DEVBUILD).
+export DEVBUILD_HOST='${DEVBUILD_HOST}'
+export DEVBUILD_USER='${DEVBUILD_USER}'
+export DEVBUILD_BASE='${DEVBUILD_BASE:-/srv/devbuild}'
+export DEVBUILD_SSH_KEY='/root/.ssh/devbuild_ed25519'
+PROFILE
+    chmod 0644 /etc/profile.d/omp-runner-devbuild.sh
+    echo "omp-runner: devbuild enabled for ${DEVBUILD_USER}@${DEVBUILD_HOST}"
+  else
+    echo "omp-runner: WARNING DEVBUILD_HOST/DEVBUILD_USER set but no key at /opt/devbuild-ssh/id_ed25519 (set OMP_RUNNER_DEVBUILD_KEY); devbuild stays off" >&2
+  fi
+fi
+
 # The board's git mirrors, read through /usr/local/bin/git (mounted read-only):
 # one line so the operator sees whether the mount holds any.
 if [ -d /cache/git ]; then

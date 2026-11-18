@@ -9,11 +9,12 @@
 // reads the delivered tree through the knowledge module, so a draft that
 // was never published does not leave the board.
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { Db } from "@myrmidon/db";
 import { companies } from "@myrmidon/db";
+import { readProductEnv } from "@myrmidon/shared/env-alias";
 import { isNotNull } from "drizzle-orm";
 import { logger } from "../../middleware/logger.js";
 import { createKnowledgeModule } from "./service.js";
@@ -84,9 +85,15 @@ export async function runKnowledgeExportPass(
   let committed = 0;
   let unchanged = 0;
   let failed = 0;
+  const env = opts.env ?? process.env;
+  const scratchRoot = readProductEnv("RUN_SCRATCH_DIR", { env })?.trim()
+    || readProductEnv("SCRATCH_DIR", { env })?.trim()
+    || os.homedir();
   for (const companyId of companyIds) {
-    const workDir = await mkdtemp(path.join(os.tmpdir(), "knowledge-export-"));
+    let workDir: string | undefined;
     try {
+      await mkdir(scratchRoot, { recursive: true });
+      workDir = await mkdtemp(path.join(scratchRoot, "knowledge-export-"));
       const buf = await ports.exportCompany(db, companyId);
       const doc = parseKnowledgeTree(buf);
       const tree = buildKnowledgeGitTree(doc);
@@ -108,7 +115,7 @@ export async function runKnowledgeExportPass(
       failed += 1;
       ports.log.warn({ error: errorMessage(err), companyId }, "knowledge export failed for one company");
     } finally {
-      await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+      if (workDir) await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
   return { enabled: true, companies: companyIds.length, committed, unchanged, failed };

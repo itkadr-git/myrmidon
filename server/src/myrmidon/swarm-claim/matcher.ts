@@ -102,8 +102,8 @@ import {
 } from "./effective-pheromone.js";
 import { projectMemberAgentIds, projectMembershipByProject, projectScopedClaimGate } from "../project-membership.js";
 import { issueService } from "../../services/issues.js";
-import { currentRunPrioritySettings } from "../run-priority/state.js";
-import { createAutoSlicePolicy, projectQueueShortages, releaseEpicCandidates, runAutoSlicePass } from "./auto-slice-policy.js";
+import { currentCompanyReleaseFocus } from "../run-priority/state.js";
+import { AUTO_SLICE_DEDUPE_STATUSES, AUTO_SLICE_TITLE, createAutoSlicePolicy, projectQueueShortages, releaseEpicCandidates, runAutoSlicePass } from "./auto-slice-policy.js";
 import { unassignedTaskRoutedToRole } from "./queue.js";
 import { insertClaim, releaseClaimsForIssue, revertIdleClaimAssignment } from "./store.js";
 
@@ -734,10 +734,9 @@ async function casteDirectoryOf(
  * that no task was found for, and a closed host field matches nothing at all.
  */
 const autoSlicePolicies = new WeakMap<object, ReturnType<typeof createAutoSlicePolicy>>();
-const AUTO_SLICE_TITLE = "[AUTO-SLICE] Пополнить очередь инженеров";
 
 async function autoSliceCompany(deps: SwarmMatcherDeps, companyId: string, castes: Map<string, SwarmMatcherCaste>): Promise<void> {
-  const release = currentRunPrioritySettings().currentRelease;
+  const release = currentCompanyReleaseFocus(companyId).currentRelease;
   if (!release) return;
   const [pools, members, projectRows, issueRows] = await Promise.all([
     listIdleRolePairs(deps.db, companyId, { roles: ["engineer", "lead"], order: queueOrderOf(deps) }),
@@ -772,7 +771,7 @@ async function autoSliceCompany(deps: SwarmMatcherDeps, companyId: string, caste
         await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${companyId}), hashtext(${projectId}))`);
         const [existing] = await tx.select({ id: issues.id }).from(issues).where(and(
           eq(issues.companyId, companyId), eq(issues.projectId, projectId), eq(issues.title, AUTO_SLICE_TITLE),
-          isNull(issues.hiddenAt), inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
+          isNull(issues.hiddenAt), inArray(issues.status, [...AUTO_SLICE_DEDUPE_STATUSES]),
         )).limit(1);
         if (existing) return null;
         return issueService(deps.db).create(companyId, {
@@ -1496,9 +1495,18 @@ export async function openLoadByAgent(db: Db, companyId: string): Promise<Map<st
   return loads;
 }
 
+const CI_WAIT_ISSUE_STATUSES: ReadonlySet<string> = new Set(["todo", "in_progress"]);
+
 /**
  * A linked open PR waiting on CI or review discounts assigned load after
  * fifteen minutes without an activity observation.
+ *
+ * myrmidon(CI-WAIT-NOT-LOAD): a CI wait counts for todo tasks too (a bot
+ * hands the task back to todo while its PR runs CI), draft PRs included. On
+ * 16.11 only in_progress was discounted, 45 such todo tasks kept 8-13 of 14
+ * engineers "busy". The fifteen minutes stay: they keep a task out of the
+ * discount in the first moments after a push, while the agent may still work.
+ * The review wait stays in_progress only.
  */
 async function ciWaitingPullRequestIssueIds(db: Db, companyId: string): Promise<Set<string>> {
   const products = await db.select({ issueId: issueWorkProducts.issueId, issueStatus: issues.status, status: issueWorkProducts.status, metadata: issueWorkProducts.metadata, externalId: issueWorkProducts.externalId, reviewState: issueWorkProducts.reviewState, updatedAt: issueWorkProducts.updatedAt })
@@ -1511,14 +1519,14 @@ async function ciWaitingPullRequestIssueIds(db: Db, companyId: string): Promise<
     const repository = typeof metadata?.repository === "string" ? metadata.repository : typeof metadata?.repo === "string" ? metadata.repo : null;
     const number = typeof metadata?.number === "number" ? metadata.number : Number(product.externalId?.match(/#pull\/(\d+)$/)?.[1]);
     const ci = metadata?.activeCi && typeof metadata.activeCi === "object" ? metadata.activeCi as Record<string, unknown> : null;
-    if (product.issueStatus === "in_progress" && repository && Number.isSafeInteger(number) && number > 0) {
+    if (CI_WAIT_ISSUE_STATUSES.has(product.issueStatus) && repository && Number.isSafeInteger(number) && number > 0) {
       current.set(`${repository.toLowerCase()}#${number}`, { head: typeof ci?.headSha === "string" ? ci.headSha.toLowerCase() : "", issueId: product.issueId });
     }
   }
   if (!current.size) return new Set();
   const waiting = new Set<string>();
   for (const product of products) {
-    if (product.issueStatus !== "in_progress") continue;
+    if (!CI_WAIT_ISSUE_STATUSES.has(product.issueStatus)) continue;
     const meta = product.metadata as Record<string, unknown> | null;
     const ci = meta?.activeCi && typeof meta.activeCi === "object" ? meta.activeCi as Record<string, unknown> : null;
     const repository = typeof meta?.repository === "string" ? meta.repository : typeof meta?.repo === "string" ? meta.repo : null;
@@ -1532,7 +1540,7 @@ async function ciWaitingPullRequestIssueIds(db: Db, companyId: string): Promise<
     const lastActivityAt = Number.isFinite(observedAt) ? Math.max(observedAt, product.updatedAt.getTime()) : product.updatedAt.getTime();
     const age = Date.now() - lastActivityAt;
     const waitingLongEnough = age >= 15 * 60_000;
-    const reviewWait = product.status === "open" && product.reviewState === "ready_for_review" && waitingLongEnough;
+    const reviewWait = product.issueStatus === "in_progress" && product.status === "open" && product.reviewState === "ready_for_review" && waitingLongEnough;
     const ciWait = product.status === "open" && waitingForCi && matchingCiHead && waitingLongEnough;
     if (currentPr?.issueId === product.issueId && (ciWait || reviewWait)) {
       waiting.add(product.issueId);

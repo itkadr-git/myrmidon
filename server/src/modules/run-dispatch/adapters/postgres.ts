@@ -1118,6 +1118,35 @@ export function createPostgresRunDispatchAdapter(
         }
       }
 
+      if (issueId && decision.errorCode === "issue_review_participant_changed" &&
+          readNonEmptyString(parseObject(run.contextSnapshot).wakeReason) === "issue_monitor_due") {
+        const participant = parseObject(decision.details.currentParticipant);
+        const reviewerId = participant.type === "agent" ? readNonEmptyString(participant.agentId) : null;
+        if (reviewerId && reviewerId !== run.agentId) {
+          const [existing] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, reviewerId),
+            inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+            sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+          )).limit(1);
+          const [pending] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+            eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, reviewerId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+            sql`${agentWakeupRequests.payload}->'executionWait' is null`,
+            sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
+          )).limit(1);
+          if (!existing && !pending) {
+            const context = { ...parseObject(run.contextSnapshot), issueId, wakeReason: "issue_monitor_due" };
+            await tx.insert(agentWakeupRequests).values({
+              companyId: run.companyId, agentId: reviewerId, source: "automation", triggerDetail: "system",
+              reason: "issue_monitor_due", status: "deferred_issue_execution",
+              payload: { issueId, wakeReason: "issue_monitor_due", _paperclipWakeContext: context },
+              idempotencyKey: `issue-monitor-handoff:${run.id}:${reviewerId}`, createdAt: now, updatedAt: now,
+            });
+          }
+        }
+      }
+
       if (issueId) {
         await tx
           .update(issues)

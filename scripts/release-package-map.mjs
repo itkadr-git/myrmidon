@@ -261,13 +261,11 @@ function setVersion(version) {
 
   const cliEntryPath = join(repoRoot, "cli/src/index.ts");
   const cliEntry = readFileSync(cliEntryPath, "utf8");
-  const nextCliEntry = cliEntry.replace(
-    /\.version\("([^"]+)"\)/,
-    `.version("${version}")`,
-  );
+  const literalVersion = /\.version\("([^"]+)"\)/;
+  const nextCliEntry = cliEntry.replace(literalVersion, `.version("${version}")`);
 
-  if (cliEntry !== nextCliEntry) {
-    writeFileSync(cliEntryPath, nextCliEntry);
+  if (literalVersion.test(cliEntry)) {
+    if (cliEntry !== nextCliEntry) writeFileSync(cliEntryPath, nextCliEntry);
     return;
   }
 

@@ -235,6 +235,28 @@ docker создаёт от root.
 
 Хранилище pnpm исполнителя начинается пустым и наполняется при первой установке.
 
+### devbuild на сборочном VPS (OMP-RUNNER-DEVBUILD)
+
+В образе есть `rsync` и тот же клиент `devbuild`, что у ботов hermes
+(`/usr/local/bin/devbuild`, исходник `docker/bot-runtime/devbuild/devbuild`):
+инженер гоняет тесты и сборки на сборочном VPS, а не в раннере. Пока не заданы
+переменные ниже, раннер работает как раньше. Шаги для каждого раннера:
+
+1. Возьмите ключ и параметры подключения, которыми пользуются боты hermes: файл
+   ключа на хосте (`/srv/devbuild-ssh/id_ed25519`, права 0640 root:10001
+   подходят: процесс в контейнере работает от root), `DEVBUILD_HOST`,
+   `DEVBUILD_USER` (и `DEVBUILD_BASE`, по умолчанию `/srv/devbuild`).
+2. В env-файле раннера задайте `OMP_RUNNER_DEVBUILD_KEY=/srv/devbuild-ssh/id_ed25519`,
+   `DEVBUILD_HOST=...`, `DEVBUILD_USER=...`. Compose монтирует ключ только на
+   чтение в `/opt/devbuild-ssh/id_ed25519` и передаёт три переменные.
+3. Пересоздайте контейнер, пока у агента нет прогона
+   (`docker compose up -d --force-recreate`). Точка входа пишет
+   `/etc/profile.d/omp-runner-devbuild.sh` (sshd не передаёт окружение
+   контейнера в SSH-сессии доски) и выводит
+   `omp-runner: devbuild enabled for <user>@<host>`; если хост и пользователь
+   заданы, а ключа нет, выводит WARNING и оставляет devbuild выключенным.
+4. Проверка через SSH-путь доски: `ssh ... 'devbuild "echo ok"'` в git-рабочей копии.
+
 ### Перенос работающего исполнителя на общее хранилище pnpm (OPE-13018)
 
 Исполнитель, запущенный до появления общего хранилища, держит своё хранилище

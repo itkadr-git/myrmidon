@@ -164,7 +164,9 @@ export function checkRegistry({ root = ".", extracted, registry, csvText, dynami
   const patterns = registry.dynamic_patterns ?? [];
   for (const pattern of patterns) {
     for (const field of ["id", "template", "prefix", "classification", "scope", "source", "decision"]) {
-      if (typeof pattern[field] !== "string" || pattern[field] === "") problems.push(`dynamic pattern ${pattern.id ?? "?"}: field ${field} is empty`);
+      if (typeof pattern[field] !== "string" || pattern[field] === "" || /pending-audit/.test(pattern[field])) {
+        problems.push(`dynamic pattern ${pattern.id ?? "?"}: field ${field} is empty or pending-audit`);
+      }
     }
     if (!CLASSIFICATIONS.has(pattern.classification)) problems.push(`dynamic pattern ${pattern.id}: bad classification ${pattern.classification}`);
     if (!SCOPES.has(pattern.scope)) problems.push(`dynamic pattern ${pattern.id}: bad scope ${pattern.scope}`);

@@ -148,7 +148,7 @@ export interface ContinuationCapReading {
  */
 async function loadExternalMovements(
   db: Db,
-  input: { companyId: string; issueId: string; agentId: string; since: Date },
+  input: { companyId: string; issueId: string; agentId: string; since: Date; ignoreActions?: readonly string[] },
 ): Promise<TaskMovement[]> {
   const comments = await db
     .select({
@@ -190,7 +190,15 @@ async function loadExternalMovements(
         eq(activityLog.entityType, "issue"),
         eq(activityLog.entityId, input.issueId),
         gt(activityLog.createdAt, input.since),
-        inArray(activityLog.action, EXTERNAL_INPUT_ACTIVITY_ACTIONS),
+        // The system actions of the list below must pass this filter too: a
+        // row the filter drops never reaches the `or` branch (the PR head
+        // change was dropped here, so a push did not reset the count).
+        inArray(
+          activityLog.action,
+          [...new Set([...EXTERNAL_INPUT_ACTIVITY_ACTIONS, ...EXTERNAL_INPUT_SYSTEM_ACTIONS])].filter(
+            (action) => !input.ignoreActions?.includes(action),
+          ),
+        ),
         or(
           eq(activityLog.actorType, "user"),
           and(eq(activityLog.actorType, "agent"), ne(activityLog.actorId, input.agentId)),
@@ -251,6 +259,47 @@ export async function readContinuationCap(
   });
   const count = countContinuationsWithoutExternalInput({ agentId: input.agentId, runs, moves });
   return { count, max, capped: count >= max };
+}
+
+/** Activity the stop writes when it parks an issue. */
+export const CONTINUATION_CAP_STOP_ACTIVITY_ACTION = "issue.continuation_cap_reached";
+
+/**
+ * True while the issue sits in a continuation stop: the latest stop record is
+ * for this agent and no external input came after it. External input is the
+ * same notion the cap counts (a comment or movement by a user or another
+ * agent, a PR/CI sync event, a PR head change), plus a blocker closed after
+ * the stop (`blockersResolvedAt`). The wake the dependency backstop emitted
+ * itself is not input: it is the producer of the loop, so it is ignored here.
+ * A change of assignee leaves the stop at once (the stop belongs to one agent).
+ */
+export async function isIssueInContinuationStop(
+  db: Db,
+  input: { companyId: string; issueId: string; agentId: string; blockersResolvedAt?: Date | null },
+): Promise<boolean> {
+  const [stop] = await db
+    .select({ at: activityLog.createdAt, agentId: activityLog.agentId })
+    .from(activityLog)
+    .where(
+      and(
+        eq(activityLog.companyId, input.companyId),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, input.issueId),
+        eq(activityLog.action, CONTINUATION_CAP_STOP_ACTIVITY_ACTION),
+      ),
+    )
+    .orderBy(desc(activityLog.createdAt))
+    .limit(1);
+  if (!stop || stop.agentId !== input.agentId) return false;
+  if (input.blockersResolvedAt && input.blockersResolvedAt.getTime() > stop.at.getTime()) return false;
+  const moves = await loadExternalMovements(db, {
+    companyId: input.companyId,
+    issueId: input.issueId,
+    agentId: input.agentId,
+    since: stop.at,
+    ignoreActions: ["issue.blockers_resolved_wake_emitted"],
+  });
+  return !moves.some((move) => isExternalInput(move, input.agentId));
 }
 
 /**

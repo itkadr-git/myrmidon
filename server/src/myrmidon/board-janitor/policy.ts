@@ -56,6 +56,7 @@ export type JanitorAction =
       type: "close_merged_pr";
       issueId: string;
       identifier: string;
+      fromStatus: string;
       prNumber: number;
       comment: string;
     }
@@ -63,6 +64,7 @@ export type JanitorAction =
       type: "unblock_stale";
       issueId: string;
       identifier: string;
+      fromStatus: string;
       comment: string;
     }
   | {
@@ -90,6 +92,7 @@ export type JanitorAction =
       type: "move_stale_to_backlog";
       issueId: string;
       identifier: string;
+      fromStatus: string;
       staleDays: number;
       comment: string;
     }
@@ -100,6 +103,45 @@ export type JanitorAction =
       deadline: string;
       comment: string;
     };
+
+/**
+ * Status change a janitor action makes, for the activity log. Null when the action
+ * does not change the status (rule 3 only notifies the distribution queue).
+ */
+export function janitorStatusChange(
+  action: JanitorAction,
+): { from: string; to: string; rule: string } | null {
+  switch (action.type) {
+    case "close_merged_pr":
+      return { from: action.fromStatus, to: "done", rule: action.type };
+    case "unblock_stale":
+      return { from: action.fromStatus, to: "todo", rule: action.type };
+    case "move_stale_to_backlog":
+      return { from: action.fromStatus, to: "backlog", rule: action.type };
+    default:
+      return null;
+  }
+}
+
+/** Activity log entry (action issue.updated) for a status change made by the janitor. */
+export function buildJanitorActivityEntry(companyId: string, action: JanitorAction) {
+  const change = janitorStatusChange(action);
+  if (!change || !("identifier" in action)) return null;
+  return {
+    companyId,
+    actorType: "system" as const,
+    actorId: "board_janitor",
+    action: "issue.updated",
+    entityType: "issue",
+    entityId: action.issueId,
+    details: {
+      source: "board_janitor",
+      identifier: action.identifier,
+      changes: { status: { from: change.from, to: change.to } },
+      rule: change.rule,
+    },
+  };
+}
 
 export function isOpenStatus(status: string): boolean {
   return ["backlog", "todo", "in_progress", "in_review", "blocked"].includes(status);
@@ -294,7 +336,8 @@ export function extractReleasePrefix(
 export function judgeUnassignedReleaseTask(
   task: IssueCandidate,
 ): { shouldQueue: boolean; releasePrefix: string; comment: string } | null {
-  if (!isOpenStatus(task.status)) return null;
+  // Only todo: backlog, blocked, in_review and in_progress are deliberate states (OPE-13327).
+  if (task.status !== "todo") return null;
   if (task.assigneeAgentId || task.assigneeUserId) return null;
 
   const releasePrefix = extractReleasePrefix(task.labels);

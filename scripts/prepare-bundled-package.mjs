@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -136,6 +136,65 @@ export function applyBundledDependencyPatches(destinationDir, bundledDependencie
   }
 }
 
+function isContained(parent, child) {
+  const pathFromParent = relative(parent, child);
+  return pathFromParent === "" || (pathFromParent !== ".." && !pathFromParent.startsWith(`..${sep}`) && !isAbsolute(pathFromParent));
+}
+
+function resolveExistingAncestor(path) {
+  if (existsSync(path)) return realpathSync(path);
+  const parent = dirname(path);
+  return resolve(resolveExistingAncestor(parent), basename(path));
+}
+
+function validateSourceTree(path, root) {
+  const actual = realpathSync(path);
+  if (!isContained(root, actual)) {
+    throw new Error(`Cannot stage bundled package: source path resolves outside source directory: ${path}`);
+  }
+  if (lstatSync(path).isDirectory()) {
+    for (const name of readdirSync(path)) validateSourceTree(resolve(path, name), root);
+  }
+}
+
+function validateBundleStaging(sourceDir, destinationDir, entries) {
+  const sourcePath = resolve(sourceDir);
+  const destinationPath = resolve(destinationDir);
+  if (isContained(sourcePath, destinationPath) || isContained(destinationPath, sourcePath)) {
+    throw new Error("Cannot stage bundled package: source and destination directories overlap");
+  }
+
+  const realSourcePath = realpathSync(sourcePath);
+  const realDestinationPath = resolveExistingAncestor(destinationPath);
+  if (
+    realDestinationPath &&
+    (isContained(realSourcePath, realDestinationPath) || isContained(realDestinationPath, realSourcePath))
+  ) {
+    throw new Error("Cannot stage bundled package: source and destination directories overlap after resolving symlinks");
+  }
+
+  for (const entry of entries) {
+    if (typeof entry !== "string" || entry.length === 0 || isAbsolute(entry) || /[*?[\]{}]/.test(entry)) {
+      throw new Error(`Cannot stage bundled package: unsupported package.files path ${JSON.stringify(entry)}`);
+    }
+    const sourceEntry = resolve(sourcePath, entry);
+    const destinationEntry = resolve(destinationPath, entry);
+    if (!isContained(sourcePath, sourceEntry) || !isContained(destinationPath, destinationEntry)) {
+      throw new Error(`Cannot stage bundled package: package.files path escapes its root: ${entry}`);
+    }
+    let realSourceEntry;
+    try {
+      realSourceEntry = realpathSync(sourceEntry);
+    } catch (cause) {
+      throw new Error(`Cannot stage bundled package: package.files entry does not exist: ${entry}`, { cause });
+    }
+    if (!isContained(realSourcePath, realSourceEntry)) {
+      throw new Error(`Cannot stage bundled package: package.files entry resolves outside source directory: ${entry}`);
+    }
+    validateSourceTree(sourceEntry, realSourcePath);
+  }
+}
+
 export function prepareBundledPackage(sourceDir, destinationDir, { sourceRoot = repoRoot } = {}) {
   const sourcePackagePath = resolve(sourceDir, "package.json");
   const sourcePackage = JSON.parse(readFileSync(sourcePackagePath, "utf8"));
@@ -145,9 +204,20 @@ export function prepareBundledPackage(sourceDir, destinationDir, { sourceRoot = 
     throw new Error(`${sourcePackage.name} does not declare bundled dependencies`);
   }
 
+  const files = sourcePackage.files ?? [];
+  const ancillaryEntries = ["README.md", "LICENSE", "LICENSE.md"].filter((entry) => {
+    try {
+      lstatSync(resolve(sourceDir, entry));
+      return true;
+    } catch (cause) {
+      if (cause.code === "ENOENT") return false;
+      throw cause;
+    }
+  });
+  validateBundleStaging(sourceDir, destinationDir, [...files, ...ancillaryEntries]);
   rmSync(destinationDir, { recursive: true, force: true });
   mkdirSync(destinationDir, { recursive: true });
-  for (const entry of sourcePackage.files ?? []) {
+  for (const entry of files) {
     cpSync(resolve(sourceDir, entry), resolve(destinationDir, entry), { recursive: true });
   }
   for (const entry of ["README.md", "LICENSE", "LICENSE.md"]) {

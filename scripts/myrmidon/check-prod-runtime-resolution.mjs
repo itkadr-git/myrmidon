@@ -25,8 +25,9 @@
 //     whose `name` equals the specifier's package, resolved through its own
 //     `exports` map. Read that map, pick the target by
 //     `import`/`node`/`default` conditions (string targets and `./*`
-//     patterns included), then verify the target file exists and is
-//     compiled JS (not `.ts`, not under `/src/`). Reached package files are
+//     patterns included); without an exports map, resolve subpaths relative
+//     to the package root. Verify the target file exists and is compiled JS
+//     (not `.ts`, not under `/src/`). Reached package files are
 //     then walked recursively for their own imports;
 //   - compiled test artifacts (`*.test.js`, `*.myrmidon.test.js`) are never
 //     loaded by the production runtime and are skipped;
@@ -353,7 +354,7 @@ export function matchExportsTarget(exportsField, main, subpath) {
       if (!/\.(?:js|mjs|cjs|ts|d\.ts)$/.test(entry)) entry += ".js";
       return entry;
     }
-    return subpath.slice(1); // "./lib/x.js" -> "lib/x.js"
+    return subpath.slice(2); // "./lib/x.js" -> "lib/x.js"
   }
   if (typeof exportsField === "string") {
     return subpath === "." ? exportsField : undefined;
@@ -574,7 +575,7 @@ function pluralRu(n, one, few, many) {
 
 function displayPath(file, cwd) {
   const rel = relative(cwd, file);
-  return rel.startsWith("..") ? file : rel;
+  return rel === ".." || rel.startsWith(`..${sep}`) ? file : rel;
 }
 
 export function formatFailures(failures, cwd = process.cwd()) {

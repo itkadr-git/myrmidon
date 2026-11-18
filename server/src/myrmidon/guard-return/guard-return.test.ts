@@ -262,7 +262,27 @@ describe("1.6.6 GUARD-RETURN: domain logic", () => {
     expect(decision.targetKind).toBe("pr_author");
   });
 
-  it("uses an available project lead only after engineer candidates are exhausted", () => {
+  it("does not return code to work-gip through author, return assignee, or fallback", () => {
+    const workGip = { id: "work-gip", name: "work-gip", role: "engineer", status: "idle", metadata: { swarmQueueEligible: false } };
+    const candidate: GuardReturnCandidate = {
+      issueId: "issue-14000", identifier: "OPE-14000", title: "Fix code", companyId: "comp-1",
+      status: "in_progress", assigneeAgentId: reviewerAgent.id, assigneeRole: reviewerAgent.role,
+      projectId: null, casteKey: "engineer", labels: [],
+      executionState: { status: "changes_requested", returnAssignee: { type: "agent", agentId: workGip.id } },
+      prWorkProducts: [{ id: "pr", type: "pull_request", status: "open", creatorAgentId: workGip.id }],
+      comments: [], createdAt: new Date(), updatedAt: new Date(),
+    };
+    const map = new Map<string, AgentSummary>([[workGip.id, workGip], [reviewerAgent.id, reviewerAgent]]);
+    const decision = decideGuardReturn(candidate, map, undefined, [workGip]);
+    expect(decision.action).toBe("skip");
+    expect(decision.reason).toContain("eligible");
+    expect(decision.targetAssigneeAgentId).toBeUndefined();
+    const eligible = { ...engineerAgent, status: "idle", metadata: { swarmQueueEligible: true } };
+    map.set(eligible.id, eligible);
+    expect(decideGuardReturn(candidate, map, undefined, [workGip, eligible]).targetAssigneeAgentId).toBe(eligible.id);
+  });
+
+  it("skips a code task instead of returning it to a project lead", () => {
     const projectLead: AgentSummary = { id: "project-lead", name: "project-lead", role: "lead", status: "idle" };
     const candidate: GuardReturnCandidate = {
       issueId: "issue-project-lead", identifier: "OPE-13140", title: "Return planning task", companyId: "comp-1",
@@ -274,9 +294,8 @@ describe("1.6.6 GUARD-RETURN: domain logic", () => {
     const decision = decideGuardReturn(candidate, new Map([
       [projectLead.id, projectLead], [reviewerAgent.id, reviewerAgent],
     ]), undefined, []);
-    expect(decision.action).toBe("return");
-    expect(decision.targetAssigneeAgentId).toBe(projectLead.id);
-    expect(decision.targetKind).toBe("project_lead");
+    expect(decision.action).toBe("skip");
+    expect(decision.targetAssigneeAgentId).toBeUndefined();
   });
 
   it("skips guard-return for a code task already in review", () => {

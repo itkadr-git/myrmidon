@@ -6,6 +6,10 @@
 // GitHub while the shared rate-limit state says the budget is gone.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+vi.mock("../../services/github-review-budget.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../services/github-review-budget.js")>();
+  return { ...actual, withGitHubReviewBudget: (_db: unknown, _source: unknown, fetch: unknown) => fetch };
+});
 import { resetGitHubRateLimitForTests, setGitHubRateLimitForTests } from "../../services/github-rate-limit.js";
 import {
   REVIEW_CI_CACHE_MAX_ENTRIES,
@@ -365,6 +369,15 @@ describe("resolvePullRequestHeadCi: read cache", () => {
 });
 
 describe("resolvePullRequestHeadCi: rate limit", () => {
+  it("does not treat an expired PR head as current when GitHub becomes unavailable", async () => {
+    const fetch = completeGithub();
+    expect(await readCi(fetch)).toMatchObject({ state: "complete", headSha: "abc123" });
+    at(61);
+    setGitHubRateLimitForTests(START_SEC + 600, 0);
+    expect(await readCi(fetch)).toMatchObject({ state: "unknown", headSha: null, reason: "pull:skipped_rate_limited" });
+    expect(paths(fetch)).toEqual([pullPath(7), WORKFLOWS, finalCheckPath("abc123")]);
+  });
+
   const limited = { remaining: 0, limit: null, resetEpochSeconds: START_SEC + 600 };
 
   function exhaust(untilSeconds = 600) {
@@ -400,16 +413,16 @@ describe("resolvePullRequestHeadCi: rate limit", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("returns the remembered result, even an expired one, and refuses a head it never read", async () => {
+  it("rejects expired and unseen heads when rate limited", async () => {
     const fetch = completeGithub();
-    const remembered = await readCi(fetch);
+    await readCi(fetch);
 
     at(700);
     exhaust(1500);
     const stale = await readCi(fetch);
     const unseen = await readCi(fetch, 8);
 
-    expect(stale).toEqual(remembered);
+    expect(stale).toMatchObject({ state: "unknown", reason: "pull:skipped_rate_limited" });
     expect(unseen).toMatchObject({ state: "unknown", reason: "pull:skipped_rate_limited" });
     expect(fetch).toHaveBeenCalledTimes(3);
   });
@@ -605,16 +618,16 @@ describe("resolvePullRequestHeadFailedChecks: read cache", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("sends nothing while the budget is gone and returns the remembered list, even an expired one", async () => {
+  it("rejects an expired failed-check list while rate limited", async () => {
     const fetch = githubFetch({ [latestChecksPath("abc123")]: () => json(finishedRuns) });
-    const remembered = await readFailed(fetch);
+    await readFailed(fetch);
 
     at(700);
     setGitHubRateLimitForTests(START_SEC + 1500, 0);
     const stale = await readFailed(fetch);
     const unseen = await readFailed(fetch, "def456");
 
-    expect(stale).toEqual(remembered);
+    expect(stale).toEqual({ state: "unknown", reason: "check_runs:skipped_rate_limited" });
     expect(unseen).toEqual({ state: "unknown", reason: "check_runs:skipped_rate_limited" });
     expect(fetch).toHaveBeenCalledTimes(1);
   });

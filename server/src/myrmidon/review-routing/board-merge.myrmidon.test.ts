@@ -17,6 +17,7 @@ import {
 } from "@myrmidon/shared";
 import {
   BOARD_MERGE_COOLDOWN_MS,
+  BOARD_MERGE_QUEUED_PARK_MS,
   BOARD_MERGE_REFUSED_COOLDOWN_MS,
   boardMergeReturnComment,
   createBoardMerger,
@@ -80,7 +81,7 @@ function setup(
   rows: ApprovedPrIssueRow[],
   pulls: Record<number, PullState>,
   boardMerge: Partial<ReviewRoutingSettings["boardMerge"]> = {},
-  extra: { readFailure?: Record<number, string> } = {},
+  extra: { readFailure?: Record<number, string>; headChecksQueued?: () => Promise<boolean> } = {},
 ) {
   const settings = normalizeReviewRoutingSettings({ boardMerge });
   const standing = new Set(rows.map((row) => row.issueId));
@@ -165,6 +166,7 @@ function setup(
     logActivity: async (entry) => {
       activities.push({ action: entry.action, issueId: entry.issueId, details: entry.details });
     },
+    headChecksQueued: extra.headChecksQueued,
     log,
   });
   return { merger, settings, log, calls, comments, activities, wakes, returnedIssues, pulls };
@@ -394,13 +396,48 @@ describe("board merge: limits, refusals and the review marker", () => {
     expect(t.activities.map((entry) => entry.action)).toEqual([REVIEW_ROUTING_BOARD_MERGE_REFUSED_ACTION]);
   });
 
+  it("myrmidon(OPE-13942): after a 405 \"is queued\" the PR is not tried again until a check of its head completes (or 10 minutes pass)", async () => {
+    const message = "Required status check \"hot files review\" is queued.";
+    const t = setup([approved(60)], {
+      60: { facts: facts(), checks: "success", mergeOutcome: { status: "refused", httpStatus: 405, message } },
+    });
+    await t.merger.sweepCompany(COMPANY, t.settings, at(0));
+    expect(t.calls.merge).toHaveLength(1);
+    expect(t.merger.isParked(COMPANY, { repository: REPO, number: 60 })).toBe(true);
+
+    // Neither a sweep, nor an approval event, nor a CI event of another head, nor a completed check of another head repeats it.
+    await t.merger.sweepCompany(COMPANY, t.settings, at(BOARD_MERGE_REFUSED_COOLDOWN_MS + 1));
+    await t.merger.mergeIssue(COMPANY, "issue-60", t.settings, at(BOARD_MERGE_REFUSED_COOLDOWN_MS + 2));
+    await t.merger.mergePullRequest(COMPANY, { repository: REPO, number: 60, headSha: OTHER_HEAD, checkCompleted: true }, t.settings, at(BOARD_MERGE_REFUSED_COOLDOWN_MS + 3));
+    expect(t.calls.merge).toHaveLength(1);
+    expect(t.calls.readPull).toHaveLength(1);
+
+    // A completed check of the same head frees it.
+    await t.merger.mergePullRequest(COMPANY, { repository: REPO, number: 60, headSha: HEAD, checkCompleted: true }, t.settings, at(BOARD_MERGE_REFUSED_COOLDOWN_MS + 4));
+    expect(t.calls.merge).toHaveLength(2);
+  });
+
+  it("myrmidon(OPE-13942): webhooks already show a queued check of the head: no files, checks or merge request, only the cheap PR read", async () => {
+    const headChecksQueued = vi.fn(async () => true);
+    const t = setup([approved(61)], { 61: { facts: facts(), checks: "success" } }, {}, { headChecksQueued });
+    const result = await t.merger.sweepCompany(COMPANY, t.settings, at(0));
+    expect(result.waiting).toBe(1);
+    expect(headChecksQueued).toHaveBeenCalledTimes(1);
+    expect(t.calls.readPullFiles).toHaveLength(0);
+    expect(t.calls.readChecks).toHaveLength(0);
+    expect(t.calls.merge).toHaveLength(0);
+  });
+
   it("myrmidon(OPE-13136): a refused merge puts the HTTP status and GitHub's message on the task, once", async () => {
     const message = "Required status check \"hot files review\" is expected.";
     const t = setup([approved(53)], {
       53: { facts: facts(), checks: "success", mergeOutcome: { status: "refused", httpStatus: 405, message } },
     });
     await t.merger.sweepCompany(COMPANY, t.settings, at(0));
+    // "is expected" parks the PR: the plain cool-down does not free it, the end of the park does.
     await t.merger.sweepCompany(COMPANY, t.settings, at(BOARD_MERGE_REFUSED_COOLDOWN_MS + 1));
+    expect(t.calls.merge).toHaveLength(1);
+    await t.merger.sweepCompany(COMPANY, t.settings, at(BOARD_MERGE_QUEUED_PARK_MS + 1));
     expect(t.calls.merge).toHaveLength(2);
     expect(t.activities).toEqual([
       {

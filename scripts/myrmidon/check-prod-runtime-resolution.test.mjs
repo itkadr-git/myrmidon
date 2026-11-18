@@ -159,6 +159,22 @@ describe("main on fixtures", () => {
     }
   });
 
+  it("resolves and scans an existing legacy package subpath", () => {
+    const dir = mkdtemp();
+    try {
+      writePkg(dir, "legacy", {
+        distFiles: { "feature.js": 'import "./missing.ts";\n' },
+      });
+      const dist = writeServerDist(dir, 'import "@myrmidon/legacy/dist/feature.js";\n');
+      const { code, output } = runMain(dir, ["--dist", path.relative(dir, dist)]);
+      assert.equal(code, 1);
+      assert.match(output, /legacy\/dist\/feature\.js:1 \.\/missing\.ts → относительный импорт \.ts/);
+      assert.doesNotMatch(output, /файл не собран/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("(4) flags a target file named in exports that is missing from dist", () => {
     const dir = mkdtemp();
     try {

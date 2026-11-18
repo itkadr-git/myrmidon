@@ -469,6 +469,388 @@ describe("host-clone-cache-gc e2e", () => {
     }
   });
 
+  it("apply removes a done bot worktree whose .git names a container path, admin dir included", async () => {
+    // Bot layout: <tmp>/agent/{workspace, hermes/.myrmidon/git-base/o/r.git}. In the container the
+    // bot root is /bot, so the clone's `.git` and the admin dir's `gitdir` record /bot paths the
+    // host cannot read: the closed scan must map them and free the clone plus its own admin dir.
+    const agent = path.join(tmpDir, "agent");
+    const workspace = path.join(agent, "workspace");
+    const base = path.join(agent, "hermes/.myrmidon/git-base/o/r.git");
+    fs.mkdirSync(path.dirname(base), { recursive: true });
+    fs.mkdirSync(workspace, { recursive: true });
+    const git = (args, cwd) => {
+      const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+      return r.stdout;
+    };
+    const server = path.join(tmpDir, "server.git");
+    git(["init", "-q", "--bare", "-b", "main", server]);
+    const seed = path.join(tmpDir, "seed");
+    git(["init", "-q", "-b", "main", seed]);
+    fs.writeFileSync(path.join(seed, "f.txt"), "one\n");
+    git(["add", "."], seed);
+    git(["commit", "-q", "-m", "one"], seed);
+    git(["push", "-q", server, "main"], seed);
+    git(["clone", "-q", "--bare", server, base]);
+    const dir = path.join(workspace, "OPE-32100");
+    git(["--git-dir", base, "worktree", "add", "-q", "-b", "task-OPE-32100", dir, "main"]);
+    fs.writeFileSync(path.join(dir, "w.txt"), "work\n");
+    git(["add", "."], dir);
+    git(["commit", "-q", "-m", "work"], dir);
+    git(["push", "-q", "origin", "task-OPE-32100:task-OPE-32100"], dir);
+    fs.writeFileSync(path.join(dir, ".git"), "gitdir: /bot/hermes/.myrmidon/git-base/o/r.git/worktrees/OPE-32100\n");
+    fs.writeFileSync(path.join(base, "worktrees/OPE-32100/gitdir"), "/bot/workspace/OPE-32100/.git\n");
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    for (const f of fs.readdirSync(dir).filter((e) => e !== ".git").map((e) => path.join(dir, e))) fs.utimesSync(f, old, old);
+    for (const f of ["HEAD", "index", path.join("logs", "HEAD")]) {
+      try { fs.utimesSync(path.join(base, "worktrees/OPE-32100", f), old, old); } catch { /* absent */ }
+    }
+    fs.utimesSync(dir, old, old);
+
+    const lock = path.join(tmpDir, "test.lock");
+    const journal = path.join(tmpDir, "journal.jsonl");
+    const r = await runScript(["--root", workspace, "--lock", lock, "--journal", journal, "--apply"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(fs.existsSync(dir), false, "clone removed");
+    assert.equal(fs.existsSync(path.join(base, "worktrees", "OPE-32100")), false, "own admin dir removed");
+    const rec = fs.readFileSync(journal, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.event === "clone-removed");
+    assert.ok(rec, "clone-removed journaled");
+    assert.equal(rec.path, dir);
+    assert.equal(rec.reason, "clean-pushed");
+  });
+
+  describe("archive of done bot worktrees with a container gitdir (OPE-14907 archive path)", () => {
+    const git = (args, cwd) => {
+      const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+      return r.stdout;
+    };
+    // <tmp>/agent/{workspace, hermes/.myrmidon/git-base/o/r.git}; in the container the bot root
+    // is /bot, so the clone's `.git` and the admin dir's `gitdir` record /bot paths.
+    const makeBot = () => {
+      const agent = path.join(tmpDir, "agent");
+      const workspace = path.join(agent, "workspace");
+      const base = path.join(agent, "hermes/.myrmidon/git-base/o/r.git");
+      fs.mkdirSync(path.dirname(base), { recursive: true });
+      fs.mkdirSync(workspace, { recursive: true });
+      const server = path.join(tmpDir, "server.git");
+      git(["init", "-q", "--bare", "-b", "main", server]);
+      const seed = path.join(tmpDir, "seed");
+      git(["init", "-q", "-b", "main", seed]);
+      fs.writeFileSync(path.join(seed, "f.txt"), "one\n");
+      git(["add", "."], seed);
+      git(["commit", "-q", "-m", "one"], seed);
+      git(["push", "-q", server, "main"], seed);
+      git(["clone", "-q", "--bare", server, base]);
+      return { agent, workspace, base, server };
+    };
+    const addLinkedClone = (bot, name, { pushed = true, dirty = false, ageHours = 25 } = {}) => {
+      const dir = path.join(bot.workspace, name);
+      const branch = `task-${name}`;
+      git(["--git-dir", bot.base, "worktree", "add", "-q", "-b", branch, dir, "main"]);
+      fs.writeFileSync(path.join(dir, "w.txt"), "work\n");
+      git(["add", "."], dir);
+      git(["commit", "-q", "-m", `work ${name}`], dir);
+      if (pushed) git(["push", "-q", "origin", `${branch}:${branch}`], dir);
+      if (dirty) fs.writeFileSync(path.join(dir, "f.txt"), "changed\n");
+      fs.writeFileSync(path.join(dir, ".git"), `gitdir: /bot/hermes/.myrmidon/git-base/o/r.git/worktrees/${name}\n`);
+      fs.writeFileSync(path.join(bot.base, "worktrees", name, "gitdir"), `/bot/workspace/${name}/.git\n`);
+      const old = new Date(Date.now() - ageHours * 60 * 60 * 1000);
+      for (const f of fs.readdirSync(dir).filter((e) => e !== ".git").map((e) => path.join(dir, e))) fs.utimesSync(f, old, old);
+      for (const f of ["HEAD", "index", path.join("logs", "HEAD")]) {
+        try { fs.utimesSync(path.join(bot.base, "worktrees", name, f), old, old); } catch { /* absent */ }
+      }
+      fs.utimesSync(dir, old, old);
+      return dir;
+    };
+    const apply = (root) => runScript(["--root", root, "--lock", path.join(tmpDir, "gc.lock"), "--journal", path.join(tmpDir, "gc.jsonl"), "--apply"]);
+    const journalEvents = () => fs.readFileSync(path.join(tmpDir, "gc.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const archives = (root) => {
+      const dir = path.join(root, ".gc-archive");
+      return fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => n.endsWith(".tar.gz")) : [];
+    };
+    const archiveMembers = (root, name) => {
+      const r = spawnSync("tar", ["-tzf", path.join(root, ".gc-archive", name)], { encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`tar -tzf: ${r.stderr}`);
+      return r.stdout;
+    };
+
+    it("archives a dirty mapped worktree compactly, then removes the clone and its own admin dir", async () => {
+      const bot = makeBot();
+      const dir = addLinkedClone(bot, "OPE-33001", { dirty: true });
+      const admin = path.join(bot.base, "worktrees", "OPE-33001");
+      const r = await apply(bot.workspace);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(fs.existsSync(dir), false, "clone removed");
+      assert.equal(fs.existsSync(admin), false, "own admin dir removed");
+      const names = archives(bot.workspace);
+      assert.equal(names.length, 1, `one archive expected: ${JSON.stringify(names)}`);
+      const listing = archiveMembers(bot.workspace, names[0]);
+      assert.ok(listing.includes("changes.patch"), `compact archive holds the dirty diff:\n${listing}`);
+      const events = journalEvents();
+      assert.ok(events.some((e) => e.event === "clone-archived" && e.path === dir), "clone-archived journaled");
+      assert.ok(events.some((e) => e.event === "clone-removed-after-archive" && e.path === dir), "clone-removed-after-archive journaled");
+    });
+
+    it("archives the unpublished commits of an unpushed mapped worktree, then removes it and its admin dir", async () => {
+      const bot = makeBot();
+      const dir = addLinkedClone(bot, "OPE-33002", { pushed: false });
+      const admin = path.join(bot.base, "worktrees", "OPE-33002");
+      const r = await apply(bot.workspace);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(fs.existsSync(dir), false, "clone removed");
+      assert.equal(fs.existsSync(admin), false, "own admin dir removed");
+      const names = archives(bot.workspace);
+      assert.equal(names.length, 1, `one archive expected: ${JSON.stringify(names)}`);
+      const listing = archiveMembers(bot.workspace, names[0]);
+      assert.ok(listing.includes("unpublished.bundle"), `compact archive holds the unpublished commits:\n${listing}`);
+    });
+
+    it("keeps a mapped worktree whose git-base borrows objects (alternates): no archive, no removal", async () => {
+      const bot = makeBot();
+      const dir = addLinkedClone(bot, "OPE-33003");
+      fs.mkdirSync(path.join(bot.base, "objects", "info"), { recursive: true });
+      fs.writeFileSync(path.join(bot.base, "objects", "info", "alternates"), "/tmp/fake-alternates\n");
+      const r = await apply(bot.workspace);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(fs.existsSync(dir), true, "borrowed objects: the copy stays");
+      assert.equal(archives(bot.workspace).length, 0, "nothing archived");
+      assert.ok(journalEvents().some((e) => e.event === "clone-archive-failed" && /alternate-objects/.test(e.error)), "the alternates reason is journaled");
+    });
+
+    it("keeps a mapped worktree with a broken nested repository (fail closed)", async () => {
+      const bot = makeBot();
+      const dir = addLinkedClone(bot, "OPE-33004");
+      const nested = path.join(dir, "node_modules", "broken");
+      fs.mkdirSync(nested, { recursive: true });
+      fs.writeFileSync(path.join(nested, ".git"), "gitdir: /nonexistent/elsewhere\n");
+      fs.writeFileSync(path.join(nested, "n.txt"), "n\n");
+      const r = await apply(bot.workspace);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(fs.existsSync(dir), true, "unrecoverable nested repository: the copy stays");
+      assert.equal(fs.existsSync(path.join(bot.base, "worktrees", "OPE-33004")), true, "admin dir stays with the copy");
+    });
+
+    it("still archives and removes an ordinary dirty clone, unchanged", async () => {
+      const bot = makeBot();
+      const dir = path.join(bot.workspace, "OPE-33005");
+      git(["clone", "-q", bot.server, dir]);
+      fs.writeFileSync(path.join(dir, "f.txt"), "changed\n");
+      const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+      fs.utimesSync(dir, old, old);
+      const r = await apply(bot.workspace);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(fs.existsSync(dir), false, "clone removed");
+      const names = archives(bot.workspace);
+      assert.equal(names.length, 1, `one archive expected: ${JSON.stringify(names)}`);
+      const listing = archiveMembers(bot.workspace, names[0]);
+      assert.ok(listing.includes("changes.patch"), `compact archive holds the dirty diff:\n${listing}`);
+    });
+  });
+
+  describe("archive of mapped worktrees that borrow objects (alternates)", () => {
+    const git = (args, cwd) => {
+      const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+      return r.stdout;
+    };
+    const makeBot = () => {
+      const agent = path.join(tmpDir, "agent");
+      const workspace = path.join(agent, "workspace");
+      const base = path.join(agent, "hermes/.myrmidon/git-base/o/r.git");
+      fs.mkdirSync(path.dirname(base), { recursive: true });
+      fs.mkdirSync(workspace, { recursive: true });
+      const server = path.join(tmpDir, "server.git");
+      git(["init", "-q", "--bare", "-b", "main", server]);
+      const seed = path.join(tmpDir, "seed");
+      git(["init", "-q", "-b", "main", seed]);
+      fs.writeFileSync(path.join(seed, "f.txt"), "one\n");
+      git(["add", "."], seed);
+      git(["commit", "-q", "-m", "one"], seed);
+      git(["push", "-q", server, "main"], seed);
+      git(["clone", "-q", "--bare", server, base]);
+      return { agent, workspace, base, server };
+    };
+    const addLinkedClone = (bot, name, { dirty = false, ageHours = 25 } = {}) => {
+      const dir = path.join(bot.workspace, name);
+      const branch = `task-${name}`;
+      git(["--git-dir", bot.base, "worktree", "add", "-q", "-b", branch, dir, "main"]);
+      fs.writeFileSync(path.join(dir, "w.txt"), "work\n");
+      git(["add", "."], dir);
+      git(["commit", "-q", "-m", `work ${name}`], dir);
+      if (dirty) fs.writeFileSync(path.join(dir, "f.txt"), "changed\n");
+      fs.writeFileSync(path.join(dir, ".git"), `gitdir: /bot/hermes/.myrmidon/git-base/o/r.git/worktrees/${name}\n`);
+      fs.writeFileSync(path.join(bot.base, "worktrees", name, "gitdir"), `/bot/workspace/${name}/.git\n`);
+      const old = new Date(Date.now() - ageHours * 60 * 60 * 1000);
+      for (const f of fs.readdirSync(dir).filter((e) => e !== ".git").map((e) => path.join(dir, e))) fs.utimesSync(f, old, old);
+      for (const f of ["HEAD", "index", path.join("logs", "HEAD")]) {
+        try { fs.utimesSync(path.join(bot.base, "worktrees", name, f), old, old); } catch { /* absent */ }
+      }
+      fs.utimesSync(dir, old, old);
+      return dir;
+    };
+    // The bot git-base borrows objects from the shared mirror, as on the bots volume.
+    const borrow = (bot, target) => {
+      fs.mkdirSync(path.join(bot.base, "objects", "info"), { recursive: true });
+      fs.writeFileSync(path.join(bot.base, "objects", "info", "alternates"), `${target}\n`);
+    };
+    const apply = (root) => runScript(["--root", root, "--lock", path.join(tmpDir, "gc.lock"), "--journal", path.join(tmpDir, "gc.jsonl"), "--apply"]);
+    const journalEvents = () => fs.readFileSync(path.join(tmpDir, "gc.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const archives = (root) => {
+      const dir = path.join(root, ".gc-archive");
+      return fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => n.endsWith(".tar.gz")) : [];
+    };
+    const archiveMembers = (root, name) => {
+      const r = spawnSync("tar", ["-tzf", path.join(root, ".gc-archive", name)], { encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`tar -tzf: ${r.stderr}`);
+      return r.stdout;
+    };
+
+    it("archives a dirty unpushed mapped worktree whose alternate object store is reachable", async () => {
+      const bot = makeBot();
+      const dir = addLinkedClone(bot, "OPE-34001", { dirty: true });
+      const admin = path.join(bot.base, "worktrees", "OPE-34001");
+      const mirror = path.join(tmpDir, "mirror-objects");
+      fs.mkdirSync(mirror, { recursive: true });
+      borrow(bot, mirror);
+      const r = await apply(bot.workspace);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(fs.existsSync(dir), false, "clone removed");
+      assert.equal(fs.existsSync(admin), false, "own admin dir removed");
+      const names = archives(bot.workspace);
+      assert.equal(names.length, 1, `one archive expected: ${JSON.stringify(names)}`);
+      const listing = archiveMembers(bot.workspace, names[0]);
+      assert.ok(listing.includes("unpublished.bundle"), `the unpushed commit is bundled:\n${listing}`);
+      assert.ok(listing.includes("changes.patch"), `the dirty diff is patched:\n${listing}`);
+      assert.ok(journalEvents().some((e) => e.event === "clone-removed-after-archive" && e.path === dir), "clone-removed-after-archive journaled");
+    });
+
+    it("keeps a mapped worktree whose alternate object store is gone, copy and admin dir", async () => {
+      const bot = makeBot();
+      const dir = addLinkedClone(bot, "OPE-34002", { dirty: true });
+      const admin = path.join(bot.base, "worktrees", "OPE-34002");
+      borrow(bot, "/nonexistent/mirror-objects");
+      const r = await apply(bot.workspace);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(fs.existsSync(dir), true, "borrowed objects unreachable: the copy stays");
+      assert.equal(fs.existsSync(admin), true, "the admin dir stays with the copy");
+      assert.equal(archives(bot.workspace).length, 0, "nothing archived");
+      assert.ok(journalEvents().some((e) => e.event === "clone-archive-failed" && /alternate/i.test(e.error)), "the alternates reason is journaled");
+    });
+  });
+
+  describe("admin dirs whose commondir names a container path (OPE-14907)", () => {
+    const git = (args, cwd) => {
+      const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+      return r.stdout;
+    };
+    const makeBot = () => {
+      const agent = path.join(tmpDir, "agent");
+      const workspace = path.join(agent, "workspace");
+      const base = path.join(agent, "hermes/.myrmidon/git-base/o/r.git");
+      fs.mkdirSync(path.dirname(base), { recursive: true });
+      fs.mkdirSync(workspace, { recursive: true });
+      const server = path.join(tmpDir, "server.git");
+      git(["init", "-q", "--bare", "-b", "main", server]);
+      const seed = path.join(tmpDir, "seed");
+      git(["init", "-q", "-b", "main", seed]);
+      fs.writeFileSync(path.join(seed, "f.txt"), "one\n");
+      git(["add", "."], seed);
+      git(["commit", "-q", "-m", "one"], seed);
+      git(["push", "-q", server, "main"], seed);
+      git(["clone", "-q", "--bare", server, base]);
+      return { agent, workspace, base, server };
+    };
+    // The bots volume records container paths everywhere: the clone .git file AND the admin
+    // dir's commondir both name /bot, which does not exist on the host.
+    const addMappedClone = (bot, name, { dirty = false, stashes = 0, ageHours = 25 } = {}) => {
+      const dir = path.join(bot.workspace, name);
+      const branch = `task-${name}`;
+      git(["--git-dir", bot.base, "worktree", "add", "-q", "-b", branch, dir, "main"]);
+      fs.writeFileSync(path.join(dir, "w.txt"), "work\n");
+      git(["add", "."], dir);
+      git(["commit", "-q", "-m", `work ${name}`], dir);
+      for (let i = 0; i < stashes; i += 1) {
+        fs.writeFileSync(path.join(dir, `stash-${i}.txt`), `stash ${i}\n`);
+        git(["add", `stash-${i}.txt`], dir);
+        git(["stash", "-q", "--", `stash-${i}.txt`], dir);
+      }
+      if (dirty) fs.writeFileSync(path.join(dir, "f.txt"), "changed\n");
+      fs.writeFileSync(path.join(dir, ".git"), `gitdir: /bot/hermes/.myrmidon/git-base/o/r.git/worktrees/${name}\n`);
+      fs.writeFileSync(path.join(bot.base, "worktrees", name, "gitdir"), `/bot/workspace/${name}/.git\n`);
+      fs.writeFileSync(path.join(bot.base, "worktrees", name, "commondir"), "/bot/hermes/.myrmidon/git-base/o/r.git\n");
+      const old = new Date(Date.now() - ageHours * 60 * 60 * 1000);
+      for (const f of fs.readdirSync(dir).filter((e) => e !== ".git").map((e) => path.join(dir, e))) fs.utimesSync(f, old, old);
+      for (const f of ["HEAD", "index", path.join("logs", "HEAD")]) {
+        try { fs.utimesSync(path.join(bot.base, "worktrees", name, f), old, old); } catch { /* absent */ }
+      }
+      fs.utimesSync(dir, old, old);
+      return dir;
+    };
+    const apply = (root) => runScript(["--root", root, "--lock", path.join(tmpDir, "gc.lock"), "--journal", path.join(tmpDir, "gc.jsonl"), "--apply"]);
+    const journalEvents = () => fs.readFileSync(path.join(tmpDir, "gc.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const archives = (root) => {
+      const dir = path.join(root, ".gc-archive");
+      return fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => n.endsWith(".tar.gz")) : [];
+    };
+    const archiveMembers = (root, name) => {
+      const r = spawnSync("tar", ["-tzf", path.join(root, ".gc-archive", name)], { encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`tar -tzf: ${r.stderr}`);
+      return r.stdout;
+    };
+
+    it("archives a dirty unpushed mapped worktree whose admin commondir names a container path", async () => {
+      const bot = makeBot();
+      const dir = addMappedClone(bot, "OPE-35001", { dirty: true });
+      const admin = path.join(bot.base, "worktrees", "OPE-35001");
+      const mirror = path.join(tmpDir, "mirror-objects");
+      fs.mkdirSync(mirror, { recursive: true });
+      fs.writeFileSync(path.join(bot.base, "objects", "info", "alternates"), `${mirror}\n`);
+      const r = await apply(bot.workspace);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(fs.existsSync(dir), false, "clone removed");
+      assert.equal(fs.existsSync(admin), false, "exactly its own admin dir removed");
+      const names = archives(bot.workspace);
+      assert.equal(names.length, 1, `one archive expected: ${JSON.stringify(names)}`);
+      const listing = archiveMembers(bot.workspace, names[0]);
+      assert.ok(listing.includes("unpublished.bundle"), `the bundle was created through the mapped common dir:\n${listing}`);
+      assert.ok(listing.includes("changes.patch"), `the dirty diff is patched:\n${listing}`);
+      assert.ok(journalEvents().some((e) => e.event === "clone-removed-after-archive" && e.path === dir), "clone-removed-after-archive journaled");
+    });
+
+    it("a kept clone (multiple stash guard) gets its container commondir content back byte-exact", async () => {
+      const bot = makeBot();
+      const dir = addMappedClone(bot, "OPE-35002", { stashes: 2 });
+      const admin = path.join(bot.base, "worktrees", "OPE-35002");
+      const commondirFile = path.join(admin, "commondir");
+      const before = fs.readFileSync(commondirFile, "utf8");
+      assert.equal(before, "/bot/hermes/.myrmidon/git-base/o/r.git\n");
+      const r = await apply(bot.workspace);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(fs.existsSync(dir), true, "multiple stash entries keep the copy");
+      assert.equal(fs.readFileSync(commondirFile, "utf8"), before, "commondir restored byte-exact after the process exited");
+      assert.equal(fs.lstatSync(commondirFile).isFile(), true, "commondir is still a regular file");
+      assert.ok(journalEvents().some((e) => e.event === "clone-archive-failed" && /multiple stash entries/.test(e.error)), "the stash guard is journaled");
+    });
+
+    it("a symlinked commondir is never followed or rewritten; the target and the clone stay untouched", async () => {
+      const bot = makeBot();
+      const dir = addMappedClone(bot, "OPE-35003");
+      const admin = path.join(bot.base, "worktrees", "OPE-35003");
+      const commondirFile = path.join(admin, "commondir");
+      const outside = path.join(tmpDir, "outside-commondir");
+      fs.writeFileSync(outside, "/bot/hermes/.myrmidon/git-base/o/r.git\n");
+      fs.rmSync(commondirFile);
+      fs.symlinkSync(outside, commondirFile);
+      const r = await apply(bot.workspace);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(fs.existsSync(dir), true, "the clone stays: the repair refused the symlink and git failed closed");
+      assert.equal(fs.readFileSync(outside, "utf8"), "/bot/hermes/.myrmidon/git-base/o/r.git\n", "the symlink target is unchanged");
+      assert.ok(fs.lstatSync(commondirFile).isSymbolicLink(), "commondir is still the bot's symlink");
+    });
+  });
+
   it("fails when lock is held", async () => {
     const root = path.join(tmpDir, "root");
     fs.mkdirSync(root);
