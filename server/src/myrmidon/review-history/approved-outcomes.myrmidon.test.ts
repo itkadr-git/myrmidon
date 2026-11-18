@@ -160,6 +160,14 @@ describeEmbeddedPostgres("queryApprovedReviewOutcomes — bounded review-history
     expect(result.records).toEqual([]);
   });
 
+  it("does not expand the 30-day window when a larger window is requested", async () => {
+    const issue = await makeIssue("OPE-C2");
+    await attachPullRequest(issue, 302);
+    await makeDecision({ issueId: issue, body: "stale verdict", createdAt: new Date(NOW.getTime() - 31 * DAY_MS) });
+    const result = await queryApprovedReviewOutcomes(db!, { companyId, now: NOW, windowMs: 60 * DAY_MS });
+    expect(result.records).toEqual([]);
+  });
+
   it("clamps the page size to REVIEW_HISTORY_MAX_PAGE_SIZE and the cursor walks the full set", async () => {
     const issue = await makeIssue("OPE-D1");
     await attachPullRequest(issue, 401);
