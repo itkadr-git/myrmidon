@@ -704,7 +704,7 @@ describe("createReviewPullRequestCiResolver", () => {
     });
     const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => "token" });
     await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
-      state: "pending", headSha: "def456",
+      state: "unknown", headSha: "def456", reason: "head_moved",
     });
   });
 
@@ -724,6 +724,31 @@ describe("createReviewPullRequestCiResolver", () => {
     const resolver = createReviewPullRequestCiResolver({ db, fetch: async () => { throw new Error("transport unavailable"); }, tokenProvider: async () => "token" });
     await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
       state: "unknown", headSha: null,
+    });
+  });
+
+  it("does not carry a matching verdict onto a fully green new head (OPE-15114)", async () => {
+    // The verdict was made on head A; head B is pushed and fully green. The
+    // new head's CI must not admit the old verdict: moved head => unknown.
+    const now = new Date();
+    const rows = [
+      { event: "pull_request", createdAt: now, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
+      { event: "check_run", createdAt: now, normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "abc123", checkName: "CI result", status: "completed", conclusion: "success" } },
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const fetch = fakeFetch({
+      [PULL]: { state: "open", head: { sha: "def456" } },
+      ["/repos/acme/app/commits/def456/check-runs?check_name=CI%20result&filter=all&per_page=100"]: { total_count: 1, check_runs: [{ id: 2, name: "CI result", status: "completed", conclusion: "success", head_sha: "def456" }] },
+    });
+    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => "token" });
+    await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
+      state: "unknown", headSha: "def456", reason: "head_moved",
     });
   });
 
@@ -755,7 +780,7 @@ describe("createReviewPullRequestCiResolver", () => {
     });
     const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => "token" });
     await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
-      state: "pending", headSha: "def456",
+      state: "unknown", headSha: "def456", reason: "head_moved",
     });
   });
 

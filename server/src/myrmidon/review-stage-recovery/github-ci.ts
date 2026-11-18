@@ -679,8 +679,15 @@ export function createReviewPullRequestCiResolver(input: {
           ...(head.rateLimit ? { rateLimit: head.rateLimit } : {}),
         };
       }
-      // The head moved on or the PR closed: the authoritative resolver below
-      // re-reads the current state and supersedes the local verdict.
+      if (head.state === "ok") {
+        // The fresh head moved past the webhook head. The verdict was made on
+        // the old head: its CI must not carry over to this review decision,
+        // even when the new head is fully green. The reviewer re-submits on
+        // the current head.
+        return { state: "unknown", pullRequestUrl, headSha: head.headSha, reason: "head_moved" };
+      }
+      // A closed PR falls through: the authoritative resolver below answers
+      // no_pull_request with the closed head.
     }
     try {
       const head = await resolvePullRequestHeadCi({ reference, token, fetch: fetchImpl, fresh: true });
