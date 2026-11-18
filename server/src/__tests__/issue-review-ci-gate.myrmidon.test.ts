@@ -121,29 +121,6 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, partial.body])).not.toContain(canary);
 
     transport.mockClear();
-    diagnostic.mockClear();
-    resetReviewCiCacheForTests();
-    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
-    transport.mockImplementationOnce(async () => Response.json({ state: "open", head: { sha: headSha } }));
-    transport.mockImplementationOnce(async () => Response.json([{ name: "ci.yml" }]));
-    transport.mockImplementationOnce(async () => Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "success", head_sha: headSha }] }));
-    const success = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI passed" });
-    const checkUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?check_name=CI%20result&filter=all&per_page=100`;
-    expect(success.status, JSON.stringify(success.body)).toBe(200);
-    const workflowUrl = "https://api.github.com/repos/acme/app/contents/.github/workflows";
-    expect(transport.mock.calls.map(([url]) => url)).toEqual([pullUrl, workflowUrl, checkUrl]);
-    expect(unexpectedCalls(transport.mock.calls, [pullUrl, workflowUrl, checkUrl])).toEqual([]);
-    expect(diagnostic.mock.calls.some(([fields]) => typeof fields === "object" && fields !== null &&
-      "transportCalls" in fields && fields.transportCalls === 3 &&
-      "budget" in fields && JSON.stringify(fields.budget) === JSON.stringify({ used: 3, cap: 2000, windowMinutes: 60 }))).toBe(true);
-    expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, success.body])).not.toContain(canary);
-    await ctx.db.update(issues).set({ status: "in_review", executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewer, userId: null }, returnAssignee: { type: "agent", agentId: author, userId: null }, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null } }).where(sql`${issues.id} = ${issueId}`);
-    await ctx.db.update(toolGatewayRateLimitCounters).set({ count: 2000 }).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
-    resetReviewCiCacheForTests();
-    diagnostic.mockRestore();
-    warning.mockRestore();
-    error.mockRestore();
-    transport.mockClear();
 
     const stale = new Date(Date.now() - 31 * 60_000);
     await ctx.db.insert(connectionEventDeliveries).values([
@@ -171,5 +148,24 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
     expect(accepted.body.status).toBe("in_progress");
     expect(transport).not.toHaveBeenCalled();
+    await ctx.db.update(issues).set({ status: "in_review", executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewer, userId: null }, returnAssignee: { type: "agent", agentId: author, userId: null }, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null } }).where(sql`${issues.id} = ${issueId}`);
+    await ctx.db.delete(connectionEventDeliveries).where(sql`${connectionEventDeliveries.companyId} = ${companyId}`);
+    transport.mockClear();
+    diagnostic.mockClear();
+    resetReviewCiCacheForTests();
+    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
+    transport.mockImplementationOnce(async () => Response.json({ state: "open", head: { sha: headSha } }));
+    transport.mockImplementationOnce(async () => Response.json([{ name: "ci.yml" }]));
+    transport.mockImplementationOnce(async () => Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "success", head_sha: headSha }] }));
+    const success = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI passed" });
+    const checkUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?check_name=CI%20result&filter=all&per_page=100`;
+    expect(success.status, JSON.stringify(success.body)).toBe(200);
+    const workflowUrl = "https://api.github.com/repos/acme/app/contents/.github/workflows";
+    expect(transport.mock.calls.map(([url]) => url)).toEqual([pullUrl, workflowUrl, checkUrl]);
+    expect(unexpectedCalls(transport.mock.calls, [pullUrl, workflowUrl, checkUrl])).toEqual([]);
+    expect(diagnostic.mock.calls.some(([fields]) => typeof fields === "object" && fields !== null &&
+      "transportCalls" in fields && fields.transportCalls === 3 &&
+      "budget" in fields && JSON.stringify(fields.budget) === JSON.stringify({ used: 3, cap: 2000, windowMinutes: 60 }))).toBe(true);
+    expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, success.body])).not.toContain(canary);
   });
 });
