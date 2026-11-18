@@ -70,7 +70,9 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     const rejected = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
     expect(diagnostic.mock.calls.some(([fields]) => typeof fields === "object" && fields !== null &&
       "issueId" in fields && fields.issueId === issueId && "runId" in fields && fields.runId === runId &&
-      "reason" in fields && fields.reason === "budget_exhausted")).toBe(true);
+      "reason" in fields && fields.reason === "budget_exhausted" &&
+      "transportCalls" in fields && fields.transportCalls === 0 &&
+      "budget" in fields && JSON.stringify(fields.budget) === JSON.stringify({ used: 2000, cap: 2000, windowMinutes: 60 }))).toBe(true);
     expect(rejected.status, JSON.stringify(rejected.body)).toBe(422);
     expect(JSON.stringify(rejected.body)).toContain("CI status for the current pull request head is unavailable");
     expect(transport).not.toHaveBeenCalled();
@@ -103,7 +105,9 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     expect(partial.status).toBe(422);
     expect(transport).toHaveBeenCalledTimes(1);
     expect(diagnostic.mock.calls.some(([fields]) => typeof fields === "object" && fields !== null &&
-      "reason" in fields && fields.reason === "budget_exhausted")).toBe(true);
+      "reason" in fields && fields.reason === "budget_exhausted" &&
+      "transportCalls" in fields && fields.transportCalls === 1 &&
+      "budget" in fields && JSON.stringify(fields.budget) === JSON.stringify({ used: 2000, cap: 2000, windowMinutes: 60 }))).toBe(true);
     expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, partial.body])).not.toContain(canary);
     diagnostic.mockRestore();
     warning.mockRestore();

@@ -27,7 +27,7 @@ import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { connectionEventDeliveries, issueWorkProducts, type Db } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../../services/git-credentials.js";
 import { getGitHubRateLimitMetrics, isGitHubRateLimited, recordGitHubRequest } from "../../services/github-rate-limit.js";
-import { GitHubReviewBudgetError, withGitHubReviewBudget } from "../../services/github-review-budget.js";
+import { GitHubReviewBudgetError, withGitHubReviewBudget, type ReviewBudgetSnapshot } from "../../services/github-review-budget.js";
 import { ghFetch, gitHubApiBase } from "../../services/github-fetch.js";
 import { repositoryHasHostedCi } from "../../services/github-hosted-ci.js";
 import { defaultTokenProvider as resolveGitHubReadToken } from "../../services/github-external-object-provider.js";
@@ -579,14 +579,26 @@ export function createReviewPullRequestCiResolver(input: {
   db: Db;
   fetch?: FetchLike;
   tokenProvider?: (companyId: string, repository: string) => Promise<string | null>;
+  onDiagnostic?: (diagnostic: { transportCalls: number; budget: ReviewBudgetSnapshot | null }) => void;
 }): ReviewPullRequestCiResolver {
-  const fetchImpl = withGitHubReviewBudget(input.db, "review-recovery", input.fetch ?? ghFetch);
-  const tokenProvider =
-    input.tokenProvider ??
-    ((companyId: string, repository: string) =>
-      resolveGitHubReadToken(input.db, companyId, repository, DEFAULT_GITHUB_TOKEN_SECRET_NAMES, fetchImpl));
-
   return async ({ companyId, issueId }) => {
+    let transportCalls = 0;
+    let budget: ReviewBudgetSnapshot | null = null;
+    const budgetedFetch = withGitHubReviewBudget(input.db, "review-recovery", async (url, init) => {
+      transportCalls += 1;
+      return (input.fetch ?? ghFetch)(url, init);
+    });
+    const fetchImpl: FetchLike = async (url, init) => {
+      try {
+        return await budgetedFetch(url, init);
+      } catch (error) {
+        if (error instanceof GitHubReviewBudgetError && error.budget) budget = error.budget;
+        throw error;
+      }
+    };
+    const tokenProvider = input.tokenProvider ?? ((id: string, repository: string) =>
+      resolveGitHubReadToken(input.db, id, repository, DEFAULT_GITHUB_TOKEN_SECRET_NAMES, fetchImpl));
+    try {
     const target = await loadIssuePullRequestTarget(input.db, companyId, issueId);
     if (target.kind === "none") return { state: "no_pull_request", pullRequestUrl: null, headSha: null };
     if (target.kind === "unreadable") {
@@ -624,6 +636,9 @@ export function createReviewPullRequestCiResolver(input: {
       };
     } catch {
       return { state: "unknown", pullRequestUrl, headSha: null, reason: "read_failed" };
+    }
+    } finally {
+      try { input.onDiagnostic?.({ transportCalls, budget }); } catch { /* Diagnostics must not affect admission. */ }
     }
   };
 }
