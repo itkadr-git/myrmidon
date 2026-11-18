@@ -345,6 +345,24 @@ function repoFromOrigin(git, dir) {
 
 // --- open ------------------------------------------------------------------
 
+/**
+ * A base that is bare with extensions.worktreeConfig=true hands every linked
+ * worktree its core.bare=true: `git worktree add` never writes the admin dir's
+ * config.worktree, so the copy answers rev-parse but is not a work tree, and
+ * status/read-tree/sparse-checkout refuse. Write the override exactly where git
+ * looks for it — the copy's config.worktree; the common config and the base's
+ * bareness stay untouched. A linked worktree can only read as bare when the
+ * extension is on (without it git reports a worktree of a bare base as
+ * non-bare), so `git config --worktree` is valid exactly here. Returns true
+ * when a fix was written.
+ */
+function ensureWorktreeNotBare(git, wt) {
+  const r = git(wt, ["rev-parse", "--is-bare-repository"], { allowFail: true });
+  if (r.status !== 0 || r.stdout !== "true") return false;
+  git(wt, ["config", "--worktree", "core.bare", "false"]);
+  return true;
+}
+
 /** Short directory suffix of a repository: `owner/name(.git)` -> `name`. */
 function repoShortName(repo) {
   return repo.split("/")[1].replace(/\.git$/, "");
@@ -429,6 +447,22 @@ async function open(request, deps = {}) {
     const res = sparse.checkoutTaskCopy(git, wt);
     if (!res.sparse) warn(`${wt}: full checkout (${res.reason})`);
   };
+  // `git worktree add` of a base with extensions.worktreeConfig=true leaves the
+  // new copy inheriting core.bare=true: make it a real work tree before any
+  // checkout step (finishCopy/finishReview) runs.
+  const addCopy = (basePath, args) => {
+    git(basePath, args);
+    ensureWorktreeNotBare(git, dir);
+  };
+  // Recover of a copy that inherited core.bare=true fixes the copy's config
+  // inside recoverCopy; a copy whose create died in finish* still has no
+  // checkout at all, so give it the one a fresh open would have created. A copy
+  // that already has a checkout (a plain `worktree add` populates one) is left
+  // alone.
+  const materializeBare = (wt) => {
+    if (git(wt, ["ls-files"], { allowFail: true }).stdout !== "") return;
+    finishCopy(wt);
+  };
   const baseTarget = request.base ? `refs/remotes/origin/${request.base}` : "refs/remotes/origin/HEAD";
   let recovered = [];
   let recoveryRef;
@@ -452,6 +486,7 @@ async function open(request, deps = {}) {
         expectedBranch: request.branch || known.branch || branch,
         explicitBranch: Boolean(request.branch),
         baseTarget,
+        materialize: materializeBare,
       });
     }
     if (!healed || healed.action !== "fallthrough") {
@@ -486,7 +521,7 @@ async function open(request, deps = {}) {
   //     registry was lost or a previous open died before writing it) is adopted.
   if (!scratch && fs.existsSync(dir) && isWorktreeOf(dir)) {
     const adoptedRepo = repo || repoFromOrigin(git, dir) || undefined;
-    const healed = recover.recoverCopy(ctx, git, dir, { key, expectedBranch: request.branch || null, explicitBranch: Boolean(request.branch), baseTarget });
+    const healed = recover.recoverCopy(ctx, git, dir, { key, expectedBranch: request.branch || null, explicitBranch: Boolean(request.branch), baseTarget, materialize: materializeBare });
     if (healed.action === "fallthrough") {
       recovered = healed.recovered;
       repo = repo || adoptedRepo;
@@ -551,8 +586,8 @@ async function open(request, deps = {}) {
       baseRef = resolveBaseRef(git, basePath, request.base);
       const target = `refs/remotes/origin/${baseRef}`;
       const existingBranch = git(basePath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { allowFail: true }).status === 0;
-      if (existingBranch) git(basePath, [...wtAdd, dir, branch]);
-      else git(basePath, [...wtAdd, "--no-track", "-b", branch, dir, target]);
+      if (existingBranch) addCopy(basePath, [...wtAdd, dir, branch]);
+      else addCopy(basePath, [...wtAdd, "--no-track", "-b", branch, dir, target]);
       finishCopy(dir);
       if (sourceHead && sourceHead !== git(dir, ["rev-parse", "HEAD"])) {
         const recoveryBranch = `myr-ws/recovery/${key}`;
@@ -594,7 +629,7 @@ async function open(request, deps = {}) {
     if (fs.existsSync(dir)) fs.rmdirSync(dir); // empty leftover dir: worktree add wants to make it
     const target = `refs/remotes/origin/${baseRef}`;
     if (scratch) {
-      git(basePath, ["worktree", "add", "--detach", dir, target]);
+      addCopy(basePath, ["worktree", "add", "--detach", dir, target]);
     } else {
       const haveBranch = git(basePath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { allowFail: true }).status === 0;
       if (review) {
@@ -617,13 +652,13 @@ async function open(request, deps = {}) {
           }
         }
         if (haveBranch || hasRemote) {
-          if (haveBranch) git(basePath, [...wtAdd, dir, branch]);
-          else git(basePath, [...wtAdd, "--no-track", "-b", branch, dir, remote]);
-        } else git(basePath, [...wtAdd, "--no-track", "-b", branch, dir, target]);
+          if (haveBranch) addCopy(basePath, [...wtAdd, dir, branch]);
+          else addCopy(basePath, [...wtAdd, "--no-track", "-b", branch, dir, remote]);
+        } else addCopy(basePath, [...wtAdd, "--no-track", "-b", branch, dir, target]);
         finishReview(dir);
       } else if (haveBranch) {
         // A branch left by an earlier copy of this task keeps its commits: reattach it, do not reset it.
-        git(basePath, [...wtAdd, dir, branch]);
+        addCopy(basePath, [...wtAdd, dir, branch]);
         finishCopy(dir);
       } else {
         // An explicit --branch (the head branch of the task's pull request) starts from its
@@ -635,7 +670,7 @@ async function open(request, deps = {}) {
           if (!has()) git(basePath, ["fetch", "--no-tags", "origin", `+refs/heads/${branch}:${remote}`], { allowFail: true });
           if (has()) from = remote;
         }
-        git(basePath, [...wtAdd, "--no-track", "-b", branch, dir, from]);
+        addCopy(basePath, [...wtAdd, "--no-track", "-b", branch, dir, from]);
         finishCopy(dir);
       }
     }
