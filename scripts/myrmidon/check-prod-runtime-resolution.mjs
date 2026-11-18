@@ -68,7 +68,7 @@ const TEST_ARTIFACT_EXT = /(?:^|\.)test\.js$|\.myrmidon\.test\.js$/;
  * Returns spans { start, end, value } so callers can inspect the code text
  * immediately around each literal.
  */
-export function scanCodeStringLiterals(text) {
+export function scanCodeStringLiterals(text, code = null) {
   const spans = [];
   const n = text.length;
   let i = 0;
@@ -77,25 +77,30 @@ export function scanCodeStringLiterals(text) {
   while (i < n) {
     const c = text[i];
     if (inLineComment) {
-      if (c === "\n") inLineComment = false;
+      if (c === "\n" || c === "\r") inLineComment = false;
+      else if (code) code[i] = " ";
       i += 1;
       continue;
     }
     if (inBlockComment) {
       if (c === "*" && text[i + 1] === "/") {
+        if (code) code[i] = code[i + 1] = " ";
         inBlockComment = false;
         i += 2;
         continue;
       }
+      if (code && c !== "\n" && c !== "\r") code[i] = " ";
       i += 1;
       continue;
     }
     if (c === "/" && text[i + 1] === "/") {
+      if (code) code[i] = code[i + 1] = " ";
       inLineComment = true;
       i += 2;
       continue;
     }
     if (c === "/" && text[i + 1] === "*") {
+      if (code) code[i] = code[i + 1] = " ";
       inBlockComment = true;
       i += 2;
       continue;
@@ -226,7 +231,9 @@ function lineAt(text, lineStarts, pos) {
  * with a string literal), "url" (new URL("...", import.meta.url)).
  */
 export function scanImports(text) {
-  const spans = scanCodeStringLiterals(text);
+  const code = text.split("");
+  const spans = scanCodeStringLiterals(text, code);
+  const context = code.join("");
   const lineStarts = [];
   for (let i = 0; i < text.length; i += 1) {
     if (text[i] === "\n") lineStarts.push(i + 1);
@@ -235,8 +242,8 @@ export function scanImports(text) {
   const seen = new Set();
   for (const span of spans) {
     if (span.value === "") continue;
-    const before = text.slice(Math.max(0, span.start - 80), span.start).replace(/\s+$/, "");
-    const after = text.slice(span.end, span.end + 60);
+    const before = context.slice(Math.max(0, span.start - 80), span.start).replace(/\s+$/, "");
+    const after = context.slice(span.end, span.end + 60);
     let kind = null;
     if (/import\s*\($/.test(before) && /^\s*[),]/.test(after)) {
       kind = "import"; // dynamic import("...")
