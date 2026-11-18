@@ -45,6 +45,30 @@ export async function renewLegacyControllerLease(
   return Boolean(renewed);
 }
 
+/** What the database currently records about this process's lease on the run.
+ * A plain snapshot read: it takes no row lock, so it settles even while
+ * renewal and revocation writers queue on the row. */
+export async function readLegacyControllerLeaseState(
+  db: Db,
+  run: Pick<Run, "id" | "companyId">,
+): Promise<{ owned: boolean; expiresAt: Date | null }> {
+  const [row] = await db.select({
+    status: heartbeatRuns.status,
+    controllerBootId: heartbeatRuns.controllerBootId,
+    controllerLeaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt,
+  }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+  ));
+  if (!row) return { owned: false, expiresAt: null };
+  const expiresAt = row.controllerLeaseExpiresAt;
+  return {
+    owned: row.status === "running" &&
+      row.controllerBootId === legacyControllerBootId &&
+      expiresAt != null && expiresAt.getTime() > Date.now(),
+    expiresAt,
+  };
+}
+
 export async function hasLiveLegacyController(db: Db, run: Run): Promise<boolean> {
   if (run.runtimeMode === "native" || !run.controllerBootId) return false;
   const [owner] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
@@ -76,10 +100,18 @@ export async function revokeExpiredLegacyController(db: Db, run: Run): Promise<b
  *
  * myrmidon(OPE-12578): a passed deadline is a question, not a verdict. After a
  * stall of this process the deadline fires late together with the renewal tick;
- * it asks the database first and aborts only when the renewal is refused, fails,
- * or does not settle within LEGACY_CONTROLLER_DEADLINE_CONFIRM_MS. A failed
- * background renewal (pool timeout, connection error) is retried on the next
- * tick; only a refused renewal aborts at once. */
+ * it asks the database first and aborts when ownership is refused, when a live
+ * lease cannot be confirmed, or when both the renewal and the subsequent read
+ * exceed their confirm windows. A failed background renewal (pool timeout,
+ * connection error) is retried on the next tick; only a refusal aborts at once.
+ *
+ * myrmidon(OPE-15074): the confirm window bounds this process's own renewal
+ * attempt, not the lease. A renewal issued earlier can land while the attempt
+ * is still unsettled (row-lock queue, pool wait): production cancelled a run
+ * 1.4 s after the row already carried its renewed lease. When the window
+ * closes, the decision reads the lease the database actually holds; it aborts
+ * on a definitive not-owned answer, and keeps the fail-safe abort when the
+ * read itself cannot settle. */
 export function watchLegacyControllerLease(db: Db, run: Run, controller: AbortController) {
   if (run.runtimeMode === "native" || !run.controllerBootId) {
     return { stop() {}, async assertOwned(_stage?: "dispatching") {} };
@@ -95,7 +127,7 @@ export function watchLegacyControllerLease(db: Db, run: Run, controller: AbortCo
   let confirm: ReturnType<typeof setTimeout> | null = null;
   const onDeadline = () => {
     if (stopped || confirm) return;
-    confirm = setTimeout(lost, LEGACY_CONTROLLER_DEADLINE_CONFIRM_MS);
+    confirm = setTimeout(() => { void confirmLeaseLost(); }, LEGACY_CONTROLLER_DEADLINE_CONFIRM_MS);
     confirm.unref();
     void assertOwned().catch(lost).finally(() => {
       if (confirm) clearTimeout(confirm);
@@ -130,6 +162,38 @@ export function watchLegacyControllerLease(db: Db, run: Run, controller: AbortCo
       clearTimeout(deadline);
       deadline = setTimeout(onDeadline, Math.max(0, LEGACY_CONTROLLER_LEASE_MS - (Date.now() - startedAt)));
       deadline.unref();
+    }
+  };
+  // myrmidon(OPE-15074): the renewal attempt did not settle within the confirm
+  // window. Decide from the lease the database actually holds, not from this
+  // attempt's latency: an earlier renewal may have landed while it was
+  // unsettled. Survive only on a definitive live-and-owned answer; any error
+  // or a read that cannot settle within one more confirm window keeps the
+  // fail-safe abort, so a controller that cannot reach the database still
+  // releases the run instead of holding it on stale knowledge.
+  const confirmLeaseLost = async () => {
+    if (stopped) return;
+    let verifyTimeout: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const verifySettled = new Promise<never>((_, reject) => {
+        verifyTimeout = setTimeout(() => reject(new Error("lease ownership verify timeout")),
+          LEGACY_CONTROLLER_DEADLINE_CONFIRM_MS);
+        verifyTimeout.unref();
+      });
+      const state = await Promise.race([readLegacyControllerLeaseState(db, run), verifySettled]);
+      if (stopped) return;
+      if (state.owned) {
+        if (confirm) { clearTimeout(confirm); confirm = null; }
+        clearTimeout(deadline);
+        deadline = setTimeout(onDeadline, Math.max(0, (state.expiresAt?.getTime() ?? 0) - Date.now()));
+        deadline.unref();
+        return;
+      }
+      lost();
+    } catch {
+      lost();
+    } finally {
+      if (verifyTimeout) clearTimeout(verifyTimeout);
     }
   };
   const timer = backgroundInterval(() => {

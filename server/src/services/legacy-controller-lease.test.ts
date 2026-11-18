@@ -133,6 +133,101 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await renewLegacyControllerLease(db, run)).toBe(false);
     expect(await revokeExpiredLegacyController(db, run)).toBe(false);
   });
+  // myrmidon(OPE-15074): production run 8d3d992e was aborted with
+  // ControllerLeaseLost 1.4 s after the row already carried a renewed lease
+  // (controller_lease_expires_at moved past the abort time). The confirm-path
+  // renewal had not settled, so the watcher decided on its own attempt's
+  // latency instead of the lease that was actually in the database.
+  it("keeps the run when the lease is live in the database but the confirm renewal has not settled", async () => {
+    const run = await seed();
+    const deadlineAt = Date.now() + 200;
+    await db.update(heartbeatRuns)
+      .set({ controllerLeaseExpiresAt: new Date(deadlineAt) })
+      .where(eq(heartbeatRuns.id, run.id));
+    // The watcher's renewals stay unsettled (pool wait, lock queue) for as
+    // long as the test holds them; its ownership read still reaches the real
+    // database, as in production, where reads and the late renewal landed
+    // while the confirm-path renewal had not settled.
+    let releaseRenew!: (rows: { id: string }[]) => void;
+    const unsettledRenew = new Promise<{ id: string }[]>((resolve) => { releaseRenew = resolve; });
+    const routedDb = {
+      update: () => ({ set: () => ({ where: () => ({ returning: () => unsettledRenew }) }) }),
+      select: (...args: unknown[]) => (db.select as (...a: unknown[]) => unknown)(...args),
+    } as unknown as typeof db;
+    const controller = new AbortController();
+    const watch = watchLegacyControllerLease(routedDb, { ...run, controllerLeaseExpiresAt: new Date(deadlineAt) }, controller);
+    try {
+      // Confirm window opens at the deadline with the watcher renewal unsettled.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(controller.signal.aborted).toBe(false);
+      // A renewal lands in the database while the watcher's attempt is
+      // unsettled — the late renewal that wrote the lease in production.
+      expect(await renewLegacyControllerLease(db, run)).toBe(true);
+      // The confirm deadline passes with the watcher renewal still unsettled.
+      await new Promise((resolve) => setTimeout(resolve, LEGACY_CONTROLLER_DEADLINE_CONFIRM_MS + 300));
+      const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+      expect(saved.status).toBe("running");
+      expect(saved.controllerBootId).toBe(legacyControllerBootId);
+      expect(saved.controllerLeaseExpiresAt!.getTime()).toBeGreaterThan(Date.now());
+      // The lease truthfully in the database is live and still ours: aborting
+      // here is the false lease-loss that cancelled the production run.
+      expect(controller.signal.aborted).toBe(false);
+      releaseRenew([{ id: run.id }]);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(controller.signal.aborted).toBe(false);
+    } finally {
+      releaseRenew([{ id: run.id }]);
+      watch.stop();
+    }
+  });
+  // The other half of the OPE-15074 decision: a takeover that replaced the
+  // boot id while the confirm renewal is unsettled must still abort.
+  it("aborts when the database shows the lease no longer ours at the confirm deadline", async () => {
+    const run = await seed();
+    const deadlineAt = Date.now() + 200;
+    await db.update(heartbeatRuns)
+      .set({ controllerLeaseExpiresAt: new Date(deadlineAt) })
+      .where(eq(heartbeatRuns.id, run.id));
+    let releaseRenew!: (rows: { id: string }[]) => void;
+    const unsettledRenew = new Promise<{ id: string }[]>((resolve) => { releaseRenew = resolve; });
+    // The watcher's renewals hang; its ownership read sees the real database.
+    const routedDb = {
+      update: () => ({ set: () => ({ where: () => ({ returning: () => unsettledRenew }) }) }),
+      select: (...args: unknown[]) => (db.select as (...a: unknown[]) => unknown)(...args),
+    } as unknown as typeof db;
+    const controller = new AbortController();
+    const watch = watchLegacyControllerLease(routedDb, { ...run, controllerLeaseExpiresAt: new Date(deadlineAt) }, controller);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      // Another controller revokes and takes over while our renewal is unsettled.
+      expect(await revokeExpiredLegacyController(db, run)).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, LEGACY_CONTROLLER_DEADLINE_CONFIRM_MS + 300));
+      expect(controller.signal.aborted).toBe(true);
+      expect((controller.signal.reason as Error).name).toBe("ControllerLeaseLost");
+    } finally {
+      releaseRenew([{ id: run.id }]);
+      watch.stop();
+    }
+  });
+  // Fail-safe half of the OPE-15074 decision: ownership cannot be proven from
+  // the database at the deadline (read hangs as well as the renewal) — the
+  // run is still released, within a second bounded confirm window.
+  it("aborts when neither the renewal nor the ownership read settles by the deadline", async () => {
+    const run = await seed();
+    const never = new Promise(() => {});
+    const hungDb = {
+      update: () => ({ set: () => ({ where: () => ({ returning: () => never }) }) }),
+      select: () => ({ from: () => ({ where: () => never }) }),
+    } as unknown as typeof db;
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const watch = watchLegacyControllerLease(hungDb, { ...run, controllerLeaseExpiresAt: new Date(Date.now() + 100) }, controller);
+    try {
+      await vi.advanceTimersByTimeAsync(100 + 2 * LEGACY_CONTROLLER_DEADLINE_CONFIRM_MS + 500);
+      expect(controller.signal.aborted).toBe(true);
+      expect((controller.signal.reason as Error).name).toBe("ControllerLeaseLost");
+    } finally { watch.stop(); vi.useRealTimers(); }
+  });
   it("rejects dispatch at the lease deadline even if the database query never settles", async () => {
     const run = await seed();
     const hungDb = { update: () => ({ set: () => ({ where: () => ({ returning: () => new Promise(() => {}) }) }) }) } as unknown as typeof db;
