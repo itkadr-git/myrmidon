@@ -76,7 +76,7 @@ describeDb("heartbeat run credential lifecycle", () => {
     { outcome: "success", script: "console.log(process.env.MYRMIDON_LLM_API_KEY)", status: "succeeded", timeout: 0 },
     { outcome: "failure", script: "console.log(process.env.MYRMIDON_LLM_API_KEY); process.exit(1)", status: "failed", timeout: 0 },
     { outcome: "timeout", script: "console.log(process.env.MYRMIDON_LLM_API_KEY); setInterval(() => {}, 1000)", status: "timed_out", timeout: 1 },
-    { outcome: "cancel", script: "console.log(process.env.MYRMIDON_LLM_API_KEY); setInterval(() => {}, 1000)", status: "cancelled", timeout: 0 },
+    { outcome: "cancel", script: "console.log('PROCESS_READY', process.env.MYRMIDON_LLM_API_KEY); setInterval(() => {}, 1000)", status: "cancelled", timeout: 0 },
   ])("revokes and redacts the credential after $outcome", async ({ outcome, script, status, timeout }) => {
     const { companyId, agentId } = await setup(script, timeout);
     const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
@@ -85,13 +85,22 @@ describeDb("heartbeat run credential lifecycle", () => {
     await waitFor(runId, async () => gateway.issued.has(runId));
     const key = gateway.issued.get(runId)!;
     if (outcome === "cancel") {
-      await waitFor(runId, async () => (await heartbeat.getRun(runId))?.status === "running");
+      await waitFor(runId, async () => {
+        try {
+          return (await heartbeat.readLog(runId)).content.includes("PROCESS_READY");
+        } catch {
+          return false;
+        }
+      });
       await heartbeat.cancelRun(runId, "test cancellation");
     }
     await waitFor(runId, async () => !["queued", "running"].includes((await heartbeat.getRun(runId))?.status ?? "queued"));
     await heartbeat.drainActiveRunExecutions();
     expect((await heartbeat.getRun(runId))?.status).toBe(status);
     expect(gateway.active.has(key)).toBe(false);
+    const log = await heartbeat.readLog(runId);
+    expect(log.content).not.toContain(key);
+    expect(log.content).toContain("REDACTED");
     const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
     const redacted = await createRunSecretRedactionRegistry(db).redactForRun(companyId, runId, events);
     expect(JSON.stringify(redacted)).not.toContain(key);

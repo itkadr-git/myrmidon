@@ -914,7 +914,7 @@ import {
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
-import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
+import { createRunSecretRedactionRegistry, redactRegisteredSecretValues } from "./run-secret-redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolvePaperclipRunnerIdleTimeoutMs,
@@ -26557,6 +26557,7 @@ export function heartbeatService(
       }
       const runtime = await ensureRuntimeState(agent);
       const context = parseObject(run.contextSnapshot);
+      let issuedRunGatewayKey: string | null = null;
       const externalSessionOverride = parseObject(context.externalSession);
       const authorizeFailedChatRetryExecution = () =>
         db.transaction((tx) =>
@@ -29129,6 +29130,10 @@ export function heartbeatService(
               companyId: agent.companyId,
               runId: run.id,
             });
+            await createRunSecretRedactionRegistry(db).register(agent.companyId, run.id, minted.value);
+            const registeredRun = await getRun(run.id);
+            context.paperclipSecretRedactions = parseObject(registeredRun?.contextSnapshot).paperclipSecretRedactions;
+            issuedRunGatewayKey = minted.value;
             const runKeyEnvName = runKeySettings.agentKeyEnv ?? "MYRMIDON_LLM_API_KEY";
             runtimeConfig = {
               ...runtimeConfig,
@@ -29139,14 +29144,6 @@ export function heartbeatService(
               },
             };
             secretKeys.add(runKeyEnvName);
-            try {
-              await createRunSecretRedactionRegistry(db).register(agent.companyId, run.id, minted.value);
-            } catch (redactErr) {
-              logger.warn(
-                { err: redactErr, runId: run.id, companyId: agent.companyId },
-                "failed to register heartbeat-run LLM gateway key for log redaction",
-              );
-            }
           } catch (mintErr) {
             logger.warn(
               { err: mintErr, runId: run.id, companyId: agent.companyId },
@@ -29737,7 +29734,10 @@ export function heartbeatService(
           await getCurrentUserRedactionOptions();
         const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
           const sanitizedChunk = compactRunLogChunk(
-            redactCurrentUserText(chunk, currentUserRedactionOptions),
+            redactRegisteredSecretValues(
+              redactCurrentUserText(chunk, currentUserRedactionOptions),
+              issuedRunGatewayKey ? [issuedRunGatewayKey] : [],
+            ),
           );
           if (sanitizedChunk) runGuard.event();
           // myrmidon(DM-PROGRESS): Hermes tool lines feed the step history of
