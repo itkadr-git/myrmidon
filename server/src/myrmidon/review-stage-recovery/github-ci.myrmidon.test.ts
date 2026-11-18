@@ -445,6 +445,28 @@ describe("createReviewPullRequestCiResolver", () => {
     expect(await review({ companyId: "company-1", issueId: "issue-1" })).toMatchObject({ state: "unknown", reason: "pull:network_error (anonymous)" });
   });
 
+  it("rejects an expired wake snapshot when GitHub denies permission", async () => {
+    clearCiCacheForTests();
+    vi.useFakeTimers();
+    try {
+      const wake = createPullRequestCiResolver({ select: vi.fn() } as never, {
+        source: "run-context", tokenProvider: async () => "token",
+        prResolver: async () => ({ headSha: "abc123", headRef: "branch" }),
+        fetch: fakeFetch({ ["/repos/acme/app/commits/abc123/check-runs?per_page=100&page=1&filter=latest"]: { total_count: 1, check_runs: [{ id: 1, ...ciResultOnHead("failure"), html_url: "https://github.com/acme/app/runs/1", started_at: "2026-11-14T08:00:00Z", completed_at: "2026-11-14T08:01:00Z" }] } }),
+      });
+      expect(await wake.resolveForPullRequest("company-1", reference)).toMatchObject({ authoritative: true, status: "completed" });
+      vi.advanceTimersByTime(60_001);
+      const fetch = vi.fn(async () => new Response("{}", { status: 403 }));
+      const review = createReviewPullRequestCiResolver({ db: fakeDb([openProduct]), tokenProvider: async () => "token", fetch });
+      const result = await review({ companyId: "company-1", issueId: "issue-1" });
+      expect(result).toMatchObject({ state: "unknown" });
+      expect(fetch).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      clearCiCacheForTests();
+    }
+  });
+
   it("preserves a budget denial from the token provider when anonymous transport also fails", async () => {
     const { GitHubReviewBudgetError } = await import("../../services/github-review-budget.js");
     const resolver = createReviewPullRequestCiResolver({
