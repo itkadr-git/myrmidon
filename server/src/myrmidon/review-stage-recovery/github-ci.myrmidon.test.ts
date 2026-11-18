@@ -481,6 +481,25 @@ describe("createReviewPullRequestCiResolver", () => {
     expect(result).not.toMatchObject({ state: "complete", finalCheckConclusion: "success" });
   });
 
+  it("does not trust an incomplete webhook delivery window", async () => {
+    const now = new Date();
+    const rows = [
+      { event: "pull_request", createdAt: now, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
+      { event: "check_run", createdAt: now, normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "abc123", checkName: "CI result", runId: "100", status: "completed", conclusion: "failure" } },
+      ...Array.from({ length: 199 }, () => ({ event: "check_run", createdAt: now, normalizedPayload: { checkName: "other" } })),
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const resolver = createReviewPullRequestCiResolver({ db, fetch: vi.fn(fakeFetch({})), tokenProvider: async () => null });
+    const result = await resolver({ companyId: "company-1", issueId: "issue-1" });
+    expect(result.state).not.toBe("complete");
+  });
+
   it("does not accept a completed webhook when a newer running check has no run identity", async () => {
     const now = Date.now();
     const rows = [
