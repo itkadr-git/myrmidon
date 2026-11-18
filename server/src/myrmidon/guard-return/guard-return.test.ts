@@ -262,6 +262,26 @@ describe("1.6.6 GUARD-RETURN: domain logic", () => {
     expect(decision.targetKind).toBe("pr_author");
   });
 
+  it("does not return code to work-gip through author, return assignee, or fallback", () => {
+    const workGip = { id: "work-gip", name: "work-gip", role: "engineer", status: "idle", metadata: { swarmQueueEligible: false } };
+    const candidate: GuardReturnCandidate = {
+      issueId: "issue-14000", identifier: "OPE-14000", title: "Fix code", companyId: "comp-1",
+      status: "in_progress", assigneeAgentId: reviewerAgent.id, assigneeRole: reviewerAgent.role,
+      projectId: null, casteKey: "engineer", labels: [],
+      executionState: { status: "changes_requested", returnAssignee: { type: "agent", agentId: workGip.id } },
+      prWorkProducts: [{ id: "pr", type: "pull_request", status: "open", creatorAgentId: workGip.id }],
+      comments: [], createdAt: new Date(), updatedAt: new Date(),
+    };
+    const map = new Map([[workGip.id, workGip], [reviewerAgent.id, reviewerAgent]]);
+    const decision = decideGuardReturn(candidate, map, undefined, [workGip]);
+    expect(decision.action).toBe("skip");
+    expect(decision.reason).toContain("eligible");
+    expect(decision.targetAssigneeAgentId).toBeUndefined();
+    const eligible = { ...engineerAgent, status: "idle", metadata: { swarmQueueEligible: true } };
+    map.set(eligible.id, eligible);
+    expect(decideGuardReturn(candidate, map, undefined, [workGip, eligible]).targetAssigneeAgentId).toBe(eligible.id);
+  });
+
   it("uses an available project lead only after engineer candidates are exhausted", () => {
     const projectLead: AgentSummary = { id: "project-lead", name: "project-lead", role: "lead", status: "idle" };
     const candidate: GuardReturnCandidate = {
