@@ -141,6 +141,17 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
 
     await ctx.db.delete(connectionEventDeliveries).where(sql`${connectionEventDeliveries.companyId} = ${companyId}`);
     await ctx.db.insert(connectionEventDeliveries).values([
+      { companyId, provider: "github", providerDeliveryId: "pending-pr", event: "pull_request", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha } },
+      { companyId, provider: "github", providerDeliveryId: "pending-check", event: "check_run", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, headSha, checkName: "CI result", status: "in_progress", conclusion: null } },
+    ]);
+    const pending = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI failed" });
+    expect(pending.status, JSON.stringify(pending.body)).toBe(422);
+    expect(transport).not.toHaveBeenCalled();
+    const [stillInReview] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+    expect(stillInReview?.status).toBe("in_review");
+
+    await ctx.db.delete(connectionEventDeliveries).where(sql`${connectionEventDeliveries.companyId} = ${companyId}`);
+    await ctx.db.insert(connectionEventDeliveries).values([
       { companyId, provider: "github", providerDeliveryId: "synthetic-pr", event: "pull_request", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha } },
       { companyId, provider: "github", providerDeliveryId: "synthetic-check", event: "check_run", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, headSha, checkName: "CI result", status: "completed", conclusion: "failure" } },
     ]);
