@@ -172,9 +172,8 @@ async function readGitHub(
 // 0 for both turns the cache off (the stop while the rate limit is exhausted stays). An error is
 // never stored, a result read with one token is never served to a caller with another (the key
 // holds a hash of the token), reads of one key that run at the same time share one request, and
-// at most REVIEW_CI_CACHE_MAX_ENTRIES entries are kept, the oldest leave first. While the shared
-// rate-limit state says the budget is gone an entry is served even after it expired: the
-// alternative is "unknown" for every review stage.
+// at most REVIEW_CI_CACHE_MAX_ENTRIES entries are kept, the oldest leave first. Expired entries
+// are never authoritative during rate limits: the PR head or CI rerun may have changed.
 const PULL_CACHE_TTL_ENV = "MYRMIDON_REVIEW_CI_PULL_CACHE_TTL_SEC";
 const COMPLETE_CACHE_TTL_ENV = "MYRMIDON_REVIEW_CI_COMPLETE_CACHE_TTL_SEC";
 const DEFAULT_PULL_CACHE_TTL_SECONDS = 60;
@@ -235,7 +234,7 @@ function rememberRead(key: string, value: unknown, ttlMs: number): void {
 function cachedRead<T>(key: string, load: () => Promise<LoadedRead<T>>): Promise<CachedRead<T>> {
   if (pullTtlMs() === 0 && completeTtlMs() === 0) return load();
   const entry = readCache.get(key);
-  if (entry && (entry.expiresAt > Date.now() || isGitHubRateLimited())) {
+  if (entry && entry.expiresAt > Date.now()) {
     return Promise.resolve<CachedRead<T>>({ ok: true, value: entry.value as T });
   }
   const running = readsInFlight.get(key);

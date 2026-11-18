@@ -413,16 +413,16 @@ describe("resolvePullRequestHeadCi: rate limit", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("returns the remembered result, even an expired one, and refuses a head it never read", async () => {
+  it("rejects expired and unseen heads when rate limited", async () => {
     const fetch = completeGithub();
-    const remembered = await readCi(fetch);
+    await readCi(fetch);
 
     at(700);
     exhaust(1500);
     const stale = await readCi(fetch);
     const unseen = await readCi(fetch, 8);
 
-    expect(stale).toEqual(remembered);
+    expect(stale).toMatchObject({ state: "unknown", reason: "pull:skipped_rate_limited" });
     expect(unseen).toMatchObject({ state: "unknown", reason: "pull:skipped_rate_limited" });
     expect(fetch).toHaveBeenCalledTimes(3);
   });
@@ -618,16 +618,16 @@ describe("resolvePullRequestHeadFailedChecks: read cache", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("sends nothing while the budget is gone and returns the remembered list, even an expired one", async () => {
+  it("rejects an expired failed-check list while rate limited", async () => {
     const fetch = githubFetch({ [latestChecksPath("abc123")]: () => json(finishedRuns) });
-    const remembered = await readFailed(fetch);
+    await readFailed(fetch);
 
     at(700);
     setGitHubRateLimitForTests(START_SEC + 1500, 0);
     const stale = await readFailed(fetch);
     const unseen = await readFailed(fetch, "def456");
 
-    expect(stale).toEqual(remembered);
+    expect(stale).toEqual({ state: "unknown", reason: "check_runs:skipped_rate_limited" });
     expect(unseen).toEqual({ state: "unknown", reason: "check_runs:skipped_rate_limited" });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
