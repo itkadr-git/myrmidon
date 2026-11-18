@@ -615,11 +615,11 @@ export function createReviewPullRequestCiResolver(input: {
     const matchingWebhook = webhook && target.knownHeadSha && target.knownHeadSha === webhook.headSha ? webhook : null;
     if (matchingWebhook?.verdict) return { ...matchingWebhook.verdict, headSha: matchingWebhook.headSha, pullRequestUrl };
     let token: string | null = null;
-    let tokenError = false;
+    let tokenError: string | null = null;
     try {
       token = (await tokenProvider(companyId, `${reference.owner}/${reference.repo}`))?.trim() || null;
-    } catch {
-      tokenError = true;
+    } catch (error) {
+      tokenError = error instanceof GitHubReviewBudgetError ? `token_provider:${error.reason}` : "token provider failed";
     }
     try {
       const head = await resolvePullRequestHeadCi({ reference, token, fetch: fetchImpl, knownHeadSha: matchingWebhook?.headSha });
@@ -637,7 +637,7 @@ export function createReviewPullRequestCiResolver(input: {
         state: "unknown",
         pullRequestUrl,
         headSha: head.headSha,
-        reason: `${head.reason ?? "read_failed"}${tokenError ? "; token provider failed" : ""}`,
+        reason: `${head.reason ?? "read_failed"}${tokenError ? `; ${tokenError}` : ""}`,
         ...(head.rateLimit ? { rateLimit: head.rateLimit } : {}),
       };
     } catch {
