@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { logger } from "../../middleware/logger.js";
-import { companies, createDb, instanceSettings, issueWorkProducts, issues, toolGatewayRateLimitCounters } from "@myrmidon/db";
+import { companies, connectionEventDeliveries, createDb, instanceSettings, issueWorkProducts, issues, toolGatewayRateLimitCounters } from "@myrmidon/db";
 import { createReviewPullRequestCiResolver, resetReviewCiCacheForTests } from "../../myrmidon/review-stage-recovery/github-ci.js";
 import { resetGitHubRateLimitForTests } from "../github-rate-limit.js";
 import { like, sql } from "drizzle-orm";
@@ -159,6 +159,48 @@ describePostgres("shared GitHub review budget", () => {
     expect(calls).toBe(0);
     expect(result).toMatchObject({ state: "unknown", reason: expect.stringContaining("budget_exhausted") });
     expect(result.reason).not.toContain("network_error");
+  });
+
+  it.each([
+    { name: "fresh matching", webhook: true, age: 0, webhookHead: "a", checkHead: "a", calls: 0, state: "complete" },
+    { name: "missing", webhook: false, age: 0, webhookHead: "a", checkHead: "a", calls: 1, state: "unknown" },
+    { name: "stale", webhook: true, age: 31, webhookHead: "a", checkHead: "a", calls: 1, state: "unknown" },
+    { name: "moved head", webhook: true, age: 0, webhookHead: "b", checkHead: "b", calls: 1, state: "unknown" },
+    { name: "foreign check head", webhook: true, age: 0, webhookHead: "a", checkHead: "b", calls: 2, state: "unknown" },
+  ])("uses only $name webhook evidence for the real resolver", async ({ webhook, age, webhookHead, checkHead, calls, state }) => {
+    await db.delete(toolGatewayRateLimitCounters).where(like(toolGatewayRateLimitCounters.counterKey, "github-budget:%"));
+    await db.delete(connectionEventDeliveries);
+    resetReviewCiCacheForTests();
+    resetGitHubRateLimitForTests();
+    const [company] = await db.select().from(companies).limit(1);
+    if (!company) throw new Error("Budget test company missing");
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Webhook resolver", status: "in_progress", priority: "medium" }).returning();
+    if (!issue) throw new Error("Budget test issue missing");
+    const headSha = "a".repeat(40);
+    await db.insert(issueWorkProducts).values({ companyId: company.id, issueId: issue.id, type: "pull_request", provider: "github", title: "Synthetic PR", url: "https://github.com/acme/app/pull/7", status: "open", isPrimary: true, metadata: { repo: "acme/app", number: 7, headSha } });
+    if (webhook) {
+      const createdAt = new Date(Date.now() - age * 60_000);
+      await db.insert(connectionEventDeliveries).values([
+        { companyId: company.id, provider: "github", providerDeliveryId: "synthetic-pr", event: "pull_request", status: "processed", createdAt, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: webhookHead.repeat(40) } },
+        { companyId: company.id, provider: "github", providerDeliveryId: "synthetic-check", event: "check_run", status: "processed", createdAt, normalizedPayload: { repository: "acme/app", number: 7, headSha: checkHead.repeat(40), checkName: "CI result", status: "completed", conclusion: "success" } },
+      ]);
+    }
+    const seen: string[] = [];
+    const transport = vi.fn(async (url: string) => {
+      seen.push(url);
+      return new Response("", { status: 503 });
+    });
+    const resolve = createReviewPullRequestCiResolver({ db, fetch: transport, tokenProvider: async () => null });
+    const result = await resolve({ companyId: company.id, issueId: issue.id });
+    expect(result.state).toBe(state);
+    expect(transport).toHaveBeenCalledTimes(calls);
+    const prefix = "https://api.github.com/repos/acme/app";
+    const expectedUrls = calls === 0 ? [] : calls === 1 ? [`${prefix}/pulls/7`] : [
+      `${prefix}/contents/.github/workflows`,
+      `${prefix}/commits/${headSha}/check-runs?check_name=CI%20result&filter=all&per_page=100`,
+    ];
+    expect(seen).toEqual(expectedUrls);
+    if (state === "complete") expect(result).toMatchObject({ headSha, finalCheckConclusion: "success" });
   });
 
   it("fails closed on a budget store exception without exposing its contents", async () => {
