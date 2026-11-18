@@ -79,6 +79,33 @@ describePostgres("shared GitHub review budget", () => {
     expect(await reserveGitHubReviewRequest(db, "board-merge", 25)).toBe(false);
   });
 
+  it("allows only one concurrent transport when the default budget has one reservation left", async () => {
+    await db.delete(toolGatewayRateLimitCounters).where(like(toolGatewayRateLimitCounters.counterKey, "github-budget:%"));
+    const [company] = await db.select().from(companies).limit(1);
+    if (!company) throw new Error("Budget test company missing");
+    const [clock] = await db.execute(sql`select floor(extract(epoch from clock_timestamp()) / 60)::bigint as minute`);
+    const minute = Number(clock?.minute);
+    const windowStart = new Date(minute * 60_000);
+    await db.insert(toolGatewayRateLimitCounters).values({
+      companyId: company.id,
+      counterKey: `github-budget:board-merge:${minute}`,
+      windowStartAt: windowStart,
+      windowMs: 60_000,
+      limit: 4500,
+      count: 1999,
+      resetAt: new Date(windowStart.getTime() + 3_600_000),
+    });
+    let calls = 0;
+    const transport = withGitHubReviewBudget(db, "review-recovery", async () => {
+      calls++;
+      return new Response("ok");
+    });
+    const results = await Promise.allSettled(Array.from({ length: 20 }, () => transport("https://api.github.com/test")));
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(19);
+    expect(calls).toBe(1);
+  });
+
   it("excludes expired buckets and sums all three sources in the rolling window", async () => {
     await db.delete(toolGatewayRateLimitCounters).where(like(toolGatewayRateLimitCounters.counterKey, "github-budget:%"));
     const [company] = await db.select().from(companies).limit(1);
