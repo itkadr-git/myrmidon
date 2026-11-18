@@ -10,7 +10,7 @@ import { heartbeatService } from "../services/heartbeat.js";
 import { resetReviewCiCacheForTests } from "../myrmidon/review-stage-recovery/github-ci.js";
 import { resetGitHubRateLimitForTests } from "../services/github-rate-limit.js";
 import { logger } from "../middleware/logger.js";
-import { clearCiCacheForTests, createPullRequestCiResolver } from "../services/github-pull-request-ci.js";
+import { clearCiCacheForTests, createPullRequestCiResolver, invalidateCiCacheForHead } from "../services/github-pull-request-ci.js";
 
 const transport = vi.hoisted(() => vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> => {
   throw new Error("Unexpected external transport");
@@ -223,6 +223,12 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
       expect(rejected.status, JSON.stringify(rejected.body)).toBe(422);
     }
     await ctx.db.update(issueWorkProducts).set({ metadata: { repo: "acme/app", number: 7, headSha } }).where(sql`${issueWorkProducts.issueId} = ${issueId}`);
+    // A check-run event invalidates the old verdict before a rerun can be admitted.
+    invalidateCiCacheForHead(companyId, "acme/app", headSha);
+    const invalidated = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI failed" });
+    expect(invalidated.status, JSON.stringify(invalidated.body)).toBe(422);
+    expect(transport).not.toHaveBeenCalled();
+    await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
     const response = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI failed" });
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(response.body.status).toBe("in_progress");
