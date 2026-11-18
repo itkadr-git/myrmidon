@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { companies, createDb, instanceSettings, toolGatewayRateLimitCounters } from "@myrmidon/db";
-import { like } from "drizzle-orm";
+import { like, sql } from "drizzle-orm";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { reserveGitHubReviewRequest, withGitHubReviewBudget } from "../github-review-budget.js";
 
@@ -31,6 +31,36 @@ describePostgres("shared GitHub review budget", () => {
     }, 25);
     await expect(fetch("https://api.github.com/test")).rejects.toThrow("review budget exhausted");
     expect(calls).toBe(0);
+  });
+
+  it("permits exactly one transport at the default 1999-request boundary", async () => {
+    await db.delete(toolGatewayRateLimitCounters).where(like(toolGatewayRateLimitCounters.counterKey, "github-budget:%"));
+    const [company] = await db.select().from(companies).limit(1);
+    if (!company) throw new Error("Budget test company missing");
+    const [clock] = await db.execute(sql`select floor(extract(epoch from clock_timestamp()) / 60)::bigint as minute`);
+    const minute = Number(clock?.minute);
+    const windowStart = new Date(minute * 60_000);
+    await db.insert(toolGatewayRateLimitCounters).values({
+      companyId: company.id,
+      counterKey: `github-budget:review-rework:${minute}`,
+      windowStartAt: windowStart,
+      windowMs: 60_000,
+      limit: 2000,
+      count: 1999,
+      resetAt: new Date(windowStart.getTime() + 3_600_000),
+    });
+    let calls = 0;
+    const transport = withGitHubReviewBudget(db, "review-recovery", async () => {
+      calls++;
+      return new Response("ok");
+    });
+    await expect(transport("https://api.github.com/test")).resolves.toHaveProperty("status", 200);
+    await expect(transport("https://api.github.com/test")).rejects.toThrow("review budget exhausted");
+    expect(calls).toBe(1);
+    await db.delete(toolGatewayRateLimitCounters).where(like(toolGatewayRateLimitCounters.counterKey, "github-budget:%"));
+    await Promise.all(Array.from({ length: 10 }, (_, index) =>
+      reserveGitHubReviewRequest(db, index % 2 ? "review-rework" : "review-recovery", 25),
+    ));
   });
 
   it("OPE-13942: counters live in tool_gateway_rate_limit_counters (one row per source and minute); instance_settings gets no extra row", async () => {
