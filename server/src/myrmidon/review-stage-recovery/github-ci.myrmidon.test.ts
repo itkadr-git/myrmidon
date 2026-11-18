@@ -233,6 +233,18 @@ describe("resolvePullRequestHeadCi", () => {
     expect(result.state).toBe("pending");
   });
 
+  it("does not accept a terminal final check from a truncated result page", async () => {
+    const result = await resolvePullRequestHeadCi({
+      reference,
+      token: "token",
+      fetch: fakeFetch({
+        [PULL]: openPull,
+        [CHECK_RUNS]: { total_count: 2, check_runs: [ciResultOnHead("failure")] },
+      }),
+    });
+    expect(result).toMatchObject({ state: "unknown", reason: "check_runs:more_than_one_page" });
+  });
+
   it("is complete once the final check is completed, green or red", async () => {
     for (const conclusion of ["success", "failure", "timed_out"]) {
       const result = await resolvePullRequestHeadCi({
