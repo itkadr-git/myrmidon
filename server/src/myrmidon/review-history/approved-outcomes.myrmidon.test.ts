@@ -194,6 +194,23 @@ describeEmbeddedPostgres("queryApprovedReviewOutcomes — bounded review-history
     expect(seen.size).toBe(total - REVIEW_HISTORY_MAX_PAGE_SIZE);
   });
 
+  it("paginates decisions sharing the cursor timestamp without duplicates", async () => {
+    const issue = await makeIssue("OPE-D2");
+    await attachPullRequest(issue, 402);
+    const createdAt = new Date(NOW.getTime() - DAY_MS);
+    for (let index = 0; index < 3; index += 1) {
+      await makeDecision({ issueId: issue, body: `same time ${index}`, createdAt });
+    }
+
+    const first = await queryApprovedReviewOutcomes(db!, { companyId, now: NOW, limit: 2 });
+    expect(first.records).toHaveLength(2);
+    expect(first.nextCursor).toBeTruthy();
+    const second = await queryApprovedReviewOutcomes(db!, { companyId, now: NOW, limit: 2, cursor: first.nextCursor });
+    expect(second.records).toHaveLength(1);
+    expect(second.nextCursor).toBeNull();
+    expect(new Set([...first.records, ...second.records].map((record) => record.id)).size).toBe(3);
+  });
+
   it("redacts secrets from approved bodies at the query boundary", async () => {
     const issue = await makeIssue("OPE-E1");
     await attachPullRequest(issue, 501);
