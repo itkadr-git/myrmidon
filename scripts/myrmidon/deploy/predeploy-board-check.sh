@@ -96,6 +96,16 @@ token_file="${MYRMIDON_PREDEPLOY_TOKEN_FILE:-${HEALTH_TOKEN_FILE:-${BOARD_TOKEN_
 master_key_file="${MYRMIDON_PREDEPLOY_MASTER_KEY_FILE:-}"
 api_paths="${MYRMIDON_PREDEPLOY_API_PATHS:-/api/health,/api/companies/:company:/attention,/api/companies/:company:/issues?limit=1,/api/companies/:company:/agents,/api/companies/:company:/dashboard}"
 
+# myrmidon(PREDEPLOY-ROUTE-TIMEOUT) (OPE-15009): the route walk used to curl
+# with a hardcoded --max-time 30. On a cold copy the attention list answers in
+# more than 30 s while still healthy (rc.18: 200 in 32.19 s on production, curl
+# exit 28 at 30 s on the copy) and the check false-negatived before the window.
+# The walk gets its own budget; the health wait keeps its own timeout.
+route_timeout="${MYRMIDON_PREDEPLOY_ROUTE_TIMEOUT_SEC:-90}"
+if ! [[ "$route_timeout" =~ ^[0-9]+$ ]] || ((route_timeout < 1 || route_timeout > 600)); then
+  die "MYRMIDON_PREDEPLOY_ROUTE_TIMEOUT_SEC must be a positive integer in 1..600 (got: '$route_timeout'); nothing was changed"
+fi
+
 db_ready_command="${MYRMIDON_PREDEPLOY_DB_READY_COMMAND:-}"
 # shellcheck disable=SC2016  # the quotes are part of the command the operator overrides
 [[ -n "$db_ready_command" ]] || db_ready_command='docker exec "$MYR_PREDEPLOY_DB_CONTAINER" pg_isready -U "$MYR_PREDEPLOY_DB_USER" -d "$MYR_PREDEPLOY_DB_NAME"'
@@ -110,8 +120,22 @@ restore_command="${MYRMIDON_PREDEPLOY_RESTORE_COMMAND:-}"
 # the production roles are not what is being proven, so the default skips them
 # (--no-owner --no-acl). An operator who wants the production grants modelled on
 # the copy pre-creates the roles and overrides MYRMIDON_PREDEPLOY_RESTORE_COMMAND.
+# myrmidon(PREDEPLOY-RESTORE-JOBS) (OPE-15009): the restore of a production dump
+# ran single-threaded for ~an hour. The default restore gets pg_restore --jobs
+# (valid for the -Fc custom-format dump of DUMP_COMMAND; it composes with
+# --no-owner/--no-acl, verified against the real pg_restore). An explicit
+# MYRMIDON_PREDEPLOY_RESTORE_COMMAND is used verbatim and does NOT read this value.
+restore_jobs="${MYRMIDON_PREDEPLOY_RESTORE_JOBS:-4}"
+if ! [[ "$restore_jobs" =~ ^[0-9]+$ ]] || ((restore_jobs < 1 || restore_jobs > 16)); then
+  die "MYRMIDON_PREDEPLOY_RESTORE_JOBS must be a positive integer in 1..16 (got: '$restore_jobs'); nothing was changed"
+fi
 # shellcheck disable=SC2016  # the quotes are part of the command the operator overrides
-[[ -n "$restore_command" ]] || restore_command='docker exec -i -e PGPASSWORD="$MYR_PREDEPLOY_DB_PASSWORD" "$MYR_PREDEPLOY_DB_CONTAINER" pg_restore -U "$MYR_PREDEPLOY_DB_USER" -d "$MYR_PREDEPLOY_DB_NAME" --no-owner --no-acl < "$DUMP_FILE"'
+if [[ -z "$restore_command" ]]; then
+  restore_command='docker cp "$DUMP_FILE" "$MYR_PREDEPLOY_DB_CONTAINER:/tmp/myrmidon-predeploy.dump" && docker exec -e PGPASSWORD="$MYR_PREDEPLOY_DB_PASSWORD" "$MYR_PREDEPLOY_DB_CONTAINER" pg_restore -U "$MYR_PREDEPLOY_DB_USER" -d "$MYR_PREDEPLOY_DB_NAME" --jobs "$MYR_PREDEPLOY_RESTORE_JOBS" --no-owner --no-acl /tmp/myrmidon-predeploy.dump'
+  default_restore=1
+else
+  default_restore=0
+fi
 
 # myrmidon(PREDEPLOY-ANALYZE): pg_restore loads rows but not planner statistics,
 # so the planner of a fresh copy works on default estimates. The issues list
@@ -243,7 +267,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   fi
   plan "5. docker run -d --name $board_ctr --network $network ${master_key_file:+(production master key file mounted read-only) }-p 127.0.0.1:$board_port:3100 $board_ref (production DATABASE_URL ignored; the copy's URL is set)"
   plan "6. wait for http://127.0.0.1:$board_port/api/health: status ok, version/commit of $board_ref (timeout ${health_timeout}s)"
-  plan "7. walk ${api_paths//:company:/$company_id} against the copy"
+  plan "7. walk ${api_paths//:company:/$company_id} against the copy (route timeout ${route_timeout}s)"
   plan "8. remove the throwaway stack (network $network, $db_ctr, $dg_ctr, $board_ctr, volume $db_vol)"
   plan "any failure stops deploy.sh BEFORE the maintenance window; production is never touched"
   exit 0
@@ -256,6 +280,9 @@ log "PREDEPLOY-DB-CHECK: proving $board_ref against a copy of the production dat
 # interrupt alike.
 cleanup() {
   local names=() n
+  if [[ "$default_restore" == 1 ]]; then
+    docker exec "$db_ctr" rm -f /tmp/myrmidon-predeploy.dump >/dev/null 2>&1 || true
+  fi
   for n in "$board_ctr" "$dg_ctr" "$db_ctr"; do [[ -n "$n" ]] && names+=("$n"); done
   if [[ "$keep" == "1" ]]; then
     log "PREDEPLOY-DB-CHECK: keeping the throwaway stack (MYRMIDON_PREDEPLOY_KEEP=1): network=$network db=$db_ctr dockergate=${dg_ctr:-<none>} board=$board_ctr (port $board_port) volume=$db_vol"
@@ -294,6 +321,7 @@ export MYR_PREDEPLOY_DB_CONTAINER="$db_ctr"
 export MYR_PREDEPLOY_DB_USER="$db_user"
 export MYR_PREDEPLOY_DB_NAME="$db_name"
 export MYR_PREDEPLOY_DB_PASSWORD="$db_password"
+export MYR_PREDEPLOY_RESTORE_JOBS="$restore_jobs"
 export DUMP_FILE="$dump_file"
 
 log "PREDEPLOY-DB-CHECK: 2/6 copy of the production database ($postgres_image)"
@@ -532,13 +560,13 @@ else
   log "PREDEPLOY-DB-CHECK: liveness check off (MYRMIDON_PREDEPLOY_LIVENESS=off)"
 fi
 # 6/6: the attention list and the main company routes, against the copy.
-log "PREDEPLOY-DB-CHECK: 6/6 the attention list and the main APIs"
+log "PREDEPLOY-DB-CHECK: 6/6 the attention list and the main APIs (route timeout ${route_timeout}s)"
 IFS=',' read -r -a paths <<<"$api_paths"
 for path in "${paths[@]}"; do
   [[ -n "$path" ]] || continue
   path="${path//:company:/$company_id}"
   rc=0
-  out="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "${auth[@]}" "http://127.0.0.1:$board_port$path" 2>/dev/null)" || rc=$?
+  out="$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$route_timeout" "${auth[@]}" "http://127.0.0.1:$board_port$path" 2>/dev/null)" || rc=$?
   if ((rc != 0)); then
     dump_logs "$board_ctr"
     die "the copy did not answer $path (curl exit $rc); the board is not usable on production data, the deploy stops BEFORE the maintenance window"
