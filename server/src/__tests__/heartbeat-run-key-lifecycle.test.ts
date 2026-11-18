@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
+import express from "express";
+import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRunEvents } from "@myrmidon/db";
+import { agents, companies, createDb, heartbeatRunEvents, toolProfiles } from "@myrmidon/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const gateway = vi.hoisted(() => ({
@@ -23,6 +25,8 @@ vi.mock("../myrmidon/litellm-keys/run-keys.js", () => ({
 
 import { heartbeatService } from "../services/heartbeat.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
+import { createToolGatewayService } from "../services/tool-gateway.js";
+import { mcpGatewayProtocolRoutes } from "../routes/tool-gateway.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describeDb = support.supported ? describe : describe.skip;
@@ -88,17 +92,25 @@ describeDb("heartbeat run credential lifecycle", () => {
   }, 45_000);
 
   it.each([
-    { outcome: "success", script: "console.log(process.env.MYRMIDON_LLM_API_KEY)", status: "succeeded", timeout: 0 },
-    { outcome: "failure", script: "console.log(process.env.MYRMIDON_LLM_API_KEY); process.exit(1)", status: "failed", timeout: 0 },
-    { outcome: "timeout", script: "console.log(process.env.MYRMIDON_LLM_API_KEY); setInterval(() => {}, 1000)", status: "timed_out", timeout: 1 },
+    { outcome: "success", script: "console.log(process.env.MYRMIDON_LLM_API_KEY); setTimeout(() => process.exit(0), 3000)", status: "succeeded", timeout: 0 },
+    { outcome: "failure", script: "console.log(process.env.MYRMIDON_LLM_API_KEY); setTimeout(() => process.exit(1), 3000)", status: "failed", timeout: 0 },
+    { outcome: "timeout", script: "console.log(process.env.MYRMIDON_LLM_API_KEY); setInterval(() => {}, 1000)", status: "timed_out", timeout: 3 },
     { outcome: "cancel", script: "console.log('PROCESS_READY', process.env.MYRMIDON_LLM_API_KEY); setInterval(() => {}, 1000)", status: "cancelled", timeout: 0 },
   ])("revokes and redacts the credential after $outcome", async ({ outcome, script, status, timeout }) => {
     const { companyId, agentId } = await setup(script, timeout);
+    const [profile] = await db.insert(toolProfiles).values({ companyId, profileKey: "run-test", name: "Run test", defaultAction: "deny" }).returning();
+    const mcp = createToolGatewayService(db, { toolActionSigningSecret: "test-signing-secret-for-run-lifecycle" });
+    const namedGateway = await mcp.createNamedGateway({ companyId, body: { name: "Run gateway", profileId: profile.id } });
+    const app = express();
+    app.use(express.json());
+    app.use(mcpGatewayProtocolRoutes(mcp));
     const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
     expect(run).not.toBeNull();
     const runId = run!.id;
     await waitFor(runId, async () => gateway.issued.has(runId));
     const key = gateway.issued.get(runId)!;
+    const token = await mcp.createNamedGatewayToken({ companyId, gatewayId: namedGateway.id, body: { name: "Run token", subjectType: "heartbeat_run", subjectId: runId, expiresAt: new Date(Date.now() + 60_000) } });
+    await request(app).post(namedGateway.endpointPath).set("authorization", `Bearer ${token.token}`).send({ jsonrpc: "2.0", id: 1, method: "tools/list" }).expect(200);
     if (outcome === "cancel") {
       await waitFor(runId, async () => {
         try {
@@ -113,6 +125,8 @@ describeDb("heartbeat run credential lifecycle", () => {
     await heartbeat.drainActiveRunExecutions();
     expect((await heartbeat.getRun(runId))?.status).toBe(status);
     expect(gateway.active.has(key)).toBe(false);
+    const rejected = await request(app).post(namedGateway.endpointPath).set("authorization", `Bearer ${token.token}`).send({ jsonrpc: "2.0", id: 2, method: "tools/list" }).expect(401);
+    expect(rejected.body.error.data.reasonCode).toBe("gateway_token_revoked");
     const log = await heartbeat.readLog(runId);
     expect(log.content).not.toContain(key);
     expect(log.content).toContain("REDACTED");
