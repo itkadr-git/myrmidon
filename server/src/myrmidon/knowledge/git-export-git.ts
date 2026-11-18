@@ -278,6 +278,14 @@ export async function publishKnowledgeExport(input: PublishKnowledgeExportInput)
   } else {
     // Even a missing branch fails closed: an existing checkout may be stale.
     await git(runner, input.workDir, ["fetch", "origin", input.branch], env);
+    const localBranchExists = await git(runner, input.workDir, ["show-ref", "--verify", "--quiet", `refs/heads/${input.branch}`], env)
+      .then(() => true).catch(() => false);
+    if (localBranchExists) {
+      await git(runner, input.workDir, ["checkout", input.branch], env);
+      await git(runner, input.workDir, ["merge", "--ff-only", "FETCH_HEAD"], env);
+    } else {
+      await git(runner, input.workDir, ["checkout", "-b", input.branch, "FETCH_HEAD"], env);
+    }
   }
 
   const { committed, commit } = await commitKnowledgeTreeIfChanged(
