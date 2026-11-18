@@ -675,10 +675,11 @@ jobs:
       - name: Shellcheck deploy scripts
         run: shellcheck --version && shellcheck -x scripts/myrmidon/deploy/*.sh
 
-      - name: Script tests (node:test under scripts/myrmidon)
+      - name: Script tests (node:test under scripts/myrmidon and release verification roots)
         run: |
           set -euo pipefail
           mapfile -t files < <(find scripts/myrmidon -name '*.test.mjs' -type f | sort)
+          files+=(scripts/cloud-source-verification.test.mjs scripts/source-jobs-bound.myrmidon.test.mjs)
           printf 'Running %s\n' "${files[@]}"
           node --test "${files[@]}"
 
