@@ -2,7 +2,7 @@
 
 > English version: [Upgrading-and-rollback](Upgrading-and-rollback)
 
-> Команда ниже закреплена на rc.13 до promotion более нового выпуска. rc.14 — текущий кандидат (тег `myr-v1.6.9-rc.14`), не stable. См. [заметки оператора](../myrmidon/releases/1.6.9.ru.md).
+> Команда ниже закреплена на rc.13 до promotion более нового выпуска. rc.19 — выкачанный кандидат (тег `myr-v1.6.9-rc.19`), не stable. См. [заметки оператора](../myrmidon/releases/1.6.9.ru.md).
 
 ## Обновление установщиком (обычный путь)
 

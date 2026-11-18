@@ -2,7 +2,7 @@
 
 > Русская версия: [Quick-start.ru](Quick-start.ru)
 
-> The pinned command below stays on rc.13 until a newer release is promoted. rc.14 is the current candidate (tag `myr-v1.6.9-rc.14`), not a stable release. See the [operator notes](../myrmidon/releases/1.6.9.md).
+> The pinned command below stays on rc.13 until a newer release is promoted. rc.19 is the deployed candidate (tag `myr-v1.6.9-rc.19`), not a stable release. See the [operator notes](../myrmidon/releases/1.6.9.md).
 
 The shortest path to a running board. One command on a fresh server (see
 [System requirements](System-requirements)):
