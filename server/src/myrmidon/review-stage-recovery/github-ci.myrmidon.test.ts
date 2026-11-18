@@ -481,6 +481,25 @@ describe("createReviewPullRequestCiResolver", () => {
     expect(result).not.toMatchObject({ state: "complete", finalCheckConclusion: "success" });
   });
 
+  it("does not accept a completed webhook when a newer running check has no run identity", async () => {
+    const now = Date.now();
+    const rows = [
+      { event: "pull_request", createdAt: new Date(now - 3000), normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
+      { event: "check_run", createdAt: new Date(now - 2000), normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "abc123", checkName: "CI result", runId: "100", status: "completed", conclusion: "failure" } },
+      { event: "check_run", createdAt: new Date(now - 1000), normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "abc123", checkName: "CI result", status: "in_progress" } },
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const resolver = createReviewPullRequestCiResolver({ db, fetch: vi.fn(fakeFetch({})), tokenProvider: async () => null });
+    const result = await resolver({ companyId: "company-1", issueId: "issue-1" });
+    expect(result.state).not.toBe("complete");
+  });
+
   it("takes the PR head by GitHub's updatedAt, not by receipt order", async () => {
     const now = Date.now();
     const rows = [
