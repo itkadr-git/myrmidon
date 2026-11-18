@@ -3,6 +3,17 @@
 Здесь описано, какие проверки запускаются в `itkadr-git/myrmidon`, почему они устроены так, и
 что из вендорских workflow у нас не работает.
 
+## Проверка bundle-copy для PR #3836
+
+После слияния `.github/workflows/myrmidon-bundle-copy.yml` запустите
+`gh workflow run myrmidon-bundle-copy.yml --ref main` в `itkadr-git/myrmidon`.
+Workflow использует GitHub-hosted runner и Node 24, проверяет checkout
+`66707c986fdc519fa6484b5e1e63f2749e29fa56` и запускает
+`node --test scripts/bundle-copy.myrmidon.test.mjs` без секретов в окружении
+теста. Журнал job содержит SHA workflow, ожидаемый и фактический SHA и TAP.
+Зелёный общий CI не заменяет проверку TAP: нужны успешные assertions без
+fail, skip и todo.
+
 ## Два уровня CI
 
 Workflow [`myrmidon-ci.yml`](../../.github/workflows/myrmidon-ci.yml) — на каждый
