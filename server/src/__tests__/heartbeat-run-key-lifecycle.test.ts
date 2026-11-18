@@ -72,6 +72,21 @@ describeDb("heartbeat run credential lifecycle", () => {
     throw new Error(`run ${runId} did not reach expected state`);
   }
 
+  it("issues a fresh credential for the next run and rejects the revoked one", async () => {
+    const { agentId } = await setup("console.log('finished')");
+    const first = (await heartbeat.invoke(agentId, "on_demand", {}, "manual"))!;
+    await waitFor(first.id, async () => gateway.issued.has(first.id));
+    const firstKey = gateway.issued.get(first.id)!;
+    await waitFor(first.id, async () => (await heartbeat.getRun(first.id))?.status === "succeeded");
+    await heartbeat.drainActiveRunExecutions();
+    expect(gateway.active.has(firstKey)).toBe(false);
+    const second = (await heartbeat.invoke(agentId, "on_demand", {}, "manual"))!;
+    await waitFor(second.id, async () => gateway.issued.has(second.id));
+    expect(gateway.issued.get(second.id)).not.toBe(firstKey);
+    expect(gateway.active.has(firstKey)).toBe(false);
+    await heartbeat.drainActiveRunExecutions();
+  }, 45_000);
+
   it.each([
     { outcome: "success", script: "console.log(process.env.MYRMIDON_LLM_API_KEY)", status: "succeeded", timeout: 0 },
     { outcome: "failure", script: "console.log(process.env.MYRMIDON_LLM_API_KEY); process.exit(1)", status: "failed", timeout: 0 },
