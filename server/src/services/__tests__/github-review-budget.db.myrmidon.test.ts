@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { companies, createDb, instanceSettings, toolGatewayRateLimitCounters } from "@myrmidon/db";
+import { companies, createDb, instanceSettings, issueWorkProducts, issues, toolGatewayRateLimitCounters } from "@myrmidon/db";
+import { createReviewPullRequestCiResolver, resetReviewCiCacheForTests } from "../../myrmidon/review-stage-recovery/github-ci.js";
+import { resetGitHubRateLimitForTests } from "../github-rate-limit.js";
 import { like, sql } from "drizzle-orm";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { reserveGitHubReviewRequest, withGitHubReviewBudget } from "../github-review-budget.js";
@@ -104,6 +106,33 @@ describePostgres("shared GitHub review budget", () => {
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(results.filter((result) => result.status === "rejected")).toHaveLength(19);
     expect(calls).toBe(1);
+  });
+
+  it("exposes exhaustion rather than network error in the real resolver after its final reservation", async () => {
+    await db.delete(toolGatewayRateLimitCounters).where(like(toolGatewayRateLimitCounters.counterKey, "github-budget:%"));
+    resetReviewCiCacheForTests();
+    resetGitHubRateLimitForTests();
+    const [company] = await db.select().from(companies).limit(1);
+    if (!company) throw new Error("Budget test company missing");
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Budget resolver", status: "in_progress", priority: "medium" }).returning();
+    if (!issue) throw new Error("Budget test issue missing");
+    const headSha = "a".repeat(40);
+    await db.insert(issueWorkProducts).values({ companyId: company.id, issueId: issue.id, type: "pull_request", provider: "github", title: "Synthetic PR", url: "https://github.com/acme/app/pull/7", status: "open", isPrimary: true, metadata: { repo: "acme/app", number: 7, headSha } });
+    const [clock] = await db.execute(sql`select floor(extract(epoch from clock_timestamp()) / 60)::bigint as minute`);
+    const minute = Number(clock?.minute);
+    const windowStart = new Date(minute * 60_000);
+    await db.insert(toolGatewayRateLimitCounters).values({ companyId: company.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: windowStart, windowMs: 60_000, limit: 2000, count: 1999, resetAt: new Date(windowStart.getTime() + 3_600_000) });
+    const calls: string[] = [];
+    const resolve = createReviewPullRequestCiResolver({ db, tokenProvider: async () => null, fetch: async (url) => {
+      calls.push(url);
+      if (url !== "https://api.github.com/repos/acme/app/pulls/7") throw new Error("Unexpected synthetic transport URL");
+      return Response.json({ state: "open", head: { sha: headSha } });
+    } });
+    const result = await resolve({ companyId: company.id, issueId: issue.id });
+    expect(calls).toEqual(["https://api.github.com/repos/acme/app/pulls/7"]);
+    expect(result.state).toBe("unknown");
+    expect(result.reason).toContain("budget_exhausted");
+    expect(result.reason).not.toContain("network_error");
   });
 
   it("excludes expired buckets and sums all three sources in the rolling window", async () => {
