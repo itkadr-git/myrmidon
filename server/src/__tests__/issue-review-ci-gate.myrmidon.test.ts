@@ -69,6 +69,24 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     const [unchanged] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
     expect(unchanged?.status).toBe("in_review");
 
+    const stale = new Date(Date.now() - 31 * 60_000);
+    await ctx.db.insert(connectionEventDeliveries).values([
+      { companyId, provider: "github", providerDeliveryId: "stale-pr", event: "pull_request", status: "processed", createdAt: stale, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha } },
+      { companyId, provider: "github", providerDeliveryId: "stale-check", event: "check_run", status: "processed", createdAt: stale, normalizedPayload: { repository: "acme/app", number: 7, headSha, checkName: "CI result", status: "completed", conclusion: "success" } },
+    ]);
+    const staleResult = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
+    expect(staleResult.status, JSON.stringify(staleResult.body)).toBe(422);
+    expect(transport).not.toHaveBeenCalled();
+
+    await ctx.db.insert(connectionEventDeliveries).values([
+      { companyId, provider: "github", providerDeliveryId: "moved-pr", event: "pull_request", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "b".repeat(40) } },
+      { companyId, provider: "github", providerDeliveryId: "moved-check", event: "check_run", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, headSha: "b".repeat(40), checkName: "CI result", status: "completed", conclusion: "success" } },
+    ]);
+    const movedResult = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
+    expect(movedResult.status, JSON.stringify(movedResult.body)).toBe(422);
+    expect(transport).not.toHaveBeenCalled();
+
+    await ctx.db.delete(connectionEventDeliveries).where(sql`${connectionEventDeliveries.companyId} = ${companyId}`);
     await ctx.db.insert(connectionEventDeliveries).values([
       { companyId, provider: "github", providerDeliveryId: "synthetic-pr", event: "pull_request", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha } },
       { companyId, provider: "github", providerDeliveryId: "synthetic-check", event: "check_run", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, headSha, checkName: "CI result", status: "completed", conclusion: "success" } },
