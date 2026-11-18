@@ -9,6 +9,7 @@ import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.j
 import { heartbeatService } from "../services/heartbeat.js";
 import { resetReviewCiCacheForTests } from "../myrmidon/review-stage-recovery/github-ci.js";
 import { resetGitHubRateLimitForTests } from "../services/github-rate-limit.js";
+import { logger } from "../middleware/logger.js";
 
 const transport = vi.hoisted(() => vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> => {
   throw new Error("Unexpected external transport");
@@ -62,7 +63,12 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
     const actor = { type: "agent", agentId: reviewer, companyId, source: "agent_key", runId };
     const app = routeApp(ctx.db, actor as never, issueRoutes);
+    const diagnostic = vi.spyOn(logger, "info");
     const rejected = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
+    expect(diagnostic.mock.calls.some(([fields]) => typeof fields === "object" && fields !== null &&
+      "issueId" in fields && fields.issueId === issueId && "runId" in fields && fields.runId === runId &&
+      "reason" in fields && fields.reason === "budget_exhausted")).toBe(true);
+    diagnostic.mockRestore();
     expect(rejected.status, JSON.stringify(rejected.body)).toBe(422);
     expect(JSON.stringify(rejected.body)).toContain("CI status for the current pull request head is unavailable");
     expect(transport).not.toHaveBeenCalled();

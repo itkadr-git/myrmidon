@@ -3840,6 +3840,12 @@ function logIssueListRequest(input: {
   });
 }
 
+function logReviewWriteCi(input: { issueId: string; runId: string | null | undefined; ci: Awaited<ReturnType<ReviewPullRequestCiResolver>> }): void {
+  const reason = input.ci.reason?.match(/(?:budget_exhausted|budget_store_unavailable|network_error|http_401|http_403_rate_limited|http_403|http_429_rate_limited|skipped_rate_limited)/)?.[0] ?? null;
+  const headSha = input.ci.headSha && /^[a-f0-9]{40}$/i.test(input.ci.headSha) ? input.ci.headSha : null;
+  logger.info({ issueId: input.issueId, runId: input.runId ?? null, headSha, source: "review-recovery", state: input.ci.state, reason }, "review_write_ci_gate");
+}
+
 export function issueRoutes(
   db: Db,
   storage: StorageService,
@@ -15788,6 +15794,7 @@ export function issueRoutes(
           companyId: existing.companyId,
           issueId: existing.id,
         });
+        logReviewWriteCi({ issueId: existing.id, runId: actor.runId, ci });
         if ((ci.state === "pending" || ci.state === "unknown") && !reviewCommentReferencesCode(transition.decision?.body)) {
           throw unprocessable(
             ci.state === "pending"
@@ -17079,6 +17086,7 @@ export function issueRoutes(
                 companyId: lockedExisting.companyId,
                 issueId: lockedExisting.id,
               });
+              logReviewWriteCi({ issueId: lockedExisting.id, runId: actor.runId, ci });
               if ((ci.state === "pending" || ci.state === "unknown") && !reviewCommentReferencesCode(lockedTransition.decision?.body)) {
                 throw unprocessable(
                   ci.state === "pending"
