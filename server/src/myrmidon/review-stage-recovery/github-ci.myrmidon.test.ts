@@ -479,7 +479,7 @@ describe("createReviewPullRequestCiResolver", () => {
     expect(result).toMatchObject({ reason: expect.stringContaining("pull:network_error") });
   });
 
-  it("uses fresh matching PR and final-check webhook deliveries without GitHub reads", async () => {
+  it("uses fresh matching PR and final-check webhook deliveries once the current head is confirmed", async () => {
     const now = new Date();
     const rows = [
       { event: "pull_request", createdAt: now, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
@@ -492,17 +492,19 @@ describe("createReviewPullRequestCiResolver", () => {
         return { orderBy: () => ({ limit: async () => rows }) };
       } }) }),
     } as never;
-    const fetch = vi.fn(fakeFetch({}));
+    const fetch = vi.fn(fakeFetch({ [PULL]: openPull }));
     const tokenProvider = vi.fn(async () => "token");
     const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider });
     await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toEqual({
       state: "complete", pullRequestUrl: openProduct.url, headSha: "abc123", finalCheckConclusion: "success",
     });
-    expect(fetch).not.toHaveBeenCalled();
-    expect(tokenProvider).not.toHaveBeenCalled();
+    // OPE-15114: the verdict is used only after an authoritative read confirms
+    // the webhook head is still the current head.
+    expect(fetch).toHaveBeenCalled();
+    expect(tokenProvider).toHaveBeenCalled();
   });
 
-  it("waits on a fresh running final-check webhook without GitHub reads", async () => {
+  it("waits on a fresh running final-check webhook once the current head is confirmed", async () => {
     const now = new Date();
     const rows = [
       { event: "pull_request", createdAt: now, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
@@ -515,14 +517,14 @@ describe("createReviewPullRequestCiResolver", () => {
         return { orderBy: () => ({ limit: async () => rows }) };
       } }) }),
     } as never;
-    const fetch = vi.fn(fakeFetch({}));
+    const fetch = vi.fn(fakeFetch({ [PULL]: openPull }));
     const tokenProvider = vi.fn(async () => "token");
     const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider });
     await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toEqual({
       state: "pending", pullRequestUrl: openProduct.url, headSha: "abc123",
     });
-    expect(fetch).not.toHaveBeenCalled();
-    expect(tokenProvider).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalled();
+    expect(tokenProvider).toHaveBeenCalled();
   });
 
   it("does not accept a delayed successful webhook over a newer running CI run", async () => {
@@ -615,7 +617,7 @@ describe("createReviewPullRequestCiResolver", () => {
         return { orderBy: () => ({ limit: async () => rows }) };
       } }) }),
     } as never;
-    const resolver = createReviewPullRequestCiResolver({ db, fetch: vi.fn(fakeFetch({})), tokenProvider: async () => null });
+    const resolver = createReviewPullRequestCiResolver({ db, fetch: vi.fn(fakeFetch({ [PULL]: openPull })), tokenProvider: async () => null });
     await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({ state: "complete", finalCheckConclusion: "failure", headSha: "abc123" });
   });
 
@@ -631,12 +633,14 @@ describe("createReviewPullRequestCiResolver", () => {
     const calls: Array<{ path: string; headers: Record<string, string> }> = [];
     const resolver = createReviewPullRequestCiResolver({
       db, tokenProvider: async () => null,
-      fetch: fakeFetch({ [CHECK_RUNS]: { check_runs: [ciResultOnHead("success")] } }, calls),
+      fetch: fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [ciResultOnHead("success")] } }, calls),
     });
     await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
       state: "complete", headSha: "abc123", finalCheckConclusion: "success",
     });
-    expect(calls.map((call) => call.path)).not.toContain(PULL);
+    // OPE-15114: the head read is part of the evidence, never skipped by a hint.
+    expect(calls.map((call) => call.path)).toContain(PULL);
+    expect(calls.map((call) => call.path)).toContain(CHECK_RUNS);
   });
 
   it("does not use a webhook verdict when the work product has no current head", async () => {
@@ -674,6 +678,51 @@ describe("createReviewPullRequestCiResolver", () => {
     const result = await resolver({ companyId: "company-1", issueId: "issue-1" });
     expect(fetch).toHaveBeenCalled();
     expect(result).not.toMatchObject({ state: "complete", headSha: "old" });
+  });
+
+  it("does not accept a matching local complete verdict when the current head moved on (OPE-15114)", async () => {
+    // A green head A, then push B with a lost `synchronize`: the work product and
+    // the latest webhook still agree on A. The local verdict must not be used
+    // without an authoritative confirmation that A is still the current head.
+    const now = new Date();
+    const rows = [
+      { event: "pull_request", createdAt: now, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
+      { event: "check_run", createdAt: now, normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "abc123", checkName: "CI result", status: "completed", conclusion: "success" } },
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const fetch = fakeFetch({
+      [PULL]: { state: "open", head: { sha: "def456" } },
+      ["/repos/acme/app/commits/def456/check-runs?check_name=CI%20result&filter=all&per_page=100"]: { total_count: 1, check_runs: [{ id: 2, name: "CI result", status: "in_progress", conclusion: null, head_sha: "def456" }] },
+    });
+    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => "token" });
+    await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
+      state: "pending", headSha: "def456",
+    });
+  });
+
+  it("fails closed on a matching local verdict when the current head cannot be confirmed (OPE-15114)", async () => {
+    const now = new Date();
+    const rows = [
+      { event: "pull_request", createdAt: now, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
+      { event: "check_run", createdAt: now, normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "abc123", checkName: "CI result", status: "completed", conclusion: "success" } },
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const resolver = createReviewPullRequestCiResolver({ db, fetch: async () => { throw new Error("transport unavailable"); }, tokenProvider: async () => "token" });
+    await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
+      state: "unknown", headSha: null,
+    });
   });
 
   it("answers no_pull_request without a token or network call when the issue has no open PR", async () => {

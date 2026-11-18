@@ -344,13 +344,45 @@ async function readHeadCi(input: {
   return settledHeadCi({ state: pullRequestHeadCiStateFromAllChecks({ checkRuns: allRunsList }) });
 }
 
+/** The current PR head as GitHub reports it right now; no CI read, cached like the pull read below. */
+async function resolvePullRequestCurrentHead(input: {
+  reference: GitHubPullRequestReference;
+  /** Null reads anonymously: the repository may be public. */
+  token: string | null;
+  fetch?: FetchLike;
+}): Promise<
+  | { state: "ok"; headSha: string }
+  | { state: "closed"; headSha: string | null }
+  | { state: "unknown"; reason: string; rateLimit?: RateLimitFacts | null }
+> {
+  const fetchImpl = input.fetch ?? ghFetch;
+  const apiBase = gitHubApiBase(input.reference.host);
+  const repository = `${encodeURIComponent(input.reference.owner)}/${encodeURIComponent(input.reference.repo)}`;
+  const keyBase = `${tokenScope(input.token)}|${repositoryKey(input.reference)}`;
+  const pull = await cachedRead<PullHead>(`pull|${keyBase}#${input.reference.number}`, async (): Promise<LoadedRead<PullHead>> => {
+    const read = await readGitHub(fetchImpl, `${apiBase}/repos/${repository}/pulls/${input.reference.number}`, input.token, "pull");
+    if (!read.ok) return read;
+    const pullRecord = asRecord(read.json);
+    if (!pullRecord) return { ok: false, reason: "pull:unreadable_payload" };
+    const headRecord = asRecord(pullRecord.head);
+    return {
+      ok: true,
+      value: { open: pullRecord.state === "open", headSha: typeof headRecord?.sha === "string" ? headRecord.sha : null },
+      ttlMs: pullTtlMs(),
+    };
+  });
+  if (!pull.ok) return { state: "unknown", reason: pull.reason, ...(pull.rateLimit ? { rateLimit: pull.rateLimit } : {}) };
+  if (!pull.value.open) return { state: "closed", headSha: pull.value.headSha };
+  if (!pull.value.headSha) return { state: "unknown", reason: "pull:no_head_sha" };
+  return { state: "ok", headSha: pull.value.headSha };
+}
+
 /** CI state of the current head of one pull request; network only, injected fetch for tests. */
 export async function resolvePullRequestHeadCi(input: {
   reference: GitHubPullRequestReference;
   /** Null reads anonymously: the repository may be public. */
   token: string | null;
   fetch?: FetchLike;
-  knownHeadSha?: string;
 }): Promise<{
   state: "pending" | "complete" | "unknown" | "not_configured" | "no_pull_request";
   headSha: string | null;
@@ -366,33 +398,21 @@ export async function resolvePullRequestHeadCi(input: {
   rateLimit?: RateLimitFacts | null;
 }> {
   const fetchImpl = input.fetch ?? ghFetch;
-  const apiBase = gitHubApiBase(input.reference.host);
-  const repository = `${encodeURIComponent(input.reference.owner)}/${encodeURIComponent(input.reference.repo)}`;
-  const keyBase = `${tokenScope(input.token)}|${repositoryKey(input.reference)}`;
-  const pull: CachedRead<PullHead> = input.knownHeadSha ? { ok: true, value: { open: true, headSha: input.knownHeadSha } } : await cachedRead<PullHead>(`pull|${keyBase}#${input.reference.number}`, async (): Promise<LoadedRead<PullHead>> => {
-    const read = await readGitHub(fetchImpl, `${apiBase}/repos/${repository}/pulls/${input.reference.number}`, input.token, "pull");
-    if (!read.ok) return read;
-    const pullRecord = asRecord(read.json);
-    if (!pullRecord) return { ok: false, reason: "pull:unreadable_payload" };
-    const headRecord = asRecord(pullRecord.head);
-    return {
-      ok: true,
-      value: { open: pullRecord.state === "open", headSha: typeof headRecord?.sha === "string" ? headRecord.sha : null },
-      ttlMs: pullTtlMs(),
-    };
-  });
-  if (!pull.ok) {
+  const head = await resolvePullRequestCurrentHead(input);
+  if (head.state === "unknown") {
     return {
       state: "unknown",
       headSha: null,
-      reason: pull.reason,
-      ...(pull.rateLimit ? { rateLimit: pull.rateLimit } : {}),
+      reason: head.reason,
+      ...(head.rateLimit ? { rateLimit: head.rateLimit } : {}),
     };
   }
-  const { open, headSha } = pull.value;
   // A merged or closed pull request has no CI to wait for; the PR sync owns it.
-  if (!open) return { state: "no_pull_request", headSha };
-  if (!headSha) return { state: "unknown", headSha: null, reason: "pull:no_head_sha" };
+  if (head.state === "closed") return { state: "no_pull_request", headSha: head.headSha };
+  const headSha = head.headSha;
+  const apiBase = gitHubApiBase(input.reference.host);
+  const repository = `${encodeURIComponent(input.reference.owner)}/${encodeURIComponent(input.reference.repo)}`;
+  const keyBase = `${tokenScope(input.token)}|${repositoryKey(input.reference)}`;
   const ci = await cachedRead<HeadCiOutcome>(`ci|${keyBase}@${headSha}`, () =>
     readHeadCi({ fetchImpl, reference: input.reference, token: input.token, headSha, apiBase, repository }),
   );
@@ -615,12 +635,6 @@ export function createReviewPullRequestCiResolver(input: {
       return { state: "unknown", pullRequestUrl: target.pullRequestUrl, headSha: null, reason: "pull_request_reference_unreadable" };
     }
     const { reference, pullRequestUrl } = target;
-    const webhook = await readWebhookCi(input.db, companyId, reference);
-    const matchingWebhook = webhook && target.knownHeadSha && target.knownHeadSha === webhook.headSha ? webhook : null;
-    if (matchingWebhook?.verdict) return { ...matchingWebhook.verdict, headSha: matchingWebhook.headSha, pullRequestUrl };
-    // Reuse the board's recent exact-head read; never trust a wake/comment payload.
-    const snapshot = readFreshReviewCiSnapshot(companyId, reference, target.knownHeadSha);
-    if (snapshot && !webhook) return { ...snapshot, pullRequestUrl };
     let token: string | null = null;
     let tokenError: string | null = null;
     try {
@@ -628,8 +642,41 @@ export function createReviewPullRequestCiResolver(input: {
     } catch (error) {
       tokenError = error instanceof GitHubReviewBudgetError ? `token_provider:${error.reason}` : "token provider failed";
     }
+    const webhook = await readWebhookCi(input.db, companyId, reference);
+    const matchingWebhook = webhook && target.knownHeadSha && target.knownHeadSha === webhook.headSha ? webhook : null;
+    if (matchingWebhook?.verdict) {
+      // myrmidon(OPE-15114): a webhook/work-product verdict is evidence only for
+      // the head it names. A lost or delayed `synchronize` leaves both records
+      // on the old head, so the verdict is accepted only after an authoritative
+      // read confirms that this head is still the current one.
+      let head: Awaited<ReturnType<typeof resolvePullRequestCurrentHead>>;
+      try {
+        head = await resolvePullRequestCurrentHead({ reference, token, fetch: fetchImpl });
+      } catch {
+        head = { state: "unknown", reason: "read_failed" };
+      }
+      if (head.state === "ok" && head.headSha === matchingWebhook.headSha) {
+        return { ...matchingWebhook.verdict, headSha: matchingWebhook.headSha, pullRequestUrl };
+      }
+      if (head.state === "unknown") {
+        // The current head could not be confirmed: fail closed instead of
+        // trusting a local verdict that may belong to a superseded head.
+        return {
+          state: "unknown",
+          pullRequestUrl,
+          headSha: null,
+          reason: `${head.reason ?? "read_failed"}${tokenError ? `; ${tokenError}` : ""}`,
+          ...(head.rateLimit ? { rateLimit: head.rateLimit } : {}),
+        };
+      }
+      // The head moved on or the PR closed: the authoritative resolver below
+      // re-reads the current state and supersedes the local verdict.
+    }
+    // Reuse the board's recent exact-head read; never trust a wake/comment payload.
+    const snapshot = readFreshReviewCiSnapshot(companyId, reference, target.knownHeadSha);
+    if (snapshot && !webhook) return { ...snapshot, pullRequestUrl };
     try {
-      const head = await resolvePullRequestHeadCi({ reference, token, fetch: fetchImpl, knownHeadSha: matchingWebhook?.headSha });
+      const head = await resolvePullRequestHeadCi({ reference, token, fetch: fetchImpl });
       if (head.state !== "unknown") {
         // myrmidon(OPE-12176): the verdict of the final check travels with the
         // state; review admission tells green from red without a second read.

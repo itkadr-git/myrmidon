@@ -162,12 +162,12 @@ describePostgres("shared GitHub review budget", () => {
   });
 
   it.each([
-    { name: "fresh matching", webhook: true, age: 0, webhookHead: "a", checkHead: "a", calls: 0, state: "complete" },
-    { name: "missing", webhook: false, age: 0, webhookHead: "a", checkHead: "a", calls: 1, state: "unknown" },
-    { name: "stale", webhook: true, age: 31, webhookHead: "a", checkHead: "a", calls: 1, state: "unknown" },
-    { name: "moved head", webhook: true, age: 0, webhookHead: "b", checkHead: "b", calls: 1, state: "unknown" },
-    { name: "foreign check head", webhook: true, age: 0, webhookHead: "a", checkHead: "b", calls: 2, state: "unknown" },
-  ])("uses only $name webhook evidence for the real resolver", async ({ webhook, age, webhookHead, checkHead, calls, state }) => {
+    { name: "fresh matching", webhook: true, age: 0, webhookHead: "a", checkHead: "a", calls: 1, state: "complete" },
+    { name: "missing", webhook: false, age: 0, webhookHead: "a", checkHead: "a", calls: 3, state: "unknown" },
+    { name: "stale", webhook: true, age: 31, webhookHead: "a", checkHead: "a", calls: 3, state: "unknown" },
+    { name: "moved head", webhook: true, age: 0, webhookHead: "b", checkHead: "b", calls: 3, state: "unknown" },
+    { name: "foreign check head", webhook: true, age: 0, webhookHead: "a", checkHead: "b", calls: 3, state: "unknown" },
+  ])("uses $name webhook CI evidence only with a confirmed current head", async ({ webhook, age, webhookHead, checkHead, calls, state }) => {
     await db.delete(toolGatewayRateLimitCounters).where(like(toolGatewayRateLimitCounters.counterKey, "github-budget:%"));
     await db.delete(connectionEventDeliveries);
     resetReviewCiCacheForTests();
@@ -188,6 +188,9 @@ describePostgres("shared GitHub review budget", () => {
     const seen: string[] = [];
     const transport = vi.fn(async (url: string) => {
       seen.push(url);
+      // OPE-15114: the pull read confirms the current head; every other read
+      // stays unreadable so an unconfirmed verdict fails closed.
+      if (url === "https://api.github.com/repos/acme/app/pulls/7") return Response.json({ state: "open", head: { sha: headSha } });
       return new Response("", { status: 503 });
     });
     const resolve = createReviewPullRequestCiResolver({ db, fetch: transport, tokenProvider: async () => null });
@@ -195,7 +198,8 @@ describePostgres("shared GitHub review budget", () => {
     expect(result.state).toBe(state);
     expect(transport).toHaveBeenCalledTimes(calls);
     const prefix = "https://api.github.com/repos/acme/app";
-    const expectedUrls = calls === 0 ? [] : calls === 1 ? [`${prefix}/pulls/7`] : [
+    const expectedUrls = calls === 1 ? [`${prefix}/pulls/7`] : [
+      `${prefix}/pulls/7`,
       `${prefix}/contents/.github/workflows`,
       `${prefix}/commits/${headSha}/check-runs?check_name=CI%20result&filter=all&per_page=100`,
     ];
