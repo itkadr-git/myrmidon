@@ -416,6 +416,18 @@ describe("createReviewPullRequestCiResolver", () => {
     updatedAt: new Date(),
   };
 
+  it("preserves a budget denial from the token provider when anonymous transport also fails", async () => {
+    const { GitHubReviewBudgetError } = await import("../../services/github-review-budget.js");
+    const resolver = createReviewPullRequestCiResolver({
+      db: fakeDb([openProduct]),
+      tokenProvider: async () => { throw new GitHubReviewBudgetError("budget_exhausted"); },
+      fetch: async () => { throw new Error("connection reset"); },
+    });
+    const result = await resolver({ companyId: "company-1", issueId: "issue-1" });
+    expect(result).toMatchObject({ state: "unknown", reason: expect.stringContaining("token_provider:budget_exhausted") });
+    expect(result).toMatchObject({ reason: expect.stringContaining("pull:network_error") });
+  });
+
   it("uses fresh matching PR and final-check webhook deliveries without GitHub reads", async () => {
     const now = new Date();
     const rows = [
