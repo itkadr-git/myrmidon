@@ -540,6 +540,8 @@ async function readWebhookCi(db: Db, companyId: string, reference: GitHubPullReq
       sql`lower(${connectionEventDeliveries.normalizedPayload}->>'repository') = lower(${`${reference.owner}/${reference.repo}`})`,
       sql`coalesce(${connectionEventDeliveries.normalizedPayload}->>'pullRequestNumber', ${connectionEventDeliveries.normalizedPayload}->>'number') = ${String(reference.number)}`,
     )).orderBy(desc(connectionEventDeliveries.createdAt)).limit(200);
+    // A truncated window may omit a later run delivered out of order.
+    if (rows.length >= 200) return null;
     const sorted = [...rows].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
     // Receipt order is not event order: pick the newest pull_request event by the
     // time GitHub stamped on the PR (updatedAt), falling back to receipt order, so
