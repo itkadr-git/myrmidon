@@ -228,6 +228,13 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     const invalidated = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI failed" });
     expect(invalidated.status, JSON.stringify(invalidated.body)).toBe(422);
     expect(transport).not.toHaveBeenCalled();
+    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${budgetCompany.id}`);
+    transport.mockImplementation(async () => new Response(null, { status: 403 }));
+    const forbidden = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI failed" });
+    expect(forbidden.status, JSON.stringify(forbidden.body)).toBe(422);
+    expect(transport).toHaveBeenCalled();
+    transport.mockReset();
+    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: budgetCompany.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
     await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
     const response = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI failed" });
     expect(response.status, JSON.stringify(response.body)).toBe(200);
