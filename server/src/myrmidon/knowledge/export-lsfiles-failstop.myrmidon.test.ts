@@ -58,6 +58,9 @@ describe("knowledge export ls-files fail-stop", () => {
       expect(await readFile(path.join(workDir, "company-a", "stale.md"))).toEqual(Buffer.from("stale\n"));
       expect(calls).toEqual([
         { cwd: workDir, args: ["fetch", "origin", branch] },
+        { cwd: workDir, args: ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`] },
+        { cwd: workDir, args: ["checkout", branch] },
+        { cwd: workDir, args: ["merge", "--ff-only", "FETCH_HEAD"] },
         { cwd: workDir, args: ["status", "--porcelain", "-z", "--untracked-files=all"] },
         { cwd: workDir, args: ["ls-files", "-z"] },
       ]);
@@ -73,11 +76,14 @@ describe("knowledge export ls-files fail-stop", () => {
       await expect(readFile(path.join(workDir, "company-a", "stale.md"))).rejects.toMatchObject({ code: "ENOENT" });
       expect(await readFile(path.join(workDir, "company-a", "untracked.md"))).toEqual(Buffer.from("untracked\n"));
       expect(await readFile(path.join(workDir, "company-b", "other.md"))).toEqual(Buffer.from("other\n"));
-      expect(calls.map(({ args }) => args[0])).toEqual(["fetch", "status", "ls-files", "add", "status", "commit", "rev-parse", "push"]);
-      expect(calls[1]).toEqual({ cwd: workDir, args: ["status", "--porcelain", "-z", "--untracked-files=all"] });
-      expect(calls[2]).toEqual({ cwd: workDir, args: ["ls-files", "-z"] });
-      expect(calls[3]).toEqual({ cwd: workDir, args: ["add", "-A"] });
-      expect(calls[7]).toEqual({ cwd: workDir, args: ["push", "origin", `HEAD:${branch}`] });
+      expect(calls.map(({ args }) => args[0])).toEqual(["fetch", "show-ref", "checkout", "merge", "status", "ls-files", "add", "status", "commit", "rev-parse", "push"]);
+      expect(calls[1]).toEqual({ cwd: workDir, args: ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`] });
+      expect(calls[2]).toEqual({ cwd: workDir, args: ["checkout", branch] });
+      expect(calls[3]).toEqual({ cwd: workDir, args: ["merge", "--ff-only", "FETCH_HEAD"] });
+      expect(calls[4]).toEqual({ cwd: workDir, args: ["status", "--porcelain", "-z", "--untracked-files=all"] });
+      expect(calls[5]).toEqual({ cwd: workDir, args: ["ls-files", "-z"] });
+      expect(calls[6]).toEqual({ cwd: workDir, args: ["add", "-A"] });
+      expect(calls[10]).toEqual({ cwd: workDir, args: ["push", "origin", `HEAD:${branch}`] });
     });
   });
 });
