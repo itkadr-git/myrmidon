@@ -801,6 +801,20 @@ describe("summarizeCheckRuns", () => {
 });
 
 describe("fetchCommitCheckRuns", () => {
+  it("distinguishes review budget denial from a transport failure without exposing errors", async () => {
+    const { GitHubReviewBudgetError } = await import("../github-review-budget.js");
+    const denied = await fetchCommitCheckRuns("acme", "app", "abc123", null, async () => {
+      throw new GitHubReviewBudgetError("budget_exhausted");
+    });
+    const network = await fetchCommitCheckRuns("acme", "app", "abc123", null, async () => {
+      throw new Error("synthetic-secret");
+    });
+    expect(denied.authoritative).toBe(false);
+    expect(denied.summary).toContain("budget_exhausted");
+    expect(network.summary).toContain("network_error");
+    expect(JSON.stringify(network)).not.toContain("synthetic-secret");
+  });
+
   it("fetches check runs for exact head SHA with authorization header", async () => {
     const mockCheckRuns = [
       {
