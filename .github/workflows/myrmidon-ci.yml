@@ -695,6 +695,9 @@ jobs:
           printf 'Running %s\n' "${files[@]}"
           node --test "${files[@]}"
 
+      - name: Bootstrap path selection regression
+        run: node --test scripts/bootstrap-path-selection.myrmidon.test.mjs
+
       - name: Root contract tests (node:test)
         run: node --test scripts/*.myrmidon.test.mjs
 
