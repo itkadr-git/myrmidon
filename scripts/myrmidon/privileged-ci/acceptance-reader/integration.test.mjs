@@ -7,7 +7,10 @@ import { createServer, request } from 'node:https';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
 import { createUpstream } from './upstream.mjs';
-import { createListener } from './listener.mjs';
+import { start } from './main.mjs';
+import { createPersistentCredentialStore } from './persistent-credentials.mjs';
+import { mkdirSync } from 'node:fs';
+import { createServer as createNetServer } from 'node:net';
 
 test('gateway to separate mTLS upstream: projections, tenant boundaries and TLS authentication', async (t) => {
   const dir = mkdtempSync(join(process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || process.env.HOME, 'reader-integration-'));
@@ -40,10 +43,17 @@ test('gateway to separate mTLS upstream: projections, tenant boundaries and TLS 
   await assert.rejects(createUpstream({ origin, ca: wrongTls.cert, ...clientTls }).readIssue('OPE-1'));
   await assert.rejects(createUpstream({ origin, ca: upstreamTls.cert, ...wrongTls }).readIssue('OPE-1'));
   const token = 'candidate-integration-token';
-  const events = [];
   const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'allowed', expiresAt: Date.now() + 60000, revoked: false }];
-  const gateway = createListener({ tls: gatewayTls, records, ...adapter, audit: async (event) => events.push(event) });
-  gateway.listen(0, '127.0.0.1'); await once(gateway, 'listening');
+  const credentialDirectory = file('credentials');
+  mkdirSync(credentialDirectory);
+  const store = createPersistentCredentialStore(credentialDirectory);
+  store.issue(records[0]);
+  const reservation = createNetServer();
+  reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening');
+  const port = reservation.address().port;
+  await new Promise((resolve) => reservation.close(resolve));
+  const gateway = start({ host: '127.0.0.1', port, credentialDirectory, auditFile: file('audit.jsonl'), listener: { cert: file('gateway.crt'), key: file('gateway.key') }, upstream: { origin, ca: file('upstream.crt'), cert: file('client.crt'), key: file('client.key') } });
+  await once(gateway, 'listening');
   t.after(() => gateway.close());
   const call = (path, options = {}) => new Promise((resolve, reject) => {
     const req = request({ host: '127.0.0.1', servername: 'localhost', port: gateway.address().port, ca: gatewayTls.cert, path, headers: { authorization: `Bearer ${token}` }, ...options }, (res) => {
@@ -65,12 +75,13 @@ test('gateway to separate mTLS upstream: projections, tenant boundaries and TLS 
   for (const header of ['x-http-method-override', 'x-method-override', 'x-http-method']) assert.equal((await call('/api/issues/OPE-1', { headers: { authorization: `Bearer ${token}`, [header]: 'POST' } })).status, 404, header);
   for (const authorization of [undefined, 'Bearer invalid', 'Basic candidate']) assert.equal((await call('/api/issues/OPE-1', { headers: authorization ? { authorization } : {} })).status, 401);
   assert.equal(upstreamRequests, before);
-  records[0].expiresAt = Date.now() - 1;
-  assert.equal((await call('/api/issues/OPE-1')).status, 401);
-  records[0].expiresAt = Date.now() + 60000;
-  records[0].revoked = true;
+  const expired = 'candidate-expired-token';
+  store.issue({ tokenHash: createHash('sha256').update(expired).digest('hex'), companyId: 'allowed', expiresAt: Date.now() - 1 });
+  assert.equal((await call('/api/issues/OPE-1', { headers: { authorization: `Bearer ${expired}` } })).status, 401);
+  store.revoke(records[0].tokenHash);
   assert.equal((await call('/api/issues/OPE-1')).status, 401);
   assert.equal(upstreamRequests, before);
-  const audit = JSON.stringify(events);
-  for (const secret of [token, 'private-relation', 'private-document', 'criteria']) assert.ok(!audit.includes(secret));
+  const audit = readFileSync(file('audit.jsonl'), 'utf8');
+  assert.ok(audit.length > 0);
+  for (const secret of [token, expired, 'private-relation', 'private-document', 'criteria']) assert.ok(!audit.includes(secret));
 });
