@@ -13,6 +13,13 @@ test('credential binding rejects expired revoked and wrong bearer', () => {
   assert.equal(authenticate(undefined, [record], 1000), null);
 });
 
+test('duplicate credential records fail closed, even when one is revoked or has another company', () => {
+  const token = 'candidate-test-token';
+  const record = { tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: 2000, revoked: false };
+  assert.equal(authenticate(`Bearer ${token}`, [record, { ...record, revoked: true }], 1000), null);
+  assert.equal(authenticate(`Bearer ${token}`, [record, { ...record, companyId: 'company-b' }], 1000), null);
+});
+
 test('accepts only canonical issue and acceptance document paths', () => {
   assert.deepEqual(parsePath('/api/issues/OPE-123'), { issue: 'OPE-123', document: false });
   assert.deepEqual(parsePath('/api/issues/OPE-123/documents/acceptance-scenarios'), { issue: 'OPE-123', document: true });
