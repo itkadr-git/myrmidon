@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { Client } from "ssh2";
+import { sshTransportPrivateKey } from "./ssh-key.js";
 import type { SshConnectionOptions, SshExecuteOptions, SshExecutionResult, SshExecutor } from "../../services/fleet/mock-ssh-executor.js";
 
 /** SSH2 pauses the handshake until the asynchronous pin decision completes. */
@@ -19,7 +20,7 @@ export class OnboardSshTransport implements SshExecutor {
       client.once("close", () => { this.connected = false; });
       client.connect({
         host: options.host, port: options.port ?? 22, username: options.username,
-        password: options.password, privateKey: options.privateKey, passphrase: options.passphrase,
+        password: options.password, privateKey: options.privateKey ? sshTransportPrivateKey(options.privateKey) : undefined, passphrase: options.passphrase,
         readyTimeout: options.timeoutMs ?? 20000,
         hostVerifier: (key, callback) => {
           const fingerprint = `SHA256:${createHash("sha256").update(key).digest("base64").replace(/=+$/, "")}`;

@@ -14,7 +14,7 @@ it("closes the bootstrap SSH session after switching to the stored access key", 
     clients.add(client);
     client.on("close", () => clients.delete(client));
     client.on("error", () => {});
-    client.on("authentication", (ctx) => { authMethods.push(ctx.method); ctx.accept(); });
+    client.on("authentication", (ctx) => { authMethods.push(ctx.method); if (ctx.method === "none") ctx.reject(["password", "publickey"]); else ctx.accept(); });
     client.on("ready", () => client.on("session", (accept) => {
       const session = accept();
       session.on("exec", (acceptExec, _reject, info) => {

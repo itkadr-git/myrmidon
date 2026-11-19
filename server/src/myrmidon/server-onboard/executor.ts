@@ -217,12 +217,18 @@ export class FleetOnboardExecutor {
               privateKey: activePrivateKey,
             };
             const verifySsh = await connectVerified(keyConnOptions);
-            const verifyRes = await verifySsh.execute('echo "myrmidon-key-verify"');
-            if (verifyRes.exitCode !== 0 || !verifyRes.stdout.includes("myrmidon-key-verify")) {
-              throw new Error("Key verification failed: unable to verify SSH login using the installed key");
+            try {
+              const verifyRes = await verifySsh.execute('echo "myrmidon-key-verify"');
+              if (verifyRes.exitCode !== 0 || !verifyRes.stdout.includes("myrmidon-key-verify")) {
+                throw new Error("Key verification failed: unable to verify SSH login using the installed key");
+              }
+            } catch (error) {
+              await verifySsh.disconnect().catch(() => {});
+              throw error;
             }
 
-            // Key login is verified! We now use this SSH connection.
+            // Close the bootstrap connection before switching to key authentication.
+            await activeSsh.disconnect();
             activeSsh = verifySsh;
             connOptions.privateKey = activePrivateKey;
             delete connOptions.password;
