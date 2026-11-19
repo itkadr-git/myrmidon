@@ -83,6 +83,9 @@ merge. The log records the fetched document and revision IDs as a snapshot, not
 proof that the document remained unchanged afterwards. The commitperclip review
 uses the ephemeral GitHub token with read access to contents and pull requests,
 and write access to issue comments; it does not receive the App private key.
+Review runs for each PR are serialized and update the signed `github-actions[bot]`
+comment. Older commitperclip App comments cannot be edited by the new identity;
+they remain historical, and the current comment identifies them as such.
 
 Before activation, ADM/Alex must configure both `myrmidon-acceptance-trusted`
 and `myrmidon-acceptance-external` environments with environment-scoped

@@ -9,6 +9,10 @@ on:
 # built-in GITHUB_TOKEN with minimal permissions is sufficient. No App
 # private key (COMMITPERCLIP_KEY) reaches this public runner.
 
+concurrency:
+  group: commitperclip-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
   pull-requests: read
