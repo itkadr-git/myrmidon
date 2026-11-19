@@ -12,8 +12,20 @@ export function createCredentialStore(path, key) {
   const remove = db.prepare('DELETE FROM credentials WHERE handle = ? AND owner = ?');
   const removeHandle = db.prepare('DELETE FROM credentials WHERE handle = ?');
   const listHandles = db.prepare('SELECT handle, owner FROM credentials ORDER BY rowid');
+  db.exec('CREATE TABLE IF NOT EXISTS pending_issuance (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), attempt TEXT NOT NULL) STRICT');
   let active = false;
   const store = {
+    async reserveIssuance(attempt) {
+      if (active || typeof attempt !== 'string' || !attempt) throw new Error('invalid issuance reservation');
+      try { db.prepare('INSERT INTO pending_issuance VALUES (1, ?)').run(attempt); }
+      catch { throw new Error('pending issuance or storage failure'); }
+    },
+    async pendingIssuances() {
+      return db.prepare('SELECT attempt FROM pending_issuance').all().map(row => row.attempt);
+    },
+    async resolveIssuance(attempt) {
+      if (active || db.prepare('DELETE FROM pending_issuance WHERE attempt = ?').run(attempt).changes !== 1) throw new Error('pending issuance not found');
+    },
     async put(handle, credential, owner) {
       if (active) throw new Error('store busy');
       const nonce = randomBytes(12);
