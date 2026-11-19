@@ -173,6 +173,9 @@ describe("non-container GitHub repository resolution (GITHUB-SHARED-IDENTITY)", 
     expect(target(["repo", "view", "owner/target", "-R", "owner/override"])).toBe("owner/override");
     expect(target(["repo", "clone", "owner/target"], { GH_REPO: "owner/override" })).toBe("owner/override");
     expect(target(["api", "repos/owner/target/pulls"])).toBe("owner/target");
+    expect(target(["repo", "view", "--", "owner/target.git"])).toBe("owner/target");
+    expect(target(["repo", "clone", "github.com/owner/target"])).toBe("owner/target");
+    expect(target(["repo", "clone", "owner/target", "origin/main"])).toBe("owner/target");
     expect(target(["pr", "checkout", "origin/main"])).toBe("origin/repository");
     expect(target(["repo", "view", "--json", "owner/target"])).toBe("origin/repository");
     expect(target(["repo", "view", "other.example/owner/target"])).toBe("origin/repository");
