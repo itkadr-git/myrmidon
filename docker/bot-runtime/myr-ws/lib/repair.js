@@ -8,10 +8,8 @@
 // may be hours away. botd calls this verb when no run is going; a copy with a
 // process whose working directory is inside it is skipped.
 //
-// Only unfinished operations and bare-inherited copies are repaired here (no
-// branch policy: the registry follows branch changes in `open`). The state is
-// saved to refs/myr-ws/recovery/<KEY> before anything is aborted, so no change
-// is lost.
+// Unfinished operations are left for the task. Only bare-inherited copies are
+// repaired here; branch policy is handled by `open`.
 
 const fs = require("node:fs");
 const open = require("./open.js");
