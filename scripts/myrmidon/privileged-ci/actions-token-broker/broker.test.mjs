@@ -5,6 +5,7 @@ import { createBroker, createSingleHostBroker, createRecoveredSingleHostBroker, 
 import * as tls from './tls.mjs';
 const { createRecoveredSecureServer } = tls;
 import { createCredentialStore } from './store.mjs';
+import { createInstallationClient } from './installation.mjs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -18,6 +19,29 @@ function jwt(jti, overrides = {}) {
   const input = [ { alg: 'RS256', kid: 'fixture' }, claims ].map(x => Buffer.from(JSON.stringify(x)).toString('base64url')).join('.');
   return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
 }
+
+test('invalid upstream scope and failed revocation retain the known token for restart recovery', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-rejected-retain-'));
+  const revoked = [];
+  const credentialPath = join(dir, 'credentials.sqlite'), credentialKey = randomBytes(32);
+  const installation = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'fixture', request: async (_url, options) => {
+    if (options.method === 'DELETE') return { ok: false };
+    return { ok: true, json: async () => ({ token: 'fixture-known', expires_at: '2030-01-01T00:00:00Z', permissions: { contents: 'write' }, repositories: [{ id: 123 }] }) };
+  } });
+  const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'), credentialPath, credentialKey, installation, audit: async () => {} };
+  try {
+    const broker = createSingleHostBroker(options);
+    await assert.rejects(broker.exchange(jwt('rejected-scope')));
+    broker.close();
+    const store = createCredentialStore(credentialPath, credentialKey);
+    try {
+      const result = await store.revokeRetained(async token => revoked.push(token));
+      assert.equal(result.revoked, 1);
+      assert.deepEqual(revoked, ['fixture-known']);
+      assert.equal((await store.pendingIssuances()).length, 1);
+    } finally { store.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('audited TLS lifecycle retries recovery before constructing a server', async () => {
   assert.equal(typeof tls.createAuditedSupervisedServer, 'function');
