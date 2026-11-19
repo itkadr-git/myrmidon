@@ -7,6 +7,27 @@ import { join } from 'node:path';
 import { createCredentialStore } from './store.mjs';
 import { createRecoveryWorker } from './recovery-worker.mjs';
 
+test('outbox failure does not prevent recovery retry of a known credential', async () => {
+  let revokes = 0;
+  const alerts = [];
+  const store = {
+    revokeRetained: async () => ({ revoked: revokes++ ? 1 : 0, failed: revokes === 1 ? 1 : 0 }),
+    pendingIssuances: async () => ['unknown'],
+    queueAlert: async () => { throw new Error('outbox offline'); },
+    pendingAlertEntries: async () => [], pendingAlerts: async () => [],
+  };
+  const worker = createRecoveryWorker({ store, revoke: async () => {}, alert: async event => alerts.push(event) });
+  const first = await worker.runOnce();
+  assert.equal(first.failed, 1);
+  assert.equal(first.alertFailed, true);
+  const second = await worker.runOnce();
+  assert.equal(second.revoked, 1);
+  assert.equal(second.pending, true);
+  assert.equal(second.alertFailed, true);
+  assert.ok(alerts.includes('issuance_ambiguous'));
+  assert.ok(alerts.includes('credential_recovery_failed'));
+});
+
 test('an alert queued during delivery remains pending after the earlier alert is acknowledged', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'recovery-alert-race-'));
   const store = createCredentialStore(join(dir, 'credentials.sqlite'), randomBytes(32));
