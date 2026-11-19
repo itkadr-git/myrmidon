@@ -190,6 +190,22 @@ describe("myrmidon(OPE-12932) resolveExecutionRunAdapterConfig runScopedSecretEn
     expect(secretKeys.has("MYRMIDON_LLM_API_KEY")).toBe(true);
   });
 
+  it("resolves a run reference before dispatch and marks the resulting value secret", async () => {
+    const input = baseInput();
+    const resolveEnvBindings = vi.fn(async (_companyId: string, bindings: unknown) => {
+      expect(bindings).toEqual({ MYRMIDON_LLM_API_KEY: RUN_SCOPED_REF });
+      return { env: { MYRMIDON_LLM_API_KEY: "run-key-canary" }, secretKeys: new Set(["MYRMIDON_LLM_API_KEY"]), manifest: [] };
+    });
+    const { resolvedConfig, secretKeys } = await resolveExecutionRunAdapterConfig({
+      ...input,
+      secretsSvc: { ...input.secretsSvc, resolveEnvBindings },
+      runScopedSecretEnv: { MYRMIDON_LLM_API_KEY: RUN_SCOPED_REF },
+    } as never);
+    expect(resolveEnvBindings).toHaveBeenCalledOnce();
+    expect((resolvedConfig.env as Record<string, unknown>).MYRMIDON_LLM_API_KEY).toBe("run-key-canary");
+    expect(secretKeys.has("MYRMIDON_LLM_API_KEY")).toBe(true);
+  });
+
   it("never overrides a binding that the card/environment already provided", async () => {
     const { resolvedConfig } = await resolveExecutionRunAdapterConfig({
       ...baseInput(),
