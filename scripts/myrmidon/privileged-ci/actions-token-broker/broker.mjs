@@ -24,6 +24,7 @@ export async function createRecoveredSingleHostBroker({ credentialPath, credenti
   try {
     const result = await store.revokeRetained(token => options.installation.revoke(token));
     if (result.failed) throw new Error('credential recovery failed');
+    if ((await store.pendingIssuances()).length) throw new Error('ambiguous issuance requires operator containment');
     const broker = createSingleHostBroker({ ...options, store });
     return { ...broker, close: () => { broker.close(); store.close(); } };
   } catch (error) {
@@ -56,14 +57,20 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
     async exchange(jwt) {
       return guarded('exchange_failed', async () => {
         const owner = await identity(jwt);
-        const credential = await installation.issue();
         const handle = randomUUID();
+        const durable = typeof store.reserveIssuance === 'function';
+        if (durable) await store.reserveIssuance(handle);
+        const credential = await installation.issue();
         try {
           await store.put(handle, credential, owner);
         } catch {
-          try { await installation.revoke(credential.token); } catch { await record('revoke_failed'); }
+          try {
+            await installation.revoke(credential.token);
+            if (durable) await store.resolveIssuance(handle);
+          } catch { await record('revoke_failed'); }
           throw new Error('credential storage failed');
         }
+        if (durable) await store.resolveIssuance(handle);
         try {
           await record('issued');
         } catch {
