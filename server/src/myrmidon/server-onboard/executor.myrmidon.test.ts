@@ -639,6 +639,49 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     }
   });
 
+  it("leaves UFW unchanged when an executed timer dies after launch confirmation", async () => {
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-timer-dead-"));
+    const calls = join(dir, "calls");
+    const checks = join(dir, "checks");
+    writeFileSync(checks, "0\n");
+    writeFileSync(join(dir, "sudo"), `#!/bin/sh
+printf '%s\\n' "$*" >> "$CALLS"
+if [ "$*" = "ufw status" ]; then printf 'Status: active\\n'; exit 0; fi
+case "$1" in systemd-run|systemctl) exec "$@";; esac
+exit 97
+`);
+    writeFileSync(join(dir, "systemd-run"), "#!/bin/sh\nexit 0\n");
+    writeFileSync(join(dir, "systemctl"), `#!/bin/sh
+n=$(cat "$CHECKS")
+n=$((n + 1))
+printf '%s\\n' "$n" > "$CHECKS"
+if [ "$n" -eq 1 ]; then printf 'active\\n'; exit 0; fi
+exit 1
+`);
+    for (const name of ["sudo", "systemd-run", "systemctl"]) chmodSync(join(dir, name), 0o700);
+    try {
+      const ssh = new MockSshExecutor({ onCommand: (command) => {
+        const result = spawnSync("sh", ["-c", command], {
+          encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: calls, CHECKS: checks }, timeout: 5000,
+        });
+        return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", exitCode: result.status ?? 1 };
+      } });
+      const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+      const claim: any = {
+        job: { id: "job-real-timer-dies", companyId: "c1", serverId: "s1" },
+        server: { hostname: "1.2.3.4", port: 22, username: "root" },
+        steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+      };
+      const result = await executor.execute(claim, createMockReporter().reporter);
+      expect(result.status).toBe("failed");
+      expect(Number(readFileSync(checks, "utf8"))).toBeGreaterThanOrEqual(2);
+      expect(result.error).toMatch(/timer.*(confirm|alive|running|liveness)/i);
+      expect(readFileSync(calls, "utf8")).not.toMatch(/ufw (allow|default|delete|disable|--force enable)/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("leaves an actually executed inactive firewall status probe unchanged", async () => {
     const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-ufw-test-"));
     const calls = join(dir, "calls");
