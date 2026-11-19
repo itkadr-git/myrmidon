@@ -70,6 +70,28 @@ test('independent anchor service persists CAS across restart and authorizes the 
       await assert.rejects(client(corruptServer, 'client').read(), /anchor read failed/);
     } finally { await new Promise(resolve => corruptServer.close(resolve)); }
 
+    // Simulate a committed CAS whose response is lost at the service boundary.
+    const lostPath = join(dir, 'lost-response.sqlite');
+    provisionSqliteAnchor(lostPath);
+    const lostStore = createSqliteAnchor(lostPath);
+    const lostServer = createAnchorServer({ tls, allowedFingerprint256: fingerprint, store: {
+      read: () => lostStore.read(),
+      compareAndSet: (previous, next) => {
+        assert.equal(lostStore.compareAndSet(previous, next), true);
+        throw new Error('response lost after durable commit');
+      },
+    } });
+    await new Promise(resolve => lostServer.listen(0, '127.0.0.1', resolve));
+    try {
+      const anchor = client(lostServer, 'client');
+      const auditPath = join(dir, 'lost-audit.sqlite'), key = randomBytes(32);
+      const audit = await createAsyncAuthenticatedAudit(auditPath, key, anchor);
+      await assert.rejects(audit.record('issued'), /anchor update failed/);
+      audit.close();
+      assert.equal((await anchor.read()).seq, 1);
+      await assert.rejects(createAsyncAuthenticatedAudit(auditPath, key, anchor), /anchor mismatch/);
+    } finally { await new Promise(resolve => lostServer.close(resolve)); lostStore.close(); }
+
     // A separate anchor starts at genesis; exercise the real audit over mTLS.
     const isolatedPath = join(dir, 'independent.sqlite');
     provisionSqliteAnchor(isolatedPath);
