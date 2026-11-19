@@ -46,6 +46,15 @@ test('single-host broker persists credentials across restart for owner revocatio
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('mutating caller policy after construction cannot authorize another repository', async () => {
+  const mutablePolicy = { ...policy };
+  let issued = 0;
+  const broker = createBroker({ policy: mutablePolicy, loadKeys: async () => [key], claimOnce: async () => true, installation: { issue: async () => { issued++; return { token: 'fixture', expiresAt: '2030-01-01T00:00:00Z' }; } }, store: { put: async () => {} }, audit: async () => {} });
+  mutablePolicy.repository_id = '999';
+  await assert.rejects(broker.exchange(jwt('changed-policy', { repository_id: '999' })));
+  assert.equal(issued, 0);
+});
+
 test('exchange and revoke use verified identity and redact audit', async () => {
   const seen = new Set(), entries = new Map(), events = [], revoked = [];
   const store = { put: async (h, c, owner) => entries.set(h, { credential: c, owner }), delete: async h => entries.delete(h), withOwned: async (h, owner, action) => { const entry = entries.get(h); if (!entry || entry.owner !== owner) throw new Error('credential not found'); await action(entry.credential); entries.delete(h); } };
