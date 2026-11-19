@@ -161,6 +161,10 @@ secret management, least privilege and key rotation.
   every issuer sharing the store before recovery because it also revokes active
   tokens. A successful upstream revoke followed by a failed database commit can
   require manual reconciliation.
+- Native GitHub issuance response bodies are capped at 128 KiB and an oversized
+  stream is cancelled. Rejection remains ambiguous: the pre-existing issuance
+  fence stays in place because GitHub may already have created a token. Injected
+  JSON-only transports are test adapters and do not enforce that streaming limit.
 - A valid response is now persisted as soon as it is parsed and validated, before
   the installation client returns it to the broker. A failed persistence attempts
   immediate revocation and leaves the pre-existing reservation ambiguous; it does

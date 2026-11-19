@@ -1,4 +1,26 @@
 const API = 'https://api.github.com';
+const MAX_RESPONSE_BYTES = 128 * 1024;
+
+async function readIssuanceResponse(response, allowTestAdapter) {
+  // Native fetch always exposes body; json-only adapters exist for isolated tests.
+  if (response.body === undefined && allowTestAdapter) return response.json();
+  if (!response.body) throw new Error('invalid installation response');
+  const reader = response.body.getReader(), chunks = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_RESPONSE_BYTES) {
+        void reader.cancel().catch(() => {});
+        throw new Error('installation response too large');
+      }
+      chunks.push(value);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } finally { reader.releaseLock(); }
+}
 
 // The transport, signing key and policy are supplied by the server, never by callers.
 export function createInstallationClient({ installationId, repositoryId, permissions, appJwt, request = fetch, requestTimeoutMs = 15000 }) {
@@ -29,7 +51,7 @@ export function createInstallationClient({ installationId, repositoryId, permiss
         method: 'POST', redirect: 'error', headers: { authorization: `Bearer ${jwt}`, accept: 'application/vnd.github+json', 'content-type': 'application/json', 'x-github-api-version': '2022-11-28' }, body,
       }, async response => {
         if (!response.ok) throw new Error('installation token issuance failed');
-        return response.json();
+        return readIssuanceResponse(response, request !== fetch);
       });
       if (typeof result.token !== 'string' || !result.token) throw new Error('invalid installation response');
       const allowedPermissions = { ...fixedPermissions, metadata: 'read' };
