@@ -416,6 +416,36 @@ test('unresolved anchored intent still triggers recovery of retained credentials
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('anchored pending startup retries failed known-token revocation without opening service', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-pending-retry-'));
+  const credentialPath = join(dir, 'credentials.sqlite'), credentialKey = randomBytes(32);
+  const auditPath = join(dir, 'audit.sqlite'), auditKey = randomBytes(32);
+  let head = { seq: 0, mac: '' }, attempts = 0, delays = 0;
+  const anchor = { read: async () => ({ ...head }), compareAndSet: async (previous, next) => { if (JSON.stringify(previous) !== JSON.stringify(head)) return false; head = { ...next }; return true; } };
+  try {
+    const store = createCredentialStore(credentialPath, credentialKey);
+    await store.put('known', { token: 'fixture-known' }, 'owner');
+    await store.reserveIssuance('unknown');
+    store.close();
+    const audit = await createAsyncAuthenticatedAudit(auditPath, auditKey, anchor);
+    await audit.record('issuance_pending');
+    audit.close();
+    await assert.rejects(tls.createAuditedSupervisedServer({}, {
+      auditPath, auditKey, auditAnchor: anchor, credentialPath, credentialKey,
+      installation: { revoke: async () => { if (++attempts === 1) throw new Error('offline'); } },
+      alert: async () => {}, delay: async () => { delays++; },
+    }), /pending issuance/);
+    assert.equal(attempts, 2);
+    assert.equal(delays, 1);
+    const reopened = createCredentialStore(credentialPath, credentialKey);
+    try {
+      assert.equal(reopened.hasRetainedCredentials(), false);
+      assert.equal((await reopened.pendingIssuances()).length, 1);
+    } finally { reopened.close(); }
+    await assert.rejects(createAsyncAuthenticatedAudit(auditPath, auditKey, anchor), /pending issuance/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('audited TLS startup reports an unavailable anchor before refusing service', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-anchor-alert-'));
   const alerts = [];
