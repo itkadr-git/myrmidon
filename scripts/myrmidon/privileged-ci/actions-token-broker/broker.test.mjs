@@ -15,7 +15,7 @@ function jwt(jti, overrides = {}) {
 
 test('exchange and revoke use verified identity and redact audit', async () => {
   const seen = new Set(), entries = new Map(), events = [], revoked = [];
-  const store = { put: async (h, c) => entries.set(h, c), get: async h => entries.get(h), delete: async h => entries.delete(h) };
+  const store = { put: async (h, c, owner) => entries.set(h, { credential: c, owner }), delete: async h => entries.delete(h), withOwned: async (h, owner, action) => { const entry = entries.get(h); if (!entry || entry.owner !== owner) throw new Error('credential not found'); await action(entry.credential); entries.delete(h); } };
   const installation = { issue: async () => ({ token: 'synthetic-credential', expiresAt: '2030-01-01T00:00:00Z' }), revoke: async token => revoked.push(token) };
   const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async jti => { if (seen.has(jti)) return false; seen.add(jti); return true; }, installation, store, audit: async e => events.push(e) });
   const issued = await broker.exchange(jwt('one'));
