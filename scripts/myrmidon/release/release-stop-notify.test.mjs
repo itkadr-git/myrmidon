@@ -54,11 +54,27 @@ case "$sub" in
       echo 1 >> "$SANDBOX/api-failures"
       exit 1
     fi
+    # Listing-lag emulation (test-only, deterministic): while lag-listing.json
+    # exists, the listing endpoint serves that frozen snapshot instead of the
+    # live file. This emulates the real GitHub behavior the production script
+    # is designed around: a list query can be answered by a replica that has
+    # not yet absorbed a just-created issue. issue create clears the lag (the
+    # mutating write is fresh on the primary); see the self-heal test.
+    if [ -f "$SANDBOX/lag-listing.json" ]; then
+      if [ -n "$jq_filter" ]; then
+        result="$(jq -r "$jq_filter" "$SANDBOX/lag-listing.json")" || exit 1
+      else
+        result="$(jq -r '.[].title' "$SANDBOX/lag-listing.json")" || exit 1
+      fi
+      trace "scan result(lagged)=$result"
+      printf '%s\\n' "$result"
+      exit 0
+    fi
     # Serialize reads with the issue create/close writes below: a scan that
     # races a concurrent create must observe the fully written issue, never
-    # a transient (pre-write) state. Without this lock the overlap test could
-    # deduplicate against a stale snapshot and create the 100/101 duplicate
-    # pair observed in CI (runs 43779902791 and 44507283140).
+    # a transient (pre-write) state. Without this lock a listing read whose
+    # open() lands before a concurrent create's rename reads the pre-write
+    # inode (a stale snapshot), the only torn-read hazard a local file has.
     while ! mkdir "$SANDBOX/issues-file.lock" 2>/dev/null; do
       trace "api waiting for issues lock"
       sleep 0.01
@@ -128,6 +144,9 @@ case "$sub" in
         jq --arg t "$title" --argjson n "$n" '. + [{number: $n, title: $t, state: "open"}]' "$SANDBOX/issues.json" > "$SANDBOX/issues.json.tmp"
         mv "$SANDBOX/issues.json.tmp" "$SANDBOX/issues.json"
         rmdir "$SANDBOX/issues-file.lock"
+        # The create path is served by the primary: from here on, listing reads
+        # observe the new issue (clears the listing-lag emulation).
+        rm -f "$SANDBOX/lag-listing.json"
         printf 'https://github.com/x/y/issues/%s\\n' "$n" ;;
       close)
         num="$1"; shift
@@ -356,16 +375,18 @@ describe("release-stop-notify.sh (fake gh)", () => {
     assert.equal(matchingIssues[0].state, "open");
   });
 
-  // Deterministic reproduction of the failing interleaving behind the
-  // "issues 100/101" CI flake (PR #3086 run 43779902791, PR #4570 run
-  // 44507283140): the fake gh api scan used to read issues.json WITHOUT the
-  // issues-file lock the create/close handlers hold, so a scan that started
-  // while a create was in flight could observe the pre-write state and
-  // deduplicate against a stale snapshot. This test is a pure event
-  // handshake with no wall-clock assertions: the test process itself holds
-  // the same lock an in-flight create would hold, starts a scan, waits until
-  // the fake handler observably reports that it is waiting on that lock,
-  // asserts the scan is still blocked, then publishes the fully written
+  // Fixture-fidelity proof (deterministic, no wall-clock): the production
+  // contract requires a listing read to observe every COMPLETED write. On a
+  // local file the only way to violate that is a torn read: the reader's
+  // open() lands before a concurrent create's rename and its read() executes
+  // after it, returning the pre-write inode (a stale snapshot). The old fake
+  // api handler read issues.json without the issues-file.lock the create and
+  // close handlers hold, so nothing prevented that window. The fix makes the
+  // listing read take the same lock, which moves the open() strictly after
+  // the writer's rename. This test is a pure event handshake: the test
+  // process holds the lock (as an in-flight create would), starts a scan,
+  // waits until the fake handler observably reports it is waiting on that
+  // lock, asserts the scan stays blocked, then publishes the fully written
   // issue and releases the lock. The scan must observe the published issue.
   it("fake gh api scan is serialized with a concurrent issue write (deterministic interleaving)", async () => {
     const sb = makeSandbox();
@@ -416,6 +437,46 @@ describe("release-stop-notify.sh (fake gh)", () => {
       if (scan.exitCode === null) scan.kill();
       await closed;
     }
+  });
+
+  // Deterministic reproduction of the observed "open #100 + closed #101" pair
+  // (runs 43779902791 and 44507283140) through TWO REAL release-stop-notify.sh
+  // runs. The production script is explicitly designed for a listing that lags
+  // a just-created issue ("if concurrent creations ever race past the lock,
+  // any duplicate is immediately closed in favor of the canonical lowest issue
+  // number"). That lag at the label-lock handover is the one interleaving that
+  // yields the pair:
+  //   1. Run A completes: creates #100 (canonical), releases the label lock.
+  //   2. Run B starts while a listing replica still serves the pre-A view.
+  //      B's initial scan and its rescan-after-lock-acquire both miss #100.
+  //   3. B creates #101. B's post-creation scan (fresh, write path) sees both
+  //      entries and closes #101 in favor of canonical #100.
+  // End state: exactly one OPEN journal entry plus the self-healed closed
+  // duplicate — the pair from CI. The fake emulates the lag deterministically
+  // via the lag-listing.json snapshot (armed by the test, cleared by the
+  // create handler); no sleeps, no wall-clock assertions.
+  it("two real runs under a listing lag at the lock handover reproduce the observed pair and self-heal to one open entry", () => {
+    const sbA = makeSandbox();
+    const ra = runScript(sbA);
+    assert.equal(ra.status, 0, ra.stderr);
+    assert.match(ra.stdout, /stop=created issue=https:\/\/github\.com\/x\/y\/issues\/100 event=111/);
+    // Fresh sandbox holding A's published state; arm the lagged listing (the
+    // replica view from before A's create) before B starts.
+    const sb = makeSandbox({ issues: JSON.parse(fs.readFileSync(path.join(sbA.dir, "issues.json"), "utf8")) });
+    fs.writeFileSync(path.join(sb.dir, "lag-listing.json"), "[]");
+    const rb = runScript(sb);
+    assert.equal(rb.status, 0, rb.stderr);
+    assert.match(rb.stdout, /stop=deduplicated issue=100 event=111/);
+    const issues = JSON.parse(fs.readFileSync(path.join(sb.dir, "issues.json"), "utf8"));
+    const matching = issues.filter((it) => it.title === "release-stop: myr-v1.8.0 (111)");
+    assert.deepEqual(
+      matching.map((m) => `${m.number}:${m.state}`).sort(),
+      ["100:open", "101:closed"],
+      `expected the observed self-healed pair, got: ${JSON.stringify(issues)}`,
+    );
+    const mutations = fs.readFileSync(path.join(sb.dir, "mutations.log"), "utf8");
+    assert.match(mutations, /create title=release-stop: myr-v1\.8\.0 \(111\)/);
+    assert.match(mutations, /close issue=101/, "the duplicate must be closed by the post-creation self-heal");
   });
 
   it("rescans after acquiring lock when another run created the issue and released the lock", () => {
