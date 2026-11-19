@@ -37,8 +37,15 @@ secret management, least privilege and key rotation.
   tokens. A successful upstream revoke followed by a failed database commit can
   require manual reconciliation.
 - Issuance followed by storage and revocation failures can lose an active token;
-  invalid upstream expiry can also leave a token untracked. Durable recovery
-  and alerting must be implemented before any live use.
+  invalid upstream expiry can also leave a token untracked. A process crash or
+  lost HTTP response after GitHub creates a token can leave the token unknown to
+  this service even if local storage is healthy. GitHub issuance and a local
+  database commit are not one atomic transaction. A pending local record alone
+  cannot recover a token whose value was never received. The design needs an
+  approved containment and reconciliation strategy for ambiguous issuance, as
+  well as durable recovery and alerting, before any live use. Do not assume an
+  unknown token can be individually revoked; GitHub's expiry is the remaining
+  boundary unless an independently verified revocation mechanism is available.
 - Returned repository and permissions are checked against configured scope,
   but revocation failure after a rejected response still needs durable recovery.
   TLS helpers alone do not establish host isolation.
