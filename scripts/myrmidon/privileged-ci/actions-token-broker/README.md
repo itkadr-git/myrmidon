@@ -173,11 +173,12 @@ secret management, least privilege and key rotation.
   anchor commits that fence but its response is lost, the mutation does not run:
   even a known token remains stored and cannot be retried automatically after
   restart because the checkpoint no longer matches. The same mismatch can occur
-  after a crash or lost response during checkpoint finalization; it does not prove
-  whether a revocation or local mutation happened. Preserve the state and escalate
-  rather than resetting the anchor or claiming the token was revoked. The
-  `audit-recovery-lost-checkpoint.test.mjs` fixture exercises the lost fence response;
-  this is a regression scenario, not evidence of a successful live recovery.
+  after a crash during checkpoint finalization. If finalization commits but its
+  reply is lost, the checkpoint may instead match the locally mutated state on
+  restart: matching alone does not prove the remote revocation outcome. Preserve
+  the state and escalate rather than resetting the anchor or claiming the token
+  was revoked. The `audit-recovery-lost-checkpoint.test.mjs` fixtures exercise lost
+  fence and finalization responses; they are not evidence of live recovery.
   These experimental checks still require independently administered durable anchors,
   security review and a crash-safe operator reconciliation procedure. Do not restore
   or replace the credential database to recover service.
