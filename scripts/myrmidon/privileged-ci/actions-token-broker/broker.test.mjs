@@ -165,6 +165,26 @@ test('audit failure on a rejected request fences issuance until recovery after r
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('lost finalization acknowledgement and failed revoke retain a durable issuance fence', async () => {
+  const pending = new Set(), retained = new Map();
+  let issued = 0;
+  const store = {
+    reserveIssuance: async handle => { if (pending.size) throw new Error('already reserved'); pending.add(handle); },
+    resolveIssuance: async handle => { pending.delete(handle); throw new Error('acknowledgement lost'); },
+    put: async (handle, credential) => retained.set(handle, credential),
+    delete: async handle => retained.delete(handle),
+    queueAlert: async () => { throw new Error('outbox unavailable'); },
+  };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    installation: { issue: async () => { issued++; return { token: 'fixture' }; }, revoke: async () => { throw new Error('offline'); } },
+    audit: async () => {}, alert: async () => { throw new Error('offline'); } });
+  await assert.rejects(broker.exchange(jwt('lost-finalization-ack')));
+  assert.equal(retained.size, 1);
+  assert.equal(pending.size, 1);
+  await assert.rejects(broker.exchange(jwt('after-lost-finalization-ack')));
+  assert.equal(issued, 1);
+});
+
 test('failed issuance finalization immediately revokes the known token while retaining the fence', async () => {
   const retained = new Map(), revoked = [], pending = new Set();
   const store = {
