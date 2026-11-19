@@ -21,7 +21,7 @@ export async function checkAcceptance({ pr, expectedBase, expectedHead, getDocum
 }
 
 async function json(url, token) {
-  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'myrmidon-acceptance-gate', Accept: 'application/json' }, signal: AbortSignal.timeout(30000) });
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'myrmidon-acceptance-gate', Accept: 'application/json' }, signal: AbortSignal.timeout(30000), redirect: 'error' });
   if (!response.ok) throw Error(`API request failed: ${response.status} ${new URL(url).pathname}`);
   return response.json();
 }
