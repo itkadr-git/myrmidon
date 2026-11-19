@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import request from "supertest";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -26,6 +27,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { issueRoutes } from "../routes/issues.js";
+import { routeApp } from "./helpers/route-test-harness.js";
 import { reviewWakesQuotaForCompany } from "../myrmidon/review-stage-recovery/review-wakes-quota.ts";
 import {
   REVIEW_CI_WAIT_INTERVAL_MS,
@@ -422,6 +425,59 @@ describeEmbeddedPostgres("issue monitor that waits for the CI of a review (Revie
     expect(await activityOf(issueId, "issue.monitor_deferred")).toHaveLength(0);
     expect((await scheduler.tickTimers(new Date(backoffAt.getTime() - 1))).enqueued).toBe(0);
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+  });
+
+  it("keeps the budget deferral when a real review PATCH overlaps a claimed monitor", async () => {
+    const { companyId, reviewerId, issueId } = await seed();
+    const runId = randomUUID();
+    const now = new Date();
+    const due = new Date(now.getTime() - 60_000);
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewerId, status: "succeeded", contextSnapshot: { issueId } });
+    await db.update(issues).set({
+      monitorNextCheckAt: due,
+      executionState: sql`jsonb_set(${issues.executionState}, '{monitor,status}', '"triggered"'::jsonb)`,
+    }).where(eq(issues.id, issueId));
+    let releaseLookup!: () => void;
+    let lookupStarted!: () => void;
+    const started = new Promise<void>((resolve) => { lookupStarted = resolve; });
+    const release = new Promise<void>((resolve) => { releaseLookup = resolve; });
+    mockReviewCi.resolveCi.mockResolvedValue({ state: "complete", finalCheckConclusion: "success", pullRequestUrl: PR_URL, headSha: HEAD });
+    mockReviewCi.resolveCi.mockImplementationOnce(async () => {
+      lookupStarted();
+      await release;
+      return { state: "complete", finalCheckConclusion: "success", pullRequestUrl: PR_URL, headSha: HEAD };
+    });
+    const scheduler = heartbeatService(db, { executesRuns: false });
+    const staleTick = scheduler.tickTimers(now);
+    try {
+      await started;
+      const app = routeApp(db, { type: "agent", agentId: reviewerId, companyId, source: "agent_key", runId } as never,
+        (routeDb, storage) => issueRoutes(routeDb, storage, {
+          resolveReviewPullRequestCi: async () => ({ state: "unknown", reason: "budget_exhausted", pullRequestUrl: PR_URL, headSha: HEAD }),
+        }));
+      const response = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI unavailable" });
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      const [deferred] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(deferred!.monitorWakeRequestedAt).toBeNull();
+      expect(deferred!.monitorNextCheckAt!.getTime()).toBeGreaterThan(Date.now() + 60 * 60_000);
+      expect(deferred!.executionState).toMatchObject({ reviewCiBudgetDeferred: true });
+    } finally {
+      releaseLookup();
+    }
+    expect((await staleTick).enqueued).toBe(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+    await db.update(issues).set({
+      monitorNextCheckAt: now,
+      monitorWakeRequestedAt: null,
+      monitorNotes: "replacement evidence",
+      executionState: sql`jsonb_set(${issues.executionState}, '{monitor,status}', '"scheduled"'::jsonb)`,
+    }).where(eq(issues.id, issueId));
+    expect((await scheduler.tickTimers(new Date(now.getTime() + 1_000))).enqueued).toBe(1);
+    expect((await scheduler.tickTimers(new Date(now.getTime() + 2_000))).enqueued).toBe(0);
+    const wakes = await db.select().from(agentWakeupRequests);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]?.payload).toMatchObject({ issueId, monitorNotes: "replacement evidence" });
+    await db.delete(heartbeatRuns);
   });
 
   it("does not defer a replacement monitor when the stale claim hits the review wake quota", async () => {
