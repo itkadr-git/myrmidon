@@ -93,7 +93,7 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
   async function identity(jwt) {
     const claims = await verifyIdentity(jwt, { policy: fixedPolicy, loadKeys, claimOnce });
     if (typeof claims.run_id !== 'string' || !/^[1-9][0-9]*$/.test(claims.run_id) || typeof claims.run_attempt !== 'string' || !/^[1-9][0-9]*$/.test(claims.run_attempt)) throw new Error('identity rejected');
-    return JSON.stringify([claims.repository_owner_id, claims.repository_id, claims.run_id, claims.run_attempt]);
+    return { owner: JSON.stringify([claims.repository_owner_id, claims.repository_id, claims.run_id, claims.run_attempt]), exp: claims.exp };
   }
   async function record(event) {
     // Audit receives only a fixed event name, never claims, errors or credentials.
@@ -126,7 +126,7 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
     assertIdle, shutdown,
     async exchange(jwt) {
       return guarded('exchange_failed', async () => {
-        const owner = await identity(jwt);
+        const { owner, exp } = await identity(jwt);
         if (auditFailed || recoveryRequired) throw new Error('recovery required');
         const handle = randomUUID();
         const durable = typeof store.reserveIssuance === 'function';
@@ -138,7 +138,7 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         // even if the local reservation is later lost or rolled back.
         if (anchoredIssuance) await record('issuance_pending');
         // Another request can fail audit while the anchor write is in flight.
-        if (auditFailed) throw new Error('audit unavailable');
+        if (auditFailed || exp <= Math.floor(Date.now() / 1000)) throw new Error('audit unavailable or identity expired');
         let credential, retained = false;
         try {
           credential = await installation.issue(async token => {
@@ -223,7 +223,7 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
     },
     async revoke(jwt, handle) {
       return guarded('revoke_failed', async () => {
-        const owner = await identity(jwt);
+        const { owner, exp } = await identity(jwt);
         if (typeof handle !== 'string' || !/^[0-9a-f-]{36}$/.test(handle)) throw new Error('invalid handle');
         if (auditFailed) throw new Error('audit unavailable');
         // Reserve before revocation: a crash or failure must keep issuance fenced.
@@ -233,7 +233,7 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         if (auditFailed) throw new Error('audit unavailable');
         // Protect the revocation fence against local store rollback as well.
         if (anchoredIssuance) await record('issuance_pending');
-        if (auditFailed) throw new Error('audit unavailable');
+        if (auditFailed || exp <= Math.floor(Date.now() / 1000)) throw new Error('audit unavailable or identity expired');
         let revocationAttempted = false;
         try {
           await store.withOwned(handle, owner, async credential => {
