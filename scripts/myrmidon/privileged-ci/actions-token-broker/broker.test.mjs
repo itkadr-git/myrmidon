@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { createBroker, createSingleHostBroker } from './broker.mjs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -29,6 +29,20 @@ test('single-host broker persists replay claims across broker restarts', async (
     const second = createSingleHostBroker({ ...options, replayPath: path });
     try { await assert.rejects(second.exchange(token)); } finally { second.close(); }
     assert.equal(issued, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('single-host broker persists credentials across restart for owner revocation', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-credentials-'));
+  const credentialKey = randomBytes(32), revoked = [];
+  const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'), credentialPath: join(dir, 'credentials.sqlite'), credentialKey, installation: { issue: async () => ({ token: 'fixture', expiresAt: '2030-01-01T00:00:00Z' }), revoke: async token => revoked.push(token) }, audit: async () => {} };
+  try {
+    const first = createSingleHostBroker(options);
+    const issued = await first.exchange(jwt('persistent-credential'));
+    first.close();
+    const second = createSingleHostBroker(options);
+    try { await second.revoke(jwt('persistent-revoke'), issued.handle); } finally { second.close(); }
+    assert.deepEqual(revoked, ['fixture']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

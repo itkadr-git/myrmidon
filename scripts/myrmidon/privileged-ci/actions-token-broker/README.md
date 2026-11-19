@@ -20,11 +20,10 @@ secret management, least privilege and key rotation.
 
 - The single-host broker factory wires replay protection to a persistent SQLite
   database. All broker processes must share that local database on a supported
-  filesystem; this does not support separate hosts. There is no concrete
-  wired credential store, recovery worker, authenticated audit sink,
-  or production deployment wiring. An experimental AES-GCM SQLite store is
-  included but is not wired into the broker factory or security approved; its
-  single-host locking and key custody need independent review.
+  filesystem; this does not support separate hosts. The factory wires an
+  experimental AES-GCM SQLite credential store when a credential path and key
+  are provided. Its single-host locking and key custody need independent review.
+  There is no recovery worker, authenticated audit sink or deployment wiring.
 - Issuance followed by storage and revocation failures can lose an active token;
   invalid upstream expiry can also leave a token untracked. Durable recovery
   and alerting must be implemented before any live use.
