@@ -728,6 +728,22 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(ssh.hasExecuted(/sudo ufw (allow|default|--force enable|disable)/)).toBe(false);
   });
 
+  it("does not mutate the firewall when starting the rollback timer times out", async () => {
+    const ssh = new MockSshExecutor({ timeoutCommands: [/start-myrmidon-firewall-timer/] });
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-firewall-timer-timeout", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(ssh.hasExecuted(/start-myrmidon-firewall-timer/)).toBe(true);
+    expect(ssh.hasExecuted(/sudo ufw (allow|default|--force enable|disable)/)).toBe(false);
+  });
+
   it("reports timer launch failure before attempting any firewall mutation", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
