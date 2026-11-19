@@ -26,9 +26,11 @@ secret management, least privilege and key rotation.
   There is no recovery worker or deployment wiring. An experimental single-host
   HMAC-chained audit store is available via `createAuditedRecoveredServer`; it
   permits fixed event names only, checks integrity on startup and before each
-  append, and needs a distinct server-held 32-byte key. It cannot detect deletion
-  of a valid suffix or entire database without an independently anchored head;
-  host compromise, rollback, availability, alerting and remote collection remain
+  append, and needs a distinct server-held 32-byte key. The audited server now
+  requires a synchronous CAS anchor, but no independently durable anchor service
+  or deployment wiring is provided. An in-memory or colocated anchor is not
+  adequate: it cannot protect against rollback of the entire failure domain.
+  Host compromise, availability, alerting and remote collection remain
   unaddressed. Do not treat it as a production audit system.
   The experimental `createRecoveredSingleHostBroker` revokes stored tokens before
   returning a broker and refuses startup when any revoke fails. It is not a
