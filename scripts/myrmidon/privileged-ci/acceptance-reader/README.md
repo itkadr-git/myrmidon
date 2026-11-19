@@ -49,6 +49,10 @@ rechecks credentials and document revision before response. Audit records contai
 only response status. TLS keys, credential store, config, audit and upstream are
 trusted operator assets; an operator or upstream compromise is outside this
 boundary. A shared filesystem must have coherent visibility for revocations.
+The repeated issue and document reads detect observed changes, but they are not
+an atomic snapshot: concurrent changes between reads or after the last check may
+escape detection. A live upstream must provide a verified transactional snapshot
+or equivalent consistency mechanism before this gateway is used for acceptance.
 
 TLS alone does not establish network isolation: a runner must be prevented by
 network policy from reaching upstream directly. No such policy or live upstream

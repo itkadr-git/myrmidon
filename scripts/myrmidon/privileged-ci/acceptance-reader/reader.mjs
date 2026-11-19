@@ -44,6 +44,8 @@ export function createHandler({ records, credentialStore, readIssue, readDocumen
       if (!valid(first)) return respond(404);
       const second = await readDocument(issue.id);
       if (!valid(second) || first.id !== second.id || first.latestRevisionId !== second.latestRevisionId || first.body !== second.body) return respond(409);
+      const currentIssue = await readIssue(issue.id);
+      if (!currentIssue || currentIssue.id !== issue.id || currentIssue.identifier !== issue.identifier || currentIssue.companyId !== companyId) return respond(409);
       return respond(200, { id: first.id, latestRevisionId: first.latestRevisionId, body: first.body });
     } catch {
       return respond(502);
