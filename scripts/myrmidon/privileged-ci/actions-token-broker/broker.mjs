@@ -97,17 +97,18 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
           }
           throw new Error('credential storage failed');
         }
-        if (durable) await store.resolveIssuance(handle);
         try {
           await record('issued');
         } catch {
-          // Keep the stored credential for recovery if revocation fails.
+          // Retain the reservation and credential until revocation succeeds.
           try {
             await installation.revoke(credential.token);
             await store.delete(handle);
-          } catch { /* The original audit failure remains the public error. */ }
+            if (durable) await store.resolveIssuance(handle);
+          } catch { await ambiguous(); }
           throw new Error('audit failed');
         }
+        if (durable) await store.resolveIssuance(handle);
         return { handle, ...credential };
       });
     },

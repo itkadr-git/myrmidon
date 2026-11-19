@@ -51,6 +51,8 @@ secret management, least privilege and key rotation.
   well as durable recovery and alerting, before any live use. Do not assume an
   unknown token can be individually revoked; GitHub's expiry is the remaining
   boundary unless an independently verified revocation mechanism is available.
+  The issuance reservation also remains in place if audit and token revocation
+  both fail; a retained known token can be retried, but an unknown token cannot.
 - Returned repository and permissions are checked against configured scope,
   but revocation failure after a rejected response still needs durable recovery.
   TLS helpers alone do not establish host isolation.
