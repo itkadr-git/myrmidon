@@ -41,8 +41,11 @@ secret management, least privilege and key rotation.
   permits fixed event names only, checks integrity on startup and before each
   append, and needs a distinct server-held 32-byte key. The audited server now
   requires a synchronous CAS anchor, but no independently durable anchor service
-  or deployment wiring is provided. An in-memory or colocated anchor is not
-  adequate: it cannot protect against rollback of the entire failure domain.
+  or deployment wiring is provided. `createSqliteAnchor` is a durable CAS
+  reference implementation for testing separate stores, not an independently
+  operated anchor service: colocating it with the audit database does not protect
+  against rollback of the entire failure domain. A separately administered,
+  independently durable and authenticated service is still required.
   Host compromise, availability, alerting and remote collection remain
   unaddressed. Do not treat it as a production audit system.
   The experimental `createRecoveredSingleHostBroker` revokes stored tokens before
