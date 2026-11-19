@@ -260,18 +260,24 @@ describeEmbeddedPostgres.sequential("CI deliveries by the final result of the he
       await expect(service.deliver([ciEvent(seeded, "check_run", "success", "CI result")]))
         .resolves.toMatchObject({ processed: 1, failed: 0 });
 
-      // OPE-15114: the webhook verdict stands only after an authoritative read
-      // confirms that its head is still the current head.
+      // OPE-15114 + OPE-15127: a stored webhook verdict is not admission
+      // evidence. Admission confirms the head with a fresh pull read and then
+      // re-reads the head CI fresh before it answers complete.
+      const readUrls: string[] = [];
       const fetch = vi.fn(async (url: string) => {
+        readUrls.push(url);
         if (url === `https://api.github.com/repos/${REPO}/pulls/123`) return Response.json({ state: "open", head: { sha: HEAD } });
+        if (url.startsWith(`https://api.github.com/repos/${REPO}/commits/${HEAD}/check-runs`)) {
+          return Response.json({ total_count: 1, check_runs: [{ name: "CI result", status: "completed", conclusion: "success", head_sha: HEAD }] });
+        }
         return new Response("unexpected", { status: 500 });
       });
       const tokenProvider = vi.fn(async () => null);
-      const resolve = createReviewPullRequestCiResolver({ db, fetch, tokenProvider });
+      const resolve = createReviewPullRequestCiResolver({ db, fetch, tokenProvider, admission: true });
       await expect(resolve({ companyId: seeded.companyId, issueId: seeded.issueId })).resolves.toMatchObject({
         state: "complete", headSha: HEAD, finalCheckConclusion: "success",
       });
-      expect(fetch).toHaveBeenCalled();
+      expect(readUrls.some((url) => url.includes("/check-runs"))).toBe(true);
       expect(tokenProvider).toHaveBeenCalled();
     });
 

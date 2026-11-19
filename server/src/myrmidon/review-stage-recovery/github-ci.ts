@@ -21,6 +21,22 @@
 // the budget is gone. The stranded-issue sweep asks for the CI of every review
 // stage with an open PR on each heartbeat tick, which made "review-recovery"
 // the largest user of the App's 5000/h budget.
+//
+// myrmidon(OPE-15004): the resolver serves two kinds of readers and they do
+// not share one freshness contract. Review admission (the write verdict gate
+// and the review hand-off admission) must never be answered from memory: it
+// passes `admission: true`, which skips the read cache on every GitHub read.
+// OPE-15127: admission does not trust a stored verdict at all — not even a
+// webhook one for a head a fresh pull read confirms. A rerun of that same
+// head can sit queued while the stored verdict still says complete, so the
+// head CI is re-read fresh on every admission call; and a fresh head that
+// differs from the reviewed head the board stored is `head_moved` before any
+// CI read, even when the new head is fully green. Non-admission consumers
+// (the stranded-issue sweep, the Review CI wait monitor tick, idle pickup,
+// the wake CI gate, the review-routing sweep) keep the cache: their ticks ask
+// every few seconds and must not turn into a request storm, and they never
+// decide the verdict — the write gate the reviewer hits afterwards re-reads
+// GitHub fresh and fails closed.
 
 import { createHash } from "node:crypto";
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
@@ -389,6 +405,13 @@ export async function resolvePullRequestHeadCi(input: {
   fetch?: FetchLike;
   /** Admission reads pass fresh: skip the cache, always ask GitHub. */
   fresh?: boolean;
+  /**
+   * myrmidon(OPE-15127): a review admission made on a known reviewed head A is
+   * never answered for a different current head B, even when B is fully green.
+   * Admission readers pass the reviewed head the board stored; a fresh head
+   * that differs answers `unknown / head_moved` before any CI read.
+   */
+  expectedHeadSha?: string;
 }): Promise<{
   state: "pending" | "complete" | "unknown" | "not_configured" | "no_pull_request";
   headSha: string | null;
@@ -415,6 +438,12 @@ export async function resolvePullRequestHeadCi(input: {
   }
   // A merged or closed pull request has no CI to wait for; the PR sync owns it.
   if (head.state === "closed") return { state: "no_pull_request", headSha: head.headSha };
+  // OPE-15127: the admission was made on the reviewed head A. A different
+  // current head B never inherits it, even when B is fully green — and the CI
+  // read below is skipped entirely: its verdict could only belong to B.
+  if (input.expectedHeadSha && head.headSha !== input.expectedHeadSha) {
+    return { state: "unknown", headSha: head.headSha, reason: "head_moved" };
+  }
   const headSha = head.headSha;
   const apiBase = gitHubApiBase(input.reference.host);
   const repository = `${encodeURIComponent(input.reference.owner)}/${encodeURIComponent(input.reference.repo)}`;
@@ -618,7 +647,20 @@ export function createReviewPullRequestCiResolver(input: {
   fetch?: FetchLike;
   tokenProvider?: (companyId: string, repository: string) => Promise<string | null>;
   onDiagnostic?: (diagnostic: { transportCalls: number; budget: ReviewBudgetSnapshot | null }) => void;
+  /**
+   * Review-admission readers pass `true`: every GitHub read is fresh (the
+   * read cache is skipped), a stored verdict is never admission evidence —
+   * the head CI of the current head is re-read fresh on every call, because a
+   * rerun of the same head can be queued while a stored verdict still says
+   * complete (OPE-15127) — and a fresh head that differs from the reviewed
+   * head the board stored answers `head_moved` before any CI read (OPE-15127).
+   * Everything else — monitor ticks, sweeps, wake gates — shares the process
+   * read cache (OPE-12397); it never decides the verdict, so a cached answer
+   * cannot admit a review decision.
+   */
+  admission?: boolean;
 }): ReviewPullRequestCiResolver {
+  const fresh = input.admission === true;
   return async ({ companyId, issueId }) => {
     let transportCalls = 0;
     let budget: ReviewBudgetSnapshot | null = null;
@@ -643,6 +685,18 @@ export function createReviewPullRequestCiResolver(input: {
       return { state: "unknown", pullRequestUrl: target.pullRequestUrl, headSha: null, reason: "pull_request_reference_unreadable" };
     }
     const { reference, pullRequestUrl } = target;
+    if (!fresh) {
+      // Non-admission consumer (monitor tick, sweep, wake gate): the stored
+      // webhook verdict names the same head the work product knows, and this
+      // reader never decides the verdict — the reviewer's write gate re-reads
+      // GitHub fresh. Serve it without a token request and without a GitHub
+      // read (the pre-OPE-15114 fast path for non-admission readers).
+      const webhook = await readWebhookCi(input.db, companyId, reference);
+      const matchingWebhook = webhook && target.knownHeadSha && target.knownHeadSha === webhook.headSha ? webhook : null;
+      if (matchingWebhook?.verdict) {
+        return { ...matchingWebhook.verdict, headSha: matchingWebhook.headSha, pullRequestUrl };
+      }
+    }
     let token: string | null = null;
     let tokenError: string | null = null;
     try {
@@ -650,48 +704,22 @@ export function createReviewPullRequestCiResolver(input: {
     } catch (error) {
       tokenError = error instanceof GitHubReviewBudgetError ? `token_provider:${error.reason}` : "token provider failed";
     }
-    const webhook = await readWebhookCi(input.db, companyId, reference);
-    const matchingWebhook = webhook && target.knownHeadSha && target.knownHeadSha === webhook.headSha ? webhook : null;
-    if (matchingWebhook?.verdict) {
-      // myrmidon(OPE-15114): a webhook/work-product verdict is evidence only for
-      // the head it names. A lost or delayed `synchronize` leaves both records
-      // on the old head, so the verdict is accepted only after a fresh
-      // authoritative read confirms that this head is still the current one.
-      // Admission never serves from the read cache: a warm cached head is
-      // exactly how a lost synchronize would otherwise stay invisible.
-      let head: Awaited<ReturnType<typeof resolvePullRequestCurrentHead>>;
-      try {
-        head = await resolvePullRequestCurrentHead({ reference, token, fetch: fetchImpl, fresh: true });
-      } catch {
-        head = { state: "unknown", reason: "read_failed" };
-      }
-      if (head.state === "ok" && head.headSha === matchingWebhook.headSha) {
-        return { ...matchingWebhook.verdict, headSha: matchingWebhook.headSha, pullRequestUrl };
-      }
-      if (head.state === "unknown") {
-        // The current head could not be confirmed: fail closed instead of
-        // trusting a local verdict that may belong to a superseded head.
-        return {
-          state: "unknown",
-          pullRequestUrl,
-          headSha: null,
-          reason: `${head.reason ?? "read_failed"}${tokenError ? `; ${tokenError}` : ""}`,
-          ...(head.rateLimit ? { rateLimit: head.rateLimit } : {}),
-        };
-      }
-      if (head.state === "ok") {
-        // The fresh head moved past the webhook head. The verdict was made on
-        // the old head: its CI must not carry over to this review decision,
-        // even when the new head is fully green. The reviewer re-submits on
-        // the current head.
-        return { state: "unknown", pullRequestUrl, headSha: head.headSha, reason: "head_moved" };
-      }
-      // Closed, as the first authoritative read established it: answer now,
-      // with no second read that a reopened PR or a lost budget could steer.
-      return { state: "no_pull_request", pullRequestUrl, headSha: head.headSha };
-    }
+    // OPE-15127: admission never answers from a stored verdict — not even a
+    // webhook one for a head a fresh pull read confirms. The same head can be
+    // re-run while the new check_run deliveries are delayed: a stored complete
+    // would admit a queued rerun. Admission therefore re-reads the head CI of
+    // the current head on every call. The reviewed head the board stored (the
+    // work-product metadata, kept by the PR sync and the webhook) is compared
+    // with the fresh head: a different current head is "head_moved" before any
+    // CI read, even when the new head is fully green and no webhook named it.
     try {
-      const head = await resolvePullRequestHeadCi({ reference, token, fetch: fetchImpl, fresh: true });
+      const head = await resolvePullRequestHeadCi({
+        reference,
+        token,
+        fetch: fetchImpl,
+        fresh,
+        ...(fresh && target.knownHeadSha ? { expectedHeadSha: target.knownHeadSha } : {}),
+      });
       if (head.state !== "unknown") {
         // myrmidon(OPE-12176): the verdict of the final check travels with the
         // state; review admission tells green from red without a second read.

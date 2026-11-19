@@ -121,6 +121,11 @@ If the initial settings load fails, use Retry on the screen without reloading
 the page. Retry is unavailable while the request is pending, becomes available
 again after another failure, and a successful response restores the form.
 
+During a background refresh for the same company, unsaved edits remain in the
+form while untouched fields receive the latest values. Saving sends fields that
+still differ from the latest values. Switching companies resets the form for the
+new company instead of carrying over the previous company's draft.
+
 ## Where the code lives
 
 - `server/src/myrmidon/knowledge/routes.ts` — the REST router and its gates.
