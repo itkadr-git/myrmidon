@@ -105,6 +105,8 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
     }
   }
   async function ambiguous() {
+    // Fence this process even if the reservation or outbox is lost.
+    auditFailed = true;
     // Keep the outbox entry even after immediate delivery: recovery acknowledges it.
     try { if (typeof store.queueAlert === 'function') await store.queueAlert('issuance_ambiguous'); } catch { /* Reservation remains pending. */ }
     try { await record('issuance_ambiguous'); } catch { /* Reservation remains pending. */ }
