@@ -46,6 +46,18 @@ test('shutdown during failed recovery persists the alert for the next supervisor
   assert.deepEqual(delivered, ['credential_recovery_failed']);
 });
 
+test('shutdown during alert delivery prevents issuance from starting', async () => {
+  const store = memoryOutbox();
+  await store.queueAlert('credential_recovery_failed');
+  let starts = 0;
+  const supervisor = createRecoverySupervisor({
+    store, recover: async () => ({ failed: 0, pending: false, alertFailed: false }),
+    alert: async () => supervisor.stop(), start: async () => { starts++; }, delay: async () => {},
+  });
+  await assert.rejects(supervisor.run(), /stopped/);
+  assert.equal(starts, 0);
+});
+
 test('recovery supervisor retries while issuance stays stopped, then starts exactly once', async () => {
   let attempts = 0, starts = 0;
   const alerts = [];
