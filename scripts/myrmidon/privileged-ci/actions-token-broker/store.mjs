@@ -13,8 +13,15 @@ export function createCredentialStore(path, key) {
   const removeHandle = db.prepare('DELETE FROM credentials WHERE handle = ?');
   const listHandles = db.prepare('SELECT handle, owner FROM credentials ORDER BY rowid');
   db.exec('CREATE TABLE IF NOT EXISTS pending_issuance (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), attempt TEXT NOT NULL) STRICT');
+  db.exec('CREATE TABLE IF NOT EXISTS recovery_alerts (event TEXT PRIMARY KEY) STRICT');
   let active = false;
   const store = {
+    async queueAlert(event) {
+      if (!['issuance_ambiguous', 'credential_recovery_failed'].includes(event)) throw new Error('invalid recovery alert');
+      db.prepare('INSERT OR IGNORE INTO recovery_alerts VALUES (?)').run(event);
+    },
+    async pendingAlerts() { return db.prepare('SELECT event FROM recovery_alerts ORDER BY event').all().map(row => row.event); },
+    async acknowledgeAlert(event) { db.prepare('DELETE FROM recovery_alerts WHERE event = ?').run(event); },
     async reserveIssuance(attempt) {
       if (active || typeof attempt !== 'string' || !attempt) throw new Error('invalid issuance reservation');
       try { db.prepare('INSERT INTO pending_issuance VALUES (1, ?)').run(attempt); }
