@@ -157,11 +157,21 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
       return guarded('revoke_failed', async () => {
         const owner = await identity(jwt);
         if (typeof handle !== 'string' || !/^[0-9a-f-]{36}$/.test(handle)) throw new Error('invalid handle');
-        // The store must lock and check ownership atomically, retaining the entry if revocation fails.
-        await store.withOwned(handle, owner, async credential => {
-          await installation.revoke(credential.token);
-      });
-      await record('revoked');
+        // Reserve before revocation: a crash or failure must keep issuance fenced.
+        const durable = typeof store.reserveIssuance === 'function';
+        const attempt = randomUUID();
+        if (durable) await store.reserveIssuance(attempt);
+        try {
+          await store.withOwned(handle, owner, async credential => {
+            await installation.revoke(credential.token);
+          });
+          await record('revoked');
+          if (durable) await store.resolveIssuance(attempt);
+        } catch (error) {
+          try { if (typeof store.queueAlert === 'function') await store.queueAlert('credential_recovery_failed'); } catch { /* Reservation remains pending. */ }
+          try { if (typeof alert === 'function') await alert('credential_recovery_failed'); } catch { /* Recovery retries the alert. */ }
+          throw error;
+        }
       });
     },
   };

@@ -39,6 +39,10 @@ secret management, least privilege and key rotation.
   is single-host cooperative exclusion only, requiring one canonical credential
   path and a filesystem with reliable SQLite locking. Direct store access and path
   aliases bypass the guard; it is not a distributed lease or deployment fence.
+  A failed, interrupted, or unauditable owner revocation also keeps a durable
+  reservation, blocks further issuance and queues a recovery alert. Even a bad
+  handle can therefore require operator reconciliation; this favors containment
+  over availability. Recovery does not automatically clear the reservation.
   It does not clear ambiguous
   reservations or provide guaranteed alert delivery. An experimental single-host
   HMAC-chained audit store is available via `createAuditedRecoveredServer`; it
