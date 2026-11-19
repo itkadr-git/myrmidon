@@ -32,5 +32,7 @@ for (const name of ['myrmidon-acceptance-scenarios.yml', 'commitperclip-review.y
     assert.match(yaml, /ref: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
     assert.doesNotMatch(yaml, /allow-unsafe-pr-checkout|(?<![\w-])ref:\s*\$\{\{\s*github\.event\.pull_request\.head|git\s+(?:fetch|checkout|switch)|\b(?:bash|sh|node)\s+\$\{\{/i);
     assert.match(yaml, /persist-credentials: false/);
+    assert.match(yaml, /types: \[[^\]]*\bedited\b/);
+    assert.match(yaml, /package-manager-cache: false/);
   });
 }
