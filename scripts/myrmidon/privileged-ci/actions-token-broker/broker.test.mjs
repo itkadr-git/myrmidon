@@ -390,6 +390,32 @@ test('invalid upstream scope and failed revocation retain the known token for re
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('unresolved anchored intent still triggers recovery of retained credentials before refusing startup', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-pending-recovery-'));
+  const credentialPath = join(dir, 'credentials.sqlite'), credentialKey = randomBytes(32);
+  const auditPath = join(dir, 'audit.sqlite'), auditKey = randomBytes(32);
+  let head = { seq: 0, mac: '' };
+  const anchor = { read: async () => ({ ...head }), compareAndSet: async (previous, next) => { if (JSON.stringify(previous) !== JSON.stringify(head)) return false; head = { ...next }; return true; } };
+  const revoked = [], alerts = [];
+  try {
+    const store = createCredentialStore(credentialPath, credentialKey);
+    await store.put('known', { token: 'fixture-known' }, 'owner');
+    await store.reserveIssuance('unknown');
+    store.close();
+    const audit = await createAsyncAuthenticatedAudit(auditPath, auditKey, anchor);
+    await audit.record('issuance_pending');
+    audit.close();
+    await assert.rejects(tls.createAuditedSupervisedServer({}, {
+      auditPath, auditKey, auditAnchor: anchor, credentialPath, credentialKey,
+      installation: { revoke: async token => revoked.push(token) }, alert: async event => alerts.push(event),
+    }), /pending issuance/);
+    assert.deepEqual(revoked, ['fixture-known']);
+    assert.ok(alerts.includes('issuance_ambiguous'));
+    const reopened = createCredentialStore(credentialPath, credentialKey);
+    try { assert.equal((await reopened.pendingIssuances()).length, 1); } finally { reopened.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('audited TLS startup reports an unavailable anchor before refusing service', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-anchor-alert-'));
   const alerts = [];
