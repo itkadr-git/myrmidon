@@ -7,6 +7,7 @@ import { companies, createDb } from "@myrmidon/db";
 import { defaultAgentGatewayKeyDeps } from "../myrmidon/litellm-keys/agent-keys.js";
 import { mintRunGatewayKey, revokeRunGatewayKey } from "../myrmidon/litellm-keys/run-keys.js";
 import { secretService } from "../services/secrets.js";
+import { findRunScopedGatewayKeyRef, removeRunScopedGatewayKeyRef } from "../myrmidon/litellm-costs/bot-keys.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -57,5 +58,26 @@ describeDb("run key with the real secret service", () => {
     await revokeRunGatewayKey(deps, { companyId, runId });
     expect(await deps.readSecretValue(companyId, minted.secretName)).toBeNull();
     expect(active.has(minted.secretName)).toBe(false);
+  }, 45_000);
+
+  it("isolates real run bindings and invalidates an old reference on cleanup", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Projection", issuePrefix: `P${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`, requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "test" });
+    const secrets = secretService(db);
+    const firstRun = randomUUID();
+    const secondRun = randomUUID();
+    await secrets.create(companyId, { name: `llm-gateway-run-${firstRun}`, provider: "local_encrypted", value: "first-run-value" });
+    await secrets.create(companyId, { name: `llm-gateway-run-${secondRun}`, provider: "local_encrypted", value: "second-run-value" });
+    const first = await findRunScopedGatewayKeyRef(db, companyId, firstRun, {});
+    const second = await findRunScopedGatewayKeyRef(db, companyId, secondRun, {});
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    if (!first || !second) throw new Error("run references missing");
+    expect(first.secretRef.secretId).not.toBe(second.secretRef.secretId);
+    expect(JSON.stringify(first)).not.toContain("first-run-value");
+    expect((await secrets.resolveEnvBindings(companyId, { [first.envKey]: first.secretRef })).env[first.envKey]).toBe("first-run-value");
+    expect(await removeRunScopedGatewayKeyRef(db, companyId, firstRun)).toBe(true);
+    await expect(secrets.resolveEnvBindings(companyId, { [first.envKey]: first.secretRef })).rejects.toThrow();
+    expect((await secrets.resolveEnvBindings(companyId, { [second.envKey]: second.secretRef })).env[second.envKey]).toBe("second-run-value");
   }, 45_000);
 });
