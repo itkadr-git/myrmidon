@@ -480,6 +480,40 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     }
   });
 
+  it("does not dispatch a claim invalidated by replacement evidence before admission", async () => {
+    const { issueId, nextCheckAt } = await seedFixture();
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_invalidate_claim_with_evidence() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_wake_requested_at = NULL, monitor_notes = 'replacement evidence'
+          WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_invalidate_claim_with_evidence AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_invalidate_claim_with_evidence();
+    `));
+    try {
+      const scheduler = heartbeatService(db, { executesRuns: false });
+      expect((await scheduler.tickTimers(nextCheckAt)).enqueued).toBe(0);
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(after!.monitorNotes).toBe("replacement evidence");
+      expect(after!.monitorNextCheckAt?.toISOString()).toBe(nextCheckAt.toISOString());
+      expect(after!.monitorWakeRequestedAt).toBeNull();
+      await db.execute(sql.raw("DROP TRIGGER test_invalidate_claim_with_evidence ON issues; DROP FUNCTION test_invalidate_claim_with_evidence();"));
+      expect((await scheduler.tickTimers(new Date(nextCheckAt.getTime() + 60_000))).enqueued).toBe(1);
+      expect((await scheduler.tickTimers(new Date(nextCheckAt.getTime() + 60_000))).enqueued).toBe(0);
+      const requests = await db.select().from(agentWakeupRequests);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.payload).toMatchObject({ monitorNotes: "replacement evidence" });
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_invalidate_claim_with_evidence ON issues; DROP FUNCTION IF EXISTS test_invalidate_claim_with_evidence();"));
+      await db.delete(heartbeatRuns);
+    }
+  });
+
   it("preserves a concurrent reschedule when an old monitor is deferred for CI", async () => {
     const { companyId, issueId, nextCheckAt } = await seedFixture();
     const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
