@@ -44,6 +44,9 @@ secret management, least privilege and key rotation.
   receiver remain mandatory. Outbox storage failure also needs external monitoring.
   An audit failure during issuance retains the reservation even when revocation
   succeeds, so further issuance stays fenced pending operator reconciliation.
+  Broker factories also fence new issuance and owner revocation while any durable
+  recovery alert remains undelivered, including an audit failure on a rejected
+  request before a reservation exists. Recovery must deliver the outbox first.
   Broker factories
   hold a separate SQLite write lock across recovery and the broker lifetime; this
   is single-host cooperative exclusion only, requiring one canonical credential

@@ -24,6 +24,8 @@ export function createCredentialStore(path, key) {
     async acknowledgeAlert(event) { db.prepare('DELETE FROM recovery_alerts WHERE event = ?').run(event); },
     async reserveIssuance(attempt) {
       if (active || typeof attempt !== 'string' || !attempt) throw new Error('invalid issuance reservation');
+      // An undelivered audit or recovery alert fences new upstream operations.
+      if (db.prepare('SELECT 1 FROM recovery_alerts LIMIT 1').get()) throw new Error('pending recovery alert');
       try { db.prepare('INSERT INTO pending_issuance VALUES (1, ?)').run(attempt); }
       catch { throw new Error('pending issuance or storage failure'); }
     },
