@@ -131,6 +131,10 @@ else
   sha="$object_sha"
 fi
 log "tag $tag -> commit $sha"
+checkout_sha="$(git rev-parse --verify 'HEAD^{commit}' 2>/dev/null)" \
+  || die "cannot resolve checkout commit — NOT publishing $tag"
+[[ "$checkout_sha" == "$sha" ]] \
+  || die "checkout commit '$checkout_sha' does not match tag commit '$sha' — NOT publishing $tag"
 
 # -------------------------------------- 1b. DB audit gate (final tags only) --
 # DB-AUDIT-GATE (the 08.10.2026 entry of the OPE-401 decision registry): a
