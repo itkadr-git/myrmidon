@@ -1,4 +1,10 @@
 import { test } from 'node:test';
+test('a stalled upstream transport times out issuance and revocation', async () => {
+  const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'fixture', requestTimeoutMs: 20, request: async () => new Promise(() => {}) });
+  const bounded = operation => Promise.race([operation, new Promise((_, reject) => setTimeout(() => reject(new Error('test deadline')), 200))]);
+  await assert.rejects(bounded(client.issue()), /installation request timeout/);
+  await assert.rejects(bounded(client.revoke('fixture')), /installation request timeout/);
+});
 
 test('a stalled issuance request is aborted and treated as ambiguous', async () => {
   let aborted = false;
