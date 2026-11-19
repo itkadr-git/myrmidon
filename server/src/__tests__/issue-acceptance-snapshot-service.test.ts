@@ -664,6 +664,49 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
   );
 
   it(
+    "invalidates a pin when a repeatable-read revision writer overlaps link creation",
+    async () => {
+      const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-revision-race-");
+      cleanups.push(() => dbh.cleanup());
+      const db = createDb(dbh.connectionString);
+      const client = db.$client;
+      cleanups.push(async () => { await client.end(); });
+      const issueId = randomUUID();
+      const docId = randomUUID();
+      const revisionId = randomUUID();
+      await db.insert(companies).values({ id: companyA, name: "Company A" });
+      await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task", identifier: "OPE-8802" });
+      await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a", latestRevisionId: revisionId });
+      await db.insert(documentRevisions).values({ id: revisionId, companyId: companyA, documentId: docId, revisionNumber: 1, body: "a" });
+
+      let release!: () => void;
+      let applied!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const ready = new Promise<void>((resolve) => { applied = resolve; });
+      const writer = db.transaction(async (tx) => {
+        await tx.execute(sqlTag`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
+        await tx.update(documentRevisions).set({ body: "b" }).where(eq(documentRevisions.id, revisionId));
+        applied();
+        await gate;
+        await tx.update(documentRevisions).set({ body: "a" }).where(eq(documentRevisions.id, revisionId));
+      });
+      let pin: Awaited<ReturnType<ReturnType<typeof issueAcceptanceSnapshotService>["read"]>>;
+      try {
+        await ready;
+        await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
+        pin = await issueAcceptanceSnapshotService(db).read(issueId);
+        expect(pin!.document!.body).toBe("a");
+      } finally {
+        release();
+      }
+      await writer;
+      const after = await issueAcceptanceSnapshotService(db).read(issueId);
+      expect(after!.issue.version).not.toBe(pin!.issue.version);
+    },
+    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  );
+
+  it(
     "epoch rows are immutable: re-keying fails closed and company ABA invalidates the pin (OPE-15145)",
     async () => {
       const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-epoch-pk-");
