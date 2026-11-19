@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
-import { agents, companies, connectionEventDeliveries, heartbeatRuns, issueWorkProducts, issues, toolGatewayRateLimitCounters } from "@myrmidon/db";
+import { agentWakeupRequests, agents, companies, connectionEventDeliveries, heartbeatRuns, issueWorkProducts, issues, toolGatewayRateLimitCounters } from "@myrmidon/db";
 import { describeEmbeddedPostgres, routeApp, seedCompanyWithBoardAccess, useEmbeddedPostgres } from "./helpers/route-test-harness.js";
 import { issueRoutes } from "../routes/issues.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
@@ -243,6 +243,7 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     expect(after.assigneeAgentId).toBe(author);
     expect(after.monitorNextCheckAt?.getTime()).toBeGreaterThan(Date.now() + 10 * 60_000);
     const scheduledAt = after.monitorNextCheckAt?.getTime();
+    const wakesBefore = await ctx.db.select().from(agentWakeupRequests).where(sql`${agentWakeupRequests.agentId} = ${reviewer}`);
     const heartbeat = heartbeatService(ctx.db);
     for (const minutes of [11, 20, 30, 50]) {
       await heartbeat.tickTimers(new Date(Date.now() + minutes * 60_000));
@@ -252,6 +253,8 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     expect(afterTicks.monitorAttemptCount).toBe(1);
     expect(afterTicks.status).toBe("in_review");
     expect(transport).not.toHaveBeenCalled();
+    const wakesAfter = await ctx.db.select().from(agentWakeupRequests).where(sql`${agentWakeupRequests.agentId} = ${reviewer}`);
+    expect(wakesAfter).toHaveLength(wakesBefore.length);
 
     // Simulate the existing bucket aging out, without resetting the budget.
     const expiredMinute = minute - 61;
