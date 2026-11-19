@@ -11,6 +11,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
+import { DatabaseSync } from 'node:sqlite';
 import { provisionSqliteAnchor, createSqliteAnchor } from './sqlite-anchor.mjs';
 
 const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -600,6 +601,32 @@ test('anchored pending startup retries failed known-token revocation without ope
       assert.equal((await reopened.pendingIssuances()).length, 1);
     } finally { reopened.close(); }
     await assert.rejects(createAsyncAuthenticatedAudit(auditPath, auditKey, anchor), /pending issuance/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('audit startup failure recovers known tokens when queuing the pending alert fails', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-alert-store-failure-'));
+  const credentialPath = join(dir, 'credentials.sqlite'), credentialKey = randomBytes(32);
+  const auditPath = join(dir, 'audit.sqlite'), auditKey = randomBytes(32);
+  let head = { seq: 0, mac: '' };
+  const anchor = { read: async () => ({ ...head }), compareAndSet: async (_previous, next) => { head = { ...next }; return true; } };
+  const revoked = [], alerts = [];
+  try {
+    const store = createCredentialStore(credentialPath, credentialKey);
+    await store.put('known', { token: 'fixture-known' }, 'owner');
+    store.close();
+    const db = new DatabaseSync(credentialPath);
+    db.exec("CREATE TRIGGER reject_recovery_alert BEFORE INSERT ON recovery_alerts BEGIN SELECT RAISE(FAIL, 'storage failure'); END");
+    db.close();
+    const audit = await createAsyncAuthenticatedAudit(auditPath, auditKey, anchor);
+    await audit.record('issuance_pending');
+    audit.close();
+    await assert.rejects(tls.createAuditedSupervisedServer({}, {
+      auditPath, auditKey, auditAnchor: anchor, credentialPath, credentialKey,
+      installation: { revoke: async token => revoked.push(token) }, alert: async event => alerts.push(event),
+    }), /pending issuance/);
+    assert.deepEqual(revoked, ['fixture-known']);
+    assert.ok(alerts.includes('credential_recovery_failed'));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
