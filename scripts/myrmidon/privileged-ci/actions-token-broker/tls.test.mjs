@@ -92,5 +92,31 @@ test('mTLS server accepts an authorized certificate and rejects an anonymous cli
     await assert.rejects(createAuditedSupervisedServer({ key: file('server.key'), cert: file('server.crt'), ca: file('ca.crt') }, options), /pending issuance/);
     assert.equal(revokeCount, 0);
     assert.ok(alerts.includes('issuance_ambiguous'));
+
+    // A known token survives a revoke failure and is retried before restart can serve.
+    let recoveryRevokes = 0;
+    const recoveryOptions = {
+      ...options,
+      auditPath: join(dir, 'recovery-audit.sqlite'), auditAnchor: anchor(),
+      replayPath: join(dir, 'recovery-replay.sqlite'), replayAnchor: anchor(),
+      credentialPath: join(dir, 'recovery-credentials.sqlite'),
+      installation: {
+        issue: async retain => { await retain('retained-fixture'); throw new Error('response processing failed'); },
+        revoke: async token => { assert.equal(token, 'retained-fixture'); if (++recoveryRevokes === 1) throw new Error('revoke unavailable'); },
+      },
+    };
+    const recovering = await createAuditedSupervisedServer({ key: file('server.key'), cert: file('server.crt'), ca: file('ca.crt') }, recoveryOptions);
+    await new Promise(resolve => recovering.listen(0, '127.0.0.1', resolve));
+    try {
+      const response = await new Promise((resolve, reject) => {
+        const req = https.request({ hostname: '127.0.0.1', port: recovering.address().port, path: '/exchange', method: 'POST', ca: file('ca.crt'), servername: 'server', key: file('client.key'), cert: file('client.crt') }, res => {
+          res.resume(); res.on('end', () => resolve(res.statusCode));
+        });
+        req.on('error', reject); req.end(JSON.stringify({ jwt: jwt('retained-recovery') }));
+      });
+      assert.equal(response, 403);
+    } finally { await new Promise(resolve => recovering.close(resolve)); }
+    await assert.rejects(createAuditedSupervisedServer({ key: file('server.key'), cert: file('server.crt'), ca: file('ca.crt') }, recoveryOptions), /pending issuance/);
+    assert.equal(recoveryRevokes, 2);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
