@@ -1160,6 +1160,21 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     expect(rows).toHaveLength(0);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
+  it("binds the acceptance document directly to its company and issue within the link transaction", async () => {
+    const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-direct-binding-");
+    cleanups.push(() => dbh.cleanup());
+    const db = createDb(dbh.connectionString);
+    cleanups.push(async () => { await db.$client.end(); });
+    const issueId = randomUUID();
+    const docId = randomUUID();
+    await db.insert(companies).values({ id: companyA, name: "Company A" });
+    await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
+    await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a" });
+    await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
+    const rows = await db.execute(sqlTag`SELECT acceptance_issue_id FROM documents WHERE id = ${docId}::uuid AND company_id = ${companyA}::uuid`);
+    expect(rows[0]).toMatchObject({ acceptance_issue_id: issueId });
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("rolls back a newly linked acceptance document and its epoch together", async () => {
     const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-link-rollback-");
     cleanups.push(() => dbh.cleanup());
