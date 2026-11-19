@@ -945,6 +945,28 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
 
+  it("rejects moving a linked acceptance document to a foreign company", async () => {
+    const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-document-company-move-");
+    cleanups.push(() => dbh.cleanup());
+    const db = createDb(dbh.connectionString);
+    cleanups.push(async () => { await db.$client.end(); });
+    const issueId = randomUUID();
+    const docId = randomUUID();
+    await db.insert(companies).values([
+      { id: companyA, name: "Company A" },
+      { id: companyB, name: "Company B", issuePrefix: "BBB" },
+    ]);
+    await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
+    await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a" });
+    await db.insert(issueDocuments).values({
+      companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios",
+    });
+    await expect(db.update(documents).set({ companyId: companyB }).where(eq(documents.id, docId)))
+      .rejects.toThrow();
+    const [document] = await db.select().from(documents).where(eq(documents.id, docId));
+    expect(document!.companyId).toBe(companyA);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("invalidates the acceptance pin or rejects an old repeatable-read revision insert after linking", async () => {
     const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-old-insert-");
     cleanups.push(() => dbh.cleanup());
