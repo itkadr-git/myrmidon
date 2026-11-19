@@ -29,9 +29,43 @@ export function documentBody(key, doc, log = console.log) {
   return doc.body;
 }
 
+function isLoopbackIPv4(host) {
+  const parts = host.split('.');
+  if (parts.length < 1 || parts.length > 4) return false;
+  if (!parts.every((part) => /^\d+$/.test(part))) return false;
+  const nums = parts.map((part) => parseInt(part, 10));
+  if (nums.some((n) => n > 255)) return false;
+  // First octet 127 covers dotted-quad, short (127.1) and partial forms.
+  if (nums[0] === 127) return true;
+  // The unspecified address is reachable on every local interface.
+  return nums.every((n) => n === 0);
+}
+
+// Loopback must never receive the API credential, even over HTTPS: a
+// localhost/127.0.0.1/[::1] "gateway" would be attacker-controllable on the
+// runner. Only the fixed internal HTTPS/mTLS gateway hostname is acceptable.
+function isLoopbackHost(hostname) {
+  const host = (hostname ?? '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '').replace(/%.*$/, '');
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (host === '::1' || /^0:0:0:0:0:0:0:1$/.test(host)) return true;
+  const mapped = host.match(/^::ffff:(.+)$/);
+  if (mapped) {
+    const tail = mapped[1];
+    if (tail.includes(':')) {
+      const groups = tail.split(':').map((group) => parseInt(group || '0', 16));
+      const value = (((groups[groups.length - 2] ?? 0) << 16) + (groups[groups.length - 1] ?? 0)) >>> 0;
+      return (value >>> 24) === 127;
+    }
+    return isLoopbackIPv4(tail);
+  }
+  if (host.includes(':')) return false;
+  return isLoopbackIPv4(host);
+}
+
 export async function fetchJson(url, token) {
   const target = new URL(url);
   if (target.protocol !== 'https:' || target.username || target.password || target.search || target.hash) throw Error('Refusing non-HTTPS API URL: credentials must never leave the process over plaintext transport');
+  if (isLoopbackHost(target.hostname)) throw Error('Refusing loopback API URL: the credential must go only to the fixed internal gateway, never to a local interface');
   const response = await fetch(target, { headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'myrmidon-acceptance-gate', Accept: 'application/json' }, signal: AbortSignal.timeout(30000), redirect: 'error' });
   if (!response.ok) throw Error(`API request failed: ${response.status} ${new URL(url).pathname}`);
   return response.json();
@@ -42,6 +76,7 @@ async function main() {
   if (!GH_TOKEN || !/^[\w.-]+\/[\w.-]+$/.test(GH_REPO ?? '') || !/^[1-9]\d*$/.test(PR_NUMBER ?? '') || EVENT_TITLE === undefined || EVENT_BODY === undefined || !MYRMIDON_API_URL || !MYRMIDON_API_KEY || !MYRMIDON_COMPANY_ID) throw Error('Missing or invalid gate configuration');
   const api = new URL(MYRMIDON_API_URL);
   if (api.protocol !== 'https:' || api.username || api.password || api.search || api.hash) throw Error('Invalid Myrmidon API URL');
+  if (isLoopbackHost(api.hostname)) throw Error('Invalid Myrmidon API URL: loopback hosts are not allowed');
   const prUrl = `https://api.github.com/repos/${GH_REPO}/pulls/${PR_NUMBER}`;
   const pr = await fetchJson(prUrl, GH_TOKEN);
   const result = await checkAcceptance({ pr, expectedBase: BASE_SHA, expectedHead: HEAD_SHA, expectedTitle: EVENT_TITLE, expectedBody: EVENT_BODY, reader: makeReader({ ref: BASE_SHA }), getDocument: async (key) => {
