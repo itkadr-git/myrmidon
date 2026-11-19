@@ -114,6 +114,27 @@ test('recovery refuses to revoke credentials while another broker owns the store
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('failed owner revocation blocks issuance and alerts across restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-revoke-containment-'));
+  let issued = 0;
+  const alerts = [];
+  const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'), credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32), installation: { issue: async () => { issued++; return { token: 'fixture' }; }, revoke: async () => { throw new Error('offline'); } }, audit: async () => {}, alert: async event => alerts.push(event) };
+  try {
+    let broker = createSingleHostBroker(options);
+    const credential = await broker.exchange(jwt('revoke-containment-issue'));
+    await assert.rejects(broker.revoke(jwt('revoke-containment-revoke'), credential.handle));
+    await assert.rejects(broker.exchange(jwt('revoke-containment-next')));
+    broker.close();
+    broker = createSingleHostBroker(options);
+    await assert.rejects(broker.exchange(jwt('revoke-containment-restart')));
+    broker.close();
+    assert.equal(issued, 1);
+    assert.ok(alerts.includes('credential_recovery_failed'));
+    const store = createCredentialStore(options.credentialPath, options.credentialKey);
+    try { assert.deepEqual(await store.pendingAlerts(), ['credential_recovery_failed']); } finally { store.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('lost issuance response blocks further issuance across restart', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-ambiguous-'));
   const credentialKey = randomBytes(32);
