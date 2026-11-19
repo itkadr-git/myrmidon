@@ -364,6 +364,7 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
 
       await heartbeat.reconcileStrandedAssignedIssues({ issueIds: [ctx.issueId] });
 
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
       expect(await runCount(ctx.agentId)).toBe(4);
       const [issue] = await db.select().from(issues).where(eq(issues.id, ctx.issueId));
       expect(issue?.status).toBe("in_progress");
