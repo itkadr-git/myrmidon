@@ -15825,7 +15825,9 @@ export function issueRoutes(
           throw unprocessable(
             ci.state === "pending"
               ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
-              : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
+              : ci.reason?.includes("budget_exhausted")
+                ? "REQUEST CHANGES rejected: GitHub review budget exhausted. Apply a backoff of at least 61 minutes before retrying; do not repeat the verdict immediately."
+                : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
           );
         }
       }
@@ -17120,7 +17122,9 @@ export function issueRoutes(
                 throw unprocessable(
                   ci.state === "pending"
                     ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
-                    : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
+                    : ci.reason?.includes("budget_exhausted")
+                      ? "REQUEST CHANGES rejected: GitHub review budget exhausted. Apply a backoff of at least 61 minutes before retrying; do not repeat the verdict immediately."
+                      : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
                 );
               }
               // myrmidon(OPE-11970): remember the pull request head this return was made on.
