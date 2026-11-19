@@ -19,8 +19,9 @@ export function createSingleHostBroker({ replayPath, credentialPath, credentialK
 
 // The store must persist encrypted credentials and enforce owner-bound atomic access.
 export function createBroker({ policy, loadKeys, claimOnce, installation, store, audit }) {
+  const fixedPolicy = Object.freeze({ ...policy });
   async function identity(jwt) {
-    const claims = await verifyIdentity(jwt, { policy, loadKeys, claimOnce });
+    const claims = await verifyIdentity(jwt, { policy: fixedPolicy, loadKeys, claimOnce });
     if (typeof claims.run_id !== 'string' || !/^[1-9][0-9]*$/.test(claims.run_id) || typeof claims.run_attempt !== 'string' || !/^[1-9][0-9]*$/.test(claims.run_attempt)) throw new Error('identity rejected');
     return JSON.stringify([claims.repository_owner_id, claims.repository_id, claims.run_id, claims.run_attempt]);
   }
