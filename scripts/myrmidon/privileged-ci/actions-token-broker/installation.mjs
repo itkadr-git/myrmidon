@@ -5,11 +5,21 @@ export function createInstallationClient({ installationId, repositoryId, permiss
   if (!/^[1-9][0-9]*$/.test(installationId) || !Number.isSafeInteger(repositoryId) || repositoryId <= 0 || !permissions || Object.keys(permissions).length !== 1 || permissions.contents !== 'read' || typeof appJwt !== 'function' || !Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 60000) throw new Error('invalid installation policy');
   const fixedPermissions = { ...permissions };
   const body = JSON.stringify({ repository_ids: [repositoryId], permissions: fixedPermissions });
+  async function boundedRequest(url, options) {
+    const controller = new AbortController();
+    let timer;
+    try {
+      return await Promise.race([
+        request(url, { ...options, signal: controller.signal }),
+        new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error('installation request timeout (aborted)')); }, requestTimeoutMs); }),
+      ]);
+    } finally { clearTimeout(timer); }
+  }
   return {
     async issue(retainRejected) {
       const jwt = await appJwt();
-      const response = await request(`${API}/app/installations/${installationId}/access_tokens`, {
-        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(requestTimeoutMs), headers: { authorization: `Bearer ${jwt}`, accept: 'application/vnd.github+json', 'content-type': 'application/json', 'x-github-api-version': '2022-11-28' }, body,
+      const response = await boundedRequest(`${API}/app/installations/${installationId}/access_tokens`, {
+        method: 'POST', redirect: 'error', headers: { authorization: `Bearer ${jwt}`, accept: 'application/vnd.github+json', 'content-type': 'application/json', 'x-github-api-version': '2022-11-28' }, body,
       });
       if (!response.ok) throw new Error('installation token issuance failed');
       const result = await new Promise((resolve, reject) => {
@@ -39,7 +49,7 @@ export function createInstallationClient({ installationId, repositoryId, permiss
     },
     async revoke(token) {
       if (typeof token !== 'string' || !token) throw new Error('invalid token');
-      const response = await request(`${API}/installation/token`, { method: 'DELETE', redirect: 'error', signal: AbortSignal.timeout(requestTimeoutMs), headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' } });
+      const response = await boundedRequest(`${API}/installation/token`, { method: 'DELETE', redirect: 'error', headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' } });
       if (!response.ok) throw new Error('installation token revocation failed');
     },
   };
