@@ -26,7 +26,7 @@ test('exchange and revoke use verified identity and redact audit', async () => {
   await broker.revoke(jwt('three'), issued.handle);
   assert.deepEqual(revoked, ['synthetic-credential']);
   assert.equal(entries.size, 0);
-  assert.deepEqual(events, ['issued', 'revoked']);
+  assert.deepEqual(events, ['issued', 'exchange_failed', 'revoke_failed', 'revoked']);
 });
 
 test('another run cannot revoke a handle and concurrent revocation is serialized', async () => {
@@ -65,6 +65,6 @@ test('audit failure revokes an issued credential and removes its stored copy', a
 test('failed credential persistence attempts revocation', async () => {
   const revoked = [];
   const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, installation: { issue: async () => ({ token: 'fixture', expiresAt: '2030-01-01T00:00:00Z' }), revoke: async token => revoked.push(token) }, store: { put: async () => { throw new Error('storage down'); } }, audit: async () => {} });
-  await assert.rejects(broker.exchange(jwt('four')), /credential storage failed/);
+  await assert.rejects(broker.exchange(jwt('four')), /broker request failed/);
   assert.deepEqual(revoked, ['fixture']);
 });
