@@ -183,9 +183,15 @@ DECLARE
 BEGIN
   "v_issue_id" := COALESCE(NEW."acceptance_issue_id", OLD."acceptance_issue_id");
   IF "v_issue_id" IS NOT NULL THEN
-    -- Mutate the issue row as well as its epoch, so a stale issue writer
-    -- cannot commit against a snapshot preceding this document change.
-    PERFORM "bump_issue_acceptance_epoch"("v_issue_id");
+    -- During an issue DELETE the FK cascade removes the link after the issue
+    -- row has gone. The owner FK makes this missing-row case possible only
+    -- while that cascade clears the old owner; retain the epoch for ID reuse.
+    IF TG_OP = 'UPDATE' AND NEW."acceptance_issue_id" IS NULL
+       AND NOT EXISTS (SELECT 1 FROM "issues" WHERE "id" = "v_issue_id") THEN
+      PERFORM "bump_issue_acceptance_epoch_internal"("v_issue_id");
+    ELSE
+      PERFORM "bump_issue_acceptance_epoch"("v_issue_id");
+    END IF;
   END IF;
   RETURN NULL;
 END;
