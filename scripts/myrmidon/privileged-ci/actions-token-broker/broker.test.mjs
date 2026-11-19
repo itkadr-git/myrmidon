@@ -79,6 +79,18 @@ test('undelivered runtime audit alert fences subsequent issuance', async () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('audit and outbox failure on a rejected request fences subsequent issuance in the running process', async () => {
+  let issued = 0, failAudit = true;
+  const store = { reserveIssuance: async () => {}, resolveIssuance: async () => {}, put: async () => {}, queueAlert: async () => { throw new Error('disk offline'); } };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    installation: { issue: async () => { issued++; return { token: 'fixture' }; } },
+    audit: async () => { if (failAudit) throw new Error('audit offline'); }, alert: async () => { throw new Error('alert offline'); } });
+  await assert.rejects(broker.exchange(jwt('outbox-failure-invalid', { repository_id: '999' })));
+  failAudit = false;
+  await assert.rejects(broker.exchange(jwt('outbox-failure-next')));
+  assert.equal(issued, 0);
+});
+
 test('audit failure on a rejected request fences issuance until recovery after restart', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-rejected-audit-'));
   let issued = 0, failAudit = true;
