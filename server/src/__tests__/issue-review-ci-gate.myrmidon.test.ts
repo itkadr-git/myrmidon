@@ -225,8 +225,10 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     const [carrier] = await ctx.db.select({ id: companies.id }).from(companies).orderBy(companies.createdAt).limit(1);
     await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: carrier.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
     const app = routeApp(ctx.db, { type: "agent", agentId: reviewer, companyId, source: "agent_key", runId } as never, issueRoutes);
-    const rejected = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: preserve this finding" });
-    expect(rejected.status, JSON.stringify(rejected.body)).toBe(422);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const rejected = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: preserve this finding" });
+      expect(rejected.status, JSON.stringify(rejected.body)).toBe(422);
+    }
     expect(transport).not.toHaveBeenCalled();
     const [after] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
     expect(after.status).toBe("in_review");
