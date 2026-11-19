@@ -11,7 +11,10 @@ export function createRecoveryWorker({ store, revoke, alert }) {
         const pending = (await store.pendingIssuances()).length > 0;
         let alertFailed = false;
         for (const event of [pending && 'issuance_ambiguous', result.failed && 'credential_recovery_failed'].filter(Boolean)) {
-          try { await alert(event); } catch { alertFailed = true; }
+          await store.queueAlert(event);
+        }
+        for (const event of await store.pendingAlerts()) {
+          try { await alert(event); await store.acknowledgeAlert(event); } catch { alertFailed = true; }
         }
         return { ...result, pending, alertFailed };
       } finally { active = false; }
