@@ -20,6 +20,21 @@ function jwt(jti, overrides = {}) {
   return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
 }
 
+test('ambiguous issuance fences the running process even if its durable reservation disappears', async () => {
+  let issued = 0;
+  const store = {
+    reserveIssuance: async () => {},
+    resolveIssuance: async () => {},
+    queueAlert: async () => { throw new Error('storage unavailable'); },
+  };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    installation: { issue: async () => { issued++; throw new Error('response lost'); } },
+    audit: async () => {}, alert: async () => { throw new Error('offline'); } });
+  await assert.rejects(broker.exchange(jwt('ambiguous-latch-first')));
+  await assert.rejects(broker.exchange(jwt('ambiguous-latch-next')));
+  assert.equal(issued, 1);
+});
+
 test('restart without recovery refuses issuance while a previous credential is retained', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-restart-retained-'));
   let issued = 0;
