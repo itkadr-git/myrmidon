@@ -37,6 +37,9 @@ export async function createAuditedSupervisedServer(tls, { auditPath, auditKey, 
           if (result.failed === 0 && !result.alertFailed) break;
           if (typeof options.delay !== 'function') break;
           await options.delay();
+          if (!auditAlertDelivered) {
+            try { await options.alert('audit_unavailable'); auditAlertDelivered = true; } catch { /* Retry on the next pass. */ }
+          }
         }
       } catch {
         try { await options.alert('credential_recovery_failed'); } catch { /* External monitoring remains required. */ }
