@@ -38,6 +38,17 @@ test('a stalled issuance response body times out after headers', async () => {
   await assert.rejects(client.issue(), /timeout/i);
 });
 
+test('revocation cancels unread upstream response bodies on success and failure', async () => {
+  for (const ok of [true, false]) {
+    let cancelled = false;
+    const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'fixture',
+      request: async () => ({ ok, body: new ReadableStream({ cancel() { cancelled = true; } }) }) });
+    if (ok) await client.revoke('fixture');
+    else await assert.rejects(client.revoke('fixture'), /revocation failed/);
+    assert.equal(cancelled, true);
+  }
+});
+
 test('failed issuance cancels the unread upstream response body', async () => {
   let cancelled = false;
   const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'fixture',
