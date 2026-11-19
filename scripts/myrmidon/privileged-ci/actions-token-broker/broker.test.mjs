@@ -20,6 +20,22 @@ function jwt(jti, overrides = {}) {
   return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
 }
 
+test('lost storage-failure finalization acknowledgement fences later issuance when alert storage is down', async () => {
+  let pending = false, issued = 0;
+  const store = {
+    reserveIssuance: async () => { if (pending) throw new Error('pending'); pending = true; },
+    resolveIssuance: async () => { pending = false; throw new Error('ack lost'); },
+    put: async () => { throw new Error('storage unavailable'); },
+    queueAlert: async () => { throw new Error('outbox unavailable'); },
+  };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    installation: { issue: async () => { issued++; return { token: 'fixture' }; }, revoke: async () => {} },
+    audit: async () => {}, alert: async () => { throw new Error('offline'); } });
+  await assert.rejects(broker.exchange(jwt('store-finalization-first')));
+  await assert.rejects(broker.exchange(jwt('store-finalization-next')));
+  assert.equal(issued, 1);
+});
+
 test('transient credential storage failure and failed revoke retain the known token for recovery', async () => {
   let attempts = 0;
   const retained = new Map();
