@@ -44,6 +44,28 @@ test('gateway projects a company-bound issue and denies foreign issue', async (t
   assert.ok(!denied.body.includes('company-b'));
 });
 
+test('document response is company-bound, projected and rejects a changing revision', async (t) => {
+  const token = 'candidate-test-token';
+  const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
+  let reads = 0;
+  let change = false;
+  const server = createServer(createHandler({ records,
+    readIssue: async () => ({ id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' }),
+    readDocument: async () => ({ id: 'doc-id', issueId: 'issue-id', companyId: 'company-a', key: 'acceptance-scenarios', latestRevisionId: change ? String(++reads) : 'rev-1', body: 'criteria', secret: 'hidden' }),
+  }));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const request = () => new Promise((resolve, reject) => get({ host: '127.0.0.1', port: server.address().port, path: '/api/issues/OPE-123/documents/acceptance-scenarios', headers: { authorization: `Bearer ${token}` } }, (res) => {
+    let body = ''; res.on('data', (chunk) => { body += chunk; }); res.on('end', () => resolve({ status: res.statusCode, body }));
+  }).on('error', reject));
+  const allowed = await request();
+  assert.equal(allowed.status, 200);
+  assert.deepEqual(JSON.parse(allowed.body), { id: 'doc-id', latestRevisionId: 'rev-1', body: 'criteria' });
+  change = true;
+  assert.equal((await request()).status, 409);
+});
+
 test('accepts only canonical issue and acceptance document paths', () => {
   assert.deepEqual(parsePath('/api/issues/OPE-123'), { issue: 'OPE-123', document: false });
   assert.deepEqual(parsePath('/api/issues/OPE-123/documents/acceptance-scenarios'), { issue: 'OPE-123', document: true });

@@ -9,7 +9,7 @@ export function authenticate(header, records, now = Date.now()) {
   return record.revoked === false && Number.isFinite(record.expiresAt) && now < record.expiresAt && typeof record.companyId === 'string' && record.companyId ? record.companyId : null;
 }
 
-export function createHandler({ records, readIssue }) {
+export function createHandler({ records, readIssue, readDocument }) {
   return async (req, res) => {
     const respond = (status, body = {}) => {
       res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
@@ -18,11 +18,17 @@ export function createHandler({ records, readIssue }) {
     const companyId = authenticate(req.headers.authorization, records);
     if (!companyId) return respond(401);
     const path = parsePath(req.url);
-    if (req.method !== 'GET' || !path || path.document || Object.keys(req.headers).some((name) => name.includes('method-override') || name === 'x-http-method')) return respond(404);
+    if (req.method !== 'GET' || !path || Object.keys(req.headers).some((name) => name.includes('method-override') || name === 'x-http-method')) return respond(404);
     try {
       const issue = await readIssue(path.issue);
       if (!issue || issue.companyId !== companyId || typeof issue.id !== 'string' || typeof issue.identifier !== 'string') return respond(404);
-      return respond(200, { id: issue.id, identifier: issue.identifier, companyId: issue.companyId });
+      if (!path.document) return respond(200, { id: issue.id, identifier: issue.identifier, companyId: issue.companyId });
+      const first = await readDocument(issue.id);
+      const valid = (doc) => doc && doc.issueId === issue.id && doc.companyId === companyId && doc.key === 'acceptance-scenarios' && typeof doc.id === 'string' && typeof doc.latestRevisionId === 'string' && doc.latestRevisionId && typeof doc.body === 'string';
+      if (!valid(first)) return respond(404);
+      const second = await readDocument(issue.id);
+      if (!valid(second) || first.id !== second.id || first.latestRevisionId !== second.latestRevisionId || first.body !== second.body) return respond(409);
+      return respond(200, { id: first.id, latestRevisionId: first.latestRevisionId, body: first.body });
     } catch {
       return respond(502);
     }
