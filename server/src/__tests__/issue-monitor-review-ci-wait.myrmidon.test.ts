@@ -377,6 +377,33 @@ describeEmbeddedPostgres("issue monitor that waits for the CI of a review (Revie
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
   });
 
+  it("does not clear a replacement monitor after the old CI access streak expires", async () => {
+    const { companyId, issueId } = await seed();
+    for (const minutes of [20, 10]) {
+      const at = new Date(TICK_AT.getTime() - minutes * 60_000);
+      await db.insert(activityLog).values({
+        companyId, actorType: "system", actorId: "heartbeat", action: "issue.monitor_deferred",
+        entityType: "issue", entityId: issueId, createdAt: at,
+        details: { reason: "review_ci_no_access", at: at.toISOString() },
+      });
+    }
+    const replacementAt = new Date(TICK_AT.getTime() + 3_600_000);
+    mockReviewCi.resolveCi.mockImplementation(async () => {
+      await db.update(issues).set({
+        monitorNextCheckAt: replacementAt, monitorWakeRequestedAt: null, monitorNotes: "new evidence",
+      }).where(eq(issues.id, issueId));
+      return { state: "unknown", reason: "pull:http_404", pullRequestUrl: PR_URL, headSha: HEAD };
+    });
+
+    await heartbeatService(db, { executesRuns: false }).tickTimers(TICK_AT);
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.monitorNextCheckAt?.toISOString()).toBe(replacementAt.toISOString());
+    expect(issue.monitorNotes).toBe("new evidence");
+    expect(await activityOf(issueId, "issue.monitor_cleared")).toHaveLength(0);
+    expect(await db.select().from(issueComments)).toHaveLength(0);
+  });
+
   it("keeps waiting while CI runs, exactly as before", async () => {
     const { issueId } = await seed();
     headCi({ state: "pending" });
