@@ -146,7 +146,10 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
           } catch { await ambiguous(); }
           throw new Error('audit failed');
         }
-        if (durable) await store.resolveIssuance(handle);
+        if (durable) {
+          try { await store.resolveIssuance(handle); }
+          catch { await ambiguous(); throw new Error('issuance finalization failed'); }
+        }
         return { handle, ...credential };
       });
     },
