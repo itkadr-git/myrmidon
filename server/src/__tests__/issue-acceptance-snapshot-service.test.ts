@@ -94,6 +94,12 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
         document: null,
       });
 
+      const scoped = issueAcceptanceSnapshotService(db);
+      expect(await scoped.read(issue!.id, companyA)).toEqual(withDocument);
+      expect(await scoped.read("OPE-7001", companyA)).toEqual(withDocument);
+      expect(await scoped.read(issue!.id, companyB)).toBeNull();
+      expect(await scoped.read("OPE-7001", companyB)).toBeNull();
+
       const missing = await issueAcceptanceSnapshotService(db).read(randomUUID());
       expect(missing).toBeNull();
     },
