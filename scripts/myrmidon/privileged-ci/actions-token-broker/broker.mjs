@@ -144,7 +144,13 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         } catch {
           try {
             await installation.revoke(credential.token);
-            if (durable) await store.resolveIssuance(handle);
+            if (durable) {
+              try { await store.resolveIssuance(handle); } catch (error) {
+                auditFailed = true;
+                try { await store.reserveIssuance(handle); } catch { /* Existing fence or storage failure. */ }
+                throw error;
+              }
+            }
           } catch {
             // A transient storage failure must not discard a known, active token.
             try { await store.put(handle, { token: credential.token }, owner); } catch { /* Keep the reservation even if retention remains impossible. */ }
