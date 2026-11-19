@@ -49,6 +49,20 @@ test('rejected upstream token is retained after transient storage failure and fa
   assert.deepEqual([...retained.values()], [{ token: 'rejected-fixture' }]);
 });
 
+test('runtime audit failure persists an alert for recovery after restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-audit-outbox-'));
+  const credentialPath = join(dir, 'credentials.sqlite'), credentialKey = randomBytes(32);
+  const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'), credentialPath, credentialKey,
+    installation: { issue: async () => ({ token: 'fixture' }), revoke: async () => {} },
+    audit: async () => { throw new Error('anchor unavailable'); }, alert: async () => { throw new Error('offline'); } };
+  try {
+    const broker = createSingleHostBroker(options);
+    try { await assert.rejects(broker.exchange(jwt('runtime-audit-failure'))); } finally { broker.close(); }
+    const store = createCredentialStore(credentialPath, credentialKey);
+    try { assert.ok((await store.pendingAlerts()).includes('audit_unavailable')); } finally { store.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('failure to resolve issuance alerts and retains the token for recovery', async () => {
   const alerts = [];
   const retained = new Map();
