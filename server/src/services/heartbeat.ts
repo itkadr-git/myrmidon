@@ -13557,7 +13557,11 @@ export function heartbeatService(
             monitorWakeRequestedAt: null,
             updatedAt: new Date(),
           })
-          .where(eq(issues.id, claimed.id));
+          .where(and(
+            eq(issues.id, claimed.id),
+            eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+            eq(issues.monitorWakeRequestedAt, input.now),
+          ));
       } else {
         await db
           .update(issues)
@@ -13565,7 +13569,11 @@ export function heartbeatService(
             monitorWakeRequestedAt: null,
             updatedAt: new Date(),
           })
-          .where(eq(issues.id, claimed.id));
+          .where(and(
+            eq(issues.id, claimed.id),
+            eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+            eq(issues.monitorWakeRequestedAt, input.now),
+          ));
       }
 
       throw err;
