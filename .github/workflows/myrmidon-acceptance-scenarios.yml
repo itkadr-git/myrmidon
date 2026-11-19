@@ -2,7 +2,7 @@ name: Myrmidon Acceptance Scenarios CI Gate
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 concurrency:
   group: myrmidon-acceptance-scenarios-${{ github.event.pull_request.number }}
@@ -17,7 +17,9 @@ jobs:
     # Both environments use the isolated, ephemeral internal runner group.
     # Only the external-PR environment requires maintainer approval.
     environment: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'myrmidon-acceptance-trusted' || 'myrmidon-acceptance-external' }}
-    runs-on: [self-hosted, myrmidon-acceptance-ephemeral]
+    runs-on:
+      group: myrmidon-acceptance
+      labels: [self-hosted, myrmidon-acceptance-ephemeral]
     timeout-minutes: 5
     steps:
       - name: Checkout immutable base (never PR code)
@@ -29,6 +31,7 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4
         with:
           node-version: '24'
+          package-manager-cache: false
       - name: Verify acceptance documents
         run: node .github/scripts/acceptance-gate.mjs
         env:

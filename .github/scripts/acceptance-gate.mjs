@@ -41,7 +41,7 @@ async function main() {
     return doc?.body;
   } });
   const latest = await json(prUrl, GH_TOKEN);
-  if (latest.head?.sha !== HEAD_SHA || latest.base?.sha !== BASE_SHA) throw Error('PR head or base changed during verification');
+  if (latest.head?.sha !== HEAD_SHA || latest.base?.sha !== BASE_SHA || latest.title !== pr.title || latest.body !== pr.body) throw Error('PR head, base, title or body changed during verification');
   console.log(result.skipped ? 'No linked OPE issues; acceptance check skipped. Documents verified: 0.' : `Documents verified: ${result.checked}. Base: ${BASE_SHA}; head: ${HEAD_SHA}`);
 }
 

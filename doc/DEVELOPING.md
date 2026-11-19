@@ -72,7 +72,12 @@ The acceptance gate skips PRs without an OPE key and prints zero verified
 documents. For linked keys, every document must be fetched and verified; any
 API, parsing or validation error fails the gate. Its successful log reports
 `Documents verified` and the event base and head SHAs. A green check is not a
-live acceptance or deployment verification.
+live acceptance or deployment verification. Title and body edits rerun the gate;
+changes during a run fail it. Document changes do not trigger GitHub checks:
+maintainers must rerun the gate after an acceptance document changes and before
+merge. The commitperclip App private key remains more powerful than its minted
+installation token; activation requires independent review of its runner and
+key custody.
 
 Before activation, ADM/Alex must configure both `myrmidon-acceptance-trusted`
 and `myrmidon-acceptance-external` environments with environment-scoped
@@ -81,9 +86,9 @@ and `myrmidon-acceptance-external` environments with environment-scoped
 maintainer approval and prevent self-approval. Credentials must be restricted
 server-side to read-only issue and acceptance-document access in that company;
 a normal agent key is not proof of read-only access. Both environments must use
-an isolated, single-job ephemeral self-hosted runner labelled
-`myrmidon-acceptance-ephemeral`, restricted to this workflow, with internal
-network access. Never place the internal secret on a public GitHub runner. Do not
+an isolated, single-job ephemeral self-hosted runner in the `myrmidon-acceptance`
+group, labelled `myrmidon-acceptance-ephemeral`, restricted to this workflow,
+with internal network access. Never place the internal secret on a public GitHub runner. Do not
 activate until the credential restriction and runner isolation are verified.
 Allow only the reviewed acceptance and commitperclip workflow paths under the
 applicable Actions policy after security review. Do not change policies or
