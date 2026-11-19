@@ -55,10 +55,38 @@ function graph(seed) {
 function oracle(report) {
   const reached = closure(report.entry, report.edges);
   const bytes = new Map(report.modules.map(module => [module.path, module.bytes]));
+  // Documented boundary semantics (bundle-audit README, "Lazy boundaries"):
+  // a boundary carries the bytes of its target plus every module reachable
+  // from it through EAGER edges, excluding modules already eagerly reached
+  // from the entry; each module counts once per boundary; nested lazy edges
+  // are not followed. #4010's oracle used only the target's own bytes, so it
+  // disagreed with the CLI (e.g. seed 1: 584 vs 587) on every seeded graph
+  // where a boundary target eagerly pulls in more lazy-reachable modules.
+  // Implemented independently of the CLI (linear edge scans instead of its
+  // adjacency lists) so agreement is still a real cross-check.
+  const closureBytes = new Map();
+  const bytesFor = target => {
+    if (closureBytes.has(target)) return closureBytes.get(target);
+    const seen = new Set([target]);
+    const pending = [target];
+    let total = 0;
+    for (let i = 0; i < pending.length; i++) {
+      const path = pending[i];
+      total += bytes.get(path);
+      for (const edge of report.edges) {
+        if (edge.kind === 'eager' && edge.to !== null && edge.from === path && !reached.has(edge.to) && !seen.has(edge.to)) {
+          seen.add(edge.to);
+          pending.push(edge.to);
+        }
+      }
+    }
+    closureBytes.set(target, total);
+    return total;
+  };
   const result = [];
   for (const { from, specifier, kind, to } of report.edges) {
     if (kind === 'lazy' && to !== null && reached.has(from) && !reached.has(to)) {
-      result.push({ from, specifier, to, bytes: bytes.get(to) });
+      result.push({ from, specifier, to, bytes: bytesFor(to) });
     }
   }
   const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
