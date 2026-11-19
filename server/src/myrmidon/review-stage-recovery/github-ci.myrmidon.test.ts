@@ -481,7 +481,7 @@ describe("createReviewPullRequestCiResolver", () => {
     expect(result).toMatchObject({ reason: expect.stringContaining("pull:network_error") });
   });
 
-  it("uses fresh matching PR and final-check webhook deliveries once the current head is confirmed", async () => {
+  it("re-reads the head CI fresh before admitting, even when a matching webhook verdict is complete (OPE-15127)", async () => {
     const now = new Date();
     const rows = [
       { event: "pull_request", createdAt: now, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
@@ -494,16 +494,88 @@ describe("createReviewPullRequestCiResolver", () => {
         return { orderBy: () => ({ limit: async () => rows }) };
       } }) }),
     } as never;
-    const fetch = vi.fn(fakeFetch({ [PULL]: openPull }));
+    const fetch = vi.fn(fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [ciResultOnHead("success")] } }));
     const tokenProvider = vi.fn(async () => "token");
     const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider, admission: true });
     await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toEqual({
       state: "complete", pullRequestUrl: openProduct.url, headSha: "abc123", finalCheckConclusion: "success",
     });
-    // OPE-15114: the verdict is used only after an authoritative read confirms
-    // the webhook head is still the current head.
-    expect(fetch).toHaveBeenCalled();
+    // OPE-15127: a stored verdict (webhook or cache) is not admission evidence.
+    // Admission re-reads the head CI of the current head before it answers.
+    expect(fetch.mock.calls.map(([url]) => url.replace("https://api.github.com", ""))).toContain(CHECK_RUNS);
     expect(tokenProvider).toHaveBeenCalled();
+  });
+
+  it("does not admit a stored same-head verdict when the head CI was rerun and is queued (OPE-15127)", async () => {
+    // Stored webhook evidence says complete on head A. The same head A is then
+    // re-run and sits queued, and the new check_run deliveries are delayed.
+    // Admission must answer from a fresh CI read of A: pending, not complete.
+    const now = new Date();
+    const rows = [
+      { event: "pull_request", createdAt: now, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
+      { event: "check_run", createdAt: now, normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "abc123", checkName: "CI result", status: "completed", conclusion: "success" } },
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const fetch = vi.fn(fakeFetch({
+      [PULL]: openPull,
+      [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "queued", conclusion: null, head_sha: "abc123" }] },
+    }));
+    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => "token", admission: true });
+    await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toEqual({
+      state: "pending", pullRequestUrl: openProduct.url, headSha: "abc123",
+    });
+    expect(fetch.mock.calls.map(([url]) => url.replace("https://api.github.com", ""))).toContain(CHECK_RUNS);
+  });
+
+  it("answers head_moved when the stored reviewed head differs from the fresh head and no webhook verdict names it (OPE-15127)", async () => {
+    // The work product still knows reviewed head A and a pull_request webhook
+    // named A, but its final check is not (yet) delivered: verdict null. The
+    // fresh pull read shows head B and B is fully green. Admission must NOT
+    // answer complete for B: the reviewed head moved, re-submit on B.
+    const now = new Date();
+    const rows = [
+      { event: "pull_request", createdAt: now, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const calls: Array<{ path: string }> = [];
+    const fetch = vi.fn(fakeFetch({
+      [PULL]: { state: "open", head: { sha: "def456" } },
+      ["/repos/acme/app/commits/def456/check-runs?check_name=CI%20result&filter=all&per_page=100"]: { check_runs: [{ id: 2, name: "CI result", status: "completed", conclusion: "success", head_sha: "def456" }] },
+    }, calls));
+    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => "token", admission: true });
+    await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
+      state: "unknown", headSha: "def456", reason: "head_moved",
+    });
+  });
+
+  it("answers head_moved for a moved head even with no webhook deliveries at all (OPE-15127)", async () => {
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => [] }) };
+      } }) }),
+    } as never;
+    const fetch = vi.fn(fakeFetch({
+      [PULL]: { state: "open", head: { sha: "def456" } },
+      ["/repos/acme/app/commits/def456/check-runs?check_name=CI%20result&filter=all&per_page=100"]: { check_runs: [{ id: 2, name: "CI result", status: "completed", conclusion: "success", head_sha: "def456" }] },
+    }));
+    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => "token", admission: true });
+    await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
+      state: "unknown", headSha: "def456", reason: "head_moved",
+    });
   });
 
   it("serves a non-admission sweep from a matching webhook verdict without a GitHub read (OPE-15004)", async () => {
@@ -532,7 +604,7 @@ describe("createReviewPullRequestCiResolver", () => {
     expect(tokenProvider).not.toHaveBeenCalled();
   });
 
-  it("waits on a fresh running final-check webhook once the current head is confirmed", async () => {
+  it("answers pending from the fresh CI read when the head is still running, whatever the webhook said", async () => {
     const now = new Date();
     const rows = [
       { event: "pull_request", createdAt: now, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
@@ -545,13 +617,16 @@ describe("createReviewPullRequestCiResolver", () => {
         return { orderBy: () => ({ limit: async () => rows }) };
       } }) }),
     } as never;
-    const fetch = vi.fn(fakeFetch({ [PULL]: openPull }));
+    const fetch = vi.fn(fakeFetch({
+      [PULL]: openPull,
+      [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "in_progress", conclusion: null, head_sha: "abc123" }] },
+    }));
     const tokenProvider = vi.fn(async () => "token");
     const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider, admission: true });
     await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toEqual({
       state: "pending", pullRequestUrl: openProduct.url, headSha: "abc123",
     });
-    expect(fetch).toHaveBeenCalled();
+    expect(fetch.mock.calls.map(([url]) => url.replace("https://api.github.com", ""))).toContain(CHECK_RUNS);
     expect(tokenProvider).toHaveBeenCalled();
   });
 

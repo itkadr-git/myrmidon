@@ -162,12 +162,13 @@ describePostgres("shared GitHub review budget", () => {
   });
 
   it.each([
-    { name: "fresh matching", webhook: true, age: 0, webhookHead: "a", checkHead: "a", calls: 1, state: "complete" },
-    { name: "missing", webhook: false, age: 0, webhookHead: "a", checkHead: "a", calls: 3, state: "unknown" },
-    { name: "stale", webhook: true, age: 31, webhookHead: "a", checkHead: "a", calls: 3, state: "unknown" },
-    { name: "moved head", webhook: true, age: 0, webhookHead: "b", checkHead: "b", calls: 3, state: "unknown" },
-    { name: "foreign check head", webhook: true, age: 0, webhookHead: "a", checkHead: "b", calls: 3, state: "unknown" },
-  ])("uses $name webhook CI evidence only with a confirmed current head", async ({ webhook, age, webhookHead, checkHead, calls, state }) => {
+    { name: "no webhook, fresh CI green", webhook: false, age: 0, pullHead: "a", ci: "success", calls: 3, state: "complete" },
+    { name: "matching webhook, fresh CI green", webhook: true, age: 0, pullHead: "a", ci: "success", calls: 3, state: "complete" },
+    { name: "matching webhook, same-head rerun queued", webhook: true, age: 0, pullHead: "a", ci: "queued", calls: 3, state: "pending" },
+    { name: "matching webhook, fresh CI unreadable", webhook: true, age: 0, pullHead: "a", ci: "unreadable", calls: 3, state: "unknown" },
+    { name: "stale webhook, fresh CI unreadable", webhook: true, age: 31, pullHead: "a", ci: "unreadable", calls: 3, state: "unknown" },
+    { name: "moved head before any CI read", webhook: true, age: 0, pullHead: "b", ci: "green-but-unread", calls: 1, state: "unknown" },
+  ])("admission re-reads the head CI fresh ($name)", async ({ webhook, age, pullHead, ci, calls, state }) => {
     await db.delete(toolGatewayRateLimitCounters).where(like(toolGatewayRateLimitCounters.counterKey, "github-budget:%"));
     await db.delete(connectionEventDeliveries);
     resetReviewCiCacheForTests();
@@ -181,17 +182,24 @@ describePostgres("shared GitHub review budget", () => {
     if (webhook) {
       const createdAt = new Date(Date.now() - age * 60_000);
       await db.insert(connectionEventDeliveries).values([
-        { companyId: company.id, provider: "github", providerDeliveryId: "synthetic-pr", event: "pull_request", status: "processed", createdAt, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: webhookHead.repeat(40) } },
-        { companyId: company.id, provider: "github", providerDeliveryId: "synthetic-check", event: "check_run", status: "processed", createdAt, normalizedPayload: { repository: "acme/app", number: 7, headSha: checkHead.repeat(40), checkName: "CI result", status: "completed", conclusion: "success" } },
+        { companyId: company.id, provider: "github", providerDeliveryId: "synthetic-pr", event: "pull_request", status: "processed", createdAt, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha } },
+        { companyId: company.id, provider: "github", providerDeliveryId: "synthetic-check", event: "check_run", status: "processed", createdAt, normalizedPayload: { repository: "acme/app", number: 7, headSha, checkName: "CI result", status: "completed", conclusion: "success" } },
       ]);
     }
     const seen: string[] = [];
     const transport = vi.fn(async (url: string) => {
       seen.push(url);
-      // OPE-15114: the pull read confirms the current head; every other read
-      // stays unreadable so an unconfirmed verdict fails closed.
-      if (url === "https://api.github.com/repos/acme/app/pulls/7") return Response.json({ state: "open", head: { sha: headSha } });
-      return new Response("", { status: 503 });
+      // The fresh pull read names the current head; the fresh CI read of that
+      // head answers per the case. OPE-15127: admission never answers from a
+      // stored verdict, so a queued rerun on a matching head must be pending.
+      if (url === "https://api.github.com/repos/acme/app/pulls/7") return Response.json({ state: "open", head: { sha: pullHead.repeat(40) } });
+      if (url === "https://api.github.com/repos/acme/app/contents/.github/workflows") return Response.json([{ name: "ci.yml" }]);
+      if (url.startsWith(`https://api.github.com/repos/acme/app/commits/${headSha}/check-runs`)) {
+        if (ci === "success") return Response.json({ total_count: 1, check_runs: [{ name: "CI result", status: "completed", conclusion: "success", head_sha: headSha }] });
+        if (ci === "queued") return Response.json({ total_count: 1, check_runs: [{ name: "CI result", status: "queued", conclusion: null, head_sha: headSha }] });
+        return new Response("", { status: 503 });
+      }
+      return new Response("unexpected", { status: 500 });
     });
     const resolve = createReviewPullRequestCiResolver({ db, fetch: transport, tokenProvider: async () => null, admission: true });
     const result = await resolve({ companyId: company.id, issueId: issue.id });
@@ -205,6 +213,7 @@ describePostgres("shared GitHub review budget", () => {
     ];
     expect(seen).toEqual(expectedUrls);
     if (state === "complete") expect(result).toMatchObject({ headSha, finalCheckConclusion: "success" });
+    if (state === "unknown" && calls === 1) expect(result).toMatchObject({ reason: "head_moved", headSha: pullHead.repeat(40) });
   });
 
   it("fails closed on a budget store exception without exposing its contents", async () => {
