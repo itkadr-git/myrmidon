@@ -868,6 +868,49 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(ssh.hasExecuted("sudo ufw disable")).toBe(false);
   });
 
+  it("preserves an operator rule added during an executed partial SSH allow failure", async () => {
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-ufw-partial-"));
+    const rules = join(dir, "rules");
+    const calls = join(dir, "calls");
+    writeFileSync(rules, "operator-original\n");
+    writeFileSync(join(dir, "sudo"), `#!/bin/sh
+printf '%s\\n' "$*" >> "$CALLS"
+case "$1" in
+  ufw)
+    shift
+    case "$1" in
+      status) printf 'Status: active\\n'; exit 0 ;;
+      allow) printf 'onboarding-ssh\\noperator-concurrent\\n' >> "$RULES"; exit 1 ;;
+      delete) python3 -c 'import os; p=os.environ["RULES"]; s=open(p).readlines(); open(p,"w").writelines(x for x in s if x != "onboarding-ssh\\n")'; exit 0 ;;
+    esac ;;
+  systemd-run) exit 0 ;;
+  systemctl) printf 'active\\n'; exit 0 ;;
+esac
+exit 97
+`);
+    chmodSync(join(dir, "sudo"), 0o700);
+    try {
+      const ssh = new MockSshExecutor({ onCommand: (command) => {
+        const result = spawnSync("sh", ["-c", command], {
+          encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: calls, RULES: rules }, timeout: 5000,
+        });
+        return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", exitCode: result.status ?? 1 };
+      } });
+      const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+      const claim: any = {
+        job: { id: "job-real-concurrent-partial", companyId: "c1", serverId: "s1" },
+        server: { hostname: "1.2.3.4", port: 22, username: "root" },
+        steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+      };
+      const result = await executor.execute(claim, createMockReporter().reporter);
+      expect(result.status).toBe("failed");
+      expect(readFileSync(calls, "utf8")).toMatch(/ufw allow/);
+      expect(readFileSync(rules, "utf8").split("\n").filter(Boolean).sort()).toEqual(["operator-concurrent", "operator-original"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("preserves an operator's concurrent rule when a partially applied SSH allow is rolled back", async () => {
     const rules = new Set(["operator-original"]);
     const ssh = new MockSshExecutor({ onCommand: (command) => {
