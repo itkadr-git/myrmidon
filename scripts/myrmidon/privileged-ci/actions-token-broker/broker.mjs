@@ -116,7 +116,9 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         if (durable) await store.reserveIssuance(handle);
         let credential;
         try {
-          credential = await installation.issue();
+          credential = await installation.issue(async token => {
+            await store.put(handle, { token }, owner);
+          });
         } catch {
           // The upstream may have created a token despite the failed response.
           await ambiguous();

@@ -6,7 +6,7 @@ export function createInstallationClient({ installationId, repositoryId, permiss
   const fixedPermissions = { ...permissions };
   const body = JSON.stringify({ repository_ids: [repositoryId], permissions: fixedPermissions });
   return {
-    async issue() {
+    async issue(retainRejected) {
       const jwt = await appJwt();
       const response = await request(`${API}/app/installations/${installationId}/access_tokens`, {
         method: 'POST', redirect: 'error', headers: { authorization: `Bearer ${jwt}`, accept: 'application/vnd.github+json', 'content-type': 'application/json', 'x-github-api-version': '2022-11-28' }, body,
@@ -20,7 +20,9 @@ export function createInstallationClient({ installationId, repositoryId, permiss
         && Object.entries(fixedPermissions).every(([name, value]) => result.permissions[name] === value)
         && Array.isArray(result.repositories) && result.repositories.length === 1 && result.repositories[0]?.id === repositoryId;
       if (!scopeValid || typeof result.expires_at !== 'string' || !Number.isFinite(Date.parse(result.expires_at)) || Date.parse(result.expires_at) <= Date.now()) {
-        await this.revoke(result.token);
+        // Persist a rejected known token before revocation so a failed revoke can be retried.
+        // If persistence fails, still attempt revocation and leave issuance ambiguous.
+        try { if (typeof retainRejected === 'function') await retainRejected(result.token); } finally { await this.revoke(result.token); }
         throw new Error('invalid installation response');
       }
       return { token: result.token, expiresAt: result.expires_at };

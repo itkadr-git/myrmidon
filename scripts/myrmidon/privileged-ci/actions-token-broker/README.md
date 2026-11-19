@@ -63,9 +63,11 @@ secret management, least privilege and key rotation.
   boundary unless an independently verified revocation mechanism is available.
   The issuance reservation also remains in place if audit and token revocation
   both fail; a retained known token can be retried, but an unknown token cannot.
-- Returned repository and permissions are checked against configured scope,
-  but revocation failure after a rejected response still needs durable recovery.
-  TLS helpers alone do not establish host isolation.
+- Returned repository and permissions are checked against configured scope.
+  A known rejected token is retained before revocation for retry after restart;
+  the reservation remains ambiguous even if revocation succeeds, and requires
+  operator reconciliation. If retention and revocation both fail, only the
+  reservation remains. TLS helpers alone do not establish host isolation.
 - The prototype permits only `contents: read`; this is a restrictive test
   profile, not an approved workflow policy or evidence that this permission is
   sufficient for the eventual integration. Any expansion requires review.
