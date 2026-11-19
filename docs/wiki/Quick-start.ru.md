@@ -2,7 +2,7 @@
 
 > English version: [Quick-start](Quick-start)
 
-> Команда ниже закреплена на rc.13 до promotion более нового выпуска. Production работает на кандидате rc.21 (тег `myr-v1.6.9-rc.21`, health отвечает коммитом `2b5dadeb`); это release candidate, не stable. См. [заметки оператора](../myrmidon/releases/1.6.9.ru.md).
+> Команда ниже закреплена на rc.13 до promotion более нового выпуска. Кандидат rc.22 (тег `myr-v1.6.9-rc.22`) опубликован и проходит валидацию; production пока работает на rc.21 (health отвечает коммитом `2b5dadeb`), выкат rc.22 идёт. Это release candidate, не stable. См. [заметки оператора](../myrmidon/releases/1.6.9.ru.md).
 
 Кратчайший путь к работающей доске. Одна команда на чистом сервере (см.
 [Системные требования](System-requirements.ru)):
