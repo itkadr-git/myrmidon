@@ -625,6 +625,37 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(ssh.hasExecuted(/restore-myrmidon-firewall|pkill/)).toBe(false);
   });
 
+  it("preserves a concurrent operator rule in an executed fail-closed firewall probe", async () => {
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-ufw-concurrent-"));
+    const rules = join(dir, "rules");
+    const calls = join(dir, "calls");
+    writeFileSync(rules, "operator-original\n");
+    writeFileSync(join(dir, "sudo"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\nif [ "$*" = "ufw status" ]; then printf "operator-concurrent\\n" >> "$RULES"; printf "Status: active\\n"; exit 0; fi\nexit 97\n');
+    chmodSync(join(dir, "sudo"), 0o700);
+    try {
+      const ssh = new MockSshExecutor({ onCommand: (command) => {
+        const result = spawnSync("sh", ["-c", command], {
+          encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: calls, RULES: rules },
+        });
+        return { stdout: result.stdout, stderr: result.stderr, exitCode: result.status ?? 1 };
+      } });
+      const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+      const claim: any = {
+        job: { id: "job-firewall-concurrent-real-probe", companyId: "c1", serverId: "s1" },
+        server: { hostname: "1.2.3.4", port: 22, username: "root" },
+        steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+      };
+      const result = await executor.execute(claim, createMockReporter().reporter);
+      expect(result.status).toBe("failed");
+      expect(result.error).toMatch(/scoped.*rollback.*unavailable/i);
+      expect(readFileSync(rules, "utf8")).toBe("operator-original\noperator-concurrent\n");
+      expect(readFileSync(calls, "utf8")).toBe("ufw status\n");
+      expect(ssh.executedCommands.map((entry) => entry.command)).toEqual(["sudo ufw status"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("preserves concurrent operator changes when scoped rollback is unavailable", async () => {
     const rules = new Set(["operator-original"]);
     let statusRead = false;
