@@ -49,6 +49,21 @@ test('ambiguous issuance emits a distinct alert event while reservation remains 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('ambiguous issuance immediately alerts without releasing the durable reservation if alert delivery fails', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-immediate-alert-'));
+  const alerts = [];
+  const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'), credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32), installation: { issue: async () => { throw new Error('lost response'); }, revoke: async () => assert.fail('unknown token') }, audit: async () => {}, alert: async event => { alerts.push(event); throw new Error('alert unavailable'); } };
+  try {
+    const broker = createSingleHostBroker(options);
+    await assert.rejects(broker.exchange(jwt('immediate-alert')));
+    broker.close();
+    assert.deepEqual(alerts, ['issuance_ambiguous']);
+    const store = createCredentialStore(options.credentialPath, options.credentialKey);
+    assert.equal((await store.pendingIssuances()).length, 1);
+    store.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('recovery alerts on pending ambiguous issuance after restart and keeps issuance blocked', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-recovery-alert-'));
   const alerts = [];
