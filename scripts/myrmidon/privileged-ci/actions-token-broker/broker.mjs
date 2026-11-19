@@ -260,11 +260,11 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         const durable = typeof store.reserveIssuance === 'function';
         const attempt = randomUUID();
         if (durable) await store.reserveIssuance(attempt);
-        if (auditFailed) throw new Error('audit unavailable');
-        // Protect the revocation fence against local store rollback as well.
-        if (anchoredIssuance) await record('issuance_pending');
         let revocationAttempted = false;
         try {
+          if (auditFailed) throw new Error('audit unavailable');
+          // Protect the revocation fence against local store rollback as well.
+          if (anchoredIssuance) await record('issuance_pending');
           if (auditFailed || exp <= Math.floor(Date.now() / 1000)) throw new Error('audit unavailable or identity expired');
           await store.withOwned(handle, owner, async credential => {
             revocationAttempted = true;
