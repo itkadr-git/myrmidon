@@ -229,6 +229,9 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         const attempt = randomUUID();
         if (durable) await store.reserveIssuance(attempt);
         if (auditFailed) throw new Error('audit unavailable');
+        // Protect the revocation fence against local store rollback as well.
+        if (anchoredIssuance) await record('issuance_pending');
+        if (auditFailed) throw new Error('audit unavailable');
         try {
           await store.withOwned(handle, owner, async credential => {
             await installation.revoke(credential.token);
@@ -242,6 +245,7 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
               throw error;
             }
           }
+          if (anchoredIssuance) await record('issuance_resolved');
         } catch (error) {
           try { if (typeof store.queueAlert === 'function') await store.queueAlert('credential_recovery_failed'); } catch { /* Reservation or process latch remains in force. */ }
           try { if (typeof alert === 'function') await alert('credential_recovery_failed'); } catch { /* Recovery retries the alert. */ }

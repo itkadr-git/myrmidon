@@ -79,9 +79,12 @@ secret management, least privilege and key rotation.
   broker instances reject new requests. Direct store access and path aliases
   bypass the guard; it is not a distributed lease or deployment fence.
   A failed, interrupted, or unauditable owner revocation also keeps a durable
-  reservation, blocks further issuance and queues a recovery alert. Even a bad
-  handle can therefore require operator reconciliation; this favors containment
-  over availability. Recovery does not automatically clear the reservation.
+  reservation, blocks further issuance and queues a recovery alert. The supervised
+  audited path also anchors the revocation intent before contacting GitHub, so
+  losing the local reservation cannot silently permit startup after a failed or
+  interrupted revocation. Even a bad handle can therefore require operator
+  reconciliation; this favors containment over availability. Recovery does not
+  automatically clear the reservation or the anchored intent.
   It does not clear ambiguous
   reservations or provide guaranteed alert delivery. An experimental single-host
   HMAC-chained audit store is available via `createAuditedRecoveredServer`; it
