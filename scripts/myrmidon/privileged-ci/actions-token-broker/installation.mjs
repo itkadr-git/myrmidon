@@ -17,7 +17,14 @@ export function createInstallationClient({ installationId, repositoryId, permiss
   }
   return {
     async issue(retainRejected) {
-      const jwt = await appJwt();
+      let timer;
+      let jwt;
+      try {
+        jwt = await Promise.race([
+          Promise.resolve().then(() => appJwt()),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('installation request timeout (signer)')), requestTimeoutMs); }),
+        ]);
+      } finally { clearTimeout(timer); }
       const result = await boundedRequest(`${API}/app/installations/${installationId}/access_tokens`, {
         method: 'POST', redirect: 'error', headers: { authorization: `Bearer ${jwt}`, accept: 'application/vnd.github+json', 'content-type': 'application/json', 'x-github-api-version': '2022-11-28' }, body,
       }, async response => {
