@@ -24,8 +24,11 @@ secret management, least privilege and key rotation.
   experimental AES-GCM SQLite credential store when a credential path and key
   are provided. Its single-host locking and key custody need independent review.
   An experimental `createRecoveryWorker` provides a single quiesced recovery
-  pass with retryable alerts; it is not scheduled or wired into a deployment.
-  Callers must stop all issuers before running it. It does not clear ambiguous
+  pass with retryable alerts. An experimental `createRecoverySupervisor` retries
+  a supplied recovery pass and will not invoke its start callback while a pending
+  issuance, failed revocation, or failed alert is reported. It is not wired into
+  a deployment, does not enforce exclusive ownership, and its alert callback is
+  not guaranteed delivery. Callers must stop all issuers before running it. It does not clear ambiguous
   reservations or provide guaranteed alert delivery. An experimental single-host
   HMAC-chained audit store is available via `createAuditedRecoveredServer`; it
   permits fixed event names only, checks integrity on startup and before each
