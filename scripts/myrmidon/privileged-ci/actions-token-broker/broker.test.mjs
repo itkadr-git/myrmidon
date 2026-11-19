@@ -102,6 +102,21 @@ test('audited TLS startup reports an unavailable anchor before refusing service'
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('audit startup failure retries a failed alert before returning the startup error', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-anchor-retry-'));
+  let attempts = 0, delays = 0;
+  try {
+    await assert.rejects(tls.createAuditedSupervisedServer({}, {
+      auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32),
+      auditAnchor: { read: async () => { throw new Error('anchor unavailable'); }, compareAndSet: async () => true },
+      alert: async event => { assert.equal(event, 'audit_unavailable'); if (++attempts === 1) throw new Error('offline'); },
+      delay: async () => { delays++; },
+    }), /anchor unavailable/);
+    assert.equal(attempts, 2);
+    assert.equal(delays, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('audited TLS lifecycle retries recovery before constructing a server', async () => {
   assert.equal(typeof tls.createAuditedSupervisedServer, 'function');
   const dir = mkdtempSync(join(tmpdir(), 'broker-supervised-tls-'));
