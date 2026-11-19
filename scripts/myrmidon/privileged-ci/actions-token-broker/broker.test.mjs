@@ -144,10 +144,11 @@ test('identity expiring during upstream issuance cannot receive a credential', a
 
 test('token expiring during issuance audit is not returned and is revoked', async () => {
   let revoked = 0, pending = false;
+  const alerts = [], queued = [];
   const store = {
     reserveIssuance: async () => { pending = true; },
     resolveIssuance: async () => { pending = false; },
-    put: async () => {}, delete: async () => {}, queueAlert: async () => {},
+    put: async () => {}, delete: async () => {}, queueAlert: async event => queued.push(event),
   };
   const installation = {
     issue: async retain => {
@@ -158,10 +159,12 @@ test('token expiring during issuance audit is not returned and is revoked', asyn
     revoke: async () => { revoked++; },
   };
   const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store, installation,
-    audit: async event => { if (event === 'issued') await new Promise(resolve => setTimeout(resolve, 200)); }, alert: async () => {} });
+    audit: async event => { if (event === 'issued') await new Promise(resolve => setTimeout(resolve, 200)); }, alert: async event => alerts.push(event) });
   await assert.rejects(broker.exchange(jwt('expired-during-audit')));
   assert.equal(revoked, 1);
   assert.equal(pending, true);
+  assert.ok(queued.includes('issuance_ambiguous'));
+  assert.ok(alerts.includes('issuance_ambiguous'));
 });
 
 test('lost issuance response leaves anchored intent fenced across restart despite lost local reservation', async () => {
