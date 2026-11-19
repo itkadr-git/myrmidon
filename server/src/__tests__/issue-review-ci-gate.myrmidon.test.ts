@@ -234,6 +234,16 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     expect(after.status).toBe("in_review");
     expect(after.assigneeAgentId).toBe(author);
     expect(after.monitorNextCheckAt?.getTime()).toBeGreaterThan(Date.now() + 10 * 60_000);
+    const scheduledAt = after.monitorNextCheckAt?.getTime();
+    const heartbeat = heartbeatService(ctx.db);
+    for (const minutes of [11, 20, 30, 50]) {
+      await heartbeat.tickTimers(new Date(Date.now() + minutes * 60_000));
+    }
+    const [afterTicks] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+    expect(afterTicks.monitorNextCheckAt?.getTime()).toBe(scheduledAt);
+    expect(afterTicks.monitorAttemptCount).toBe(1);
+    expect(afterTicks.status).toBe("in_review");
+    expect(transport).not.toHaveBeenCalled();
   });
 
   it("rejects a verdict on stored wake evidence alone when the review budget is exhausted (OPE-15114)", async () => {
