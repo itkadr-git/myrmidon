@@ -688,6 +688,68 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
 
+  it.each([
+    ["READ COMMITTED", "document"],
+    ["READ COMMITTED", "revision"],
+    ["REPEATABLE READ", "document"],
+    ["REPEATABLE READ", "revision"],
+  ] as const)(
+    "explicit issue bump protects a %s %s writer after link creation",
+    async (isolation, target) => {
+      const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-explicit-overlap-");
+      cleanups.push(() => dbh.cleanup());
+      const db = createDb(dbh.connectionString);
+      cleanups.push(async () => { await db.$client.end(); });
+      const issueId = randomUUID();
+      const docId = randomUUID();
+      const revisionId = randomUUID();
+      await db.insert(companies).values({ id: companyA, name: "Company A" });
+      await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
+      await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a", latestRevisionId: revisionId });
+      await db.insert(documentRevisions).values({ id: revisionId, companyId: companyA, documentId: docId, revisionNumber: 1, body: "a" });
+      let resume!: () => void;
+      let started!: () => void;
+      const gate = new Promise<void>((resolve) => { resume = resolve; });
+      const ready = new Promise<void>((resolve) => { started = resolve; });
+      const writer = db.transaction(async (tx) => {
+        await tx.execute(isolation === "REPEATABLE READ"
+          ? sqlTag`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`
+          : sqlTag`SET TRANSACTION ISOLATION LEVEL READ COMMITTED`);
+        await tx.execute(sqlTag`SELECT id FROM issues WHERE id = ${issueId}::uuid`);
+        started();
+        await gate;
+        await tx.execute(sqlTag`SELECT bump_issue_acceptance_epoch(${issueId}::uuid)`);
+        if (target === "document") {
+          await tx.update(documents).set({ latestBody: "b" }).where(eq(documents.id, docId));
+          await tx.update(documents).set({ latestBody: "a" }).where(eq(documents.id, docId));
+        } else {
+          await tx.update(documentRevisions).set({ body: "b" }).where(eq(documentRevisions.id, revisionId));
+          await tx.update(documentRevisions).set({ body: "a" }).where(eq(documentRevisions.id, revisionId));
+        }
+      });
+      const outcome = writer.then(() => null, (error: unknown) => error);
+      let version: string;
+      try {
+        await ready;
+        await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
+        version = (await issueAcceptanceSnapshotService(db).read(issueId))!.issue.version;
+      } finally {
+        resume();
+      }
+      const error = await outcome;
+      const after = await issueAcceptanceSnapshotService(db).read(issueId);
+      if (isolation === "REPEATABLE READ") {
+        expect(error).toMatchObject({ cause: { code: "40001" } });
+        expect(after!.issue.version).toBe(version!);
+      } else {
+        expect(error).toBeNull();
+        expect(after!.issue.version).not.toBe(version!);
+      }
+      expect(after!.document!.body).toBe("a");
+    },
+    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  );
+
   it.each(["READ COMMITTED", "REPEATABLE READ"] as const)(
     "invalidates a pin when a %s document writer overlaps link creation",
     async (isolation) => {
