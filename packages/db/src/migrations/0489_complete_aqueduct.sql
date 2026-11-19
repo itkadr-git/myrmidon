@@ -98,6 +98,13 @@ BEGIN
     IF NOT FOUND THEN
       RAISE EXCEPTION 'acceptance link document company mismatch';
     END IF;
+    IF EXISTS (
+      SELECT 1 FROM "document_revisions"
+      WHERE "document_id" = NEW."document_id"
+        AND "company_id" IS DISTINCT FROM NEW."company_id"
+    ) THEN
+      RAISE EXCEPTION 'acceptance link revision company mismatch';
+    END IF;
   END IF;
   RETURN NEW;
 END;
