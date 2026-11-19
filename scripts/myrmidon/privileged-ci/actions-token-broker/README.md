@@ -82,7 +82,11 @@ secret management, least privilege and key rotation.
   recovery under that lock without clearing or trusting the failed audit state.
   Recovery retries known-token revocation even if the alert outbox fails; it
   attempts direct notification but still reports an alert failure and remains
-  closed. Direct notification is best effort, not a durable replacement.
+  closed. The normal recovery supervisor also keeps retrying known-token revocation when
+  outbox writes fail, without starting issuance; it retries unqueued alerts in
+  memory and attempts direct delivery. A crash can still lose those in-memory
+  alerts, so external monitoring is required. Direct notification is best effort,
+  not a durable replacement.
   An interrupted pass needs an external restart/supervisor to retry; an unknown
   token cannot be recovered. Missing or rolled-back local credentials remain
   unknown and require independent operator containment.

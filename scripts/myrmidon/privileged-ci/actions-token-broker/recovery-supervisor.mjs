@@ -2,6 +2,7 @@
 export function createRecoverySupervisor({ recover, start, alert, delay, store }) {
   if (![recover, start, alert, delay, store?.queueAlert, store?.pendingAlerts, store?.pendingAlertEntries, store?.acknowledgeAlert].every(value => typeof value === 'function')) throw new Error('recovery dependencies required');
   let stopped = false, running = false, started = false;
+  const unqueued = new Set();
   return {
     stop() { stopped = true; },
     async run() {
@@ -13,9 +14,17 @@ export function createRecoverySupervisor({ recover, start, alert, delay, store }
           let result;
           try { result = await recover(); } catch { result = { failed: 1, pending: false, alertFailed: false }; }
           const clean = result && result.failed === 0 && result.pending === false && result.alertFailed === false;
-          if (result?.pending) await store.queueAlert('issuance_ambiguous');
-          if (!clean && (!result?.pending || result?.failed !== 0 || result?.alertFailed !== false)) await store.queueAlert('credential_recovery_failed');
+          for (const event of [result?.pending && 'issuance_ambiguous', !clean && (!result?.pending || result?.failed !== 0 || result?.alertFailed !== false) && 'credential_recovery_failed'].filter(Boolean)) unqueued.add(event);
+          let outboxFailed = false;
+          for (const event of unqueued) {
+            try { await store.queueAlert(event); unqueued.delete(event); } catch {
+              outboxFailed = true;
+              try { await alert(event); } catch { /* Independent process monitoring remains required. */ }
+            }
+          }
           if (stopped) break;
+          // Keep revoking on later passes even if the outbox is unavailable.
+          if (outboxFailed) { await delay(); continue; }
           for (const { event, generation } of await store.pendingAlertEntries()) {
             try { await alert(event); await store.acknowledgeAlert(event, generation); } catch { /* Retry before starting. */ }
           }
