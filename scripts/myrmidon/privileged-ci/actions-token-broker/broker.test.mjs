@@ -6,6 +6,7 @@ import * as tls from './tls.mjs';
 const { createRecoveredSecureServer } = tls;
 import { createCredentialStore } from './store.mjs';
 import { createInstallationClient } from './installation.mjs';
+import { createAsyncAuthenticatedAudit } from './authenticated-audit.mjs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -19,6 +20,26 @@ function jwt(jti, overrides = {}) {
   const input = [ { alg: 'RS256', kid: 'fixture' }, claims ].map(x => Buffer.from(JSON.stringify(x)).toString('base64url')).join('.');
   return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
 }
+
+test('lost issuance response leaves anchored intent fenced across restart despite lost local reservation', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-anchored-intent-'));
+  const path = join(dir, 'audit.sqlite'), auditKey = randomBytes(32);
+  let head = { seq: 0, mac: '' }, calls = 0;
+  const anchor = { read: async () => ({ ...head }), compareAndSet: async (old, next) => {
+    if (JSON.stringify(old) !== JSON.stringify(head)) return false;
+    head = { ...next }; return true;
+  } };
+  try {
+    const audit = await createAsyncAuthenticatedAudit(path, auditKey, anchor);
+    const store = { reserveIssuance: async () => {}, queueAlert: async () => { throw new Error('disk lost'); } };
+    const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store, anchoredIssuance: true,
+      installation: { issue: async () => { calls++; throw new Error('response lost'); } }, audit: event => audit.record(event), alert: async () => {} });
+    await assert.rejects(broker.exchange(jwt('anchored-response-lost')));
+    audit.close();
+    await assert.rejects(createAsyncAuthenticatedAudit(path, auditKey, anchor), /pending issuance/);
+    assert.equal(calls, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('ambiguous issuance fences the running process even if its durable reservation disappears', async () => {
   let issued = 0;

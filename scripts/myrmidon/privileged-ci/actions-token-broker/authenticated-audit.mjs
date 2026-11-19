@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
-const events = new Set(['issued', 'revoked', 'exchange_failed', 'revoke_failed', 'issuance_ambiguous']);
+const events = new Set(['issued', 'revoked', 'exchange_failed', 'revoke_failed', 'issuance_ambiguous', 'issuance_pending', 'issuance_resolved']);
 
 // Async CAS permits an anchor in a separately operated failure domain.
 export async function createAsyncAuthenticatedAudit(path, key, anchor) {
@@ -12,18 +12,27 @@ export async function createAsyncAuthenticatedAudit(path, key, anchor) {
     return createHmac('sha256', secret).update(JSON.stringify([seq, event, previous])).digest('hex');
   }
   function verify() {
-    let previous = '', expected = 1;
+    let previous = '', expected = 1, pending = false;
     for (const row of db.prepare('SELECT seq, event, mac FROM audit_events ORDER BY seq').iterate()) {
       if (row.seq !== expected || !events.has(row.event) || typeof row.mac !== 'string' || !/^[0-9a-f]{64}$/.test(row.mac) || !timingSafeEqual(Buffer.from(row.mac, 'hex'), Buffer.from(digest(row.seq, row.event, previous), 'hex'))) throw new Error('audit integrity failure');
+      if (row.event === 'issuance_pending') {
+        if (pending) throw new Error('audit integrity failure: duplicate pending issuance');
+        pending = true;
+      } else if (row.event === 'issuance_resolved') {
+        if (!pending) throw new Error('audit integrity failure: missing pending issuance');
+        pending = false;
+      }
       previous = row.mac;
       expected++;
     }
-    return { seq: expected - 1, mac: previous };
+    return { seq: expected - 1, mac: previous, pending };
   }
   const equal = (a, b) => a?.seq === b.seq && a?.mac === b.mac;
   try {
     db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; CREATE TABLE IF NOT EXISTS audit_events (seq INTEGER PRIMARY KEY, event TEXT NOT NULL, mac TEXT NOT NULL) STRICT');
-    if (!equal(await anchor.read(), verify())) throw new Error('audit integrity failure: anchor mismatch');
+    const head = verify();
+    if (!equal(await anchor.read(), head)) throw new Error('audit integrity failure: anchor mismatch');
+    if (head.pending) throw new Error('pending issuance requires operator containment');
   } catch (error) { db.close(); secret.fill(0); throw error; }
   return {
     async record(event) {
@@ -33,7 +42,9 @@ export async function createAsyncAuthenticatedAudit(path, key, anchor) {
       try {
         db.exec('BEGIN IMMEDIATE');
         transaction = true;
-        const oldHead = verify();
+        const verified = verify();
+        if ((event === 'issuance_pending' && verified.pending) || (event === 'issuance_resolved' && !verified.pending)) throw new Error('invalid issuance audit transition');
+        const oldHead = { seq: verified.seq, mac: verified.mac };
         if (!equal(await anchor.read(), oldHead)) throw new Error('audit integrity failure: anchor mismatch');
         const next = { seq: oldHead.seq + 1, mac: digest(oldHead.seq + 1, event, oldHead.mac) };
         db.prepare('INSERT INTO audit_events VALUES (?, ?, ?)').run(next.seq, event, next.mac);

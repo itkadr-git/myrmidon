@@ -85,7 +85,7 @@ export async function createRecoveredSingleHostBroker({ credentialPath, credenti
 }
 
 // The store must persist encrypted credentials and enforce owner-bound atomic access.
-export function createBroker({ policy, loadKeys, claimOnce, installation, store, audit, alert, recoveryRequired = false }) {
+export function createBroker({ policy, loadKeys, claimOnce, installation, store, audit, alert, recoveryRequired = false, anchoredIssuance = false }) {
   const fixedPolicy = Object.freeze({ ...policy });
   let auditFailed = false, activeRequests = 0, closed = false;
   function assertIdle() { if (activeRequests) throw new Error('broker has in-flight requests'); }
@@ -134,6 +134,9 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         // A concurrent audit failure may have occurred while reserving.
         // Keep the reservation for recovery instead of contacting GitHub.
         if (auditFailed) throw new Error('audit unavailable');
+        // Anchor the intent before contacting GitHub; a crash then blocks restart
+        // even if the local reservation is later lost or rolled back.
+        if (anchoredIssuance) await record('issuance_pending');
         let credential, retained = false;
         try {
           credential = await installation.issue(async token => {
@@ -194,6 +197,13 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
             try { await installation.revoke(credential.token); await store.delete(handle); } catch { /* Recovery retries the retained credential. */ }
             await ambiguous();
             throw new Error('issuance finalization failed');
+          }
+        }
+        if (anchoredIssuance && !auditFailed) {
+          try { await record('issuance_resolved'); } catch {
+            try { await installation.revoke(credential.token); await store.delete(handle); } catch { /* Recovery retries retained credentials. */ }
+            await ambiguous();
+            throw new Error('issuance audit finalization failed');
           }
         }
         if (auditFailed) {

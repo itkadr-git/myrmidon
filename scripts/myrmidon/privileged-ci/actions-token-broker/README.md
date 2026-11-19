@@ -56,7 +56,12 @@ secret management, least privilege and key rotation.
   investigation remain required before restart.
   An ambiguous issuance also latches the running broker closed even if its
   reservation and alert outbox are lost. This latch is process-local, not a
-  substitute for independent durable containment across restart.
+  substitute for independent durable containment across restart. The supervised
+  audited TLS path now also anchors an issuance intent before contacting GitHub;
+  an unresolved intent prevents audit startup after restart, including when the
+  credential reservation is lost. This deliberately sacrifices availability:
+  there is not yet a reviewed operator reconciliation procedure to clear it.
+  The unsupervised and synchronous audited helpers do not provide this protection.
   Broker factories also fence new issuance and owner revocation while any durable
   recovery alert remains undelivered, including an audit failure on a rejected
   request before a reservation exists. Recovery must deliver the outbox first.
