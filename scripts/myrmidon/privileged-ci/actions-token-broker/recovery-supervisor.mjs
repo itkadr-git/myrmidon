@@ -12,7 +12,8 @@ export function createRecoverySupervisor({ recover, start, alert, delay, store }
           let result;
           try { result = await recover(); } catch { result = { failed: 1, pending: false, alertFailed: false }; }
           const clean = result && result.failed === 0 && result.pending === false && result.alertFailed === false;
-          if (!clean) await store.queueAlert(result?.pending ? 'issuance_ambiguous' : 'credential_recovery_failed');
+          if (result?.pending) await store.queueAlert('issuance_ambiguous');
+          if (!clean && (!result?.pending || result?.failed !== 0 || result?.alertFailed !== false)) await store.queueAlert('credential_recovery_failed');
           if (stopped) break;
           for (const event of await store.pendingAlerts()) {
             try { await alert(event); await store.acknowledgeAlert(event); } catch { /* Retry before starting. */ }
