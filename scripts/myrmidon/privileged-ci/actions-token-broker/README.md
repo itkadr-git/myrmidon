@@ -21,6 +21,9 @@ secret management, least privilege and key rotation.
 - The supervised audited TLS path requires a separate replay key and independent
   replay anchor and verifies the anchored replay log before serving. A rollback,
   suffix deletion, unavailable anchor or interrupted anchor commit fails closed.
+  If the replay anchor commits but its acknowledgement is lost, the local replay
+  transaction rolls back; the resulting mismatch also prevents restart. This is
+  containment, not automatic reconciliation or proof of an independent deployment.
   The unanchored single-host and synchronous helpers remain vulnerable to replay
   database rollback and must not be used for live service. The append-only replay
   log has no bounded retention, and the anchor needs a separately administered
