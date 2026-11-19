@@ -15805,21 +15805,21 @@ export function issueRoutes(
           if (ci.reason?.includes("budget_exhausted")) {
             // A triggered CI-wait monitor otherwise gets rearmed by the stale
             // monitor sweep and repeatedly wakes a reviewer who cannot decide.
-            await db.update(issues).set({
+            await db.update(issueRows).set({
               monitorNextCheckAt: new Date(Date.now() + 61 * 60_000),
               monitorWakeRequestedAt: null,
             }).where(and(
-              eq(issues.id, existing.id),
-              eq(issues.companyId, existing.companyId),
-              eq(issues.status, "in_review"),
+              eq(issueRows.id, existing.id),
+              eq(issueRows.companyId, existing.companyId),
+              eq(issueRows.status, "in_review"),
               or(
-                isNull(issues.monitorNextCheckAt),
-                lt(issues.monitorNextCheckAt, new Date(Date.now() + 60 * 60_000)),
+                isNull(issueRows.monitorNextCheckAt),
+                lt(issueRows.monitorNextCheckAt, new Date(Date.now() + 60 * 60_000)),
               ),
-              isNull(issues.monitorWakeRequestedAt),
-              sql`${issues.executionState} -> 'monitor' ->> 'status' = 'triggered'`,
-              sql`${issues.executionState} -> 'monitor' ->> 'serviceName' = 'Review CI wait'`,
-              sql`${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${actor.agentId ?? null}`,
+              isNull(issueRows.monitorWakeRequestedAt),
+              sql`${issueRows.executionState} -> 'monitor' ->> 'status' = 'triggered'`,
+              sql`${issueRows.executionState} -> 'monitor' ->> 'serviceName' = 'Review CI wait'`,
+              sql`${issueRows.executionState} -> 'currentParticipant' ->> 'agentId' = ${actor.agentId ?? null}`,
             ));
           }
           throw unprocessable(
