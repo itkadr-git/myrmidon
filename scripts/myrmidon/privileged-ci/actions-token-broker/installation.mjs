@@ -50,6 +50,11 @@ export function createInstallationClient({ installationId, repositoryId, permiss
           throw error;
         }
       }
+      // Retention can block long enough for the upstream token to expire.
+      if (Date.parse(result.expires_at) <= Date.now()) {
+        try { await this.revoke(result.token); } catch { /* The broker retains the recovery fence. */ }
+        throw new Error('installation token expired during retention');
+      }
       return { token: result.token, expiresAt: result.expires_at };
     },
     async revoke(token) {
