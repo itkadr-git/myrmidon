@@ -1,11 +1,11 @@
 // Run with exclusive ownership of the store; no issuer may run concurrently.
 export function createRecoverySupervisor({ recover, start, alert, delay, store }) {
   if (![recover, start, alert, delay, store?.queueAlert, store?.pendingAlerts, store?.acknowledgeAlert].every(value => typeof value === 'function')) throw new Error('recovery dependencies required');
-  let stopped = false, running = false;
+  let stopped = false, running = false, started = false;
   return {
     stop() { stopped = true; },
     async run() {
-      if (running) throw new Error('recovery supervisor already running');
+      if (running || started) throw new Error('recovery supervisor already running or started');
       running = true;
       try {
         while (!stopped) {
@@ -20,7 +20,11 @@ export function createRecoverySupervisor({ recover, start, alert, delay, store }
           }
           const pendingAlerts = await store.pendingAlerts();
           if (stopped) break;
-          if (clean && pendingAlerts.length === 0) return await start();
+          if (clean && pendingAlerts.length === 0) {
+            // A failed start may have partially activated an issuer; never retry it.
+            started = true;
+            return await start();
+          }
           if (!stopped) await delay();
         }
         throw new Error('recovery supervisor stopped');
