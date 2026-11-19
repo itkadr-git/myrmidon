@@ -273,6 +273,12 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
       if (url === checkUrl) return Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "failure", head_sha: headSha }] });
       throw new Error("Unexpected external transport");
     });
+    // The timer itself must resume review after the budget window; a manual
+    // verdict retry alone would conceal a stranded monitor.
+    await heartbeat.tickTimers(new Date(scheduledAt! + 1_000));
+    const wakesAfterRollover = await ctx.db.select().from(agentWakeupRequests).where(sql`${agentWakeupRequests.agentId} = ${reviewer}`);
+    expect(wakesAfterRollover.length).toBeGreaterThan(wakesAfter.length);
+
     const accepted = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: preserve this finding" });
     expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
     const fetched = await request(app).get(`/api/issues/${issueId}`);
