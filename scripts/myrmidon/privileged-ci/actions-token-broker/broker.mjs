@@ -18,7 +18,7 @@ export async function createSupervisedSingleHostBroker({ credentialPath, credent
       start: async () => createSingleHostBrokerWithStore({ ...options, store }),
     });
     const broker = await supervisor.run();
-    return { ...broker, close: () => { try { broker.close(); store.close(); } finally { release(); } } };
+    return { ...broker, close: () => { broker.assertIdle(); try { broker.close(); store.close(); } finally { release(); } } };
   } catch (error) {
     try { store?.close(); } finally { release(); }
     throw error;
@@ -30,7 +30,7 @@ export function createSingleHostBroker({ store, ...options }) {
   const release = acquireExclusiveStore(options.credentialPath);
   try {
     const broker = createSingleHostBrokerWithStore(options);
-    return { ...broker, close: () => { try { broker.close(); } finally { release(); } } };
+    return { ...broker, close: () => { broker.assertIdle(); try { broker.close(); } finally { release(); } } };
   } catch (error) { release(); throw error; }
 }
 
@@ -49,7 +49,7 @@ function createSingleHostBrokerWithStore({ replayPath, credentialPath, credentia
   // have gone through recovery; owner revocation remains available.
   const recoveryRequired = store.hasRetainedCredentials();
   const broker = createBroker({ ...options, store, recoveryRequired, claimOnce: replay.claimOnce });
-  return { ...broker, close: () => { replay.close(); if (!suppliedStore) store.close(); } };
+  return { ...broker, close: () => { broker.shutdown(); replay.close(); if (!suppliedStore) store.close(); } };
 }
 
 // Call only while issuance is quiesced across all processes sharing the store.
@@ -77,7 +77,7 @@ export async function createRecoveredSingleHostBroker({ credentialPath, credenti
     if (pending) throw new Error('ambiguous issuance requires operator containment');
     if (alertFailed) throw new Error('recovery alert failed');
     const broker = createSingleHostBrokerWithStore({ ...options, store });
-    return { ...broker, close: () => { try { broker.close(); store.close(); } finally { release(); } } };
+    return { ...broker, close: () => { broker.assertIdle(); try { broker.close(); store.close(); } finally { release(); } } };
   } catch (error) {
     try { store?.close(); } finally { release(); }
     throw error;
@@ -87,7 +87,9 @@ export async function createRecoveredSingleHostBroker({ credentialPath, credenti
 // The store must persist encrypted credentials and enforce owner-bound atomic access.
 export function createBroker({ policy, loadKeys, claimOnce, installation, store, audit, alert, recoveryRequired = false }) {
   const fixedPolicy = Object.freeze({ ...policy });
-  let auditFailed = false;
+  let auditFailed = false, activeRequests = 0, closed = false;
+  function assertIdle() { if (activeRequests) throw new Error('broker has in-flight requests'); }
+  function shutdown() { assertIdle(); closed = true; }
   async function identity(jwt) {
     const claims = await verifyIdentity(jwt, { policy: fixedPolicy, loadKeys, claimOnce });
     if (typeof claims.run_id !== 'string' || !/^[1-9][0-9]*$/.test(claims.run_id) || typeof claims.run_attempt !== 'string' || !/^[1-9][0-9]*$/.test(claims.run_attempt)) throw new Error('identity rejected');
@@ -109,14 +111,17 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
     try { if (typeof alert === 'function') await alert('issuance_ambiguous'); } catch { /* Recovery retries from the reservation. */ }
   }
   async function guarded(event, operation) {
+    if (closed) throw new Error('broker closed');
+    activeRequests++;
     try {
       return await operation();
     } catch {
       try { await record(event); } catch { /* Audit failure remains fail-closed. */ }
       throw new Error('broker request failed');
-    }
+    } finally { activeRequests--; }
   }
   return {
+    assertIdle, shutdown,
     async exchange(jwt) {
       return guarded('exchange_failed', async () => {
         const owner = await identity(jwt);

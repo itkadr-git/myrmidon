@@ -66,8 +66,10 @@ secret management, least privilege and key rotation.
   Broker factories
   hold a separate SQLite write lock across recovery and the broker lifetime; this
   is single-host cooperative exclusion only, requiring one canonical credential
-  path and a filesystem with reliable SQLite locking. Direct store access and path
-  aliases bypass the guard; it is not a distributed lease or deployment fence.
+  path and a filesystem with reliable SQLite locking. Broker close now refuses
+  while requests are in flight, preserving the lock until they settle; closed
+  broker instances reject new requests. Direct store access and path aliases
+  bypass the guard; it is not a distributed lease or deployment fence.
   A failed, interrupted, or unauditable owner revocation also keeps a durable
   reservation, blocks further issuance and queues a recovery alert. Even a bad
   handle can therefore require operator reconciliation; this favors containment

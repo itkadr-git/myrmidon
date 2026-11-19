@@ -380,6 +380,7 @@ test('closing a broker with an in-flight issuance keeps exclusive ownership unti
     releaseIssue({ token: 'fixture' });
     await exchange;
     broker.close();
+    await assert.rejects(broker.exchange(jwt('closed-broker')), /closed/);
     const replacement = createSingleHostBroker(options);
     replacement.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
