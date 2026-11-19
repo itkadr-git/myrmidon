@@ -4,7 +4,7 @@ const ISSUER = 'https://token.actions.githubusercontent.com';
 const FIELDS = ['repository_id', 'repository_owner_id', 'repository', 'job_workflow_ref', 'ref', 'environment', 'event_name', 'sub', 'workflow_ref', 'workflow_sha', 'actor', 'actor_id'];
 
 // claimOnce must atomically persist the JTI through its expiry, across restarts and instances.
-export async function verifyIdentity(token, { policy, loadKeys, claimOnce, now = Math.floor(Date.now() / 1000) }) {
+export async function verifyIdentity(token, { policy, loadKeys, claimOnce, now }) {
   const reject = () => { throw new Error('identity rejected'); };
   if (typeof token !== 'string' || token.length > 16384) return reject();
   const parts = token.split('.');
@@ -24,6 +24,8 @@ export async function verifyIdentity(token, { policy, loadKeys, claimOnce, now =
     if (key.asymmetricKeyDetails.modulusLength < 2048 || !verify('RSA-SHA256', Buffer.from(`${parts[0]}.${parts[1]}`), key, Buffer.from(parts[2], 'base64url'))) return reject();
   } catch { return reject(); }
   if (!claims || claims.iss !== ISSUER || typeof policy.audience !== 'string' || !policy.audience || claims.aud !== policy.audience) return reject();
+  // Evaluate time after the potentially slow JWKS fetch and signature verification.
+  now ??= Math.floor(Date.now() / 1000);
   // No clock skew is accepted; identities are valid for at most ten minutes.
   if (!Number.isSafeInteger(claims.exp) || !Number.isSafeInteger(claims.nbf) || !Number.isSafeInteger(claims.iat) || claims.exp <= now || claims.nbf > now || claims.iat > now || claims.exp <= claims.iat || claims.nbf > claims.exp || claims.exp - claims.iat > 600 || now - claims.iat > 600) return reject();
   if (typeof claims.jti !== 'string' || !claims.jti || claims.jti.length > 256) return reject();
