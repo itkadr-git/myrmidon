@@ -35,7 +35,8 @@ test('gateway to separate mTLS upstream: projections, tenant boundaries and TLS 
     const isForeign = req.url.includes(foreign) || req.url.includes('OPE-2');
     const issue = { id: isForeign ? foreign : id, identifier: isForeign ? 'OPE-2' : 'OPE-1', companyId: isForeign ? 'other' : 'allowed', version: '1', secret: 'private-relation' };
     const document = { id: 'doc', latestRevisionId: 'rev', latestRevisionNumber: 1, body: 'criteria', secret: 'private-document' };
-    res.writeHead(200, { 'content-type': 'application/json' });
+    if (req.headers['if-match'] && req.headers['if-match'] !== '"rev"') { res.writeHead(412); res.end(); return; }
+    res.writeHead(200, { 'content-type': 'application/json', etag: '"rev"' });
     res.end(JSON.stringify({ issue, document }));
   });
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
@@ -65,7 +66,8 @@ test('gateway to separate mTLS upstream: projections, tenant boundaries and TLS 
   });
   for (const identifier of ['OPE-1', id]) {
     assert.deepEqual(JSON.parse((await call(`/api/issues/${identifier}`)).body), { identifier: 'OPE-1', companyId: 'allowed' });
-    assert.deepEqual(JSON.parse((await call(`/api/issues/${identifier}/documents/acceptance-scenarios`)).body), { id: 'doc', latestRevisionId: 'rev', body: 'criteria' });
+    assert.deepEqual(JSON.parse((await call(`/api/issues/${identifier}/documents/acceptance-scenarios`)).body), { identifier: 'OPE-1', companyId: 'allowed', document: { id: 'doc', revisionId: 'rev', body: 'criteria' } });
+    assert.equal((await call(`/api/issues/${identifier}/documents/acceptance-scenarios`, { headers: { authorization: `Bearer ${token}`, 'if-match': '"stale"' } })).status, 412);
   }
   for (const identifier of ['OPE-2', foreign]) {
     assert.equal((await call(`/api/issues/${identifier}`)).status, 404);

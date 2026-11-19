@@ -45,7 +45,7 @@ test('gateway projects a company-bound issue and denies foreign issue', async (t
   assert.ok(!denied.body.includes('company-b'));
 });
 
-test('document response is company-bound, projected and rejects a changing revision', async (t) => {
+test('document response uses a single atomic upstream read', async (t) => {
   const token = 'candidate-test-token';
   const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
   let reads = 0;
@@ -61,30 +61,10 @@ test('document response is company-bound, projected and rejects a changing revis
   }).on('error', reject));
   const allowed = await request();
   assert.equal(allowed.status, 200);
-  assert.deepEqual(JSON.parse(allowed.body), { id: 'doc-id', latestRevisionId: 'rev-1', body: 'criteria' });
+  assert.deepEqual(JSON.parse(allowed.body), { identifier: 'OPE-123', companyId: 'company-a', document: { id: 'doc-id', revisionId: 'rev-1', body: 'criteria' } });
   change = true;
-  assert.equal((await request()).status, 409);
-});
-
-test('document is withheld on an ABA change even when the visible issue and revision return to their original values', async (t) => {
-  const token = 'candidate-test-token';
-  const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
-  let version = 1;
-  const server = createServer(createHandler({ records,
-    readSnapshot: async () => {
-      const snapshot = { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: String(version) }, document: { id: 'doc-id', latestRevisionId: 'rev-1', latestRevisionNumber: 1, body: 'criteria' } };
-      version = 3; // A -> B -> A preserves visible content but advances the epoch.
-      return snapshot;
-    },
-  }));
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  t.after(() => server.close());
-  const result = await new Promise((resolve, reject) => get({ host: '127.0.0.1', port: server.address().port, path: '/api/issues/OPE-123/documents/acceptance-scenarios', headers: { authorization: `Bearer ${token}` } }, (res) => {
-    let body = ''; res.on('data', (chunk) => { body += chunk; }); res.on('end', () => resolve({ status: res.statusCode, body }));
-  }).on('error', reject));
-  assert.equal(result.status, 409);
-  assert.ok(!result.body.includes('criteria'));
+  assert.equal((await request()).status, 200);
+  assert.equal(reads, 1);
 });
 
 test('capture returns a revision-pinned combined projection and rejects a stale If-Match', async (t) => {
@@ -105,6 +85,11 @@ test('capture returns a revision-pinned combined projection and rejects a stale 
   assert.equal(capture.status, 200);
   assert.equal(capture.etag, '"rev-1"');
   assert.deepEqual(JSON.parse(capture.body), { identifier: 'OPE-123', companyId: 'company-a', document: { id: 'doc-id', revisionId: 'rev-1', body: 'criteria' } });
+  const verified = await request(capture.etag);
+  assert.equal(verified.status, 200);
+  assert.equal(verified.etag, capture.etag);
+  assert.deepEqual(JSON.parse(verified.body), JSON.parse(capture.body));
+  for (const invalid of ['*', 'W/"rev-1"', '"rev-1", "rev-2"']) assert.equal((await request(invalid)).status, 412);
   revision = 'rev-2';
   const stale = await request(capture.etag);
   assert.ok(stale.status === 409 || stale.status === 412);
@@ -130,23 +115,6 @@ test('revocation during upstream lookup fails closed and audit excludes request 
   assert.equal(events.length, 1);
   assert.ok(!JSON.stringify(events).includes(token));
   assert.ok(!JSON.stringify(events).includes('hidden'));
-});
-
-test('document is withheld when the issue changes company during lookup', async (t) => {
-  const token = 'candidate-test-token';
-  const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
-  let reads = 0;
-  const server = createServer(createHandler({ records,
-    readSnapshot: async () => ({ issue: { id: 'issue-id', identifier: 'OPE-123', companyId: ++reads === 1 ? 'company-a' : 'company-b', version: String(reads) }, document: { id: 'doc-id', latestRevisionId: 'rev-1', latestRevisionNumber: 1, body: 'criteria' } }),
-  }));
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  t.after(() => server.close());
-  const result = await new Promise((resolve, reject) => get({ host: '127.0.0.1', port: server.address().port, path: '/api/issues/OPE-123/documents/acceptance-scenarios', headers: { authorization: `Bearer ${token}` } }, (res) => {
-    let body = ''; res.on('data', (chunk) => { body += chunk; }); res.on('end', () => resolve({ status: res.statusCode, body }));
-  }).on('error', reject));
-  assert.notEqual(result.status, 200);
-  assert.ok(!result.body.includes('criteria'));
 });
 
 test('malformed snapshot documents are never returned', async (t) => {

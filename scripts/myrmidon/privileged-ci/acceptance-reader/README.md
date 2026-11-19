@@ -2,9 +2,8 @@
 
 This standalone gateway is not a production deployment. It exposes only the two
 company-bound GET projections in `reader.mjs`. The upstream must implement the
-atomic `acceptance-scenarios-snapshot` endpoint with its issue epoch and document
-revision generation. This
-contract has only been exercised against a fixture, not a live Myrmidon service.
+revision-pinned service endpoint specified below. This contract has only been
+exercised against a fixture, not a live Myrmidon service.
 
 ## Operation / Запуск
 
@@ -54,12 +53,19 @@ fail closed. Core must ensure the revision and body are immutable and belong to
 that document and issue; a revision lookup alone is not proof of currentness.
 The service credential must have no board/agent authority or broader routes.
 
+The required wire endpoint is `GET /api/service/issues/{identifier-or-uuid}/acceptance-scenarios`.
+It returns `{issue:{id,identifier,companyId,version},document:{id,latestRevisionId,latestRevisionNumber,body}}`
+(or a null document), with a strong ETag equal to the quoted revision ID. The
+reader forwards a single strong `If-Match`, rejects malformed or duplicate values,
+checks the upstream ETag and company, and returns one combined projection. The
+endpoint and its service actor do not exist in the current core; the board-only
+snapshot route is incompatible. mTLS alone is not the required service credential.
+
 The runner must capture the returned revision, verify it conditionally, and use
 only the verified revision. A conditional read does not make a later side effect
 atomic: privileged use requires its own atomic enforcement at the use boundary.
 No production activation is permitted until that boundary and the core actor are
-implemented and independently reviewed. The current reader still uses the older
-snapshot interface and does not implement this contract.
+implemented and independently reviewed.
 
 ## Threat model and limitations
 
@@ -71,11 +77,11 @@ rechecks credentials and document revision before response. Audit records contai
 only response status. TLS keys, credential store, config, audit and upstream are
 trusted operator assets; an operator or upstream compromise is outside this
 boundary. A shared filesystem must have coherent visibility for revocations.
-Each upstream read is an atomic snapshot. The document response compares two
-snapshot pins, including the monotonic issue epoch, so an observed ABA transition
-fails closed. A write after the final check remains invisible: these two GETs
-cannot provide an atomic verify-and-use boundary. Do not use this interface as a
-privileged CI gate until the run-scoped verification/use contract is implemented.
+Each response depends on a single atomic upstream read; the core must guarantee
+immutable revisions and conditional currentness, including ABA transitions. A write
+after the conditional check remains invisible: the reader cannot provide an
+atomic verify-and-use boundary. Do not use this interface as a privileged CI gate
+until the run-scoped verification/use contract is implemented.
 
 TLS alone does not establish network isolation: a runner must be prevented by
 network policy from reaching upstream directly. No such policy or live upstream

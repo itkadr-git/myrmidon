@@ -19,18 +19,12 @@ function validSnapshot(value) {
     doc.latestRevisionNumber > 0 && typeof doc.body === 'string')));
 }
 
-function pin(snapshot) {
-  const { issue, document } = snapshot;
-  return JSON.stringify([issue.id, issue.identifier, issue.companyId, BigInt(issue.version).toString(),
-    document && [document.id, document.latestRevisionId, document.latestRevisionNumber, document.body]]);
-}
-
 export function createHandler({ records, credentialStore, readSnapshot, audit = async () => {} }) {
   const checkCredential = (header) => credentialStore ? credentialStore.authenticate(header) : authenticate(header, records);
   return async (req, res) => {
     const authorizations = req.rawHeaders.filter((_, index) => index % 2 === 0 && req.rawHeaders[index].toLowerCase() === 'authorization').length;
     const companyId = authorizations === 1 ? checkCredential(req.headers.authorization) : null;
-    const respond = async (status, body = {}) => {
+    const respond = async (status, body = {}, etag) => {
       if (status === 200 && checkCredential(req.headers.authorization) !== companyId) {
         status = 401;
         body = {};
@@ -45,25 +39,29 @@ export function createHandler({ records, credentialStore, readSnapshot, audit = 
         status = 401;
         body = {};
       }
-      res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...(status === 200 && etag ? { etag } : {}) });
       res.end(JSON.stringify(body));
     };
     if (!companyId) return respond(401);
     const path = parsePath(req.url);
     if (req.method !== 'GET' || !path || Object.keys(req.headers).some((name) => name.includes('method-override') || name === 'x-http-method')) return respond(404);
+    const matches = req.rawHeaders.filter((_, index) => index % 2 === 0 && req.rawHeaders[index].toLowerCase() === 'if-match').length;
+    const match = req.headers['if-match'];
+    if (matches > 1 || (matches === 1 && (typeof match !== 'string' || !/^"[A-Za-z0-9_-]+"$/.test(match)))) return respond(412);
     try {
-      const snapshot = await readSnapshot(path.issue);
+      const snapshot = await readSnapshot(path.issue, match);
       if (snapshot === null) return respond(404);
       if (!validSnapshot(snapshot)) return respond(502);
       const { issue, document } = snapshot;
       if (issue.companyId !== companyId || (path.issue !== issue.id && path.issue !== issue.identifier)) return respond(404);
       if (!path.document) return respond(200, { identifier: issue.identifier, companyId: issue.companyId });
       if (!document) return respond(404);
-      const current = await readSnapshot(issue.id);
-      if (!validSnapshot(current) || pin(snapshot) !== pin(current)) return respond(409);
-      return respond(200, { id: document.id, latestRevisionId: document.latestRevisionId, body: document.body });
-    } catch {
-      return respond(502);
+      if (!/^[A-Za-z0-9_-]+$/.test(document.latestRevisionId)) return respond(502);
+      const etag = `"${document.latestRevisionId}"`;
+      if (match && match !== etag) return respond(412);
+      return respond(200, { identifier: issue.identifier, companyId: issue.companyId, document: { id: document.id, revisionId: document.latestRevisionId, body: document.body } }, etag);
+    } catch (error) {
+      return respond(error?.code === 'PRECONDITION_FAILED' ? 412 : 502);
     }
   };
 }
