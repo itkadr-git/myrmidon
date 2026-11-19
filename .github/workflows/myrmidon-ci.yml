@@ -704,6 +704,15 @@ jobs:
       - name: Root contract tests (node:test)
         run: node --test scripts/*.myrmidon.test.mjs
 
+      - name: Scan serialization VM test
+        run: |
+          set -euo pipefail
+          if [ -f scripts/dev-runner.scan-serialization.test.mjs ]; then
+            node --experimental-vm-modules --test scripts/dev-runner.scan-serialization.test.mjs
+          else
+            echo 'Scan serialization test is not present in this checkout.'
+          fi
+
       - name: Dev runner argv regression test
         if: ${{ !cancelled() }}
         run: |
