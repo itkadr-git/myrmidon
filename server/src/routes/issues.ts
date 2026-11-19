@@ -131,6 +131,7 @@ import {
   eq,
   inArray,
   isNull,
+  lt,
   ne,
   notInArray,
   or,
@@ -15801,6 +15802,26 @@ export function issueRoutes(
         });
         logReviewWriteCi({ issueId: existing.id, runId: actor.runId, ci, diagnostic });
         if (ci.state === "pending" || ci.state === "unknown") {
+          if (ci.reason?.includes("budget_exhausted")) {
+            // A triggered CI-wait monitor otherwise gets rearmed by the stale
+            // monitor sweep and repeatedly wakes a reviewer who cannot decide.
+            await db.update(issueRows).set({
+              monitorNextCheckAt: new Date(Date.now() + 61 * 60_000),
+              monitorWakeRequestedAt: null,
+              executionState: sql`jsonb_set(${issueRows.executionState}, '{reviewCiBudgetDeferred}', 'true'::jsonb, true)`,
+            }).where(and(
+              eq(issueRows.id, existing.id),
+              eq(issueRows.companyId, existing.companyId),
+              eq(issueRows.status, "in_review"),
+              or(
+                isNull(issueRows.monitorNextCheckAt),
+                lt(issueRows.monitorNextCheckAt, new Date(Date.now() + 60 * 60_000)),
+              ),
+              sql`${issueRows.executionState} -> 'monitor' ->> 'status' = 'triggered'`,
+              sql`${issueRows.executionState} -> 'monitor' ->> 'serviceName' = 'Review CI wait'`,
+              sql`${issueRows.executionState} -> 'currentParticipant' ->> 'agentId' = ${actor.agentId ?? null}`,
+            ));
+          }
           throw unprocessable(
             ci.state === "pending"
               ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."

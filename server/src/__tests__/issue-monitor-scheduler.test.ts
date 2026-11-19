@@ -400,6 +400,120 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     }
   });
 
+  it("does not dispatch a stale review claim after the monitor is rescheduled", async () => {
+    const { issueId, agentId, nextCheckAt } = await seedFixture({
+      issueStatus: "in_review", monitor: { serviceName: "Review CI wait" },
+    });
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    await db.update(issues).set({ executionState: {
+      status: "pending", currentStageId: randomUUID(), currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId, userId: null },
+      returnAssignee: { type: "agent", agentId, userId: null },
+      reviewRequest: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+      monitor: parseIssueExecutionState(before!.executionState)?.monitor,
+    } }).where(eq(issues.id, issueId));
+    const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_reschedule_stale_review_claim() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_next_check_at = '${rescheduledAt.toISOString()}'::timestamptz,
+            monitor_wake_requested_at = NULL,
+            execution_state = jsonb_set(execution_state, '{monitor,nextCheckAt}', to_jsonb('${rescheduledAt.toISOString()}'::text))
+          WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_reschedule_stale_review_claim AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_reschedule_stale_review_claim();
+    `));
+    try {
+      const result = await heartbeatService(db, { executesRuns: false }).tickTimers(nextCheckAt);
+      expect(result.enqueued).toBe(0);
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(after!.monitorNextCheckAt?.toISOString()).toBe(rescheduledAt.toISOString());
+      await db.execute(sql.raw("DROP TRIGGER test_reschedule_stale_review_claim ON issues; DROP FUNCTION test_reschedule_stale_review_claim();"));
+      expect((await heartbeatService(db, { executesRuns: false }).tickTimers(rescheduledAt)).enqueued).toBe(1);
+      expect((await heartbeatService(db, { executesRuns: false }).tickTimers(rescheduledAt)).enqueued).toBe(0);
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_reschedule_stale_review_claim ON issues; DROP FUNCTION IF EXISTS test_reschedule_stale_review_claim();"));
+      await db.delete(heartbeatRuns);
+    }
+  });
+
+  it("does not wake an old claim when new evidence replaces it at the same schedule", async () => {
+    const { issueId, nextCheckAt } = await seedFixture();
+    const newerClaimAt = new Date(nextCheckAt.getTime() + 60_000);
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_replace_claim_with_evidence() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_wake_requested_at = '${newerClaimAt.toISOString()}'::timestamptz,
+            monitor_notes = 'new evidence'
+          WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_replace_claim_with_evidence AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_replace_claim_with_evidence();
+    `));
+    try {
+      const result = await heartbeatService(db, { executesRuns: false }).tickTimers(nextCheckAt);
+      expect(result.enqueued).toBe(0);
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(after!.monitorWakeRequestedAt?.toISOString()).toBe(newerClaimAt.toISOString());
+      expect(after!.monitorNotes).toBe("new evidence");
+      await db.execute(sql.raw("DROP TRIGGER test_replace_claim_with_evidence ON issues; DROP FUNCTION test_replace_claim_with_evidence();"));
+      await db.update(issues).set({ monitorWakeRequestedAt: null }).where(eq(issues.id, issueId));
+      const scheduler = heartbeatService(db, { executesRuns: false });
+      expect((await scheduler.tickTimers(newerClaimAt)).enqueued).toBe(1);
+      expect((await scheduler.tickTimers(newerClaimAt)).enqueued).toBe(0);
+      const requests = await db.select().from(agentWakeupRequests);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.payload).toMatchObject({ monitorNotes: "new evidence" });
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_replace_claim_with_evidence ON issues; DROP FUNCTION IF EXISTS test_replace_claim_with_evidence();"));
+      await db.delete(heartbeatRuns);
+    }
+  });
+
+  it("does not dispatch a claim invalidated by replacement evidence before admission", async () => {
+    const { issueId, nextCheckAt } = await seedFixture();
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_invalidate_claim_with_evidence() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_wake_requested_at = NULL, monitor_notes = 'replacement evidence'
+          WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_invalidate_claim_with_evidence AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_invalidate_claim_with_evidence();
+    `));
+    try {
+      const scheduler = heartbeatService(db, { executesRuns: false });
+      expect((await scheduler.tickTimers(nextCheckAt)).enqueued).toBe(0);
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(after!.monitorNotes).toBe("replacement evidence");
+      expect(after!.monitorNextCheckAt?.toISOString()).toBe(nextCheckAt.toISOString());
+      expect(after!.monitorWakeRequestedAt).toBeNull();
+      await db.execute(sql.raw("DROP TRIGGER test_invalidate_claim_with_evidence ON issues; DROP FUNCTION test_invalidate_claim_with_evidence();"));
+      expect((await scheduler.tickTimers(new Date(nextCheckAt.getTime() + 60_000))).enqueued).toBe(1);
+      expect((await scheduler.tickTimers(new Date(nextCheckAt.getTime() + 60_000))).enqueued).toBe(0);
+      const requests = await db.select().from(agentWakeupRequests);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.payload).toMatchObject({ monitorNotes: "replacement evidence" });
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_invalidate_claim_with_evidence ON issues; DROP FUNCTION IF EXISTS test_invalidate_claim_with_evidence();"));
+      await db.delete(heartbeatRuns);
+    }
+  });
+
   it("preserves a concurrent reschedule when an old monitor is deferred for CI", async () => {
     const { companyId, issueId, nextCheckAt } = await seedFixture();
     const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
@@ -431,6 +545,62 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     }
   });
 
+  it("does not release a newer claim when a manual wake fails", async () => {
+    const { issueId, nextCheckAt } = await seedFixture({ agentStatus: "paused" });
+    const newerClaimAt = new Date(nextCheckAt.getTime() + 60_000);
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_replace_manual_monitor_claim() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_wake_requested_at = '${newerClaimAt.toISOString()}'::timestamptz
+          WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_replace_manual_monitor_claim AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_replace_manual_monitor_claim();
+    `));
+    try {
+      await expect(heartbeatService(db).triggerIssueMonitor(issueId, {
+        now: nextCheckAt, actorType: "user", actorId: "local-board",
+      })).rejects.toThrow();
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(after!.monitorWakeRequestedAt?.toISOString()).toBe(newerClaimAt.toISOString());
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER test_replace_manual_monitor_claim ON issues; DROP FUNCTION test_replace_manual_monitor_claim();"));
+    }
+  });
+
+  it("does not clear a newer claim when an old scheduled wake is skipped", async () => {
+    const { issueId, nextCheckAt } = await seedFixture({ agentStatus: "paused" });
+    const newerClaimAt = new Date(nextCheckAt.getTime() + 60_000);
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_replace_skipped_monitor_claim() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_wake_requested_at = '${newerClaimAt.toISOString()}'::timestamptz,
+            monitor_notes = 'new evidence'
+          WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_replace_skipped_monitor_claim AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_replace_skipped_monitor_claim();
+    `));
+    try {
+      const result = await heartbeatService(db, { executesRuns: false }).tickTimers(nextCheckAt);
+      expect(result.enqueued).toBe(0);
+      expect(result.skipped).toBe(1);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue!.monitorNextCheckAt?.toISOString()).toBe(nextCheckAt.toISOString());
+      expect(issue!.monitorWakeRequestedAt?.toISOString()).toBe(newerClaimAt.toISOString());
+      expect(issue!.monitorNotes).toBe("new evidence");
+      expect((await db.select().from(agentWakeupRequests)).every((request) => request.status === "skipped")).toBe(true);
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_replace_skipped_monitor_claim ON issues; DROP FUNCTION IF EXISTS test_replace_skipped_monitor_claim();"));
+    }
+  });
+
   it("preserves a concurrent reschedule when an old monitor cannot wake a paused agent", async () => {
     const { issueId, nextCheckAt } = await seedFixture({ agentStatus: "paused" });
     const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
@@ -455,6 +625,158 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       expect(normalizeIssueExecutionPolicy(after!.executionPolicy)?.monitor?.nextCheckAt).toBe(rescheduledAt.toISOString());
     } finally {
       await db.execute(sql.raw("DROP TRIGGER test_reschedule_before_failed_wake ON issues; DROP FUNCTION test_reschedule_before_failed_wake();"));
+    }
+  });
+
+  it("does not repeat an admitted monitor wake when its claim is reclaimed before completion", async () => {
+    const { nextCheckAt } = await seedFixture();
+    let signalAdmission!: () => void;
+    let releaseAdmission!: () => void;
+    const admitted = new Promise<void>((resolve) => { signalAdmission = resolve; });
+    const released = new Promise<void>((resolve) => { releaseAdmission = resolve; });
+    let paused = false;
+    const pausedDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property !== "transaction") return Reflect.get(target, property, receiver);
+        return async (...args: Parameters<typeof db.transaction>) => {
+          const result = await db.transaction(...args);
+          if (!paused && (await db.select().from(agentWakeupRequests)).length > 0) {
+            paused = true;
+            signalAdmission();
+            await released;
+          }
+          return result;
+        };
+      },
+    });
+    const first = heartbeatService(pausedDb, { executesRuns: false }).tickTimers(nextCheckAt);
+    try {
+      await admitted;
+      await heartbeatService(db, { executesRuns: false }).tickTimers(new Date(nextCheckAt.getTime() + 6 * 60_000));
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+    } finally {
+      releaseAdmission();
+      await first;
+      await db.delete(heartbeatRuns);
+    }
+  });
+
+  it("does not repeat a deferred monitor wake when its claim is reclaimed after admission", async () => {
+    const { companyId, issueId, nextCheckAt } = await seedFixture();
+    const runId = randomUUID();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({ id: otherAgentId, companyId, name: "Other Bot", role: "engineer", status: "active", adapterType: "process", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: otherAgentId, status: "running", contextSnapshot: { issueId } });
+    await db.update(issues).set({ executionRunId: runId, executionAgentNameKey: "other bot", executionLockedAt: new Date() }).where(eq(issues.id, issueId));
+    let signalAdmission!: () => void;
+    let releaseAdmission!: () => void;
+    const admitted = new Promise<void>((resolve) => { signalAdmission = resolve; });
+    const released = new Promise<void>((resolve) => { releaseAdmission = resolve; });
+    let paused = false;
+    const pausedDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property !== "transaction") return Reflect.get(target, property, receiver);
+        return async (...args: Parameters<typeof db.transaction>) => {
+          const result = await db.transaction(...args);
+          if (!paused && (await db.select().from(agentWakeupRequests)).length > 0) {
+            paused = true;
+            signalAdmission();
+            await released;
+          }
+          return result;
+        };
+      },
+    });
+    const first = heartbeatService(pausedDb, { executesRuns: false }).tickTimers(nextCheckAt);
+    try {
+      await admitted;
+      expect((await db.select().from(agentWakeupRequests))[0]?.status).toBe("deferred_issue_execution");
+      const [admittedIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(admittedIssue!.monitorNextCheckAt).toBeNull();
+      await heartbeatService(db, { executesRuns: false }).tickTimers(new Date(nextCheckAt.getTime() + 6 * 60_000));
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue!.monitorNextCheckAt).toBeNull();
+    } finally {
+      releaseAdmission();
+      await first;
+      await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, issueId));
+      await db.delete(heartbeatRuns);
+    }
+  });
+
+  it("does not repeat a monitor wake coalesced into a queued execution", async () => {
+    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "queued", contextSnapshot: { issueId } });
+    await db.update(issues).set({ executionRunId: runId, executionAgentNameKey: "monitor bot", executionLockedAt: new Date() }).where(eq(issues.id, issueId));
+    let signalAdmission!: () => void;
+    let releaseAdmission!: () => void;
+    const admitted = new Promise<void>((resolve) => { signalAdmission = resolve; });
+    const released = new Promise<void>((resolve) => { releaseAdmission = resolve; });
+    let paused = false;
+    const pausedDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property !== "transaction") return Reflect.get(target, property, receiver);
+        return async (...args: Parameters<typeof db.transaction>) => {
+          const result = await db.transaction(...args);
+          if (!paused && (await db.select().from(agentWakeupRequests)).some((request) => request.status === "coalesced")) {
+            paused = true;
+            signalAdmission();
+            await released;
+          }
+          return result;
+        };
+      },
+    });
+    const first = heartbeatService(pausedDb, { executesRuns: false }).tickTimers(nextCheckAt);
+    try {
+      await admitted;
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue!.monitorNextCheckAt).toBeNull();
+      await heartbeatService(db, { executesRuns: false }).tickTimers(new Date(nextCheckAt.getTime() + 6 * 60_000));
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(run!.contextSnapshot).toMatchObject({ issueId, monitorNotes: "Check deploy" });
+    } finally {
+      releaseAdmission();
+      await first;
+      await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, issueId));
+      await db.delete(heartbeatRuns);
+    }
+  });
+
+  it("dispatches replacement evidence at the same schedule after an admitted wake", async () => {
+    const { issueId, nextCheckAt } = await seedFixture();
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_replace_evidence_on_admission() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.payload->>'monitorNotes' = 'Check deploy' THEN
+          UPDATE issues SET monitor_wake_requested_at = NULL, monitor_notes = 'replacement evidence'
+          WHERE id = '${issueId}'::uuid;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_replace_evidence_on_admission AFTER INSERT ON agent_wakeup_requests
+      FOR EACH ROW EXECUTE FUNCTION test_replace_evidence_on_admission();
+    `));
+    try {
+      const scheduler = heartbeatService(db, { executesRuns: false });
+      expect((await scheduler.tickTimers(nextCheckAt)).enqueued).toBe(1);
+      const [replacement] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(replacement!.monitorNotes).toBe("replacement evidence");
+      expect(replacement!.monitorNextCheckAt?.toISOString()).toBe(nextCheckAt.toISOString());
+      const retryAt = new Date(nextCheckAt.getTime() + 60_000);
+      expect((await scheduler.tickTimers(retryAt)).enqueued).toBe(1);
+      expect((await scheduler.tickTimers(retryAt)).enqueued).toBe(0);
+      const requests = await db.select().from(agentWakeupRequests);
+      expect(requests).toHaveLength(2);
+      expect(requests.map((request) => request.payload?.monitorNotes)).toEqual([
+        "Check deploy", "replacement evidence",
+      ]);
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_replace_evidence_on_admission ON agent_wakeup_requests; DROP FUNCTION IF EXISTS test_replace_evidence_on_admission();"));
+      await db.delete(heartbeatRuns);
     }
   });
 
@@ -788,6 +1110,41 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
     expect(await db.select().from(heartbeatRuns)).toHaveLength(1);
     expect(await db.select().from(issueRecoveryActions)).toMatchObject([{ ownerType: "board", evidence: { runId: sourceRunId } }]);
+  });
+
+  it("does not schedule quota recovery from an invalidated monitor claim", async () => {
+    const sourceRunId = randomUUID();
+    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture({
+      monitor: { serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME, externalRef: sourceRunId },
+    });
+    await db.insert(heartbeatRuns).values({
+      id: sourceRunId, companyId, agentId, status: "failed", errorCode: "provider_quota",
+      finishedAt: new Date("2026-04-11T12:00:00.000Z"), contextSnapshot: { issueId },
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    });
+    const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_invalidate_quota_claim() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_next_check_at = '${rescheduledAt.toISOString()}'::timestamptz,
+            monitor_wake_requested_at = NULL WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_invalidate_quota_claim AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_invalidate_quota_claim();
+    `));
+    try {
+      await heartbeatService(db, { executesRuns: false }).tickTimers(nextCheckAt);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, sourceRunId))).toHaveLength(0);
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue!.monitorNextCheckAt?.toISOString()).toBe(rescheduledAt.toISOString());
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_invalidate_quota_claim ON issues; DROP FUNCTION IF EXISTS test_invalidate_quota_claim();"));
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.retryOfRunId, sourceRunId));
+    }
   });
 
   it("wakes a cross-agent review participant for provider quota monitors", async () => {
