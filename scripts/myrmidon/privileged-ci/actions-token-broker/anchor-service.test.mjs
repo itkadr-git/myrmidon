@@ -4,7 +4,9 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { X509Certificate } from 'node:crypto';
+import { randomBytes, X509Certificate } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
+import { createAsyncAuthenticatedAudit } from './authenticated-audit.mjs';
 import { provisionSqliteAnchor, createSqliteAnchor } from './sqlite-anchor.mjs';
 import { createRemoteAnchor } from './remote-anchor.mjs';
 import { createAnchorServer } from './anchor-service.mjs';
@@ -40,7 +42,28 @@ test('independent anchor service persists CAS across restart and authorizes the 
       assert.equal(await client(instance.server, 'client').compareAndSet(zero, next), false);
     } finally { await new Promise(resolve => instance.server.close(resolve)); instance.store.close(); }
     instance = await start();
-    try { assert.deepEqual(await client(instance.server, 'client').read(), next); }
-    finally { await new Promise(resolve => instance.server.close(resolve)); instance.store.close(); }
+    try {
+      const anchor = client(instance.server, 'client');
+      assert.deepEqual(await anchor.read(), next);
+      await assert.rejects(createAsyncAuthenticatedAudit(join(dir, 'empty.sqlite'), randomBytes(32), anchor), /anchor mismatch/);
+    } finally { await new Promise(resolve => instance.server.close(resolve)); instance.store.close(); }
+
+    // A separate anchor starts at genesis; exercise the real audit over mTLS.
+    const isolatedPath = join(dir, 'independent.sqlite');
+    provisionSqliteAnchor(isolatedPath);
+    const store = createSqliteAnchor(isolatedPath);
+    const server = createAnchorServer({ tls, store, allowedFingerprint256: fingerprint });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const anchor = client(server, 'client'), auditPath = join(dir, 'audit.sqlite'), auditKey = randomBytes(32);
+      const audit = await createAsyncAuthenticatedAudit(auditPath, auditKey, anchor);
+      await audit.record('issued');
+      await audit.record('revoked');
+      audit.close();
+      const db = new DatabaseSync(auditPath);
+      db.exec('DELETE FROM audit_events WHERE seq = 2');
+      db.close();
+      await assert.rejects(createAsyncAuthenticatedAudit(auditPath, auditKey, anchor), /anchor mismatch/);
+    } finally { await new Promise(resolve => server.close(resolve)); store.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
