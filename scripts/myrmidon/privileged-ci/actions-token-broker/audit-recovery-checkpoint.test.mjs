@@ -72,6 +72,42 @@ test('audit outage retries failed revocation and preserves checkpoint after rest
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('lost revocation response remains fenced when later retries are rejected', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-recovery-lost-revoke-'));
+  const credentialPath = join(dir, 'credentials.sqlite'), credentialKey = randomBytes(32);
+  let head = { seq: 0, mac: '' }, attempts = 0, delays = 0;
+  const credentialAnchor = { read: async () => ({ ...head }), compareAndSet: async (previous, next) => {
+    if (JSON.stringify(previous) !== JSON.stringify(head)) return false;
+    head = { ...next }; return true;
+  } };
+  const alerts = [];
+  try {
+    let store = createCredentialStore(credentialPath, credentialKey);
+    const checkpoint = await createCredentialCheckpoint(store, credentialAnchor, { provision: true });
+    await checkpointCredentialStore(store, checkpoint).put('known', { token: 'fixture-known' }, 'owner');
+    store.close();
+    await assert.rejects(createAuditedSupervisedServer({}, {
+      auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32),
+      auditAnchor: { read: async () => { throw new Error('audit offline'); }, compareAndSet: async () => false },
+      credentialPath, credentialKey, alert: async event => alerts.push(event),
+      installation: { revoke: async token => {
+        assert.equal(token, 'fixture-known');
+        if (++attempts === 1) throw new Error('revocation response lost');
+        throw new Error('upstream rejects the now-invalid token');
+      } },
+      delay: async () => { if (++delays === 2) throw new Error('stop fixture'); },
+    }), /audit offline/);
+    assert.equal(attempts, 2);
+    assert.equal(delays, 2);
+    assert.ok(alerts.includes('credential_recovery_failed'));
+    store = createCredentialStore(credentialPath, credentialKey);
+    try {
+      await createCredentialCheckpoint(store, credentialAnchor);
+      assert.equal(store.hasRetainedCredentials(), true);
+    } finally { store.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('audit outage without credential anchor never recovers unverified credentials', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'audit-recovery-no-anchor-'));
   const credentialPath = join(dir, 'credentials.sqlite'), credentialKey = randomBytes(32);

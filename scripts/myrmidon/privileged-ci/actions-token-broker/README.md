@@ -161,8 +161,10 @@ secret management, least privilege and key rotation.
   returning a broker and refuses startup when any revoke fails. It is not a
   deployed service, distributed lock, or scheduled worker; operators must stop
   every issuer sharing the store before recovery because it also revokes active
-  tokens. A successful upstream revoke followed by a failed database commit can
-  require manual reconciliation.
+  tokens. A successful upstream revoke followed by a failed database commit or a lost
+  revocation response can require manual reconciliation. If GitHub later rejects
+  the same token, that response is not evidence of successful revocation: recovery
+  retains the credential and stays fenced rather than treating an error as success.
 - The audit and replay anchors alone do not authenticate the credential database.
   The supervised audited path now verifies an independent credential checkpoint
   before startup and before audit-failure recovery, and fences credential mutations
