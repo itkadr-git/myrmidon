@@ -232,8 +232,10 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         // Protect the revocation fence against local store rollback as well.
         if (anchoredIssuance) await record('issuance_pending');
         if (auditFailed) throw new Error('audit unavailable');
+        let revocationAttempted = false;
         try {
           await store.withOwned(handle, owner, async credential => {
+            revocationAttempted = true;
             await installation.revoke(credential.token);
           });
           await record('revoked');
@@ -247,6 +249,8 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
           }
           if (anchoredIssuance) await record('issuance_resolved');
         } catch (error) {
+          // A failed revoke is ambiguous even if both the reservation and outbox are lost.
+          if (revocationAttempted || durable || anchoredIssuance) auditFailed = true;
           try { if (typeof store.queueAlert === 'function') await store.queueAlert('credential_recovery_failed'); } catch { /* Reservation or process latch remains in force. */ }
           try { if (typeof alert === 'function') await alert('credential_recovery_failed'); } catch { /* Recovery retries the alert. */ }
           throw error;
