@@ -12,6 +12,17 @@ function memoryOutbox() {
   return { queueAlert: async event => pending.add(event), pendingAlerts: async () => [...pending], acknowledgeAlert: async event => pending.delete(event) };
 }
 
+test('a supervisor cannot start issuance twice after successful recovery', async () => {
+  let starts = 0;
+  const supervisor = createRecoverySupervisor({
+    store: memoryOutbox(), recover: async () => ({ failed: 0, pending: false, alertFailed: false }),
+    alert: async () => {}, start: async () => { starts++; }, delay: async () => {},
+  });
+  await supervisor.run();
+  await assert.rejects(supervisor.run());
+  assert.equal(starts, 1);
+});
+
 test('failed recovery alert survives a supervisor and store restart', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'recovery-outbox-'));
   const path = join(dir, 'store.sqlite'), key = randomBytes(32);
