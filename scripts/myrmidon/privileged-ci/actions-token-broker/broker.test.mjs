@@ -148,7 +148,7 @@ test('recovery alerts about pending issuance even when retained revocation fails
     await store.reserveIssuance('unknown');
     store.close();
     await assert.rejects(createRecoveredSingleHostBroker(options));
-    assert.deepEqual(alerts, ['issuance_ambiguous', 'credential_recovery_failed']);
+    assert.deepEqual(alerts.sort(), ['credential_recovery_failed', 'issuance_ambiguous']);
     const reopened = createCredentialStore(credentialPath, credentialKey);
     assert.deepEqual(await reopened.pendingIssuances(), ['unknown']);
     reopened.close();
@@ -203,7 +203,7 @@ test('recovery revokes retained credentials and blocks issuance when recovery fa
     first.close();
     await assert.rejects(createRecoveredSingleHostBroker(options), /recovery failed/);
     fail = false;
-    const recovered = await createRecoveredSingleHostBroker(options);
+    const recovered = await createRecoveredSingleHostBroker({ ...options, alert: async () => {} });
     recovered.close();
     assert.deepEqual(revoked, ['fixture', 'fixture']);
   } finally { rmSync(dir, { recursive: true, force: true }); }

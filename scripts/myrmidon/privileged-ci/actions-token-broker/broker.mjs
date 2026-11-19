@@ -37,11 +37,17 @@ export async function createRecoveredSingleHostBroker({ credentialPath, credenti
     store = createCredentialStore(credentialPath, credentialKey);
     const result = await store.revokeRetained(token => options.installation.revoke(token));
     const pending = (await store.pendingIssuances()).length > 0;
-    // Attempt both notifications independently; durable rows remain on any failure.
-    let alertFailed = false;
+    // Persist each notification before delivery and retry the outbox on restart.
     for (const event of [pending && 'issuance_ambiguous', result.failed && 'credential_recovery_failed'].filter(Boolean)) {
-      try { if (typeof options.alert === 'function') await options.alert(event); }
-      catch { alertFailed = true; }
+      await store.queueAlert(event);
+    }
+    let alertFailed = false;
+    for (const event of await store.pendingAlerts()) {
+      try {
+        if (typeof options.alert !== 'function') throw new Error('alert sink unavailable');
+        await options.alert(event);
+        await store.acknowledgeAlert(event);
+      } catch { alertFailed = true; }
     }
     if (result.failed) throw new Error('credential recovery failed');
     if (pending) throw new Error('ambiguous issuance requires operator containment');
