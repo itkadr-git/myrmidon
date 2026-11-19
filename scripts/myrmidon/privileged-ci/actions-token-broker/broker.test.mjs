@@ -21,6 +21,17 @@ function jwt(jti, overrides = {}) {
   return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
 }
 
+test('identity expiring during reservation never contacts installation API', async () => {
+  let calls = 0;
+  const store = { reserveIssuance: async () => { await new Promise(resolve => setTimeout(resolve, 2100)); },
+    resolveIssuance: async () => {}, put: async () => {}, queueAlert: async () => {} };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    installation: { issue: async () => { calls++; return { token: 'fixture' }; } }, audit: async () => {}, alert: async () => {} });
+  const now = Math.floor(Date.now() / 1000);
+  await assert.rejects(broker.exchange(jwt('expires-during-reservation', { iat: now, nbf: now, exp: now + 1 })));
+  assert.equal(calls, 0);
+});
+
 test('token expiring during issuance audit is not returned and is revoked', async () => {
   let revoked = 0, pending = false;
   const store = {
