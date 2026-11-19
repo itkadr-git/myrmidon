@@ -6,7 +6,7 @@ test('installation issuance uses only the configured repository and permissions'
   const calls = [];
   const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'app-fixture', request: async (url, init) => {
     calls.push({ url, init });
-    return { ok: true, json: async () => ({ token: 'issued-fixture', expires_at: '2030-01-01T00:00:00Z' }) };
+    return { ok: true, json: async () => ({ token: 'issued-fixture', expires_at: '2030-01-01T00:00:00Z', permissions: { contents: 'read', metadata: 'read' }, repositories: [{ id: 123 }] }) };
   } });
   const token = await client.issue();
   assert.equal(token.token, 'issued-fixture');
@@ -18,4 +18,16 @@ test('installation issuance uses only the configured repository and permissions'
   assert.equal(calls[1].init.method, 'DELETE');
   assert.equal(calls[1].init.redirect, 'error');
   assert.equal(calls[1].init.headers.authorization, 'Bearer issued-fixture');
+});
+
+test('rejects and revokes an upstream token with expanded permissions', async () => {
+  const calls = [];
+  const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'app-fixture', request: async (url, init) => {
+    calls.push({ url, init });
+    if (init.method === 'DELETE') return { ok: true };
+    return { ok: true, json: async () => ({ token: 'unsafe-fixture', expires_at: '2030-01-01T00:00:00Z', permissions: { contents: 'write' }, repositories: [{ id: 123 }] }) };
+  } });
+  await assert.rejects(client.issue());
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].init.method, 'DELETE');
 });
