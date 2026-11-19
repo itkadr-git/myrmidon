@@ -372,11 +372,11 @@ async function readHeadCi(input: {
     if (!Array.isArray(workflowRuns) || typeof payload?.total_count !== "number" || payload.total_count > workflowRuns.length) {
       return { ok: false, reason: "workflow_runs:incomplete_payload" };
     }
-    const excludedSuites = new Set(workflowRuns.flatMap((entry) => {
-      const run = asRecord(entry);
-      return typeof run?.check_suite_id === "number" && pendingSuites.has(run.check_suite_id) &&
-        run.head_sha === headSha && run.event === "pull_request" &&
-        run.path === ".github/workflows/review-label-sync.yml" ? [run.check_suite_id] : [];
+    const excludedSuites = new Set([...pendingSuites].filter((suiteId) => {
+      const matches = workflowRuns.map(asRecord).filter((run) => run?.check_suite_id === suiteId);
+      const run = matches[0];
+      return matches.length === 1 && run?.head_sha === headSha && run.event === "pull_request" &&
+        run.path === ".github/workflows/review-label-sync.yml";
     }));
     if (excludedSuites.size > 0) {
       const relevant = allRunsList.filter((entry) => {
