@@ -193,7 +193,7 @@ describePostgres("shared GitHub review budget", () => {
       if (url === "https://api.github.com/repos/acme/app/pulls/7") return Response.json({ state: "open", head: { sha: headSha } });
       return new Response("", { status: 503 });
     });
-    const resolve = createReviewPullRequestCiResolver({ db, fetch: transport, tokenProvider: async () => null });
+    const resolve = createReviewPullRequestCiResolver({ db, fetch: transport, tokenProvider: async () => null, admission: true });
     const result = await resolve({ companyId: company.id, issueId: issue.id });
     expect(result.state).toBe(state);
     expect(transport).toHaveBeenCalledTimes(calls);

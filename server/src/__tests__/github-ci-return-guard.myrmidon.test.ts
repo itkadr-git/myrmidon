@@ -267,7 +267,7 @@ describeEmbeddedPostgres.sequential("CI deliveries by the final result of the he
         return new Response("unexpected", { status: 500 });
       });
       const tokenProvider = vi.fn(async () => null);
-      const resolve = createReviewPullRequestCiResolver({ db, fetch, tokenProvider });
+      const resolve = createReviewPullRequestCiResolver({ db, fetch, tokenProvider, admission: true });
       await expect(resolve({ companyId: seeded.companyId, issueId: seeded.issueId })).resolves.toMatchObject({
         state: "complete", headSha: HEAD, finalCheckConclusion: "success",
       });

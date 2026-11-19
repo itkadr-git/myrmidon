@@ -21,6 +21,17 @@
 // the budget is gone. The stranded-issue sweep asks for the CI of every review
 // stage with an open PR on each heartbeat tick, which made "review-recovery"
 // the largest user of the App's 5000/h budget.
+//
+// myrmidon(OPE-15004): the resolver serves two kinds of readers and they do
+// not share one freshness contract. Review admission (the write verdict gate
+// and the review hand-off admission) must never be answered from memory: it
+// passes `admission: true`, which skips the read cache on every GitHub read
+// and confirms a stored webhook verdict against the current head before using
+// it. Non-admission consumers (the stranded-issue sweep, the Review CI wait
+// monitor tick, idle pickup, the wake CI gate, the review-routing sweep) keep
+// the cache: their ticks ask every few seconds and must not turn into a
+// request storm, and they never decide the verdict — the write gate the
+// reviewer hits afterwards re-reads GitHub fresh and fails closed.
 
 import { createHash } from "node:crypto";
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
@@ -618,7 +629,17 @@ export function createReviewPullRequestCiResolver(input: {
   fetch?: FetchLike;
   tokenProvider?: (companyId: string, repository: string) => Promise<string | null>;
   onDiagnostic?: (diagnostic: { transportCalls: number; budget: ReviewBudgetSnapshot | null }) => void;
+  /**
+   * Review-admission readers pass `true`: every GitHub read is fresh (the
+   * read cache is skipped) and a stored webhook verdict is accepted only
+   * after a fresh read confirms that the head it names is still the current
+   * one (OPE-15114). Everything else — monitor ticks, sweeps, wake gates —
+   * shares the process read cache (OPE-12397); it never decides the verdict,
+   * so a cached answer cannot admit a review decision.
+   */
+  admission?: boolean;
 }): ReviewPullRequestCiResolver {
+  const fresh = input.admission === true;
   return async ({ companyId, issueId }) => {
     let transportCalls = 0;
     let budget: ReviewBudgetSnapshot | null = null;
@@ -643,6 +664,16 @@ export function createReviewPullRequestCiResolver(input: {
       return { state: "unknown", pullRequestUrl: target.pullRequestUrl, headSha: null, reason: "pull_request_reference_unreadable" };
     }
     const { reference, pullRequestUrl } = target;
+    const webhook = await readWebhookCi(input.db, companyId, reference);
+    const matchingWebhook = webhook && target.knownHeadSha && target.knownHeadSha === webhook.headSha ? webhook : null;
+    if (matchingWebhook?.verdict && !fresh) {
+      // Non-admission consumer (monitor tick, sweep, wake gate): the stored
+      // webhook verdict names the same head the work product knows, and this
+      // reader never decides the verdict — the reviewer's write gate re-reads
+      // GitHub fresh. Serve it without a token request and without a GitHub
+      // read (the pre-OPE-15114 fast path for non-admission readers).
+      return { ...matchingWebhook.verdict, headSha: matchingWebhook.headSha, pullRequestUrl };
+    }
     let token: string | null = null;
     let tokenError: string | null = null;
     try {
@@ -650,8 +681,6 @@ export function createReviewPullRequestCiResolver(input: {
     } catch (error) {
       tokenError = error instanceof GitHubReviewBudgetError ? `token_provider:${error.reason}` : "token provider failed";
     }
-    const webhook = await readWebhookCi(input.db, companyId, reference);
-    const matchingWebhook = webhook && target.knownHeadSha && target.knownHeadSha === webhook.headSha ? webhook : null;
     if (matchingWebhook?.verdict) {
       // myrmidon(OPE-15114): a webhook/work-product verdict is evidence only for
       // the head it names. A lost or delayed `synchronize` leaves both records
@@ -691,7 +720,7 @@ export function createReviewPullRequestCiResolver(input: {
       return { state: "no_pull_request", pullRequestUrl, headSha: head.headSha };
     }
     try {
-      const head = await resolvePullRequestHeadCi({ reference, token, fetch: fetchImpl, fresh: true });
+      const head = await resolvePullRequestHeadCi({ reference, token, fetch: fetchImpl, fresh });
       if (head.state !== "unknown") {
         // myrmidon(OPE-12176): the verdict of the final check travels with the
         // state; review admission tells green from red without a second read.

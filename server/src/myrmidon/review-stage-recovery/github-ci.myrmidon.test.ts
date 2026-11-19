@@ -496,7 +496,7 @@ describe("createReviewPullRequestCiResolver", () => {
     } as never;
     const fetch = vi.fn(fakeFetch({ [PULL]: openPull }));
     const tokenProvider = vi.fn(async () => "token");
-    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider });
+    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider, admission: true });
     await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toEqual({
       state: "complete", pullRequestUrl: openProduct.url, headSha: "abc123", finalCheckConclusion: "success",
     });
@@ -504,6 +504,32 @@ describe("createReviewPullRequestCiResolver", () => {
     // the webhook head is still the current head.
     expect(fetch).toHaveBeenCalled();
     expect(tokenProvider).toHaveBeenCalled();
+  });
+
+  it("serves a non-admission sweep from a matching webhook verdict without a GitHub read (OPE-15004)", async () => {
+    const now = new Date();
+    const rows = [
+      { event: "pull_request", createdAt: now, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "abc123" } },
+      { event: "check_run", createdAt: now, normalizedPayload: { repository: "acme/app", pullRequestNumber: 7, headSha: "abc123", checkName: "CI result", status: "completed", conclusion: "success" } },
+    ];
+    let selects = 0;
+    const db = {
+      select: () => ({ from: () => ({ where: () => {
+        if (selects++ === 0) return Promise.resolve([openProduct]);
+        return { orderBy: () => ({ limit: async () => rows }) };
+      } }) }),
+    } as never;
+    const fetch = vi.fn(fakeFetch({}));
+    const tokenProvider = vi.fn(async () => "token");
+    // No `admission` flag: a monitor/wake sweep only schedules the reviewer,
+    // it never decides the verdict — the fresh confirmation read exists only
+    // on the admission path.
+    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider });
+    await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toEqual({
+      state: "complete", pullRequestUrl: openProduct.url, headSha: "abc123", finalCheckConclusion: "success",
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(tokenProvider).not.toHaveBeenCalled();
   });
 
   it("waits on a fresh running final-check webhook once the current head is confirmed", async () => {
@@ -521,7 +547,7 @@ describe("createReviewPullRequestCiResolver", () => {
     } as never;
     const fetch = vi.fn(fakeFetch({ [PULL]: openPull }));
     const tokenProvider = vi.fn(async () => "token");
-    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider });
+    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider, admission: true });
     await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toEqual({
       state: "pending", pullRequestUrl: openProduct.url, headSha: "abc123",
     });
@@ -676,7 +702,7 @@ describe("createReviewPullRequestCiResolver", () => {
       } }) }),
     } as never;
     const fetch = vi.fn(fakeFetch({ [PULL]: { state: "open", head: { sha: "new" } } }));
-    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => null });
+    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => null, admission: true });
     const result = await resolver({ companyId: "company-1", issueId: "issue-1" });
     expect(fetch).toHaveBeenCalled();
     expect(result).not.toMatchObject({ state: "complete", headSha: "old" });
@@ -702,7 +728,7 @@ describe("createReviewPullRequestCiResolver", () => {
       [PULL]: { state: "open", head: { sha: "def456" } },
       ["/repos/acme/app/commits/def456/check-runs?check_name=CI%20result&filter=all&per_page=100"]: { total_count: 1, check_runs: [{ id: 2, name: "CI result", status: "in_progress", conclusion: null, head_sha: "def456" }] },
     });
-    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => "token" });
+    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => "token", admission: true });
     await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
       state: "unknown", headSha: "def456", reason: "head_moved",
     });
@@ -721,7 +747,7 @@ describe("createReviewPullRequestCiResolver", () => {
         return { orderBy: () => ({ limit: async () => rows }) };
       } }) }),
     } as never;
-    const resolver = createReviewPullRequestCiResolver({ db, fetch: async () => { throw new Error("transport unavailable"); }, tokenProvider: async () => "token" });
+    const resolver = createReviewPullRequestCiResolver({ db, fetch: async () => { throw new Error("transport unavailable"); }, tokenProvider: async () => "token", admission: true });
     await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
       state: "unknown", headSha: null,
     });
@@ -749,7 +775,7 @@ describe("createReviewPullRequestCiResolver", () => {
       if (calls.length > 1) throw new Error("no second read expected");
       return new Response(JSON.stringify({ state: "closed", merged: true, head: { sha: "abc123" } }), { status: 200, headers: { "content-type": "application/json" } });
     };
-    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => "token" });
+    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => "token", admission: true });
     await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toEqual({
       state: "no_pull_request", pullRequestUrl: openProduct.url, headSha: "abc123",
     });
@@ -775,7 +801,7 @@ describe("createReviewPullRequestCiResolver", () => {
       [PULL]: { state: "open", head: { sha: "def456" } },
       ["/repos/acme/app/commits/def456/check-runs?check_name=CI%20result&filter=all&per_page=100"]: { total_count: 1, check_runs: [{ id: 2, name: "CI result", status: "completed", conclusion: "success", head_sha: "def456" }] },
     });
-    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => "token" });
+    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => "token", admission: true });
     await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
       state: "unknown", headSha: "def456", reason: "head_moved",
     });
@@ -807,7 +833,7 @@ describe("createReviewPullRequestCiResolver", () => {
       [PULL]: { state: "open", head: { sha: "def456" } },
       ["/repos/acme/app/commits/def456/check-runs?check_name=CI%20result&filter=all&per_page=100"]: { total_count: 1, check_runs: [{ id: 2, name: "CI result", status: "in_progress", conclusion: null, head_sha: "def456" }] },
     });
-    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => "token" });
+    const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => "token", admission: true });
     await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
       state: "unknown", headSha: "def456", reason: "head_moved",
     });
@@ -833,7 +859,7 @@ describe("createReviewPullRequestCiResolver", () => {
         return { orderBy: () => ({ limit: async () => rows }) };
       } }) }),
     } as never;
-    const resolver = createReviewPullRequestCiResolver({ db, fetch: async () => { throw new Error("transport unavailable"); }, tokenProvider: async () => "token" });
+    const resolver = createReviewPullRequestCiResolver({ db, fetch: async () => { throw new Error("transport unavailable"); }, tokenProvider: async () => "token", admission: true });
     await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
       state: "unknown", headSha: null,
     });
@@ -856,7 +882,7 @@ describe("createReviewPullRequestCiResolver", () => {
         return { orderBy: () => ({ limit: async () => [] }) };
       } }) }),
     } as never;
-    const resolver = createReviewPullRequestCiResolver({ db, fetch: async () => { throw new Error("transport unavailable"); }, tokenProvider: async () => null });
+    const resolver = createReviewPullRequestCiResolver({ db, fetch: async () => { throw new Error("transport unavailable"); }, tokenProvider: async () => null, admission: true });
     await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
       state: "unknown", headSha: null,
     });
