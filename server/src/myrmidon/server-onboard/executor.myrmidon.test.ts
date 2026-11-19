@@ -911,6 +911,35 @@ exit 97
     }
   });
 
+  it("does not delete an indistinguishable operator rule after an uncertain allow", async () => {
+    const rules = ["operator-ssh"];
+    let allowAttempted = false;
+    const ssh = new MockSshExecutor({ onCommand: (command) => {
+      if (command.includes("start-myrmidon-firewall-timer")) return { exitCode: 0, stdout: "timer-confirmed\n" };
+      if (command.includes("check-myrmidon-firewall-timer")) return { exitCode: 0, stdout: "timer-confirmed\n" };
+      if (command.includes("sudo ufw allow")) {
+        allowAttempted = true;
+        // An operator installs the same rule while the allow outcome is unknown.
+        return { exitCode: 1, stderr: "allow outcome unknown" };
+      }
+      if (/ufw\s+(?:--force\s+)?delete/.test(command)) rules.pop();
+      return undefined;
+    } });
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-ambiguous-rule", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(allowAttempted).toBe(true);
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatch(/(ambiguous|unconfirmed|unsafe|unknown)/i);
+    expect(rules).toEqual(["operator-ssh"]);
+  });
+
   it("preserves an operator's concurrent rule when a partially applied SSH allow is rolled back", async () => {
     const rules = new Set(["operator-original"]);
     const ssh = new MockSshExecutor({ onCommand: (command) => {
