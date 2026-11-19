@@ -538,7 +538,9 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
     expect(result.error).toMatch(/inactive.*refus/i);
-    expect(ssh.hasExecuted(/sudo ufw (allow|default|--force enable|disable)/)).toBe(false);
+    expect(ssh.hasExecuted(/start-myrmidon-firewall-timer/)).toBe(false);
+    expect(ssh.hasExecuted(/sudo ufw (allow|default|delete|--force enable|disable)/)).toBe(false);
+    expect(ssh.hasExecuted(/restore-myrmidon-firewall|pkill/)).toBe(false);
   });
 
   it("preserves concurrent operator changes when scoped rollback is unavailable", async () => {
