@@ -4470,6 +4470,10 @@ export function recoveryService(
 
   // myrmidon(OPE-10045): CI of the open PR head, read lazily so the resolver's
   // GitHub/secrets imports stay out of the heartbeat import graph.
+  // OPE-15004: the recovery sweep is a non-admission reader: it shares the
+  // resolver's process read cache (no `admission` flag) so its every-tick asks
+  // do not become fresh GitHub reads; the verdict itself is only ever decided
+  // by the fresh write gate.
   async function resolveReviewPullRequestCi(input: {
     companyId: string;
     issueId: string;

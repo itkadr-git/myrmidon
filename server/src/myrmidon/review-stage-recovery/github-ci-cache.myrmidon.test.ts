@@ -491,8 +491,30 @@ describe("createReviewPullRequestCiResolver: read cache", () => {
     updatedAt: new Date(),
   };
 
-  it("reads GitHub afresh for every admission sweep of the same review stage", async () => {
+  it("reads GitHub afresh for every admission read of the same review stage", async () => {
     const fetch = completeGithub();
+    const resolver = createReviewPullRequestCiResolver({
+      db: fakeDb([openProduct]),
+      tokenProvider: async () => "token",
+      fetch,
+      admission: true,
+    });
+
+    const first = await resolver({ companyId: "company-1", issueId: "issue-1" });
+    at(30);
+    const second = await resolver({ companyId: "company-1", issueId: "issue-1" });
+
+    // OPE-15114: admission never serves from the read cache; an admission
+    // read must see the current head, not a remembered one.
+    expect(first).toEqual({ state: "complete", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "abc123", finalCheckConclusion: "success" });
+    expect(second).toEqual(first);
+    expect(fetch).toHaveBeenCalledTimes(6);
+  });
+
+  it("serves repeated non-admission sweeps of the same review stage from the read cache (OPE-15004)", async () => {
+    const fetch = completeGithub();
+    // No `admission` flag: monitor/sweep readers share the process read cache
+    // so their every-tick asks do not become fresh GitHub reads.
     const resolver = createReviewPullRequestCiResolver({
       db: fakeDb([openProduct]),
       tokenProvider: async () => "token",
@@ -503,11 +525,39 @@ describe("createReviewPullRequestCiResolver: read cache", () => {
     at(30);
     const second = await resolver({ companyId: "company-1", issueId: "issue-1" });
 
-    // OPE-15114: admission never serves from the read cache; a sweep must see
-    // the current head, not a remembered one.
     expect(first).toEqual({ state: "complete", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "abc123", finalCheckConclusion: "success" });
     expect(second).toEqual(first);
-    expect(fetch).toHaveBeenCalledTimes(6);
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps admission reads fresh even when a non-admission sweep warmed the cache (OPE-15004)", async () => {
+    const sweepFetch = completeGithub();
+    const sweep = createReviewPullRequestCiResolver({
+      db: fakeDb([openProduct]),
+      tokenProvider: async () => "token",
+      fetch: sweepFetch,
+    });
+    await sweep({ companyId: "company-1", issueId: "issue-1" });
+    expect(sweepFetch).toHaveBeenCalledTimes(3);
+
+    // A push moves the head after the sweep's read; the admission reader must
+    // not be served the swept head from the cache.
+    const admissionFetch = githubFetch({
+      [pullPath(7)]: openPull("def456"),
+      [finalCheckPath("def456")]: queuedFinalCheck,
+    });
+    const admission = createReviewPullRequestCiResolver({
+      db: fakeDb([openProduct]),
+      tokenProvider: async () => "token",
+      fetch: admissionFetch,
+      admission: true,
+    });
+    await expect(admission({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
+      state: "pending", headSha: "def456",
+    });
+    // A fresh admission read asks GitHub again: the head that was cached by the
+    // sweep is not served to it.
+    expect(paths(admissionFetch)).toEqual([pullPath(7), WORKFLOWS, finalCheckPath("def456")]);
   });
 
   it("hands the reason and the time to come back to the recovery while the budget is gone", async () => {
