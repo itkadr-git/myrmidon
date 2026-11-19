@@ -11,6 +11,7 @@ test('installation issuance uses only the configured repository and permissions'
   const token = await client.issue();
   assert.equal(token.token, 'issued-fixture');
   assert.equal(calls[0].url, 'https://api.github.com/app/installations/42/access_tokens');
+  assert.equal(calls[0].init.redirect, 'error');
   assert.deepEqual(JSON.parse(calls[0].init.body), { repository_ids: [123], permissions: { contents: 'read' } });
   await client.revoke(token.token);
   assert.equal(calls[1].url, 'https://api.github.com/installation/token');
