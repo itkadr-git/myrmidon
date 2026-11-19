@@ -149,11 +149,11 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         try {
           await record('issued');
         } catch {
-          // Retain the reservation and credential until revocation succeeds.
+          // Keep the reservation even after successful revocation: audit failure
+          // requires recovery and alert delivery before issuing again.
           try {
             await installation.revoke(credential.token);
             await store.delete(handle);
-            if (durable) await store.resolveIssuance(handle);
           } catch { await ambiguous(); }
           throw new Error('audit failed');
         }
