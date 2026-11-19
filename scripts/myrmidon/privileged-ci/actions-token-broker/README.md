@@ -114,8 +114,11 @@ secret management, least privilege and key rotation.
   is single-host cooperative exclusion only, requiring one canonical credential
   path and a filesystem with reliable SQLite locking. Broker close now refuses
   while requests are in flight, preserving the lock until they settle; closed
-  broker instances reject new requests. Direct store access and path aliases
-  bypass the guard; it is not a distributed lease or deployment fence.
+  broker instances reject new requests. Parent directories are canonicalized and
+  existing symlink or hard-linked credential files are refused. The directory must
+  remain trusted against replacement or link creation during service; the checks
+  are not race-proof against local attackers. Direct store access bypasses the guard;
+  it is not a distributed lease or deployment fence.
   A failed, interrupted, or unauditable owner revocation also keeps a durable
   reservation, blocks further issuance and queues a recovery alert. The supervised
   audited path also anchors the revocation intent before contacting GitHub, so
