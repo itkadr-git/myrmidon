@@ -153,6 +153,22 @@ const assertClean = (dir) => {
 };
 
 describe("myr-ws open — a copy left half-way is repaired, not reused", { skip: !hasGit }, () => {
+  it("preserves a partially resolved merge across idle repair and reopening", async () => {
+    const first = await conflictingCopy("ABC-390");
+    assert.notEqual(gitRaw(first.path, "merge", "origin/main").status, 0);
+    fs.writeFileSync(path.join(first.path, "README.md"), "resolved work\n");
+    git(first.path, "add", "README.md");
+    fs.writeFileSync(path.join(first.path, "notes.txt"), "uncommitted notes\n");
+    const before = git(first.path, "status", "--porcelain");
+    const repaired = await wsRepair.repair({}, { ...ctx, procRoot: path.join(ctx.root, "no-processes") });
+    assert.equal(repaired.repaired.length, 0);
+    const reopened = await opened(["ABC-390", REPO]);
+    assert.equal(reopened.path, first.path);
+    assert.equal(git(first.path, "status", "--porcelain"), before);
+    assert.ok(fs.existsSync(gitPath(first.path, "MERGE_HEAD")));
+    assert.equal(fs.readFileSync(path.join(first.path, "README.md"), "utf8"), "resolved work\n");
+    assert.equal(fs.readFileSync(path.join(first.path, "notes.txt"), "utf8"), "uncommitted notes\n");
+  });
   it("aborts a merge in progress, keeps the state in refs/myr-ws/recovery/<KEY> and says so", async () => {
     const first = await conflictingCopy("ABC-301");
     const head = git(first.path, "rev-parse", "HEAD");
