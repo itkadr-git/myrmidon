@@ -4411,7 +4411,7 @@ export interface WakeupOptions {
     statusVersion?: number;
   };
   /** Internal monitor claim checked under the issue admission lock. */
-  monitorClaimGuard?: { issueId: string; scheduledAt: Date; claimedAt: Date; invalidated: boolean };
+  monitorClaimGuard?: { issueId: string; scheduledAt: Date; claimedAt: Date; invalidated: boolean; completed: boolean; patch: ReturnType<typeof buildIssueMonitorTriggeredPatch> };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;
 }
@@ -12897,6 +12897,7 @@ export function heartbeatService(
 
     // myrmidon(MONITOR-IDLE-LOOP, OPE-13141): the snapshot this wake is based on.
     let idleSnapshotHash: string | null = null;
+    let monitorCompletedInAdmission = false;
 
     try {
       if (monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME) {
@@ -13476,6 +13477,8 @@ export function heartbeatService(
           scheduledAt: claimed.monitorNextCheckAt,
           claimedAt: input.now,
           invalidated: false,
+          completed: false,
+          patch: buildIssueMonitorTriggeredPatch({ issue: claimed, policy, triggeredAt: input.now }),
         };
         await enqueueWakeup(targetAgentId, {
           monitorClaimGuard,
@@ -13511,6 +13514,7 @@ export function heartbeatService(
           },
         });
         if (monitorClaimGuard.invalidated) return { outcome: "skipped" as const, reason: "monitor_changed" };
+        monitorCompletedInAdmission = monitorClaimGuard.completed;
       }
 
       const triggeredPatch = buildIssueMonitorTriggeredPatch({
@@ -13518,7 +13522,7 @@ export function heartbeatService(
         policy,
         triggeredAt: input.now,
       });
-      await db
+      if (!monitorCompletedInAdmission) await db
         .update(issues)
         .set({
           ...triggeredPatch,
@@ -37355,6 +37359,21 @@ export function heartbeatService(
 
           if (!wakeupRequest) {
             return { kind: "skipped" as const };
+          }
+
+          if (opts.monitorClaimGuard) {
+            const guard = opts.monitorClaimGuard;
+            const [completed] = await tx.update(issues).set({
+              ...guard.patch,
+              executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(guard.patch.executionState?.monitor ?? null)}::jsonb, true)`,
+              executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
+              updatedAt: new Date(),
+            }).where(and(
+              eq(issues.id, guard.issueId),
+              eq(issues.monitorNextCheckAt, guard.scheduledAt),
+              eq(issues.monitorWakeRequestedAt, guard.claimedAt),
+            )).returning({ id: issues.id });
+            guard.completed = Boolean(completed);
           }
 
           // A handoff changes the executor, not the owner of saved user input.
