@@ -293,7 +293,8 @@ export class FleetOnboardExecutor {
 
             // We cannot safely restore an inactive firewall without disabling UFW.
             const firewallStatus = await activeSsh.execute("sudo ufw status");
-            if (firewallStatus.exitCode !== 0 || !/^Status: active\s*$/m.test(firewallStatus.stdout)) {
+            const statusLines = firewallStatus.stdout.split(/\r?\n/).filter((line) => /^Status:/.test(line));
+            if (firewallStatus.exitCode !== 0 || statusLines.length !== 1 || !/^Status: active\s*$/.test(statusLines[0] ?? "")) {
               throw new Error("Firewall inactive or status unconfirmed; refusing unsafe firewall changes");
             }
 
