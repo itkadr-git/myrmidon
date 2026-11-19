@@ -309,6 +309,42 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     expect(JSON.stringify(comments.body)).toContain("REQUEST CHANGES: preserve this finding");
   });
 
+  it.each(["approve", "changes"] as const)("admits %s against a fresh authoritative wake SUCCESS when review budget is exhausted", async (verdict) => {
+    const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Cached success admission");
+    const author = randomUUID(), reviewer = randomUUID(), issueId = randomUUID(), runId = randomUUID(), stageId = randomUUID();
+    const headSha = "f".repeat(40);
+    const base = { companyId, status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} };
+    await ctx.db.insert(agents).values([
+      { ...base, id: author, name: "Author", role: "engineer" },
+      { ...base, id: reviewer, name: "Reviewer", role: "reviewer" },
+    ]);
+    await ctx.db.insert(issues).values({
+      id: issueId, companyId, title: "Cached success", status: "in_review", priority: "critical",
+      createdByAgentId: author, assigneeAgentId: author,
+      executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewer, userId: null }] }] },
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewer, userId: null }, returnAssignee: { type: "agent", agentId: author, userId: null }, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null },
+    });
+    await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewer, status: "succeeded", contextSnapshot: { issueId } });
+    await ctx.db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", title: "Synthetic PR", url: "https://github.com/acme/app/pull/7", status: "open", isPrimary: true, metadata: { repo: "acme/app", number: 7, headSha } });
+    const wakeFetch = vi.fn(async (url: string) => {
+      if (url.includes("/pulls/7")) return Response.json({ state: "open", head: { sha: headSha, ref: "branch" } });
+      if (url.includes("/check-runs")) return Response.json({ total_count: 1, check_runs: [{ id: 1, name: "CI result", status: "completed", conclusion: "success", head_sha: headSha, html_url: "https://github.com/acme/app/actions/runs/1", started_at: new Date().toISOString(), completed_at: new Date().toISOString() }] });
+      return new Response(null, { status: 404 });
+    });
+    const wake = createPullRequestCiResolver(ctx.db, { source: "run-context", fetch: wakeFetch, tokenProvider: async () => canary });
+    const evidence = await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
+    expect(evidence).toMatchObject({ authoritative: true, status: "completed", conclusion: "success", headSha });
+    const [clock] = await ctx.db.execute(sql`select floor(extract(epoch from clock_timestamp()) / 60)::bigint as minute`);
+    const minute = Number(clock?.minute), start = new Date(minute * 60_000);
+    const [carrier] = await ctx.db.select({ id: companies.id }).from(companies).orderBy(companies.createdAt).limit(1);
+    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: carrier.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
+    const app = routeApp(ctx.db, { type: "agent", agentId: reviewer, companyId, source: "agent_key", runId } as never, issueRoutes);
+    const response = await request(app).patch(`/api/issues/${issueId}`).send(verdict === "approve"
+      ? { status: "done", comment: `APPROVE PR #7 ${headSha}` }
+      : { status: "in_progress", comment: `REQUEST CHANGES PR #7 ${headSha}: server/src/example.ts:42 is broken` });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+  });
+
   it("rejects a verdict on stored wake evidence alone when the review budget is exhausted (OPE-15114)", async () => {
     const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Shared wake evidence");
     const author = randomUUID(), reviewer = randomUUID(), issueId = randomUUID(), runId = randomUUID(), stageId = randomUUID();
