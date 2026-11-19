@@ -585,6 +585,9 @@ export async function reviewCiDefersIdlePickup(
       : null;
   if (!participant || participant.type !== "agent" || participant.agentId !== agent.id) return false;
   try {
+    // OPE-15004: idle pickup is a wake-path sweep, not review admission: it
+    // shares the resolver's process read cache and never decides the verdict —
+    // the reviewer it may wake still meets the fresh write gate.
     const decision = await readReviewAdmissionDecision({
       companyId: agent.companyId,
       issueId: candidate.id,
