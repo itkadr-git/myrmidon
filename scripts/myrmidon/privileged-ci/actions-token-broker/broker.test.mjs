@@ -118,6 +118,24 @@ test('recovery alerts on pending ambiguous issuance after restart and keeps issu
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('recovered broker refuses startup until a persisted alert is delivered', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-recovery-outbox-'));
+  const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'), credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32), installation: { revoke: async () => {} }, audit: async () => {}, alert: async () => { throw new Error('offline'); } };
+  try {
+    const store = createCredentialStore(options.credentialPath, options.credentialKey);
+    await store.queueAlert('issuance_ambiguous');
+    store.close();
+    await assert.rejects(createRecoveredSingleHostBroker(options), /alert/);
+    const delivered = [];
+    const broker = await createRecoveredSingleHostBroker({ ...options, alert: async event => delivered.push(event) });
+    broker.close();
+    assert.deepEqual(delivered, ['issuance_ambiguous']);
+    const reopened = createCredentialStore(options.credentialPath, options.credentialKey);
+    assert.deepEqual(await reopened.pendingAlerts(), []);
+    reopened.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('recovery alerts about pending issuance even when retained revocation fails', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-recovery-both-'));
   const alerts = [];
