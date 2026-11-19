@@ -19,8 +19,22 @@ type Input = Parameters<typeof resolveGitHubOperationCredentials>[1];
 type Identity = Awaited<ReturnType<typeof captureRunIdentity>>;
 type Resolution = Awaited<ReturnType<typeof resolveManagedGitHubCredential>>;
 
+type RunRow = Identity["run"];
+type ContextRow = NonNullable<Identity["context"]>;
+
 const base: Input = { companyId: "company-a", agentId: "agent-a", runId: "run-a", repository: "owner/repo-a" };
-const identity = { id: "context-a", revision: 1, responsibleUserId: "user-a" };
+const at = new Date("2026-01-01T00:00:00.000Z");
+const identity: ContextRow = {
+  id: "context-a",
+  companyId: "company-a",
+  runId: "run-a",
+  revision: 1,
+  responsibleUserId: "user-a",
+  cause: "operator",
+  correlationId: "correlation-a",
+  status: "accepted",
+  createdAt: at,
+};
 const writes = vi.fn();
 const db = {
   select: () => ({ from: () => ({ where: async () => [{ enabled: true, status: "active", role: "agent" }] }) }),
@@ -28,10 +42,43 @@ const db = {
 } as unknown as Db;
 
 function credential(token: string): Resolution {
-  return { credential: { identitySource: "personal", githubIdentity: { login: "fixture" }, connectionId: "connection", grantId: "grant", token, source: "managed_connection", secretName: null } } as unknown as Resolution;
+  return {
+    configured: true,
+    credential: {
+      token,
+      source: "managed_connection",
+      secretName: null,
+      identitySource: "personal",
+      githubIdentity: { userId: "user-fixture", login: "fixture" },
+      connectionId: "connection",
+      grantId: "grant",
+    },
+  };
 }
-function setIdentity(input: Input, context = identity) {
-  return { run: { id: input.runId, companyId: input.companyId, agentId: input.agentId, status: "running" }, context: { ...context, companyId: input.companyId, runId: input.runId } } as unknown as Identity;
+function runRow(input: Input): RunRow {
+  return {
+    id: input.runId,
+    companyId: input.companyId,
+    agentId: input.agentId,
+    status: "running",
+    invocationSource: "on_demand",
+    runtimeMode: "legacy",
+    nextEventSeq: 1,
+    logCompressed: false,
+    lastOutputSeq: 0,
+    processLossRetryCount: 0,
+    scheduledRetryAttempt: 0,
+    issueCommentStatus: "not_applicable",
+    continuationAttempt: 0,
+    createdAt: at,
+    updatedAt: at,
+  };
+}
+function setIdentity(input: Input, context: ContextRow = identity): Identity {
+  return {
+    run: runRow(input),
+    context: { ...context, companyId: input.companyId, runId: input.runId },
+  };
 }
 
 describe("runtime GitHub credential identity boundaries", () => {
