@@ -276,7 +276,11 @@ describe("two-uid shared git cache with real rsync (root-gated)", {
   const USER_A = `${TAG}a`;
   const USER_B = `${TAG}b`;
   const GROUP = `${TAG}g`;
-  const BOT = "dbttest";
+  // The cache bot name MUST be unique per test process: parallel root runs
+  // on one build host share /srv/devcache/git-wt, and a shared name would let
+  // one run's cleanup delete another run's cache. Derived from TAG (already
+  // pid-based), so it stays inside the wrapper's [A-Za-z0-9._-] bot-name set.
+  const BOT = `${TAG}bot`;
   let tmp;
   let fixture;
   let key;
@@ -285,7 +289,7 @@ describe("two-uid shared git cache with real rsync (root-gated)", {
   let wt;        // worktree synced by the wrapper
   let hermes;    // HERMES_HOME containing .myrmidon/git-base
   let baseDest;  // DEVBUILD_BASE for the per-bot copy
-  let cacheDir;  // /srv/devcache/git-wt/dbttest/<key>.git (resolved by glob)
+  let cacheDir;  // /srv/devcache/git-wt/<BOT>/<key>.git (resolved by glob)
   let objectsMtimeBeforePass2;
   let uidB = -1;
 
@@ -389,7 +393,10 @@ describe("two-uid shared git cache with real rsync (root-gated)", {
   });
 
   after(() => {
-    if (cacheDir) priv("rm", "-rf", path.join("/srv/devcache/git-wt", BOT));
+    // Always remove ONLY this run's cache root: runs in parallel have
+    // different BOT names, and a failure before cacheDir was resolved must
+    // not leak the cache dir either.
+    priv("rm", "-rf", path.join("/srv/devcache/git-wt", BOT));
     for (const u of [USER_A, USER_B]) priv("userdel", u);
     priv("rm", "-rf", `/home/${USER_A}`, `/home/${USER_B}`);
     priv("groupdel", GROUP);
@@ -463,4 +470,16 @@ describe("two-uid shared git cache with real rsync (root-gated)", {
     assert.equal(p3.status, 0, `pass 3 (uid1 again) failed: ${p3.stderr}`);
     assertNoWorldWrite(cacheDir);
   });
+});
+
+// The shared-cache suite derives its bot name (and cache root) from the
+// process id; two parallel root runs on one build host must never collide
+// on /srv/devcache/git-wt/<bot>. Locks the naming scheme without a framework.
+it("two-uid cache bot name is unique per process and path-safe", () => {
+  const mk = (pid) => `dbt${pid}bot`;
+  for (const pid of [2, 3, 12345, process.pid, process.pid + 1]) {
+    assert.match(mk(pid), /^[A-Za-z0-9._-]+$/);
+  }
+  assert.notEqual(mk(process.pid), mk(process.pid + 1));
+  assert.notEqual(mk(1000), mk(1001));
 });
