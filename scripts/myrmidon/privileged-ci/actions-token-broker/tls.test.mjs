@@ -5,9 +5,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import https from 'node:https';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { createBroker } from './broker.mjs';
-import { createSecureServer } from './tls.mjs';
+import { createAuditedSupervisedServer, createSecureServer } from './tls.mjs';
 
 test('mTLS server accepts an authorized certificate and rejects an anonymous client', async () => {
   const scratch = process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_SCRATCH_DIR || join(homedir(), '.cache', 'myrmidon-broker-tests');
@@ -55,5 +55,42 @@ test('mTLS server accepts an authorized certificate and rejects an anonymous cli
       await assert.rejects(request({}));
       await assert.rejects(request({ key: file('untrusted.key'), cert: file('untrusted.crt') }));
     } finally { await new Promise(resolve => server.close(resolve)); }
+
+    // Exercise actual mTLS ingress, durable reservation and independent anchors together.
+    const anchor = () => {
+      let head = { seq: 0, mac: '' };
+      return { read: async () => ({ ...head }), compareAndSet: async (previous, next) => {
+        if (JSON.stringify(previous) !== JSON.stringify(head)) return false;
+        head = { ...next }; return true;
+      } };
+    };
+    let issueCount = 0, revokeCount = 0;
+    const alerts = [];
+    const options = {
+      auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32), auditAnchor: anchor(),
+      replayPath: join(dir, 'replay.sqlite'), replayKey: randomBytes(32), replayAnchor: anchor(),
+      credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32),
+      policy, loadKeys: async () => [key],
+      installation: { issue: async () => { issueCount++; throw new Error('upstream response lost'); }, revoke: async () => { revokeCount++; } },
+      alert: async event => alerts.push(event), delay: async () => {},
+    };
+    const supervised = await createAuditedSupervisedServer({ key: file('server.key'), cert: file('server.crt'), ca: file('ca.crt') }, options);
+    await new Promise(resolve => supervised.listen(0, '127.0.0.1', resolve));
+    try {
+      const exchange = jti => new Promise((resolve, reject) => {
+        const req = https.request({ hostname: '127.0.0.1', port: supervised.address().port, path: '/exchange', method: 'POST', ca: file('ca.crt'), servername: 'server', key: file('client.key'), cert: file('client.crt') }, res => {
+          let data = ''; res.on('data', chunk => { data += chunk; }); res.on('end', () => resolve({ status: res.statusCode, body: data }));
+        });
+        req.on('error', reject); req.end(JSON.stringify({ jwt: jwt(jti) }));
+      });
+      const failed = await exchange('lost-upstream-response');
+      assert.equal(failed.status, 403);
+      assert.equal(failed.body.includes('upstream response lost'), false);
+      assert.equal((await exchange('subsequent-request')).status, 403);
+      assert.equal(issueCount, 1);
+    } finally { await new Promise(resolve => supervised.close(resolve)); }
+    await assert.rejects(createAuditedSupervisedServer({ key: file('server.key'), cert: file('server.crt'), ca: file('ca.crt') }, options), /pending issuance/);
+    assert.equal(revokeCount, 0);
+    assert.ok(alerts.includes('issuance_ambiguous'));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
