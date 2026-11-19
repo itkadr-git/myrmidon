@@ -265,9 +265,9 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         // Reserve before revocation: a crash or failure must keep issuance fenced.
         const durable = typeof store.reserveIssuance === 'function';
         const attempt = randomUUID();
-        if (durable) await store.reserveIssuance(attempt);
         let revocationAttempted = false;
         try {
+          if (durable) await store.reserveIssuance(attempt);
           if (auditFailed) throw new Error('audit unavailable');
           // Protect the revocation fence against local store rollback as well.
           if (anchoredIssuance) await record('issuance_pending');
