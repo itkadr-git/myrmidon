@@ -52,7 +52,13 @@ secret management, least privilege and key rotation.
   independently operated service can be used. A lost CAS response or crash between
   CAS and the SQLite commit creates a mismatch and stops startup; reconciliation
   requires operator investigation, not an automatic reset. No independently
-  durable anchor service or deployment wiring is provided. `createSqliteAnchor` is a durable CAS
+  durable anchor service or deployment wiring is provided. `createRemoteAnchor`
+  supplies an mTLS client for a separately administered endpoint: GET returns a
+  JSON `{seq,mac}` head with HTTP 200; POST accepts `{previous,next}` and returns
+  204 only after durable linearizable CAS, or 409 on conflict. The service must
+  enforce client authorization, immutable genesis and independent storage; this
+  client does not implement or attest those properties. Timeouts and lost responses
+  fail closed, potentially requiring manual reconciliation. `createSqliteAnchor` is a durable CAS
   reference implementation for testing separate stores, not an independently
   operated anchor service: colocating it with the audit database does not protect
   against rollback of the entire failure domain. Explicit one-time provisioning
