@@ -617,6 +617,21 @@ test('single-host broker persists credentials across restart for owner revocatio
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('failed revocation fences further issuance in the running broker', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-revoke-fence-'));
+  let issued = 0;
+  const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'), credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32), installation: { issue: async () => { issued++; return { token: 'fixture', expiresAt: '2030-01-01T00:00:00Z' }; }, revoke: async () => { throw new Error('unavailable'); } }, audit: async () => {}, alert: async () => {} };
+  try {
+    const broker = createSingleHostBroker(options);
+    try {
+      const credential = await broker.exchange(jwt('revoke-fence-first'));
+      await assert.rejects(broker.revoke(jwt('revoke-fence-revoke'), credential.handle));
+      await assert.rejects(broker.exchange(jwt('revoke-fence-second')));
+      assert.equal(issued, 1);
+    } finally { broker.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('recovery revokes retained credentials and blocks issuance when recovery fails', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-startup-'));
   const credentialKey = randomBytes(32), revoked = [];
