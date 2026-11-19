@@ -7,7 +7,14 @@ import { createAuthenticatedAudit, createAsyncAuthenticatedAudit } from './authe
 export async function createAuditedSupervisedServer(tls, { auditPath, auditKey, auditAnchor, ...options }) {
   if (!auditAnchor || typeof auditAnchor.read !== 'function' || typeof auditAnchor.compareAndSet !== 'function') throw new Error('audit anchor required');
   if (typeof options.alert !== 'function') throw new Error('recovery alert required');
-  const audit = await createAsyncAuthenticatedAudit(auditPath, auditKey, auditAnchor);
+  let audit;
+  try {
+    audit = await createAsyncAuthenticatedAudit(auditPath, auditKey, auditAnchor);
+  } catch (error) {
+    // No local outbox is available here; the supervisor must retry startup.
+    try { await options.alert('audit_unavailable'); } catch { /* Startup stays closed. */ }
+    throw error;
+  }
   let broker;
   try {
     broker = await createSupervisedSingleHostBroker({ ...options, audit: event => audit.record(event) });

@@ -1,6 +1,6 @@
 import https from 'node:https';
 
-const events = new Set(['issuance_ambiguous', 'credential_recovery_failed']);
+const events = new Set(['issuance_ambiguous', 'credential_recovery_failed', 'audit_unavailable']);
 
 // Delivery is at-least-once: a lost response must leave the durable alert queued.
 export function createAlertSink({ url, ca, cert, key, timeoutMs = 5000, lookup }) {

@@ -34,7 +34,10 @@ secret management, least privilege and key rotation.
   HTTPS; failures remain queued for retry, and a lost response can cause duplicates.
   This callback requires an independently operated, monitored receiver and has not
   been wired into a deployment. A successful HTTP response does not itself prove
-  durable alert storage or operator notification. Broker factories
+  durable alert storage or operator notification. Audit startup failures also
+  attempt an `audit_unavailable` notification, but no local outbox is available
+  at that point: an external supervisor must retry startup and alert on repeated
+  failures; delivery is not guaranteed. Broker factories
   hold a separate SQLite write lock across recovery and the broker lifetime; this
   is single-host cooperative exclusion only, requiring one canonical credential
   path and a filesystem with reliable SQLite locking. Direct store access and path

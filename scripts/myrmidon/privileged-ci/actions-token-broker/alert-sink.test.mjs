@@ -29,8 +29,9 @@ test('authenticated HTTPS alert delivers only an allowlisted event and rejects n
       await assert.rejects(sink('issuance_ambiguous'));
       status = 204;
       await sink('issuance_ambiguous');
+      await sink('audit_unavailable');
       await assert.rejects(sink('secret token'));
-      assert.deepEqual(received, [{ event: 'issuance_ambiguous' }, { event: 'issuance_ambiguous' }]);
+      assert.deepEqual(received, [{ event: 'issuance_ambiguous' }, { event: 'issuance_ambiguous' }, { event: 'audit_unavailable' }]);
     } finally { await new Promise(resolve => server.close(resolve)); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
