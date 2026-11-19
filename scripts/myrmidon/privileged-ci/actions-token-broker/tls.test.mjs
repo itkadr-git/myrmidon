@@ -9,6 +9,13 @@ import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { createBroker } from './broker.mjs';
 import { createAuditedSupervisedServer, createSecureServer } from './tls.mjs';
 
+test('audited supervised server rejects a missing credential checkpoint before opening audit', async () => {
+  let auditReads = 0;
+  const auditAnchor = { read: async () => { auditReads++; throw new Error('audit accessed'); }, compareAndSet: async () => false };
+  await assert.rejects(createAuditedSupervisedServer({}, { auditAnchor, alert: async () => {} }), /credential anchor required/);
+  assert.equal(auditReads, 0);
+});
+
 test('mTLS server accepts an authorized certificate and rejects an anonymous client', async () => {
   const scratch = process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_SCRATCH_DIR || join(homedir(), '.cache', 'myrmidon-broker-tests');
   mkdirSync(scratch, { recursive: true, mode: 0o700 });
