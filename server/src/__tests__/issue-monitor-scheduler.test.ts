@@ -598,6 +598,31 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     }
   });
 
+  it("does not repeat an admitted monitor wake when its claim is reclaimed before completion", async () => {
+    const { issueId, nextCheckAt } = await seedFixture();
+    const reclaimedAt = new Date(nextCheckAt.getTime() + 6 * 60_000);
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_reclaim_admitted_monitor() RETURNS trigger AS $$
+      BEGIN
+        UPDATE issues SET monitor_wake_requested_at = '${reclaimedAt.toISOString()}'::timestamptz
+        WHERE id = '${issueId}'::uuid;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_reclaim_admitted_monitor AFTER INSERT ON agent_wakeup_requests
+      FOR EACH ROW EXECUTE FUNCTION test_reclaim_admitted_monitor();
+    `));
+    try {
+      const scheduler = heartbeatService(db, { executesRuns: false });
+      expect((await scheduler.tickTimers(nextCheckAt)).enqueued).toBe(1);
+      await db.execute(sql.raw("DROP TRIGGER test_reclaim_admitted_monitor ON agent_wakeup_requests; DROP FUNCTION test_reclaim_admitted_monitor();"));
+      await scheduler.tickTimers(new Date(reclaimedAt.getTime() + 6 * 60_000));
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_reclaim_admitted_monitor ON agent_wakeup_requests; DROP FUNCTION IF EXISTS test_reclaim_admitted_monitor();"));
+      await db.delete(heartbeatRuns);
+    }
+  });
+
   it("dispatches replacement evidence at the same schedule after an admitted wake", async () => {
     const { issueId, nextCheckAt } = await seedFixture();
     await db.execute(sql.raw(`
