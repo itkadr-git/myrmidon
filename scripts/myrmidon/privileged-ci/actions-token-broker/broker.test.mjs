@@ -24,6 +24,25 @@ function jwt(jti, overrides = {}) {
   return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
 }
 
+test('audited supervised startup refuses issuance without a credential anchor', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-missing-credential-anchor-'));
+  let head = { seq: 0, mac: '' }, issues = 0;
+  const auditAnchor = { read: async () => ({ ...head }), compareAndSet: async (previous, next) => {
+    if (JSON.stringify(previous) !== JSON.stringify(head)) return false;
+    head = { ...next }; return true;
+  } };
+  try {
+    await assert.rejects(tls.createAuditedSupervisedServer({}, {
+      auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32), auditAnchor,
+      credentialPath: join(dir, 'credential.sqlite'), credentialKey: randomBytes(32),
+      replayPath: join(dir, 'replay.sqlite'), replayKey: randomBytes(32), replayAnchor: auditAnchor,
+      policy, loadKeys: async () => [key], installation: { issue: async () => { issues++; }, revoke: async () => {} },
+      alert: async () => {}, delay: async () => {},
+    }), /credential anchor required/);
+    assert.equal(issues, 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('supervised broker refuses credential database rollback against independent anchor', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-credential-anchor-'));
   const { copyFileSync } = await import('node:fs');
