@@ -25,7 +25,7 @@ test('authenticated HTTPS alert delivers only an allowlisted event and rejects n
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     try {
-      const sink = createAlertSink({ url: `https://server:${server.address().port}/alerts`, ca: file('ca.crt'), cert: file('client.crt'), key: file('client.key'), lookup: (_hostname, _options, callback) => callback(null, '127.0.0.1', 4) });
+      const sink = createAlertSink({ url: `https://server:${server.address().port}/alerts`, ca: file('ca.crt'), cert: file('client.crt'), key: file('client.key'), lookup: (_hostname, options, callback) => options.all ? callback(null, [{ address: '127.0.0.1', family: 4 }]) : callback(null, '127.0.0.1', 4) });
       await assert.rejects(sink('issuance_ambiguous'));
       status = 204;
       await sink('issuance_ambiguous');

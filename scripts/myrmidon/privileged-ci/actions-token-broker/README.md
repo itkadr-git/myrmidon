@@ -29,8 +29,12 @@ secret management, least privilege and key rotation.
   issuance, failed revocation, or failed alert is reported. The experimental
   `createSupervisedSingleHostBroker` holds exclusive ownership through retries and
   the broker lifetime. `createAuditedSupervisedServer` connects that supervisor
-  to TLS and closes its broker and audit store with the server. It is not wired
-  into a deployment, and its alert callback is not guaranteed delivery. Broker factories
+  into TLS and closes its broker and audit store with the server. An experimental
+  `createAlertSink` delivers allowlisted recovery events over mutually authenticated
+  HTTPS; failures remain queued for retry, and a lost response can cause duplicates.
+  This callback requires an independently operated, monitored receiver and has not
+  been wired into a deployment. A successful HTTP response does not itself prove
+  durable alert storage or operator notification. Broker factories
   hold a separate SQLite write lock across recovery and the broker lifetime; this
   is single-host cooperative exclusion only, requiring one canonical credential
   path and a filesystem with reliable SQLite locking. Direct store access and path
