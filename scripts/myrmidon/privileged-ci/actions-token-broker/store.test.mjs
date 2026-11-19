@@ -6,6 +6,32 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createCredentialStore } from './store.mjs';
 
+test('operator recovery retries retained credentials after restart without exposing tokens', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-recovery-'));
+  const path = join(dir, 'credentials.sqlite');
+  const key = randomBytes(32);
+  try {
+    let store = createCredentialStore(path, key);
+    await store.put('one', { token: 'fixture-one' }, 'owner-one');
+    await store.put('two', { token: 'fixture-two' }, 'owner-two');
+    store.close();
+    store = createCredentialStore(path, key);
+    const attempts = [];
+    const first = await store.revokeRetained(async token => {
+      attempts.push(token);
+      if (token === 'fixture-two') throw new Error('upstream failed');
+    });
+    assert.deepEqual(first, { revoked: 1, failed: 1 });
+    store.close();
+    store = createCredentialStore(path, key);
+    const second = await store.revokeRetained(async token => { attempts.push(token); });
+    assert.deepEqual(second, { revoked: 1, failed: 0 });
+    assert.deepEqual(attempts, ['fixture-one', 'fixture-two', 'fixture-two']);
+    assert.deepEqual(await store.revokeRetained(async () => assert.fail()), { revoked: 0, failed: 0 });
+    store.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('encrypted credentials persist across restart, enforce ownership and retain failed revocations', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-store-'));
   const path = join(dir, 'credentials.sqlite');
