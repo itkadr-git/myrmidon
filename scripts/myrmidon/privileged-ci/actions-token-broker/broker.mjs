@@ -5,6 +5,7 @@ import { createAnchoredReplayStore } from './anchored-replay.mjs';
 import { createCredentialStore } from './store.mjs';
 import { acquireExclusiveStore } from './exclusive.mjs';
 import { createRecoverySupervisor } from './recovery-supervisor.mjs';
+import { createCredentialCheckpoint, checkpointCredentialStore } from './credential-checkpoint.mjs';
 
 // Retain exclusive ownership across all retries and for the broker lifetime.
 export async function createSupervisedSingleHostBroker({ credentialPath, credentialKey, store: suppliedStore, delay, ...options }) {
@@ -13,6 +14,14 @@ export async function createSupervisedSingleHostBroker({ credentialPath, credent
   let store;
   try {
     store = createCredentialStore(credentialPath, credentialKey);
+    if (options.credentialAnchor) {
+      try {
+        store = checkpointCredentialStore(store, await createCredentialCheckpoint(store, options.credentialAnchor));
+      } catch (error) {
+        try { await options.alert('credential_recovery_failed'); } catch { /* Independent monitoring is required. */ }
+        throw error;
+      }
+    }
     let replay;
     const supervisor = createRecoverySupervisor({
       store, delay, alert: options.alert,

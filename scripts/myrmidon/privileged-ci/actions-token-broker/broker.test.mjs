@@ -24,6 +24,30 @@ function jwt(jti, overrides = {}) {
   return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
 }
 
+test('supervised broker refuses credential database rollback against independent anchor', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-credential-anchor-'));
+  const { copyFileSync } = await import('node:fs');
+  const credentialPath = join(dir, 'credentials.sqlite'), anchorPath = join(dir, 'anchor.sqlite');
+  provisionSqliteAnchor(anchorPath);
+  const credentialAnchor = createSqliteAnchor(anchorPath);
+  const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'),
+    credentialPath, credentialKey: randomBytes(32), credentialAnchor,
+    installation: { issue: async () => ({ token: 'fixture', expiresAt: '2030-01-01T00:00:00Z' }), revoke: async () => {} },
+    audit: async () => {}, alert: async () => {}, delay: async () => {} };
+  try {
+    const initial = createCredentialStore(credentialPath, options.credentialKey);
+    const { createCredentialCheckpoint } = await import('./credential-checkpoint.mjs');
+    await createCredentialCheckpoint(initial, credentialAnchor, { provision: true });
+    initial.close();
+    copyFileSync(credentialPath, join(dir, 'snapshot.sqlite'));
+    const broker = await createSupervisedSingleHostBroker(options);
+    await broker.exchange(jwt('credential-rollback'));
+    broker.close();
+    copyFileSync(join(dir, 'snapshot.sqlite'), credentialPath);
+    await assert.rejects(createSupervisedSingleHostBroker(options), /credential checkpoint mismatch/);
+  } finally { credentialAnchor.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('supervised broker refuses replay database rollback against independent anchor', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-replay-anchor-'));
   const replayPath = join(dir, 'replay.sqlite'), anchorPath = join(dir, 'anchor.sqlite');
