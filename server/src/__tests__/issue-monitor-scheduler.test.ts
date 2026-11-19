@@ -433,8 +433,12 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
       const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
       expect(after!.monitorNextCheckAt?.toISOString()).toBe(rescheduledAt.toISOString());
-    } finally {
       await db.execute(sql.raw("DROP TRIGGER test_reschedule_stale_review_claim ON issues; DROP FUNCTION test_reschedule_stale_review_claim();"));
+      expect((await heartbeatService(db, { executesRuns: false }).tickTimers(rescheduledAt)).enqueued).toBe(1);
+      expect((await heartbeatService(db, { executesRuns: false }).tickTimers(rescheduledAt)).enqueued).toBe(0);
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_reschedule_stale_review_claim ON issues; DROP FUNCTION IF EXISTS test_reschedule_stale_review_claim();"));
       await db.delete(heartbeatRuns);
     }
   });
