@@ -17,7 +17,9 @@ export function createRecoverySupervisor({ recover, start, alert, delay, store }
           for (const event of await store.pendingAlerts()) {
             try { await alert(event); await store.acknowledgeAlert(event); } catch { /* Retry before starting. */ }
           }
-          if (clean && (await store.pendingAlerts()).length === 0) return await start();
+          const pendingAlerts = await store.pendingAlerts();
+          if (stopped) break;
+          if (clean && pendingAlerts.length === 0) return await start();
           if (!stopped) await delay();
         }
         throw new Error('recovery supervisor stopped');
