@@ -945,6 +945,46 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
 
+  it("fails closed when an old repeatable-read writer races a link with a foreign revision", async () => {
+    const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-foreign-race-");
+    cleanups.push(() => dbh.cleanup());
+    const db = createDb(dbh.connectionString);
+    cleanups.push(async () => { await db.$client.end(); });
+    const issueId = randomUUID();
+    const docId = randomUUID();
+    await db.insert(companies).values([
+      { id: companyA, name: "Company A" },
+      { id: companyB, name: "Company B", issuePrefix: "BBB" },
+    ]);
+    await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
+    await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a" });
+
+    let resume!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { resume = resolve; });
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const writer = db.transaction(async (tx) => {
+      await tx.execute(sqlTag`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
+      await tx.execute(sqlTag`SELECT id FROM documents WHERE id = ${docId}::uuid`);
+      started();
+      await gate;
+      await tx.insert(documentRevisions).values({
+        companyId: companyB, documentId: docId, revisionNumber: 1, body: "foreign",
+      });
+    });
+    const outcome = writer.then(() => null, (error: unknown) => error);
+    try {
+      await ready;
+      await db.insert(issueDocuments).values({
+        companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios",
+      });
+    } finally {
+      resume();
+    }
+    expect(await outcome).not.toBeNull();
+    expect(await db.select().from(documentRevisions).where(eq(documentRevisions.documentId, docId))).toHaveLength(0);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("rejects a foreign-company revision inserted after an acceptance link", async () => {
     const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-foreign-new-revision-");
     cleanups.push(() => dbh.cleanup());
