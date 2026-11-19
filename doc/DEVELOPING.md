@@ -68,6 +68,10 @@ workflows execute only code checked out at the event base SHA, never PR head.
 New privileged workflows require security review and a narrowly scoped Actions
 policy allowance for the reviewed workflow path; never allow all workflows.
 
+The privileged acceptance job is disabled in the workflow. A skipped job is not
+an acceptance verification. The script is testable independently, but enabling
+it requires the security prerequisites below and a separate reviewed change.
+
 The acceptance gate skips PRs without an OPE key and prints zero verified
 documents. For linked keys, every document must be fetched and verified; any
 API, parsing or validation error fails the gate. Its successful log reports
@@ -76,9 +80,9 @@ live acceptance or deployment verification. Title and body edits rerun the gate;
 changes during a run fail it. Document changes do not trigger GitHub checks:
 maintainers must rerun the gate after an acceptance document changes and before
 merge. The log records the fetched document and revision IDs as a snapshot, not
-proof that the document remained unchanged afterwards. The commitperclip App private key remains more powerful than its minted
-installation token; activation requires independent review of its runner and
-key custody.
+proof that the document remained unchanged afterwards. The commitperclip review
+uses the ephemeral GitHub token with read access to contents and pull requests,
+and write access to issue comments; it does not receive the App private key.
 
 Before activation, ADM/Alex must configure both `myrmidon-acceptance-trusted`
 and `myrmidon-acceptance-external` environments with environment-scoped

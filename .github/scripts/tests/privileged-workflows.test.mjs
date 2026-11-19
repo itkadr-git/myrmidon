@@ -70,6 +70,11 @@ test('commitperclip-review.yml requires no app secrets and uses minimal github.t
   assert.match(code, /^\s*issues: write$/m);
 });
 
+test('privileged acceptance integration stays disabled', () => {
+  const yaml = readFileSync(new URL('../../workflows/myrmidon-acceptance-scenarios.yml', import.meta.url), 'utf8');
+  assert.match(yaml, /check-acceptance-scenarios:\s*(?:#[^\n]*\n\s*)*if:\s*\$\{\{\s*false\s*\}\}/);
+});
+
 test('myrmidon-acceptance-scenarios.yml is the only privileged workflow holding secrets', () => {
   for (const name of ['myrmidon-acceptance-scenarios.yml', 'commitperclip-review.yml']) {
     const yaml = readFileSync(new URL(`../../workflows/${name}`, import.meta.url), 'utf8');

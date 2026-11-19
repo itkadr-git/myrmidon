@@ -14,6 +14,8 @@ permissions:
 
 jobs:
   check-acceptance-scenarios:
+    # Disabled until the reader, runner isolation and live security checks are approved.
+    if: ${{ false }}
     # Both environments use the isolated, ephemeral internal runner group.
     # Only the external-PR environment requires maintainer approval.
     environment: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'myrmidon-acceptance-trusted' || 'myrmidon-acceptance-external' }}
