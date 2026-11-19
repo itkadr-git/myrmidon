@@ -18,6 +18,7 @@ test('mTLS server accepts an authorized certificate and rejects an anonymous cli
       run('req', '-newkey', 'rsa:2048', '-nodes', '-keyout', `${name}.key`, '-out', `${name}.csr`, '-subj', `/CN=${name}`);
       run('x509', '-req', '-in', `${name}.csr`, '-CA', 'ca.crt', '-CAkey', 'ca.key', '-CAcreateserial', '-out', `${name}.crt`, '-days', '1');
     }
+    run('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'untrusted.key', '-out', 'untrusted.crt', '-subj', '/CN=untrusted client', '-days', '1');
     const file = name => readFileSync(join(dir, name));
     const server = createSecureServer({ key: file('server.key'), cert: file('server.crt'), ca: file('ca.crt') }, {
       exchange: async () => ({ token: 'fixture-only' }),
@@ -34,6 +35,7 @@ test('mTLS server accepts an authorized certificate and rejects an anonymous cli
       assert.equal(ok.status, 200);
       assert.equal(JSON.parse(ok.body).token, 'fixture-only');
       await assert.rejects(request({}));
+      await assert.rejects(request({ key: file('untrusted.key'), cert: file('untrusted.crt') }));
     } finally { await new Promise(resolve => server.close(resolve)); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
