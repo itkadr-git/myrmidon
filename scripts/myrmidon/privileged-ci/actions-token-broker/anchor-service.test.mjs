@@ -97,11 +97,12 @@ test('independent anchor service persists CAS across restart and authorizes the 
     // A separate anchor starts at genesis; exercise the real audit over mTLS.
     const isolatedPath = join(dir, 'independent.sqlite');
     provisionSqliteAnchor(isolatedPath);
-    const store = createSqliteAnchor(isolatedPath);
-    const server = createAnchorServer({ tls, store, allowedFingerprint256: fingerprint });
+    let store = createSqliteAnchor(isolatedPath);
+    let server = createAnchorServer({ tls, store, allowedFingerprint256: fingerprint });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     try {
-      const anchor = client(server, 'client'), auditPath = join(dir, 'audit.sqlite'), auditKey = randomBytes(32);
+      let anchor = client(server, 'client');
+      const auditPath = join(dir, 'audit.sqlite'), auditKey = randomBytes(32);
       const audit = await createAsyncAuthenticatedAudit(auditPath, auditKey, anchor);
       await audit.record('issued');
       audit.close();
@@ -136,7 +137,13 @@ test('independent anchor service persists CAS across restart and authorizes the 
         assert.equal(recovered.hasRetainedCredentials(), false);
         assert.equal((await recovered.pendingIssuances()).length, 1);
       } finally { recovered.close(); }
-      // Restore a valid historical database, rather than merely corrupting its rows.
+      // Restart the anchor service and restore a valid historical audit snapshot.
+      await new Promise(resolve => server.close(resolve));
+      store.close();
+      store = createSqliteAnchor(isolatedPath);
+      server = createAnchorServer({ tls, store, allowedFingerprint256: fingerprint });
+      await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+      anchor = client(server, 'client');
       copyFileSync(snapshot, auditPath);
       await assert.rejects(createAsyncAuthenticatedAudit(auditPath, auditKey, anchor), /anchor mismatch/);
     } finally { await new Promise(resolve => server.close(resolve)); store.close(); }
