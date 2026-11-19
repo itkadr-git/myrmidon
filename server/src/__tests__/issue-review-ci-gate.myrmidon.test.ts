@@ -340,9 +340,14 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     const [carrier] = await ctx.db.select({ id: companies.id }).from(companies).orderBy(companies.createdAt).limit(1);
     await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: carrier.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
     const app = routeApp(ctx.db, { type: "agent", agentId: reviewer, companyId, source: "agent_key", runId } as never, issueRoutes);
-    const response = await request(app).patch(`/api/issues/${issueId}`).send(verdict === "approve"
+    const decision = verdict === "approve"
       ? { status: "done", comment: `APPROVE PR #7 ${headSha}` }
-      : { status: "in_progress", comment: `REQUEST CHANGES PR #7 ${headSha}: server/src/example.ts:42 is broken` });
+      : { status: "in_progress", comment: `REQUEST CHANGES PR #7 ${headSha}: server/src/example.ts:42 is broken` };
+    await ctx.db.update(issueWorkProducts).set({ metadata: { repo: "acme/app", number: 7, headSha: "a".repeat(40) } }).where(sql`${issueWorkProducts.issueId} = ${issueId}`);
+    const staleHead = await request(app).patch(`/api/issues/${issueId}`).send(decision);
+    expect(staleHead.status, JSON.stringify(staleHead.body)).toBe(422);
+    await ctx.db.update(issueWorkProducts).set({ metadata: { repo: "acme/app", number: 7, headSha } }).where(sql`${issueWorkProducts.issueId} = ${issueId}`);
+    const response = await request(app).patch(`/api/issues/${issueId}`).send(decision);
     expect(response.status, JSON.stringify(response.body)).toBe(200);
   });
 
