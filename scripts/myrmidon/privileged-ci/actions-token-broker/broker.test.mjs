@@ -35,6 +35,20 @@ test('transient credential storage failure and failed revoke retain the known to
   assert.deepEqual([...retained.values()], [{ token: 'known-fixture' }]);
 });
 
+test('rejected upstream token is retained after transient storage failure and failed revoke', async () => {
+  let attempts = 0;
+  const retained = new Map();
+  const store = {
+    reserveIssuance: async () => {}, resolveIssuance: async () => assert.fail('must remain fenced'),
+    put: async (handle, credential) => { if (++attempts === 1) throw new Error('storage unavailable'); retained.set(handle, credential); },
+    queueAlert: async () => {},
+  };
+  const installation = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'fixture', request: async (_url, options) => options.method === 'DELETE' ? { ok: false } : { ok: true, json: async () => ({ token: 'rejected-fixture', expires_at: '2030-01-01T00:00:00Z', permissions: { contents: 'write' }, repositories: [{ id: 123 }] }) } });
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, installation, store, audit: async () => {} });
+  await assert.rejects(broker.exchange(jwt('rejected-transient-failure')));
+  assert.deepEqual([...retained.values()], [{ token: 'rejected-fixture' }]);
+});
+
 test('failure to resolve issuance alerts and retains the token for recovery', async () => {
   const alerts = [];
   const retained = new Map();
