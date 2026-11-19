@@ -100,6 +100,36 @@ describe("myrmidon(OPE-12932) findRunScopedGatewayKeyRef", () => {
 });
 
 describe("myrmidon(OPE-12932) run ownership", () => {
+  it("invalidates a finished run without affecting a concurrent or subsequent run", async () => {
+    const otherRunId = "55555555-5555-4555-8555-555555555555";
+    const nextRunId = "66666666-6666-4666-8666-666666666666";
+    const secrets = new Map([
+      [`llm-gateway-run-${RUN_ID}`, { id: SECRET_ID, status: "active", scope: "company" }],
+      [`llm-gateway-run-${otherRunId}`, { id: "other-secret", status: "active", scope: "company" }],
+      [`llm-gateway-run-${nextRunId}`, { id: "next-secret", status: "active", scope: "company" }],
+    ]);
+    getByNameMock.mockImplementation(async (_companyId: string, name: string) => secrets.get(name) ?? null);
+    removeMock.mockImplementation(async (id: string) => {
+      for (const [name, secret] of secrets) if (secret.id === id) secrets.delete(name);
+    });
+    resolveSecretValueMock.mockImplementation(async (_companyId: string, id: string) => {
+      if (![...secrets.values()].some((secret) => secret.id === id)) throw new Error("Secret not found");
+      return `value-${id}`;
+    });
+
+    const first = await findRunScopedGatewayKeyRef({} as never, COMPANY_ID, RUN_ID, {});
+    const concurrent = await findRunScopedGatewayKeyRef({} as never, COMPANY_ID, otherRunId, {});
+    expect(first?.secretRef.secretId).toBe(SECRET_ID);
+    expect(concurrent?.secretRef.secretId).toBe("other-secret");
+    expect(await removeRunScopedGatewayKeyRef({} as never, COMPANY_ID, RUN_ID, {})).toBe(true);
+    await expect(resolveSecretValueMock(COMPANY_ID, first!.secretRef.secretId)).rejects.toThrow("Secret not found");
+    await expect(resolveSecretValueMock(COMPANY_ID, concurrent!.secretRef.secretId)).resolves.toBe("value-other-secret");
+    expect(await findRunScopedGatewayKeyRef({} as never, COMPANY_ID, RUN_ID, {})).toBeNull();
+    const next = await findRunScopedGatewayKeyRef({} as never, COMPANY_ID, nextRunId, {});
+    expect(next?.secretRef.secretId).toBe("next-secret");
+    expect(next?.secretRef.secretId).not.toBe(first?.secretRef.secretId);
+  });
+
   it("looks up and removes only the current run's secret", async () => {
     getByNameMock.mockResolvedValue({ id: SECRET_ID, status: "active", scope: "company" });
     removeMock.mockResolvedValue({ id: SECRET_ID });
