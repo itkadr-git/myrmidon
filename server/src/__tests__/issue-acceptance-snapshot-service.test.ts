@@ -1180,6 +1180,42 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     expect(row!.companyId).toBe(companyA);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
+  it("rejects a stale repeatable-read issue company move after a concurrent link", async () => {
+    const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-stale-company-move-");
+    cleanups.push(() => dbh.cleanup());
+    const db = createDb(dbh.connectionString);
+    cleanups.push(async () => { await db.$client.end(); });
+    const issueId = randomUUID();
+    const docId = randomUUID();
+    await db.insert(companies).values([
+      { id: companyA, name: "Company A" },
+      { id: companyB, name: "Company B", issuePrefix: "BBB" },
+    ]);
+    await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
+    await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a" });
+    let resume!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { resume = resolve; });
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const writer = db.transaction(async (tx) => {
+      await tx.execute(sqlTag`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
+      await tx.execute(sqlTag`SELECT id FROM issues WHERE id = ${issueId}::uuid`);
+      started();
+      await gate;
+      await tx.update(issues).set({ companyId: companyB }).where(eq(issues.id, issueId));
+    });
+    const outcome = writer.then(() => null, (error: unknown) => error);
+    try {
+      await ready;
+      await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
+    } finally {
+      resume();
+    }
+    expect(await outcome).not.toBeNull();
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue!.companyId).toBe(companyA);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it.each(["issue", "document"] as const)(
     "rejects changing the company of a linked %s at the database boundary",
     async (target) => {
