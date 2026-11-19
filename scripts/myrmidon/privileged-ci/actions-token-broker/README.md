@@ -24,8 +24,9 @@ secret management, least privilege and key rotation.
 - Issuance followed by storage and revocation failures can lose an active token;
   invalid upstream expiry can also leave a token untracked. Durable recovery
   and alerting must be implemented before any live use.
-- Server-side least-privilege policy and upstream response scope need explicit
-  enforcement and review. TLS helpers alone do not establish host isolation.
+- Returned repository and permissions are checked against configured scope,
+  but revocation failure after a rejected response still needs durable recovery.
+  TLS helpers alone do not establish host isolation.
 - Independent security review must be repeated on the final head. Live acceptance
   requires an authorized isolated test App, installation policy and genuine
   Actions OIDC; fixtures are not evidence of GitHub compatibility.

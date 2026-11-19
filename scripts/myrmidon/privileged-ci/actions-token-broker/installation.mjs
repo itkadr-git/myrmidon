@@ -12,7 +12,16 @@ export function createInstallationClient({ installationId, repositoryId, permiss
       });
       if (!response.ok) throw new Error('installation token issuance failed');
       const result = await response.json();
-      if (typeof result.token !== 'string' || !result.token || typeof result.expires_at !== 'string' || !Number.isFinite(Date.parse(result.expires_at))) throw new Error('invalid installation response');
+      if (typeof result.token !== 'string' || !result.token) throw new Error('invalid installation response');
+      const allowedPermissions = { ...permissions, metadata: 'read' };
+      const scopeValid = result.permissions && typeof result.permissions === 'object' && !Array.isArray(result.permissions)
+        && Object.entries(result.permissions).every(([name, value]) => allowedPermissions[name] === value)
+        && Object.entries(permissions).every(([name, value]) => result.permissions[name] === value)
+        && Array.isArray(result.repositories) && result.repositories.length === 1 && result.repositories[0]?.id === repositoryId;
+      if (!scopeValid || typeof result.expires_at !== 'string' || !Number.isFinite(Date.parse(result.expires_at)) || Date.parse(result.expires_at) <= Date.now()) {
+        await this.revoke(result.token);
+        throw new Error('invalid installation response');
+      }
       return { token: result.token, expiresAt: result.expires_at };
     },
     async revoke(token) {
