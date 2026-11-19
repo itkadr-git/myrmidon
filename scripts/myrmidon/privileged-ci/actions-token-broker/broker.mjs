@@ -121,6 +121,9 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         const handle = randomUUID();
         const durable = typeof store.reserveIssuance === 'function';
         if (durable) await store.reserveIssuance(handle);
+        // A concurrent audit failure may have occurred while reserving.
+        // Keep the reservation for recovery instead of contacting GitHub.
+        if (auditFailed) throw new Error('audit unavailable');
         let credential;
         try {
           credential = await installation.issue(async token => {
