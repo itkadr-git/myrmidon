@@ -29,6 +29,23 @@ test('failed recovery alert survives a supervisor and store restart', async () =
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('shutdown during failed recovery persists the alert for the next supervisor', async () => {
+  const store = memoryOutbox();
+  const first = createRecoverySupervisor({
+    store,
+    recover: async () => { first.stop(); return { failed: 1, pending: false, alertFailed: false }; },
+    alert: async () => {}, start: async () => {}, delay: async () => {},
+  });
+  await assert.rejects(first.run(), /stopped/);
+  const delivered = [];
+  const second = createRecoverySupervisor({
+    store, recover: async () => ({ failed: 0, pending: false, alertFailed: false }),
+    alert: async event => delivered.push(event), start: async () => {}, delay: async () => {},
+  });
+  await second.run();
+  assert.deepEqual(delivered, ['credential_recovery_failed']);
+});
+
 test('recovery supervisor retries while issuance stays stopped, then starts exactly once', async () => {
   let attempts = 0, starts = 0;
   const alerts = [];
