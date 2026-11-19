@@ -1149,6 +1149,23 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     expect(foreign!.latestBody).toBe("foreign");
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
+  it("allows deleting an issue with a linked acceptance document", async () => {
+    const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-issue-delete-");
+    cleanups.push(() => dbh.cleanup());
+    const db = createDb(dbh.connectionString);
+    cleanups.push(async () => { await db.$client.end(); });
+    const issueId = randomUUID();
+    const docId = randomUUID();
+    await db.insert(companies).values({ id: companyA, name: "Company A" });
+    await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
+    await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a" });
+    await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
+    await db.delete(issues).where(eq(issues.id, issueId));
+    expect(await db.select().from(issueDocuments).where(eq(issueDocuments.issueId, issueId))).toHaveLength(0);
+    const rows = await db.execute(sqlTag`SELECT acceptance_issue_id FROM documents WHERE id = ${docId}::uuid`);
+    expect(rows[0]).toMatchObject({ acceptance_issue_id: null });
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("fails closed when an explicit acceptance bump names a nonexistent issue", async () => {
     const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-missing-issue-");
     cleanups.push(() => dbh.cleanup());
