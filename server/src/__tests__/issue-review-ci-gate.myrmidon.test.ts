@@ -328,9 +328,13 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewer, status: "succeeded", contextSnapshot: { issueId } });
     await ctx.db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", title: "Synthetic PR", url: "https://github.com/acme/app/pull/7", status: "open", isPrimary: true, metadata: { repo: "acme/app", number: 7, headSha } });
     let checkState: "success" | "failure" | "pending" | "missing" = "success";
+    let invalidateDuringRead = false;
     const wakeFetch = vi.fn(async (url: string) => {
       if (url.includes("/pulls/7")) return Response.json({ state: "open", head: { sha: headSha, ref: "branch" } });
-      if (url.includes("/check-runs")) return Response.json({ total_count: checkState === "missing" ? 0 : 1, check_runs: checkState === "missing" ? [] : [{ id: 1, name: "CI result", status: checkState === "pending" ? "in_progress" : "completed", conclusion: checkState === "pending" ? null : checkState, head_sha: headSha, html_url: "https://github.com/acme/app/actions/runs/1", started_at: new Date().toISOString(), completed_at: new Date().toISOString() }] });
+      if (url.includes("/check-runs")) {
+        if (invalidateDuringRead) invalidateCiCacheForHead(companyId, "acme/app", headSha);
+        return Response.json({ total_count: checkState === "missing" ? 0 : 1, check_runs: checkState === "missing" ? [] : [{ id: 1, name: "CI result", status: checkState === "pending" ? "in_progress" : "completed", conclusion: checkState === "pending" ? null : checkState, head_sha: headSha, html_url: "https://github.com/acme/app/actions/runs/1", started_at: new Date().toISOString(), completed_at: new Date().toISOString() }] });
+      }
       return new Response(null, { status: 404 });
     });
     const wake = createPullRequestCiResolver(ctx.db, { source: "run-context", fetch: wakeFetch, tokenProvider: async () => canary });
@@ -360,6 +364,12 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
       expect(rejected.status, `${state}: ${JSON.stringify(rejected.body)}`).toBe(422);
     }
     checkState = "success";
+    clearCiCacheForTests();
+    invalidateDuringRead = true;
+    await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
+    const raced = await request(app).patch(`/api/issues/${issueId}`).send(decision);
+    expect(raced.status, JSON.stringify(raced.body)).toBe(422);
+    invalidateDuringRead = false;
     clearCiCacheForTests();
     await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
     const response = await request(app).patch(`/api/issues/${issueId}`).send(decision);
