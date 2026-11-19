@@ -8,6 +8,21 @@ import { createCredentialStore } from './store.mjs';
 import { createSqliteAnchor, provisionSqliteAnchor } from './sqlite-anchor.mjs';
 import { createCredentialCheckpoint } from './credential-checkpoint.mjs';
 
+test('checkpoint provisioning refuses a store with an unresolved issuance or recovery alert', async () => {
+  for (const prepare of [store => store.reserveIssuance('attempt'), store => store.queueAlert('issuance_ambiguous')]) {
+    const dir = mkdtempSync(join(tmpdir(), 'credential-checkpoint-provision-'));
+    const anchorPath = join(dir, 'anchor.sqlite');
+    provisionSqliteAnchor(anchorPath);
+    const anchor = createSqliteAnchor(anchorPath);
+    const store = createCredentialStore(join(dir, 'credentials.sqlite'), randomBytes(32));
+    try {
+      await prepare(store);
+      await assert.rejects(createCredentialCheckpoint(store, anchor, { provision: true }), /invalid credential checkpoint provisioning/);
+      assert.deepEqual(await anchor.read(), { seq: 0, mac: '' });
+    } finally { store.close(); anchor.close(); rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
 test('interrupted credential mutation fences restart before the database is changed', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'credential-checkpoint-interrupted-'));
   const path = join(dir, 'credentials.sqlite'), anchorPath = join(dir, 'anchor.sqlite');
