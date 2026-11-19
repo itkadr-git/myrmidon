@@ -840,6 +840,59 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
 
+  it.each(["document", "revision"] as const)(
+    "rejects or invalidates an old repeatable-read %s writer after concurrent linking",
+    async (target) => {
+      const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-old-writer-");
+      cleanups.push(() => dbh.cleanup());
+      const db = createDb(dbh.connectionString);
+      cleanups.push(async () => { await db.$client.end(); });
+      const issueId = randomUUID();
+      const docId = randomUUID();
+      const revisionId = randomUUID();
+      await db.insert(companies).values({ id: companyA, name: "Company A" });
+      await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
+      await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a", latestRevisionId: revisionId });
+      await db.insert(documentRevisions).values({ id: revisionId, companyId: companyA, documentId: docId, revisionNumber: 1, body: "a" });
+
+      let resume!: () => void;
+      let started!: () => void;
+      const gate = new Promise<void>((resolve) => { resume = resolve; });
+      const ready = new Promise<void>((resolve) => { started = resolve; });
+      const writer = db.transaction(async (tx) => {
+        await tx.execute(sqlTag`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
+        await tx.execute(sqlTag`SELECT id FROM documents WHERE id = ${docId}::uuid`);
+        started();
+        await gate;
+        if (target === "document") {
+          await tx.update(documents).set({ latestBody: "b" }).where(eq(documents.id, docId));
+          await tx.update(documents).set({ latestBody: "a" }).where(eq(documents.id, docId));
+        } else {
+          await tx.update(documentRevisions).set({ body: "b" }).where(eq(documentRevisions.id, revisionId));
+          await tx.update(documentRevisions).set({ body: "a" }).where(eq(documentRevisions.id, revisionId));
+        }
+      });
+      const outcome = writer.then(() => null, (error: unknown) => error);
+      let pin: string;
+      try {
+        await ready;
+        await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
+        pin = (await issueAcceptanceSnapshotService(db).read(issueId))!.issue.version;
+      } finally {
+        resume();
+      }
+      const error = await outcome;
+      const after = await issueAcceptanceSnapshotService(db).read(issueId);
+      if (error) {
+        expect(error).toMatchObject({ cause: { code: "40001" } });
+      } else {
+        expect(after!.issue.version).not.toBe(pin!);
+      }
+      expect(after!.document!.body).toBe("a");
+    },
+    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  );
+
   it(
     "rejects cross-company issue links and revision writes at the database boundary",
     async () => {
