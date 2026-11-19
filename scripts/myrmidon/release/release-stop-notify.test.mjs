@@ -60,6 +60,7 @@ case "$sub" in
     # deduplicate against a stale snapshot and create the 100/101 duplicate
     # pair observed in CI (runs 43779902791 and 44507283140).
     while ! mkdir "$SANDBOX/issues-file.lock" 2>/dev/null; do
+      trace "api waiting for issues lock"
       sleep 0.01
     done
     if [ -n "$jq_filter" ]; then
@@ -360,40 +361,60 @@ describe("release-stop-notify.sh (fake gh)", () => {
   // 44507283140): the fake gh api scan used to read issues.json WITHOUT the
   // issues-file lock the create/close handlers hold, so a scan that started
   // while a create was in flight could observe the pre-write state and
-  // deduplicate against a stale snapshot. This test holds that lock from the
-  // outside (exactly like an in-flight create), starts a scan while the lock
-  // is held, and requires the scan to block until the fully written issue is
-  // published and then observe it.
+  // deduplicate against a stale snapshot. This test is a pure event
+  // handshake with no wall-clock assertions: the test process itself holds
+  // the same lock an in-flight create would hold, starts a scan, waits until
+  // the fake handler observably reports that it is waiting on that lock,
+  // asserts the scan is still blocked, then publishes the fully written
+  // issue and releases the lock. The scan must observe the published issue.
   it("fake gh api scan is serialized with a concurrent issue write (deterministic interleaving)", async () => {
     const sb = makeSandbox();
     const lockDir = path.join(sb.dir, "issues-file.lock");
-    const writer = spawn("bash", ["-c", 'mkdir "$SANDBOX/issues-file.lock" && sleep 0.5 && printf %s "[{\\"number\\":7,\\"title\\":\\"written\\",\\"state\\":\\"open\\"}]" > "$SANDBOX/issues.json" && rmdir "$SANDBOX/issues-file.lock"'], {
-      env: { ...process.env, SANDBOX: sb.dir },
-      stdio: "ignore",
+    const traceFile = path.join(sb.dir, "trace.log");
+    // Writer half of the handshake: hold the lock exactly like an in-flight
+    // create, and publish the issue only after the scan is observably blocked.
+    fs.mkdirSync(lockDir);
+    const scan = spawn("gh", [
+      "api", "--paginate",
+      "-H", "Accept: application/vnd.github+json",
+      `/repos/${REPO}/issues?state=all&per_page=100`,
+      "--jq", '.[] | select(.title == "written") | .number',
+    ], {
+      env: { ...process.env, SANDBOX: sb.dir, PATH: `${sb.bin}:${process.env.PATH}` },
+      stdio: ["ignore", "pipe", "pipe"],
     });
+    let stdout = "";
+    let stderr = "";
+    scan.stdout.on("data", (chunk) => { stdout += chunk; });
+    scan.stderr.on("data", (chunk) => { stderr += chunk; });
+    const closed = new Promise((resolve) => scan.on("close", (code) => resolve(code)));
     try {
+      const readTrace = () => (fs.existsSync(traceFile) ? fs.readFileSync(traceFile, "utf8") : "");
+      // Wait (bounded) until the fake handler observably reports it is
+      // waiting on the issues lock. A scan that does not serialize reads
+      // with writes never waits: it reads the pre-write file and exits, so
+      // this assertion fails deterministically.
       const deadline = Date.now() + 5000;
-      while (!fs.existsSync(lockDir)) {
-        if (Date.now() > deadline) throw new Error("writer did not acquire the issues-file lock in time");
+      while (!readTrace().includes("api waiting for issues lock")) {
+        if (scan.exitCode !== null) break;
+        if (Date.now() > deadline) break;
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
-      const started = Date.now();
-      const scan = spawnSync("gh", [
-        "api", "--paginate",
-        "-H", "Accept: application/vnd.github+json",
-        `/repos/${REPO}/issues?state=all&per_page=100`,
-        "--jq", '.[] | select(.title == "written") | .number',
-      ], {
-        env: { ...process.env, SANDBOX: sb.dir, PATH: `${sb.bin}:${process.env.PATH}` },
-        encoding: "utf8",
-      });
-      const elapsed = Date.now() - started;
-      assert.equal(scan.status, 0, scan.stderr);
-      assert.match(scan.stdout, /^7/, `scan must observe the fully written issue, got: ${JSON.stringify(scan.stdout)}`);
-      assert.ok(elapsed >= 350, `scan returned after ${elapsed}ms without waiting for the writer lock; reads are not serialized with writes`);
+      assert.ok(
+        readTrace().includes("api waiting for issues lock"),
+        `scan never waited on the issues lock; it read the pre-write snapshot and raced ahead. stderr: ${stderr}`,
+      );
+      assert.equal(scan.exitCode, null, "scan must stay blocked while the lock is held");
+      // Publish the fully written issue, then release the lock.
+      fs.writeFileSync(path.join(sb.dir, "issues.json"), '[{"number":7,"title":"written","state":"open"}]');
+      fs.rmdirSync(lockDir);
+      const status = await closed;
+      assert.equal(status, 0, stderr);
+      assert.match(stdout, /^7/, `scan must observe the fully written issue, got: ${JSON.stringify(stdout)}`);
     } finally {
       if (fs.existsSync(lockDir)) fs.rmdirSync(lockDir);
-      await new Promise((resolve) => writer.on("close", resolve));
+      if (scan.exitCode === null) scan.kill();
+      await closed;
     }
   });
 
