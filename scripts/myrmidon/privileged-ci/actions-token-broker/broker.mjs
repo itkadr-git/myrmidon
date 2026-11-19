@@ -17,6 +17,21 @@ export function createSingleHostBroker({ replayPath, credentialPath, credentialK
   return { ...broker, close: () => { replay.close(); if (!suppliedStore) store.close(); } };
 }
 
+// Call only while issuance is quiesced across all processes sharing the store.
+export async function createRecoveredSingleHostBroker({ credentialPath, credentialKey, store: suppliedStore, ...options }) {
+  if (suppliedStore) throw new Error('persistent recovery store required');
+  const store = createCredentialStore(credentialPath, credentialKey);
+  try {
+    const result = await store.revokeRetained(token => options.installation.revoke(token));
+    if (result.failed) throw new Error('credential recovery failed');
+    const broker = createSingleHostBroker({ ...options, store });
+    return { ...broker, close: () => { broker.close(); store.close(); } };
+  } catch (error) {
+    store.close();
+    throw error;
+  }
+}
+
 // The store must persist encrypted credentials and enforce owner-bound atomic access.
 export function createBroker({ policy, loadKeys, claimOnce, installation, store, audit }) {
   const fixedPolicy = Object.freeze({ ...policy });

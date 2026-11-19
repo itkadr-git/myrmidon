@@ -24,11 +24,12 @@ secret management, least privilege and key rotation.
   experimental AES-GCM SQLite credential store when a credential path and key
   are provided. Its single-host locking and key custody need independent review.
   There is no recovery worker, authenticated audit sink or deployment wiring.
-  The store exposes an operator-only `revokeRetained(revoke)` primitive that
-  attempts to revoke every stored token, retains failures and returns only counts.
-  It is not wired to a service or scheduled worker; it also revokes active tokens,
-  so operators must quiesce issuance before invoking it. A successful upstream
-  revoke followed by a failed database commit can require manual reconciliation.
+  The experimental `createRecoveredSingleHostBroker` revokes stored tokens before
+  returning a broker and refuses startup when any revoke fails. It is not a
+  deployed service, distributed lock, or scheduled worker; operators must stop
+  every issuer sharing the store before recovery because it also revokes active
+  tokens. A successful upstream revoke followed by a failed database commit can
+  require manual reconciliation.
 - Issuance followed by storage and revocation failures can lose an active token;
   invalid upstream expiry can also leave a token untracked. Durable recovery
   and alerting must be implemented before any live use.
