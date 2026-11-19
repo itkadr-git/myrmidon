@@ -112,6 +112,19 @@ test('outbox failure does not prevent retrying known-token recovery', async () =
   assert.ok(alerts.includes('credential_recovery_failed'));
 });
 
+test('outbox read failure does not interrupt known-token recovery retries', async () => {
+  let attempts = 0, starts = 0;
+  const store = { ...memoryOutbox(), pendingAlertEntries: async () => { throw new Error('disk offline'); } };
+  const supervisor = createRecoverySupervisor({
+    store, recover: async () => ({ failed: ++attempts === 1 ? 1 : 0, pending: true, alertFailed: false }),
+    alert: async () => {}, start: async () => { starts++; },
+    delay: async () => { if (attempts === 2) supervisor.stop(); },
+  });
+  await assert.rejects(supervisor.run(), /stopped/);
+  assert.equal(attempts, 2);
+  assert.equal(starts, 0);
+});
+
 test('a failed alert must be delivered before a later clean recovery can start issuance', async () => {
   let attempts = 0, deliveries = 0, starts = 0;
   const supervisor = createRecoverySupervisor({
