@@ -634,7 +634,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
   it("refuses firewall changes when the timer launch returns without confirming a running timer", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
-    ssh.mockResponse(/nohup sh -c 'sleep 300/, { exitCode: 0, stdout: "" });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 0, stdout: "" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
       job: { id: "job-unconfirmed-timer", companyId: "c1", serverId: "s1" },
@@ -644,6 +644,8 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
 
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
+    expect(ssh.hasExecuted(/start-myrmidon-firewall-timer/)).toBe(true);
+    expect(result.error).toMatch(/timer.*(confirm|unconfirmed)/i);
     expect(ssh.hasExecuted(/sudo ufw allow|sudo ufw default/)).toBe(false);
   });
 
