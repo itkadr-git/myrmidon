@@ -19,6 +19,17 @@ test('a valid upstream token is retained before issuance returns', async () => {
   assert.deepEqual(events, ['retained:known-fixture', 'returned:known-fixture']);
 });
 
+test('valid token retention failure attempts revocation without returning the token', async () => {
+  const calls = [];
+  const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'fixture', request: async (_url, options) => {
+    calls.push(options.method);
+    if (options.method === 'DELETE') throw new Error('revoke offline');
+    return { ok: true, json: async () => ({ token: 'known-fixture', expires_at: '2030-01-01T00:00:00Z', permissions: { contents: 'read' }, repositories: [{ id: 123 }] }) };
+  } });
+  await assert.rejects(client.issue(async () => { throw new Error('store offline'); }), /store offline/);
+  assert.deepEqual(calls, ['POST', 'DELETE']);
+});
+
 test('server policy rejects permissions outside the prototype read-only profile', () => {
   for (const permissions of [{ administration: 'write' }, { contents: 'write' }, { issues: 'read' }]) {
     assert.throws(() => createInstallationClient({ installationId: '42', repositoryId: 123, permissions, appJwt: async () => 'fixture' }), /invalid installation policy/);

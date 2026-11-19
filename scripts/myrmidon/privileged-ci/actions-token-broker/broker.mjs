@@ -127,7 +127,7 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         // A concurrent audit failure may have occurred while reserving.
         // Keep the reservation for recovery instead of contacting GitHub.
         if (auditFailed) throw new Error('audit unavailable');
-        let credential;
+        let credential, retained = false;
         try {
           credential = await installation.issue(async token => {
             try {
@@ -136,6 +136,7 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
               // Retry transient failures while the rejected token is still known.
               await store.put(handle, { token }, owner);
             }
+            retained = true;
           });
         } catch {
           // The upstream may have created a token despite the failed response.
@@ -143,7 +144,7 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
           throw new Error('issuance outcome unknown');
         }
         try {
-          await store.put(handle, credential, owner);
+          if (!retained) await store.put(handle, credential, owner);
         } catch {
           try {
             await installation.revoke(credential.token);

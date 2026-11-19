@@ -25,6 +25,13 @@ export function createInstallationClient({ installationId, repositoryId, permiss
         try { if (typeof retainRejected === 'function') await retainRejected(result.token); } finally { await this.revoke(result.token); }
         throw new Error('invalid installation response');
       }
+      if (typeof retainRejected === 'function') {
+        try { await retainRejected(result.token); }
+        catch (error) {
+          try { await this.revoke(result.token); } catch { /* The reservation remains ambiguous. */ }
+          throw error;
+        }
+      }
       return { token: result.token, expiresAt: result.expires_at };
     },
     async revoke(token) {

@@ -105,6 +105,10 @@ secret management, least privilege and key rotation.
   every issuer sharing the store before recovery because it also revokes active
   tokens. A successful upstream revoke followed by a failed database commit can
   require manual reconciliation.
+- A valid response is now persisted as soon as it is parsed and validated, before
+  the installation client returns it to the broker. A failed persistence attempts
+  immediate revocation and leaves the pre-existing reservation ambiguous; it does
+  not close the crash window between GitHub issuance and parsing/persistence.
 - Issuance followed by storage and revocation failures can lose an active token;
   invalid upstream expiry can also leave a token untracked. A process crash or
   lost HTTP response after GitHub creates a token can leave the token unknown to
