@@ -56,7 +56,7 @@ function snapshotFor(issue: { id: string; identifier: string; companyId: string 
 
 describe("GET /api/issues/:id/acceptance-scenarios-snapshot route (OPE-15134)", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   it("returns the minimal atomic snapshot and nothing else", async () => {
@@ -74,10 +74,10 @@ describe("GET /api/issues/:id/acceptance-scenarios-snapshot route (OPE-15134)", 
     });
     expect(Object.keys(res.body.issue).sort()).toEqual(["companyId", "id", "identifier", "version"]);
     expect(Object.keys(res.body.document).sort()).toEqual(["body", "id", "latestRevisionId", "latestRevisionNumber"]);
-    // The whole route is one snapshot read: the authorized row is the row
-    // that is served — there is no earlier, richer issue read.
-    expect(mockSnapshotService.read).toHaveBeenCalledTimes(1);
-    expect(mockSnapshotService.read).toHaveBeenCalledWith(issue.identifier);
+    // The second read revalidates the epoch by immutable issue id.
+    expect(mockSnapshotService.read).toHaveBeenCalledTimes(2);
+    expect(mockSnapshotService.read).toHaveBeenNthCalledWith(1, issue.identifier);
+    expect(mockSnapshotService.read).toHaveBeenNthCalledWith(2, issue.id);
   }, ROUTE_TEST_TIMEOUT_MS);
 
   it("carries document: null when the acceptance document is absent", async () => {
@@ -131,6 +131,19 @@ describe("GET /api/issues/:id/acceptance-scenarios-snapshot route (OPE-15134)", 
     const res = await request(app).get("/api/issues/OPE-1/acceptance-scenarios-snapshot");
     expect(res.status).toBe(401);
     expect(mockSnapshotService.read).not.toHaveBeenCalled();
+  }, ROUTE_TEST_TIMEOUT_MS);
+
+  it("fails closed if the issue epoch changes before the response", async () => {
+    const issue = { id: randomUUID(), identifier: "OPE-1", companyId: companyA };
+    mockSnapshotService.read
+      .mockResolvedValueOnce(snapshotFor(issue))
+      .mockResolvedValueOnce({ ...snapshotFor(issue), issue: { ...issue, version: "2" } });
+
+    const app = await createApp(boardActor([companyA]));
+    const res = await request(app).get(`/api/issues/${issue.identifier}/acceptance-scenarios-snapshot`);
+
+    expect(res.status).not.toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain("criteria");
   }, ROUTE_TEST_TIMEOUT_MS);
 
   it("does not return a partial snapshot when the read model fails", async () => {
