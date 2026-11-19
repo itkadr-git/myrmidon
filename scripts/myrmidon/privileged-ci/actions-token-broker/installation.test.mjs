@@ -1,4 +1,13 @@
 import { test } from 'node:test';
+
+test('a stalled issuance request is aborted and treated as ambiguous', async () => {
+  let aborted = false;
+  const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'fixture', requestTimeoutMs: 10, request: async (_url, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')); }, { once: true });
+  }) });
+  await assert.rejects(client.issue(), /aborted/);
+  assert.equal(aborted, true);
+});
 import assert from 'node:assert/strict';
 import { createInstallationClient } from './installation.mjs';
 
