@@ -1,4 +1,11 @@
 import { test } from 'node:test';
+
+test('a stalled App JWT signer times out without contacting GitHub', async () => {
+  let requests = 0;
+  const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => new Promise(() => {}), requestTimeoutMs: 20, request: async () => { requests++; } });
+  await assert.rejects(Promise.race([client.issue(), new Promise((_, reject) => setTimeout(() => reject(new Error('test deadline')), 200))]), /installation request timeout/);
+  assert.equal(requests, 0);
+});
 test('a stalled upstream transport times out issuance and revocation', async () => {
   const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'fixture', requestTimeoutMs: 20, request: async () => new Promise(() => {}) });
   const bounded = operation => Promise.race([operation, new Promise((_, reject) => setTimeout(() => reject(new Error('test deadline')), 200))]);
