@@ -25,10 +25,18 @@ export function createRecoverySupervisor({ recover, start, alert, delay, store }
           if (stopped) break;
           // Keep revoking on later passes even if the outbox is unavailable.
           if (outboxFailed) { await delay(); continue; }
-          for (const { event, generation } of await store.pendingAlertEntries()) {
-            try { await alert(event); await store.acknowledgeAlert(event, generation); } catch { /* Retry before starting. */ }
+          let pendingAlerts;
+          try {
+            for (const { event, generation } of await store.pendingAlertEntries()) {
+              try { await alert(event); await store.acknowledgeAlert(event, generation); } catch { /* Retry before starting. */ }
+            }
+            pendingAlerts = await store.pendingAlerts();
+          } catch {
+            unqueued.add('credential_recovery_failed');
+            try { await alert('credential_recovery_failed'); } catch { /* Independent monitoring remains required. */ }
+            if (!stopped) await delay();
+            continue;
           }
-          const pendingAlerts = await store.pendingAlerts();
           if (stopped) break;
           if (clean && pendingAlerts.length === 0) {
             // A failed start may have partially activated an issuer; never retry it.
