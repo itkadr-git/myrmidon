@@ -934,11 +934,18 @@ test('audited TLS lifecycle retries recovery before constructing a server', asyn
   const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'), credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32), installation: { issue: async () => ({ token: 'fixture' }), revoke: async () => { throw new Error('offline'); } }, audit: async () => {} };
   let delays = 0;
   try {
-    const initial = createSingleHostBroker(options);
-    await initial.exchange(jwt('tls-supervisor-initial'));
+    let credentialHead = { seq: 0, mac: '' };
+    const credentialAnchor = { read: async () => ({ ...credentialHead }), compareAndSet: async (previous, next) => {
+      if (JSON.stringify(previous) !== JSON.stringify(credentialHead)) return false;
+      credentialHead = { ...next }; return true;
+    } };
+    const { createCredentialCheckpoint, checkpointCredentialStore } = await import('./credential-checkpoint.mjs');
+    const initial = createCredentialStore(options.credentialPath, options.credentialKey);
+    const checkpoint = await createCredentialCheckpoint(initial, credentialAnchor, { provision: true });
+    await checkpointCredentialStore(initial, checkpoint).put('known', { token: 'fixture' }, 'owner');
     initial.close();
     const anchor = { read: () => ({ seq: 0, mac: '' }), compareAndSet: () => true };
-    await assert.rejects(tls.createAuditedSupervisedServer({}, { ...options, auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32), auditAnchor: anchor, alert: async () => {}, delay: async () => { delays++; throw new Error('retry observed'); } }), /retry observed/);
+    await assert.rejects(tls.createAuditedSupervisedServer({}, { ...options, credentialAnchor, auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32), auditAnchor: anchor, alert: async () => {}, delay: async () => { delays++; throw new Error('retry observed'); } }), /retry observed/);
     assert.equal(delays, 1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

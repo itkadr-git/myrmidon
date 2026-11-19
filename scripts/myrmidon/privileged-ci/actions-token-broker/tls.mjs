@@ -49,6 +49,7 @@ export async function createAuditedSupervisedServer(tls, { auditPath, auditKey, 
   }
   let broker;
   try {
+    if (typeof options.credentialAnchor?.read !== 'function' || typeof options.credentialAnchor?.compareAndSet !== 'function') throw new Error('credential anchor required');
     broker = await createSupervisedSingleHostBroker({ ...options, anchoredIssuance: true, audit: event => audit.record(event) });
     const server = createSecureServer(tls, broker);
     server.once('close', () => { try { broker.close(); } finally { audit.close(); } });

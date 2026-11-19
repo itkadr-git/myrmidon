@@ -64,16 +64,23 @@ test('mTLS server accepts an authorized certificate and rejects an anonymous cli
         head = { ...next }; return true;
       } };
     };
+    const { createCredentialStore } = await import('./store.mjs');
+    const { createCredentialCheckpoint } = await import('./credential-checkpoint.mjs');
+    async function provisionCredential(options) {
+      const store = createCredentialStore(options.credentialPath, options.credentialKey);
+      try { await createCredentialCheckpoint(store, options.credentialAnchor, { provision: true }); } finally { store.close(); }
+    }
     let issueCount = 0, revokeCount = 0;
     const alerts = [];
     const options = {
       auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32), auditAnchor: anchor(),
       replayPath: join(dir, 'replay.sqlite'), replayKey: randomBytes(32), replayAnchor: anchor(),
-      credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32),
+      credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32), credentialAnchor: anchor(),
       policy, loadKeys: async () => [key],
       installation: { issue: async () => { issueCount++; throw new Error('upstream response lost'); }, revoke: async () => { revokeCount++; } },
       alert: async event => alerts.push(event), delay: async () => {},
     };
+    await provisionCredential(options);
     const supervised = await createAuditedSupervisedServer({ key: file('server.key'), cert: file('server.crt'), ca: file('ca.crt') }, options);
     await new Promise(resolve => supervised.listen(0, '127.0.0.1', resolve));
     try {
@@ -99,12 +106,13 @@ test('mTLS server accepts an authorized certificate and rejects an anonymous cli
       ...options,
       auditPath: join(dir, 'recovery-audit.sqlite'), auditAnchor: anchor(),
       replayPath: join(dir, 'recovery-replay.sqlite'), replayAnchor: anchor(),
-      credentialPath: join(dir, 'recovery-credentials.sqlite'),
+      credentialPath: join(dir, 'recovery-credentials.sqlite'), credentialAnchor: anchor(),
       installation: {
         issue: async retain => { await retain('retained-fixture'); throw new Error('response processing failed'); },
         revoke: async token => { assert.equal(token, 'retained-fixture'); if (++recoveryRevokes === 1) throw new Error('revoke unavailable'); },
       },
     };
+    await provisionCredential(recoveryOptions);
     const recovering = await createAuditedSupervisedServer({ key: file('server.key'), cert: file('server.crt'), ca: file('ca.crt') }, recoveryOptions);
     await new Promise(resolve => recovering.listen(0, '127.0.0.1', resolve));
     try {
