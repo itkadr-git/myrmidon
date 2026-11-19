@@ -279,6 +279,15 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     const wakesAfterRollover = await ctx.db.select().from(agentWakeupRequests).where(sql`${agentWakeupRequests.agentId} = ${reviewer}`);
     expect(wakesAfterRollover.length).toBeGreaterThan(wakesAfter.length);
 
+    // The recovered gate must still reject a verdict from someone other than
+    // the current review participant, even when fresh CI is available.
+    const nonParticipantApp = routeApp(ctx.db, { type: "agent", agentId: author, companyId, source: "agent_key" } as never, issueRoutes);
+    const unauthorized = await request(nonParticipantApp).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: unauthorized finding" });
+    expect(unauthorized.status, JSON.stringify(unauthorized.body)).toBeGreaterThanOrEqual(400);
+    const [beforeVerdict] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+    expect(beforeVerdict.status).toBe("in_review");
+    expect(beforeVerdict.executionState?.currentParticipant?.agentId).toBe(reviewer);
+
     const accepted = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: preserve this finding" });
     expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
     const fetched = await request(app).get(`/api/issues/${issueId}`);
