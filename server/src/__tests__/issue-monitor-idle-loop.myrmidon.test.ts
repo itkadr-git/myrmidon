@@ -333,6 +333,39 @@ describeEmbeddedPostgres("issue monitor that waits for subtasks", () => {
     }
   });
 
+  it("does not clear a replacement monitor after an old unchanged snapshot reaches its limit", async () => {
+    const { companyId, agentId, epicId } = await seedEpic();
+    await recordWake(companyId, epicId, agentId);
+    const heartbeat = heartbeatService(db, { executesRuns: false });
+    await armMonitor(epicId, at("12:30"));
+    await heartbeat.tickTimers(at("12:31"));
+    await armMonitor(epicId, at("13:30"));
+    await heartbeat.tickTimers(at("13:31"));
+    await armMonitor(epicId, at("14:30"));
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_replace_idle_clear() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_next_check_at = '2026-04-11T15:30:00Z'::timestamptz,
+            monitor_wake_requested_at = NULL, monitor_notes = 'new evidence'
+          WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_replace_idle_clear AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_replace_idle_clear();
+    `));
+    try {
+      expect((await heartbeat.tickTimers(at("14:31"))).enqueued).toBe(0);
+      const [epic] = await db.select().from(issues).where(eq(issues.id, epicId));
+      expect(epic.monitorNextCheckAt?.toISOString()).toBe("2026-04-11T15:30:00.000Z");
+      expect(epic.monitorNotes).toBe("new evidence");
+      expect(await activityActions(epicId, "issue.monitor_cleared")).toHaveLength(0);
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_replace_idle_clear ON issues; DROP FUNCTION IF EXISTS test_replace_idle_clear();"));
+    }
+  });
+
   it("wakes the owner at the first term when it has no recorded wake, and records the snapshot", async () => {
     const { agentId, epicId } = await seedEpic();
     await armMonitor(epicId, at("12:30"));
