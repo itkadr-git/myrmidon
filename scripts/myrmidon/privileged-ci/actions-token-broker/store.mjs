@@ -11,8 +11,9 @@ export function createCredentialStore(path, key) {
   const select = db.prepare('SELECT nonce, ciphertext, tag FROM credentials WHERE handle = ? AND owner = ?');
   const remove = db.prepare('DELETE FROM credentials WHERE handle = ? AND owner = ?');
   const removeHandle = db.prepare('DELETE FROM credentials WHERE handle = ?');
+  const listHandles = db.prepare('SELECT handle, owner FROM credentials ORDER BY rowid');
   let active = false;
-  return {
+  const store = {
     async put(handle, credential, owner) {
       if (active) throw new Error('store busy');
       const nonce = randomBytes(12);
@@ -47,6 +48,20 @@ export function createCredentialStore(path, key) {
         active = false;
       }
     },
+    async revokeRetained(revoke) {
+      if (typeof revoke !== 'function' || active) throw new Error('invalid recovery');
+      const result = { revoked: 0, failed: 0 };
+      for (const { handle, owner } of listHandles.all()) {
+        try {
+          await store.withOwned(handle, owner, credential => revoke(credential.token));
+          result.revoked++;
+        } catch {
+          result.failed++;
+        }
+      }
+      return result;
+    },
     close() { db.close(); secret.fill(0); },
   };
+  return store;
 }
