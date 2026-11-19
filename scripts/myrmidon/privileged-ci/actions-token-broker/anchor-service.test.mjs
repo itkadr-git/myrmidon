@@ -1,0 +1,46 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { X509Certificate } from 'node:crypto';
+import { provisionSqliteAnchor, createSqliteAnchor } from './sqlite-anchor.mjs';
+import { createRemoteAnchor } from './remote-anchor.mjs';
+import { createAnchorServer } from './anchor-service.mjs';
+
+test('independent anchor service persists CAS across restart and authorizes the client certificate', async () => {
+  const scratch = process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_SCRATCH_DIR || join(homedir(), '.cache', 'myrmidon-broker-tests');
+  mkdirSync(scratch, { recursive: true, mode: 0o700 });
+  const dir = mkdtempSync(join(scratch, 'anchor-service-'));
+  const run = (...args) => execFileSync('openssl', args, { cwd: dir, stdio: 'ignore' });
+  try {
+    run('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'ca.key', '-out', 'ca.crt', '-subj', '/CN=fixture CA', '-days', '1');
+    for (const name of ['server', 'client', 'other']) {
+      run('req', '-newkey', 'rsa:2048', '-nodes', '-keyout', `${name}.key`, '-out', `${name}.csr`, '-subj', `/CN=${name}`);
+      run('x509', '-req', '-in', `${name}.csr`, '-CA', 'ca.crt', '-CAkey', 'ca.key', '-CAcreateserial', '-out', `${name}.crt`, '-days', '1');
+    }
+    const file = name => readFileSync(join(dir, name));
+    const dbPath = join(dir, 'anchor.sqlite');
+    provisionSqliteAnchor(dbPath);
+    const fingerprint = new X509Certificate(file('client.crt')).fingerprint256;
+    const tls = { key: file('server.key'), cert: file('server.crt'), ca: file('ca.crt') };
+    const start = async () => {
+      const store = createSqliteAnchor(dbPath);
+      const server = createAnchorServer({ tls, store, allowedFingerprint256: fingerprint });
+      await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+      return { server, store };
+    };
+    const client = (server, name) => createRemoteAnchor({ url: `https://server:${server.address().port}/head`, ca: file('ca.crt'), cert: file(`${name}.crt`), key: file(`${name}.key`), lookup: (_host, options, cb) => options.all ? cb(null, [{ address: '127.0.0.1', family: 4 }]) : cb(null, '127.0.0.1', 4) });
+    let instance = await start();
+    const zero = { seq: 0, mac: '' }, next = { seq: 1, mac: 'a'.repeat(64) };
+    try {
+      await assert.rejects(client(instance.server, 'other').read(), /anchor read failed/);
+      assert.equal(await client(instance.server, 'client').compareAndSet(zero, next), true);
+      assert.equal(await client(instance.server, 'client').compareAndSet(zero, next), false);
+    } finally { await new Promise(resolve => instance.server.close(resolve)); instance.store.close(); }
+    instance = await start();
+    try { assert.deepEqual(await client(instance.server, 'client').read(), next); }
+    finally { await new Promise(resolve => instance.server.close(resolve)); instance.store.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
