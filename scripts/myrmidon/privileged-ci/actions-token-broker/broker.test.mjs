@@ -624,6 +624,27 @@ test('audit startup failure alerts before an interrupted recovery retry', async 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('audit startup alert is retried while credential recovery remains unavailable', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-audit-alert-retry-'));
+  const credentialPath = join(dir, 'credentials.sqlite'), credentialKey = randomBytes(32);
+  let auditAttempts = 0, recoveryAttempts = 0;
+  try {
+    const store = createCredentialStore(credentialPath, credentialKey);
+    await store.put('known', { token: 'fixture-known' }, 'owner');
+    store.close();
+    await assert.rejects(tls.createAuditedSupervisedServer({}, {
+      auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32),
+      auditAnchor: { read: async () => { throw new Error('anchor offline'); }, compareAndSet: async () => true },
+      credentialPath, credentialKey,
+      installation: { revoke: async () => { recoveryAttempts++; throw new Error('offline'); } },
+      alert: async event => { if (event === 'audit_unavailable' && ++auditAttempts === 1) throw new Error('alert offline'); },
+      delay: async () => { if (recoveryAttempts >= 2) throw new Error('interrupted'); },
+    }), /interrupted|anchor offline/);
+    assert.ok(recoveryAttempts >= 2);
+    assert.equal(auditAttempts, 2);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('audit startup failure recovers known tokens when queuing the pending alert fails', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-alert-store-failure-'));
   const credentialPath = join(dir, 'credentials.sqlite'), credentialKey = randomBytes(32);
