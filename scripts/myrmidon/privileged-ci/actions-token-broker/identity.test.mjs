@@ -51,6 +51,14 @@ test('rejects a matching caller workflow SHA that is not a full commit hash', as
   }
 });
 
+test('fails closed on issuer, future issuance and unavailable JWKS', async () => {
+  const verify = (token, loadKeys = async () => [jwk]) => verifyIdentity(token, { policy, loadKeys, claimOnce: async () => true, now });
+  await assert.rejects(verify(jwt({ ...claims, iss: 'https://attacker.example' })));
+  await assert.rejects(verify(jwt({ ...claims, iat: now + 1 })));
+  await assert.rejects(verify(jwt(), async () => { throw new Error('JWKS unavailable'); }));
+  await assert.rejects(verify(jwt(), async () => []));
+});
+
 test('rejects excessively long-lived or stale signed identities', async () => {
   const verify = token => verifyIdentity(token, { policy, loadKeys: async () => [jwk], claimOnce: async () => true, now });
   await assert.rejects(verify(jwt({ ...claims, exp: now + 365 * 86400 })));
