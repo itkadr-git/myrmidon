@@ -49,6 +49,22 @@ test('ambiguous issuance emits a distinct alert event while reservation remains 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('recovery alerts on pending ambiguous issuance after restart and keeps issuance blocked', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-recovery-alert-'));
+  const alerts = [];
+  const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'), credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32), installation: { issue: async () => { throw new Error('response lost'); }, revoke: async () => assert.fail('unknown token cannot be revoked') }, audit: async () => {}, alert: async event => alerts.push(event) };
+  try {
+    const broker = createSingleHostBroker(options);
+    await assert.rejects(broker.exchange(jwt('recovery-alert')));
+    broker.close();
+    await assert.rejects(createRecoveredSingleHostBroker(options), /ambiguous issuance/);
+    assert.deepEqual(alerts, ['issuance_ambiguous']);
+    const store = createCredentialStore(options.credentialPath, options.credentialKey);
+    assert.equal((await store.pendingIssuances()).length, 1);
+    store.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('single-host broker rejects a supplied store without durable issuance reservations', () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-unsafe-store-'));
   try {
