@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes, X509Certificate } from 'node:crypto';
@@ -102,11 +102,18 @@ test('independent anchor service persists CAS across restart and authorizes the 
       const anchor = client(server, 'client'), auditPath = join(dir, 'audit.sqlite'), auditKey = randomBytes(32);
       const audit = await createAsyncAuthenticatedAudit(auditPath, auditKey, anchor);
       await audit.record('issued');
-      await audit.record('revoked');
       audit.close();
+      const snapshot = join(dir, 'audit-snapshot.sqlite');
+      copyFileSync(auditPath, snapshot);
+      const reopened = await createAsyncAuthenticatedAudit(auditPath, auditKey, anchor);
+      await reopened.record('revoked');
+      reopened.close();
       const db = new DatabaseSync(auditPath);
       db.exec('DELETE FROM audit_events WHERE seq = 2');
       db.close();
+      await assert.rejects(createAsyncAuthenticatedAudit(auditPath, auditKey, anchor), /anchor mismatch/);
+      // Restore a valid historical database, rather than merely corrupting its rows.
+      copyFileSync(snapshot, auditPath);
       await assert.rejects(createAsyncAuthenticatedAudit(auditPath, auditKey, anchor), /anchor mismatch/);
     } finally { await new Promise(resolve => server.close(resolve)); store.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
