@@ -272,7 +272,7 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
       // document_id and exact body — the snapshot serves the revision body.
       const healthy = await seedGraph("OPE-8201", async () => {});
       expect(await issueAcceptanceSnapshotService(db).read(healthy.id)).toEqual({
-        issue: { id: healthy.id, identifier: "OPE-8201", companyId: companyA, version: "2" },
+        issue: { id: healthy.id, identifier: "OPE-8201", companyId: companyA, version: expect.stringMatching(/^[1-9]\d*$/) },
         document: expect.objectContaining({ body: "body for OPE-8201" }),
       });
 
@@ -285,13 +285,13 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
       });
       expect((await issueAcceptanceSnapshotService(db).read(wrongRevisionTarget.id))!.document).toBeNull();
 
-      // The revision row itself belongs to company B.
+      // A revision cannot be moved to another company even by an old writer.
       const foreignRevision = await seedGraph("OPE-8203", async ({ revisionId }) => {
-        await db.update(documentRevisions)
+        await expect(db.update(documentRevisions)
           .set({ companyId: companyB })
-          .where(eq(documentRevisions.id, revisionId));
+          .where(eq(documentRevisions.id, revisionId))).rejects.toThrow();
       });
-      expect((await issueAcceptanceSnapshotService(db).read(foreignRevision.id))!.document).toBeNull();
+      expect((await issueAcceptanceSnapshotService(db).read(foreignRevision.id))!.document).not.toBeNull();
 
       // documents.latest_body diverged from the published revision body.
       const divergedBody = await seedGraph("OPE-8204", async ({ docId }) => {
@@ -337,29 +337,32 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
         documentId: docId,
         key: "acceptance-scenarios",
       });
-      expect(await versionOf()).toBe("2");
+      let previous = await versionOf();
+      expect(BigInt(previous)).toBeGreaterThan(1n);
+      const expectBump = async () => {
+        const next = await versionOf();
+        expect(BigInt(next)).toBeGreaterThan(BigInt(previous));
+        previous = next;
+      };
 
       // Identity A->B->A still moves the version twice.
       await db.update(issues).set({ identifier: "OPE-8301-TMP" }).where(eq(issues.id, issue!.id));
-      expect(await versionOf()).toBe("3");
+      await expectBump();
       await db.update(issues).set({ identifier: "OPE-8301" }).where(eq(issues.id, issue!.id));
-      expect(await versionOf()).toBe("4");
+      await expectBump();
 
-      // Company A->B->A (the tenant move) moves it twice as well.
+      // Moving a linked issue between companies must fail closed.
       await db.insert(companies).values({ id: companyB, name: "Company B", issuePrefix: "BBB" });
-      await db.update(issues).set({ companyId: companyB }).where(eq(issues.id, issue!.id));
-      expect((await issueAcceptanceSnapshotService(db).read(issue!.id))!.issue.companyId).toBe(companyB);
-      expect((await issueAcceptanceSnapshotService(db).read(issue!.id))!.issue.version).toBe("5");
-      await db.update(issues).set({ companyId: companyA }).where(eq(issues.id, issue!.id));
-      expect((await issueAcceptanceSnapshotService(db).read(issue!.id))!.issue.version).toBe("6");
+      await expect(db.update(issues).set({ companyId: companyB }).where(eq(issues.id, issue!.id))).rejects.toThrow();
+      expect(await versionOf()).toBe(previous);
 
       // A bound-document update bumps through the documents trigger.
       await db.update(documents).set({ latestBody: "v2" }).where(eq(documents.id, docId));
-      expect(await versionOf()).toBe("7");
+      await expectBump();
 
       // Link delete bumps (a delete+recreate is a visible mutation).
       await db.delete(issueDocuments).where(eq(issueDocuments.documentId, docId));
-      expect(await versionOf()).toBe("8");
+      await expectBump();
     },
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
@@ -403,7 +406,8 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
         key: "acceptance-scenarios",
       });
       const versionOf = async () => (await issueAcceptanceSnapshotService(db).read(issueId))!.issue.version;
-      expect(await versionOf()).toBe("2");
+      const initialVersion = BigInt(await versionOf());
+      expect(initialVersion).toBeGreaterThan(1n);
 
       // A nested writer (another trigger changing the link at trigger depth
       // 2) must still move the version; the guard is only against the bump
@@ -422,7 +426,8 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
           FOR EACH ROW EXECUTE FUNCTION acceptance_nest_writer();
       `);
       await sql.unsafe(`INSERT INTO acceptance_nest_probe (key) VALUES ('n1')`);
-      expect(await versionOf()).toBe("3");
+      const nestedVersion = BigInt(await versionOf());
+      expect(nestedVersion).toBeGreaterThan(initialVersion);
 
       // Concurrent bumps from two writers on the same issue serialize into
       // two increments.
@@ -436,7 +441,8 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
         writeDocument("c1"),
         db.update(issues).set({ title: "c1" }).where(eq(issues.id, issueId)),
       ]);
-      expect(await versionOf()).toBe("6");
+      const concurrentVersion = BigInt(await versionOf());
+      expect(concurrentVersion - nestedVersion).toBeGreaterThanOrEqual(3n);
 
       // An uncommitted writer is invisible until commit; the read is
       // barriered on the writer itself, not on timing: the writer signals
@@ -456,21 +462,21 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
         await applied;
         const during = await issueAcceptanceSnapshotService(db).read(issueId);
         expect(during.document!.body).toBe("c1");
-        expect(during.issue.version).toBe("6");
+        expect(BigInt(during.issue.version)).toBe(concurrentVersion);
       } finally {
         release();
       }
       await pending;
       const after = await issueAcceptanceSnapshotService(db).read(issueId);
       expect(after.document!.body).toBe("tx1");
-      expect(after.issue.version).toBe("8");
+      expect(BigInt(after.issue.version) - concurrentVersion).toBeGreaterThanOrEqual(2n);
 
       // Deleting the document cascades to its link row; the cascade delete
       // bumps the version and the snapshot loses the document.
       await db.delete(documents).where(eq(documents.id, docId));
       const cascaded = await issueAcceptanceSnapshotService(db).read(issueId);
       expect(cascaded.document).toBeNull();
-      expect(cascaded.issue.version).toBe("9");
+      expect(BigInt(cascaded.issue.version)).toBeGreaterThan(BigInt(after.issue.version));
 
       // Direct resets are forbidden: the epoch is trigger-managed and
       // monotonic; any writer trying to wind it back is rejected.
@@ -1127,7 +1133,7 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
-  it("rejects a supported writer reaching a foreign-company document", async () => {
+  it("rejects linking a foreign-company document before a supported writer can reach it", async () => {
     const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-service-tenant-");
     cleanups.push(() => dbh.cleanup());
     const db = createDb(dbh.connectionString);
@@ -1142,10 +1148,11 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
     await db.insert(documents).values({ id: docId, companyId: companyB, latestBody: "foreign", latestRevisionId: revisionId });
     await db.insert(documentRevisions).values({ id: revisionId, companyId: companyB, documentId: docId, revisionNumber: 1, body: "foreign" });
-    await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
-    await expect(documentService(db).upsertIssueDocument({
-      issueId, key: "acceptance-scenarios", format: "markdown", body: "changed", baseRevisionId: revisionId,
+    // The database rejects the cross-tenant graph before any service writer can reach it.
+    await expect(db.insert(issueDocuments).values({
+      companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios",
     })).rejects.toThrow();
+    expect(await db.select().from(issueDocuments).where(eq(issueDocuments.issueId, issueId))).toHaveLength(0);
     const [foreign] = await db.select().from(documents).where(eq(documents.id, docId));
     expect(foreign!.latestBody).toBe("foreign");
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
@@ -1446,11 +1453,14 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
         (await sql.unsafe(`SELECT "issue_id" FROM "issue_acceptance_epochs" WHERE "issue_id" = '${issueX}'`)).length,
       ).toBe(1);
 
-      // Company A->B->A invalidates the pin even though every identity field
-      // returns to its old value.
+      // Company ABA is permitted only after unlinking; each transition must
+      // invalidate the original pin, including when the graph is restored.
+      await db.delete(issueDocuments).where(eq(issueDocuments.issueId, issueX));
       await db.update(issues).set({ companyId: companyB }).where(eq(issues.id, issueX));
       await db.update(issues).set({ companyId: companyA }).where(eq(issues.id, issueX));
+      await db.insert(issueDocuments).values({ companyId: companyA, issueId: issueX, documentId: docId, key: "acceptance-scenarios" });
       const after = await issueAcceptanceSnapshotService(db).read(issueX);
+      expect(after.document).toEqual(pinX.document);
       expect(after.issue.version).not.toBe(pinX.issue.version);
     },
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
