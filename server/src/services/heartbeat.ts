@@ -12938,11 +12938,17 @@ export function heartbeatService(
           const targetAgent = await getAgent(targetAgentId);
           if (!targetAgent)
             throw conflict("The quota recovery agent is unavailable.");
+          const monitorClaimGuard = {
+            issueId: claimed.id, scheduledAt: claimed.monitorNextCheckAt, claimedAt: input.now,
+            invalidated: false, completed: false,
+            patch: buildIssueMonitorTriggeredPatch({ issue: claimed, policy, triggeredAt: input.now }),
+          };
           const scheduled = await scheduleBoundedRetryForRun(
             sourceRun,
             targetAgent,
             {
               now: input.now,
+              monitorClaimGuard,
               ...(isProviderQuotaReviewMonitor
                 ? {
                     retryReason:
@@ -12963,6 +12969,8 @@ export function heartbeatService(
                   : {}),
             },
           );
+          if (monitorClaimGuard.invalidated) return { outcome: "skipped" as const, reason: "monitor_changed" };
+          monitorCompletedInAdmission = monitorClaimGuard.completed;
           if (scheduled.outcome === "not_scheduled")
             throw conflict(scheduled.reason);
         }
@@ -18123,6 +18131,7 @@ export function heartbeatService(
       runGuardContinuation?: boolean;
       livenessContinuationInstruction?: string;
       livenessContinuationState?: string;
+      monitorClaimGuard?: NonNullable<WakeupOptions["monitorClaimGuard"]>;
     },
   ) {
     const now = opts?.now ?? new Date();
@@ -18688,6 +18697,19 @@ export function heartbeatService(
 
     const scheduleResult = await db.transaction(
       async (tx): Promise<ScheduledRetryTransactionResult> => {
+        const guard = opts?.monitorClaimGuard;
+        if (guard) {
+          await tx.execute(sql`select id from issues where company_id = ${run.companyId} and id = ${guard.issueId} for update`);
+          const [current] = await tx.select({ id: issues.id }).from(issues).where(and(
+            eq(issues.companyId, run.companyId), eq(issues.id, guard.issueId),
+            eq(issues.monitorNextCheckAt, guard.scheduledAt), eq(issues.monitorWakeRequestedAt, guard.claimedAt),
+          )).limit(1);
+          if (!current || issueId !== guard.issueId) {
+            guard.invalidated = true;
+            return { outcome: "not_scheduled", reason: "monitor_changed", errorCode: "issue_execution_lock_changed", issueId, details: {} };
+          }
+        }
+        const result = await (async (): Promise<ScheduledRetryTransactionResult> => {
         // All automatic failure paths share the same predecessor claim. A
         // duplicate monitor, restart sweep or wake must reuse its successor.
         if (
@@ -19265,6 +19287,20 @@ export function heartbeatService(
           }
           throw error;
         }
+        })();
+        if (guard && result.outcome === "scheduled") {
+          const [completed] = await tx.update(issues).set({
+            ...guard.patch,
+            executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(guard.patch.executionState?.monitor ?? null)}::jsonb, true)`,
+            executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
+            updatedAt: new Date(),
+          }).where(and(
+            eq(issues.id, guard.issueId), eq(issues.monitorNextCheckAt, guard.scheduledAt),
+            eq(issues.monitorWakeRequestedAt, guard.claimedAt),
+          )).returning({ id: issues.id });
+          guard.completed = Boolean(completed);
+        }
+        return result;
       },
     );
 
