@@ -140,6 +140,26 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
   );
 
   it(
+    "rejects a published revision whose number disagrees with the document",
+    async () => {
+      const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-revision-number-");
+      cleanups.push(() => dbh.cleanup());
+      const db = createDb(dbh.connectionString);
+      cleanups.push(async () => { await db.$client.end(); });
+      const issueId = randomUUID();
+      const documentId = randomUUID();
+      const revisionId = randomUUID();
+      await db.insert(companies).values({ id: companyA, name: "A" });
+      await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task", identifier: "OPE-7998" });
+      await db.insert(documents).values({ id: documentId, companyId: companyA, latestBody: "criteria", latestRevisionId: revisionId, latestRevisionNumber: 2 });
+      await db.insert(documentRevisions).values({ id: revisionId, companyId: companyA, documentId, revisionNumber: 1, body: "criteria" });
+      await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId, key: "acceptance-scenarios" });
+      await expect(issueAcceptanceSnapshotService(db).read(issueId, companyA)).rejects.toThrow("Ambiguous acceptance snapshot");
+    },
+    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  );
+
+  it(
     "never joins a document bound to another company",
     async () => {
       const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-snapshot-x-");
