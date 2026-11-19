@@ -8,7 +8,7 @@ export function createInstallationClient({ installationId, repositoryId, permiss
     async issue() {
       const jwt = await appJwt();
       const response = await request(`${API}/app/installations/${installationId}/access_tokens`, {
-        method: 'POST', headers: { authorization: `Bearer ${jwt}`, accept: 'application/vnd.github+json', 'content-type': 'application/json', 'x-github-api-version': '2022-11-28' }, body,
+        method: 'POST', redirect: 'error', headers: { authorization: `Bearer ${jwt}`, accept: 'application/vnd.github+json', 'content-type': 'application/json', 'x-github-api-version': '2022-11-28' }, body,
       });
       if (!response.ok) throw new Error('installation token issuance failed');
       const result = await response.json();
@@ -17,7 +17,7 @@ export function createInstallationClient({ installationId, repositoryId, permiss
     },
     async revoke(token) {
       if (typeof token !== 'string' || !token) throw new Error('invalid token');
-      const response = await request(`${API}/installation/token`, { method: 'DELETE', headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' } });
+      const response = await request(`${API}/installation/token`, { method: 'DELETE', redirect: 'error', headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' } });
       if (!response.ok) throw new Error('installation token revocation failed');
     },
   };

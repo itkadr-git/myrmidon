@@ -16,5 +16,6 @@ test('installation issuance uses only the configured repository and permissions'
   await client.revoke(token.token);
   assert.equal(calls[1].url, 'https://api.github.com/installation/token');
   assert.equal(calls[1].init.method, 'DELETE');
+  assert.equal(calls[1].init.redirect, 'error');
   assert.equal(calls[1].init.headers.authorization, 'Bearer issued-fixture');
 });
