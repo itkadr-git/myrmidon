@@ -11,6 +11,14 @@ test('a stalled issuance request is aborted and treated as ambiguous', async () 
 import assert from 'node:assert/strict';
 import { createInstallationClient } from './installation.mjs';
 
+test('a valid upstream token is retained before issuance returns', async () => {
+  const events = [];
+  const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'fixture', request: async () => ({ ok: true, json: async () => ({ token: 'known-fixture', expires_at: '2030-01-01T00:00:00Z', permissions: { contents: 'read' }, repositories: [{ id: 123 }] }) }) });
+  const result = await client.issue(async token => { events.push(`retained:${token}`); });
+  events.push(`returned:${result.token}`);
+  assert.deepEqual(events, ['retained:known-fixture', 'returned:known-fixture']);
+});
+
 test('server policy rejects permissions outside the prototype read-only profile', () => {
   for (const permissions of [{ administration: 'write' }, { contents: 'write' }, { issues: 'read' }]) {
     assert.throws(() => createInstallationClient({ installationId: '42', repositoryId: 123, permissions, appJwt: async () => 'fixture' }), /invalid installation policy/);
