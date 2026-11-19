@@ -186,6 +186,12 @@ BEGIN
   IF TG_OP <> 'DELETE' AND (TG_OP = 'INSERT' OR NEW."document_id" IS DISTINCT FROM OLD."document_id") THEN
     UPDATE "documents" SET "updated_at" = "updated_at" WHERE "id" = NEW."document_id";
   END IF;
+  IF TG_OP <> 'DELETE' AND NOT EXISTS (
+    SELECT 1 FROM "documents"
+    WHERE "id" = NEW."document_id" AND "company_id" = NEW."company_id"
+  ) THEN
+    RAISE EXCEPTION 'revision document company mismatch';
+  END IF;
   IF TG_OP <> 'DELETE' AND EXISTS (
     SELECT 1 FROM "issue_documents" AS "link"
     WHERE "link"."document_id" = NEW."document_id"
