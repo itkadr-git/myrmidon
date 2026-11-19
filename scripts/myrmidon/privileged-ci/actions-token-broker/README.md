@@ -27,8 +27,12 @@ secret management, least privilege and key rotation.
   pass with retryable alerts. An experimental `createRecoverySupervisor` retries
   a supplied recovery pass and will not invoke its start callback while a pending
   issuance, failed revocation, or failed alert is reported. It is not wired into
-  a deployment, does not enforce exclusive ownership, and its alert callback is
-  not guaranteed delivery. Callers must stop all issuers before running it. It does not clear ambiguous
+  a deployment and its alert callback is not guaranteed delivery. Broker factories
+  hold a separate SQLite write lock across recovery and the broker lifetime; this
+  is single-host cooperative exclusion only, requiring one canonical credential
+  path and a filesystem with reliable SQLite locking. Direct store access and path
+  aliases bypass the guard; it is not a distributed lease or deployment fence.
+  It does not clear ambiguous
   reservations or provide guaranteed alert delivery. An experimental single-host
   HMAC-chained audit store is available via `createAuditedRecoveredServer`; it
   permits fixed event names only, checks integrity on startup and before each

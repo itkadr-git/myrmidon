@@ -2,10 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { verifyIdentity } from './identity.mjs';
 import { createReplayStore } from './replay.mjs';
 import { createCredentialStore } from './store.mjs';
+import { acquireExclusiveStore } from './exclusive.mjs';
 
 export function createSingleHostBroker({ store, ...options }) {
   if (store) throw new Error('durable issuance store must be managed by broker');
-  return createSingleHostBrokerWithStore(options);
+  const release = acquireExclusiveStore(options.credentialPath);
+  try {
+    const broker = createSingleHostBrokerWithStore(options);
+    return { ...broker, close: () => { try { broker.close(); } finally { release(); } } };
+  } catch (error) { release(); throw error; }
 }
 
 function createSingleHostBrokerWithStore({ replayPath, credentialPath, credentialKey, store: suppliedStore, ...options }) {
@@ -26,8 +31,10 @@ function createSingleHostBrokerWithStore({ replayPath, credentialPath, credentia
 // Call only while issuance is quiesced across all processes sharing the store.
 export async function createRecoveredSingleHostBroker({ credentialPath, credentialKey, store: suppliedStore, ...options }) {
   if (suppliedStore) throw new Error('persistent recovery store required');
-  const store = createCredentialStore(credentialPath, credentialKey);
+  const release = acquireExclusiveStore(credentialPath);
+  let store;
   try {
+    store = createCredentialStore(credentialPath, credentialKey);
     const result = await store.revokeRetained(token => options.installation.revoke(token));
     const pending = (await store.pendingIssuances()).length > 0;
     // Attempt both notifications independently; durable rows remain on any failure.
@@ -40,9 +47,9 @@ export async function createRecoveredSingleHostBroker({ credentialPath, credenti
     if (pending) throw new Error('ambiguous issuance requires operator containment');
     if (alertFailed) throw new Error('recovery alert failed');
     const broker = createSingleHostBrokerWithStore({ ...options, store });
-    return { ...broker, close: () => { broker.close(); store.close(); } };
+    return { ...broker, close: () => { try { broker.close(); store.close(); } finally { release(); } } };
   } catch (error) {
-    store.close();
+    try { store?.close(); } finally { release(); }
     throw error;
   }
 }
