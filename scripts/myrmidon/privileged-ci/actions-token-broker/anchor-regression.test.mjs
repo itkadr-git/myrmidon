@@ -17,6 +17,16 @@ test('audited server refuses startup without an independent audit anchor', async
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('audited server refuses startup without a recovery alert sink', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-alert-required-'));
+  try {
+    const anchor = { read: () => ({ seq: 0, mac: '' }), compareAndSet: () => true };
+    await assert.rejects(createAuditedRecoveredServer({}, {
+      auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32), auditAnchor: anchor,
+    }), /recovery alert required/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('anchor CAS rejection must fail the audit append closed', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'audit-cas-'));
   const path = join(dir, 'audit.sqlite');
