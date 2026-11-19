@@ -944,6 +944,37 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
 
+  it("does not commit a cross-company graph when a link races an issue company move", async () => {
+    const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-company-race-");
+    cleanups.push(() => dbh.cleanup());
+    const db = createDb(dbh.connectionString);
+    cleanups.push(async () => { await db.$client.end(); });
+    const issueId = randomUUID();
+    const docId = randomUUID();
+    await db.insert(companies).values([
+      { id: companyA, name: "Company A" },
+      { id: companyB, name: "Company B", issuePrefix: "BBB" },
+    ]);
+    await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
+    await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a" });
+    let release!: () => void;
+    let linked!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const ready = new Promise<void>((resolve) => { linked = resolve; });
+    const link = db.transaction(async (tx) => {
+      await tx.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
+      linked();
+      await gate;
+    });
+    await ready;
+    const move = db.update(issues).set({ companyId: companyB }).where(eq(issues.id, issueId)).then(() => null, (error: unknown) => error);
+    release();
+    await link;
+    expect(await move).not.toBeNull();
+    const [row] = await db.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, issueId));
+    expect(row!.companyId).toBe(companyA);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it.each(["issue", "document"] as const)(
     "rejects changing the company of a linked %s at the database boundary",
     async (target) => {
