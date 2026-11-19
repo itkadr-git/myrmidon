@@ -26,7 +26,7 @@ test('duplicate credential records fail closed, even when one is revoked or has 
 test('gateway projects a company-bound issue and denies foreign issue', async (t) => {
   const token = 'candidate-test-token';
   const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
-  const server = createServer(createHandler({ records, readIssue: async (id) => ({ id, identifier: 'OPE-123', companyId: id === 'OPE-123' ? 'company-a' : 'company-b', secret: 'hidden' }) }));
+  const server = createServer(createHandler({ records, readSnapshot: async (id) => ({ issue: { id, identifier: 'OPE-123', companyId: id === 'OPE-123' ? 'company-a' : 'company-b', version: '1', secret: 'hidden' }, document: null }) }));
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(() => server.close());
@@ -51,8 +51,7 @@ test('document response is company-bound, projected and rejects a changing revis
   let reads = 0;
   let change = false;
   const server = createServer(createHandler({ records,
-    readIssue: async () => ({ id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' }),
-    readDocument: async () => ({ id: 'doc-id', issueId: 'issue-id', companyId: 'company-a', key: 'acceptance-scenarios', latestRevisionId: change ? String(++reads) : 'rev-1', body: 'criteria', secret: 'hidden' }),
+    readSnapshot: async () => ({ issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: change ? String(++reads) : '1' }, document: { id: 'doc-id', latestRevisionId: 'rev-1', latestRevisionNumber: 1, body: 'criteria', secret: 'hidden' } }),
   }));
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -92,9 +91,9 @@ test('revocation during upstream lookup fails closed and audit excludes request 
   const token = 'candidate-test-token';
   const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
   const events = [];
-  const server = createServer(createHandler({ records, audit: async (event) => events.push(event), readIssue: async () => {
+  const server = createServer(createHandler({ records, audit: async (event) => events.push(event), readSnapshot: async () => {
     records[0].revoked = true;
-    return { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', secret: 'hidden' };
+    return { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: '1', secret: 'hidden' }, document: null };
   } }));
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -114,8 +113,7 @@ test('document is withheld when the issue changes company during lookup', async 
   const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
   let reads = 0;
   const server = createServer(createHandler({ records,
-    readIssue: async () => ({ id: 'issue-id', identifier: 'OPE-123', companyId: ++reads === 1 ? 'company-a' : 'company-b' }),
-    readDocument: async () => ({ id: 'doc-id', issueId: 'issue-id', companyId: 'company-a', key: 'acceptance-scenarios', latestRevisionId: 'rev-1', body: 'criteria' }),
+    readSnapshot: async () => ({ issue: { id: 'issue-id', identifier: 'OPE-123', companyId: ++reads === 1 ? 'company-a' : 'company-b', version: String(reads) }, document: { id: 'doc-id', latestRevisionId: 'rev-1', latestRevisionNumber: 1, body: 'criteria' } }),
   }));
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -127,23 +125,22 @@ test('document is withheld when the issue changes company during lookup', async 
   assert.ok(!result.body.includes('criteria'));
 });
 
-test('document with mismatched issue, company or key is never returned', async (t) => {
+test('malformed snapshot documents are never returned', async (t) => {
   const token = 'candidate-test-token';
   const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
-  let document = { id: 'doc-id', issueId: 'issue-id', companyId: 'company-a', key: 'acceptance-scenarios', latestRevisionId: 'rev-1', body: 'private-criteria' };
+  let document;
   const server = createServer(createHandler({ records,
-    readIssue: async () => ({ id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' }),
-    readDocument: async () => document,
+    readSnapshot: async () => ({ issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: '1' }, document }),
   }));
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(() => server.close());
-  for (const change of [{ issueId: 'other-issue' }, { companyId: 'company-b' }, { key: 'plan' }]) {
-    document = { ...document, issueId: 'issue-id', companyId: 'company-a', key: 'acceptance-scenarios', ...change };
+  for (const change of [{ id: null }, { latestRevisionId: null }, { latestRevisionNumber: 0 }]) {
+    document = { id: 'doc-id', latestRevisionId: 'rev-1', latestRevisionNumber: 1, body: 'private-criteria', ...change };
     const result = await new Promise((resolve, reject) => get({ host: '127.0.0.1', port: server.address().port, path: '/api/issues/OPE-123/documents/acceptance-scenarios', headers: { authorization: `Bearer ${token}` } }, (res) => {
       let body = ''; res.on('data', (chunk) => { body += chunk; }); res.on('end', () => resolve({ status: res.statusCode, body }));
     }).on('error', reject));
-    assert.equal(result.status, 404);
+    assert.equal(result.status, 502);
     assert.ok(!result.body.includes('private-criteria'));
   }
 });
@@ -152,9 +149,9 @@ test('duplicate authorization headers are rejected before upstream access', asyn
   const token = 'candidate-test-token';
   const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
   let reads = 0;
-  const server = createServer(createHandler({ records, readIssue: async () => {
+  const server = createServer(createHandler({ records, readSnapshot: async () => {
     reads++;
-    return { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' };
+    return { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: '1' }, document: null };
   } }));
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -169,7 +166,7 @@ test('duplicate authorization headers are rejected before upstream access', asyn
 test('rejects an upstream issue that does not match the requested identifier', async (t) => {
   const token = 'candidate-test-token';
   const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
-  const server = createServer(createHandler({ records, readIssue: async () => ({ id: 'issue-id', identifier: 'OPE-999', companyId: 'company-a' }) }));
+  const server = createServer(createHandler({ records, readSnapshot: async () => ({ issue: { id: 'issue-id', identifier: 'OPE-999', companyId: 'company-a', version: '1' }, document: null }) }));
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(() => server.close());
@@ -183,7 +180,7 @@ test('handler accepts the immutable credential store and observes revocation', a
   const token = 'candidate-test-token';
   const hash = createHash('sha256').update(token).digest('hex');
   const store = createCredentialStore([{ tokenHash: hash, companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }]);
-  const server = createServer(createHandler({ credentialStore: store, readIssue: async () => ({ id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' }) }));
+  const server = createServer(createHandler({ credentialStore: store, readSnapshot: async () => ({ issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: '1' }, document: null }) }));
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(() => server.close());
