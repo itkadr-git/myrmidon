@@ -16,8 +16,11 @@ atomic snapshot endpoint `GET /api/issues/{id}/acceptance-scenarios-snapshot`
 The upstream reads the issue row and the document row with a single SQL
 statement, so both always come from one database snapshot; the gateway issues
 exactly one upstream read per runner request and never stitches independent
-reads into an answer. This contract has only been exercised against a fixture,
-not a live Myrmidon service.
+reads into an answer. Upstream not-found is the identical `404` for foreign
+and unknown issues (no existence oracle); network failures, `5xx`, oversized
+or invalid payloads are a bare `502` that never carries a partial body. This
+contract has only been exercised against a fixture, not a live Myrmidon
+service.
 
 ## Operation / Запуск
 

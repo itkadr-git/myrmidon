@@ -86,18 +86,56 @@ test('a snapshot document is withheld when its tenant differs from the credentia
   assert.ok(!result.body.includes('criteria'));
 });
 
-test('document is never returned when the snapshot omits it or its identity is malformed', async (t) => {
-  for (const document of [null, { id: 'doc-id' }, { id: 'doc-id', latestRevisionId: '', body: 'criteria' }, { id: 'doc-id', latestRevisionId: 'rev-1' }]) {
+test('document is withheld as an identical 404 when the snapshot carries no usable document', async (t) => {
+  const request = await serve(t, {
+    records: records(),
+    readSnapshot: async () => ({
+      issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' },
+      document: null,
+    }),
+  });
+  const issue = await request('/api/issues/OPE-123');
+  assert.equal(issue.status, 200);
+  const document = await request('/api/issues/OPE-123/documents/acceptance-scenarios');
+  assert.equal(document.status, 404);
+  assert.deepEqual(JSON.parse(document.body), {});
+});
+
+test('upstream not-found is an identical 404 for foreign and unknown issues', async (t) => {
+  // The board upstream answers both "foreign" and "unknown" with the same
+  // 404; the gateway must surface exactly that and never a 502 existence
+  // oracle.
+  const request = await serve(t, {
+    records: records(),
+    readSnapshot: async (ref) => (ref === 'OPE-123' || ref === 'issue-id'
+      ? { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' }, document: null }
+      : null),
+  });
+  const foreign = await request('/api/issues/OPE-124');
+  const unknown = await request('/api/issues/11111111-1111-1111-1111-111111111111');
+  assert.equal(foreign.status, 404);
+  assert.equal(unknown.status, 404);
+  assert.deepEqual(JSON.parse(foreign.body), JSON.parse(unknown.body));
+});
+
+test('an invalid upstream payload fails as 502, never as a partial snapshot', async (t) => {
+  for (const snapshot of [
+    {},
+    { issue: null },
+    { issue: { id: 'issue-id', identifier: 'OPE-123' } },
+    { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' }, document: { id: 'doc-id' } },
+    { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' }, document: { id: 'doc-id', latestRevisionId: '', body: 'criteria' } },
+    { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' }, document: { id: 'doc-id', latestRevisionId: 'rev-1' } },
+  ]) {
     const request = await serve(t, {
       records: records(),
-      readSnapshot: async () => ({
-        issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' },
-        document,
-      }),
+      readSnapshot: async () => snapshot,
     });
-    const result = await request('/api/issues/OPE-123/documents/acceptance-scenarios');
-    assert.equal(result.status, 404, JSON.stringify(document));
-    assert.ok(!result.body.includes('criteria'));
+    for (const path of ['/api/issues/OPE-123', '/api/issues/OPE-123/documents/acceptance-scenarios']) {
+      const result = await request(path);
+      assert.equal(result.status, 502, `${path} ${JSON.stringify(snapshot)}`);
+      assert.deepEqual(JSON.parse(result.body), {});
+    }
   }
 });
 

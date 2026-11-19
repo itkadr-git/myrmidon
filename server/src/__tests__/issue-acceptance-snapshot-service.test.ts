@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { createDb } from "@myrmidon/db";
 import {
   companies,
+  documentRevisions,
   documents,
   issueDocuments,
   issues,
@@ -50,6 +52,15 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
         latestBody: "acceptance body",
         latestRevisionId: revisionId,
         latestRevisionNumber: 3,
+      });
+      // The snapshot serves the published revision's body; the revision row
+      // must exist, bind to this document and match latest_body.
+      await db.insert(documentRevisions).values({
+        id: revisionId,
+        companyId: companyA,
+        documentId: docId,
+        revisionNumber: 3,
+        body: "acceptance body",
       });
       await db.insert(issueDocuments).values({
         companyId: companyA,
@@ -122,6 +133,167 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
         issue: { id: issue!.id, identifier: "OPE-8001", companyId: companyA },
         document: null,
       });
+    },
+    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "never returns a foreign document reachable through an own-company link (OPE-15145)",
+    async () => {
+      const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-snapshot-link-a-");
+      cleanups.push(() => dbh.cleanup());
+      const db = createDb(dbh.connectionString);
+      const client = db.$client;
+      cleanups.push(async () => {
+        await (client as any).end();
+      });
+
+      await db.insert(companies).values([
+        { id: companyA, name: "Company A", issuePrefix: "AAA" },
+        { id: companyB, name: "Company B", issuePrefix: "BBB" },
+      ]);
+      const [issue] = await db
+        .insert(issues)
+        .values({ id: randomUUID(), companyId: companyA, title: "Task", identifier: "OPE-8101" })
+        .returning();
+      // The reviewer's repro shape: the LINK row is a legitimate company A
+      // row, but it points at a document owned by company B. A join on
+      // documents.id alone would serve B's secret body under A's issue.
+      const foreignDocId = randomUUID();
+      const foreignRevisionId = randomUUID();
+      await db.insert(documents).values({
+        id: foreignDocId,
+        companyId: companyB,
+        latestBody: "foreign secret",
+        latestRevisionId: foreignRevisionId,
+      });
+      await db.insert(documentRevisions).values({
+        id: foreignRevisionId,
+        companyId: companyB,
+        documentId: foreignDocId,
+        revisionNumber: 1,
+        body: "foreign secret",
+      });
+      await db.insert(issueDocuments).values({
+        companyId: companyA,
+        issueId: issue!.id,
+        documentId: foreignDocId,
+        key: "acceptance-scenarios",
+      });
+
+      const snapshot = await issueAcceptanceSnapshotService(db).read(issue!.id);
+      expect(snapshot).toEqual({
+        issue: { id: issue!.id, identifier: "OPE-8101", companyId: companyA },
+        document: null,
+      });
+    },
+    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "binds the published revision by document, company and exact body, and fails closed otherwise (OPE-15145)",
+    async () => {
+      const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-snapshot-rev-");
+      cleanups.push(() => dbh.cleanup());
+      const db = createDb(dbh.connectionString);
+      const client = db.$client;
+      cleanups.push(async () => {
+        await (client as any).end();
+      });
+
+      await db.insert(companies).values([
+        { id: companyA, name: "Company A", issuePrefix: "AAA" },
+        { id: companyB, name: "Company B", issuePrefix: "BBB" },
+      ]);
+
+      const seedGraph = async (identifier: string, mutate: (graph: {
+        docId: string;
+        revisionId: string;
+        otherDocId: string;
+        otherRevisionId: string;
+      }) => Promise<void>) => {
+        const [issue] = await db
+          .insert(issues)
+          .values({ id: randomUUID(), companyId: companyA, title: "Task", identifier })
+          .returning();
+        const docId = randomUUID();
+        const revisionId = randomUUID();
+        const otherDocId = randomUUID();
+        const otherRevisionId = randomUUID();
+        await db.insert(documents).values([
+          {
+            id: docId,
+            companyId: companyA,
+            latestBody: `body for ${identifier}`,
+            latestRevisionId: revisionId,
+          },
+          // A second, unrelated company A document+revision used to test
+          // that latest_revision_id must point at THIS document's revision.
+          {
+            id: otherDocId,
+            companyId: companyA,
+            latestBody: "other body",
+            latestRevisionId: otherRevisionId,
+          },
+        ]);
+        await db.insert(documentRevisions).values([
+          {
+            id: revisionId,
+            companyId: companyA,
+            documentId: docId,
+            revisionNumber: 1,
+            body: `body for ${identifier}`,
+          },
+          {
+            id: otherRevisionId,
+            companyId: companyA,
+            documentId: otherDocId,
+            revisionNumber: 1,
+            body: "other body",
+          },
+        ]);
+        await db.insert(issueDocuments).values({
+          companyId: companyA,
+          issueId: issue!.id,
+          documentId: docId,
+          key: "acceptance-scenarios",
+        });
+        await mutate({ docId, revisionId, otherDocId, otherRevisionId });
+        return issue!;
+      };
+
+      // Correct graph: every company_id is A, revision binds by id,
+      // document_id and exact body — the snapshot serves the revision body.
+      const healthy = await seedGraph("OPE-8201", async () => {});
+      expect(await issueAcceptanceSnapshotService(db).read(healthy.id)).toEqual({
+        issue: { id: healthy.id, identifier: "OPE-8201", companyId: companyA },
+        document: expect.objectContaining({ body: "body for OPE-8201" }),
+      });
+
+      // latest_revision_id points at the revision of ANOTHER document (same
+      // company): the revision join must fail, not serve the other body.
+      const wrongRevisionTarget = await seedGraph("OPE-8202", async ({ docId, otherRevisionId }) => {
+        await db.update(documents)
+          .set({ latestRevisionId: otherRevisionId })
+          .where(eq(documents.id, docId));
+      });
+      expect((await issueAcceptanceSnapshotService(db).read(wrongRevisionTarget.id))!.document).toBeNull();
+
+      // The revision row itself belongs to company B.
+      const foreignRevision = await seedGraph("OPE-8203", async ({ revisionId }) => {
+        await db.update(documentRevisions)
+          .set({ companyId: companyB })
+          .where(eq(documentRevisions.id, revisionId));
+      });
+      expect((await issueAcceptanceSnapshotService(db).read(foreignRevision.id))!.document).toBeNull();
+
+      // documents.latest_body diverged from the published revision body.
+      const divergedBody = await seedGraph("OPE-8204", async ({ docId }) => {
+        await db.update(documents)
+          .set({ latestBody: "rewritten outside the revision log" })
+          .where(eq(documents.id, docId));
+      });
+      expect((await issueAcceptanceSnapshotService(db).read(divergedBody.id))!.document).toBeNull();
     },
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );

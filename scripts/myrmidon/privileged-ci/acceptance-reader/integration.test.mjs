@@ -30,22 +30,35 @@ test('gateway to separate mTLS upstream: one atomic snapshot read per request, t
   const foreign = '22222222-2222-2222-2222-222222222222';
   let upstreamRequests = 0;
   const requestedPaths = [];
-  // The upstream fixture implements the atomic snapshot contract: one response
-  // carries the minimal issue identity and the acceptance document.
+  // The upstream fixture implements the atomic snapshot contract with the
+  // board's no-existence-oracle semantics: known issues get one snapshot
+  // response; foreign and unknown issues get the identical 404; other
+  // statuses exercise the failure classes.
   const upstream = createServer({ ...upstreamTls, ca: clientTls.cert, requestCert: true, rejectUnauthorized: true }, (req, res) => {
     upstreamRequests++;
     requestedPaths.push(req.url);
-    const isDocumentless = req.url.includes('OPE-3') || req.url.includes(id3);
-    const isForeign = req.url.includes(foreign) || req.url.includes('OPE-2');
-    const isBroken = req.url.includes('OPE-9');
-    if (isBroken) {
+    if (req.url.includes('OPE-6')) { req.socket.destroy(); return; }
+    if (req.url.includes('OPE-9')) {
       res.writeHead(500, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'upstream failure' }));
       return;
     }
+    if (req.url.includes('OPE-8')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{not-json');
+      return;
+    }
+    const isDocumentless = req.url.includes('OPE-3') || req.url.includes(id3);
+    const isKnown = req.url.includes('OPE-1') || req.url.includes(id) || isDocumentless;
+    if (!isKnown) {
+      // Foreign AND unknown issues are the identical upstream 404.
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Issue not found' }));
+      return;
+    }
     const issue = isDocumentless
       ? { id: id3, identifier: 'OPE-3', companyId: 'allowed', secret: 'private-relation' }
-      : { id: isForeign ? foreign : id, identifier: isForeign ? 'OPE-2' : 'OPE-1', companyId: isForeign ? 'other' : 'allowed', secret: 'private-relation' };
+      : { id, identifier: 'OPE-1', companyId: 'allowed', secret: 'private-relation' };
     const document = isDocumentless
       ? null
       : { id: 'doc', latestRevisionId: 'rev', body: 'criteria', secret: 'private-document' };
@@ -88,14 +101,23 @@ test('gateway to separate mTLS upstream: one atomic snapshot read per request, t
   // An issue whose snapshot carries no document still serves the issue projection.
   assert.deepEqual(JSON.parse((await call('/api/issues/OPE-3')).body), { id: id3, identifier: 'OPE-3', companyId: 'allowed' });
   assert.equal((await call('/api/issues/OPE-3/documents/acceptance-scenarios')).status, 404);
+  // Foreign and unknown issues are the identical 404: no existence oracle.
+  const foreign404 = await call(`/api/issues/${foreign}`);
+  const unknown404 = await call('/api/issues/99999999-9999-9999-9999-999999999999');
   for (const identifier of ['OPE-2', foreign]) {
     assert.equal((await call(`/api/issues/${identifier}`)).status, 404);
     assert.equal((await call(`/api/issues/${identifier}/documents/acceptance-scenarios`)).status, 404);
   }
-  // Upstream read failures never surface as a partial snapshot.
-  const broken = await call('/api/issues/OPE-9');
-  assert.equal(broken.status, 502);
-  assert.deepEqual(JSON.parse(broken.body), {});
+  assert.equal(unknown404.status, 404);
+  assert.equal(foreign404.status, 404);
+  assert.deepEqual(JSON.parse(foreign404.body), JSON.parse(unknown404.body));
+  // Upstream failure classes never surface as a partial snapshot; each is a
+  // bare 502, indistinguishable from the others.
+  for (const identifier of ['OPE-9', 'OPE-8', 'OPE-6']) {
+    const failed = await call(`/api/issues/${identifier}`);
+    assert.equal(failed.status, 502, identifier);
+    assert.deepEqual(JSON.parse(failed.body), {}, identifier);
+  }
   const before = upstreamRequests;
   for (const path of ['/api/issues', '/api/issues?search=OPE', '/api/issues/OPE-1/documents/plan', '/api/issues/OPE-1/acceptance-scenarios-snapshot', '/api/secrets', '/api/agents', '/api/plugins', '/api/issues/%4fPE-1', '/api/issues/%254fPE-1', '/api/issues/OPE-1%2fdocuments%2facceptance-scenarios', '/api/issues/../OPE-1', '/api/issues/OPE-1?x=1']) assert.equal((await call(path)).status, 404, path);
   for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']) assert.equal((await call('/api/issues/OPE-1', { method })).status, 404, method);

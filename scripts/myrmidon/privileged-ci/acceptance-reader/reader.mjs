@@ -55,13 +55,24 @@ export function createHandler({ records, credentialStore, readSnapshot, audit = 
     if (req.method !== 'GET' || !path || Object.keys(req.headers).some((name) => name.includes('method-override') || name === 'x-http-method')) return respond(404);
     try {
       const snapshot = await readSnapshot(path.issue);
-      const issue = snapshot && snapshot.issue;
+      // Upstream not-found: the identical 404 for foreign and unknown issues.
+      if (snapshot === null || snapshot === undefined) return respond(404);
+      const issue = snapshot.issue;
+      const document = snapshot.document;
+      // A 200 payload that does not match the snapshot contract is an
+      // upstream malfunction, not "not found": fail closed with 502 before
+      // anything is projected, whatever route was requested.
+      const validIssue = issue && typeof issue.id === 'string' && typeof issue.identifier === 'string' && typeof issue.companyId === 'string';
+      const validDocument = document === null || document === undefined || (
+        typeof document.id === 'string' && typeof document.latestRevisionId === 'string' && document.latestRevisionId && typeof document.body === 'string'
+      );
+      if (!validIssue || !validDocument) return respond(502);
       // Fail closed on anything that does not match the credential's company
       // and the requested identity; unknown and foreign are the same 404.
-      if (!issue || issue.companyId !== companyId || typeof issue.id !== 'string' || typeof issue.identifier !== 'string' || (path.issue !== issue.id && path.issue !== issue.identifier)) return respond(404);
+      if (issue.companyId !== companyId || (path.issue !== issue.id && path.issue !== issue.identifier)) return respond(404);
       if (!path.document) return respond(200, { id: issue.id, identifier: issue.identifier, companyId: issue.companyId });
-      const document = snapshot.document;
-      if (!document || typeof document.id !== 'string' || typeof document.latestRevisionId !== 'string' || !document.latestRevisionId || typeof document.body !== 'string') return respond(404);
+      // A valid snapshot may carry no document yet; that is the 404 case.
+      if (document === null || document === undefined) return respond(404);
       return respond(200, { id: document.id, latestRevisionId: document.latestRevisionId, body: document.body });
     } catch {
       // A failed upstream read never yields a partial or mixed snapshot.

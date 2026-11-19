@@ -32,7 +32,16 @@ export function issueAcceptanceSnapshotRoutes(db: Db) {
     );
     if (!issue) return;
     const snapshot = await snapshots.read(issue.id);
-    if (!snapshot) {
+    // The snapshot must name the SAME issue id and company that just passed
+    // the access check. If the issue moved between companies (or the row was
+    // substituted) after the check, this is the identical 404 — never the
+    // new company's document (OPE-15145). One MVCC read stays one read: the
+    // comparison runs on the same snapshot row that would be served.
+    if (
+      !snapshot ||
+      snapshot.issue.id !== issue.id ||
+      snapshot.issue.companyId !== issue.companyId
+    ) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }

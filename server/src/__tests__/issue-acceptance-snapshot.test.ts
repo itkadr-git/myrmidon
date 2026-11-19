@@ -148,4 +148,43 @@ describe("GET /api/issues/:id/acceptance-scenarios-snapshot route (OPE-15134)", 
     expect(JSON.stringify(res.body)).not.toContain(issue.id);
     expect(JSON.stringify(res.body)).not.toContain("criteria");
   }, ROUTE_TEST_TIMEOUT_MS);
+
+  it("returns the identical 404 when the snapshot tenant differs from the access-checked tenant (OPE-15145)", async () => {
+    // The issue was confirmed accessible in company A, but by the time the
+    // snapshot row was read the issue had moved to company B (or the snapshot
+    // otherwise names another tenant). Serving it would hand company B's
+    // document to an A actor: same 404 as an unknown issue, no disclosure.
+    const moved = { id: randomUUID(), identifier: "OPE-1", companyId: companyA };
+    mockIssueService.getById.mockResolvedValue(moved);
+    mockSnapshotService.read.mockResolvedValue({
+      issue: { id: moved.id, identifier: "OPE-1", companyId: companyB },
+      document: { id: randomUUID(), latestRevisionId: randomUUID(), body: "company-b criteria" },
+    });
+
+    const app = await createApp(boardActor([companyA]));
+    const denied = await request(app).get(`/api/issues/${moved.identifier}/acceptance-scenarios-snapshot`);
+    const missing = await request(app).get("/api/issues/OPE-404/acceptance-scenarios-snapshot");
+
+    expect(denied.status).toBe(404);
+    expect(missing.status).toBe(404);
+    expect(denied.body).toEqual(missing.body);
+    expect(JSON.stringify(denied.body)).not.toContain("company-b criteria");
+  }, ROUTE_TEST_TIMEOUT_MS);
+
+  it("returns the identical 404 when the snapshot identity differs from the access-checked issue (OPE-15145)", async () => {
+    // A→B→A churn or a substitute row: the snapshot must name the same issue
+    // id that passed the access check, never a look-alike row.
+    const issue = { id: randomUUID(), identifier: "OPE-1", companyId: companyA };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockSnapshotService.read.mockResolvedValue({
+      issue: { id: randomUUID(), identifier: "OPE-1", companyId: companyA },
+      document: { id: randomUUID(), latestRevisionId: randomUUID(), body: "criteria" },
+    });
+
+    const app = await createApp(boardActor([companyA]));
+    const denied = await request(app).get(`/api/issues/${issue.identifier}/acceptance-scenarios-snapshot`);
+
+    expect(denied.status).toBe(404);
+    expect(JSON.stringify(denied.body)).not.toContain("criteria");
+  }, ROUTE_TEST_TIMEOUT_MS);
 });

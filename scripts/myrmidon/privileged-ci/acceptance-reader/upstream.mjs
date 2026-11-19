@@ -8,7 +8,17 @@ export function createUpstream({ origin, ca, cert, key }) {
   if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash || !ca || !cert || !key) throw new TypeError('invalid upstream configuration');
   const fetchJson = (path) => new Promise((resolve, reject) => {
     const req = request({ hostname: url.hostname, port: url.port || 443, path, method: 'GET', ca, cert, key, rejectUnauthorized: true, timeout: 5000, headers: { accept: 'application/json' } }, (res) => {
-      if (res.statusCode !== 200) { res.resume(); reject(new Error('upstream rejected request')); return; }
+      if (res.statusCode !== 200) {
+        // The status rides on the error so readSnapshot can tell the board's
+        // not-found (404) apart from real failures — without that split the
+        // gateway would answer unknown issues 502 where foreign issues get
+        // 404, an existence oracle (OPE-15145).
+        res.resume();
+        const error = new Error('upstream rejected request');
+        error.status = res.statusCode ?? 0;
+        reject(error);
+        return;
+      }
       let size = 0;
       const chunks = [];
       res.on('data', (chunk) => {
@@ -31,7 +41,18 @@ export function createUpstream({ origin, ca, cert, key }) {
   };
   return Object.freeze({
     // One request, one atomic snapshot: the issue identity and the document
-    // revision upstream always come from the same MVCC snapshot.
-    readSnapshot: async (id) => fetchJson(snapshotPath(id)),
+    // revision upstream always come from the same MVCC snapshot. Upstream
+    // not-found resolves null (the gateway answers the identical 404 for
+    // foreign and unknown issues); every other failure — 5xx, network,
+    // timeout, oversized or invalid payload — rejects so the gateway fails
+    // closed with 502 and never a partial body.
+    readSnapshot: async (id) => {
+      try {
+        return await fetchJson(snapshotPath(id));
+      } catch (error) {
+        if (error && error.status === 404) return null;
+        throw error;
+      }
+    },
   });
 }
