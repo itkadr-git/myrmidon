@@ -51,8 +51,8 @@ export function issueAcceptanceSnapshotService(db: Db) {
      *   - the link row matches issue_id, company_id and the fixed key;
      *   - the document matches id AND company_id;
      *   - the published revision matches latest_revision_id, document_id
-     *     AND company_id, and its body equals documents.latest_body
-     *     (a row rewritten outside the revision log binds to nothing).
+     *     AND company_id, and its number and body equal the document's
+     *     latest values (an inconsistent publication binds to nothing).
      * Otherwise the document fails closed to null — never a foreign or
      * mixed body. A missing issue yields null.
      *
@@ -106,6 +106,7 @@ export function issueAcceptanceSnapshotService(db: Db) {
             eq(documentRevisions.id, documents.latestRevisionId),
             eq(documentRevisions.documentId, documents.id),
             eq(documentRevisions.companyId, issues.companyId),
+            eq(documentRevisions.revisionNumber, documents.latestRevisionNumber),
             eq(documentRevisions.body, documents.latestBody),
           ),
         )
