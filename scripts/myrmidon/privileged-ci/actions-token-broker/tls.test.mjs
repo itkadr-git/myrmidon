@@ -5,6 +5,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import https from 'node:https';
+import { generateKeyPairSync, sign } from 'node:crypto';
+import { createBroker } from './broker.mjs';
 import { createSecureServer } from './tls.mjs';
 
 test('mTLS server accepts an authorized certificate and rejects an anonymous client', async () => {
@@ -20,20 +22,36 @@ test('mTLS server accepts an authorized certificate and rejects an anonymous cli
     }
     run('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'untrusted.key', '-out', 'untrusted.crt', '-subj', '/CN=untrusted client', '-days', '1');
     const file = name => readFileSync(join(dir, name));
-    const server = createSecureServer({ key: file('server.key'), cert: file('server.crt'), ca: file('ca.crt') }, {
-      exchange: async () => ({ token: 'fixture-only' }),
-    });
+    const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const key = { ...publicKey.export({ format: 'jwk' }), kid: 'fixture', alg: 'RS256', use: 'sig' };
+    const policy = { audience: 'isolated', repository_id: '123', repository_owner_id: '456', repository: 'example/test', job_workflow_ref: 'example/test/.github/workflows/trusted.yml@refs/heads/main', ref: 'refs/heads/main', environment: 'test', event_name: 'push', sub: 'repo:example/test:environment:test', workflow_ref: 'example/test/.github/workflows/caller.yml@refs/heads/main', workflow_sha: 'a'.repeat(40), actor: 'trusted', actor_id: '789' };
+    const now = Math.floor(Date.now() / 1000);
+    const jwt = jti => {
+      const claims = { ...policy, iss: 'https://token.actions.githubusercontent.com', aud: policy.audience, iat: now, nbf: now, exp: now + 60, run_id: '100', run_attempt: '1', jti };
+      const input = [{ alg: 'RS256', kid: 'fixture' }, claims].map(value => Buffer.from(JSON.stringify(value)).toString('base64url')).join('.');
+      return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
+    };
+    const seen = new Set(), entries = new Map(), revoked = [];
+    const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async jti => { if (seen.has(jti)) return false; seen.add(jti); return true; },
+      installation: { issue: async () => ({ token: 'fixture-only', expiresAt: '2030-01-01T00:00:00Z' }), revoke: async token => revoked.push(token) },
+      store: { put: async (handle, credential, owner) => entries.set(handle, { credential, owner }), withOwned: async (handle, owner, action) => { const entry = entries.get(handle); if (!entry || entry.owner !== owner) throw new Error('not owned'); await action(entry.credential); entries.delete(handle); } }, audit: async () => {} });
+    const server = createSecureServer({ key: file('server.key'), cert: file('server.crt'), ca: file('ca.crt') }, broker);
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     try {
-      const request = credentials => new Promise((resolve, reject) => {
-        const req = https.request({ hostname: '127.0.0.1', port: server.address().port, path: '/exchange', method: 'POST', ca: file('ca.crt'), servername: 'server', ...credentials }, res => {
+      const request = (credentials, path = '/exchange', body = { jwt: jwt('exchange') }) => new Promise((resolve, reject) => {
+        const req = https.request({ hostname: '127.0.0.1', port: server.address().port, path, method: 'POST', ca: file('ca.crt'), servername: 'server', ...credentials }, res => {
           let body = ''; res.on('data', chunk => { body += chunk; }); res.on('end', () => resolve({ status: res.statusCode, body }));
         });
-        req.on('error', reject); req.end(JSON.stringify({ jwt: 'fixture' }));
+        req.on('error', reject); req.end(JSON.stringify(body));
       });
-      const ok = await request({ key: file('client.key'), cert: file('client.crt') });
+      const credentials = { key: file('client.key'), cert: file('client.crt') };
+      const ok = await request(credentials);
       assert.equal(ok.status, 200);
-      assert.equal(JSON.parse(ok.body).token, 'fixture-only');
+      const issued = JSON.parse(ok.body);
+      assert.equal(issued.token, 'fixture-only');
+      assert.equal((await request(credentials)).status, 403);
+      assert.equal((await request(credentials, '/revoke', { jwt: jwt('revoke'), handle: issued.handle })).status, 200);
+      assert.deepEqual(revoked, ['fixture-only']);
       await assert.rejects(request({}));
       await assert.rejects(request({ key: file('untrusted.key'), cert: file('untrusted.crt') }));
     } finally { await new Promise(resolve => server.close(resolve)); }
