@@ -27,3 +27,9 @@ test('accepts signed pinned identity; rejects tampering and policy confusion', a
   await assert.rejects(verify(jwt({ ...claims, jti: 'expired', exp: now - 1 })));
   await assert.rejects(verify(jwt({ ...claims, jti: 'future', nbf: now + 60 })));
 });
+
+test('rejects excessively long-lived or stale signed identities', async () => {
+  const verify = token => verifyIdentity(token, { policy, loadKeys: async () => [jwk], claimOnce: async () => true, now });
+  await assert.rejects(verify(jwt({ ...claims, exp: now + 365 * 86400 })));
+  await assert.rejects(verify(jwt({ ...claims, iat: now - 601, nbf: now - 601, exp: now + 1 })));
+});
