@@ -110,13 +110,14 @@ async function main() {
   const jwt = generateJWT(privateKey);
   const repo = process.env.GH_REPO ?? process.env.GITHUB_REPOSITORY;
   const owner = process.env.GITHUB_REPOSITORY_OWNER ?? repo?.split('/')[0];
+  if (!repo || !REPO_PATTERN.test(repo)) throw new Error('GH_REPO or GITHUB_REPOSITORY is required to scope the token');
 
   const installationId = await resolveInstallationId(ghFetch, jwt, repo, owner);
 
   const { token } = await ghFetch(
     `/app/installations/${installationId}/access_tokens`,
     jwt,
-    { method: 'POST', headers: { 'Content-Type': 'application/json' } }
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repositories: [repo.split('/')[1]], permissions: { contents: 'read', pull_requests: 'read', issues: 'write' } }) }
   );
 
   if (!token) {
