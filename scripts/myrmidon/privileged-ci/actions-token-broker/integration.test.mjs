@@ -47,6 +47,8 @@ test('HTTP exchange rejects signed identity confusion and replay before issuance
       assert.equal((await post('/exchange', { jwt: token })).status, 403);
     }
     assert.equal((await post('/exchange', { jwt: encode({ ...base, jti: 'scope' }), permissions: { administration: 'write' } })).status, 400);
+    assert.equal((await post('/exchange', { jwt: encode({ ...base, jti: 'repository-override' }), repository_ids: [999] })).status, 400);
+    assert.equal((await post('/exchange', { jwt: encode({ ...base, jti: 'installation-override' }), installationId: '999' })).status, 400);
     assert.equal(issues, 1);
     assert.equal((await post('/revoke', { jwt: encode({ ...base, jti: 'other-run', run_id: '101' }), handle: issued.body.handle })).status, 403);
     assert.equal((await post('/revoke', { jwt: encode({ ...base, jti: 'revoke' }), handle: issued.body.handle })).status, 200);
