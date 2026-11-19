@@ -139,8 +139,8 @@ describeEmbeddedPostgres("adm access request gateway (OPE-12766)", () => {
       targetCompanyId: targetCompany.id,
       resourceType: "skill",
       resourceRef: "skill:atlas-report",
-      action: "read_metadata",
-      justification: "Need the approved skill catalog metadata for a report.",
+      action: "grant_capability",
+      justification: "Need an approved skill capability for a report.",
       requestedScope: { resourceKey: "atlas-report" },
       idempotencyKey: `idem-${randomUUID()}`,
       ...overrides,
@@ -430,7 +430,7 @@ describeEmbeddedPostgres("adm access request gateway (OPE-12766)", () => {
     // the token signs a different resourceKey than the stored requestedScope.
     const created = await request(buildApp(db, agentActor(sourceCompany)))
       .post(`/api/companies/${sourceCompany.id}/adm/access-requests`)
-      .send(createRequestBody({ action: "read_metadata", resourceRef: "skill:atlas-report", requestedScope: { resourceKey: "atlas-report" } }));
+      .send(createRequestBody({ action: "grant_capability", resourceRef: "skill:atlas-report", requestedScope: { resourceKey: "atlas-report" } }));
     const requestId = created.body.requestId as string;
     const admBoard = buildApp(db, boardActorFor(targetCompany));
     const approve = await request(admBoard)
@@ -448,7 +448,7 @@ describeEmbeddedPostgres("adm access request gateway (OPE-12766)", () => {
       requesterId: sourceCompany.agentId,
       resourceType: "skill",
       resourceRef: "skill:other-skill",
-      action: "read_metadata",
+      action: "grant_capability",
       scopeHash: admScopeHash(forgedScope),
       ttlSeconds: 300,
     });
@@ -460,27 +460,37 @@ describeEmbeddedPostgres("adm access request gateway (OPE-12766)", () => {
     expect(execute.status).toBe(403);
   });
 
-  it("bounds action returns a bounded projection, never raw content", async () => {
-    const app = buildApp(db, agentActor(sourceCompany));
-    const created = await request(app)
+  it("rejects bounds requests rather than exposing a resource projection", async () => {
+    const response = await request(buildApp(db, agentActor(sourceCompany)))
       .post(`/api/companies/${sourceCompany.id}/adm/access-requests`)
       .send(createRequestBody({ action: "bounds", resourceRef: "skill:bounded-skill", requestedScope: { resourceKey: "bounded-skill", operationKind: "bounds" } }));
-    const requestId = created.body.requestId as string;
-    const admBoard = buildApp(db, boardActorFor(targetCompany));
-    const approve = await request(admBoard)
-      .post(`/api/adm/access-requests/${requestId}/decide`)
-      .send({ decision: "approved" });
-    const capabilityToken = approve.body.capabilityToken as string;
+    expect(response.status).toBe(400);
+    expect(JSON.stringify(response.body)).not.toContain("markdown");
+  });
 
-    const execute = await request(app)
-      .post(`/api/companies/${sourceCompany.id}/adm/capability/execute`)
-      .send({ capabilityToken });
-    expect(execute.status).toBe(200);
-    expect(execute.body.executed).toBe(true);
-    expect(execute.body.result.kind).toBe("resource_bounds");
-    expect(execute.body.result.available).toBe(false);
-    const serialized = JSON.stringify(execute.body.result);
-    expect(serialized).not.toContain("markdown");
+  it("denies approval and execution of legacy data-reading requests", async () => {
+    const sourceApp = buildApp(db, agentActor(sourceCompany));
+    const created = await request(sourceApp)
+      .post(`/api/companies/${sourceCompany.id}/adm/access-requests`)
+      .send(createRequestBody());
+    expect(created.status).toBe(201);
+    const requestId = created.body.requestId as string;
+    const row = (await db.select().from(approvals).where(eq(approvals.id, requestId)))[0]!;
+    const legacyPayload = { ...(row.payload as Record<string, unknown>), resourceType: "task", resourceRef: "task:legacy", action: "read_metadata" };
+    await db.update(approvals).set({ payload: legacyPayload }).where(eq(approvals.id, requestId));
+    const admBoard = buildApp(db, boardActorFor(targetCompany));
+    const decision = await request(admBoard).post(`/api/adm/access-requests/${requestId}/decide`).send({ decision: "approved" });
+    expect(decision.status).toBe(403);
+    await db.update(approvals).set({ status: "approved" }).where(eq(approvals.id, requestId));
+    const issued = createAdmCapabilityToken({ requestId, sourceCompanyId: sourceCompany.id,
+      targetCompanyId: targetCompany.id, requesterType: "agent", requesterId: sourceCompany.agentId,
+      resourceType: "task", resourceRef: "task:legacy", action: "read_metadata",
+      scopeHash: admScopeHash({ resourceKey: "atlas-report" }), ttlSeconds: 300 });
+    expect(issued).not.toBeNull();
+    const execution = await request(sourceApp).post(`/api/companies/${sourceCompany.id}/adm/capability/execute`)
+      .send({ capabilityToken: issued!.token });
+    expect(execution.status).toBe(403);
+    expect(execution.body.result).toBeUndefined();
   });
 
   it("denies execution of a forged or foreign-audience capability", async () => {
