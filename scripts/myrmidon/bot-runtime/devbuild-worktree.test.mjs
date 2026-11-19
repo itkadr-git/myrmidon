@@ -10,6 +10,9 @@ import { fileURLToPath } from "node:url";
 // `.git` is a FILE (`gitdir: <base>/worktrees/<name>`). Fixture repositories
 // are built with the real git; ssh and rsync are stubs that record their
 // arguments, so nothing touches the network.
+// myrmidon(1.6.9 DEVBUILD-CACHE-MODES): the shared /srv/devcache git caches
+// must be synced with group read/write/traverse regardless of restrictive
+// source modes, while the per-bot repo mirror keeps its isolation.
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const DEVBUILD = path.join(ROOT, "docker/bot-runtime/devbuild/devbuild");
@@ -158,6 +161,47 @@ describe("devbuild worktree support", { skip: !hasGit || !hasBash }, () => {
       assert.match(calls, /SSH .* bash -s -- \/srv\/devbuild\/bot1\/ABC-1 \/srv\/devcache\/git-wt\/bot1\/[0-9a-f]{16}\.git ABC-1/);
       // nothing treats the worktree's .git as a directory
       assert.doesNotMatch(calls, /ABC-1\/\.git\/objects/);
+    });
+
+    // myrmidon(1.6.9 DEVBUILD-CACHE-MODES): the shared git caches under
+    // /srv/devcache are written by the transport user and used by the (different)
+    // user that runs the remote command. A bot-volume base can be mode 0700;
+    // rsync -a then copies that onto the shared cache and the remote command gets
+    // Permission denied. The devcache syncs must add group rwx/traverse (and
+    // setgid, so both users keep sharing new files) without touching the
+    // per-bot repo mirror, which keeps its restrictive isolation.
+    it("worktree: shared git-wt cache syncs add group rw/traverse even for 0700 sources", () => {
+      fs.chmodSync(base, 0o700);
+      try {
+        const { r, calls } = run(wt);
+        assert.equal(r.status, 0, r.stderr);
+        const cacheSyncs = calls.split("\n").filter((l) => l.startsWith("RSYNC") && l.includes(":/srv/devcache/git-wt/"));
+        assert.ok(cacheSyncs.length >= 2, `expected the base and admin-dir syncs, got:\n${calls}`);
+        for (const line of cacheSyncs) {
+          assert.ok(line.includes("--chmod=Dg+rwXs,Fg+rw"), `shared cache sync lacks the group chmod:\n${line}`);
+        }
+        // the per-bot repo mirror must NOT be widened
+        const botSyncs = calls.split("\n").filter((l) => l.startsWith("RSYNC") && l.includes(":/srv/devbuild/bot1/ABC-1/"));
+        assert.ok(botSyncs.length >= 1, `expected the per-bot sync, got:\n${calls}`);
+        for (const line of botSyncs) assert.ok(!line.includes("--chmod"), `per-bot sync must stay unmodified:\n${line}`);
+      } finally {
+        fs.chmodSync(base, 0o755);
+      }
+    });
+
+    it("borrowed-object mirror cache sync adds group rw/traverse too", () => {
+      const mirror = path.join(tmp, "hermes/.myrmidon/git-objects/seed.git");
+      fs.mkdirSync(path.join(mirror, "objects"), { recursive: true });
+      fs.writeFileSync(path.join(clone, ".git/objects/info/alternates"), `${path.join(mirror, "objects")}\n`);
+      try {
+        const { r, calls } = run(clone);
+        assert.equal(r.status, 0, r.stderr);
+        const mirrorSyncs = calls.split("\n").filter((l) => l.startsWith("RSYNC") && l.includes(":/srv/devcache/git/"));
+        assert.equal(mirrorSyncs.length, 1, `expected exactly one mirror sync, got:\n${calls}`);
+        assert.ok(mirrorSyncs[0].includes("--chmod=Dg+rwXs,Fg+rw"), `mirror cache sync lacks the group chmod:\n${mirrorSyncs[0]}`);
+      } finally {
+        fs.rmSync(path.join(clone, ".git/objects/info/alternates"), { force: true });
+      }
     });
 
     it("plain clone: no base shipped, no worktree rewrite", () => {
