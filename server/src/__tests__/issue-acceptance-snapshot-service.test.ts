@@ -1288,6 +1288,41 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     expect(link!.issueId).toBe(issueA);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
+  it("serializes concurrent acceptance links to the same document", async () => {
+    const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-concurrent-link-");
+    cleanups.push(() => dbh.cleanup());
+    const db = createDb(dbh.connectionString);
+    cleanups.push(async () => { await db.$client.end(); });
+    const issueA = randomUUID();
+    const issueB = randomUUID();
+    const docId = randomUUID();
+    await db.insert(companies).values({ id: companyA, name: "Company A" });
+    await db.insert(issues).values([
+      { id: issueA, companyId: companyA, title: "A" },
+      { id: issueB, companyId: companyA, title: "B" },
+    ]);
+    await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a" });
+    let release!: () => void;
+    let linked!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const ready = new Promise<void>((resolve) => { linked = resolve; });
+    const first = db.transaction(async (tx) => {
+      await tx.insert(issueDocuments).values({ companyId: companyA, issueId: issueA, documentId: docId, key: "acceptance-scenarios" });
+      linked();
+      await gate;
+    });
+    await ready;
+    const second = db.insert(issueDocuments).values({ companyId: companyA, issueId: issueB, documentId: docId, key: "acceptance-scenarios" }).then(() => null, (error: unknown) => error);
+    release();
+    await first;
+    expect(await second).not.toBeNull();
+    const links = await db.select().from(issueDocuments).where(eq(issueDocuments.documentId, docId));
+    expect(links).toHaveLength(1);
+    expect(links[0]!.issueId).toBe(issueA);
+    const rows = await db.execute(sqlTag`SELECT acceptance_issue_id FROM documents WHERE id = ${docId}::uuid`);
+    expect(rows[0]).toMatchObject({ acceptance_issue_id: issueA });
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("does not commit a cross-company graph when a link races an issue company move", async () => {
     const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-company-race-");
     cleanups.push(() => dbh.cleanup());
