@@ -940,6 +940,49 @@ exit 97
     expect(rules).toEqual(["operator-ssh"]);
   });
 
+  it("does not overwrite a concurrent operator default policy after an executed SSH allow", async () => {
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-ufw-policy-race-"));
+    const policy = join(dir, "policy");
+    const calls = join(dir, "calls");
+    writeFileSync(policy, "allow\n");
+    writeFileSync(join(dir, "sudo"), `#!/bin/sh
+printf '%s\\n' "$*" >> "$CALLS"
+case "$1" in
+  ufw)
+    shift
+    case "$1" in
+      status) printf 'Status: active\\n'; exit 0 ;;
+      allow) printf 'reject\\n' > "$POLICY"; exit 0 ;;
+      default) printf '%s\\n' "$2" > "$POLICY"; exit 0 ;;
+    esac ;;
+  systemd-run|systemctl) printf 'active\\n'; exit 0 ;;
+esac
+exit 97
+`);
+    chmodSync(join(dir, "sudo"), 0o700);
+    try {
+      const ssh = new MockSshExecutor({ onCommand: (command) => {
+        const result = spawnSync("sh", ["-c", command], {
+          encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: calls, POLICY: policy }, timeout: 5000,
+        });
+        return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", exitCode: result.status ?? 1 };
+      } });
+      const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+      const claim: any = {
+        job: { id: "job-concurrent-policy", companyId: "c1", serverId: "s1" },
+        server: { hostname: "1.2.3.4", port: 22, username: "root" },
+        steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+      };
+      const result = await executor.execute(claim, createMockReporter().reporter);
+      expect(readFileSync(calls, "utf8")).toMatch(/ufw allow/);
+      expect(result.status).toBe("failed");
+      expect(result.error).toMatch(/concurrent|ambiguous|unsafe|unconfirmed/i);
+      expect(readFileSync(policy, "utf8")).toBe("reject\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("does not delete an operator's indistinguishable rule after a real uncertain allow", async () => {
     const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-ufw-ambiguous-"));
     const rules = join(dir, "rules");
