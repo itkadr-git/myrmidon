@@ -196,8 +196,6 @@ describe("devbuild worktree support", { skip: !hasGit || !hasBash }, () => {
       const mirror = path.join(tmp, "hermes/.myrmidon/git-objects/seed.git");
       fs.mkdirSync(path.join(mirror, "objects"), { recursive: true });
       fs.writeFileSync(path.join(clone, ".git/objects/info/alternates"), `${path.join(mirror, "objects")}\n`);
-      fs.mkdirSync(path.join(mirror, "objects"), { recursive: true });
-      fs.writeFileSync(path.join(clone, ".git/objects/info/alternates"), `${path.join(mirror, "objects")}\n`);
       try {
         const { r, calls } = run(clone);
         assert.equal(r.status, 0, r.stderr);
