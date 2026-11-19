@@ -528,6 +528,36 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(ssh.hasExecuted("sudo ufw disable")).toBe(false);
   });
 
+  it("preserves an operator's concurrent rule when a partially applied SSH allow is rolled back", async () => {
+    const rules = new Set(["operator-original"]);
+    const ssh = new MockSshExecutor({ onCommand: (command) => {
+      if (command.includes("sudo ufw allow")) {
+        rules.add("onboarding-ssh");
+        rules.add("operator-concurrent");
+        return { exitCode: 1, stderr: "rule partially applied" };
+      }
+      if (command.includes("restore-myrmidon-firewall")) {
+        if (/cp .*\/etc\/ufw/.test(command)) rules.delete("operator-concurrent");
+        if (/ufw .*delete|ufw delete/.test(command)) rules.delete("onboarding-ssh");
+      }
+      return undefined;
+    } });
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-concurrent-rule-state", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(ssh.hasExecuted(/sudo ufw allow/)).toBe(true);
+    expect(ssh.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
+    expect([...rules].sort()).toEqual(["operator-concurrent", "operator-original"]);
+  });
+
   it("does not overwrite concurrent UFW configuration changes when an allow command fails", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse(/sudo ufw allow/, { exitCode: 1, stderr: "rule partially applied" });
