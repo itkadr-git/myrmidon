@@ -65,6 +65,25 @@ test('recovery alerts on pending ambiguous issuance after restart and keeps issu
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('recovery alerts about pending issuance even when retained revocation fails', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-recovery-both-'));
+  const alerts = [];
+  const credentialPath = join(dir, 'credentials.sqlite');
+  const credentialKey = randomBytes(32);
+  const options = { credentialPath, credentialKey, installation: { revoke: async () => { throw new Error('unavailable'); } }, alert: async event => alerts.push(event) };
+  try {
+    const store = createCredentialStore(credentialPath, credentialKey);
+    await store.put('retained', { token: 'fixture' }, 'owner');
+    await store.reserveIssuance('unknown');
+    store.close();
+    await assert.rejects(createRecoveredSingleHostBroker(options));
+    assert.deepEqual(alerts, ['issuance_ambiguous', 'credential_recovery_failed']);
+    const reopened = createCredentialStore(credentialPath, credentialKey);
+    assert.deepEqual(await reopened.pendingIssuances(), ['unknown']);
+    reopened.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('single-host broker rejects a supplied store without durable issuance reservations', () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-unsafe-store-'));
   try {
