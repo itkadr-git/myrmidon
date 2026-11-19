@@ -5,7 +5,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { createAuthenticatedAudit } from './authenticated-audit.mjs';
+import * as authenticatedAudit from './authenticated-audit.mjs';
+const { createAuthenticatedAudit } = authenticatedAudit;
 import { createAuditedRecoveredServer } from './tls.mjs';
 
 test('audited server refuses startup without an independent audit anchor', async () => {
@@ -64,5 +65,30 @@ test('an independently retained audit head rejects suffix deletion on restart', 
     db.exec('DELETE FROM audit_events WHERE seq = 2');
     db.close();
     assert.throws(() => createAuthenticatedAudit(path, key, anchor), /audit integrity/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('async independent anchor detects audit rollback after restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-remote-anchor-'));
+  const path = join(dir, 'audit.sqlite'), key = randomBytes(32);
+  let head = { seq: 0, mac: '' };
+  const anchor = {
+    async read() { return { ...head }; },
+    async compareAndSet(previous, next) {
+      if (JSON.stringify(previous) !== JSON.stringify(head)) return false;
+      head = { ...next };
+      return true;
+    },
+  };
+  try {
+    assert.equal(typeof authenticatedAudit.createAsyncAuthenticatedAudit, 'function');
+    const audit = await authenticatedAudit.createAsyncAuthenticatedAudit(path, key, anchor);
+    await audit.record('issued');
+    await audit.record('revoked');
+    audit.close();
+    const db = new DatabaseSync(path);
+    db.exec('DELETE FROM audit_events WHERE seq = 2');
+    db.close();
+    await assert.rejects(authenticatedAudit.createAsyncAuthenticatedAudit(path, key, anchor), /audit integrity/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
