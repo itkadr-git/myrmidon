@@ -244,6 +244,33 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     expect(afterTicks.monitorAttemptCount).toBe(1);
     expect(afterTicks.status).toBe("in_review");
     expect(transport).not.toHaveBeenCalled();
+
+    // Simulate the existing bucket aging out, without resetting the budget.
+    const expiredMinute = minute - 61;
+    const expiredStart = new Date(expiredMinute * 60_000);
+    await ctx.db.update(toolGatewayRateLimitCounters).set({
+      counterKey: `github-budget:review-rework:${expiredMinute}`,
+      windowStartAt: expiredStart,
+      resetAt: new Date(expiredStart.getTime() + 3_600_000),
+    }).where(sql`${toolGatewayRateLimitCounters.companyId} = ${carrier.id}`);
+    const headSha = "e".repeat(40);
+    const workflowUrl = "https://api.github.com/repos/acme/app/contents/.github/workflows";
+    const checkUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?check_name=CI%20result&filter=all&per_page=100`;
+    transport.mockImplementation(async (url) => {
+      if (url === pullUrl) return Response.json({ state: "open", head: { sha: headSha } });
+      if (url === workflowUrl) return Response.json([{ name: "ci.yml" }]);
+      if (url === checkUrl) return Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "failure", head_sha: headSha }] });
+      throw new Error("Unexpected external transport");
+    });
+    const accepted = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: preserve this finding" });
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+    const fetched = await request(app).get(`/api/issues/${issueId}`);
+    expect(fetched.status).toBe(200);
+    expect(fetched.body.status).toBe("in_progress");
+    expect(fetched.body.assigneeAgentId).toBe(author);
+    const comments = await request(app).get(`/api/issues/${issueId}/comments`);
+    expect(comments.status).toBe(200);
+    expect(JSON.stringify(comments.body)).toContain("REQUEST CHANGES: preserve this finding");
   });
 
   it("rejects a verdict on stored wake evidence alone when the review budget is exhausted (OPE-15114)", async () => {
