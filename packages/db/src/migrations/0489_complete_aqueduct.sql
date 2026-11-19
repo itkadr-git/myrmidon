@@ -229,11 +229,8 @@ DECLARE
   "v_new_issue_id" uuid;
 BEGIN
   IF TG_OP = 'INSERT' THEN
-    SELECT "i"."issue_id" INTO "v_new_issue_id"
-    FROM "documents" "d"
-    JOIN "issue_documents" "i" ON "i"."document_id" = "d"."id"
-    WHERE "d"."id" = NEW."document_id" AND "i"."key" = 'acceptance-scenarios'
-    LIMIT 1;
+    SELECT "acceptance_issue_id" INTO "v_new_issue_id"
+    FROM "documents" WHERE "id" = NEW."document_id";
     IF "v_new_issue_id" IS NOT NULL THEN
       PERFORM "bump_issue_acceptance_epoch_internal"("v_new_issue_id");
     END IF;
@@ -241,16 +238,10 @@ BEGIN
     -- A revision moved between documents bumps both owners, exactly once
     -- each when they differ; a moved-back revision can never restore the
     -- previous pin.
-    SELECT "i"."issue_id" INTO "v_old_issue_id"
-    FROM "documents" "d"
-    JOIN "issue_documents" "i" ON "i"."document_id" = "d"."id"
-    WHERE "d"."id" = OLD."document_id" AND "i"."key" = 'acceptance-scenarios'
-    LIMIT 1;
-    SELECT "i"."issue_id" INTO "v_new_issue_id"
-    FROM "documents" "d"
-    JOIN "issue_documents" "i" ON "i"."document_id" = "d"."id"
-    WHERE "d"."id" = NEW."document_id" AND "i"."key" = 'acceptance-scenarios'
-    LIMIT 1;
+    SELECT "acceptance_issue_id" INTO "v_old_issue_id"
+    FROM "documents" WHERE "id" = OLD."document_id";
+    SELECT "acceptance_issue_id" INTO "v_new_issue_id"
+    FROM "documents" WHERE "id" = NEW."document_id";
     IF "v_old_issue_id" IS DISTINCT FROM "v_new_issue_id" THEN
       IF "v_old_issue_id" IS NOT NULL THEN
         PERFORM "bump_issue_acceptance_epoch_internal"("v_old_issue_id");
@@ -260,11 +251,8 @@ BEGIN
       PERFORM "bump_issue_acceptance_epoch_internal"("v_new_issue_id");
     END IF;
   ELSE
-    SELECT "i"."issue_id" INTO "v_old_issue_id"
-    FROM "documents" "d"
-    JOIN "issue_documents" "i" ON "i"."document_id" = "d"."id"
-    WHERE "d"."id" = OLD."document_id" AND "i"."key" = 'acceptance-scenarios'
-    LIMIT 1;
+    SELECT "acceptance_issue_id" INTO "v_old_issue_id"
+    FROM "documents" WHERE "id" = OLD."document_id";
     IF "v_old_issue_id" IS NOT NULL THEN
       PERFORM "bump_issue_acceptance_epoch_internal"("v_old_issue_id");
     END IF;
