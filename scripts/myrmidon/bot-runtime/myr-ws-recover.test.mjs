@@ -7,12 +7,9 @@ import path from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-// myrmidon(MYR-WS-RECOVER): `myr-ws open` must not hand on a copy that a run left
-// half-way (merge/rebase/cherry-pick in progress, unresolved stages, detached head,
-// another branch than the registry says), must take --branch / --repository, and
-// `myr-ws repair` (botd) does the same for copies nobody is about to open. Nothing is
-// lost: the state goes to refs/myr-ws/recovery/<KEY> first. Same fake base as
-// myr-ws-open.test.mjs: a bare repository fetched from a local "origin", no network.
+// Unfinished operations are preserved for the next task heartbeat. Branch drift
+// recovery and bare-worktree repair remain covered independently. The fixture uses
+// a bare repository fetched from a local origin; it never touches production copies.
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const require = createRequire(import.meta.url);
@@ -152,100 +149,70 @@ const assertClean = (dir) => {
   }
 };
 
-describe("myr-ws open — a copy left half-way is repaired, not reused", { skip: !hasGit }, () => {
-  it("aborts a merge in progress, keeps the state in refs/myr-ws/recovery/<KEY> and says so", async () => {
-    const first = await conflictingCopy("ABC-301");
-    const head = git(first.path, "rev-parse", "HEAD");
+describe("myr-ws open — a copy left half-way is preserved", { skip: !hasGit }, () => {
+  it("preserves a partially resolved merge across idle repair and reopening", async () => {
+    const first = await conflictingCopy("ABC-390");
     assert.notEqual(gitRaw(first.path, "merge", "origin/main").status, 0);
+    fs.writeFileSync(path.join(first.path, "README.md"), "resolved work\n");
+    git(first.path, "add", "README.md");
+    fs.writeFileSync(path.join(first.path, "notes.txt"), "uncommitted notes\n");
+    const before = git(first.path, "status", "--porcelain");
+    const proc = path.join(ctx.root, "idle-proc", "1000");
+    fs.mkdirSync(proc, { recursive: true });
+    fs.symlinkSync(ctx.root, path.join(proc, "cwd"));
+    const repaired = await wsRepair.repair({}, { ...ctx, procRoot: path.dirname(proc) });
+    assert.equal(repaired.repaired.length, 0);
+    const reopened = await opened(["ABC-390", REPO]);
+    assert.equal(reopened.path, first.path);
+    assert.equal(git(first.path, "status", "--porcelain"), before);
     assert.ok(fs.existsSync(gitPath(first.path, "MERGE_HEAD")));
-    assert.notEqual(git(first.path, "ls-files", "-u"), "");
-
-    const r = await run(["ABC-301", REPO, "--json"]);
-    assert.equal(r.exitCode, 0);
-    const out = JSON.parse(r.stdout);
-    assert.equal(out.reused, true);
-    assert.equal(out.path, first.path);
-    assert.equal(out.recovered.length, 1);
-    assert.equal(out.recovered[0].problem, "merge_in_progress");
-    assert.equal(out.recovered[0].action, "aborted");
-    assert.equal(out.recoveryRef, "refs/myr-ws/recovery/ABC-301");
-    assert.match(r.stderr, /ABC-301: copy was not clean \(merge_in_progress -> aborted/);
-    assertClean(first.path);
-    assert.equal(git(first.path, "rev-parse", "HEAD"), head);
-
-    // the conflicted state is kept: both parents, conflict markers in the stored file
-    const ref = out.recoveryRef;
-    assert.equal(git(first.path, "rev-list", "--parents", "-n", "1", ref).split(" ").length, 3);
-    assert.match(git(first.path, "show", `${ref}:README.md`), /<<<<<<</);
-    // and the next open is the plain idempotent one
-    const again = await opened(["ABC-301", REPO]);
-    assert.equal(again.recovered, undefined);
-    assert.equal(again.reused, true);
+    assert.equal(fs.readFileSync(path.join(first.path, "README.md"), "utf8"), "resolved work\n");
+    assert.equal(fs.readFileSync(path.join(first.path, "notes.txt"), "utf8"), "uncommitted notes\n");
   });
+  for (const [key, operation, marker] of [
+    ["ABC-301", "merge", "MERGE_HEAD"],
+    ["ABC-303", "rebase", "rebase-merge"],
+    ["ABC-304", "cherry-pick", "CHERRY_PICK_HEAD"],
+  ]) {
+    it(`preserves an interrupted ${operation} on reopen`, async () => {
+      const first = await conflictingCopy(key);
+      assert.notEqual(gitRaw(first.path, operation, "origin/main").status, 0);
+      const status = git(first.path, "status", "--porcelain");
+      const index = git(first.path, "ls-files", "-u");
+      const content = fs.readFileSync(path.join(first.path, "README.md"), "utf8");
+      const head = git(first.path, "rev-parse", "HEAD");
+      assert.ok(fs.existsSync(gitPath(first.path, marker)));
+      const out = await opened([key, REPO]);
+      assert.equal(out.path, first.path);
+      assert.equal(git(first.path, "rev-parse", "HEAD"), head);
+      assert.equal(git(first.path, "status", "--porcelain"), status);
+      assert.equal(git(first.path, "ls-files", "-u"), index);
+      assert.equal(fs.readFileSync(path.join(first.path, "README.md"), "utf8"), content);
+      assert.ok(fs.existsSync(gitPath(first.path, marker)));
+    });
+  }
 
-  it("saves untracked and unstaged work made during the merge, a second incident gets its own ref", async () => {
-    const first = await conflictingCopy("ABC-302");
-    assert.notEqual(gitRaw(first.path, "merge", "origin/main").status, 0);
-    fs.writeFileSync(path.join(first.path, "notes.txt"), "my notes\n");
-    const one = await opened(["ABC-302", REPO]);
-    assert.equal(git(first.path, "show", `${one.recoveryRef}:notes.txt`), "my notes");
-
-    advanceOrigin("main side again\n");
-    assert.notEqual(gitRaw(first.path, "merge", "origin/main").status, 0);
-    const two = await opened(["ABC-302", REPO]);
-    assert.notEqual(two.recoveryRef, one.recoveryRef);
-    assert.match(two.recoveryRef, /^refs\/myr-ws\/recovery\/ABC-302-\d+$/);
-    assert.equal(git(first.path, "rev-parse", "--verify", one.recoveryRef).length, 40);
-  });
-
-  it("aborts a rebase in progress", async () => {
-    const first = await conflictingCopy("ABC-303");
-    const head = git(first.path, "rev-parse", "HEAD");
-    assert.notEqual(gitRaw(first.path, "rebase", "origin/main").status, 0);
-    assert.ok(fs.existsSync(gitPath(first.path, "rebase-merge")) || fs.existsSync(gitPath(first.path, "rebase-apply")));
-    const out = await opened(["ABC-303", REPO]);
-    assert.ok(out.recovered.some((r) => r.problem === "rebase_in_progress" && r.action === "aborted"), JSON.stringify(out.recovered));
-    assertClean(first.path);
-    assert.equal(git(first.path, "rev-parse", "--abbrev-ref", "HEAD"), "bot/ABC-303");
-    assert.equal(git(first.path, "rev-parse", "HEAD"), head);
-  });
-
-  it("aborts a cherry-pick in progress", async () => {
-    const first = await conflictingCopy("ABC-304");
-    assert.notEqual(gitRaw(first.path, "cherry-pick", "origin/main").status, 0);
-    assert.ok(fs.existsSync(gitPath(first.path, "CHERRY_PICK_HEAD")));
-    const out = await opened(["ABC-304", REPO]);
-    assert.ok(out.recovered.some((r) => r.problem === "cherry_pick_in_progress" && r.action === "aborted"), JSON.stringify(out.recovered));
-    assertClean(first.path);
-  });
-
-  it("clears unresolved stages that no operation marker explains", async () => {
+  it("preserves unresolved stages without an operation marker", async () => {
     const first = await conflictingCopy("ABC-305");
     assert.notEqual(gitRaw(first.path, "merge", "origin/main").status, 0);
     fs.rmSync(gitPath(first.path, "MERGE_HEAD"));
-    assert.notEqual(git(first.path, "ls-files", "-u"), "");
-    const out = await opened(["ABC-305", REPO]);
-    assert.ok(out.recovered.some((r) => r.problem === "unmerged_paths"), JSON.stringify(out.recovered));
-    assertClean(first.path);
-    assert.match(git(first.path, "show", `${out.recoveryRef}:README.md`), /<<<<<<</);
+    const index = git(first.path, "ls-files", "-u");
+    assert.notEqual(index, "");
+    await opened(["ABC-305", REPO]);
+    assert.equal(git(first.path, "ls-files", "-u"), index);
   });
 
-  it("recreates the worktree when the abort does not clean it, on the same branch, with the state saved", async () => {
+  it("preserves unreadable rebase bookkeeping and local work", async () => {
     const first = await opened(["ABC-306", REPO]);
     fs.writeFileSync(path.join(first.path, "wip.txt"), "wip\n");
-    const head = git(first.path, "rev-parse", "HEAD");
-    // an interrupted rebase whose bookkeeping is unreadable: `rebase --abort` cannot succeed
     const dir = gitPath(first.path, "rebase-merge");
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "head-name"), "refs/heads/does-not-exist\n");
-    const out = await opened(["ABC-306", REPO]);
-    assert.equal(out.reused, true);
-    assert.ok(out.recovered.length >= 1);
-    assert.equal(git(out.path, "ls-files", "-u"), "");
-    for (const m of ["MERGE_HEAD", "rebase-merge", "rebase-apply"]) assert.equal(fs.existsSync(gitPath(out.path, m)), false, `${m} is still there`);
-    assert.equal(git(out.path, "rev-parse", "--abbrev-ref", "HEAD"), "bot/ABC-306");
-    assert.equal(git(out.path, "rev-parse", "HEAD"), head);
-    assert.equal(git(out.path, "show", `${out.recoveryRef}:wip.txt`), "wip");
+    const head = git(first.path, "rev-parse", "HEAD");
+    await opened(["ABC-306", REPO]);
+    assert.equal(git(first.path, "rev-parse", "HEAD"), head);
+    assert.equal(fs.readFileSync(path.join(first.path, "wip.txt"), "utf8"), "wip\n");
+    assert.ok(fs.existsSync(dir));
   });
 
   it("follows a branch the bot moved the copy to into the registry and reports it", async () => {
@@ -394,45 +361,45 @@ describe("myr-ws repair (botd) — copies nobody is about to open", { skip: !has
   }
   const repair = (args, extra) => wsRepair.repair({ positionals: args, env: ctx.env }, { ...ctx, ...extra });
 
-  it("aborts the merge an interrupted run left, saving the state first", async () => {
+  it("leaves an interrupted merge untouched on repeated idle passes", async () => {
     const first = await conflictingCopy("ABC-321");
     assert.notEqual(gitRaw(first.path, "merge", "origin/main").status, 0);
-    const res = await repair([], { procRoot: fakeProc([os.tmpdir()]) });
-    assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
-    assert.equal(res.repaired.length, 1);
-    assert.equal(res.repaired[0].key, "ABC-321");
-    assert.equal(res.repaired[0].recovered[0].action, "aborted");
-    assert.match(git(first.path, "show", `${res.repaired[0].recoveryRef}:README.md`), /<<<<<<</);
-    assertClean(first.path);
-    assert.match(res.human, /ABC-321/);
-    const again = await repair([], { procRoot: fakeProc([os.tmpdir()]) });
-    assert.equal(again.repaired.length, 0);
-    assert.match(again.human, /nothing to repair/);
+    const index = git(first.path, "ls-files", "-u");
+    const content = fs.readFileSync(path.join(first.path, "README.md"), "utf8");
+    for (let i = 0; i < 2; i++) {
+      const res = await repair([], { procRoot: fakeProc([os.tmpdir()]) });
+      assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+      assert.equal(res.repaired.length, 0);
+      assert.match(res.skipped[0].reason, /unfinished git operation/);
+      assert.equal(git(first.path, "ls-files", "-u"), index);
+      assert.equal(fs.readFileSync(path.join(first.path, "README.md"), "utf8"), content);
+      assert.ok(fs.existsSync(gitPath(first.path, "MERGE_HEAD")));
+    }
   });
 
-  it("does not touch a copy a process works in, nor when it cannot tell", async () => {
+  it("preserves unfinished work even when process visibility is unavailable", async () => {
     const first = await conflictingCopy("ABC-322");
     assert.notEqual(gitRaw(first.path, "merge", "origin/main").status, 0);
-    const busy = await repair([], { procRoot: fakeProc([path.join(first.path, "sub")]) });
-    assert.equal(busy.repaired.length, 0);
-    assert.match(busy.skipped[0].reason, /process is running/);
-    const blind = await repair([], { procRoot: path.join(ctx.root, "no-proc") });
-    assert.equal(blind.repaired.length, 0);
-    assert.match(blind.skipped[0].reason, /cannot tell/);
-    assert.ok(fs.existsSync(gitPath(first.path, "MERGE_HEAD")));
+    for (const procRoot of [fakeProc([first.path]), path.join(ctx.root, "no-proc")]) {
+      const res = await repair([], { procRoot });
+      assert.equal(res.repaired.length, 0);
+      assert.match(res.skipped[0].reason, /unfinished git operation/);
+      assert.ok(fs.existsSync(gitPath(first.path, "MERGE_HEAD")));
+    }
   });
 
-  it("repairs only the named key and leaves branch policy to open", async () => {
+  it("limits inspection to the named key and leaves branch policy to open", async () => {
     const a = await conflictingCopy("ABC-323");
     assert.notEqual(gitRaw(a.path, "merge", "origin/main").status, 0);
     const b = await opened(["ABC-324", REPO]);
     git(b.path, "switch", "-q", "-c", "elsewhere");
     const proc = fakeProc([os.tmpdir()]);
     const other = await repair(["ABC-324"], { procRoot: proc });
-    assert.equal(other.repaired.length, 0);
-    assert.ok(fs.existsSync(gitPath(a.path, "MERGE_HEAD")));
+    assert.equal(other.skipped.length, 0);
     const named = await repair(["ABC-323"], { procRoot: proc });
-    assert.equal(named.repaired.length, 1);
+    assert.equal(named.repaired.length, 0);
+    assert.equal(named.skipped[0].key, "ABC-323");
+    assert.ok(fs.existsSync(gitPath(a.path, "MERGE_HEAD")));
     assert.equal(git(b.path, "rev-parse", "--abbrev-ref", "HEAD"), "elsewhere");
     assert.equal(registry().entries.find((e) => e.key === "ABC-324").branch, "bot/ABC-324");
   });
