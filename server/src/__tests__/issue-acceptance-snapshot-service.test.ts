@@ -1118,12 +1118,14 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     ]);
     await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
     await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a" });
-    await db.insert(documentRevisions).values({
+    // The DB boundary rejects the invalid revision before a link can exist.
+    await expect(db.insert(documentRevisions).values({
       companyId: companyB, documentId: docId, revisionNumber: 1, body: "foreign",
-    });
-    await expect(db.insert(issueDocuments).values({
-      companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios",
     })).rejects.toThrow();
+    expect(await db.select().from(documentRevisions).where(eq(documentRevisions.documentId, docId))).toHaveLength(0);
+    await db.insert(issueDocuments).values({
+      companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios",
+    });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   it("rejects a supported writer reaching a foreign-company document", async () => {
