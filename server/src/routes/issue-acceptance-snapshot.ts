@@ -32,6 +32,14 @@ export function issueAcceptanceSnapshotRoutes(db: Db) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    // Validate against a fresh statement, not the original MVCC snapshot.
+    const current = await snapshots.read(snapshot.issue.id);
+    if (!current || current.issue.version !== snapshot.issue.version ||
+        current.issue.companyId !== snapshot.issue.companyId ||
+        current.issue.identifier !== snapshot.issue.identifier) {
+      res.status(409).json({ error: "Issue changed during snapshot read" });
+      return;
+    }
     res.json(snapshot);
   });
 
