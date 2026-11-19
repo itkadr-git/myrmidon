@@ -41,6 +41,26 @@ test('lost issuance response leaves anchored intent fenced across restart despit
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('failed revocation remains anchored across restart even if local reservation disappears', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-revoke-anchor-'));
+  const path = join(dir, 'audit.sqlite'), auditKey = randomBytes(32);
+  let head = { seq: 0, mac: '' };
+  const anchor = { read: async () => ({ ...head }), compareAndSet: async (old, next) => {
+    if (JSON.stringify(old) !== JSON.stringify(head)) return false;
+    head = { ...next }; return true;
+  } };
+  try {
+    const audit = await createAsyncAuthenticatedAudit(path, auditKey, anchor);
+    const store = { reserveIssuance: async () => {}, queueAlert: async () => {},
+      withOwned: async (_handle, _owner, callback) => callback({ token: 'fixture' }) };
+    const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store, anchoredIssuance: true,
+      installation: { revoke: async () => { throw new Error('network down'); } }, audit: event => audit.record(event), alert: async () => {} });
+    await assert.rejects(broker.revoke(jwt('revoke-anchor'), 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'));
+    audit.close();
+    await assert.rejects(createAsyncAuthenticatedAudit(path, auditKey, anchor), /pending issuance/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('ambiguous issuance fences the running process even if its durable reservation disappears', async () => {
   let issued = 0;
   const store = {
