@@ -24,7 +24,11 @@ secret management, least privilege and key rotation.
   by the audit anchor: deleting or restoring the replay database permits reuse of
   an unexpired signed identity, even when the audit and anchor remain intact.
   A rollback-resistant replay design is required before any live use; an anchored
-  audit head alone does not satisfy this requirement. The factory wires an
+  audit head alone does not satisfy this requirement. `anchored-replay.mjs` is an
+  experimental append-only anchored replay store, tested for rollback and suffix
+  deletion but not wired into the broker; it requires its own independently
+  provisioned anchor, bounded retention and further security review. It is not a
+  mitigation for the running broker. The factory wires an
   experimental AES-GCM SQLite credential store when a credential path and key
   are provided. Its single-host locking and key custody need independent review.
   An experimental `createRecoveryWorker` provides a single quiesced recovery
