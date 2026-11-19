@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
-const events = new Set(['issued', 'revoked', 'exchange_failed', 'revoke_failed']);
+const events = new Set(['issued', 'revoked', 'exchange_failed', 'revoke_failed', 'issuance_ambiguous']);
 
 // The HMAC key must be distinct from the credential encryption key. Optional
 // anchor is experimental: it must be an independently durable, synchronous CAS

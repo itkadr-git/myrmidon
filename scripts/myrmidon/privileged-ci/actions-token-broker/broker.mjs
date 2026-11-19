@@ -66,14 +66,23 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         const handle = randomUUID();
         const durable = typeof store.reserveIssuance === 'function';
         if (durable) await store.reserveIssuance(handle);
-        const credential = await installation.issue();
+        let credential;
+        try {
+          credential = await installation.issue();
+        } catch {
+          // The upstream may have created a token despite the failed response.
+          try { await record('issuance_ambiguous'); } catch { /* Reservation remains the durable stop signal. */ }
+          throw new Error('issuance outcome unknown');
+        }
         try {
           await store.put(handle, credential, owner);
         } catch {
           try {
             await installation.revoke(credential.token);
             if (durable) await store.resolveIssuance(handle);
-          } catch { await record('revoke_failed'); }
+          } catch {
+            try { await record('issuance_ambiguous'); } catch { /* Reservation remains pending. */ }
+          }
           throw new Error('credential storage failed');
         }
         if (durable) await store.resolveIssuance(handle);
