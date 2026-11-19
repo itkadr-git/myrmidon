@@ -159,7 +159,12 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         // even if the local reservation is later lost or rolled back.
         if (anchoredIssuance) await record('issuance_pending');
         // Another request can fail audit while the anchor write is in flight.
-        if (auditFailed || exp <= Math.floor(Date.now() / 1000)) throw new Error('audit unavailable or identity expired');
+        if (auditFailed || exp <= Math.floor(Date.now() / 1000)) {
+          // The durable reservation and anchored intent remain fenced even though
+          // GitHub was not contacted; report the unresolved state immediately.
+          await ambiguous();
+          throw new Error('audit unavailable or identity expired');
+        }
         let credential, retained = false;
         try {
           credential = await installation.issue(async token => {
