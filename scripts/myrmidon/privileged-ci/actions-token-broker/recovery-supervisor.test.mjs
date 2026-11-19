@@ -58,6 +58,17 @@ test('shutdown during alert delivery prevents issuance from starting', async () 
   assert.equal(starts, 0);
 });
 
+test('simultaneous ambiguous issuance and failed revocation both survive restart', async () => {
+  const store = memoryOutbox();
+  const first = createRecoverySupervisor({
+    store, recover: async () => ({ failed: 1, pending: true, alertFailed: false }),
+    alert: async () => { throw new Error('offline'); }, start: async () => assert.fail('must stay stopped'),
+    delay: async () => first.stop(),
+  });
+  await assert.rejects(first.run(), /stopped/);
+  assert.deepEqual((await store.pendingAlerts()).sort(), ['credential_recovery_failed', 'issuance_ambiguous']);
+});
+
 test('recovery supervisor retries while issuance stays stopped, then starts exactly once', async () => {
   let attempts = 0, starts = 0;
   const alerts = [];
