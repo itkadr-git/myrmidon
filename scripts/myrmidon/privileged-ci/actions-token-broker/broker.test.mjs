@@ -59,6 +59,23 @@ test('supervised broker alerts when replay anchor is unavailable and refuses sta
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('runtime replay anchor failure alerts and fences issuance after anchor recovers', async () => {
+  let offline = true, issued = 0;
+  const queued = [], alerts = [];
+  const store = { reserveIssuance: async () => {}, resolveIssuance: async () => {}, put: async () => {},
+    queueAlert: async event => queued.push(event) };
+  const broker = createBroker({ policy, loadKeys: async () => [key], store,
+    claimOnce: async () => { if (offline) throw new Error('anchor offline'); return true; },
+    installation: { issue: async () => { issued++; return { token: 'fixture' }; } },
+    audit: async () => {}, alert: async event => alerts.push(event) });
+  await assert.rejects(broker.exchange(jwt('runtime-replay-failure')));
+  offline = false;
+  await assert.rejects(broker.exchange(jwt('runtime-replay-recovered')));
+  assert.equal(issued, 0);
+  assert.deepEqual(queued, ['replay_unavailable']);
+  assert.deepEqual(alerts, ['replay_unavailable']);
+});
+
 test('identity expiring during reservation never contacts installation API', async () => {
   let calls = 0;
   const store = { reserveIssuance: async () => { await new Promise(resolve => setTimeout(resolve, 2100)); },
