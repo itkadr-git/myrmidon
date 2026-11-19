@@ -20,6 +20,23 @@ function jwt(jti, overrides = {}) {
   return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
 }
 
+test('failure to resolve issuance alerts and retains the token for recovery', async () => {
+  const alerts = [];
+  const retained = new Map();
+  const store = {
+    reserveIssuance: async () => {},
+    resolveIssuance: async () => { throw new Error('storage unavailable'); },
+    put: async (handle, credential) => retained.set(handle, credential),
+    queueAlert: async event => alerts.push(`queued:${event}`),
+  };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true,
+    installation: { issue: async () => ({ token: 'fixture', expiresAt: '2030-01-01T00:00:00Z' }) },
+    store, audit: async () => {}, alert: async event => alerts.push(event) });
+  await assert.rejects(broker.exchange(jwt('resolve-failure')));
+  assert.equal(retained.size, 1);
+  assert.deepEqual(alerts, ['queued:issuance_ambiguous', 'issuance_ambiguous']);
+});
+
 test('invalid upstream scope and failed revocation retain the known token for restart recovery', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-rejected-retain-'));
   const revoked = [];
