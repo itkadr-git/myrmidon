@@ -202,7 +202,7 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
       "budget" in fields && JSON.stringify(fields.budget) === JSON.stringify({ used: 3, cap: 2000, windowMinutes: 60 }))).toBe(true);
     expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, success.body])).not.toContain(canary);
   });
-  it.each([false, true])("defers a triggered review monitor after a budget-exhausted write (sweep already rearmed: %s)", async (sweepAlreadyRearmed) => {
+  it.each(["triggered", "rearmed", "claimed"] as const)("defers a budget-exhausted review monitor in %s state", async (monitorState) => {
     const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Review budget retry");
     const author = randomUUID(), reviewer = randomUUID(), issueId = randomUUID(), runId = randomUUID(), stageId = randomUUID();
     const base = { companyId, status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} };
@@ -225,10 +225,13 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     const [carrier] = await ctx.db.select({ id: companies.id }).from(companies).orderBy(companies.createdAt).limit(1);
     await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: carrier.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
     const app = routeApp(ctx.db, { type: "agent", agentId: reviewer, companyId, source: "agent_key", runId } as never, issueRoutes);
-    if (sweepAlreadyRearmed) {
+    if (monitorState !== "triggered") {
       await heartbeatService(ctx.db).tickTimers(new Date());
       const [rearmed] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
       expect(rearmed.monitorNextCheckAt).not.toBeNull();
+      if (monitorState === "claimed") {
+        await ctx.db.update(issues).set({ monitorWakeRequestedAt: new Date() }).where(sql`${issues.id} = ${issueId}`);
+      }
     }
     for (let attempt = 0; attempt < 3; attempt++) {
       const rejected = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: preserve this finding" });
