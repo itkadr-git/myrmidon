@@ -15816,7 +15816,6 @@ export function issueRoutes(
                 isNull(issueRows.monitorNextCheckAt),
                 lt(issueRows.monitorNextCheckAt, new Date(Date.now() + 60 * 60_000)),
               ),
-              isNull(issueRows.monitorWakeRequestedAt),
               sql`${issueRows.executionState} -> 'monitor' ->> 'status' = 'triggered'`,
               sql`${issueRows.executionState} -> 'monitor' ->> 'serviceName' = 'Review CI wait'`,
               sql`${issueRows.executionState} -> 'currentParticipant' ->> 'agentId' = ${actor.agentId ?? null}`,
