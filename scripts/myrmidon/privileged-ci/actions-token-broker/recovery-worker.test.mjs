@@ -7,6 +7,24 @@ import { join } from 'node:path';
 import { createCredentialStore } from './store.mjs';
 import { createRecoveryWorker } from './recovery-worker.mjs';
 
+test('pending reservation read failure keeps known-token recovery retryable', async () => {
+  let attempts = 0;
+  const alerts = [];
+  const store = {
+    revokeRetained: async () => ({ revoked: attempts++ ? 1 : 0, failed: attempts === 1 ? 1 : 0 }),
+    pendingIssuances: async () => { throw new Error('reservation storage unavailable'); },
+    queueAlert: async () => {}, pendingAlertEntries: async () => [], pendingAlerts: async () => [],
+  };
+  const worker = createRecoveryWorker({ store, revoke: async () => {}, alert: async event => alerts.push(event) });
+  const first = await worker.runOnce();
+  const second = await worker.runOnce();
+  assert.equal(first.failed, 1);
+  assert.equal(first.alertFailed, true);
+  assert.equal(second.revoked, 1);
+  assert.equal(second.alertFailed, true);
+  assert.ok(alerts.includes('credential_recovery_failed'));
+});
+
 test('outbox failure does not prevent recovery retry of a known credential', async () => {
   let revokes = 0;
   const alerts = [];
