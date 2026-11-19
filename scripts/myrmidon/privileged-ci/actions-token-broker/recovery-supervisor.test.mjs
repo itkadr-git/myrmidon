@@ -96,6 +96,22 @@ test('recovery supervisor retries while issuance stays stopped, then starts exac
   assert.deepEqual(alerts, ['credential_recovery_failed']);
 });
 
+test('outbox failure does not prevent retrying known-token recovery', async () => {
+  let attempts = 0, starts = 0;
+  const alerts = [];
+  const store = { ...memoryOutbox(), queueAlert: async () => { throw new Error('disk offline'); } };
+  const supervisor = createRecoverySupervisor({
+    store,
+    recover: async () => ({ failed: ++attempts === 1 ? 1 : 0, pending: true, alertFailed: false }),
+    alert: async event => alerts.push(event), start: async () => { starts++; },
+    delay: async () => { if (attempts === 2) supervisor.stop(); },
+  });
+  await assert.rejects(supervisor.run(), /stopped/);
+  assert.equal(attempts, 2);
+  assert.equal(starts, 0);
+  assert.ok(alerts.includes('credential_recovery_failed'));
+});
+
 test('a failed alert must be delivered before a later clean recovery can start issuance', async () => {
   let attempts = 0, deliveries = 0, starts = 0;
   const supervisor = createRecoverySupervisor({
