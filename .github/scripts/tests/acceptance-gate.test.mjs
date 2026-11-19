@@ -72,6 +72,51 @@ test('HTTPS API request still sends Authorization and parses JSON', async () => 
   assert.match(calls[0].url, /^https:/);
   assert.equal(calls[0].headers.Authorization, 'Bearer secret-token');
 });
+test('loopback HTTPS API URLs are rejected before any network request, in every hostname form', async () => {
+  const calls = [];
+  const seenHeaders = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (url, init = {}) => {
+    calls.push(String(url));
+    seenHeaders.push(init.headers ?? {});
+    return Promise.resolve(new Response('{"ok":true}', { status: 200 }));
+  };
+  try {
+    for (const url of [
+      'https://127.0.0.1/api',
+      'https://127.0.0.1:8443/api',
+      'https://127.1/api',
+      'https://127.123.45.67/api',
+      'https://localhost/api',
+      'https://LOCALHOST.:8443/api',
+      'https://[::1]/api',
+      'https://[0:0:0:0:0:0:0:1]/api',
+      'https://[::ffff:127.0.0.1]/api',
+      'https://0.0.0.0/api',
+    ]) {
+      await assert.rejects(fetchJson(url, 'secret-token'), /loopback/i);
+    }
+  } finally {
+    globalThis.fetch = original;
+  }
+  assert.equal(calls.length, 0, 'no request may be performed to a loopback URL, even over HTTPS');
+  assert.equal(seenHeaders.length, 0, 'Authorization must never be sent to a loopback URL');
+});
+test('fixed internal HTTPS gateway remains allowed', async () => {
+  const calls = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (url, init = {}) => {
+    calls.push(String(url));
+    return Promise.resolve(new Response('{"ok":true}', { status: 200 }));
+  };
+  try {
+    assert.deepEqual(await fetchJson('https://acceptance-reader.internal.example/api/issues/OPE-42', 'secret-token'), { ok: true });
+  } finally {
+    globalThis.fetch = original;
+  }
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /^https:\/\/acceptance-reader\.internal\.example\//);
+});
 test('missing event title/body binding fails closed', async () => {
   await assert.rejects(checkAcceptance({ ...options(async () => document), expectedTitle: undefined }), /title\/body binding/i);
   await assert.rejects(checkAcceptance({ ...options(async () => document), expectedBody: undefined }), /title\/body binding/i);
