@@ -34,6 +34,24 @@ test('lost issuance response blocks further issuance across restart', async () =
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('failed audit and failed revoke retain the issuance lock across restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-audit-revoke-'));
+  let issued = 0;
+  const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'), credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32), installation: { issue: async () => { issued++; return { token: 'fixture', expiresAt: '2030-01-01T00:00:00Z' }; }, revoke: async () => { throw new Error('unavailable'); } }, audit: async () => { throw new Error('audit unavailable'); } };
+  try {
+    let broker = createSingleHostBroker(options);
+    await assert.rejects(broker.exchange(jwt('audit-revoke-first')));
+    broker.close();
+    broker = createSingleHostBroker(options);
+    await assert.rejects(broker.exchange(jwt('audit-revoke-second')));
+    broker.close();
+    assert.equal(issued, 1);
+    const store = createCredentialStore(options.credentialPath, options.credentialKey);
+    assert.equal((await store.pendingIssuances()).length, 1);
+    store.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('ambiguous issuance emits a distinct alert event while reservation remains pending', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-alert-'));
   const events = [];
