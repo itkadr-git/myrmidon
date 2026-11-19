@@ -25,6 +25,22 @@ test('anchored pending intent retries ambiguous alert after outbox failure even 
   assert.deepEqual(alerts, ['issuance_ambiguous', 'credential_recovery_failed', 'issuance_ambiguous', 'credential_recovery_failed']);
 });
 
+test('credential enumeration failure alerts and permits a later recovery pass', async () => {
+  let attempts = 0;
+  const alerts = [];
+  const store = {
+    revokeRetained: async () => { if (++attempts === 1) throw new Error('credential storage unavailable'); return { revoked: 1, failed: 0 }; },
+    pendingIssuances: async () => [], queueAlert: async () => {},
+    pendingAlertEntries: async () => [], pendingAlerts: async () => [],
+  };
+  const worker = createRecoveryWorker({ store, revoke: async () => {}, alert: async event => alerts.push(event) });
+  const first = await worker.runOnce();
+  assert.equal(first.failed, 1);
+  assert.equal(first.alertFailed, true);
+  assert.ok(alerts.includes('credential_recovery_failed'));
+  assert.equal((await worker.runOnce()).revoked, 1);
+});
+
 test('pending reservation read failure keeps known-token recovery retryable', async () => {
   let attempts = 0;
   const alerts = [];
