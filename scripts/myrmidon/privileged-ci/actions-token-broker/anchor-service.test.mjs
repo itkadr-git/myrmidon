@@ -11,6 +11,7 @@ import { provisionSqliteAnchor, createSqliteAnchor } from './sqlite-anchor.mjs';
 import { createRemoteAnchor } from './remote-anchor.mjs';
 import { createAnchorServer } from './anchor-service.mjs';
 import { createCredentialStore } from './store.mjs';
+import { createCredentialCheckpoint, checkpointCredentialStore } from './credential-checkpoint.mjs';
 import { createAuditedSupervisedServer } from './tls.mjs';
 
 test('independent anchor service persists CAS across restart and authorizes the client certificate', async () => {
@@ -116,14 +117,20 @@ test('independent anchor service persists CAS across restart and authorizes the 
       db.close();
       await assert.rejects(createAsyncAuthenticatedAudit(auditPath, auditKey, anchor), /anchor mismatch/);
       const credentialPath = join(dir, 'recovery.sqlite'), credentialKey = randomBytes(32);
-      const credentials = createCredentialStore(credentialPath, credentialKey);
+      let credentialHead = { seq: 0, mac: '' };
+      const credentialAnchor = { read: async () => ({ ...credentialHead }), compareAndSet: async (previous, next) => {
+        if (JSON.stringify(previous) !== JSON.stringify(credentialHead)) return false;
+        credentialHead = { ...next }; return true;
+      } };
+      const rawCredentials = createCredentialStore(credentialPath, credentialKey);
+      const credentials = checkpointCredentialStore(rawCredentials, await createCredentialCheckpoint(rawCredentials, credentialAnchor, { provision: true }));
       await credentials.put('known', { token: 'fixture-known' }, 'owner');
       await credentials.reserveIssuance('unknown');
       credentials.close();
       const revoked = [], alerts = [];
       let attempts = 0, delays = 0;
       await assert.rejects(createAuditedSupervisedServer({}, {
-        auditPath, auditKey, auditAnchor: anchor, credentialPath, credentialKey,
+        auditPath, auditKey, auditAnchor: anchor, credentialPath, credentialKey, credentialAnchor,
         installation: { revoke: async token => { attempts++; if (attempts === 1) throw new Error('offline'); revoked.push(token); } },
         alert: async event => alerts.push(event), delay: async () => { delays++; },
       }), /anchor mismatch/);

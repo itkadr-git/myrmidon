@@ -89,7 +89,7 @@ test('lost revocation response remains fenced when later retries are rejected', 
     await assert.rejects(createAuditedSupervisedServer({}, {
       auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32),
       auditAnchor: { read: async () => { throw new Error('audit offline'); }, compareAndSet: async () => false },
-      credentialPath, credentialKey, alert: async event => alerts.push(event),
+      credentialPath, credentialKey, credentialAnchor, alert: async event => alerts.push(event),
       installation: { revoke: async token => {
         assert.equal(token, 'fixture-known');
         if (++attempts === 1) throw new Error('revocation response lost');

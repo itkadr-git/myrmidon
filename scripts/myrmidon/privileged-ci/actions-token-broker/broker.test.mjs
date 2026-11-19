@@ -940,9 +940,20 @@ test('audited TLS startup reports an unavailable anchor before refusing service'
   const dir = mkdtempSync(join(tmpdir(), 'broker-anchor-alert-'));
   const alerts = [];
   try {
+    const credentialPath = join(dir, 'credentials.sqlite'), credentialKey = randomBytes(32);
+    let head = { seq: 0, mac: '' };
+    const credentialAnchor = { read: async () => ({ ...head }), compareAndSet: async (previous, next) => {
+      if (JSON.stringify(previous) !== JSON.stringify(head)) return false;
+      head = { ...next }; return true;
+    } };
+    const store = createCredentialStore(credentialPath, credentialKey);
+    const { createCredentialCheckpoint } = await import('./credential-checkpoint.mjs');
+    await createCredentialCheckpoint(store, credentialAnchor, { provision: true });
+    store.close();
     await assert.rejects(tls.createAuditedSupervisedServer({}, {
       auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32),
       auditAnchor: { read: async () => { throw new Error('anchor unavailable'); }, compareAndSet: async () => true },
+      credentialPath, credentialKey, credentialAnchor, installation: { revoke: async () => { throw new Error('unexpected revoke'); } },
       alert: async event => alerts.push(event),
     }), /anchor unavailable/);
     assert.deepEqual(alerts, ['audit_unavailable']);
