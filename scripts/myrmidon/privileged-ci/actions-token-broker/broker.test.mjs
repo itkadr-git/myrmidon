@@ -89,6 +89,19 @@ test('invalid upstream scope and failed revocation retain the known token for re
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('audited TLS startup reports an unavailable anchor before refusing service', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-anchor-alert-'));
+  const alerts = [];
+  try {
+    await assert.rejects(tls.createAuditedSupervisedServer({}, {
+      auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32),
+      auditAnchor: { read: async () => { throw new Error('anchor unavailable'); }, compareAndSet: async () => true },
+      alert: async event => alerts.push(event),
+    }), /anchor unavailable/);
+    assert.deepEqual(alerts, ['audit_unavailable']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('audited TLS lifecycle retries recovery before constructing a server', async () => {
   assert.equal(typeof tls.createAuditedSupervisedServer, 'function');
   const dir = mkdtempSync(join(tmpdir(), 'broker-supervised-tls-'));
