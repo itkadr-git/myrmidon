@@ -894,6 +894,28 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
   );
 
   it(
+    "rejects a link whose issue belongs to another company at the database boundary",
+    async () => {
+      const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-foreign-issue-");
+      cleanups.push(() => dbh.cleanup());
+      const db = createDb(dbh.connectionString);
+      cleanups.push(async () => { await db.$client.end(); });
+      const issueId = randomUUID();
+      const docId = randomUUID();
+      await db.insert(companies).values([
+        { id: companyA, name: "Company A" },
+        { id: companyB, name: "Company B", issuePrefix: "BBB" },
+      ]);
+      await db.insert(issues).values({ id: issueId, companyId: companyB, title: "Foreign issue" });
+      await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "own" });
+      await expect(db.insert(issueDocuments).values({
+        companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios",
+      })).rejects.toThrow();
+    },
+    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  );
+
+  it(
     "rejects cross-company issue links and revision writes at the database boundary",
     async () => {
       const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-tenant-boundary-");
