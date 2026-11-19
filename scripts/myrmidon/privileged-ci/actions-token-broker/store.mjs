@@ -82,7 +82,10 @@ export function createCredentialStore(path, key) {
       const result = { revoked: 0, failed: 0 };
       for (const { handle, owner } of listHandles.all()) {
         try {
-          await store.withOwned(handle, owner, credential => revoke(credential.token));
+          await store.withOwned(handle, owner, credential => {
+            if (!credential || typeof credential.token !== 'string' || !credential.token) throw new Error('invalid retained credential');
+            return revoke(credential.token);
+          });
           result.revoked++;
         } catch {
           result.failed++;
