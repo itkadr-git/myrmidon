@@ -7192,7 +7192,7 @@ function registerRuntimeService(db: Db | undefined, record: RuntimeServiceRecord
 
   record.child?.on("exit", (code, signal) => {
     const current = runtimeServicesById.get(record.id);
-    if (!current) return;
+    if (current !== record) return;
     clearIdleTimer(current);
     current.status = code === 0 || signal === "SIGTERM" ? "stopped" : "failed";
     current.healthStatus = current.status === "failed" ? "unhealthy" : "unknown";
