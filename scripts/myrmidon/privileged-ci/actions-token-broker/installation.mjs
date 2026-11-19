@@ -5,12 +5,12 @@ export function createInstallationClient({ installationId, repositoryId, permiss
   if (!/^[1-9][0-9]*$/.test(installationId) || !Number.isSafeInteger(repositoryId) || repositoryId <= 0 || !permissions || Object.keys(permissions).length !== 1 || permissions.contents !== 'read' || typeof appJwt !== 'function' || !Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 60000) throw new Error('invalid installation policy');
   const fixedPermissions = { ...permissions };
   const body = JSON.stringify({ repository_ids: [repositoryId], permissions: fixedPermissions });
-  async function boundedRequest(url, options) {
+  async function boundedRequest(url, options, consume = response => response) {
     const controller = new AbortController();
     let timer;
     try {
       return await Promise.race([
-        request(url, { ...options, signal: controller.signal }),
+        Promise.resolve().then(() => request(url, { ...options, signal: controller.signal })).then(consume),
         new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error('installation request timeout (aborted)')); }, requestTimeoutMs); }),
       ]);
     } finally { clearTimeout(timer); }
@@ -18,13 +18,11 @@ export function createInstallationClient({ installationId, repositoryId, permiss
   return {
     async issue(retainRejected) {
       const jwt = await appJwt();
-      const response = await boundedRequest(`${API}/app/installations/${installationId}/access_tokens`, {
+      const result = await boundedRequest(`${API}/app/installations/${installationId}/access_tokens`, {
         method: 'POST', redirect: 'error', headers: { authorization: `Bearer ${jwt}`, accept: 'application/vnd.github+json', 'content-type': 'application/json', 'x-github-api-version': '2022-11-28' }, body,
-      });
-      if (!response.ok) throw new Error('installation token issuance failed');
-      const result = await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('installation response timeout')), requestTimeoutMs);
-        Promise.resolve().then(() => response.json()).then(resolve, reject).finally(() => clearTimeout(timer));
+      }, async response => {
+        if (!response.ok) throw new Error('installation token issuance failed');
+        return response.json();
       });
       if (typeof result.token !== 'string' || !result.token) throw new Error('invalid installation response');
       const allowedPermissions = { ...fixedPermissions, metadata: 'read' };
