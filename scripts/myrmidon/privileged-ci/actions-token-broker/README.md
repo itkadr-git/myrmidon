@@ -51,8 +51,12 @@ secret management, least privilege and key rotation.
   requires a CAS anchor; the supervised server supports asynchronous CAS so an
   independently operated service can be used. A lost CAS response or crash between
   CAS and the SQLite commit creates a mismatch and stops startup; reconciliation
-  requires operator investigation, not an automatic reset. No independently
-  durable anchor service or deployment wiring is provided. `createRemoteAnchor`
+  requires operator investigation, not an automatic reset. An experimental
+  `createAnchorServer` exposes a provisioned SQLite CAS store over mTLS and pins
+  the authorized client certificate. Its database must be on a separately
+  administered host and storage domain; it does not prevent rollback of that
+  entire domain, and no deployment wiring or operational fencing is provided.
+  It has not passed security review. `createRemoteAnchor`
   supplies an mTLS client for a separately administered endpoint: GET returns a
   JSON `{seq,mac}` head with HTTP 200; POST accepts `{previous,next}` and returns
   204 only after durable linearizable CAS, or 409 on conflict. The service must
