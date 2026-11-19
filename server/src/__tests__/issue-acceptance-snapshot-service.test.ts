@@ -944,6 +944,27 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
 
+  it("rejects linking a document with a pre-existing foreign-company revision", async () => {
+    const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-foreign-existing-revision-");
+    cleanups.push(() => dbh.cleanup());
+    const db = createDb(dbh.connectionString);
+    cleanups.push(async () => { await db.$client.end(); });
+    const issueId = randomUUID();
+    const docId = randomUUID();
+    await db.insert(companies).values([
+      { id: companyA, name: "Company A" },
+      { id: companyB, name: "Company B", issuePrefix: "BBB" },
+    ]);
+    await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
+    await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a" });
+    await db.insert(documentRevisions).values({
+      companyId: companyB, documentId: docId, revisionNumber: 1, body: "foreign",
+    });
+    await expect(db.insert(issueDocuments).values({
+      companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios",
+    })).rejects.toThrow();
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("fails closed when an explicit acceptance bump names a nonexistent issue", async () => {
     const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-missing-issue-");
     cleanups.push(() => dbh.cleanup());
