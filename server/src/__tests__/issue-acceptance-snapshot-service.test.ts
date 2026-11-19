@@ -120,24 +120,23 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
         .insert(issues)
         .values({ id: randomUUID(), companyId: companyA, title: "Task", identifier: "OPE-8001" })
         .returning();
-      // Corrupt cross-company binding: a document of company B linked to
-      // company A's issue. The read model must refuse to join it.
+      // The DB boundary must reject a company B link to company A's issue.
       await db.insert(documents).values({
         id: foreignDocId,
         companyId: companyB,
         latestBody: "foreign criteria",
         latestRevisionId: randomUUID(),
       });
-      await db.insert(issueDocuments).values({
+      await expect(db.insert(issueDocuments).values({
         companyId: companyB,
         issueId: issue!.id,
         documentId: foreignDocId,
         key: "acceptance-scenarios",
-      });
+      })).rejects.toThrow();
 
       const snapshot = await issueAcceptanceSnapshotService(db).read(issue!.id);
       expect(snapshot).toEqual({
-        issue: { id: issue!.id, identifier: "OPE-8001", companyId: companyA, version: "2" },
+        issue: { id: issue!.id, identifier: "OPE-8001", companyId: companyA, version: "1" },
         document: null,
       });
     },
@@ -181,16 +180,16 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
         revisionNumber: 1,
         body: "foreign secret",
       });
-      await db.insert(issueDocuments).values({
+      await expect(db.insert(issueDocuments).values({
         companyId: companyA,
         issueId: issue!.id,
         documentId: foreignDocId,
         key: "acceptance-scenarios",
-      });
+      })).rejects.toThrow();
 
       const snapshot = await issueAcceptanceSnapshotService(db).read(issue!.id);
       expect(snapshot).toEqual({
-        issue: { id: issue!.id, identifier: "OPE-8101", companyId: companyA, version: "2" },
+        issue: { id: issue!.id, identifier: "OPE-8101", companyId: companyA, version: "1" },
         document: null,
       });
     },
