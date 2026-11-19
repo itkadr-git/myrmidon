@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { checkAcceptance } from '../acceptance-gate.mjs';
+import { checkAcceptance, documentBody } from '../acceptance-gate.mjs';
+
+test('document revision is recorded without logging document content', () => {
+  const lines = [];
+  assert.equal(documentBody('OPE-42', { body: 'private content', id: 'document-id', latestRevisionId: 'revision-id' }, (line) => lines.push(line)), 'private content');
+  assert.deepEqual(lines, ['OPE-42: document=document-id revision=revision-id (snapshot; later edits require rerun)']);
+  assert.throws(() => documentBody('OPE-42', { body: 'private content' }, () => {}), /revision/i);
+});
 
 const base = 'a'.repeat(40), head = 'b'.repeat(40);
 const pr = { title: 'OPE-42', body: '', base: { sha: base }, head: { sha: head } };
