@@ -63,6 +63,22 @@ test('runtime audit failure persists an alert for recovery after restart', async
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('undelivered runtime audit alert fences subsequent issuance', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-audit-fence-'));
+  let issued = 0, auditFailed = false;
+  const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'), credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32),
+    installation: { issue: async () => { issued++; return { token: 'fixture' }; }, revoke: async () => {} },
+    audit: async event => { if (event === 'issued' && !auditFailed) { auditFailed = true; throw new Error('anchor unavailable'); } }, alert: async () => { throw new Error('offline'); } };
+  try {
+    const broker = createSingleHostBroker(options);
+    try {
+      await assert.rejects(broker.exchange(jwt('audit-fence-first')));
+      await assert.rejects(broker.exchange(jwt('audit-fence-second')));
+      assert.equal(issued, 1);
+    } finally { broker.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('failure to resolve issuance alerts and retains the token for recovery', async () => {
   const alerts = [];
   const retained = new Map();
