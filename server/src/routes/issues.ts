@@ -15021,7 +15021,9 @@ export function issueRoutes(
       const nextState = { ...currentState };
       for (const key of ["returnAssignee", "currentParticipant"] as const) {
         if (!(key in body)) continue;
-        const value = body[key];
+        const value = key === "returnAssignee"
+          ? ("returnAssignee" in body ? body.returnAssignee : undefined)
+          : ("currentParticipant" in body ? body.currentParticipant : undefined);
         if (value !== null && (value?.type !== "agent" || !value.agentId)) {
           res.status(400).json({ error: `${key} must be an agent participant or null` });
           return;

@@ -356,9 +356,11 @@ describe("issue execution policy routes", () => {
       },
     };
     mockIssueService.getById.mockResolvedValue(issue);
-    const res = await request(await createApp()).patch(`/api/issues/${issue.id}/execution-participants`)
-      .send({ returnAssignee: { type: "agent", agentId: "not-a-uuid" }, unexpected: true });
-    expect(res.status).toBe(400);
+    const app = await createApp();
+    for (const payload of [{}, { returnAssignee: { type: "agent", agentId: "not-a-uuid" }, unexpected: true }]) {
+      const res = await request(app).patch(`/api/issues/${issue.id}/execution-participants`).send(payload);
+      expect(res.status).toBe(400);
+    }
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
