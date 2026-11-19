@@ -44,6 +44,10 @@ secret management, least privilege and key rotation.
   receiver remain mandatory. Outbox storage failure also needs external monitoring.
   An audit failure during issuance retains the reservation even when revocation
   succeeds, so further issuance stays fenced pending operator reconciliation.
+  If finalization reports failure after deleting its reservation, the broker tries
+  to recreate the fence before revocation and latches the running process closed.
+  A crash or storage failure before that recreation can still leave no durable
+  fence; external supervision and investigation remain required before restart.
   Broker factories also fence new issuance and owner revocation while any durable
   recovery alert remains undelivered, including an audit failure on a rejected
   request before a reservation exists. Recovery must deliver the outbox first.

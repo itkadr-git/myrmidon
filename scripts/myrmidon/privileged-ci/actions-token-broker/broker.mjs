@@ -168,7 +168,11 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         if (durable) {
           try { await store.resolveIssuance(handle); }
           catch {
-            // Finalization failure can leave the reservation in an unknown state.
+            // Also fence the running process if durable storage cannot be restored.
+            auditFailed = true;
+            // A lost acknowledgement may mean the reservation was already removed.
+            // Restore it before attempting revocation; an existing reservation is safe.
+            try { await store.reserveIssuance(handle); } catch { /* Existing reservation or storage failure. */ }
             // Revoke immediately, but keep any retained token if revocation fails.
             try { await installation.revoke(credential.token); await store.delete(handle); } catch { /* Recovery retries the retained credential. */ }
             await ambiguous();
