@@ -13021,7 +13021,7 @@ export function heartbeatService(
               noAccess.count + 1 >= CI_NO_ACCESS_MAX_FAILURES &&
               input.now.getTime() - (noAccess.firstAt ?? input.now).getTime() >= CI_NO_ACCESS_MIN_WINDOW_MS
             ) {
-              await db
+              const [cleared] = await db
                 .update(issues)
                 .set({
                   ...buildIssueMonitorClearedPatch({
@@ -13032,7 +13032,12 @@ export function heartbeatService(
                   }),
                   updatedAt: input.now,
                 })
-                .where(eq(issues.id, claimed.id));
+                .where(and(
+                  eq(issues.id, claimed.id),
+                  eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+                  eq(issues.monitorWakeRequestedAt, input.now),
+                )).returning({ id: issues.id });
+              if (!cleared) return { outcome: "skipped" as const, reason: "monitor_changed" };
               if (
                 !(await issueHasCommentBody(db, {
                   companyId: claimed.companyId,
