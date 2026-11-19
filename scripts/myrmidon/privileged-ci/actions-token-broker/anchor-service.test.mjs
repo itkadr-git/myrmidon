@@ -10,6 +10,8 @@ import { createAsyncAuthenticatedAudit } from './authenticated-audit.mjs';
 import { provisionSqliteAnchor, createSqliteAnchor } from './sqlite-anchor.mjs';
 import { createRemoteAnchor } from './remote-anchor.mjs';
 import { createAnchorServer } from './anchor-service.mjs';
+import { createCredentialStore } from './store.mjs';
+import { createAuditedSupervisedServer } from './tls.mjs';
 
 test('independent anchor service persists CAS across restart and authorizes the client certificate', async () => {
   const scratch = process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_SCRATCH_DIR || join(homedir(), '.cache', 'myrmidon-broker-tests');
@@ -112,6 +114,28 @@ test('independent anchor service persists CAS across restart and authorizes the 
       db.exec('DELETE FROM audit_events WHERE seq = 2');
       db.close();
       await assert.rejects(createAsyncAuthenticatedAudit(auditPath, auditKey, anchor), /anchor mismatch/);
+      const credentialPath = join(dir, 'recovery.sqlite'), credentialKey = randomBytes(32);
+      const credentials = createCredentialStore(credentialPath, credentialKey);
+      await credentials.put('known', { token: 'fixture-known' }, 'owner');
+      await credentials.reserveIssuance('unknown');
+      credentials.close();
+      const revoked = [], alerts = [];
+      let attempts = 0, delays = 0;
+      await assert.rejects(createAuditedSupervisedServer({}, {
+        auditPath, auditKey, auditAnchor: anchor, credentialPath, credentialKey,
+        installation: { revoke: async token => { attempts++; if (attempts === 1) throw new Error('offline'); revoked.push(token); } },
+        alert: async event => alerts.push(event), delay: async () => { delays++; },
+      }), /anchor mismatch/);
+      assert.equal(attempts, 2);
+      assert.equal(delays, 1);
+      assert.deepEqual(revoked, ['fixture-known']);
+      assert.ok(alerts.includes('audit_unavailable'));
+      assert.ok(alerts.includes('issuance_ambiguous'));
+      const recovered = createCredentialStore(credentialPath, credentialKey);
+      try {
+        assert.equal(recovered.hasRetainedCredentials(), false);
+        assert.equal((await recovered.pendingIssuances()).length, 1);
+      } finally { recovered.close(); }
       // Restore a valid historical database, rather than merely corrupting its rows.
       copyFileSync(snapshot, auditPath);
       await assert.rejects(createAsyncAuthenticatedAudit(auditPath, auditKey, anchor), /anchor mismatch/);
