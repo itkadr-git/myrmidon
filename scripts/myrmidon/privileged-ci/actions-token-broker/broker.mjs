@@ -131,6 +131,8 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
             await installation.revoke(credential.token);
             if (durable) await store.resolveIssuance(handle);
           } catch {
+            // A transient storage failure must not discard a known, active token.
+            try { await store.put(handle, { token: credential.token }, owner); } catch { /* Keep the reservation even if retention remains impossible. */ }
             await ambiguous();
           }
           throw new Error('credential storage failed');
