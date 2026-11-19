@@ -26,6 +26,13 @@ exercised against a fixture, not a live Myrmidon service.
 
 ## Pin and verify
 
+Security limitation: the current issue epoch does not detect every concurrent
+mutation. A REPEATABLE READ document writer started before link creation can
+perform an A-to-B-to-A update after a pin without bumping that issue's epoch.
+The regression in `issue-acceptance-snapshot-service.test.ts` demonstrates
+this failure on PostgreSQL. Do not rely on verify for ABA detection or enable
+privileged CI until this defect is fixed and independently reviewed.
+
 `GET /api/issues/{ref}/acceptance-snapshot` returns the minimal projection of
 that single snapshot — the full pin:
 
