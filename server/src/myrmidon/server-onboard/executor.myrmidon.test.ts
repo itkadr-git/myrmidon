@@ -583,7 +583,8 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
     expect(ssh.hasExecuted("sudo ufw status")).toBe(true);
-    expect(ssh.hasExecuted(/sudo ufw (allow|default|--force enable|disable)/)).toBe(false);
+    expect(result.error).toMatch(/firewall.*status.*unconfirmed/i);
+    expect(ssh.hasExecuted(/start-myrmidon-firewall-timer|sudo ufw (allow|default|--force enable|disable)/)).toBe(false);
   });
 
   it("rejects contradictory firewall status before attempting hardening", async () => {
