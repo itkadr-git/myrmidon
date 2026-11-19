@@ -6,6 +6,22 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCredentialStore } from './store.mjs';
 
+test('credential state digest covers pending reservations and durable alert generations', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'credential-state-fence-'));
+  const store = createCredentialStore(join(dir, 'credentials.sqlite'), randomBytes(32));
+  try {
+    const empty = store.stateDigest();
+    await store.reserveIssuance('attempt');
+    const pending = store.stateDigest();
+    assert.notEqual(pending, empty);
+    await store.queueAlert('issuance_ambiguous');
+    const alerted = store.stateDigest();
+    assert.notEqual(alerted, pending);
+    await store.queueAlert('issuance_ambiguous');
+    assert.notEqual(store.stateDigest(), alerted);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('credential state digest changes on issuance and detects restoring an older database', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'credential-state-'));
   const path = join(dir, 'credentials.sqlite'), snapshot = join(dir, 'snapshot.sqlite');
