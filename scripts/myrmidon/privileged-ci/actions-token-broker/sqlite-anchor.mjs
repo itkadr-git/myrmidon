@@ -5,7 +5,14 @@ export function createSqliteAnchor(path) {
   if (typeof path !== 'string' || !path || path === ':memory:' || path.startsWith('file:')) throw new Error('invalid anchor path');
   const db = new DatabaseSync(path);
   try {
-    db.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; CREATE TABLE IF NOT EXISTS audit_anchor (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), seq INTEGER NOT NULL, mac TEXT NOT NULL) STRICT; INSERT OR IGNORE INTO audit_anchor VALUES (1, 0, '')");
+    db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; BEGIN IMMEDIATE');
+    const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'audit_anchor'").get();
+    if (!exists) {
+      db.exec("CREATE TABLE audit_anchor (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), seq INTEGER NOT NULL, mac TEXT NOT NULL) STRICT; INSERT INTO audit_anchor VALUES (1, 0, '')");
+    } else if (!db.prepare('SELECT 1 FROM audit_anchor WHERE singleton = 1').get()) {
+      throw new Error('audit anchor missing');
+    }
+    db.exec('COMMIT');
   } catch (error) { db.close(); throw error; }
   return {
     read() {
