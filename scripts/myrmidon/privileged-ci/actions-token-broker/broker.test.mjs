@@ -18,6 +18,23 @@ function jwt(jti, overrides = {}) {
   return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
 }
 
+test('recovery refuses to revoke credentials while another broker owns the store', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-exclusive-'));
+  let revokes = 0;
+  const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'), credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32), installation: { issue: async () => ({ token: 'fixture' }), revoke: async () => { revokes++; } }, audit: async () => {} };
+  try {
+    const broker = createSingleHostBroker(options);
+    try {
+      await broker.exchange(jwt('exclusive-active'));
+      await assert.rejects(createRecoveredSingleHostBroker(options), /exclusive/);
+      assert.equal(revokes, 0);
+    } finally { broker.close(); }
+    const recovered = await createRecoveredSingleHostBroker(options);
+    recovered.close();
+    assert.equal(revokes, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('lost issuance response blocks further issuance across restart', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-ambiguous-'));
   const credentialKey = randomBytes(32);
