@@ -47,7 +47,7 @@ function isLoopbackIPv4(host) {
 function isLoopbackHost(hostname) {
   const host = (hostname ?? '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '').replace(/%.*$/, '');
   if (host === 'localhost' || host.endsWith('.localhost')) return true;
-  if (host === '::1' || /^0:0:0:0:0:0:0:1$/.test(host)) return true;
+  if (host === '::' || host === '::1' || /^0:0:0:0:0:0:0:1$/.test(host)) return true;
   const mapped = host.match(/^::ffff:(.+)$/);
   if (mapped) {
     const tail = mapped[1];
