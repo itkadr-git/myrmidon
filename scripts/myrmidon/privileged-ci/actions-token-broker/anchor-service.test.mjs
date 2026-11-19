@@ -48,6 +48,18 @@ test('independent anchor service persists CAS across restart and authorizes the 
       await assert.rejects(createAsyncAuthenticatedAudit(join(dir, 'empty.sqlite'), randomBytes(32), anchor), /anchor mismatch/);
     } finally { await new Promise(resolve => instance.server.close(resolve)); instance.store.close(); }
 
+    // A remote or otherwise asynchronous store must not turn a rejected CAS into 204.
+    const asyncServer = createAnchorServer({ tls, allowedFingerprint256: fingerprint, store: {
+      read: async () => zero,
+      compareAndSet: async () => false,
+    } });
+    await new Promise(resolve => asyncServer.listen(0, '127.0.0.1', resolve));
+    try {
+      const anchor = client(asyncServer, 'client');
+      assert.deepEqual(await anchor.read(), zero);
+      assert.equal(await anchor.compareAndSet(zero, next), false);
+    } finally { await new Promise(resolve => asyncServer.close(resolve)); }
+
     // A separate anchor starts at genesis; exercise the real audit over mTLS.
     const isolatedPath = join(dir, 'independent.sqlite');
     provisionSqliteAnchor(isolatedPath);
