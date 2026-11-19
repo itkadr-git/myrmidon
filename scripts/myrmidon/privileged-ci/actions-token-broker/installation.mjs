@@ -50,7 +50,11 @@ export function createInstallationClient({ installationId, repositoryId, permiss
       const result = await boundedRequest(`${API}/app/installations/${installationId}/access_tokens`, {
         method: 'POST', redirect: 'error', headers: { authorization: `Bearer ${jwt}`, accept: 'application/vnd.github+json', 'content-type': 'application/json', 'x-github-api-version': '2022-11-28' }, body,
       }, async response => {
-        if (!response.ok) throw new Error('installation token issuance failed');
+        if (!response.ok) {
+          // Do not leave an unread error stream occupying the upstream connection.
+          if (response.body) void response.body.cancel().catch(() => {});
+          throw new Error('installation token issuance failed');
+        }
         return readIssuanceResponse(response, request !== fetch);
       });
       if (typeof result.token !== 'string' || !result.token) throw new Error('invalid installation response');
