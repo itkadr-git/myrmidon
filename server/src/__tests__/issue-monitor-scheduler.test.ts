@@ -631,6 +631,50 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     }
   });
 
+  it("does not repeat a deferred monitor wake when its claim is reclaimed after admission", async () => {
+    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture();
+    const runId = randomUUID();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({ id: otherAgentId, companyId, name: "Other Bot", role: "engineer", status: "active", adapterType: "process", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: otherAgentId, status: "running", contextSnapshot: { issueId } });
+    await db.update(issues).set({ executionRunId: runId, executionAgentNameKey: "other bot", executionLockedAt: new Date() }).where(eq(issues.id, issueId));
+    let signalAdmission!: () => void;
+    let releaseAdmission!: () => void;
+    const admitted = new Promise<void>((resolve) => { signalAdmission = resolve; });
+    const released = new Promise<void>((resolve) => { releaseAdmission = resolve; });
+    let paused = false;
+    const pausedDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property !== "transaction") return Reflect.get(target, property, receiver);
+        return async (...args: Parameters<typeof db.transaction>) => {
+          const result = await db.transaction(...args);
+          if (!paused && (await db.select().from(agentWakeupRequests)).length > 0) {
+            paused = true;
+            signalAdmission();
+            await released;
+          }
+          return result;
+        };
+      },
+    });
+    const first = heartbeatService(pausedDb, { executesRuns: false }).tickTimers(nextCheckAt);
+    try {
+      await admitted;
+      expect((await db.select().from(agentWakeupRequests))[0]?.status).toBe("deferred_issue_execution");
+      const [admittedIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(admittedIssue!.monitorNextCheckAt).toBeNull();
+      await heartbeatService(db, { executesRuns: false }).tickTimers(new Date(nextCheckAt.getTime() + 6 * 60_000));
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue!.monitorNextCheckAt).toBeNull();
+    } finally {
+      releaseAdmission();
+      await first;
+      await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, issueId));
+      await db.delete(heartbeatRuns);
+    }
+  });
+
   it("dispatches replacement evidence at the same schedule after an admitted wake", async () => {
     const { issueId, nextCheckAt } = await seedFixture();
     await db.execute(sql.raw(`
