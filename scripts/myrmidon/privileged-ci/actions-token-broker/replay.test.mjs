@@ -17,6 +17,9 @@ test('replay claims remain atomic across store instances and reopen', async () =
     const reopened = createReplayStore(file);
     assert.equal(await reopened.claimOnce('jti', 2000, 1001), false);
     assert.equal(await reopened.claimOnce('jti', 3000, 2000), true);
+    assert.equal(await reopened.pruneExpired(1999), 0);
+    assert.equal(await reopened.pruneExpired(3000), 1);
+    assert.equal(await reopened.claimOnce('jti', 4000, 3000), true);
     reopened.close();
   } finally {
     await rm(dir, { recursive: true, force: true });
