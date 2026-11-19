@@ -83,7 +83,6 @@ export class FleetOnboardExecutor {
     let currentStep: string | null = null;
     let activeSsh: SshExecutor | null = null;
     let activePrivateKey: string | null = claim.secretValues.accessKey ?? null;
-    let firewallRollbackArmed = false;
 
     try {
       const steps = claim.steps && claim.steps.length > 0 ? claim.steps : ["connect", "preflight", "access", "verify"];
@@ -298,85 +297,9 @@ export class FleetOnboardExecutor {
               throw new Error("Firewall inactive or status unconfirmed; refusing unsafe firewall changes");
             }
 
-            // Preserve the original UFW configuration before the first mutation.
-            // Retain it on failure so an operator can recover while rollback is incomplete.
-            const firewallSnapshot = `/var/tmp/myrmidon-ufw-${randomUUID()}`;
-            const snapshotResult = await activeSsh.execute(
-              `: snapshot-myrmidon-firewall; sudo mkdir -m 700 ${firewallSnapshot} && sudo cp -a /etc/ufw ${firewallSnapshot}/ufw && sudo cp -a /etc/default/ufw ${firewallSnapshot}/ufw-default`,
-            );
-            if (snapshotResult.exitCode !== 0) {
-              await activeSsh.execute(`sudo rm -rf ${firewallSnapshot}`).catch(() => {});
-              throw new Error("Cannot snapshot firewall configuration; refusing firewall changes");
-            }
-
-            // Firewall allow-before-deny with rollback timer:
-            // 1. Allow SSH port before deny
-            try {
-              const allowResult = await activeSsh.execute(`sudo ufw allow ${claim.server.port}/tcp comment 'myrmidon-ssh'`);
-              if (allowResult.exitCode !== 0) throw new Error("SSH allow command returned a failure");
-            } catch (error) {
-              let restored = false;
-              try {
-                const restore = await activeSsh.execute(
-                  `: restore-myrmidon-firewall; sudo cp -a ${firewallSnapshot}/ufw/. /etc/ufw/ && sudo cp -a ${firewallSnapshot}/ufw-default /etc/default/ufw && if sudo grep -q '^ENABLED=yes' ${firewallSnapshot}/ufw/ufw.conf; then sudo ufw reload; fi`,
-                );
-                restored = restore.exitCode === 0;
-              } catch {
-                // Keep the snapshot for manual recovery if the session is lost.
-              }
-              const cause = error instanceof Error ? error.message : String(error);
-              throw new Error(`Firewall SSH allow rule failed: ${cause}; refusing to enable deny policy${restored ? "; saved configuration restored" : "; firewall restoration failed or could not be confirmed"}`);
-            }
-
-            // 2. Start rollback timer (5 minutes / 300s)
-            const timerResult = await activeSsh.execute("nohup sh -c 'sleep 300 && sudo ufw disable' >/dev/null 2>&1 &");
-            if (timerResult.exitCode !== 0) {
-              throw new Error("Firewall rollback timer failed to start; refusing to enable deny policy");
-            }
-            firewallRollbackArmed = true;
-
-            // 3. Set default deny incoming & enable
-            const policyResult = await activeSsh.execute("sudo ufw default deny incoming && sudo ufw default allow outgoing && sudo ufw --force enable");
-            if (policyResult.exitCode !== 0) {
-              throw new Error("Firewall deny policy failed; firewall hardening was not enabled");
-            }
-
-            // 4. Verify connectivity using fresh connection
-            try {
-              const testSsh = await this.getSsh(connOptions);
-              try {
-                await testSsh.connect(connOptions);
-                const testPing = await testSsh.execute('echo "ufw-connectivity-ok"');
-                if (testPing.exitCode !== 0 || testPing.stdout.trim() !== "ufw-connectivity-ok") {
-                  throw new Error("Connectivity test failed after firewall enablement");
-                }
-              } finally {
-                await testSsh.disconnect().catch(() => {});
-              }
-              // A timer that remains armed can undo a seemingly successful hardening.
-              const disarmResult = await activeSsh.execute("sudo pkill -f 'sleep 300 && sudo ufw disable'");
-              if (disarmResult.exitCode !== 0) {
-                throw new Error("Firewall rollback timer could not be disarmed");
-              }
-              firewallRollbackArmed = false;
-            } catch (err) {
-              // Keep the timer armed if the immediate rollback cannot be confirmed.
-              let rollbackSucceeded = false;
-              try {
-                rollbackSucceeded = (await activeSsh.execute("sudo ufw disable")).exitCode === 0;
-              } catch {
-                // The timer remains armed for a later attempt.
-              }
-              if (!rollbackSucceeded) {
-                throw new Error(`Firewall allow-before-deny verification failed; firewall rollback failed: ${(err as Error).message}`);
-              }
-              firewallRollbackArmed = false;
-              throw new Error(`Firewall allow-before-deny verification failed; rolled back: ${(err as Error).message}`);
-            }
-
-            await reporter.reportStep("harden", "ok", "Firewall allow-before-deny configured and verified; rollback disarmed");
-            stepsCompleted.push("harden");
-            break;
+            // Snapshot restoration overwrites concurrent changes; the existing timer
+            // cannot provide scoped rollback. Refuse mutation until both are safe.
+            throw new Error("Scoped firewall rollback unavailable; refusing unsafe firewall changes");
           }
 
           case "monitoring": {
@@ -458,19 +381,6 @@ export class FleetOnboardExecutor {
       };
     } catch (error) {
       let message = error instanceof Error ? error.message : String(error);
-
-      // A policy command can fail after changing the firewall; do not hide a failed restore.
-      if (firewallRollbackArmed && activeSsh) {
-        let restored = false;
-        try {
-          restored = (await activeSsh.execute("sudo ufw disable")).exitCode === 0;
-        } catch {
-          // The timer remains armed if the SSH connection is lost.
-        }
-        if (!restored && !message.includes("firewall rollback failed")) {
-          message += "; firewall rollback failed or could not be confirmed";
-        }
-      }
 
       if (currentStep) {
         await reporter.reportStep(currentStep, "failed", message).catch(() => {});
