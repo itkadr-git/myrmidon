@@ -60,6 +60,16 @@ test('independent anchor service persists CAS across restart and authorizes the 
       assert.equal(await anchor.compareAndSet(zero, next), false);
     } finally { await new Promise(resolve => asyncServer.close(resolve)); }
 
+    // A corrupt store must not be advertised as a healthy anchor.
+    const corruptServer = createAnchorServer({ tls, allowedFingerprint256: fingerprint, store: {
+      read: async () => ({ seq: 1, mac: 'corrupt' }),
+      compareAndSet: async () => false,
+    } });
+    await new Promise(resolve => corruptServer.listen(0, '127.0.0.1', resolve));
+    try {
+      await assert.rejects(client(corruptServer, 'client').read(), /anchor read failed/);
+    } finally { await new Promise(resolve => corruptServer.close(resolve)); }
+
     // A separate anchor starts at genesis; exercise the real audit over mTLS.
     const isolatedPath = join(dir, 'independent.sqlite');
     provisionSqliteAnchor(isolatedPath);
