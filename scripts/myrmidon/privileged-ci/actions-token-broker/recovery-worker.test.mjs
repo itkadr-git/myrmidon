@@ -7,6 +7,20 @@ import { join } from 'node:path';
 import { createCredentialStore } from './store.mjs';
 import { createRecoveryWorker } from './recovery-worker.mjs';
 
+test('an alert queued during delivery remains pending after the earlier alert is acknowledged', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'recovery-alert-race-'));
+  const store = createCredentialStore(join(dir, 'credentials.sqlite'), randomBytes(32));
+  try {
+    await store.queueAlert('audit_unavailable');
+    const worker = createRecoveryWorker({
+      store, revoke: async () => {},
+      alert: async () => { await store.queueAlert('audit_unavailable'); },
+    });
+    await worker.runOnce();
+    assert.deepEqual(await store.pendingAlerts(), ['audit_unavailable']);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('worker retries revocation and pending alert after restart without clearing unknown issuance', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'recovery-worker-'));
   const path = join(dir, 'credentials.sqlite'), key = randomBytes(32);
