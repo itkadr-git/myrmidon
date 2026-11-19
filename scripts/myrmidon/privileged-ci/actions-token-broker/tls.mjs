@@ -5,6 +5,7 @@ import { createAuthenticatedAudit, createAsyncAuthenticatedAudit, PendingIssuanc
 import { createCredentialStore } from './store.mjs';
 import { acquireExclusiveStore } from './exclusive.mjs';
 import { createRecoveryWorker } from './recovery-worker.mjs';
+import { createCredentialCheckpoint, checkpointCredentialStore } from './credential-checkpoint.mjs';
 
 // The anchor must be independently durable and outside the audit database's failure domain.
 export async function createAuditedSupervisedServer(tls, { auditPath, auditKey, auditAnchor, ...options }) {
@@ -25,6 +26,9 @@ export async function createAuditedSupervisedServer(tls, { auditPath, auditKey, 
       try {
         release = acquireExclusiveStore(options.credentialPath);
         store = createCredentialStore(options.credentialPath, options.credentialKey);
+        if (options.credentialAnchor) {
+          store = checkpointCredentialStore(store, await createCredentialCheckpoint(store, options.credentialAnchor));
+        }
         const worker = createRecoveryWorker({ store, anchoredPending: error instanceof PendingIssuanceError, revoke: token => options.installation.revoke(token), alert: options.alert });
         for (;;) {
           const result = await worker.runOnce();
