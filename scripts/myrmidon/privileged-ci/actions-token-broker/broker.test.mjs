@@ -45,6 +45,20 @@ test('supervised broker refuses replay database rollback against independent anc
   } finally { replayAnchor.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('supervised broker alerts when replay anchor is unavailable and refuses startup', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-replay-alert-'));
+  const alerts = [];
+  try {
+    await assert.rejects(createSupervisedSingleHostBroker({ policy, loadKeys: async () => [key],
+      replayPath: join(dir, 'replay.sqlite'), replayKey: randomBytes(32),
+      replayAnchor: { read: async () => { throw new Error('anchor offline'); }, compareAndSet: async () => false },
+      credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32),
+      installation: { revoke: async () => {} }, audit: async () => {},
+      alert: async event => alerts.push(event), delay: async () => {} }), /anchor offline/);
+    assert.ok(alerts.includes('replay_unavailable'));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('identity expiring during reservation never contacts installation API', async () => {
   let calls = 0;
   const store = { reserveIssuance: async () => { await new Promise(resolve => setTimeout(resolve, 2100)); },
