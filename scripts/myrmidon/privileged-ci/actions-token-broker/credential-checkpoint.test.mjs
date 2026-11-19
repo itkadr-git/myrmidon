@@ -6,7 +6,34 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCredentialStore } from './store.mjs';
 import { createSqliteAnchor, provisionSqliteAnchor } from './sqlite-anchor.mjs';
-import { createCredentialCheckpoint } from './credential-checkpoint.mjs';
+import { createCredentialCheckpoint, checkpointCredentialStore } from './credential-checkpoint.mjs';
+
+test('checkpointed store fences all credential and recovery mutations across restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'credential-checkpoint-store-'));
+  const path = join(dir, 'credentials.sqlite'), snapshot = join(dir, 'snapshot.sqlite'), anchorPath = join(dir, 'anchor.sqlite');
+  const key = randomBytes(32);
+  provisionSqliteAnchor(anchorPath);
+  const anchor = createSqliteAnchor(anchorPath);
+  let store = createCredentialStore(path, key);
+  try {
+    await createCredentialCheckpoint(store, anchor, { provision: true });
+    store.close(); copyFileSync(path, snapshot);
+    store = createCredentialStore(path, key);
+    const wrapped = checkpointCredentialStore(store, await createCredentialCheckpoint(store, anchor));
+    await wrapped.reserveIssuance('attempt');
+    await wrapped.put('handle', { token: 'fixture' }, 'owner');
+    await wrapped.resolveIssuance('attempt');
+    await wrapped.queueAlert('credential_recovery_failed');
+    const [entry] = await wrapped.pendingAlertEntries();
+    await wrapped.acknowledgeAlert(entry.event, entry.generation);
+    store.close();
+    store = createCredentialStore(path, key);
+    await createCredentialCheckpoint(store, anchor);
+    store.close(); copyFileSync(snapshot, path);
+    store = createCredentialStore(path, key);
+    await assert.rejects(createCredentialCheckpoint(store, anchor), /credential checkpoint mismatch/);
+  } finally { store.close(); anchor.close(); rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('checkpoint provisioning refuses a store with an unresolved issuance or recovery alert', async () => {
   for (const prepare of [store => store.reserveIssuance('attempt'), store => store.queueAlert('issuance_ambiguous')]) {

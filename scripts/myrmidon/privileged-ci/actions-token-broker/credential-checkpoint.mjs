@@ -45,3 +45,13 @@ export async function createCredentialCheckpoint(store, anchor, { provision = fa
     },
   };
 }
+
+// Wrap every mutation, including recovery's internally performed deletions.
+export function checkpointCredentialStore(store, checkpoint) {
+  const wrapped = { ...store };
+  for (const name of ['queueAlert', 'acknowledgeAlert', 'reserveIssuance', 'resolveIssuance', 'put', 'delete', 'withOwned', 'revokeRetained']) {
+    if (typeof store[name] !== 'function') throw new Error('invalid credential store');
+    wrapped[name] = (...args) => checkpoint.mutate(() => store[name](...args));
+  }
+  return wrapped;
+}
