@@ -764,7 +764,11 @@ test('unresolved anchored intent still triggers recovery of retained credentials
   const anchor = { read: async () => ({ ...head }), compareAndSet: async (previous, next) => { if (JSON.stringify(previous) !== JSON.stringify(head)) return false; head = { ...next }; return true; } };
   const revoked = [], alerts = [];
   try {
-    const store = createCredentialStore(credentialPath, credentialKey);
+    let credentialHead = { seq: 0, mac: '' };
+    const credentialAnchor = { read: async () => ({ ...credentialHead }), compareAndSet: async (previous, next) => { if (JSON.stringify(previous) !== JSON.stringify(credentialHead)) return false; credentialHead = { ...next }; return true; } };
+    const rawStore = createCredentialStore(credentialPath, credentialKey);
+    const { createCredentialCheckpoint, checkpointCredentialStore } = await import('./credential-checkpoint.mjs');
+    const store = checkpointCredentialStore(rawStore, await createCredentialCheckpoint(rawStore, credentialAnchor, { provision: true }));
     await store.put('known', { token: 'fixture-known' }, 'owner');
     await store.reserveIssuance('unknown');
     store.close();
@@ -772,7 +776,7 @@ test('unresolved anchored intent still triggers recovery of retained credentials
     await audit.record('issuance_pending');
     audit.close();
     await assert.rejects(tls.createAuditedSupervisedServer({}, {
-      auditPath, auditKey, auditAnchor: anchor, credentialPath, credentialKey,
+      auditPath, auditKey, auditAnchor: anchor, credentialPath, credentialKey, credentialAnchor,
       installation: { revoke: async token => revoked.push(token) }, alert: async event => alerts.push(event),
     }), /pending issuance/);
     assert.deepEqual(revoked, ['fixture-known']);
@@ -789,7 +793,11 @@ test('anchored pending startup retries failed known-token revocation without ope
   let head = { seq: 0, mac: '' }, attempts = 0, delays = 0;
   const anchor = { read: async () => ({ ...head }), compareAndSet: async (previous, next) => { if (JSON.stringify(previous) !== JSON.stringify(head)) return false; head = { ...next }; return true; } };
   try {
-    const store = createCredentialStore(credentialPath, credentialKey);
+    let credentialHead = { seq: 0, mac: '' };
+    const credentialAnchor = { read: async () => ({ ...credentialHead }), compareAndSet: async (previous, next) => { if (JSON.stringify(previous) !== JSON.stringify(credentialHead)) return false; credentialHead = { ...next }; return true; } };
+    const rawStore = createCredentialStore(credentialPath, credentialKey);
+    const { createCredentialCheckpoint, checkpointCredentialStore } = await import('./credential-checkpoint.mjs');
+    const store = checkpointCredentialStore(rawStore, await createCredentialCheckpoint(rawStore, credentialAnchor, { provision: true }));
     await store.put('known', { token: 'fixture-known' }, 'owner');
     await store.reserveIssuance('unknown');
     store.close();
@@ -797,7 +805,7 @@ test('anchored pending startup retries failed known-token revocation without ope
     await audit.record('issuance_pending');
     audit.close();
     await assert.rejects(tls.createAuditedSupervisedServer({}, {
-      auditPath, auditKey, auditAnchor: anchor, credentialPath, credentialKey,
+      auditPath, auditKey, auditAnchor: anchor, credentialPath, credentialKey, credentialAnchor,
       installation: { revoke: async () => { if (++attempts === 1) throw new Error('offline'); } },
       alert: async () => {}, delay: async () => { delays++; },
     }), /pending issuance/);
@@ -818,13 +826,17 @@ test('audit startup failure alerts before an interrupted recovery retry', async 
   const alerts = [];
   let alertsBeforeRetry;
   try {
-    const store = createCredentialStore(credentialPath, credentialKey);
+    let credentialHead = { seq: 0, mac: '' };
+    const credentialAnchor = { read: async () => ({ ...credentialHead }), compareAndSet: async (previous, next) => { if (JSON.stringify(previous) !== JSON.stringify(credentialHead)) return false; credentialHead = { ...next }; return true; } };
+    const rawStore = createCredentialStore(credentialPath, credentialKey);
+    const { createCredentialCheckpoint, checkpointCredentialStore } = await import('./credential-checkpoint.mjs');
+    const store = checkpointCredentialStore(rawStore, await createCredentialCheckpoint(rawStore, credentialAnchor, { provision: true }));
     await store.put('known', { token: 'fixture-known' }, 'owner');
     store.close();
     await assert.rejects(tls.createAuditedSupervisedServer({}, {
       auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32),
       auditAnchor: { read: async () => { throw new Error('anchor offline'); }, compareAndSet: async () => true },
-      credentialPath, credentialKey, installation: { revoke: async () => { throw new Error('offline'); } },
+      credentialPath, credentialKey, credentialAnchor, installation: { revoke: async () => { throw new Error('offline'); } },
       alert: async event => alerts.push(event), delay: async () => { alertsBeforeRetry = [...alerts]; throw new Error('interrupted'); },
     }), /anchor offline/);
     assert.ok(alertsBeforeRetry.includes('audit_unavailable'));
@@ -837,13 +849,17 @@ test('audit startup alert is retried while credential recovery remains unavailab
   const credentialPath = join(dir, 'credentials.sqlite'), credentialKey = randomBytes(32);
   let auditAttempts = 0, recoveryAttempts = 0;
   try {
-    const store = createCredentialStore(credentialPath, credentialKey);
+    let credentialHead = { seq: 0, mac: '' };
+    const credentialAnchor = { read: async () => ({ ...credentialHead }), compareAndSet: async (previous, next) => { if (JSON.stringify(previous) !== JSON.stringify(credentialHead)) return false; credentialHead = { ...next }; return true; } };
+    const rawStore = createCredentialStore(credentialPath, credentialKey);
+    const { createCredentialCheckpoint, checkpointCredentialStore } = await import('./credential-checkpoint.mjs');
+    const store = checkpointCredentialStore(rawStore, await createCredentialCheckpoint(rawStore, credentialAnchor, { provision: true }));
     await store.put('known', { token: 'fixture-known' }, 'owner');
     store.close();
     await assert.rejects(tls.createAuditedSupervisedServer({}, {
       auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32),
       auditAnchor: { read: async () => { throw new Error('anchor offline'); }, compareAndSet: async () => true },
-      credentialPath, credentialKey,
+      credentialPath, credentialKey, credentialAnchor,
       installation: { revoke: async () => { recoveryAttempts++; throw new Error('offline'); } },
       alert: async event => { if (event === 'audit_unavailable' && ++auditAttempts === 1) throw new Error('alert offline'); },
       delay: async () => { if (recoveryAttempts >= 2) throw new Error('interrupted'); },
@@ -861,7 +877,11 @@ test('audit startup failure recovers known tokens when queuing the pending alert
   const anchor = { read: async () => ({ ...head }), compareAndSet: async (_previous, next) => { head = { ...next }; return true; } };
   const revoked = [], alerts = [];
   try {
-    const store = createCredentialStore(credentialPath, credentialKey);
+    let credentialHead = { seq: 0, mac: '' };
+    const credentialAnchor = { read: async () => ({ ...credentialHead }), compareAndSet: async (previous, next) => { if (JSON.stringify(previous) !== JSON.stringify(credentialHead)) return false; credentialHead = { ...next }; return true; } };
+    const rawStore = createCredentialStore(credentialPath, credentialKey);
+    const { createCredentialCheckpoint, checkpointCredentialStore } = await import('./credential-checkpoint.mjs');
+    const store = checkpointCredentialStore(rawStore, await createCredentialCheckpoint(rawStore, credentialAnchor, { provision: true }));
     await store.put('known', { token: 'fixture-known' }, 'owner');
     store.close();
     const db = new DatabaseSync(credentialPath);
@@ -871,7 +891,7 @@ test('audit startup failure recovers known tokens when queuing the pending alert
     await audit.record('issuance_pending');
     audit.close();
     await assert.rejects(tls.createAuditedSupervisedServer({}, {
-      auditPath, auditKey, auditAnchor: anchor, credentialPath, credentialKey,
+      auditPath, auditKey, auditAnchor: anchor, credentialPath, credentialKey, credentialAnchor,
       installation: { revoke: async token => revoked.push(token) }, alert: async event => alerts.push(event),
     }), /pending issuance/);
     assert.deepEqual(revoked, ['fixture-known']);
@@ -884,13 +904,17 @@ test('anchor mismatch revokes retained known credentials without starting servic
   const credentialPath = join(dir, 'credentials.sqlite'), credentialKey = randomBytes(32);
   const revoked = [], alerts = [];
   try {
-    const store = createCredentialStore(credentialPath, credentialKey);
+    let credentialHead = { seq: 0, mac: '' };
+    const credentialAnchor = { read: async () => ({ ...credentialHead }), compareAndSet: async (previous, next) => { if (JSON.stringify(previous) !== JSON.stringify(credentialHead)) return false; credentialHead = { ...next }; return true; } };
+    const rawStore = createCredentialStore(credentialPath, credentialKey);
+    const { createCredentialCheckpoint, checkpointCredentialStore } = await import('./credential-checkpoint.mjs');
+    const store = checkpointCredentialStore(rawStore, await createCredentialCheckpoint(rawStore, credentialAnchor, { provision: true }));
     await store.put('known', { token: 'fixture-known' }, 'owner');
     store.close();
     await assert.rejects(tls.createAuditedSupervisedServer({}, {
       auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32),
       auditAnchor: { read: async () => ({ seq: 1, mac: 'a'.repeat(64) }), compareAndSet: async () => true },
-      credentialPath, credentialKey, installation: { revoke: async token => revoked.push(token) },
+      credentialPath, credentialKey, credentialAnchor, installation: { revoke: async token => revoked.push(token) },
       alert: async event => alerts.push(event),
     }), /anchor mismatch/);
     assert.deepEqual(revoked, ['fixture-known']);

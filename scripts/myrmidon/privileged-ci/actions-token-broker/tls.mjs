@@ -26,9 +26,9 @@ export async function createAuditedSupervisedServer(tls, { auditPath, auditKey, 
       try {
         release = acquireExclusiveStore(options.credentialPath);
         store = createCredentialStore(options.credentialPath, options.credentialKey);
-        if (options.credentialAnchor) {
-          store = checkpointCredentialStore(store, await createCredentialCheckpoint(store, options.credentialAnchor));
-        }
+        // Never act on an unauthenticated or rolled-back credential snapshot.
+        if (!options.credentialAnchor) throw new Error('credential anchor required');
+        store = checkpointCredentialStore(store, await createCredentialCheckpoint(store, options.credentialAnchor));
         const worker = createRecoveryWorker({ store, anchoredPending: error instanceof PendingIssuanceError, revoke: token => options.installation.revoke(token), alert: options.alert });
         for (;;) {
           const result = await worker.runOnce();

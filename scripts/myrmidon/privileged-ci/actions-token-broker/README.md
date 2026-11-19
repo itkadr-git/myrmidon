@@ -85,7 +85,9 @@ secret management, least privilege and key rotation.
   the credential-store lock, retrying known-token revocation and alert delivery
   with the configured delay, but still refuses to start. Audit startup failures,
   including an anchor mismatch or unavailable anchor, also attempt known-token
-  recovery under that lock without clearing or trusting the failed audit state.
+  recovery under that lock only when the credential checkpoint validates; a missing,
+  unavailable or mismatched credential anchor prevents recovery and triggers a
+  best-effort failure alert. The failed audit state is never cleared or trusted.
   Recovery retries known-token revocation even if the alert outbox fails; it
   attempts direct notification but still reports an alert failure and remains
   closed. The normal recovery supervisor also keeps retrying known-token revocation when
@@ -161,21 +163,15 @@ secret management, least privilege and key rotation.
   every issuer sharing the store before recovery because it also revokes active
   tokens. A successful upstream revoke followed by a failed database commit can
   require manual reconciliation.
-- The audit and replay anchors do not authenticate the credential database. After a
-  completed issuance, restoring an older valid credential database can erase both
-  the retained token and its reservation while the audit head still matches. On
-  restart recovery then sees no token to revoke and may allow issuance. The
-  characterization in `credential-rollback.test.mjs` demonstrates this gap; it is
-  not a passing containment criterion. `store.stateDigest()` computes a keyed,
-  deterministic digest of encrypted credential rows as a building block. The
-  experimental `credential-checkpoint.mjs` can detect a restored snapshot, and
-  `mutate` places a remote fence before a mutation so interruption fails closed.
-  Neither is connected to the broker or recovery path; the older `advance` helper
-  has a crash window and must not be used for containment. These primitives do not
-  yet provide rollback protection for service. Independent durable binding of credential
-  state to issuance/revocation transitions and crash-safe reconciliation are needed
-  before this prototype can be considered for live use. Do not restore or replace
-  the credential database to recover service.
+- The audit and replay anchors alone do not authenticate the credential database.
+  The supervised audited path now verifies an independent credential checkpoint
+  before startup and before audit-failure recovery, and fences credential mutations
+  against that anchor. Restored snapshots and interrupted mutations fail closed;
+  `credential-rollback.test.mjs` characterizes the unanchored helper's gap.
+  The older `advance` helper has a crash window and must not be used for containment.
+  These experimental checks still require independently administered durable anchors,
+  security review and a crash-safe operator reconciliation procedure. Do not restore
+  or replace the credential database to recover service.
 - Native GitHub issuance response bodies are capped at 128 KiB and an oversized
   stream is cancelled. Rejection remains ambiguous: the pre-existing issuance
   fence stays in place because GitHub may already have created a token. Injected
