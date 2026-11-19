@@ -812,18 +812,17 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
         await gate;
         await tx.update(documents).set({ latestBody: "a" }).where(eq(documents.id, docId));
       });
-      let pin: Awaited<ReturnType<ReturnType<typeof issueAcceptanceSnapshotService>["read"]>>;
-      try {
-        await ready;
-        await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
-        pin = await issueAcceptanceSnapshotService(db).read(issueId);
-        expect(pin!.document!.body).toBe("a");
-      } finally {
-        release();
-      }
-      await writer;
+      const before = await issueAcceptanceSnapshotService(db).read(issueId);
+      await ready;
+      // Linking waits for the writer's document lock. Release the writer before
+      // awaiting the link; awaiting it first would deadlock this test's gate.
+      const link = db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
+      const linking = Promise.resolve(link);
+      release();
+      await Promise.all([writer, linking]);
       const after = await issueAcceptanceSnapshotService(db).read(issueId);
-      expect(after!.issue.version).not.toBe(pin!.issue.version);
+      expect(after!.document!.body).toBe("a");
+      expect(after!.issue.version).not.toBe(before!.issue.version);
     },
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
@@ -857,18 +856,17 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
         await gate;
         await tx.update(documentRevisions).set({ body: "a" }).where(eq(documentRevisions.id, revisionId));
       });
-      let pin: Awaited<ReturnType<ReturnType<typeof issueAcceptanceSnapshotService>["read"]>>;
-      try {
-        await ready;
-        await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
-        pin = await issueAcceptanceSnapshotService(db).read(issueId);
-        expect(pin!.document!.body).toBe("a");
-      } finally {
-        release();
-      }
-      await writer;
+      const before = await issueAcceptanceSnapshotService(db).read(issueId);
+      await ready;
+      // Linking waits for the writer's document lock. Release the writer before
+      // awaiting the link; awaiting it first would deadlock this test's gate.
+      const link = db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
+      const linking = Promise.resolve(link);
+      release();
+      await Promise.all([writer, linking]);
       const after = await issueAcceptanceSnapshotService(db).read(issueId);
-      expect(after!.issue.version).not.toBe(pin!.issue.version);
+      expect(after!.document!.body).toBe("a");
+      expect(after!.issue.version).not.toBe(before!.issue.version);
     },
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
