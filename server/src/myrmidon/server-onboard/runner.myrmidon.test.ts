@@ -2,6 +2,59 @@ import { generateKeyPairSync } from "node:crypto";
 import { Server } from "ssh2";
 import { describe, expect, it } from "vitest";
 import { runOnboardOnce } from "./runner.js";
+import { generateSshKeyPair } from "./ssh-key.js";
+
+it("closes the bootstrap SSH session after switching to the stored access key", async () => {
+  const hostKey = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs1", format: "pem" });
+  const pair = generateSshKeyPair();
+  const clients = new Set<import("ssh2").Connection>();
+  const authMethods: string[] = [];
+  let installed = "";
+  const server = new Server({ hostKeys: [hostKey] }, (client) => {
+    clients.add(client);
+    client.on("close", () => clients.delete(client));
+    client.on("error", () => {});
+    client.on("authentication", (ctx) => { authMethods.push(ctx.method); ctx.accept(); });
+    client.on("ready", () => client.on("session", (accept) => {
+      const session = accept();
+      session.on("exec", (acceptExec, _reject, info) => {
+        const stream = acceptExec();
+        if (info.command.includes("authorized_keys")) installed = info.command;
+        if (info.command.includes("myrmidon-key-verify")) stream.write("myrmidon-key-verify\n");
+        stream.exit(0);
+        stream.end();
+      });
+    }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("missing server address");
+  const reports: Array<Record<string, unknown>> = [];
+  const fetcher: typeof fetch = async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    if (path.endsWith("/claim")) return Response.json({
+      job: { id: "job", companyId: "company" },
+      server: { hostname: "127.0.0.1", port: address.port, username: "test", hostKeyFingerprint: null, accessKeySecretKey: "stored" },
+      steps: ["access"], options: { keepPassword: true }, secretValues: { bootstrapPassword: "test-password", accessKey: pair.privateKey },
+    });
+    if (path.endsWith("/host-key")) return Response.json({ accepted: true });
+    if (path.endsWith("/report")) { reports.push(JSON.parse(String(init?.body))); return Response.json({}); }
+    throw new Error(`unexpected request: ${path}`);
+  };
+  try {
+    await runOnboardOnce({ baseUrl: "http://board", companyId: "company", token: "token", fetcher });
+    expect(reports.find((report) => report.status === "failed")).toBeUndefined();
+    expect(reports.some((report) => report.status === "succeeded")).toBe(true);
+    expect(authMethods).toContain("password");
+    expect(authMethods).toContain("publickey");
+    expect(installed).toContain(pair.publicKey.trim());
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(clients.size).toBe(0);
+  } finally {
+    for (const client of clients) client.end();
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
 
 it.each(["changed", "rejected"] as const)("runs real SSH and rejects a %s host identity before authentication", async (reason) => {
   const hostKey = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs1", format: "pem" });
