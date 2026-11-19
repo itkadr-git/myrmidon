@@ -4,6 +4,7 @@ import { parsePath, authenticate, createHandler } from './reader.mjs';
 import { createServer, get } from 'node:http';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
+import { createCredentialStore } from './credentials.mjs';
 
 test('credential binding rejects expired revoked and wrong bearer', () => {
   const token = 'candidate-test-token';
@@ -116,6 +117,22 @@ test('rejects an upstream issue that does not match the requested identifier', a
     res.resume(); res.on('end', () => resolve(res.statusCode));
   }).on('error', reject));
   assert.equal(status, 404);
+});
+
+test('handler accepts the immutable credential store and observes revocation', async (t) => {
+  const token = 'candidate-test-token';
+  const hash = createHash('sha256').update(token).digest('hex');
+  const store = createCredentialStore([{ tokenHash: hash, companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }]);
+  const server = createServer(createHandler({ credentialStore: store, readIssue: async () => ({ id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' }) }));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const request = () => new Promise((resolve, reject) => get({ host: '127.0.0.1', port: server.address().port, path: '/api/issues/OPE-123', headers: { authorization: `Bearer ${token}` } }, (res) => {
+    res.resume(); res.on('end', () => resolve(res.statusCode));
+  }).on('error', reject));
+  assert.equal(await request(), 200);
+  store.revoke(hash);
+  assert.equal(await request(), 401);
 });
 
 test('accepts only canonical issue and acceptance document paths', () => {

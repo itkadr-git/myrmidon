@@ -9,12 +9,13 @@ export function authenticate(header, records, now = Date.now()) {
   return record.revoked === false && Number.isFinite(record.expiresAt) && now < record.expiresAt && typeof record.companyId === 'string' && record.companyId ? record.companyId : null;
 }
 
-export function createHandler({ records, readIssue, readDocument, audit = async () => {} }) {
+export function createHandler({ records, credentialStore, readIssue, readDocument, audit = async () => {} }) {
+  const checkCredential = (header) => credentialStore ? credentialStore.authenticate(header) : authenticate(header, records);
   return async (req, res) => {
     const authorizations = req.rawHeaders.filter((_, index) => index % 2 === 0 && req.rawHeaders[index].toLowerCase() === 'authorization').length;
-    const companyId = authorizations === 1 ? authenticate(req.headers.authorization, records) : null;
+    const companyId = authorizations === 1 ? checkCredential(req.headers.authorization) : null;
     const respond = async (status, body = {}) => {
-      if (status === 200 && authenticate(req.headers.authorization, records) !== companyId) {
+      if (status === 200 && checkCredential(req.headers.authorization) !== companyId) {
         status = 401;
         body = {};
       }
@@ -24,7 +25,7 @@ export function createHandler({ records, readIssue, readDocument, audit = async 
         status = 503;
         body = {};
       }
-      if (status === 200 && authenticate(req.headers.authorization, records) !== companyId) {
+      if (status === 200 && checkCredential(req.headers.authorization) !== companyId) {
         status = 401;
         body = {};
       }
