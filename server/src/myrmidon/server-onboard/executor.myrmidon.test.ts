@@ -65,6 +65,22 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(events).toEqual(["host-key"]);
   });
 
+  it("rejects a connection that skipped host verification even when a pin exists", async () => {
+    const ssh = new MockSshExecutor();
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-unverified", companyId: "c1", serverId: "s1" },
+      server: { hostname: "example.com", port: 22, username: "root", hostKeyFingerprint: "SHA256:original" },
+      steps: ["connect"],
+      options: { keepPassword: true },
+      secretValues: { bootstrapPassword: "sensitive" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("SSH transport did not provide a verified host key");
+    expect(ssh.hasExecuted("cat /etc/os-release")).toBe(false);
+  });
+
   it("generates an OpenSSH public key matching its private key", async () => {
     const { createPublicKey } = await import("node:crypto");
     const pair = defaultGenerateKeyPair();
