@@ -90,6 +90,7 @@ test('loopback HTTPS API URLs are rejected before any network request, in every 
       'https://localhost/api',
       'https://LOCALHOST.:8443/api',
       'https://[::1]/api',
+      'https://[::]/api',
       'https://[0:0:0:0:0:0:0:1]/api',
       'https://[::ffff:127.0.0.1]/api',
       'https://0.0.0.0/api',
