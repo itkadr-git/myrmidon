@@ -194,10 +194,12 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
       return guarded('revoke_failed', async () => {
         const owner = await identity(jwt);
         if (typeof handle !== 'string' || !/^[0-9a-f-]{36}$/.test(handle)) throw new Error('invalid handle');
+        if (auditFailed) throw new Error('audit unavailable');
         // Reserve before revocation: a crash or failure must keep issuance fenced.
         const durable = typeof store.reserveIssuance === 'function';
         const attempt = randomUUID();
         if (durable) await store.reserveIssuance(attempt);
+        if (auditFailed) throw new Error('audit unavailable');
         try {
           await store.withOwned(handle, owner, async credential => {
             await installation.revoke(credential.token);
