@@ -66,16 +66,16 @@ export async function createRecoveredSingleHostBroker({ credentialPath, credenti
       await store.queueAlert(event);
     }
     let alertFailed = false;
-    for (const event of await store.pendingAlerts()) {
+    for (const { event, generation } of await store.pendingAlertEntries()) {
       try {
         if (typeof options.alert !== 'function') throw new Error('alert sink unavailable');
         await options.alert(event);
-        await store.acknowledgeAlert(event);
+        await store.acknowledgeAlert(event, generation);
       } catch { alertFailed = true; }
     }
     if (result.failed) throw new Error('credential recovery failed');
     if (pending) throw new Error('ambiguous issuance requires operator containment');
-    if (alertFailed) throw new Error('recovery alert failed');
+    if (alertFailed || (await store.pendingAlerts()).length) throw new Error('recovery alert failed');
     const broker = createSingleHostBrokerWithStore({ ...options, store });
     return { ...broker, close: () => { broker.assertIdle(); try { broker.close(); store.close(); } finally { release(); } } };
   } catch (error) {

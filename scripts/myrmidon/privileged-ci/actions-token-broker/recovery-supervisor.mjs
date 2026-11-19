@@ -1,6 +1,6 @@
 // Run with exclusive ownership of the store; no issuer may run concurrently.
 export function createRecoverySupervisor({ recover, start, alert, delay, store }) {
-  if (![recover, start, alert, delay, store?.queueAlert, store?.pendingAlerts, store?.acknowledgeAlert].every(value => typeof value === 'function')) throw new Error('recovery dependencies required');
+  if (![recover, start, alert, delay, store?.queueAlert, store?.pendingAlerts, store?.pendingAlertEntries, store?.acknowledgeAlert].every(value => typeof value === 'function')) throw new Error('recovery dependencies required');
   let stopped = false, running = false, started = false;
   return {
     stop() { stopped = true; },
@@ -16,8 +16,8 @@ export function createRecoverySupervisor({ recover, start, alert, delay, store }
           if (result?.pending) await store.queueAlert('issuance_ambiguous');
           if (!clean && (!result?.pending || result?.failed !== 0 || result?.alertFailed !== false)) await store.queueAlert('credential_recovery_failed');
           if (stopped) break;
-          for (const event of await store.pendingAlerts()) {
-            try { await alert(event); await store.acknowledgeAlert(event); } catch { /* Retry before starting. */ }
+          for (const { event, generation } of await store.pendingAlertEntries()) {
+            try { await alert(event); await store.acknowledgeAlert(event, generation); } catch { /* Retry before starting. */ }
           }
           const pendingAlerts = await store.pendingAlerts();
           if (stopped) break;

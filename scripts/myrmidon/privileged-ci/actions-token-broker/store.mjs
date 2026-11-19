@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
 // Single-host storage; the key must come from server-side secret management.
@@ -14,15 +14,22 @@ export function createCredentialStore(path, key) {
   const listHandles = db.prepare('SELECT handle, owner FROM credentials ORDER BY rowid');
   db.exec('CREATE TABLE IF NOT EXISTS pending_issuance (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), attempt TEXT NOT NULL) STRICT');
   db.exec('CREATE TABLE IF NOT EXISTS recovery_alerts (event TEXT PRIMARY KEY) STRICT');
+  if (!db.prepare('PRAGMA table_info(recovery_alerts)').all().some(column => column.name === 'generation')) {
+    db.exec("ALTER TABLE recovery_alerts ADD COLUMN generation TEXT NOT NULL DEFAULT ''");
+  }
   let active = false;
   const store = {
     hasRetainedCredentials() { return Boolean(db.prepare('SELECT 1 FROM credentials LIMIT 1').get()); },
     async queueAlert(event) {
       if (!['issuance_ambiguous', 'credential_recovery_failed', 'audit_unavailable'].includes(event)) throw new Error('invalid recovery alert');
-      db.prepare('INSERT OR IGNORE INTO recovery_alerts VALUES (?)').run(event);
+      db.prepare('INSERT INTO recovery_alerts (event, generation) VALUES (?, ?) ON CONFLICT(event) DO UPDATE SET generation = excluded.generation').run(event, randomUUID());
     },
     async pendingAlerts() { return db.prepare('SELECT event FROM recovery_alerts ORDER BY event').all().map(row => row.event); },
-    async acknowledgeAlert(event) { db.prepare('DELETE FROM recovery_alerts WHERE event = ?').run(event); },
+    async pendingAlertEntries() { return db.prepare('SELECT event, generation FROM recovery_alerts ORDER BY event').all(); },
+    async acknowledgeAlert(event, generation) {
+      if (typeof generation !== 'string') throw new Error('alert generation required');
+      db.prepare('DELETE FROM recovery_alerts WHERE event = ? AND generation = ?').run(event, generation);
+    },
     async reserveIssuance(attempt) {
       if (active || typeof attempt !== 'string' || !attempt) throw new Error('invalid issuance reservation');
       // An undelivered audit or recovery alert fences new upstream operations.

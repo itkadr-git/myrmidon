@@ -8,8 +8,8 @@ import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 
 function memoryOutbox() {
-  const pending = new Set();
-  return { queueAlert: async event => pending.add(event), pendingAlerts: async () => [...pending], acknowledgeAlert: async event => pending.delete(event) };
+  const pending = new Map();
+  return { queueAlert: async event => pending.set(event, randomBytes(16).toString('hex')), pendingAlerts: async () => [...pending.keys()], pendingAlertEntries: async () => [...pending].map(([event, generation]) => ({ event, generation })), acknowledgeAlert: async (event, generation) => { if (pending.get(event) === generation) pending.delete(event); } };
 }
 
 test('a supervisor cannot start issuance twice after successful recovery', async () => {
