@@ -101,6 +101,37 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
   );
 
   it(
+    "independently rejects a corrupted cross-company document link on read",
+    async () => {
+      const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-corrupt-");
+      cleanups.push(() => dbh.cleanup());
+      const db = createDb(dbh.connectionString);
+      const client = db.$client;
+      cleanups.push(async () => { await (client as any).end(); });
+      const issueId = randomUUID();
+      const docId = randomUUID();
+      const revisionId = randomUUID();
+      await db.insert(companies).values([
+        { id: companyA, name: "A", issuePrefix: "AAA" },
+        { id: companyB, name: "B", issuePrefix: "BBB" },
+      ]);
+      await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task", identifier: "OPE-7999" });
+      await db.insert(documents).values({ id: docId, companyId: companyB, latestBody: "foreign secret", latestRevisionId: revisionId, latestRevisionNumber: 1 });
+      await db.insert(documentRevisions).values({ id: revisionId, companyId: companyB, documentId: docId, revisionNumber: 1, body: "foreign secret" });
+      // Simulate preexisting corruption, not a supported application writer.
+      // Keep the bypass transaction-local so the ordinary protocol stays enabled.
+      await db.transaction(async (tx) => {
+        await tx.execute(sqlTag`SET LOCAL session_replication_role = replica`);
+        await tx.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
+      });
+      const snapshot = await issueAcceptanceSnapshotService(db).read(issueId);
+      expect(snapshot?.issue.companyId).toBe(companyA);
+      expect(snapshot?.document).toBeNull();
+    },
+    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  );
+
+  it(
     "never joins a document bound to another company",
     async () => {
       const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-snapshot-x-");
