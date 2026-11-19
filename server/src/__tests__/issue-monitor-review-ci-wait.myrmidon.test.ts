@@ -355,6 +355,40 @@ describeEmbeddedPostgres("issue monitor that waits for the CI of a review (Revie
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
   });
 
+  it("dispatches replacement evidence once when an old CI lookup finishes after a concurrent update", async () => {
+    const { issueId } = await seed();
+    let releaseLookup!: () => void;
+    let lookupStarted!: () => void;
+    const started = new Promise<void>((resolve) => { lookupStarted = resolve; });
+    const release = new Promise<void>((resolve) => { releaseLookup = resolve; });
+    mockReviewCi.resolveCi.mockImplementationOnce(async () => {
+      lookupStarted();
+      await release;
+      return { state: "pending", pullRequestUrl: PR_URL, headSha: HEAD };
+    });
+    const scheduler = heartbeatService(db, { executesRuns: false });
+    const staleTick = scheduler.tickTimers(TICK_AT);
+    try {
+      await started;
+      await db.update(issues).set({
+        monitorWakeRequestedAt: null,
+        monitorNotes: "replacement evidence",
+      }).where(eq(issues.id, issueId));
+    } finally {
+      releaseLookup();
+    }
+    expect((await staleTick).enqueued).toBe(0);
+    expect(await activityOf(issueId, "issue.monitor_deferred")).toHaveLength(0);
+
+    headCi({ finalCheckConclusion: "success" });
+    expect((await scheduler.tickTimers(new Date(TICK_AT.getTime() + 60_000))).enqueued).toBe(1);
+    expect((await scheduler.tickTimers(new Date(TICK_AT.getTime() + 120_000))).enqueued).toBe(0);
+    const wakes = await db.select().from(agentWakeupRequests);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]?.payload).toMatchObject({ issueId, monitorNotes: "replacement evidence" });
+    await db.delete(heartbeatRuns);
+  });
+
   it("does not defer a replacement monitor when the stale claim hits the review wake quota", async () => {
     const { companyId, issueId } = await seed();
     const replacementAt = new Date(TICK_AT.getTime() + 3_600_000);
