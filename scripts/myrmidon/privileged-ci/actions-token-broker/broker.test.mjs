@@ -23,6 +23,28 @@ function jwt(jti, overrides = {}) {
   return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
 }
 
+test('supervised broker refuses replay database rollback against independent anchor', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-replay-anchor-'));
+  const replayPath = join(dir, 'replay.sqlite'), anchorPath = join(dir, 'anchor.sqlite');
+  const { copyFileSync } = await import('node:fs');
+  provisionSqliteAnchor(anchorPath);
+  const replayAnchor = createSqliteAnchor(anchorPath);
+  const options = { policy, loadKeys: async () => [key], replayPath, replayKey: randomBytes(32), replayAnchor,
+    credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32),
+    installation: { issue: async () => ({ token: 'fixture', expiresAt: '2030-01-01T00:00:00Z' }), revoke: async () => {} },
+    audit: async () => {}, alert: async () => {}, delay: async () => {} };
+  try {
+    let broker = await createSupervisedSingleHostBroker(options);
+    broker.close();
+    copyFileSync(replayPath, join(dir, 'snapshot.sqlite'));
+    broker = await createSupervisedSingleHostBroker(options);
+    await broker.exchange(jwt('rollback-identity'));
+    broker.close();
+    copyFileSync(join(dir, 'snapshot.sqlite'), replayPath);
+    await assert.rejects(createSupervisedSingleHostBroker(options), /replay anchor mismatch/);
+  } finally { replayAnchor.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('identity expiring during reservation never contacts installation API', async () => {
   let calls = 0;
   const store = { reserveIssuance: async () => { await new Promise(resolve => setTimeout(resolve, 2100)); },
