@@ -192,13 +192,9 @@ import {
   readWakeCiUnreadyGateEnabled,
 } from "../myrmidon/wake-ci-unready-gate.js";
 import {
-  CONTINUATION_CAP_COMMENT,
-  MAX_CONTINUATIONS_WITHOUT_EXTERNAL_INPUT,
-  buildContinuationCapBlockedPatch,
   continuationStatusesFor,
   isContinuationActionable,
   readContinuationCap,
-  type ContinuationCapStop,
 } from "../myrmidon/continuation-cap.js"; // myrmidon(OPE-11948)
 import {
   readRunCapNoCommitHistory,
@@ -33816,54 +33812,6 @@ export function heartbeatService(
     }
   }
 
-  // myrmidon(OPE-11948): parks an issue whose automatic continuation cap was
-  // reached. Runs after the wake admission committed, in its own transaction:
-  // a failure here must never fail the (already skipped) wake, and the issue is
-  // re-read under its lock so a concurrent status change or reassignment wins.
-  async function applyContinuationCapStop(stop: ContinuationCapStop) {
-    try {
-      await db.transaction(async (tx) => {
-        const [current] = await tx
-          .select()
-          .from(issues)
-          .where(and(eq(issues.id, stop.issueId), eq(issues.companyId, stop.companyId)))
-          .for("update")
-          .limit(1);
-        if (!current || !isContinuationActionable(current, stop.agentId)) return;
-        await issuesSvc.update(
-          current.id,
-          buildContinuationCapBlockedPatch({
-            issueId: current.id,
-            assigneeAgentId: stop.agentId,
-            ownerUserId: current.createdByUserId ?? current.responsibleUserId ?? null,
-          }) as Partial<typeof issues.$inferInsert>,
-          tx,
-        );
-        await issuesSvc.addComment(current.id, CONTINUATION_CAP_COMMENT, {}, { authorType: "system" }, tx);
-        await logActivity(tx as unknown as Db, {
-          companyId: current.companyId,
-          actorType: "system",
-          actorId: "heartbeat",
-          agentId: stop.agentId,
-          runId: null,
-          action: "issue.continuation_cap_reached",
-          entityType: "issue",
-          entityId: current.id,
-          details: {
-            identifier: current.identifier,
-            previousStatus: current.status,
-            consecutiveContinuations: stop.consecutiveContinuations,
-            maxContinuations: MAX_CONTINUATIONS_WITHOUT_EXTERNAL_INPUT,
-          },
-        });
-      });
-    } catch (err) {
-      logger.warn(
-        { err: err instanceof Error ? err.message : String(err), issueId: stop.issueId, agentId: stop.agentId },
-        "continuation cap: could not park the issue as blocked",
-      );
-    }
-  }
 
   // myrmidon(OPE-13080): parks an issue whose run cap without commit was reached.
   async function applyRunCapNoCommitStop(stop: RunCapNoCommitStop) {
@@ -34924,9 +34872,6 @@ export function heartbeatService(
       // admission cancelled under a bypassed hold. Applied only once the
       // transaction has committed; emptied if it is rolled back.
       const doomedWaitingRunEffects: PostCommitEffect[] = [];
-      // myrmidon(OPE-11948): issues whose continuation cap was reached inside
-      // this admission. Parked as blocked only after the transaction committed.
-      const continuationCapStops: ContinuationCapStop[] = [];
       const runCapNoCommitStops: RunCapNoCommitStop[] = [];
 
       const outcome = await db
@@ -36324,8 +36269,7 @@ export function heartbeatService(
             // myrmidon(OPE-11948): the real attempt counter. Succeeded
             // continuation runs of this (agent, issue) with no external input
             // between them; the agent's own comments and updates do not reset
-            // it. At the cap no further continuation is enqueued and the issue
-            // is parked as blocked once this transaction has committed.
+            // it. At the cap, defer admission for a bounded cooldown.
             const continuationCap = interactionContinuation
               ? null
               : await readContinuationCap(tx as unknown as Db, {
@@ -36358,12 +36302,6 @@ export function heartbeatService(
                 requestedByActorId: opts.requestedByActorId ?? null,
                 idempotencyKey: opts.idempotencyKey ?? null,
                 finishedAt: new Date(),
-              });
-              continuationCapStops.push({
-                companyId: issue.companyId,
-                issueId: issue.id,
-                agentId,
-                consecutiveContinuations: continuationCap.count,
               });
               return { kind: "skipped" as const };
             }
@@ -37431,16 +37369,13 @@ export function heartbeatService(
             // The transaction rolled back, and so did any waiting run it
             // cancelled: there is nothing to publish for it.
             doomedWaitingRunEffects.length = 0;
-            continuationCapStops.length = 0;
+
             runCapNoCommitStops.length = 0;
             return { kind: "deferred" as const };
           }
           throw error;
         });
 
-      for (const stop of continuationCapStops) {
-        await applyContinuationCapStop(stop);
-      }
 
       for (const stop of runCapNoCommitStops) {
         await applyRunCapNoCommitStop(stop);

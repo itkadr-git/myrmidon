@@ -55,6 +55,7 @@ export const CONTINUATION_INTERACTION_STATUSES = ["todo", "in_progress", "in_rev
 
 /** Succeeded continuation runs in a row, without external input, before the stop. */
 export const MAX_CONTINUATIONS_WITHOUT_EXTERNAL_INPUT = 3;
+export const CONTINUATION_CAP_COOLDOWN_MS = 60 * 60 * 1000;
 
 /** How long the stop block holds before the board janitor may look at it again. */
 export const CONTINUATION_CAP_BLOCK_TIMEOUT_MS = 7 * 24 * 60 * 60 * 1000;
@@ -258,7 +259,11 @@ export async function readContinuationCap(
     since: runs[runs.length - 1]!.createdAt,
   });
   const count = countContinuationsWithoutExternalInput({ agentId: input.agentId, runs, moves });
-  return { count, max, capped: count >= max };
+  return {
+    count,
+    max,
+    capped: count >= max && Date.now() < runs[0]!.createdAt.getTime() + CONTINUATION_CAP_COOLDOWN_MS,
+  };
 }
 
 /** Activity the stop writes when it parks an issue. */

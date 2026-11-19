@@ -6195,6 +6195,35 @@ export function recoveryService(
     issueCreatedAtGte?: Date | null;
     issueIds?: string[];
   }) {
+    // Restore only the legacy synthetic continuation block, never a real blocker.
+    const legacyContinuationBlocks = await db.select().from(issues).where(and(
+      eq(issues.status, "blocked"),
+      isNull(issues.assigneeUserId),
+      isNotNull(issues.assigneeAgentId),
+      isNull(issues.hiddenAt),
+      sql`${issues.blockerMetadata} ->> 'externalRef' = 'continuation_cap:' || ${issues.id}::text`,
+      opts?.issueIds ? inArray(issues.id, opts.issueIds) : undefined,
+    ));
+    for (const blocked of legacyContinuationBlocks) {
+      if ((await existingUnresolvedBlockerIssueIds(blocked.companyId, blocked.id)).length > 0) continue;
+      if (await hasPendingWakeInteraction(blocked.companyId, blocked.id)) continue;
+      if (await recoveryActionsSvc.getActiveForIssue(blocked.companyId, blocked.id)) continue;
+      await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(issues).where(and(
+          eq(issues.id, blocked.id), eq(issues.companyId, blocked.companyId),
+        )).for("update");
+        if (!current || current.status !== "blocked" || current.assigneeAgentId !== blocked.assigneeAgentId ||
+          current.blockerMetadata?.externalRef !== `continuation_cap:${current.id}`) return;
+        const blockers = await tx.select({ id: issueRelations.issueId }).from(issueRelations)
+          .innerJoin(issues, eq(issues.id, issueRelations.issueId))
+          .where(and(eq(issueRelations.companyId, current.companyId),
+            eq(issueRelations.relatedIssueId, current.id), eq(issueRelations.type, "blocks"),
+            notInArray(issues.status, ["done", "cancelled"])));
+        if (blockers.length) return;
+        await tx.update(issues).set({ status: "in_progress", blockerMetadata: null,
+          unblockDescriptor: null, updatedAt: new Date() }).where(eq(issues.id, current.id));
+      });
+    }
     const strandedReviewBlocks = await db
       .select()
       .from(issues)
