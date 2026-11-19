@@ -45,6 +45,18 @@ export const heartbeatRuns = pgTable(
     runtimeModeResolverVersion: text("runtime_mode_resolver_version"),
     runtimeModeReason: text("runtime_mode_reason"),
     runtimeModeResolvedAt: timestamp("runtime_mode_resolved_at", { withTimezone: true }),
+    // myrmidon(1.8 MODEL-BY-STEP / OPE-12998): the model decision of this run,
+    // resolved once before adapter dispatch and persisted as an immutable
+    // snapshot (step class, LiteLLM model group, concrete model, decision
+    // reason, resolver version). Written exactly once at run start; no run
+    // ever changes its model mid-flight, so later writers must not touch
+    // these columns. The snapshot carries only names and ids — no secrets,
+    // no credentials, no environment values.
+    stepClass: text("step_class"),
+    stepModelGroup: text("step_model_group"),
+    stepModel: text("step_model"),
+    stepModelReason: text("step_model_reason"),
+    stepModelSnapshotJson: jsonb("step_model_snapshot_json").$type<Record<string, unknown>>(),
     runnerProfileJson: jsonb("runner_profile_json").$type<Record<string, unknown>>(),
     runnerInstanceId: uuid("runner_instance_id"),
     nativeSessionId: uuid("native_session_id"),
