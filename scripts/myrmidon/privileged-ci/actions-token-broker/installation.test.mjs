@@ -31,3 +31,16 @@ test('rejects and revokes an upstream token with expanded permissions', async ()
   assert.equal(calls.length, 2);
   assert.equal(calls[1].init.method, 'DELETE');
 });
+
+test('later policy mutation cannot expand accepted upstream permissions', async () => {
+  const permissions = { contents: 'read' };
+  const calls = [];
+  const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions, appJwt: async () => 'app-fixture', request: async (url, init) => {
+    calls.push(init.method);
+    if (init.method === 'DELETE') return { ok: true };
+    return { ok: true, json: async () => ({ token: 'unsafe-fixture', expires_at: '2030-01-01T00:00:00Z', permissions: { contents: 'write' }, repositories: [{ id: 123 }] }) };
+  } });
+  permissions.contents = 'write';
+  await assert.rejects(client.issue());
+  assert.deepEqual(calls, ['POST', 'DELETE']);
+});
