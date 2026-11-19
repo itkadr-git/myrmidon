@@ -283,6 +283,8 @@ describe("docker/bot-runtime/github-broker/gh", () => {
       { args: ["pr", "checkout", "origin/main"], expected: "itkadr-git/myrmidon" },
       { args: ["repo", "view", "--json", "owner/target"], expected: "itkadr-git/myrmidon" },
       { args: ["repo", "view", "other.example/owner/target"], expected: "itkadr-git/myrmidon" },
+      { args: ["repo", "clone", "https://github.com.evil/owner/target"], expected: "itkadr-git/myrmidon" },
+      { args: ["repo", "clone", "--upstream-remote-name", "owner/target"], expected: "itkadr-git/myrmidon" },
     ];
     for (const { args, env, expected } of cases) {
       requests = [];
