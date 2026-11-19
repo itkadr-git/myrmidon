@@ -9,6 +9,22 @@ import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { createBroker } from './broker.mjs';
 import { createAuditedSupervisedServer, createSecureServer } from './tls.mjs';
 
+test('audit startup failure alerts when known-token recovery dependencies are missing', async () => {
+  const alerts = [];
+  const auditAnchor = { read: async () => { throw new Error('anchor unavailable'); }, compareAndSet: async () => true };
+  const scratch = process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_SCRATCH_DIR || join(homedir(), '.cache', 'myrmidon-broker-tests');
+  mkdirSync(scratch, { recursive: true, mode: 0o700 });
+  const dir = mkdtempSync(join(scratch, 'broker-audit-unavailable-'));
+  try {
+    await assert.rejects(createAuditedSupervisedServer({}, {
+      auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32), auditAnchor,
+      alert: async event => alerts.push(event),
+    }), /anchor unavailable/);
+    assert.ok(alerts.includes('audit_unavailable'));
+    assert.ok(alerts.includes('credential_recovery_failed'));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('supervised TLS startup alerts when the credential anchor is missing', async () => {
   const scratch = process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_SCRATCH_DIR || join(homedir(), '.cache', 'myrmidon-broker-tests');
   mkdirSync(scratch, { recursive: true, mode: 0o700 });
