@@ -158,6 +158,14 @@ BEGIN
   IF TG_OP <> 'DELETE' AND (TG_OP = 'INSERT' OR NEW."document_id" IS DISTINCT FROM OLD."document_id") THEN
     UPDATE "documents" SET "updated_at" = "updated_at" WHERE "id" = NEW."document_id";
   END IF;
+  IF TG_OP <> 'DELETE' AND EXISTS (
+    SELECT 1 FROM "issue_documents" AS "link"
+    WHERE "link"."document_id" = NEW."document_id"
+      AND "link"."key" = 'acceptance-scenarios'
+      AND "link"."company_id" IS DISTINCT FROM NEW."company_id"
+  ) THEN
+    RAISE EXCEPTION 'acceptance revision company mismatch';
+  END IF;
   RETURN COALESCE(NEW, OLD);
 END;
 $trg$ LANGUAGE plpgsql;--> statement-breakpoint
