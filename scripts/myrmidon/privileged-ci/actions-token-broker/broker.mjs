@@ -205,9 +205,16 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
             await installation.revoke(credential.token);
           });
           await record('revoked');
-          if (durable) await store.resolveIssuance(attempt);
+          if (durable) {
+            try { await store.resolveIssuance(attempt); } catch (error) {
+              // The deletion may have committed despite a lost acknowledgement.
+              auditFailed = true;
+              try { await store.reserveIssuance(attempt); } catch { /* Existing fence or unavailable storage. */ }
+              throw error;
+            }
+          }
         } catch (error) {
-          try { if (typeof store.queueAlert === 'function') await store.queueAlert('credential_recovery_failed'); } catch { /* Reservation remains pending. */ }
+          try { if (typeof store.queueAlert === 'function') await store.queueAlert('credential_recovery_failed'); } catch { /* Reservation or process latch remains in force. */ }
           try { if (typeof alert === 'function') await alert('credential_recovery_failed'); } catch { /* Recovery retries the alert. */ }
           throw error;
         }
