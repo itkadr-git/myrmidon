@@ -67,6 +67,27 @@ test('document response is company-bound, projected and rejects a changing revis
   assert.equal((await request()).status, 409);
 });
 
+test('document is withheld on an ABA change even when the visible issue and revision return to their original values', async (t) => {
+  const token = 'candidate-test-token';
+  const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
+  let version = 1;
+  const server = createServer(createHandler({ records,
+    readIssue: async () => ({ id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: String(version) }),
+    readDocument: async () => {
+      version = 3; // An intervening change and reversal must still advance the generation.
+      return { id: 'doc-id', issueId: 'issue-id', companyId: 'company-a', key: 'acceptance-scenarios', latestRevisionId: 'rev-1', body: 'criteria' };
+    },
+  }));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const result = await new Promise((resolve, reject) => get({ host: '127.0.0.1', port: server.address().port, path: '/api/issues/OPE-123/documents/acceptance-scenarios', headers: { authorization: `Bearer ${token}` } }, (res) => {
+    let body = ''; res.on('data', (chunk) => { body += chunk; }); res.on('end', () => resolve({ status: res.statusCode, body }));
+  }).on('error', reject));
+  assert.equal(result.status, 409);
+  assert.ok(!result.body.includes('criteria'));
+});
+
 test('revocation during upstream lookup fails closed and audit excludes request data', async (t) => {
   const token = 'candidate-test-token';
   const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
