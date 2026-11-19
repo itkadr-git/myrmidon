@@ -19,6 +19,18 @@ test('loads only the fixed GitHub JWKS endpoint and rejects failures and redirec
   await assert.rejects(loadGitHubKeys(async () => { throw new Error('network failure'); }));
 });
 
+test('reads a bounded streamed JWKS response and cancels error bodies', async () => {
+  const keys = [{ kid: 'fixture' }];
+  const body = new ReadableStream({
+    start(controller) { controller.enqueue(Buffer.from(JSON.stringify({ keys }))); controller.close(); },
+  });
+  assert.deepEqual(await loadGitHubKeys(async () => ({ ok: true, status: 200, body })), keys);
+  let cancelled = false;
+  const errorBody = new ReadableStream({ cancel() { cancelled = true; } });
+  await assert.rejects(loadGitHubKeys(async () => ({ ok: false, status: 500, body: errorBody })), /JWKS/);
+  assert.equal(cancelled, true);
+});
+
 test('rejects and cancels an oversized streamed JWKS response', async () => {
   let cancelled = false;
   const body = new ReadableStream({
