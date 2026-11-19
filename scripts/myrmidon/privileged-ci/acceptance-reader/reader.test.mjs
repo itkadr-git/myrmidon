@@ -88,6 +88,24 @@ test('revocation during upstream lookup fails closed and audit excludes request 
   assert.ok(!JSON.stringify(events).includes('hidden'));
 });
 
+test('document is withheld when the issue changes company during lookup', async (t) => {
+  const token = 'candidate-test-token';
+  const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
+  let reads = 0;
+  const server = createServer(createHandler({ records,
+    readIssue: async () => ({ id: 'issue-id', identifier: 'OPE-123', companyId: ++reads === 1 ? 'company-a' : 'company-b' }),
+    readDocument: async () => ({ id: 'doc-id', issueId: 'issue-id', companyId: 'company-a', key: 'acceptance-scenarios', latestRevisionId: 'rev-1', body: 'criteria' }),
+  }));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const result = await new Promise((resolve, reject) => get({ host: '127.0.0.1', port: server.address().port, path: '/api/issues/OPE-123/documents/acceptance-scenarios', headers: { authorization: `Bearer ${token}` } }, (res) => {
+    let body = ''; res.on('data', (chunk) => { body += chunk; }); res.on('end', () => resolve({ status: res.statusCode, body }));
+  }).on('error', reject));
+  assert.notEqual(result.status, 200);
+  assert.ok(!result.body.includes('criteria'));
+});
+
 test('duplicate authorization headers are rejected before upstream access', async (t) => {
   const token = 'candidate-test-token';
   const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
