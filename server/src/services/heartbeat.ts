@@ -4406,6 +4406,8 @@ export interface WakeupOptions {
     assigneeAgentId: string;
     statusVersion?: number;
   };
+  /** Internal monitor claim checked under the issue admission lock. */
+  monitorClaimGuard?: { issueId: string; scheduledAt: Date; claimedAt: Date; invalidated: boolean; completed: boolean; patch: ReturnType<typeof buildIssueMonitorTriggeredPatch> };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;
 }
@@ -12891,6 +12893,7 @@ export function heartbeatService(
 
     // myrmidon(MONITOR-IDLE-LOOP, OPE-13141): the snapshot this wake is based on.
     let idleSnapshotHash: string | null = null;
+    let monitorCompletedInAdmission = false;
 
     try {
       if (monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME) {
@@ -12931,11 +12934,17 @@ export function heartbeatService(
           const targetAgent = await getAgent(targetAgentId);
           if (!targetAgent)
             throw conflict("The quota recovery agent is unavailable.");
+          const monitorClaimGuard = {
+            issueId: claimed.id, scheduledAt: claimed.monitorNextCheckAt, claimedAt: input.now,
+            invalidated: false, completed: false,
+            patch: buildIssueMonitorTriggeredPatch({ issue: claimed, policy, triggeredAt: input.now }),
+          };
           const scheduled = await scheduleBoundedRetryForRun(
             sourceRun,
             targetAgent,
             {
               now: input.now,
+              monitorClaimGuard,
               ...(isProviderQuotaReviewMonitor
                 ? {
                     retryReason:
@@ -12956,6 +12965,8 @@ export function heartbeatService(
                   : {}),
             },
           );
+          if (monitorClaimGuard.invalidated) return { outcome: "skipped" as const, reason: "monitor_changed" };
+          monitorCompletedInAdmission = monitorClaimGuard.completed;
           if (scheduled.outcome === "not_scheduled")
             throw conflict(scheduled.reason);
         }
@@ -13017,7 +13028,7 @@ export function heartbeatService(
               noAccess.count + 1 >= CI_NO_ACCESS_MAX_FAILURES &&
               input.now.getTime() - (noAccess.firstAt ?? input.now).getTime() >= CI_NO_ACCESS_MIN_WINDOW_MS
             ) {
-              await db
+              const [cleared] = await db
                 .update(issues)
                 .set({
                   ...buildIssueMonitorClearedPatch({
@@ -13028,7 +13039,12 @@ export function heartbeatService(
                   }),
                   updatedAt: input.now,
                 })
-                .where(eq(issues.id, claimed.id));
+                .where(and(
+                  eq(issues.id, claimed.id),
+                  eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+                  eq(issues.monitorWakeRequestedAt, input.now),
+                )).returning({ id: issues.id });
+              if (!cleared) return { outcome: "skipped" as const, reason: "monitor_changed" };
               if (
                 !(await issueHasCommentBody(db, {
                   companyId: claimed.companyId,
@@ -13062,12 +13078,17 @@ export function heartbeatService(
               return { outcome: "skipped" as const, reason: CI_NO_ACCESS_DEFER_REASON };
             }
             const noAccessNextCheckAt = new Date(input.now.getTime() + CI_NO_ACCESS_PAUSE_MS);
-            await db.update(issues).set({
+            const [deferred] = await db.update(issues).set({
               monitorNextCheckAt: noAccessNextCheckAt,
               monitorAttemptCount: nextAttemptCount,
               monitorWakeRequestedAt: null,
               updatedAt: input.now,
-            }).where(eq(issues.id, claimed.id));
+            }).where(and(
+              eq(issues.id, claimed.id),
+              eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+              eq(issues.monitorWakeRequestedAt, input.now),
+            )).returning({ id: issues.id });
+            if (!deferred) return { outcome: "skipped" as const, reason: "monitor_changed" };
             await logActivity(db, {
               companyId: claimed.companyId,
               actorType: input.actorType,
@@ -13112,11 +13133,16 @@ export function heartbeatService(
             ) === "quota_reached"
           ) {
             const quotaNextCheckAt = new Date(input.now.getTime() + REVIEW_WAKE_QUOTA_DEFER_MS);
-            await db.update(issues).set({
+            const [deferred] = await db.update(issues).set({
               monitorNextCheckAt: quotaNextCheckAt,
               monitorWakeRequestedAt: null,
               updatedAt: input.now,
-            }).where(eq(issues.id, claimed.id));
+            }).where(and(
+              eq(issues.id, claimed.id),
+              eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+              eq(issues.monitorWakeRequestedAt, input.now),
+            )).returning({ id: issues.id });
+            if (!deferred) return { outcome: "skipped" as const, reason: "monitor_changed" };
             await logActivity(db, {
               companyId: claimed.companyId,
               actorType: input.actorType,
@@ -13144,12 +13170,17 @@ export function heartbeatService(
               ? REVIEW_CI_WAIT_INTERVAL_MS
               : Math.min(10 * 60_000, 30_000 * Math.pow(2, Math.min(nextAttemptCount - 1, 4)));
             const nextCheckAt = new Date(input.now.getTime() + backoffMs);
-            await db.update(issues).set({
+            const [deferred] = await db.update(issues).set({
               monitorNextCheckAt: nextCheckAt,
               monitorAttemptCount: nextAttemptCount,
               monitorWakeRequestedAt: null,
               updatedAt: input.now,
-            }).where(eq(issues.id, claimed.id));
+            }).where(and(
+              eq(issues.id, claimed.id),
+              eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+              eq(issues.monitorWakeRequestedAt, input.now),
+            )).returning({ id: issues.id });
+            if (!deferred) return { outcome: "skipped" as const, reason: "monitor_changed" };
             await logActivity(db, {
               companyId: claimed.companyId,
               actorType: input.actorType,
@@ -13203,12 +13234,17 @@ export function heartbeatService(
             }),
           });
           if (prWait.action === "defer") {
-            await db.update(issues).set({
+            const [deferred] = await db.update(issues).set({
               monitorNextCheckAt: prWait.nextCheckAt,
               monitorAttemptCount: nextAttemptCount,
               monitorWakeRequestedAt: null,
               updatedAt: input.now,
-            }).where(eq(issues.id, claimed.id));
+            }).where(and(
+              eq(issues.id, claimed.id),
+              eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+              eq(issues.monitorWakeRequestedAt, input.now),
+            )).returning({ id: issues.id });
+            if (!deferred) return { outcome: "skipped" as const, reason: "monitor_changed" };
             await logActivity(db, {
               companyId: claimed.companyId,
               actorType: input.actorType,
@@ -13304,12 +13340,17 @@ export function heartbeatService(
               limit: await loadMonitorUnchangedWakeLimit(db),
             });
             if (idleDecision.action === "defer") {
-              await db.update(issues).set({
+              const [deferred] = await db.update(issues).set({
                 monitorNextCheckAt: idleDecision.nextCheckAt,
                 monitorAttemptCount: nextAttemptCount,
                 monitorWakeRequestedAt: null,
                 updatedAt: input.now,
-              }).where(eq(issues.id, claimed.id));
+              }).where(and(
+                eq(issues.id, claimed.id),
+                eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+                eq(issues.monitorWakeRequestedAt, input.now),
+              )).returning({ id: issues.id });
+              if (!deferred) return { outcome: "skipped" as const, reason: "monitor_changed" };
               await logActivity(db, {
                 companyId: claimed.companyId,
                 actorType: input.actorType,
@@ -13332,7 +13373,7 @@ export function heartbeatService(
               return { outcome: "skipped" as const, reason: MONITOR_UNCHANGED_DEFER_REASON };
             }
             if (idleDecision.action === "clear") {
-              await db.update(issues).set({
+              const [cleared] = await db.update(issues).set({
                 ...buildIssueMonitorClearedPatch({
                   issue: claimed,
                   policy,
@@ -13340,7 +13381,12 @@ export function heartbeatService(
                   clearedAt: input.now,
                 }),
                 updatedAt: input.now,
-              }).where(eq(issues.id, claimed.id));
+              }).where(and(
+                eq(issues.id, claimed.id),
+                eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+                eq(issues.monitorWakeRequestedAt, input.now),
+              )).returning({ id: issues.id });
+              if (!cleared) return { outcome: "skipped" as const, reason: "monitor_changed" };
               await logActivity(db, {
                 companyId: claimed.companyId,
                 actorType: input.actorType,
@@ -13394,12 +13440,17 @@ export function heartbeatService(
                 }),
               });
               if (leafDecision.action === "defer") {
-                await db.update(issues).set({
+                const [deferred] = await db.update(issues).set({
                   monitorNextCheckAt: leafDecision.nextCheckAt,
                   monitorAttemptCount: nextAttemptCount,
                   monitorWakeRequestedAt: null,
                   updatedAt: input.now,
-                }).where(eq(issues.id, claimed.id));
+                }).where(and(
+                  eq(issues.id, claimed.id),
+                  eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+                  eq(issues.monitorWakeRequestedAt, input.now),
+                )).returning({ id: issues.id });
+                if (!deferred) return { outcome: "skipped" as const, reason: "monitor_changed" };
                 await logActivity(db, {
                   companyId: claimed.companyId,
                   actorType: input.actorType,
@@ -13425,7 +13476,16 @@ export function heartbeatService(
           }
         }
 
+        const monitorClaimGuard = {
+          issueId: claimed.id,
+          scheduledAt: claimed.monitorNextCheckAt,
+          claimedAt: input.now,
+          invalidated: false,
+          completed: false,
+          patch: buildIssueMonitorTriggeredPatch({ issue: claimed, policy, triggeredAt: input.now }),
+        };
         await enqueueWakeup(targetAgentId, {
+          monitorClaimGuard,
           source: input.source,
           triggerDetail: input.triggerDetail,
           reason: wakeReason,
@@ -13457,6 +13517,8 @@ export function heartbeatService(
             manualTrigger: input.activitySource === "manual",
           },
         });
+        if (monitorClaimGuard.invalidated) return { outcome: "skipped" as const, reason: "monitor_changed" };
+        monitorCompletedInAdmission = monitorClaimGuard.completed;
       }
 
       const triggeredPatch = buildIssueMonitorTriggeredPatch({
@@ -13464,7 +13526,7 @@ export function heartbeatService(
         policy,
         triggeredAt: input.now,
       });
-      await db
+      if (!monitorCompletedInAdmission) await db
         .update(issues)
         .set({
           ...triggeredPatch,
@@ -13553,7 +13615,11 @@ export function heartbeatService(
             monitorWakeRequestedAt: null,
             updatedAt: new Date(),
           })
-          .where(eq(issues.id, claimed.id));
+          .where(and(
+            eq(issues.id, claimed.id),
+            eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+            eq(issues.monitorWakeRequestedAt, input.now),
+          ));
       } else {
         await db
           .update(issues)
@@ -13561,7 +13627,11 @@ export function heartbeatService(
             monitorWakeRequestedAt: null,
             updatedAt: new Date(),
           })
-          .where(eq(issues.id, claimed.id));
+          .where(and(
+            eq(issues.id, claimed.id),
+            eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+            eq(issues.monitorWakeRequestedAt, input.now),
+          ));
       }
 
       throw err;
@@ -18057,6 +18127,7 @@ export function heartbeatService(
       runGuardContinuation?: boolean;
       livenessContinuationInstruction?: string;
       livenessContinuationState?: string;
+      monitorClaimGuard?: NonNullable<WakeupOptions["monitorClaimGuard"]>;
     },
   ) {
     const now = opts?.now ?? new Date();
@@ -18622,6 +18693,19 @@ export function heartbeatService(
 
     const scheduleResult = await db.transaction(
       async (tx): Promise<ScheduledRetryTransactionResult> => {
+        const guard = opts?.monitorClaimGuard;
+        if (guard) {
+          await tx.execute(sql`select id from issues where company_id = ${run.companyId} and id = ${guard.issueId} for update`);
+          const [current] = await tx.select({ id: issues.id }).from(issues).where(and(
+            eq(issues.companyId, run.companyId), eq(issues.id, guard.issueId),
+            eq(issues.monitorNextCheckAt, guard.scheduledAt), eq(issues.monitorWakeRequestedAt, guard.claimedAt),
+          )).limit(1);
+          if (!current || issueId !== guard.issueId) {
+            guard.invalidated = true;
+            return { outcome: "not_scheduled", reason: "monitor_changed", errorCode: "issue_execution_lock_changed", issueId, details: {} };
+          }
+        }
+        const result = await (async (): Promise<ScheduledRetryTransactionResult> => {
         // All automatic failure paths share the same predecessor claim. A
         // duplicate monitor, restart sweep or wake must reuse its successor.
         if (
@@ -19199,6 +19283,20 @@ export function heartbeatService(
           }
           throw error;
         }
+        })();
+        if (guard && result.outcome === "scheduled") {
+          const [completed] = await tx.update(issues).set({
+            ...guard.patch,
+            executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(guard.patch.executionState?.monitor ?? null)}::jsonb, true)`,
+            executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
+            updatedAt: new Date(),
+          }).where(and(
+            eq(issues.id, guard.issueId), eq(issues.monitorNextCheckAt, guard.scheduledAt),
+            eq(issues.monitorWakeRequestedAt, guard.claimedAt),
+          )).returning({ id: issues.id });
+          guard.completed = Boolean(completed);
+        }
+        return result;
       },
     );
 
@@ -34879,6 +34977,20 @@ export function heartbeatService(
           await tx.execute(
             sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
           );
+          if (opts.monitorClaimGuard) {
+            const guard = opts.monitorClaimGuard;
+            const [current] = await tx.select({ id: issues.id }).from(issues).where(and(
+              eq(issues.id, issueId),
+              eq(issues.companyId, agent.companyId),
+              eq(issues.id, guard.issueId),
+              eq(issues.monitorNextCheckAt, guard.scheduledAt),
+              eq(issues.monitorWakeRequestedAt, guard.claimedAt),
+            )).limit(1);
+            if (!current) {
+              guard.invalidated = true;
+              return { kind: "skipped" as const };
+            }
+          }
 
           if (executionWaitRequestId) {
             const [pending] = await tx.select().from(agentWakeupRequests).where(and(
@@ -36571,6 +36683,22 @@ export function heartbeatService(
             }
           }
 
+          const completeMonitorAdmission = async () => {
+            const guard = opts.monitorClaimGuard;
+            if (!guard) return;
+            const [completed] = await tx.update(issues).set({
+              ...guard.patch,
+              executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(guard.patch.executionState?.monitor ?? null)}::jsonb, true)`,
+              executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
+              updatedAt: new Date(),
+            }).where(and(
+              eq(issues.id, guard.issueId),
+              eq(issues.monitorNextCheckAt, guard.scheduledAt),
+              eq(issues.monitorWakeRequestedAt, guard.claimedAt),
+            )).returning({ id: issues.id });
+            guard.completed = Boolean(completed);
+          };
+
           if (activeExecutionRun) {
             // The resolved action is already a durable retry outbox. Do not merge
             // its fresh-session contract into unrelated work or create a second
@@ -36619,12 +36747,14 @@ export function heartbeatService(
             );
 
             if (admission.kind === "coalesced") {
+              await completeMonitorAdmission();
               return {
                 kind: "coalesced" as const,
                 run: admission.run as typeof heartbeatRuns.$inferSelect,
               };
             }
             if (admission.kind === "deferred") {
+              await completeMonitorAdmission();
               return { kind: "deferred" as const };
             }
             // admission.kind === "proceed": no active run absorbed this wake,
@@ -37222,6 +37352,8 @@ export function heartbeatService(
           if (!wakeupRequest) {
             return { kind: "skipped" as const };
           }
+
+          await completeMonitorAdmission();
 
           // A handoff changes the executor, not the owner of saved user input.
           // Validate its exact stopped source while the issue row is locked;
