@@ -386,6 +386,10 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
   });
 
   it("requires board access for retry-now", async () => {
+    // 1.7 (PRIVATE-TASKS E2): the agent hits the loader before the board
+    // gate. On a PUBLIC issue the loader passes and assertBoard still 403s —
+    // unchanged. A private issue would 404 first (flat wall, see
+    // issue-private-write-paths.test.ts).
     const { companyId, agentId, issueId } = await seedIssueWithRetry();
 
     const res = await request(createApp(agentActor(companyId, agentId)))

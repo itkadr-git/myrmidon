@@ -6042,6 +6042,30 @@ export function issueRoutes(
     return false;
   }
 
+  /**
+   * Load an issue for any route handler with the private-task wall applied
+   * (1.7 PRIVATE-TASKS E2). Wraps `getAccessibleResource` so 401 /
+   * cross-tenant / company-scope semantics stay in one place, then hides
+   * `isPrivate` issues from agent actors with the same 404 body the board
+   * guard above (`assertIssueReadAllowed`) returns. Board actors keep their
+   * existing behavior unchanged.
+   */
+  async function getAccessibleIssue<
+    T extends { companyId: string; isPrivate?: boolean | null },
+  >(
+    req: Request,
+    res: Response,
+    issue: T | null | undefined | Promise<T | null | undefined>,
+  ): Promise<T | null> {
+    const loaded = await getAccessibleResource(req, res, issue, "Issue not found");
+    if (!loaded) return null;
+    if (loaded.isPrivate && req.actor.type === "agent") {
+      res.status(404).json({ error: "Issue not found" });
+      return null;
+    }
+    return loaded;
+  }
+
   async function assertIssueWriteInfluenceAllowed(
     req: Request,
     res: Response,
@@ -9865,11 +9889,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/runner-goal", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -9894,11 +9917,10 @@ export function issueRoutes(
     validate(runnerGoalActionRequestSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         getIssueById(req, id),
-        "Issue not found",
       );
       if (!issue) return;
       if (
@@ -9948,11 +9970,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -10147,11 +10168,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/ci-status", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -10421,11 +10441,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/diagnostics/blockers", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -10464,11 +10483,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/diagnostics/wakes", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -10521,11 +10539,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/diagnostics/subtree", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -10583,11 +10600,10 @@ export function issueRoutes(
   router.get("/issues/:id", async (req, res) => {
     const requestStartedAt = performance.now();
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -10694,11 +10710,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/watchdog", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -10712,11 +10727,10 @@ export function issueRoutes(
     validate(upsertIssueWatchdogSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         getIssueById(req, id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -10771,11 +10785,10 @@ export function issueRoutes(
 
   router.delete("/issues/:id/watchdog", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -10821,11 +10834,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/recovery-actions", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -10845,11 +10857,10 @@ export function issueRoutes(
     validate(resolveIssueRecoveryActionSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const existing = await getAccessibleResource(
+      const existing = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!existing) return;
       if (!(await assertIssueReadAllowed(req, res, existing))) return;
@@ -11446,11 +11457,10 @@ export function issueRoutes(
     "/issues/:id/execution-hold/confirm-continue",
     async (req, res) => {
       const id = req.params.id as string;
-      const existing = await getAccessibleResource(
+      const existing = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!existing) return;
       if (!(await assertIssueReadAllowed(req, res, existing))) return;
@@ -11610,11 +11620,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/work-products", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -11626,11 +11635,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/external-objects", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -11640,11 +11648,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/external-object-summary", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -11696,11 +11703,10 @@ export function issueRoutes(
     validate(refreshExternalObjectsSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -11731,11 +11737,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -11747,11 +11752,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents/:key", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -11793,11 +11797,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents/:key/annotations", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -11833,11 +11836,10 @@ export function issueRoutes(
     validate(createDocumentAnnotationThreadSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (
@@ -11918,11 +11920,10 @@ export function issueRoutes(
     "/issues/:id/documents/:key/annotations/:threadId",
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         getIssueById(req, id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -11956,11 +11957,10 @@ export function issueRoutes(
     validate(createDocumentAnnotationCommentSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -12034,11 +12034,10 @@ export function issueRoutes(
     validate(updateDocumentAnnotationThreadSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -12092,11 +12091,10 @@ export function issueRoutes(
     validate(upsertIssueDocumentSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       // myrmidon(OPE-13095): the starter-pack scout may write exactly the document
@@ -12310,11 +12308,10 @@ export function issueRoutes(
 
   router.post("/issues/:id/documents/:key/lock", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!issue) return;
     if (req.actor.type !== "board") {
@@ -12367,11 +12364,10 @@ export function issueRoutes(
 
   router.post("/issues/:id/documents/:key/unlock", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!issue) return;
     if (req.actor.type !== "board") {
@@ -12421,11 +12417,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents/:key/revisions", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -12454,11 +12449,10 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const revisionId = req.params.revisionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -12603,11 +12597,10 @@ export function issueRoutes(
 
   router.delete("/issues/:id/documents/:key", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!issue) return;
     if (req.actor.type !== "board") {
@@ -12713,11 +12706,10 @@ export function issueRoutes(
     validate(createIssueWorkProductSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -12929,11 +12921,10 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const workProductId = req.params.workProductId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -12965,11 +12956,10 @@ export function issueRoutes(
     validate(promoteLowTrustOutputSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -13279,11 +13269,10 @@ export function issueRoutes(
 
   router.post("/issues/:id/read", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!issue) return;
     if (req.actor.type !== "board") {
@@ -13318,11 +13307,10 @@ export function issueRoutes(
 
   router.delete("/issues/:id/read", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!issue) return;
     if (req.actor.type !== "board") {
@@ -13423,11 +13411,10 @@ export function issueRoutes(
     validate(inboxArchiveBodySchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       const target = await resolveInboxArchiveTarget(req, issue);
@@ -13469,11 +13456,10 @@ export function issueRoutes(
     validate(inboxArchiveBodySchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       const target = await resolveInboxArchiveTarget(req, issue);
@@ -13505,11 +13491,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/approvals", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (
@@ -13526,11 +13511,10 @@ export function issueRoutes(
     validate(linkIssueApprovalSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -13566,11 +13550,10 @@ export function issueRoutes(
   router.delete("/issues/:id/approvals/:approvalId", async (req, res) => {
     const id = req.params.id as string;
     const approvalId = req.params.approvalId as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -14228,12 +14211,7 @@ export function issueRoutes(
     validateIssueMutationBody(createChildIssueSchema),
     async (req, res) => {
       const parentId = req.params.id as string;
-      const parent = await getAccessibleResource(
-        req,
-        res,
-        svc.getById(parentId),
-        "Parent issue not found",
-      );
+      const parent = await getAccessibleIssue(req, res, svc.getById(parentId));
       if (!parent) return;
       if (
         !isTaskBridgeKeyActor(req) &&
@@ -14487,11 +14465,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/accepted-plan-decompositions", async (req, res) => {
     const sourceIssueId = req.params.id as string;
-    const sourceIssue = await getAccessibleResource(
+    const sourceIssue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, sourceIssueId),
-      "Issue not found",
     );
     if (!sourceIssue) return;
     if (!(await assertIssueReadAllowed(req, res, sourceIssue))) return;
@@ -14506,11 +14483,10 @@ export function issueRoutes(
     validateIssueMutationBody(createAcceptedPlanDecompositionSchema),
     async (req, res) => {
       const sourceIssueId = req.params.id as string;
-      const sourceIssue = await getAccessibleResource(
+      const sourceIssue = await getAccessibleIssue(
         req,
         res,
         svc.getById(sourceIssueId),
-        "Issue not found",
       );
       if (!sourceIssue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, sourceIssue)))
@@ -14788,11 +14764,10 @@ export function issueRoutes(
 
   router.post("/issues/:id/monitor/check-now", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!issue) return;
     await assertCanManageIssueMonitor(
@@ -14815,15 +14790,16 @@ export function issueRoutes(
   });
 
   router.post("/issues/:id/scheduled-retry/retry-now", async (req, res) => {
-    assertBoard(req);
+    // 1.7 (PRIVATE-TASKS E2): the loader runs first so an agent probing a
+    // private issue gets the flat 404 wall, not a 403 gate reveal.
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!issue) return;
+    assertBoard(req);
 
     const actor = getActorInfo(req);
     const result = await heartbeat.retryScheduledRetryNow({
@@ -14858,11 +14834,10 @@ export function issueRoutes(
     validate(stalledReviewDecisionSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (req.actor.type === "agent") {
@@ -15003,9 +14978,11 @@ export function issueRoutes(
   router.patch(
     "/issues/:id/execution-participants",
     async (req, res) => {
-      assertBoard(req);
-      const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+      // 1.7 (PRIVATE-TASKS E2): the loader runs first so an agent probing a
+      // private issue gets the flat 404 wall, not a 403 gate reveal.
+      const issue = await getAccessibleIssue(req, res, svc.getById(req.params.id as string));
       if (!issue) return;
+      assertBoard(req);
       const body = req.body as { returnAssignee?: { type?: string; agentId?: string | null } | null; currentParticipant?: { type?: string; agentId?: string | null } | null };
       const currentState = parseIssueExecutionState(issue.executionState);
       if (!currentState) {
@@ -15044,11 +15021,10 @@ export function issueRoutes(
     validateIssueMutationBody(updateIssueRouteSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const existing = await getAccessibleResource(
+      const existing = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!existing) return;
       // 1.7 (PRIVATE-TASKS): only board actors may change the privacy flag.
@@ -19571,11 +19547,10 @@ export function issueRoutes(
 
   router.delete("/issues/:id", async (req, res) => {
     const id = req.params.id as string;
-    const existing = await getAccessibleResource(
+    const existing = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!existing) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
@@ -19621,11 +19596,10 @@ export function issueRoutes(
     validate(checkoutIssueSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       // 1.7 PRIVATE-TASKS part C: an agent key never checks out a private
@@ -19791,11 +19765,10 @@ export function issueRoutes(
 
   router.post("/issues/:id/release", async (req, res) => {
     const id = req.params.id as string;
-    const existing = await getAccessibleResource(
+    const existing = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!existing) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
@@ -19838,11 +19811,10 @@ export function issueRoutes(
     }
 
     const id = req.params.id as string;
-    const existing = await getAccessibleResource(
+    const existing = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!existing) return;
 
@@ -19878,11 +19850,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/comments", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -19953,11 +19924,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/queued-comments", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -19976,17 +19946,18 @@ export function issueRoutes(
     "/issues/:id/queued-comments/:commentId",
     validate(editQueuedCommentSchema),
     async (req, res) => {
-      assertBoard(req);
-      if (!req.actor.userId) throw forbidden("Board user context required");
+      // 1.7 (PRIVATE-TASKS E2): the loader runs first so an agent probing a
+      // private issue gets the flat 404 wall, not a 403 gate reveal.
       const id = req.params.id as string;
       const commentId = req.params.commentId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
+      assertBoard(req);
+      if (!req.actor.userId) throw forbidden("Board user context required");
       const actor = getActorInfo(req);
       const { queue, activityPublication } = await runQueuedCommentMutation(() =>
         queuedCommentQueue.editQueuedComment({
@@ -20008,16 +19979,17 @@ export function issueRoutes(
     "/issues/:id/queued-comments/order",
     validate(reorderQueuedCommentsSchema),
     async (req, res) => {
-      assertBoard(req);
-      if (!req.actor.userId) throw forbidden("Board user context required");
+      // 1.7 (PRIVATE-TASKS E2): the loader runs first so an agent probing a
+      // private issue gets the flat 404 wall, not a 403 gate reveal.
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
+      assertBoard(req);
+      if (!req.actor.userId) throw forbidden("Board user context required");
       const actor = getActorInfo(req);
       const { queue, activityPublication } = await runQueuedCommentMutation(() =>
         queuedCommentQueue.reorderQueuedComments({
@@ -20038,10 +20010,12 @@ export function issueRoutes(
     "/issues/:id/queued-comments/interrupt",
     validate(queuedCommentInterruptTargetSchema),
     async (req, res) => {
+      // 1.7 (PRIVATE-TASKS E2): the loader runs first so an agent probing a
+      // private issue gets the flat 404 wall, not a 403 gate reveal.
+      const issue = await getAccessibleIssue(req, res, svc.getById(req.params.id as string));
+      if (!issue) return;
       assertBoard(req);
       if (!req.actor.userId) throw forbidden("Board user context required");
-      const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
-      if (!issue) return;
       const decision = await decideIssueAccess(req, issue, "issue:comment");
       if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       if (issue.conversationAgentId) {
@@ -20109,17 +20083,18 @@ export function issueRoutes(
     "/issues/:id/queued-comments/:commentId/steer",
     validate(queuedCommentSteeringTargetSchema),
     async (req, res) => {
-      assertBoard(req);
-      if (!req.actor.userId) throw forbidden("Board user context required");
+      // 1.7 (PRIVATE-TASKS E2): the loader runs first so an agent probing a
+      // private issue gets the flat 404 wall, not a 403 gate reveal.
       const id = req.params.id as string;
       const commentId = req.params.commentId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
+      assertBoard(req);
+      if (!req.actor.userId) throw forbidden("Board user context required");
       if (issue.conversationAgentId) throw conflict("Conversation messages are processed in order at turn boundaries");
       // myrmidon(UPSTREAM-13539): steer of an interaction response requires comment rights on the issue.
       const decision = await decideIssueAccess(req, issue, "issue:comment");
@@ -20386,17 +20361,18 @@ export function issueRoutes(
     "/issues/:id/queued-comments/:commentId",
     validate(queuedCommentMutationTargetSchema),
     async (req, res) => {
-      assertBoard(req);
-      if (!req.actor.userId) throw forbidden("Board user context required");
+      // 1.7 (PRIVATE-TASKS E2): the loader runs first so an agent probing a
+      // private issue gets the flat 404 wall, not a 403 gate reveal.
       const id = req.params.id as string;
       const commentId = req.params.commentId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
+      assertBoard(req);
+      if (!req.actor.userId) throw forbidden("Board user context required");
       const actor = getActorInfo(req);
       const result = await runQueuedCommentMutation(() =>
         queuedCommentQueue.discardQueuedComment({
@@ -20421,11 +20397,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/interactions", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -20439,11 +20414,10 @@ export function issueRoutes(
     validate(createIssueThreadInteractionSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (req.actor.type === "agent") {
@@ -20639,11 +20613,10 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       const authorizedResolution =
@@ -20980,11 +20953,10 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       const authorizedResolution =
@@ -21090,11 +21062,10 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       const authorizedResolution =
@@ -21175,11 +21146,10 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       const authorizedResolution =
@@ -21269,11 +21239,10 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
 
@@ -21376,11 +21345,10 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (req.actor.type === "agent") {
@@ -21434,11 +21402,10 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (req.actor.type === "agent") {
@@ -21535,11 +21502,10 @@ export function issueRoutes(
   router.get("/issues/:id/comments/:commentId", async (req, res) => {
     const id = req.params.id as string;
     const commentId = req.params.commentId as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -21556,11 +21522,10 @@ export function issueRoutes(
   router.delete("/issues/:id/comments/:commentId", async (req, res) => {
     const id = req.params.id as string;
     const commentId = req.params.commentId as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -21779,11 +21744,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/feedback-votes", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (req.actor.type !== "board") {
@@ -21802,11 +21766,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/feedback-traces", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (req.actor.type !== "board") {
@@ -21912,11 +21875,10 @@ export function issueRoutes(
     validate(addIssueCommentSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (issue.conversationAgentId && req.actor.type === "board") {
@@ -23180,11 +23142,10 @@ export function issueRoutes(
     validate(upsertIssueFeedbackVoteSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getAccessibleIssue(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (req.actor.type !== "board") {
@@ -23289,11 +23250,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/attachments", async (req, res) => {
     const issueId = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getAccessibleIssue(
       req,
       res,
       getIssueById(req, issueId),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
