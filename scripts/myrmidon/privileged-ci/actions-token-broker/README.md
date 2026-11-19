@@ -48,8 +48,10 @@ secret management, least privilege and key rotation.
   recovery alert remains undelivered, including an audit failure on a rejected
   request before a reservation exists. Recovery must deliver the outbox first.
   If audit and outbox writes both fail, a process-local latch blocks later issuance
-  until restart; this latch is not durable and cannot fence a request already in
-  flight. An independent supervisor must stop service and investigate storage
+  until restart. An issuance checks the latch before and after its audit append
+  and revokes a known token if an earlier concurrent failure is observed; this
+  does not fence every possible race after audit append or across processes.
+  An independent supervisor must stop service and investigate storage
   failure before restart; do not rely on it for cross-process containment.
   Broker factories
   hold a separate SQLite write lock across recovery and the broker lifetime; this

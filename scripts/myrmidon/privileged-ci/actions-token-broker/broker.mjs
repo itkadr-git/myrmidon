@@ -150,7 +150,9 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
           throw new Error('credential storage failed');
         }
         try {
+          if (auditFailed) throw new Error('audit unavailable');
           await record('issued');
+          if (auditFailed) throw new Error('audit unavailable');
         } catch {
           // Keep the reservation even after successful revocation: audit failure
           // requires recovery and alert delivery before issuing again.
