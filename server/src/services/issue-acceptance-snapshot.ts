@@ -73,6 +73,8 @@ export function issueAcceptanceSnapshotService(db: Db) {
           identifier: issues.identifier,
           companyId: issues.companyId,
           issueEpoch: issueAcceptanceEpochs.epoch,
+          linkDocumentId: issueDocuments.documentId,
+          linkCompanyId: issueDocuments.companyId,
           documentId: documents.id,
           latestRevisionId: documents.latestRevisionId,
           latestRevisionNumber: documents.latestRevisionNumber,
@@ -87,7 +89,6 @@ export function issueAcceptanceSnapshotService(db: Db) {
           issueDocuments,
           and(
             eq(issueDocuments.issueId, issues.id),
-            eq(issueDocuments.companyId, issues.companyId),
             eq(issueDocuments.key, "acceptance-scenarios"),
           ),
         )
@@ -95,6 +96,7 @@ export function issueAcceptanceSnapshotService(db: Db) {
           documents,
           and(
             eq(documents.id, issueDocuments.documentId),
+            eq(issueDocuments.companyId, issues.companyId),
             eq(documents.companyId, issues.companyId),
           ),
         )
@@ -112,6 +114,11 @@ export function issueAcceptanceSnapshotService(db: Db) {
       const row = rows[0];
       if (!row) return null;
       const generation = row.latestRevisionNumber;
+      if (companyId && row.linkDocumentId &&
+          (row.linkCompanyId !== companyId || !row.documentId || !row.latestRevisionId || row.body === null ||
+           typeof generation !== "number" || !Number.isInteger(generation) || generation <= 0)) {
+        throw new Error("Ambiguous acceptance snapshot");
+      }
       return {
         issue: {
           id: row.issueId,

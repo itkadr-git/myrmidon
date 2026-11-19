@@ -133,6 +133,8 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
       const snapshot = await issueAcceptanceSnapshotService(db).read(issueId);
       expect(snapshot?.issue.companyId).toBe(companyA);
       expect(snapshot?.document).toBeNull();
+      // A scoped service read must distinguish a corrupt link from no document.
+      await expect(issueAcceptanceSnapshotService(db).read(issueId, companyA)).rejects.toThrow("Ambiguous acceptance snapshot");
     },
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
