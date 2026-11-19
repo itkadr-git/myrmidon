@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
 // Single-host storage; the key must come from server-side secret management.
@@ -19,6 +19,12 @@ export function createCredentialStore(path, key) {
   }
   let active = false;
   const store = {
+    stateDigest() {
+      if (active) throw new Error('store busy');
+      const rows = db.prepare('SELECT handle, owner, nonce, ciphertext, tag FROM credentials ORDER BY handle').all();
+      const state = rows.map(row => [row.handle, row.owner, Buffer.from(row.nonce).toString('hex'), Buffer.from(row.ciphertext).toString('hex'), Buffer.from(row.tag).toString('hex')]);
+      return createHmac('sha256', secret).update('credential-state-v1\0').update(JSON.stringify(state)).digest('hex');
+    },
     hasRetainedCredentials() { return Boolean(db.prepare('SELECT 1 FROM credentials LIMIT 1').get()); },
     async queueAlert(event) {
       if (!['issuance_ambiguous', 'credential_recovery_failed', 'audit_unavailable', 'replay_unavailable'].includes(event)) throw new Error('invalid recovery alert');
