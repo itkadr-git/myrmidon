@@ -945,6 +945,30 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
 
+  it("rejects a foreign-company revision inserted after an acceptance link", async () => {
+    const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-foreign-new-revision-");
+    cleanups.push(() => dbh.cleanup());
+    const db = createDb(dbh.connectionString);
+    cleanups.push(async () => { await db.$client.end(); });
+    const issueId = randomUUID();
+    const docId = randomUUID();
+    await db.insert(companies).values([
+      { id: companyA, name: "Company A" },
+      { id: companyB, name: "Company B", issuePrefix: "BBB" },
+    ]);
+    await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
+    await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a" });
+    await db.insert(issueDocuments).values({
+      companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios",
+    });
+    const before = await issueAcceptanceSnapshotService(db).read(issueId);
+    await expect(db.insert(documentRevisions).values({
+      companyId: companyB, documentId: docId, revisionNumber: 1, body: "foreign",
+    })).rejects.toThrow();
+    expect(await issueAcceptanceSnapshotService(db).read(issueId)).toEqual(before);
+    expect(await db.select().from(documentRevisions).where(eq(documentRevisions.documentId, docId))).toHaveLength(0);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("rejects linking a document with a pre-existing foreign-company revision", async () => {
     const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-foreign-existing-revision-");
     cleanups.push(() => dbh.cleanup());
