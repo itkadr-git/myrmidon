@@ -9,10 +9,10 @@ import { createCredentialCheckpoint, checkpointCredentialStore } from './credent
 
 // The anchor must be independently durable and outside the audit database's failure domain.
 export async function createAuditedSupervisedServer(tls, { auditPath, auditKey, auditAnchor, ...options }) {
-  if (!auditAnchor || typeof auditAnchor.read !== 'function' || typeof auditAnchor.compareAndSet !== 'function') throw new Error('audit anchor required');
   if (typeof options.alert !== 'function') throw new Error('recovery alert required');
   let audit;
   try {
+    if (!auditAnchor || typeof auditAnchor.read !== 'function' || typeof auditAnchor.compareAndSet !== 'function') throw new Error('audit anchor required');
     audit = await createAsyncAuthenticatedAudit(auditPath, auditKey, auditAnchor);
   } catch (error) {
     // Signal the audit outage before recovery can enter an unbounded retry loop.
