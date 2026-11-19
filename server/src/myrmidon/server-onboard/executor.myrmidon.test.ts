@@ -3,6 +3,17 @@ import { MockSshExecutor } from "../../services/fleet/mock-ssh-executor.js";
 import { defaultGenerateKeyPair, FleetOnboardExecutor, type ExecutorReporter } from "./executor.js";
 import type { OnboardJobClaim } from "./store.js";
 
+class VerifiedMockSsh extends MockSshExecutor {
+  constructor(private readonly fingerprint = "SHA256:testfingerprint123456789") { super(); }
+
+  override async connect(options?: Parameters<MockSshExecutor["connect"]>[0]) {
+    if (!options?.hostVerifier || !(await options.hostVerifier(this.fingerprint))) {
+      throw new Error("TOFU host key verification failed");
+    }
+    await super.connect(options);
+  }
+}
+
 function createMockReporter(): {
   reporter: ExecutorReporter;
   steps: Array<{ step: string; result: "ok" | "skipped" | "failed"; detail?: string | null }>;
@@ -13,6 +24,7 @@ function createMockReporter(): {
 
   return {
     reporter: {
+      async pinHostKey() { return true; },
       async reportStep(step, result, detail) {
         steps.push({ step, result, detail });
       },
@@ -66,7 +78,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(wire.subarray(8 + typeLength, 8 + typeLength + keyLength)).toEqual(Buffer.from(derived.x ?? "", "base64url"));
   });
   it("executes standard onboarding workflow and disables password when keepPassword=false", async () => {
-    const mockSsh = new MockSshExecutor();
+    const mockSsh = new VerifiedMockSsh();
     // mock responses
     mockSsh.mockResponse(/ssh-keygen -l/, {
       stdout: "256 SHA256:testfingerprint123456789 root@test (ED25519)",
@@ -178,7 +190,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
   });
 
   it("fails preflight when disk usage exceeds 90%", async () => {
-    const mockSsh = new MockSshExecutor();
+    const mockSsh = new VerifiedMockSsh();
     mockSsh.mockResponse(/ssh-keygen -l/, {
       stdout: "256 SHA256:fingerprint root@test (ED25519)",
       exitCode: 0,
@@ -258,7 +270,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
   });
 
   it("rolls back firewall and fails job when firewall connectivity check fails", async () => {
-    const mockSsh = new MockSshExecutor();
+    const mockSsh = new VerifiedMockSsh();
     mockSsh.mockResponse(/ssh-keygen -l/, {
       stdout: "256 SHA256:fp root@test (ED25519)",
       exitCode: 0,
@@ -304,7 +316,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
   });
 
   it("fails TOFU check when host key fingerprint does not match pinned value", async () => {
-    const mockSsh = new MockSshExecutor();
+    const mockSsh = new VerifiedMockSsh("SHA256:differentKeyRoot");
     mockSsh.mockResponse(/ssh-keygen -l/, {
       stdout: "256 SHA256:differentKeyRoot root@test (ED25519)",
       exitCode: 0,
