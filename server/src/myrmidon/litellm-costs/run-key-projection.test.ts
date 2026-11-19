@@ -35,6 +35,7 @@ import { resolveExecutionRunAdapterConfig } from "../../services/heartbeat.js";
 
 const COMPANY_ID = "11111111-1111-4111-8111-111111111111";
 const AGENT_ID = "22222222-2222-4222-8222-222222222222";
+const RUN_ID = "44444444-4444-4444-8444-444444444444";
 const SECRET_ID = "33333333-3333-4333-8333-333333333333";
 
 const ENV_WITH_KEY_ENV = {
@@ -95,6 +96,19 @@ describe("myrmidon(OPE-12932) findRunScopedGatewayKeyRef", () => {
     expect(
       await findRunScopedGatewayKeyRef({} as never, COMPANY_ID, AGENT_ID, ENV_WITH_KEY_ENV),
     ).toBeNull();
+  });
+});
+
+describe("myrmidon(OPE-12932) run ownership", () => {
+  it("looks up and removes only the current run's secret", async () => {
+    getByNameMock.mockResolvedValue({ id: SECRET_ID, status: "active", scope: "company" });
+    removeMock.mockResolvedValue({ id: SECRET_ID });
+    const ref = await findRunScopedGatewayKeyRef({} as never, COMPANY_ID, RUN_ID, ENV_WITH_KEY_ENV);
+    expect(ref?.secretRef.secretId).toBe(SECRET_ID);
+    expect(getByNameMock).toHaveBeenCalledWith(COMPANY_ID, `llm-gateway-run-${RUN_ID}`);
+    await removeRunScopedGatewayKeyRef({} as never, COMPANY_ID, RUN_ID, ENV_WITH_KEY_ENV);
+    expect(getByNameMock).toHaveBeenLastCalledWith(COMPANY_ID, `llm-gateway-run-${RUN_ID}`);
+    expect(removeMock).toHaveBeenCalledWith(SECRET_ID);
   });
 });
 
