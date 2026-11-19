@@ -159,6 +159,56 @@ secret management, least privilege and key rotation.
   a successful GitHub API call; neither local expiry bookkeeping nor a failed
   revoke invalidates a token already issued by GitHub.
 
+## Incident containment and reconciliation (draft; not authorization to deploy)
+
+The intent and alert fences are deliberately not self-clearing. A restart loop
+is not a reconciliation procedure. Until an independent security review approves
+one, keep issuance disabled and do not delete, reset, provision over, or manually
+edit either database or the anchor head. In particular, do not infer that an
+unknown token was revoked because a known-token recovery pass succeeded.
+
+For a test incident, the designated operator should:
+
+1. Stop and fence every issuer, including automated restarts, before touching the
+   stores. Preserve the issuer store, audit database including WAL/SHM, independent
+   anchor state, outbox, and relevant service logs as restricted evidence. Do not
+   paste tokens, JWTs, keys, encrypted credential records, or request bodies into
+   tickets or logs. Coordinate snapshots with the respective store owners so that
+   each is consistent; a copied live SQLite main file alone is not a backup.
+2. Notify the security reviewer and the separately operated anchor and alert
+   service owners. Confirm independently that alerts were durably received and
+   delivered to an operator; an HTTP success alone does not establish that fact.
+   An unavailable alert path, missing evidence, or a mismatched anchor is itself an
+   incident and must not be suppressed by reinitialization.
+3. With issuance still fenced, retry known-token revocation through the existing
+   locked recovery path. Preserve failures for retry. A lost response, missing or
+   rolled-back credential record, or failed persistence can leave a token unknown:
+   the recovery path cannot individually revoke it. Document the affected test
+   installation and incident time without copying credentials. Do not use the
+   production App or ordinary self-hosted runners for investigation.
+4. Security and the test-App owner must establish and document an independently
+   verified containment boundary for every possibly issued token, including an
+   evidence-based latest possible expiry and clock uncertainty, or another GitHub
+   mechanism whose scope and effect they have actually verified. GitHub's normal
+   one-hour lifetime is not proof of a specific unknown token's expiry time.
+   If the last possible issuance time or effective containment cannot be proven,
+   keep the service fenced and escalate; waiting an arbitrary hour is insufficient.
+5. Compare the preserved audit chain and the independently administered anchor;
+   distinguish a pending intent from a lost CAS response, rollback, deletion,
+   unavailable service, or tampering. Do not advance or roll back the anchor to
+   force a match. Record evidence and obtain an independently reviewed recovery
+   decision before any change to state. The prototype provides no supported
+   procedure or command to clear an unresolved anchored intent; reconstructing or
+   replacing state remains out of scope until such a procedure is reviewed and
+   tested. Keep the service disabled rather than inventing one.
+
+The anchor must be provisioned and operated in a separate administrative and
+storage failure domain with monitored availability, controlled access and backups;
+using two SQLite files on the same host is not independent protection. A complete
+rollback of the anchor domain is not detected by this prototype. The alert receiver
+and process watchdog must also be independently operated and monitored. These are
+requirements, not deployed infrastructure or evidence of live acceptance.
+
 ## Verification / Проверка
 
 Run from the task checkout:
