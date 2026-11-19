@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { createBroker } from './broker.mjs';
+import { createBroker, createSingleHostBroker } from './broker.mjs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const key = { ...publicKey.export({ format: 'jwk' }), kid: 'fixture', alg: 'RS256', use: 'sig' };
@@ -12,6 +15,22 @@ function jwt(jti, overrides = {}) {
   const input = [ { alg: 'RS256', kid: 'fixture' }, claims ].map(x => Buffer.from(JSON.stringify(x)).toString('base64url')).join('.');
   return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
 }
+
+test('single-host broker persists replay claims across broker restarts', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-replay-'));
+  const path = join(dir, 'replay.sqlite');
+  let issued = 0;
+  const options = { policy, loadKeys: async () => [key], installation: { issue: async () => { issued++; return { token: 'fixture', expiresAt: '2030-01-01T00:00:00Z' }; } }, store: { put: async () => {} }, audit: async () => {} };
+  try {
+    const first = createSingleHostBroker({ ...options, replayPath: path });
+    const token = jwt('persistent-jti');
+    await first.exchange(token);
+    first.close();
+    const second = createSingleHostBroker({ ...options, replayPath: path });
+    try { await assert.rejects(second.exchange(token)); } finally { second.close(); }
+    assert.equal(issued, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('exchange and revoke use verified identity and redact audit', async () => {
   const seen = new Set(), entries = new Map(), events = [], revoked = [];

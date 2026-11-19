@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { verifyIdentity } from './identity.mjs';
+import { createReplayStore } from './replay.mjs';
+
+export function createSingleHostBroker({ replayPath, ...options }) {
+  if (typeof replayPath !== 'string' || !replayPath || replayPath === ':memory:' || replayPath.startsWith('file:')) throw new Error('persistent replay path required');
+  const replay = createReplayStore(replayPath);
+  const broker = createBroker({ ...options, claimOnce: replay.claimOnce });
+  return { ...broker, close: () => replay.close() };
+}
 
 // The store must persist encrypted credentials and enforce owner-bound atomic access.
 export function createBroker({ policy, loadKeys, claimOnce, installation, store, audit }) {
