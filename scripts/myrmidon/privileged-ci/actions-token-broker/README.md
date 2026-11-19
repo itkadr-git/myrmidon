@@ -169,6 +169,15 @@ secret management, least privilege and key rotation.
   against that anchor. Restored snapshots and interrupted mutations fail closed;
   `credential-rollback.test.mjs` characterizes the unanchored helper's gap.
   The older `advance` helper has a crash window and must not be used for containment.
+  The checkpoint writes a random fence before each credential mutation. If the
+  anchor commits that fence but its response is lost, the mutation does not run:
+  even a known token remains stored and cannot be retried automatically after
+  restart because the checkpoint no longer matches. The same mismatch can occur
+  after a crash or lost response during checkpoint finalization; it does not prove
+  whether a revocation or local mutation happened. Preserve the state and escalate
+  rather than resetting the anchor or claiming the token was revoked. The
+  `audit-recovery-lost-checkpoint.test.mjs` fixture exercises the lost fence response;
+  this is a regression scenario, not evidence of a successful live recovery.
   These experimental checks still require independently administered durable anchors,
   security review and a crash-safe operator reconciliation procedure. Do not restore
   or replace the credential database to recover service.
