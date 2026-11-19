@@ -95,6 +95,7 @@ test('ambiguous issuance immediately alerts without releasing the durable reserv
     assert.deepEqual(alerts, ['issuance_ambiguous']);
     const store = createCredentialStore(options.credentialPath, options.credentialKey);
     assert.equal((await store.pendingIssuances()).length, 1);
+    assert.deepEqual(await store.pendingAlerts(), ['issuance_ambiguous']);
     store.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
