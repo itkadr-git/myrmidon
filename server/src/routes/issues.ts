@@ -15792,7 +15792,7 @@ export function issueRoutes(
           );
         }
       }
-      if (transition.decision?.outcome === "changes_requested") {
+      if (transition.decision?.outcome === "changes_requested" || transition.decision?.outcome === "approved") {
         let diagnostic: Parameters<NonNullable<Parameters<typeof createReviewPullRequestCiResolver>[0]["onDiagnostic"]>>[0] | null = null;
         // OPE-15004: the write verdict gate is review admission — its reads are
         // always fresh, never served from the read cache.
@@ -15801,7 +15801,7 @@ export function issueRoutes(
           issueId: existing.id,
         });
         logReviewWriteCi({ issueId: existing.id, runId: actor.runId, ci, diagnostic });
-        if (ci.state === "pending" || ci.state === "unknown") {
+        if (ci.state === "pending" || ci.state === "unknown" || (transition.decision?.outcome === "approved" && ci.state === "complete" && ci.finalCheckConclusion !== "success")) {
           if (ci.reason?.includes("budget_exhausted")) {
             // A triggered CI-wait monitor otherwise gets rearmed by the stale
             // monitor sweep and repeatedly wakes a reviewer who cannot decide.
@@ -17109,7 +17109,7 @@ export function issueRoutes(
               updateFields.executionState = currentMergedState;
               issueUpdateData.executionState = currentMergedState;
             }
-            if (lockedTransition.decision?.outcome === "changes_requested") {
+            if (lockedTransition.decision?.outcome === "changes_requested" || lockedTransition.decision?.outcome === "approved") {
               let diagnostic: Parameters<NonNullable<Parameters<typeof createReviewPullRequestCiResolver>[0]["onDiagnostic"]>>[0] | null = null;
               // OPE-15004: the write verdict gate is review admission — its reads are
               // always fresh, never served from the read cache.
@@ -17118,7 +17118,7 @@ export function issueRoutes(
                 issueId: lockedExisting.id,
               });
               logReviewWriteCi({ issueId: lockedExisting.id, runId: actor.runId, ci, diagnostic });
-              if (ci.state === "pending" || ci.state === "unknown") {
+              if (ci.state === "pending" || ci.state === "unknown" || (lockedTransition.decision?.outcome === "approved" && ci.state === "complete" && ci.finalCheckConclusion !== "success")) {
                 throw unprocessable(
                   ci.state === "pending"
                     ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
@@ -17129,7 +17129,7 @@ export function issueRoutes(
               }
               // myrmidon(OPE-11970): remember the pull request head this return was made on.
               // The next return on the same head does not wake the executor again.
-              if (updateFields.executionState && typeof updateFields.executionState === "object") {
+              if (lockedTransition.decision?.outcome === "changes_requested" && updateFields.executionState && typeof updateFields.executionState === "object") {
                 updateFields.executionState = withChangesRequestedHeadSha(
                   updateFields.executionState as Record<string, unknown>,
                   ci.headSha,
