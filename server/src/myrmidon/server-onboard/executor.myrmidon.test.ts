@@ -541,6 +541,34 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(ssh.hasExecuted(/sudo ufw (allow|default|--force enable|disable)/)).toBe(false);
   });
 
+  it("preserves concurrent operator changes when scoped rollback is unavailable", async () => {
+    const rules = new Set(["operator-original"]);
+    let statusRead = false;
+    const ssh = new MockSshExecutor({ onCommand: (command) => {
+      if (command === "sudo ufw status") {
+        statusRead = true;
+        rules.add("operator-concurrent");
+        return { exitCode: 0, stdout: "Status: active\n" };
+      }
+      if (/ufw (allow|default|delete|disable|--force enable)/.test(command)) {
+        rules.delete("operator-concurrent");
+      }
+      return undefined;
+    } });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-firewall-concurrent-fail-closed", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(statusRead).toBe(true);
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatch(/scoped.*rollback.*unavailable/i);
+    expect([...rules].sort()).toEqual(["operator-concurrent", "operator-original"]);
+  });
+
   it("does not mutate the firewall when reading its original state times out", async () => {
     const ssh = new MockSshExecutor({ timeoutCommands: [/^sudo ufw status$/] });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
