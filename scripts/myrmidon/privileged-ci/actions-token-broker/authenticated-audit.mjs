@@ -3,6 +3,52 @@ import { DatabaseSync } from 'node:sqlite';
 
 const events = new Set(['issued', 'revoked', 'exchange_failed', 'revoke_failed', 'issuance_ambiguous']);
 
+// Async CAS permits an anchor in a separately operated failure domain.
+export async function createAsyncAuthenticatedAudit(path, key, anchor) {
+  if (typeof path !== 'string' || !path || path === ':memory:' || path.startsWith('file:') || !Buffer.isBuffer(key) || key.length !== 32 || typeof anchor?.read !== 'function' || typeof anchor?.compareAndSet !== 'function') throw new Error('invalid audit configuration');
+  const secret = Buffer.from(key), db = new DatabaseSync(path);
+  let busy = false;
+  function digest(seq, event, previous) {
+    return createHmac('sha256', secret).update(JSON.stringify([seq, event, previous])).digest('hex');
+  }
+  function verify() {
+    let previous = '', expected = 1;
+    for (const row of db.prepare('SELECT seq, event, mac FROM audit_events ORDER BY seq').iterate()) {
+      if (row.seq !== expected || !events.has(row.event) || typeof row.mac !== 'string' || !/^[0-9a-f]{64}$/.test(row.mac) || !timingSafeEqual(Buffer.from(row.mac, 'hex'), Buffer.from(digest(row.seq, row.event, previous), 'hex'))) throw new Error('audit integrity failure');
+      previous = row.mac;
+      expected++;
+    }
+    return { seq: expected - 1, mac: previous };
+  }
+  const equal = (a, b) => a?.seq === b.seq && a?.mac === b.mac;
+  try {
+    db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; CREATE TABLE IF NOT EXISTS audit_events (seq INTEGER PRIMARY KEY, event TEXT NOT NULL, mac TEXT NOT NULL) STRICT');
+    if (!equal(await anchor.read(), verify())) throw new Error('audit integrity failure: anchor mismatch');
+  } catch (error) { db.close(); secret.fill(0); throw error; }
+  return {
+    async record(event) {
+      if (!events.has(event) || busy) throw new Error('invalid or concurrent audit event');
+      busy = true;
+      let transaction = false;
+      try {
+        db.exec('BEGIN IMMEDIATE');
+        transaction = true;
+        const oldHead = verify();
+        if (!equal(await anchor.read(), oldHead)) throw new Error('audit integrity failure: anchor mismatch');
+        const next = { seq: oldHead.seq + 1, mac: digest(oldHead.seq + 1, event, oldHead.mac) };
+        db.prepare('INSERT INTO audit_events VALUES (?, ?, ?)').run(next.seq, event, next.mac);
+        // CAS before commit: a lost response or crash leaves a mismatch, never silent rollback.
+        if (await anchor.compareAndSet(oldHead, next) !== true) throw new Error('audit anchor update failed');
+        db.exec('COMMIT');
+        transaction = false;
+      } finally {
+        try { if (transaction) db.exec('ROLLBACK'); } finally { busy = false; }
+      }
+    },
+    close() { if (busy) throw new Error('audit busy'); db.close(); secret.fill(0); },
+  };
+}
+
 // The HMAC key must be distinct from the credential encryption key. Optional
 // anchor is experimental: it must be an independently durable, synchronous CAS
 // service. Without one, suffix deletion and rollback remain undetectable.

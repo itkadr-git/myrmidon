@@ -48,8 +48,11 @@ secret management, least privilege and key rotation.
   HMAC-chained audit store is available via `createAuditedRecoveredServer`; it
   permits fixed event names only, checks integrity on startup and before each
   append, and needs a distinct server-held 32-byte key. The audited server now
-  requires a synchronous CAS anchor, but no independently durable anchor service
-  or deployment wiring is provided. `createSqliteAnchor` is a durable CAS
+  requires a CAS anchor; the supervised server supports asynchronous CAS so an
+  independently operated service can be used. A lost CAS response or crash between
+  CAS and the SQLite commit creates a mismatch and stops startup; reconciliation
+  requires operator investigation, not an automatic reset. No independently
+  durable anchor service or deployment wiring is provided. `createSqliteAnchor` is a durable CAS
   reference implementation for testing separate stores, not an independently
   operated anchor service: colocating it with the audit database does not protect
   against rollback of the entire failure domain. Explicit one-time provisioning

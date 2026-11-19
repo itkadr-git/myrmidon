@@ -68,6 +68,22 @@ test('an independently retained audit head rejects suffix deletion on restart', 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('lost asynchronous CAS response fails closed after restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-cas-lost-'));
+  const path = join(dir, 'audit.sqlite'), key = randomBytes(32);
+  let head = { seq: 0, mac: '' };
+  const anchor = {
+    async read() { return { ...head }; },
+    async compareAndSet(_previous, next) { head = { ...next }; throw new Error('response lost'); },
+  };
+  try {
+    const audit = await authenticatedAudit.createAsyncAuthenticatedAudit(path, key, anchor);
+    await assert.rejects(audit.record('issued'), /response lost/);
+    audit.close();
+    await assert.rejects(authenticatedAudit.createAsyncAuthenticatedAudit(path, key, anchor), /audit integrity/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('async independent anchor detects audit rollback after restart', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'audit-remote-anchor-'));
   const path = join(dir, 'audit.sqlite'), key = randomBytes(32);

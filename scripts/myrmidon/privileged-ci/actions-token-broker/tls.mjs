@@ -1,13 +1,13 @@
 import https from 'node:https';
 import { createHandler } from './http.mjs';
 import { createRecoveredSingleHostBroker, createSupervisedSingleHostBroker } from './broker.mjs';
-import { createAuthenticatedAudit } from './authenticated-audit.mjs';
+import { createAuthenticatedAudit, createAsyncAuthenticatedAudit } from './authenticated-audit.mjs';
 
 // The anchor must be independently durable and outside the audit database's failure domain.
 export async function createAuditedSupervisedServer(tls, { auditPath, auditKey, auditAnchor, ...options }) {
   if (!auditAnchor || typeof auditAnchor.read !== 'function' || typeof auditAnchor.compareAndSet !== 'function') throw new Error('audit anchor required');
   if (typeof options.alert !== 'function') throw new Error('recovery alert required');
-  const audit = createAuthenticatedAudit(auditPath, auditKey, auditAnchor);
+  const audit = await createAsyncAuthenticatedAudit(auditPath, auditKey, auditAnchor);
   let broker;
   try {
     broker = await createSupervisedSingleHostBroker({ ...options, audit: event => audit.record(event) });
