@@ -18,9 +18,11 @@ secret management, least privilege and key rotation.
 
 ## Current gaps / remaining gates
 
-- The dependency-injected interfaces are not a complete service: there is no
-  concrete durable atomic replay store, encrypted credential store, recovery
-  worker, authenticated audit sink, or production deployment wiring.
+- The dependency-injected interfaces are not a complete service: the SQLite
+  replay primitive is not wired to the broker and only supports processes sharing
+  one local database on a supported filesystem, not separate hosts. There is no
+  concrete encrypted credential store, recovery worker, authenticated audit sink,
+  or production deployment wiring.
 - Issuance followed by storage and revocation failures can lose an active token;
   invalid upstream expiry can also leave a token untracked. Durable recovery
   and alerting must be implemented before any live use.
