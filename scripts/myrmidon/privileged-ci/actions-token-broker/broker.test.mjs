@@ -103,6 +103,22 @@ test('identity expiring during anchored intent alerts while leaving issuance fen
   assert.ok(alerts.includes('issuance_ambiguous'));
 });
 
+test('identity expiring during anchored revocation intent alerts without contacting GitHub', async () => {
+  let calls = 0;
+  const alerts = [], queued = [];
+  const store = { reserveIssuance: async () => {}, queueAlert: async event => queued.push(event),
+    withOwned: async () => { calls++; } };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    anchoredIssuance: true, installation: { revoke: async () => { calls++; } },
+    audit: async event => { if (event === 'issuance_pending') await new Promise(resolve => setTimeout(resolve, 2100)); },
+    alert: async event => alerts.push(event) });
+  const now = Math.floor(Date.now() / 1000);
+  await assert.rejects(broker.revoke(jwt('revoke-expires-during-intent', { iat: now, nbf: now, exp: now + 1 }), 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'));
+  assert.equal(calls, 0);
+  assert.ok(queued.includes('credential_recovery_failed'));
+  assert.ok(alerts.includes('credential_recovery_failed'));
+});
+
 test('identity expiring during upstream issuance cannot receive a credential', async () => {
   let revoked = 0, pending = false;
   const store = {
