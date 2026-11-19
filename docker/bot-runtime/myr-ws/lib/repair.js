@@ -49,6 +49,10 @@ async function repair({ positionals = [], env = process.env } = {}, deps = {}) {
         errors.push({ key: e.key, path: e.path, error: "git cannot read this copy; left untouched" });
         continue;
       }
+      if (state.problems.some((p) => recover.isHalfWay(p) && p.kind !== "bare_worktree")) {
+        skipped.push({ key: e.key, path: e.path, reason: "unfinished git operation preserved for the task" });
+        continue;
+      }
       if (!state.problems.some((p) => recover.isHalfWay(p) || p.kind === "bare_worktree")) continue;
       const live = recover.hasLiveProcess(e.path, deps.procRoot);
       if (live !== false) {

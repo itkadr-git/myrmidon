@@ -232,6 +232,11 @@ function recoverCopy(ctx, git, dir, opts) {
   }
 
   const halfWay = state.problems.filter(isHalfWay);
+  // An unfinished Git operation is task work, not evidence of corruption.
+  // Preserve its index, markers and files across both idle sweeps and opens.
+  if (halfWay.length > 0) {
+    return { action: "ok", recovered, branch: state.branch };
+  }
   const drift = state.problems.filter((p) => !isHalfWay(p));
   const reason = describeProblems(state.problems);
   let recoveryRef;

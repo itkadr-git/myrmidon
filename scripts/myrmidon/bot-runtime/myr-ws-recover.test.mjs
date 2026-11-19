@@ -160,7 +160,10 @@ describe("myr-ws open — a copy left half-way is repaired, not reused", { skip:
     git(first.path, "add", "README.md");
     fs.writeFileSync(path.join(first.path, "notes.txt"), "uncommitted notes\n");
     const before = git(first.path, "status", "--porcelain");
-    const repaired = await wsRepair.repair({}, { ...ctx, procRoot: path.join(ctx.root, "no-processes") });
+    const proc = path.join(ctx.root, "idle-proc", "1000");
+    fs.mkdirSync(proc, { recursive: true });
+    fs.symlinkSync(ctx.root, path.join(proc, "cwd"));
+    const repaired = await wsRepair.repair({}, { ...ctx, procRoot: path.dirname(proc) });
     assert.equal(repaired.repaired.length, 0);
     const reopened = await opened(["ABC-390", REPO]);
     assert.equal(reopened.path, first.path);
