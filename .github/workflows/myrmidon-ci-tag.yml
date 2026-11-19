@@ -490,6 +490,9 @@ jobs:
           printf 'Running %s\n' "${files[@]}"
           node --test "${files[@]}"
 
+      - name: Privileged PR gate tests (node:test)
+        run: node --test .github/scripts/tests/acceptance-gate.test.mjs .github/scripts/tests/privileged-workflows.test.mjs
+
       - name: Secrets (gitleaks, new commits)
         if: ${{ !cancelled() }}
         env:
