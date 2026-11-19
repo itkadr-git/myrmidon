@@ -10,7 +10,7 @@ const tokenHash = createHash('sha256').update(token).digest('hex');
 const record = { tokenHash, companyId: 'company-a', expiresAt: 2000 };
 
 test('binding survives restart, cannot be replaced, and revocation is shared across instances', () => {
-  const dir = mkdtempSync(join(process.env.TMPDIR, 'reader-credentials-'));
+  const dir = mkdtempSync(join(process.env.TMPDIR || process.env.HOME, 'reader-credentials-'));
   try {
     const a = createPersistentCredentialStore(dir);
     a.issue(record);
@@ -26,7 +26,7 @@ test('binding survives restart, cannot be replaced, and revocation is shared acr
 });
 
 test('expiry, malformed records and storage errors fail closed', () => {
-  const dir = mkdtempSync(join(process.env.TMPDIR, 'reader-credentials-'));
+  const dir = mkdtempSync(join(process.env.TMPDIR || process.env.HOME, 'reader-credentials-'));
   try {
     const store = createPersistentCredentialStore(dir);
     store.issue(record);
