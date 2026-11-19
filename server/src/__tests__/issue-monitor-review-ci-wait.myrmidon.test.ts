@@ -26,6 +26,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { reviewWakesQuotaForCompany } from "../myrmidon/review-stage-recovery/review-wakes-quota.ts";
 import {
   REVIEW_CI_WAIT_INTERVAL_MS,
   REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
@@ -350,6 +351,27 @@ describeEmbeddedPostgres("issue monitor that waits for the CI of a review (Revie
     expect(issue.monitorNextCheckAt?.toISOString()).toBe(replacementAt.toISOString());
     expect(issue.monitorNotes).toBe("new evidence");
     expect(issue.monitorAttemptCount).toBe(0);
+    expect(await activityOf(issueId, "issue.monitor_deferred")).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+  });
+
+  it("does not defer a replacement monitor when the stale claim hits the review wake quota", async () => {
+    const { companyId, issueId } = await seed();
+    const replacementAt = new Date(TICK_AT.getTime() + 3_600_000);
+    mockReviewCi.resolveCi.mockImplementation(async () => {
+      reviewWakesQuotaForCompany(companyId).remaining = 0;
+      await db.update(issues).set({
+        monitorNextCheckAt: replacementAt,
+        monitorWakeRequestedAt: null,
+        monitorNotes: "new evidence",
+      }).where(eq(issues.id, issueId));
+      return { state: "complete", finalCheckConclusion: "success", pullRequestUrl: PR_URL, headSha: HEAD };
+    });
+
+    expect((await heartbeatService(db, { executesRuns: false }).tickTimers(TICK_AT)).enqueued).toBe(0);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.monitorNextCheckAt?.toISOString()).toBe(replacementAt.toISOString());
+    expect(issue.monitorNotes).toBe("new evidence");
     expect(await activityOf(issueId, "issue.monitor_deferred")).toHaveLength(0);
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
   });
