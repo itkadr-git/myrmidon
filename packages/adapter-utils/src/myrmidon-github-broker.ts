@@ -370,6 +370,20 @@ function paperclipTargetRepository(program, args, env, originalPath) {
   if (program === 'gh') {
     const explicit = paperclipRepositoryFromArgs(args) ?? (env.GH_REPO || null);
     if (explicit) return paperclipNormalizeRepository(explicit);
+    if (args[0] === 'api') {
+      for (const arg of args.slice(1)) {
+        if (arg === '--') break;
+        const match = /^\/?repos\/([^/?#]+)\/([^/?#]+)/.exec(arg);
+        if (match) return paperclipNormalizeRepository(match[1] + '/' + match[2]);
+      }
+    }
+    if (args[0] === 'repo' && (args[1] === 'view' || args[1] === 'clone')) {
+      const value = args[2] === '--' ? args[3] : args[2];
+      if (value && !value.startsWith('-') && /^(?:[A-Za-z0-9-]+\/[A-Za-z0-9._-]+|(?:www\.)?github\.com\/[A-Za-z0-9-]+\/[A-Za-z0-9._-]+)$/.test(value)) {
+        const repository = paperclipNormalizeRepository(value);
+        if (repository) return repository;
+      }
+    }
     return paperclipRepositoryFromOrigin(process.cwd(), env, originalPath);
   }
   const fromArgs = paperclipRepositoryFromGitArgs(args);

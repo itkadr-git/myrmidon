@@ -262,6 +262,25 @@ describe("docker/bot-runtime/github-broker/gh", () => {
     }
   });
 
+  it("preserves explicit and endpoint priority and ignores slash arguments of other commands", async () => {
+    const cases = [
+      { args: ["repo", "view", "owner/target", "-R", "owner/override"], expected: "owner/override" },
+      { args: ["repo", "clone", "owner/target"], env: { GH_REPO: "owner/override" }, expected: "owner/override" },
+      { args: ["api", "repos/owner/target/pulls"], expected: "owner/target" },
+      { args: ["pr", "checkout", "origin/main"], expected: "itkadr-git/myrmidon" },
+      { args: ["repo", "view", "--json", "owner/target"], expected: "itkadr-git/myrmidon" },
+      { args: ["repo", "view", "other.example/owner/target"], expected: "itkadr-git/myrmidon" },
+    ];
+    for (const { args, env, expected } of cases) {
+      requests = [];
+      const result = await run(GH_WRAPPER, args, {
+        env: { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`, ...env }, cwd: ROOT,
+      });
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(JSON.parse(requests[0].body), { repository: expected });
+    }
+  });
+
   it("runs gh without a token when the broker refuses", async () => {
     reply = { status: 200, body: { status: "unavailable", source: "app", reason: "not allowed", env: {} } };
     const result = await run(GH_WRAPPER, ["-R", "owner-b/repo-b", "pr", "list"], {

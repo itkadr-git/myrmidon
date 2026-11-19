@@ -195,6 +195,13 @@ function targetRepository(args, env) {
   if (explicit) return normalizeRepository(explicit);
   const fromEndpoint = repoFromApiEndpoint(args);
   if (fromEndpoint) return fromEndpoint;
+  if (args[0] === "repo" && (args[1] === "view" || args[1] === "clone")) {
+    const value = args[2] === "--" ? args[3] : args[2];
+    if (value && !value.startsWith("-") && /^(?:[A-Za-z0-9-]+\/[A-Za-z0-9._-]+|(?:www\.)?github\.com\/[A-Za-z0-9-]+\/[A-Za-z0-9._-]+)$/.test(value)) {
+      const repository = normalizeRepository(value);
+      if (repository) return repository;
+    }
+  }
   try {
     const result = spawnSync(awaitRealGit(), ["config", "--get", "remote.origin.url"], {
       env: { ...env, PATH: originalPath.join(path.delimiter), PAPERCLIP_GITHUB_OPERATION_ACTIVE: "1" },
