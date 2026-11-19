@@ -554,4 +554,62 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     },
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
+
+  it(
+    "revision transfer bumps both owners, truncate fails closed, and non-acceptance docs do not bump (OPE-15145)",
+    async () => {
+      const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-epoch-xfer-");
+      cleanups.push(() => dbh.cleanup());
+      const db = createDb(dbh.connectionString);
+      const sql = db.$client as any;
+      cleanups.push(async () => {
+        await sql.end();
+      });
+
+      await db.insert(companies).values({ id: companyA, name: "Company A" });
+      const issueA = randomUUID();
+      const issueB = randomUUID();
+      const issueC = randomUUID();
+      const docAccept = randomUUID();
+      const docOther = randomUUID();
+      const docB = randomUUID();
+      const revA = randomUUID();
+      for (const [id, identifier] of [[issueA, "OPE-8601"], [issueB, "OPE-8602"], [issueC, "OPE-8603"]] as const) {
+        await db.insert(issues).values({ id, companyId: companyA, title: "Task", identifier });
+      }
+      await db.insert(documents).values({ id: docAccept, companyId: companyA, latestBody: "acc", latestRevisionId: revA });
+      await db.insert(documentRevisions).values({ id: revA, companyId: companyA, documentId: docAccept, revisionNumber: 1, body: "acc" });
+      await db.insert(issueDocuments).values({ companyId: companyA, issueId: issueA, documentId: docAccept, key: "acceptance-scenarios" });
+      await db.insert(documents).values({ id: docOther, companyId: companyA, latestBody: "plan", latestRevisionId: randomUUID() });
+      await db.insert(issueDocuments).values({ companyId: companyA, issueId: issueC, documentId: docOther, key: "plan" });
+      await db.insert(documents).values({ id: docB, companyId: companyA, latestBody: "b", latestRevisionId: randomUUID() });
+      await db.insert(issueDocuments).values({ companyId: companyA, issueId: issueB, documentId: docB, key: "acceptance-scenarios" });
+
+      const versionOf = async (id: string) => (await issueAcceptanceSnapshotService(db).read(id))!.issue.version;
+
+      // A revision row moved between documents bumps BOTH owners, exactly
+      // once per hop; a B->A return cannot restore A's old pin.
+      const pinA = await versionOf(issueA);
+      await sql.unsafe(`UPDATE "document_revisions" SET "document_id" = '${docB}' WHERE "id" = '${revA}'`);
+      expect(await versionOf(issueA)).not.toBe(pinA);
+      const afterOut = await versionOf(issueA);
+      await sql.unsafe(`UPDATE "document_revisions" SET "document_id" = '${docAccept}' WHERE "id" = '${revA}'`);
+      expect(await versionOf(issueA)).not.toBe(pinA);
+      expect(await versionOf(issueA)).not.toBe(afterOut);
+
+      // Non-acceptance documents never move the epoch: a false invalidation
+      // of an unrelated pin is a bug.
+      const cPin = await versionOf(issueC);
+      await db.update(documents).set({ latestBody: "plan v2" }).where(eq(documents.id, docOther));
+      expect(await versionOf(issueC)).toBe(cPin);
+
+      // Truncating the epoch table fails closed: generations survive and a
+      // stale pin stays incompatible.
+      const aBefore = await versionOf(issueA);
+      await expect(sql.unsafe(`TRUNCATE "issue_acceptance_epochs"`)).rejects.toThrow();
+      expect(await versionOf(issueA)).toBe(aBefore);
+      expect(await versionOf(issueA)).not.toBe(pinA);
+    },
+    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  );
 });

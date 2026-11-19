@@ -95,6 +95,7 @@ BEGIN
   SELECT "issue_id" INTO "v_issue_id"
   FROM "issue_documents"
   WHERE "document_id" = COALESCE(NEW."id", OLD."id")
+    AND "key" = 'acceptance-scenarios'
   LIMIT 1;
   IF "v_issue_id" IS NOT NULL THEN
     PERFORM "bump_issue_acceptance_epoch"("v_issue_id");
@@ -107,15 +108,49 @@ CREATE TRIGGER "documents_acceptance_epoch_trg"
   FOR EACH ROW EXECUTE FUNCTION "trg_documents_acceptance_epoch"();--> statement-breakpoint
 CREATE OR REPLACE FUNCTION "trg_document_revisions_acceptance_epoch"() RETURNS trigger AS $trg$
 DECLARE
-  "v_issue_id" uuid;
+  "v_old_issue_id" uuid;
+  "v_new_issue_id" uuid;
 BEGIN
-  SELECT "i"."issue_id" INTO "v_issue_id"
-  FROM "documents" "d"
-  JOIN "issue_documents" "i" ON "i"."document_id" = "d"."id"
-  WHERE "d"."id" = COALESCE(NEW."document_id", OLD."document_id")
-  LIMIT 1;
-  IF "v_issue_id" IS NOT NULL THEN
-    PERFORM "bump_issue_acceptance_epoch"("v_issue_id");
+  IF TG_OP = 'INSERT' THEN
+    SELECT "i"."issue_id" INTO "v_new_issue_id"
+    FROM "documents" "d"
+    JOIN "issue_documents" "i" ON "i"."document_id" = "d"."id"
+    WHERE "d"."id" = NEW."document_id" AND "i"."key" = 'acceptance-scenarios'
+    LIMIT 1;
+    IF "v_new_issue_id" IS NOT NULL THEN
+      PERFORM "bump_issue_acceptance_epoch"("v_new_issue_id");
+    END IF;
+  ELSIF TG_OP = 'UPDATE' THEN
+    -- A revision moved between documents bumps both owners, exactly once
+    -- each when they differ; a moved-back revision can never restore the
+    -- previous pin.
+    SELECT "i"."issue_id" INTO "v_old_issue_id"
+    FROM "documents" "d"
+    JOIN "issue_documents" "i" ON "i"."document_id" = "d"."id"
+    WHERE "d"."id" = OLD."document_id" AND "i"."key" = 'acceptance-scenarios'
+    LIMIT 1;
+    SELECT "i"."issue_id" INTO "v_new_issue_id"
+    FROM "documents" "d"
+    JOIN "issue_documents" "i" ON "i"."document_id" = "d"."id"
+    WHERE "d"."id" = NEW."document_id" AND "i"."key" = 'acceptance-scenarios'
+    LIMIT 1;
+    IF "v_old_issue_id" IS DISTINCT FROM "v_new_issue_id" THEN
+      IF "v_old_issue_id" IS NOT NULL THEN
+        PERFORM "bump_issue_acceptance_epoch"("v_old_issue_id");
+      END IF;
+    END IF;
+    IF "v_new_issue_id" IS NOT NULL THEN
+      PERFORM "bump_issue_acceptance_epoch"("v_new_issue_id");
+    END IF;
+  ELSE
+    SELECT "i"."issue_id" INTO "v_old_issue_id"
+    FROM "documents" "d"
+    JOIN "issue_documents" "i" ON "i"."document_id" = "d"."id"
+    WHERE "d"."id" = OLD."document_id" AND "i"."key" = 'acceptance-scenarios'
+    LIMIT 1;
+    IF "v_old_issue_id" IS NOT NULL THEN
+      PERFORM "bump_issue_acceptance_epoch"("v_old_issue_id");
+    END IF;
   END IF;
   RETURN NULL;
 END;
@@ -123,4 +158,14 @@ $trg$ LANGUAGE plpgsql;--> statement-breakpoint
 CREATE TRIGGER "document_revisions_acceptance_epoch_trg"
   AFTER INSERT OR UPDATE OR DELETE ON "document_revisions"
   FOR EACH ROW EXECUTE FUNCTION "trg_document_revisions_acceptance_epoch"();--> statement-breakpoint
+-- Row triggers never fire on TRUNCATE; a statement-level guard fails closed
+-- so the generations can never be reset at once.
+CREATE OR REPLACE FUNCTION "trg_issue_acceptance_epochs_no_truncate"() RETURNS trigger AS $trg$
+BEGIN
+  RAISE EXCEPTION 'issue_acceptance_epochs cannot be truncated: epochs are monotonic generations';
+END;
+$trg$ LANGUAGE plpgsql;--> statement-breakpoint
+CREATE TRIGGER "issue_acceptance_epochs_no_truncate_trg"
+  BEFORE TRUNCATE ON "issue_acceptance_epochs"
+  FOR EACH STATEMENT EXECUTE FUNCTION "trg_issue_acceptance_epochs_no_truncate"();--> statement-breakpoint
 ALTER TABLE "issues" DROP COLUMN "acceptance_snapshot_version";
