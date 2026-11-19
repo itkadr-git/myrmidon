@@ -79,6 +79,25 @@ $trg$ LANGUAGE plpgsql;--> statement-breakpoint
 CREATE TRIGGER "issues_acceptance_epoch_trg"
   AFTER INSERT OR UPDATE ON "issues"
   FOR EACH ROW EXECUTE FUNCTION "trg_issues_acceptance_epoch"();--> statement-breakpoint
+-- Lock the issue before accepting a tenant-bound link.  The lock also makes
+-- a concurrent company move wait, rather than validating an obsolete tenant.
+CREATE OR REPLACE FUNCTION "trg_acceptance_link_issue_company"() RETURNS trigger AS $trg$
+DECLARE
+  "v_company_id" uuid;
+BEGIN
+  IF NEW."key" = 'acceptance-scenarios' THEN
+    SELECT "company_id" INTO "v_company_id" FROM "issues"
+      WHERE "id" = NEW."issue_id" FOR UPDATE;
+    IF NOT FOUND OR "v_company_id" IS DISTINCT FROM NEW."company_id" THEN
+      RAISE EXCEPTION 'acceptance link issue company mismatch';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$trg$ LANGUAGE plpgsql;--> statement-breakpoint
+CREATE TRIGGER "acceptance_link_issue_company_trg"
+  BEFORE INSERT OR UPDATE ON "issue_documents"
+  FOR EACH ROW EXECUTE FUNCTION "trg_acceptance_link_issue_company"();--> statement-breakpoint
 CREATE OR REPLACE FUNCTION "trg_issue_documents_acceptance_epoch"() RETURNS trigger AS $trg$
 BEGIN
   IF TG_OP = 'INSERT' THEN
