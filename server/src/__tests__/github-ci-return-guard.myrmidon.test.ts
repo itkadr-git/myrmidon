@@ -38,7 +38,9 @@ import {
 } from "@myrmidon/db";
 import { and, eq } from "drizzle-orm";
 import { githubConnectionEventService } from "../services/github-connection-events.js";
-import { createReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
+import { createReviewPullRequestCiResolver, resetReviewCiCacheForTests } from "../myrmidon/review-stage-recovery/github-ci.js";
+import { resetGitHubRateLimitForTests } from "../services/github-rate-limit.js";
+import { resetGitHubReviewBudgetForTests } from "../services/github-review-budget.js";
 import type { PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 import type { CiReturnFacts } from "../myrmidon/review-return-guard/ci-failure-return.js";
 import {
@@ -71,6 +73,12 @@ describeEmbeddedPostgres.sequential("CI deliveries by the final result of the he
   }, 60_000);
 
   afterEach(async () => {
+    // The review resolver keeps process-global read caches, rate-limit state,
+    // and a budget carrier company; a test that reads GitHub must not warm the
+    // next test's evidence.
+    resetReviewCiCacheForTests();
+    resetGitHubRateLimitForTests();
+    resetGitHubReviewBudgetForTests();
     await db.delete(activityLog);
     await db.delete(connectionEventDeliveries);
     await db.delete(issueWorkProducts);
@@ -238,7 +246,7 @@ describeEmbeddedPostgres.sequential("CI deliveries by the final result of the he
   }
 
   describe("the monitor and the wake of a task that waits for CI", () => {
-    it("resolves a fresh processed PR and CI webhook from PostgreSQL without a GitHub request", async () => {
+    it("resolves a fresh processed PR and CI webhook from PostgreSQL once the current head is confirmed", async () => {
       const seeded = await seedTask({ executing: true, productHeadSha: HEAD });
       await db.insert(connectionEventDeliveries).values({
         companyId: seeded.companyId,
@@ -252,14 +260,25 @@ describeEmbeddedPostgres.sequential("CI deliveries by the final result of the he
       await expect(service.deliver([ciEvent(seeded, "check_run", "success", "CI result")]))
         .resolves.toMatchObject({ processed: 1, failed: 0 });
 
-      const fetch = vi.fn(async () => new Response("unexpected", { status: 500 }));
+      // OPE-15114 + OPE-15127: a stored webhook verdict is not admission
+      // evidence. Admission confirms the head with a fresh pull read and then
+      // re-reads the head CI fresh before it answers complete.
+      const readUrls: string[] = [];
+      const fetch = vi.fn(async (url: string) => {
+        readUrls.push(url);
+        if (url === `https://api.github.com/repos/${REPO}/pulls/123`) return Response.json({ state: "open", head: { sha: HEAD } });
+        if (url.startsWith(`https://api.github.com/repos/${REPO}/commits/${HEAD}/check-runs`)) {
+          return Response.json({ total_count: 1, check_runs: [{ name: "CI result", status: "completed", conclusion: "success", head_sha: HEAD }] });
+        }
+        return new Response("unexpected", { status: 500 });
+      });
       const tokenProvider = vi.fn(async () => null);
-      const resolve = createReviewPullRequestCiResolver({ db, fetch, tokenProvider });
+      const resolve = createReviewPullRequestCiResolver({ db, fetch, tokenProvider, admission: true });
       await expect(resolve({ companyId: seeded.companyId, issueId: seeded.issueId })).resolves.toMatchObject({
         state: "complete", headSha: HEAD, finalCheckConclusion: "success",
       });
-      expect(fetch).not.toHaveBeenCalled();
-      expect(tokenProvider).not.toHaveBeenCalled();
+      expect(readUrls.some((url) => url.includes("/check-runs"))).toBe(true);
+      expect(tokenProvider).toHaveBeenCalled();
     });
 
     it("does not use a PR webhook older than 30 minutes for the CI verdict", async () => {

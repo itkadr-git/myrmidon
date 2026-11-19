@@ -250,6 +250,52 @@ describe("docker/bot-runtime/github-broker/gh", () => {
     });
   }
 
+  it("forwards positional repo view and clone targets instead of origin", async () => {
+    reply = { status: 200, body: available };
+    for (const args of [
+      ["repo", "view", "owner-b/repo-b"],
+      ["repo", "clone", "owner-b/repo-b"],
+      ["repo", "view", "--json", "name", "owner-b/repo-b"],
+      ["repo", "view", "--web", "owner-b/repo-b"],
+      ["repo", "clone", "--no-upstream", "owner-b/repo-b", "local/dir"],
+      ["repo", "view", "--template", "other/value", "owner-b/repo-b"],
+      ["repo", "clone", "--branch", "other/value", "owner-b/repo-b"],
+      ["repo", "clone", "https://github.com/owner-b/repo-b.git"],
+      ["repo", "clone", "git@github.com:owner-b/repo-b.git"],
+    ]) {
+      requests = [];
+      const result = await run(GH_WRAPPER, args, {
+        env: { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` }, cwd: ROOT,
+      });
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(JSON.parse(requests[0].body), { repository: "owner-b/repo-b" });
+    }
+  });
+
+  it("preserves explicit and endpoint priority and ignores slash arguments of other commands", async () => {
+    const cases = [
+      { args: ["repo", "view", "owner/target", "-R", "owner/override"], expected: "owner/override" },
+      { args: ["repo", "clone", "owner/target"], env: { GH_REPO: "owner/override" }, expected: "owner/override" },
+      { args: ["api", "repos/owner/target/pulls"], expected: "owner/target" },
+      { args: ["repo", "view", "--", "owner/target.git"], expected: "owner/target" },
+      { args: ["repo", "clone", "github.com/owner/target"], expected: "owner/target" },
+      { args: ["repo", "clone", "owner/target", "origin/main"], expected: "owner/target" },
+      { args: ["pr", "checkout", "origin/main"], expected: "itkadr-git/myrmidon" },
+      { args: ["repo", "view", "--json", "owner/target"], expected: "itkadr-git/myrmidon" },
+      { args: ["repo", "view", "other.example/owner/target"], expected: "itkadr-git/myrmidon" },
+      { args: ["repo", "clone", "https://github.com.evil/owner/target"], expected: "itkadr-git/myrmidon" },
+      { args: ["repo", "clone", "--upstream-remote-name", "owner/target"], expected: "itkadr-git/myrmidon" },
+    ];
+    for (const { args, env, expected } of cases) {
+      requests = [];
+      const result = await run(GH_WRAPPER, args, {
+        env: { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`, ...env }, cwd: ROOT,
+      });
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(JSON.parse(requests[0].body), { repository: expected });
+    }
+  });
+
   it("runs gh without a token when the broker refuses", async () => {
     reply = { status: 200, body: { status: "unavailable", source: "app", reason: "not allowed", env: {} } };
     const result = await run(GH_WRAPPER, ["-R", "owner-b/repo-b", "pr", "list"], {

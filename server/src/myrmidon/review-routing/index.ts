@@ -48,6 +48,9 @@ export function createReviewRoutingScheduler(input: {
     headChecksQueued: createWebhookQueuedChecksReader(input.db),
     // myrmidon(OPE-13149): the liveness wake looks at the CI of the head under review
     // with the board's own reader (the one REQUEST CHANGES is checked against).
+    // OPE-15004: the sweep is a non-admission reader — no `admission` flag — so
+    // the cached reader built here actually shares its reads across passes
+    // instead of re-reading GitHub on every pass.
     resolveReviewCi: async (ref) => {
       if (!reviewCiResolver) {
         const { createReviewPullRequestCiResolver } = await import("../review-stage-recovery/github-ci.js");

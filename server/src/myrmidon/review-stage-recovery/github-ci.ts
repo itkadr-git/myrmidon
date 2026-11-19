@@ -21,13 +21,29 @@
 // the budget is gone. The stranded-issue sweep asks for the CI of every review
 // stage with an open PR on each heartbeat tick, which made "review-recovery"
 // the largest user of the App's 5000/h budget.
+//
+// myrmidon(OPE-15004): the resolver serves two kinds of readers and they do
+// not share one freshness contract. Review admission (the write verdict gate
+// and the review hand-off admission) must never be answered from memory: it
+// passes `admission: true`, which skips the read cache on every GitHub read.
+// OPE-15127: admission does not trust a stored verdict at all — not even a
+// webhook one for a head a fresh pull read confirms. A rerun of that same
+// head can sit queued while the stored verdict still says complete, so the
+// head CI is re-read fresh on every admission call; and a fresh head that
+// differs from the reviewed head the board stored is `head_moved` before any
+// CI read, even when the new head is fully green. Non-admission consumers
+// (the stranded-issue sweep, the Review CI wait monitor tick, idle pickup,
+// the wake CI gate, the review-routing sweep) keep the cache: their ticks ask
+// every few seconds and must not turn into a request storm, and they never
+// decide the verdict — the write gate the reviewer hits afterwards re-reads
+// GitHub fresh and fails closed.
 
 import { createHash } from "node:crypto";
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { connectionEventDeliveries, issueWorkProducts, type Db } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../../services/git-credentials.js";
 import { getGitHubRateLimitMetrics, isGitHubRateLimited, recordGitHubRequest } from "../../services/github-rate-limit.js";
-import { withGitHubReviewBudget } from "../../services/github-review-budget.js";
+import { GitHubReviewBudgetError, withGitHubReviewBudget, type ReviewBudgetSnapshot } from "../../services/github-review-budget.js";
 import { ghFetch, gitHubApiBase } from "../../services/github-fetch.js";
 import { repositoryHasHostedCi } from "../../services/github-hosted-ci.js";
 import { defaultTokenProvider as resolveGitHubReadToken } from "../../services/github-external-object-provider.js";
@@ -109,8 +125,8 @@ async function readJson(fetchImpl: FetchLike, url: string, token: string | null)
   try {
     response = await fetchImpl(url, { headers: headers(token), signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
     recordGitHubRequest("review-recovery", response);
-  } catch {
-    return { ok: false, code: "network_error", status: null };
+  } catch (error) {
+    return { ok: false, code: error instanceof GitHubReviewBudgetError ? error.reason : "network_error", status: null };
   }
   if (!response.ok) {
     const rateLimited = response.status === 429 ||
@@ -172,9 +188,8 @@ async function readGitHub(
 // 0 for both turns the cache off (the stop while the rate limit is exhausted stays). An error is
 // never stored, a result read with one token is never served to a caller with another (the key
 // holds a hash of the token), reads of one key that run at the same time share one request, and
-// at most REVIEW_CI_CACHE_MAX_ENTRIES entries are kept, the oldest leave first. While the shared
-// rate-limit state says the budget is gone an entry is served even after it expired: the
-// alternative is "unknown" for every review stage.
+// at most REVIEW_CI_CACHE_MAX_ENTRIES entries are kept, the oldest leave first. Expired entries
+// are never authoritative during rate limits: the PR head or CI rerun may have changed.
 const PULL_CACHE_TTL_ENV = "MYRMIDON_REVIEW_CI_PULL_CACHE_TTL_SEC";
 const COMPLETE_CACHE_TTL_ENV = "MYRMIDON_REVIEW_CI_COMPLETE_CACHE_TTL_SEC";
 const DEFAULT_PULL_CACHE_TTL_SECONDS = 60;
@@ -232,24 +247,27 @@ function rememberRead(key: string, value: unknown, ttlMs: number): void {
   readCache.set(key, { value, expiresAt: Date.now() + ttlMs });
 }
 
-function cachedRead<T>(key: string, load: () => Promise<LoadedRead<T>>): Promise<CachedRead<T>> {
+function cachedRead<T>(key: string, load: () => Promise<LoadedRead<T>>, fresh = false): Promise<CachedRead<T>> {
   if (pullTtlMs() === 0 && completeTtlMs() === 0) return load();
-  const entry = readCache.get(key);
-  if (entry && (entry.expiresAt > Date.now() || isGitHubRateLimited())) {
-    return Promise.resolve<CachedRead<T>>({ ok: true, value: entry.value as T });
+  if (!fresh) {
+    const entry = readCache.get(key);
+    if (entry && entry.expiresAt > Date.now()) {
+      return Promise.resolve<CachedRead<T>>({ ok: true, value: entry.value as T });
+    }
+    const running = readsInFlight.get(key);
+    if (running) return running as Promise<CachedRead<T>>;
   }
-  const running = readsInFlight.get(key);
-  if (running) return running as Promise<CachedRead<T>>;
   const epoch = readCacheEpoch;
   const read: Promise<CachedRead<T>> = load()
     .then((loaded) => {
+      // Fresh reads still warm the cache for non-admission consumers.
       if (loaded.ok && loaded.ttlMs > 0 && epoch === readCacheEpoch) rememberRead(key, loaded.value, loaded.ttlMs);
       return loaded;
     })
     .finally(() => {
       if (readsInFlight.get(key) === read) readsInFlight.delete(key);
     });
-  readsInFlight.set(key, read);
+  if (!fresh) readsInFlight.set(key, read);
   return read;
 }
 
@@ -301,8 +319,12 @@ async function readHeadCi(input: {
     `?check_name=${encodeURIComponent(REVIEW_CI_FINAL_CHECK_NAME)}&filter=all&per_page=100`;
   const checkRuns = await readGitHub(fetchImpl, checkRunsUrl, input.token, "check_runs");
   if (!checkRuns.ok) return checkRuns;
-  const runs = asRecord(checkRuns.json)?.check_runs;
+  const checkPayload = asRecord(checkRuns.json);
+  const runs = checkPayload?.check_runs;
   if (!Array.isArray(runs)) return { ok: false, reason: "check_runs:unreadable_payload" };
+  if (typeof checkPayload?.total_count === "number" && checkPayload.total_count > runs.length) {
+    return { ok: false, reason: "check_runs:more_than_one_page" };
+  }
   const stateFromFinalCheck = pullRequestHeadCiStateFromChecks({ checkRuns: runs, headSha });
   if (stateFromFinalCheck === "complete") {
     return settledHeadCi({ state: "complete", finalCheckConclusion: pullRequestHeadFinalCheckConclusion({ checkRuns: runs, headSha }) });
@@ -340,13 +362,56 @@ async function readHeadCi(input: {
   return settledHeadCi({ state: pullRequestHeadCiStateFromAllChecks({ checkRuns: allRunsList }) });
 }
 
+/** The current PR head as GitHub reports it right now; no CI read, cached like the pull read below. */
+async function resolvePullRequestCurrentHead(input: {
+  reference: GitHubPullRequestReference;
+  /** Null reads anonymously: the repository may be public. */
+  token: string | null;
+  fetch?: FetchLike;
+  /** Admission reads pass fresh: skip the cache, always ask GitHub. */
+  fresh?: boolean;
+}): Promise<
+  | { state: "ok"; headSha: string }
+  | { state: "closed"; headSha: string | null }
+  | { state: "unknown"; reason: string; rateLimit?: RateLimitFacts | null }
+> {
+  const fetchImpl = input.fetch ?? ghFetch;
+  const apiBase = gitHubApiBase(input.reference.host);
+  const repository = `${encodeURIComponent(input.reference.owner)}/${encodeURIComponent(input.reference.repo)}`;
+  const keyBase = `${tokenScope(input.token)}|${repositoryKey(input.reference)}`;
+  const pull = await cachedRead<PullHead>(`pull|${keyBase}#${input.reference.number}`, async (): Promise<LoadedRead<PullHead>> => {
+    const read = await readGitHub(fetchImpl, `${apiBase}/repos/${repository}/pulls/${input.reference.number}`, input.token, "pull");
+    if (!read.ok) return read;
+    const pullRecord = asRecord(read.json);
+    if (!pullRecord) return { ok: false, reason: "pull:unreadable_payload" };
+    const headRecord = asRecord(pullRecord.head);
+    return {
+      ok: true,
+      value: { open: pullRecord.state === "open", headSha: typeof headRecord?.sha === "string" ? headRecord.sha : null },
+      ttlMs: pullTtlMs(),
+    };
+  }, input.fresh);
+  if (!pull.ok) return { state: "unknown", reason: pull.reason, ...(pull.rateLimit ? { rateLimit: pull.rateLimit } : {}) };
+  if (!pull.value.open) return { state: "closed", headSha: pull.value.headSha };
+  if (!pull.value.headSha) return { state: "unknown", reason: "pull:no_head_sha" };
+  return { state: "ok", headSha: pull.value.headSha };
+}
+
 /** CI state of the current head of one pull request; network only, injected fetch for tests. */
 export async function resolvePullRequestHeadCi(input: {
   reference: GitHubPullRequestReference;
   /** Null reads anonymously: the repository may be public. */
   token: string | null;
   fetch?: FetchLike;
-  knownHeadSha?: string;
+  /** Admission reads pass fresh: skip the cache, always ask GitHub. */
+  fresh?: boolean;
+  /**
+   * myrmidon(OPE-15127): a review admission made on a known reviewed head A is
+   * never answered for a different current head B, even when B is fully green.
+   * Admission readers pass the reviewed head the board stored; a fresh head
+   * that differs answers `unknown / head_moved` before any CI read.
+   */
+  expectedHeadSha?: string;
 }): Promise<{
   state: "pending" | "complete" | "unknown" | "not_configured" | "no_pull_request";
   headSha: string | null;
@@ -362,35 +427,31 @@ export async function resolvePullRequestHeadCi(input: {
   rateLimit?: RateLimitFacts | null;
 }> {
   const fetchImpl = input.fetch ?? ghFetch;
-  const apiBase = gitHubApiBase(input.reference.host);
-  const repository = `${encodeURIComponent(input.reference.owner)}/${encodeURIComponent(input.reference.repo)}`;
-  const keyBase = `${tokenScope(input.token)}|${repositoryKey(input.reference)}`;
-  const pull: CachedRead<PullHead> = input.knownHeadSha ? { ok: true, value: { open: true, headSha: input.knownHeadSha } } : await cachedRead<PullHead>(`pull|${keyBase}#${input.reference.number}`, async (): Promise<LoadedRead<PullHead>> => {
-    const read = await readGitHub(fetchImpl, `${apiBase}/repos/${repository}/pulls/${input.reference.number}`, input.token, "pull");
-    if (!read.ok) return read;
-    const pullRecord = asRecord(read.json);
-    if (!pullRecord) return { ok: false, reason: "pull:unreadable_payload" };
-    const headRecord = asRecord(pullRecord.head);
-    return {
-      ok: true,
-      value: { open: pullRecord.state === "open", headSha: typeof headRecord?.sha === "string" ? headRecord.sha : null },
-      ttlMs: pullTtlMs(),
-    };
-  });
-  if (!pull.ok) {
+  const head = await resolvePullRequestCurrentHead(input);
+  if (head.state === "unknown") {
     return {
       state: "unknown",
       headSha: null,
-      reason: pull.reason,
-      ...(pull.rateLimit ? { rateLimit: pull.rateLimit } : {}),
+      reason: head.reason,
+      ...(head.rateLimit ? { rateLimit: head.rateLimit } : {}),
     };
   }
-  const { open, headSha } = pull.value;
   // A merged or closed pull request has no CI to wait for; the PR sync owns it.
-  if (!open) return { state: "no_pull_request", headSha };
-  if (!headSha) return { state: "unknown", headSha: null, reason: "pull:no_head_sha" };
-  const ci = await cachedRead<HeadCiOutcome>(`ci|${keyBase}@${headSha}`, () =>
-    readHeadCi({ fetchImpl, reference: input.reference, token: input.token, headSha, apiBase, repository }),
+  if (head.state === "closed") return { state: "no_pull_request", headSha: head.headSha };
+  // OPE-15127: the admission was made on the reviewed head A. A different
+  // current head B never inherits it, even when B is fully green — and the CI
+  // read below is skipped entirely: its verdict could only belong to B.
+  if (input.expectedHeadSha && head.headSha !== input.expectedHeadSha) {
+    return { state: "unknown", headSha: head.headSha, reason: "head_moved" };
+  }
+  const headSha = head.headSha;
+  const apiBase = gitHubApiBase(input.reference.host);
+  const repository = `${encodeURIComponent(input.reference.owner)}/${encodeURIComponent(input.reference.repo)}`;
+  const keyBase = `${tokenScope(input.token)}|${repositoryKey(input.reference)}`;
+  const ci = await cachedRead<HeadCiOutcome>(
+    `ci|${keyBase}@${headSha}`,
+    () => readHeadCi({ fetchImpl, reference: input.reference, token: input.token, headSha, apiBase, repository }),
+    input.fresh,
   );
   if (!ci.ok) {
     return {
@@ -540,6 +601,8 @@ async function readWebhookCi(db: Db, companyId: string, reference: GitHubPullReq
       sql`lower(${connectionEventDeliveries.normalizedPayload}->>'repository') = lower(${`${reference.owner}/${reference.repo}`})`,
       sql`coalesce(${connectionEventDeliveries.normalizedPayload}->>'pullRequestNumber', ${connectionEventDeliveries.normalizedPayload}->>'number') = ${String(reference.number)}`,
     )).orderBy(desc(connectionEventDeliveries.createdAt)).limit(200);
+    // A truncated window may omit a later run delivered out of order.
+    if (rows.length >= 200) return null;
     const sorted = [...rows].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
     // Receipt order is not event order: pick the newest pull_request event by the
     // time GitHub stamped on the PR (updatedAt), falling back to receipt order, so
@@ -559,8 +622,12 @@ async function readWebhookCi(db: Db, companyId: string, reference: GitHubPullReq
     });
     // Receipt order is not run order: a delayed completion from an older run
     // must not override a newer rerun. Ask GitHub when multiple runs are seen.
-    const runIds = new Set(checks.map((row) => asRecord(row.normalizedPayload)?.runId).filter((id): id is string => typeof id === "string"));
-    if (runIds.size > 1) return { headSha, verdict: null };
+    const runIds = new Set(checks.map((row) => asRecord(row.normalizedPayload)?.runId).filter((id): id is string => typeof id === "string" && id.length > 0));
+    // Without identities, multiple deliveries may belong to different reruns.
+    if (runIds.size > 1 || (checks.length > 1 && checks.some((row) => {
+      const id = asRecord(row.normalizedPayload)?.runId;
+      return typeof id !== "string" || !id;
+    }))) return { headSha, verdict: null };
     // `completed` is terminal for a run: a late `in_progress` must not undo it.
     const completed = checks.map((row) => asRecord(row.normalizedPayload))
       .find((value) => value?.status === "completed" && typeof value.conclusion === "string" && !["cancelled", "skipped"].includes(value.conclusion));
@@ -579,32 +646,80 @@ export function createReviewPullRequestCiResolver(input: {
   db: Db;
   fetch?: FetchLike;
   tokenProvider?: (companyId: string, repository: string) => Promise<string | null>;
+  onDiagnostic?: (diagnostic: { transportCalls: number; budget: ReviewBudgetSnapshot | null }) => void;
+  /**
+   * Review-admission readers pass `true`: every GitHub read is fresh (the
+   * read cache is skipped), a stored verdict is never admission evidence —
+   * the head CI of the current head is re-read fresh on every call, because a
+   * rerun of the same head can be queued while a stored verdict still says
+   * complete (OPE-15127) — and a fresh head that differs from the reviewed
+   * head the board stored answers `head_moved` before any CI read (OPE-15127).
+   * Everything else — monitor ticks, sweeps, wake gates — shares the process
+   * read cache (OPE-12397); it never decides the verdict, so a cached answer
+   * cannot admit a review decision.
+   */
+  admission?: boolean;
 }): ReviewPullRequestCiResolver {
-  const fetchImpl = withGitHubReviewBudget(input.db, "review-recovery", input.fetch ?? ghFetch);
-  const tokenProvider =
-    input.tokenProvider ??
-    ((companyId: string, repository: string) =>
-      resolveGitHubReadToken(input.db, companyId, repository, DEFAULT_GITHUB_TOKEN_SECRET_NAMES, fetchImpl));
-
+  const fresh = input.admission === true;
   return async ({ companyId, issueId }) => {
+    let transportCalls = 0;
+    let budget: ReviewBudgetSnapshot | null = null;
+    const budgetedFetch = withGitHubReviewBudget(input.db, "review-recovery", async (url, init) => {
+      transportCalls += 1;
+      return (input.fetch ?? ghFetch)(url, init);
+    }, 5000, (snapshot) => { budget = snapshot; });
+    const fetchImpl: FetchLike = async (url, init) => {
+      try {
+        return await budgetedFetch(url, init);
+      } catch (error) {
+        if (error instanceof GitHubReviewBudgetError && error.budget) budget = error.budget;
+        throw error;
+      }
+    };
+    const tokenProvider = input.tokenProvider ?? ((id: string, repository: string) =>
+      resolveGitHubReadToken(input.db, id, repository, DEFAULT_GITHUB_TOKEN_SECRET_NAMES, fetchImpl));
+    try {
     const target = await loadIssuePullRequestTarget(input.db, companyId, issueId);
     if (target.kind === "none") return { state: "no_pull_request", pullRequestUrl: null, headSha: null };
     if (target.kind === "unreadable") {
       return { state: "unknown", pullRequestUrl: target.pullRequestUrl, headSha: null, reason: "pull_request_reference_unreadable" };
     }
     const { reference, pullRequestUrl } = target;
-    const webhook = await readWebhookCi(input.db, companyId, reference);
-    const matchingWebhook = webhook && (!target.knownHeadSha || target.knownHeadSha === webhook.headSha) ? webhook : null;
-    if (matchingWebhook?.verdict) return { ...matchingWebhook.verdict, headSha: matchingWebhook.headSha, pullRequestUrl };
+    if (!fresh) {
+      // Non-admission consumer (monitor tick, sweep, wake gate): the stored
+      // webhook verdict names the same head the work product knows, and this
+      // reader never decides the verdict — the reviewer's write gate re-reads
+      // GitHub fresh. Serve it without a token request and without a GitHub
+      // read (the pre-OPE-15114 fast path for non-admission readers).
+      const webhook = await readWebhookCi(input.db, companyId, reference);
+      const matchingWebhook = webhook && target.knownHeadSha && target.knownHeadSha === webhook.headSha ? webhook : null;
+      if (matchingWebhook?.verdict) {
+        return { ...matchingWebhook.verdict, headSha: matchingWebhook.headSha, pullRequestUrl };
+      }
+    }
     let token: string | null = null;
-    let tokenError = false;
+    let tokenError: string | null = null;
     try {
       token = (await tokenProvider(companyId, `${reference.owner}/${reference.repo}`))?.trim() || null;
-    } catch {
-      tokenError = true;
+    } catch (error) {
+      tokenError = error instanceof GitHubReviewBudgetError ? `token_provider:${error.reason}` : "token provider failed";
     }
+    // OPE-15127: admission never answers from a stored verdict — not even a
+    // webhook one for a head a fresh pull read confirms. The same head can be
+    // re-run while the new check_run deliveries are delayed: a stored complete
+    // would admit a queued rerun. Admission therefore re-reads the head CI of
+    // the current head on every call. The reviewed head the board stored (the
+    // work-product metadata, kept by the PR sync and the webhook) is compared
+    // with the fresh head: a different current head is "head_moved" before any
+    // CI read, even when the new head is fully green and no webhook named it.
     try {
-      const head = await resolvePullRequestHeadCi({ reference, token, fetch: fetchImpl, knownHeadSha: matchingWebhook?.headSha });
+      const head = await resolvePullRequestHeadCi({
+        reference,
+        token,
+        fetch: fetchImpl,
+        fresh,
+        ...(fresh && target.knownHeadSha ? { expectedHeadSha: target.knownHeadSha } : {}),
+      });
       if (head.state !== "unknown") {
         // myrmidon(OPE-12176): the verdict of the final check travels with the
         // state; review admission tells green from red without a second read.
@@ -619,11 +734,14 @@ export function createReviewPullRequestCiResolver(input: {
         state: "unknown",
         pullRequestUrl,
         headSha: head.headSha,
-        reason: `${head.reason ?? "read_failed"}${tokenError ? "; token provider failed" : ""}`,
+        reason: `${head.reason ?? "read_failed"}${tokenError ? `; ${tokenError}` : ""}`,
         ...(head.rateLimit ? { rateLimit: head.rateLimit } : {}),
       };
     } catch {
       return { state: "unknown", pullRequestUrl, headSha: null, reason: "read_failed" };
+    }
+    } finally {
+      try { input.onDiagnostic?.({ transportCalls, budget }); } catch { /* Diagnostics must not affect admission. */ }
     }
   };
 }

@@ -512,9 +512,9 @@ function isGitWorktree(dir, env) {
 
 // A `.git` that is empty or broken is skipped by git, which then finds the parent repository:
 // such a directory is no worktree of its own.
-function isOwnWorktree(dir) {
+function isOwnWorktree(dir, env) {
   try {
-    const r = git(["rev-parse", "--show-toplevel"], dir);
+    const r = git(["rev-parse", "--show-toplevel"], dir, env);
     return r.status === 0 && fs.realpathSync(r.stdout.trim()) === fs.realpathSync(dir);
   } catch { return false; }
 }
@@ -542,7 +542,10 @@ function hasStash(dir, env) {
 // `.git` is a directory in a plain clone but a file (`gitdir: <path>`) in a linked worktree or a
 // submodule: the objects, and their alternates file, then live in the real gitdir (and the
 // common dir behind it), so look there.
-function hasAlternates(dir, mapped) {
+// The object stores a repo borrows from: every entry of the `objects/info/alternates` files of
+// its gitdirs (a linked worktree's admin dir and the common dir behind it).
+function alternateStores(dir, mapped) {
+  const stores = [];
   try {
     const dotGit = path.join(dir, ".git");
     const st = fs.lstatSync(dotGit);
@@ -562,8 +565,34 @@ function hasAlternates(dir, mapped) {
         if (common) gitDirs.push(path.resolve(gd, common));
       } catch { /* no commondir: the gitdir is the common dir */ }
     }
-    return gitDirs.some((gd) => fs.existsSync(path.join(gd, "objects", "info", "alternates")));
-  } catch { return false; }
+    for (const gd of gitDirs) {
+      let text;
+      try { text = fs.readFileSync(path.join(gd, "objects", "info", "alternates"), "utf8"); } catch { continue; }
+      for (const line of text.split("\n")) {
+        const entry = line.trim();
+        if (entry && !entry.startsWith("#")) stores.push(path.resolve(gd, "objects", entry));
+      }
+    }
+  } catch { /* unreadable: the caller treats it as no store */ }
+  return stores;
+}
+
+function hasAlternates(dir, mapped) {
+  return alternateStores(dir, mapped).length > 0;
+}
+
+// The bot git-bases borrow objects from the shared mirror through `objects/info/alternates`.
+// When the named store exists, is readable and git still reaches HEAD through the alternates
+// chain, a compact archive is safe: `git bundle create` copies the borrowed objects into the
+// bundle, so the archive recovers the copy on its own. When the store is missing or git cannot
+// read the objects, nothing can prove recovery: the copy stays (fail closed).
+function alternatesAccessible(repo, mapped, env) {
+  for (const store of alternateStores(repo, mapped)) {
+    try { fs.accessSync(store, fs.constants.R_OK); } catch { return false; }
+  }
+  const head = git(["cat-file", "-e", "HEAD"], repo, env);
+  if (head.status !== 0) return false;
+  return git(["ls-tree", "--name-only", "HEAD"], repo, env).status === 0;
 }
 
 // Every directory under `top` (itself included) holding a `.git` entry, directory or file, at
@@ -598,11 +627,16 @@ function scanGitTree(top) {
 
 // --- Scanning ---------------------------------------------------------------
 
-function scanTaskClones(root, now, ttlHours) {
+export function scanTaskClones(root, now, ttlHours) {
   const results = [];
   const ttlMs = ttlHours * HOUR_MS;
   let entries;
   try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return results; }
+  // A bot clone's `.git` may name a container path (`gitdir: /bot/...`) that does not exist on
+  // the host: plain `git` then rejects the clone and the closed-task rule never sees it, so
+  // done/cancelled copies are never freed. Map it through the same resolver the idle and review
+  // rules use (root is the bot's `workspace`, its parent the bot dir the container calls /bot).
+  const agentRoot = path.basename(path.resolve(root)) === "workspace" ? path.dirname(path.resolve(root)) : null;
 
   for (const entry of entries) {
     if (entry.isSymbolicLink()) continue;
@@ -612,28 +646,39 @@ function scanTaskClones(root, now, ttlHours) {
     if (isSymlink(fullPath)) continue;
 
     const st = fs.statSync(fullPath);
-    const ageMs = now - st.mtimeMs;
+
+    // Resolve container gitfiles before probing git: the deployed git wrapper can make the
+    // unmapped probe succeed while later archive/removal still needs the host admin paths.
+    const dirs = resolveWorktreeGitDirs(fullPath, agentRoot);
+    const mapped = dirs.adminDir ? dirs : null;
+    // Fail closed for a container pointer that cannot be mapped, even if a wrapper accepts it.
+    if (!mapped && dirs.reason !== "not-a-linked-worktree") continue;
+    const env = mapped ? mappedGitEnv(mapped, fullPath) : undefined;
+    if (!isGitWorktree(fullPath, env)) continue;
+
+    // A linked worktree's own HEAD and reflog live in the admin dir: the directory mtime alone
+    // can sit older than the newest real change (newestCloneChangeMs, as in the idle rule).
+    const mtimeMs = mapped ? newestCloneChangeMs(fullPath, mapped.adminDir) : st.mtimeMs;
+    const ageMs = now - mtimeMs;
     if (ageMs < ttlMs) continue; // too fresh
 
-    const isGit = isGitWorktree(fullPath);
-    if (!isGit) continue; // not a git clone, skip
-
-    const clean = isClean(fullPath);
+    const clean = isClean(fullPath, env ?? undefined);
     // `pushed` asks the server (ls-remote): left to assessClone, which main runs only for clones the
     // board reports closed. Open tasks are never touched and need no network round trip.
-    const stash = hasStash(fullPath);
-    const alternates = hasAlternates(fullPath);
+    const stash = hasStash(fullPath, env ?? undefined);
+    const alternates = hasAlternates(fullPath, mapped ?? undefined);
 
     results.push({
       name,
       path: fullPath,
       ageMs,
-      mtimeMs: st.mtimeMs,
+      mtimeMs,
       isGit: true,
       clean,
       pushed: null,
       stash,
       alternates,
+      ...(mapped ? { adminDir: mapped.adminDir, commonDir: mapped.commonDir, containerPath: mapped.containerPath } : {}),
       safeToRemove: false,
       reason: "unassessed",
     });
@@ -642,8 +687,11 @@ function scanTaskClones(root, now, ttlHours) {
 }
 
 // Fills in `pushed` (checked against the server) and the removal verdict of a scanned clone.
-function assessClone(c) {
-  c.pushed = c.clean && !c.stash && !c.alternates ? isPushed(c.path) : false;
+export function assessClone(c) {
+  // A linked worktree's `.git` names a container path the host cannot read: the mapped env of
+  // the idle/review rules. A plain clone reads fine on its own.
+  const env = c.adminDir ? mappedGitEnv(c, c.path) : undefined;
+  c.pushed = c.clean && !c.stash && !c.alternates ? isPushed(c.path, env) : false;
   c.safeToRemove = c.clean && c.pushed && !c.stash && !c.alternates;
   c.reason = c.safeToRemove ? "clean-pushed" : "unsafe-archive";
   return c;
@@ -715,14 +763,81 @@ function resolveWorktreeGitDirs(clonePath, agentRoot, containerRoot = BOT_CONTAI
   }
   try {
     const adminDir = fs.realpathSync(target);
-    const common = fs.readFileSync(path.join(adminDir, "commondir"), "utf8").trim();
-    const commonDir = fs.realpathSync(path.resolve(adminDir, common));
+    // The commondir file may name the CONTAINER path of the git base (`/bot/...`), which does
+    // not exist on the host. The layout below still pins the real common dir, so an
+    // unresolvable commondir content falls back to it (mappedGitEnv repairs the file for the
+    // git calls of this pass and restores it on exit).
+    let commonDir = null;
+    try {
+      const common = fs.readFileSync(path.join(adminDir, "commondir"), "utf8").trim();
+      if (common) commonDir = fs.realpathSync(path.resolve(adminDir, common));
+    } catch { /* unresolvable commondir: the layout check pins the common dir */ }
+    if (!commonDir) commonDir = fs.realpathSync(path.dirname(path.dirname(adminDir)));
     if (path.dirname(path.dirname(adminDir)) !== commonDir || path.basename(path.dirname(adminDir)) !== "worktrees") {
       return { reason: "gitdir-unexpected-layout" };
     }
     if (!fs.existsSync(path.join(adminDir, "HEAD"))) return { reason: "gitdir-missing" };
     return { adminDir, commonDir, containerPath };
   } catch { return { reason: "gitdir-missing" }; }
+}
+
+// The admin dir's `commondir` file records the CONTAINER path of the git base (`/bot/...`),
+// which does not exist on the host: bundle/HEAD/objects reads die with "fatal: not a git
+// repository: /bot/...". GIT_COMMON_DIR and `core.commondir` do NOT override the file (git
+// 2.47, verified on the build host), and a host `/bot` symlink cannot map every agent root,
+// so the first mapped git use of an admin dir repoints its commondir file at the host common
+// dir for the duration of the pass and restores the original content on exit. Plain clones
+// pass no env and read their own `.git` directory.
+const repairedCommondirs = new Map(); // adminDir -> original commondir content
+let commondirRestoreArmed = false;
+function armCommondirRestore() {
+  if (commondirRestoreArmed) return;
+  commondirRestoreArmed = true;
+  const restore = () => {
+    for (const [adminDir, original] of repairedCommondirs) {
+      writeAdminFileAtomic(path.join(adminDir, "commondir"), original.text, original.stat);
+    }
+    repairedCommondirs.clear();
+  };
+  process.once("exit", restore);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, () => { restore(); process.kill(process.pid, signal); });
+}
+// Atomic same-directory write that keeps the owner and mode of the file it replaces.
+function writeAdminFileAtomic(file, content, stat) {
+  const tmp = path.join(path.dirname(file), `.myr-gc-${process.pid}-${Date.now()}.tmp`);
+  try {
+    fs.writeFileSync(tmp, content, { mode: stat.mode & 0o777 });
+    try { fs.chownSync(tmp, stat.uid, stat.gid); } catch { /* best effort */ }
+    fs.renameSync(tmp, file);
+  } catch {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
+  }
+}
+
+function repairCommondirForHost(adminDir, commonDir) {
+  const file = path.join(adminDir, "commondir");
+  // Never follow a symlink or touch anything but a regular file: a bot-created symlink
+  // must not redirect a root write elsewhere. Anything unusual fails closed through git.
+  let st;
+  try { st = fs.lstatSync(file); } catch { return; }
+  if (st.isSymbolicLink() || !st.isFile()) return;
+  let text;
+  try { text = fs.readFileSync(file, "utf8"); } catch { return; }
+  const target = text.trim();
+  if (!target) return;
+  try { if (fs.existsSync(path.resolve(adminDir, target))) return; } catch { /* unreadable: repair below */ }
+  // The recorded path does not resolve on the host (a container path): point the file at the
+  // host common dir for this pass. Closed clones have no live runs; the idle and review rules
+  // admit a clone only when the board reports no live run on the task.
+  if (!repairedCommondirs.has(adminDir)) repairedCommondirs.set(adminDir, { text, stat: st });
+  armCommondirRestore();
+  writeAdminFileAtomic(file, `${commonDir}\n`, st);
+}
+
+// The mapped env every git call uses for a bot or runner linked worktree.
+function mappedGitEnv(dirs, workTree) {
+  repairCommondirForHost(dirs.adminDir, dirs.commonDir);
+  return { GIT_DIR: dirs.adminDir, GIT_WORK_TREE: workTree, GIT_COMMON_DIR: dirs.commonDir, GIT_OPTIONAL_LOCKS: "0" };
 }
 
 // Newest change time of a clone: the directory, its top-level entries and the worktree's own
@@ -808,7 +923,7 @@ export async function scanIdleOpenClones(root, now, {
     base.ageMs = ageMs;
     if (ageMs < thresholdHours * HOUR_MS) { keep("fresh"); continue; }
     // GIT_OPTIONAL_LOCKS=0: `git status` must not rewrite the index, or every pass would make the clone look fresh.
-    const env = { GIT_DIR: dirs.adminDir, GIT_WORK_TREE: clonePath, GIT_OPTIONAL_LOCKS: "0" };
+    const env = mappedGitEnv(dirs, clonePath);
     if (!isCleanIgnoringJunk(clonePath, env)) { keep("dirty"); continue; }
     const tree = scanGitTree(clonePath);
     if (!tree.complete || !tree.roots.every((r) => r === clonePath)) { keep("nested-repo"); continue; }
@@ -1003,7 +1118,7 @@ export async function scanReviewerClones(root, now, {
     const ageMs = now - newestCloneChangeMs(clonePath, dirs.adminDir);
     base.ageMs = ageMs;
     if (ageMs < idleMinutes * MINUTE_MS) { keep("fresh"); continue; }
-    const env = { GIT_DIR: dirs.adminDir, GIT_WORK_TREE: clonePath, GIT_OPTIONAL_LOCKS: "0" };
+    const env = mappedGitEnv(dirs, clonePath);
     // Clean means `git status` is empty, as for the idle rule (untracked service directories are junk).
     if (!isCleanIgnoringJunk(clonePath, env)) { keep("dirty"); continue; }
     const tree = scanGitTree(clonePath);
@@ -1237,7 +1352,7 @@ function mapRunnerContainerWorktree(dir, runnerWorkspace) {
   if (target !== RUNNER_CONTAINER_ROOT && !target.startsWith(`${RUNNER_CONTAINER_ROOT}/`)) return null;
   const dirs = resolveWorktreeGitDirs(dir, runnerWorkspace, RUNNER_CONTAINER_ROOT);
   if (!dirs.adminDir) return { reason: dirs.reason };
-  return { ...dirs, env: { GIT_DIR: dirs.adminDir, GIT_WORK_TREE: dir, GIT_OPTIONAL_LOCKS: "0" } };
+  return { ...dirs, env: mappedGitEnv(dirs, dir) };
 }
 
 // Newest change time (ms) of a task folder outside `.git`: the folder, its top-level entries and
@@ -2434,14 +2549,16 @@ function archiveRepos(clonePath) {
 // tar `--exclude` arguments: exact member paths (`<clone name>/<path>`) that git reports as ignored
 // and whose last segment is in ARCHIVE_EXCLUDES. A git failure or a non-repo gives no excludes:
 // the archive is whole, the safe default.
-function archiveExcludes(clonePath) {
+function archiveExcludes(clonePath, env) {
   const name = path.basename(clonePath);
   const out = new Set();
   const allRepos = archiveRepos(clonePath);
   for (const repo of allRepos) {
     let r;
     try {
-      r = git(["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], repo);
+      // The clone's own root may be a mapped linked worktree (its `.git` names a container
+      // path): only the mapped env reads it. Nested repos are plain and read on their own.
+      r = git(["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], repo, repo === clonePath ? env : undefined);
     } catch {
       continue;
     }
@@ -2484,13 +2601,15 @@ function runArchiveTool(cmd, args, what, extra = {}) {
 // Why a checkout cannot be archived compactly (bundle + patches). `{ keep: true }` means no
 // safe archive of any kind exists (a full copy would lack the borrowed objects): the checkout
 // stays. Otherwise the reason is journaled and the previous full archive is used.
-function compactBlocker(clonePath, repos) {
+function compactBlocker(clonePath, repos, envFor = () => undefined, mappedFor = () => undefined) {
   if (!repos.length) return { reason: "no-git-repository" };
   for (const repo of repos) {
-    if (hasAlternates(repo)) return { keep: true, reason: `alternate-objects: ${repo}` };
+    if (hasAlternates(repo, mappedFor(repo)) && !alternatesAccessible(repo, mappedFor(repo), envFor(repo))) {
+      return { keep: true, reason: `alternate-objects inaccessible: ${repo}` };
+    }
   }
   for (const repo of repos) {
-    if (!isOwnWorktree(repo)) {
+    if (!isOwnWorktree(repo, envFor(repo))) {
       // The full archive leaves out git-ignored build and dependency directories: a broken
       // repository inside one would be lost with the copy. Keep the copy then.
       const skipped = path.relative(clonePath, repo).split(path.sep).some((seg) => ARCHIVE_EXCLUDES.includes(seg) || BOT_SCAN_SKIP_NAMES.has(seg));
@@ -2524,14 +2643,17 @@ function compactBlocker(clonePath, repos) {
 // Compact recovery of one git root into `dest`: unpublished commits (git bundle), staged and
 // unstaged changes (patches), untracked files. Returns the member names written (empty when
 // everything is already on the remote).
-function compactRepo(repo, dest, nestedRepos, journalPath, clonePath) {
+function compactRepo(repo, dest, nestedRepos, journalPath, clonePath, env) {
   fs.mkdirSync(dest, { recursive: true });
+  // A mapped linked worktree's `.git` names a container path: every git call needs the mapped
+  // env, exactly as the scan and assessment use it.
+  const toolEnv = env ? { ...process.env, ...env } : undefined;
   const members = [];
-  const stashes = git(["stash", "list", "--format=%H"], repo);
+  const stashes = git(["stash", "list", "--format=%H"], repo, env);
   if (stashes.status !== 0) throw new Error(`stash listing failed: ${stashes.stderr}`);
   const stashCount = stashes.stdout.trim().split("\n").filter(Boolean).length;
   if (stashCount > 1) throw new Error("multiple stash entries require reflog preservation; keeping checkout");
-  const state = pushState(repo);
+  const state = pushState(repo, env);
   if (!state.verified && journalPath) {
     journalRecord(journalPath, { event: "remote-unverified", path: repo, clone: clonePath, reason: state.reason });
   }
@@ -2540,8 +2662,8 @@ function compactRepo(repo, dest, nestedRepos, journalPath, clonePath) {
     // A bundle includes stashes as well as unpublished branches and tags. Only commits the server
     // itself advertised (and that exist here) are left out; without a verified answer nothing is.
     const exclude = state.verified && state.tips.length ? ["--not", ...state.tips] : [];
-    runArchiveTool("git", ["-C", repo, "bundle", "create", bundle, "HEAD", "--all", ...exclude], "bundle creation");
-    runArchiveTool("git", ["-C", repo, "bundle", "verify", bundle], "bundle verification");
+    runArchiveTool("git", ["-C", repo, "bundle", "create", bundle, "HEAD", "--all", ...exclude], "bundle creation", { env: toolEnv });
+    runArchiveTool("git", ["-C", repo, "bundle", "verify", bundle], "bundle verification", { env: toolEnv });
     members.push("unpublished.bundle");
   }
   // Patches are bytes: the diff goes straight to the file, nothing is decoded or buffered.
@@ -2552,14 +2674,14 @@ function compactRepo(repo, dest, nestedRepos, journalPath, clonePath) {
     const file = path.join(dest, name);
     const fd = fs.openSync(file, "w");
     try {
-      runArchiveTool("git", ["-C", repo, ...diffArgs], `${name} diff`, { stdio: ["ignore", fd, "pipe"] });
+      runArchiveTool("git", ["-C", repo, ...diffArgs], `${name} diff`, { stdio: ["ignore", fd, "pipe"], env: toolEnv });
     } finally {
       fs.closeSync(fd);
     }
     if (fs.statSync(file).size > 0) members.push(name);
     else fs.rmSync(file, { force: true });
   }
-  const listed = runArchiveTool("git", ["-C", repo, "ls-files", "--others", "--exclude-standard", "-z"], "untracked listing");
+  const listed = runArchiveTool("git", ["-C", repo, "ls-files", "--others", "--exclude-standard", "-z"], "untracked listing", { env: toolEnv });
   // A nested repository is archived by its own pass; the parent lists it as one directory. Names are
   // handled as latin1 so non-UTF-8 bytes survive the round trip to tar unchanged.
   const nestedRel = nestedRepos.map((r) => Buffer.from(path.relative(repo, r), "utf8").toString("latin1"));
@@ -2580,12 +2702,17 @@ function compactRepo(repo, dest, nestedRepos, journalPath, clonePath) {
 // or null when everything is already pushed (nothing worth keeping). Where a compact archive is
 // impossible the previous full archive is made and the reason journaled; a checkout whose Git
 // state cannot be recovered by either way stays in place (throws).
-function archiveClone(clonePath, archiveRoot, journalPath) {
+function archiveClone(clonePath, archiveRoot, journalPath, mapped = null) {
   const tree = scanGitTree(clonePath);
   // A directory that cannot be read may hide a repository: nothing can be proven, keep the copy.
   if (!tree.complete) throw new Error(`cannot safely archive ${clonePath}: unreadable or oversized tree; keeping checkout`);
   const repos = tree.roots;
-  const blocker = compactBlocker(clonePath, repos);
+  // A mapped linked worktree's `.git` names a container path the host cannot read: the blocker,
+  // the compact recovery and the exclude checks need the same mapped env as the scan.
+  const env = mapped ? mappedGitEnv(mapped, clonePath) : undefined;
+  const envFor = (repo) => (mapped && repo === clonePath ? env : undefined);
+  const mappedFor = (repo) => (mapped && repo === clonePath ? mapped : undefined);
+  const blocker = compactBlocker(clonePath, repos, envFor, mappedFor);
   if (blocker?.keep) throw new Error(`cannot safely archive ${clonePath}: ${blocker.reason}; keeping checkout`);
   if (blocker) {
     // The full archive leaves out git-ignored build and dependency directories. A repository inside
@@ -2593,7 +2720,7 @@ function archiveClone(clonePath, archiveRoot, journalPath) {
     const hidden = repos.find((r) => r !== clonePath && path.relative(clonePath, r).split(path.sep).some((seg) => ARCHIVE_EXCLUDES.includes(seg) || BOT_SCAN_SKIP_NAMES.has(seg)));
     if (hidden) throw new Error(`cannot safely archive ${clonePath}: repository in a skipped directory (${hidden}) cannot go into the full archive; keeping checkout`);
     if (journalPath) journalRecord(journalPath, { event: "archive-full-fallback", path: clonePath, reason: blocker.reason });
-    return archiveCloneFull(clonePath, archiveRoot);
+    return archiveCloneFull(clonePath, archiveRoot, env);
   }
   const stage = fs.mkdtempSync(path.join(fs.existsSync(archiveRoot) ? archiveRoot : (fs.mkdirSync(archiveRoot, { recursive: true }), archiveRoot), ".bundle-"));
   const archivePath = path.join(archiveRoot, `${path.basename(clonePath)}-${crypto.randomUUID()}.tar.gz`);
@@ -2603,7 +2730,7 @@ function archiveClone(clonePath, archiveRoot, journalPath) {
       const rel = path.relative(clonePath, repo);
       const nested = repos.filter((r) => r !== repo && r.startsWith(`${repo}${path.sep}`));
       // The checkout's own repository keeps flat member names; inner ones go under repos/<path>.
-      const members = compactRepo(repo, rel ? path.join(stage, "repos", rel) : stage, nested, journalPath, clonePath);
+      const members = compactRepo(repo, rel ? path.join(stage, "repos", rel) : stage, nested, journalPath, clonePath, envFor(repo));
       if (members.length) manifest.push({ path: rel || ".", members });
     }
     if (!manifest.length) {
@@ -2624,7 +2751,7 @@ function archiveClone(clonePath, archiveRoot, journalPath) {
 
 // Previous full archive (the whole checkout, minus git-ignored build output). Used only where the
 // compact archive is impossible; archiveClone journals why.
-function archiveCloneFull(clonePath, archiveRoot) {
+function archiveCloneFull(clonePath, archiveRoot, env) {
   if (!fs.existsSync(archiveRoot)) fs.mkdirSync(archiveRoot, { recursive: true });
   const name = path.basename(clonePath);
   const ts = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-").slice(0, 15);
@@ -2636,7 +2763,7 @@ function archiveCloneFull(clonePath, archiveRoot) {
   // Only build and dependency dirs that git reports as ignored are left out, as exact paths
   // (--anchored, --no-wildcards: a name with `*` or `[` matches literally, nowhere else).
   // Unpushed commits (.git), working files and anything git does not ignore stay in.
-  const excludes = ["--no-wildcards", "--anchored", ...archiveExcludes(clonePath)];
+  const excludes = ["--no-wildcards", "--anchored", ...archiveExcludes(clonePath, env)];
   // Per-archive limit, 10 min by default. The test hook is the env var (finite, > 0).
   const envTimeoutS = Number(process.env.HOST_GC_ARCHIVE_TIMEOUT_SECONDS);
   const timeoutS = Number.isFinite(envTimeoutS) && envTimeoutS > 0 ? envTimeoutS : 600;
@@ -3012,16 +3139,19 @@ async function main() {
       const archiveRoot = path.join(root, ".gc-archive");
       for (const c of plan.clones.filter((x) => x.action === "archive-remove")) {
         try {
-          const archivePath = archiveClone(c.path, archiveRoot, args.journal);
+          const archivePath = archiveClone(c.path, archiveRoot, args.journal, c.adminDir ? { adminDir: c.adminDir, commonDir: c.commonDir } : null);
+          // A mapped linked worktree also leaves its own admin dir under the git-base: the drop
+          // frees the copy and exactly that admin dir (removeWorktreeClone), never the common dir.
+          const drop = () => (c.adminDir ? removeWorktreeClone(c, root) : atomicDrop(c.path, root));
           if (!archivePath) {
             // Everything is pushed (every git root): nothing to keep.
-            atomicDrop(c.path, root);
+            drop();
             plan.removed.push({ path: c.path });
             journalRecord(args.journal, { event: "clone-removed", path: c.path, reason: "all-pushed" });
             continue;
           }
           journalRecord(args.journal, { event: "clone-archived", path: c.path, archive: archivePath, sizeBytes: c.sizeBytes });
-          atomicDrop(c.path, root);
+          drop();
           plan.archived.push({ path: c.path, archive: archivePath });
           journalRecord(args.journal, { event: "clone-removed-after-archive", path: c.path, archive: archivePath });
         } catch (err) {
@@ -3030,7 +3160,10 @@ async function main() {
       }
       for (const c of plan.clones.filter((x) => x.action === "remove")) {
         try {
-          atomicDrop(c.path, root);
+          // A mapped linked worktree also leaves its own admin dir under the git-base: freeing
+          // only the checkout would strand it (removeWorktreeClone drops exactly it).
+          if (c.adminDir) removeWorktreeClone(c, root);
+          else atomicDrop(c.path, root);
           plan.removed.push({ path: c.path });
           journalRecord(args.journal, { event: "clone-removed", path: c.path, reason: c.reason });
         } catch (err) {

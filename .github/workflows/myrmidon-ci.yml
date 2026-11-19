@@ -681,12 +681,25 @@ jobs:
       - name: Shellcheck deploy scripts
         run: shellcheck --version && shellcheck -x scripts/myrmidon/deploy/*.sh
 
-      - name: Script tests (node:test under scripts/myrmidon)
+      - name: Script tests (node:test)
+        run: bash scripts/myrmidon/ci/run-script-tests.sh
+
+      - name: Cloud source verification (node:test)
+        run: node --test scripts/cloud-source-verification.test.mjs
+
+      - name: Bundle audit contracts (node:test)
         run: |
           set -euo pipefail
-          mapfile -t files < <(find scripts/myrmidon -name '*.test.mjs' -type f | sort)
+          mapfile -t files < <(find scripts/myrmidon/bundle-audit -name '*.test.mjs' -type f | sort)
+          if (( ${#files[@]} == 0 )); then
+            echo 'No bundle audit tests found' >&2
+            exit 1
+          fi
           printf 'Running %s\n' "${files[@]}"
           node --test "${files[@]}"
+
+      - name: Bootstrap path selection regression
+        run: node --test scripts/bootstrap-path-selection.myrmidon.test.mjs
 
       - name: Root contract tests (node:test)
         run: node --test scripts/*.myrmidon.test.mjs
@@ -699,6 +712,14 @@ jobs:
           else
             echo 'Dev runner argv regression test is not present in this checkout.'
           fi
+
+      - name: Dev runner migration policy tests
+        if: ${{ !cancelled() }}
+        run: node --experimental-vm-modules --test scripts/dev-runner.migration-policy.test.mjs
+
+      - name: Dev runner child lifecycle tests
+        if: ${{ !cancelled() }}
+        run: node --experimental-vm-modules --test scripts/dev-runner.child-lifecycle.test.mjs
 
       - name: Brand release audit (DEBRAND gate)
         if: ${{ !cancelled() }}
