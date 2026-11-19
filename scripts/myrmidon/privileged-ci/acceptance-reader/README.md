@@ -39,6 +39,28 @@ bearer gateway. Запись содержит SHA-256 токена, неизме
 является проверкой production. Реальная сетевая изоляция требует отдельного
 подтверждения инфраструктуры до развёртывания.
 
+## Required core endpoint (not implemented)
+
+The existing board-only snapshot endpoint does not implement this contract and
+must not be treated as a privileged reader upstream. Core must expose one narrow
+company-bound service endpoint authenticated by a server-issued credential record
+with immutable company and audience, expiry and revocation, bound to the mTLS
+client identity. It must resolve the issue and acceptance document in one
+consistent read and return only issue identifier/companyId and document
+id/revisionId/body, with the immutable revisionId as a strong ETag. A conditional
+request with exactly one `If-Match` must either return that same revision and its
+body or fail with 409/412; missing, malformed or ambiguous revision state must
+fail closed. Core must ensure the revision and body are immutable and belong to
+that document and issue; a revision lookup alone is not proof of currentness.
+The service credential must have no board/agent authority or broader routes.
+
+The runner must capture the returned revision, verify it conditionally, and use
+only the verified revision. A conditional read does not make a later side effect
+atomic: privileged use requires its own atomic enforcement at the use boundary.
+No production activation is permitted until that boundary and the core actor are
+implemented and independently reviewed. The current reader still uses the older
+snapshot interface and does not implement this contract.
+
 ## Threat model and limitations
 
 A malicious runner can choose methods, paths, headers and payloads and holds only

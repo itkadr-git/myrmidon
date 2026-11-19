@@ -87,6 +87,30 @@ test('document is withheld on an ABA change even when the visible issue and revi
   assert.ok(!result.body.includes('criteria'));
 });
 
+test('capture returns a revision-pinned combined projection and rejects a stale If-Match', async (t) => {
+  const token = 'candidate-test-token';
+  const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
+  let revision = 'rev-1';
+  const server = createServer(createHandler({ records, readSnapshot: async () => ({
+    issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: '1' },
+    document: { id: 'doc-id', latestRevisionId: revision, latestRevisionNumber: 1, body: 'criteria' },
+  }) }));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const request = (match) => new Promise((resolve, reject) => get({ host: '127.0.0.1', port: server.address().port, path: '/api/issues/OPE-123/documents/acceptance-scenarios', headers: { authorization: `Bearer ${token}`, ...(match ? { 'if-match': match } : {}) } }, (res) => {
+    let body = ''; res.on('data', (chunk) => { body += chunk; }); res.on('end', () => resolve({ status: res.statusCode, body, etag: res.headers.etag }));
+  }).on('error', reject));
+  const capture = await request();
+  assert.equal(capture.status, 200);
+  assert.equal(capture.etag, '"rev-1"');
+  assert.deepEqual(JSON.parse(capture.body), { identifier: 'OPE-123', companyId: 'company-a', document: { id: 'doc-id', revisionId: 'rev-1', body: 'criteria' } });
+  revision = 'rev-2';
+  const stale = await request(capture.etag);
+  assert.ok(stale.status === 409 || stale.status === 412);
+  assert.ok(!stale.body.includes('criteria'));
+});
+
 test('revocation during upstream lookup fails closed and audit excludes request data', async (t) => {
   const token = 'candidate-test-token';
   const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
