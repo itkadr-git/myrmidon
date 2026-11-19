@@ -292,6 +292,12 @@ export class FleetOnboardExecutor {
               await activeSsh.connect(connOptions);
             }
 
+            // We cannot safely restore an inactive firewall without disabling UFW.
+            const firewallStatus = await activeSsh.execute("sudo ufw status");
+            if (firewallStatus.exitCode !== 0 || !/^Status: active\s*$/m.test(firewallStatus.stdout)) {
+              throw new Error("Firewall inactive or status unconfirmed; refusing unsafe firewall changes");
+            }
+
             // Preserve the original UFW configuration before the first mutation.
             // Retain it on failure so an operator can recover while rollback is incomplete.
             const firewallSnapshot = `/var/tmp/myrmidon-ufw-${randomUUID()}`;
