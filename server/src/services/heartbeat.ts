@@ -36745,6 +36745,22 @@ export function heartbeatService(
             }
           }
 
+          const completeMonitorAdmission = async () => {
+            const guard = opts.monitorClaimGuard;
+            if (!guard) return;
+            const [completed] = await tx.update(issues).set({
+              ...guard.patch,
+              executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(guard.patch.executionState?.monitor ?? null)}::jsonb, true)`,
+              executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
+              updatedAt: new Date(),
+            }).where(and(
+              eq(issues.id, guard.issueId),
+              eq(issues.monitorNextCheckAt, guard.scheduledAt),
+              eq(issues.monitorWakeRequestedAt, guard.claimedAt),
+            )).returning({ id: issues.id });
+            guard.completed = Boolean(completed);
+          };
+
           if (activeExecutionRun) {
             // The resolved action is already a durable retry outbox. Do not merge
             // its fresh-session contract into unrelated work or create a second
@@ -36793,12 +36809,14 @@ export function heartbeatService(
             );
 
             if (admission.kind === "coalesced") {
+              await completeMonitorAdmission();
               return {
                 kind: "coalesced" as const,
                 run: admission.run as typeof heartbeatRuns.$inferSelect,
               };
             }
             if (admission.kind === "deferred") {
+              await completeMonitorAdmission();
               return { kind: "deferred" as const };
             }
             // admission.kind === "proceed": no active run absorbed this wake,
@@ -37397,20 +37415,7 @@ export function heartbeatService(
             return { kind: "skipped" as const };
           }
 
-          if (opts.monitorClaimGuard) {
-            const guard = opts.monitorClaimGuard;
-            const [completed] = await tx.update(issues).set({
-              ...guard.patch,
-              executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(guard.patch.executionState?.monitor ?? null)}::jsonb, true)`,
-              executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
-              updatedAt: new Date(),
-            }).where(and(
-              eq(issues.id, guard.issueId),
-              eq(issues.monitorNextCheckAt, guard.scheduledAt),
-              eq(issues.monitorWakeRequestedAt, guard.claimedAt),
-            )).returning({ id: issues.id });
-            guard.completed = Boolean(completed);
-          }
+          await completeMonitorAdmission();
 
           // A handoff changes the executor, not the owner of saved user input.
           // Validate its exact stopped source while the issue row is locked;

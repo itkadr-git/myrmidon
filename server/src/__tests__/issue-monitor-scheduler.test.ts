@@ -632,7 +632,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
   });
 
   it("does not repeat a deferred monitor wake when its claim is reclaimed after admission", async () => {
-    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture();
+    const { companyId, issueId, nextCheckAt } = await seedFixture();
     const runId = randomUUID();
     const otherAgentId = randomUUID();
     await db.insert(agents).values({ id: otherAgentId, companyId, name: "Other Bot", role: "engineer", status: "active", adapterType: "process", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
