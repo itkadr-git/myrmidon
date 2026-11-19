@@ -571,6 +571,36 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     }
   });
 
+  it("does not clear a newer claim when an old scheduled wake is skipped", async () => {
+    const { issueId, nextCheckAt } = await seedFixture({ agentStatus: "paused" });
+    const newerClaimAt = new Date(nextCheckAt.getTime() + 60_000);
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_replace_skipped_monitor_claim() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_wake_requested_at = '${newerClaimAt.toISOString()}'::timestamptz,
+            monitor_notes = 'new evidence'
+          WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_replace_skipped_monitor_claim AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_replace_skipped_monitor_claim();
+    `));
+    try {
+      const result = await heartbeatService(db, { executesRuns: false }).tickTimers(nextCheckAt);
+      expect(result.enqueued).toBe(0);
+      expect(result.skipped).toBe(1);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue!.monitorNextCheckAt?.toISOString()).toBe(nextCheckAt.toISOString());
+      expect(issue!.monitorWakeRequestedAt?.toISOString()).toBe(newerClaimAt.toISOString());
+      expect(issue!.monitorNotes).toBe("new evidence");
+      expect((await db.select().from(agentWakeupRequests)).every((request) => request.status === "skipped")).toBe(true);
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_replace_skipped_monitor_claim ON issues; DROP FUNCTION IF EXISTS test_replace_skipped_monitor_claim();"));
+    }
+  });
+
   it("preserves a concurrent reschedule when an old monitor cannot wake a paused agent", async () => {
     const { issueId, nextCheckAt } = await seedFixture({ agentStatus: "paused" });
     const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
