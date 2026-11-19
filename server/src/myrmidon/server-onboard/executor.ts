@@ -300,6 +300,9 @@ export class FleetOnboardExecutor {
               throw new Error(`Firewall status unconfirmed; refusing unsafe firewall changes: ${cause}`);
             }
             const statusLines = firewallStatus.stdout.split(/\r?\n/).filter((line) => /^\s*Status:/i.test(line));
+            if (firewallStatus.exitCode === 0 && statusLines.length === 1 && /^Status: inactive\s*$/.test(statusLines[0] ?? "")) {
+              throw new Error("Firewall is inactive; refusing changes because its original disabled state cannot be safely restored");
+            }
             if (firewallStatus.exitCode !== 0 || statusLines.length !== 1 || !/^Status: active\s*$/.test(statusLines[0] ?? "")) {
               throw new Error("Firewall inactive or status unconfirmed; refusing unsafe firewall changes");
             }
