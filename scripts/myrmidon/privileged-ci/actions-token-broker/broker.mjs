@@ -154,7 +154,10 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         if (durable) await store.reserveIssuance(handle);
         // A concurrent audit failure may have occurred while reserving.
         // Keep the reservation for recovery instead of contacting GitHub.
-        if (auditFailed) throw new Error('audit unavailable');
+        if (auditFailed) {
+          await ambiguous();
+          throw new Error('audit unavailable');
+        }
         // Anchor the intent before contacting GitHub; a crash then blocks restart
         // even if the local reservation is later lost or rolled back.
         if (anchoredIssuance) await record('issuance_pending');
