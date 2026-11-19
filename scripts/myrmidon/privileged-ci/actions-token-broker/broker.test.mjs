@@ -101,6 +101,23 @@ test('audit failure on another request prevents an in-flight issuance from retur
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('audit failure during reservation prevents an upstream token request', async () => {
+  let releaseReservation, reservationStarted;
+  const started = new Promise(resolve => { reservationStarted = resolve; });
+  const gate = new Promise(resolve => { releaseReservation = resolve; });
+  let issued = 0;
+  const store = { reserveIssuance: async () => { reservationStarted(); await gate; }, resolveIssuance: async () => {}, put: async () => {}, delete: async () => {}, queueAlert: async () => {} };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    installation: { issue: async () => { issued++; return { token: 'fixture' }; }, revoke: async () => {} },
+    audit: async event => { if (event === 'exchange_failed') throw new Error('audit unavailable'); }, alert: async () => {} });
+  const pending = broker.exchange(jwt('reservation-valid'));
+  await started;
+  await assert.rejects(broker.exchange(jwt('reservation-invalid', { repository_id: '999' })));
+  releaseReservation();
+  await assert.rejects(pending);
+  assert.equal(issued, 0);
+});
+
 test('audit failure during issuance finalization prevents returning the token', async () => {
   let finalize, startedFinalize;
   const started = new Promise(resolve => { startedFinalize = resolve; });
