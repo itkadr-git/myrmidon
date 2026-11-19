@@ -12,7 +12,10 @@ export function createInstallationClient({ installationId, repositoryId, permiss
         method: 'POST', redirect: 'error', signal: AbortSignal.timeout(requestTimeoutMs), headers: { authorization: `Bearer ${jwt}`, accept: 'application/vnd.github+json', 'content-type': 'application/json', 'x-github-api-version': '2022-11-28' }, body,
       });
       if (!response.ok) throw new Error('installation token issuance failed');
-      const result = await response.json();
+      const result = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('installation response timeout')), requestTimeoutMs);
+        Promise.resolve().then(() => response.json()).then(resolve, reject).finally(() => clearTimeout(timer));
+      });
       if (typeof result.token !== 'string' || !result.token) throw new Error('invalid installation response');
       const allowedPermissions = { ...fixedPermissions, metadata: 'read' };
       const scopeValid = result.permissions && typeof result.permissions === 'object' && !Array.isArray(result.permissions)
