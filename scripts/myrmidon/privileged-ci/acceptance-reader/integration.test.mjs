@@ -62,7 +62,7 @@ test('gateway to separate mTLS upstream: projections, tenant boundaries and TLS 
     req.on('error', reject); req.end();
   });
   for (const identifier of ['OPE-1', id]) {
-    assert.deepEqual(JSON.parse((await call(`/api/issues/${identifier}`)).body), { id, identifier: 'OPE-1', companyId: 'allowed' });
+    assert.deepEqual(JSON.parse((await call(`/api/issues/${identifier}`)).body), { identifier: 'OPE-1', companyId: 'allowed' });
     assert.deepEqual(JSON.parse((await call(`/api/issues/${identifier}/documents/acceptance-scenarios`)).body), { id: 'doc', latestRevisionId: 'rev', body: 'criteria' });
   }
   for (const identifier of ['OPE-2', foreign]) {

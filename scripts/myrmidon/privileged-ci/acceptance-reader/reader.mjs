@@ -38,7 +38,7 @@ export function createHandler({ records, credentialStore, readIssue, readDocumen
     try {
       const issue = await readIssue(path.issue);
       if (!issue || issue.companyId !== companyId || typeof issue.id !== 'string' || typeof issue.identifier !== 'string' || (path.issue !== issue.id && path.issue !== issue.identifier)) return respond(404);
-      if (!path.document) return respond(200, { id: issue.id, identifier: issue.identifier, companyId: issue.companyId });
+      if (!path.document) return respond(200, { identifier: issue.identifier, companyId: issue.companyId });
       const first = await readDocument(issue.id);
       const valid = (doc) => doc && doc.issueId === issue.id && doc.companyId === companyId && doc.key === 'acceptance-scenarios' && typeof doc.id === 'string' && typeof doc.latestRevisionId === 'string' && doc.latestRevisionId && typeof doc.body === 'string';
       if (!valid(first)) return respond(404);

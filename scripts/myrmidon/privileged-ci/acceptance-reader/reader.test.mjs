@@ -39,7 +39,7 @@ test('gateway projects a company-bound issue and denies foreign issue', async (t
   });
   const allowed = await request('/api/issues/OPE-123');
   assert.equal(allowed.status, 200);
-  assert.deepEqual(JSON.parse(allowed.body), { id: 'OPE-123', identifier: 'OPE-123', companyId: 'company-a' });
+  assert.deepEqual(JSON.parse(allowed.body), { identifier: 'OPE-123', companyId: 'company-a' });
   const denied = await request('/api/issues/OPE-124');
   assert.equal(denied.status, 404);
   assert.ok(!denied.body.includes('company-b'));
