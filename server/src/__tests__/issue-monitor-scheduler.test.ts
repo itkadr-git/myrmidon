@@ -400,6 +400,44 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     }
   });
 
+  it("does not dispatch a stale review claim after the monitor is rescheduled", async () => {
+    const { issueId, agentId, nextCheckAt } = await seedFixture({
+      issueStatus: "in_review", monitor: { serviceName: "Review CI wait" },
+    });
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    await db.update(issues).set({ executionState: {
+      status: "pending", currentStageId: randomUUID(), currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId, userId: null },
+      returnAssignee: { type: "agent", agentId, userId: null },
+      reviewRequest: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+      monitor: parseIssueExecutionState(before!.executionState)?.monitor,
+    } }).where(eq(issues.id, issueId));
+    const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_reschedule_stale_review_claim() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_next_check_at = '${rescheduledAt.toISOString()}'::timestamptz,
+            monitor_wake_requested_at = NULL,
+            execution_state = jsonb_set(execution_state, '{monitor,nextCheckAt}', to_jsonb('${rescheduledAt.toISOString()}'::text))
+          WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_reschedule_stale_review_claim AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_reschedule_stale_review_claim();
+    `));
+    try {
+      const result = await heartbeatService(db, { executesRuns: false }).tickTimers(nextCheckAt);
+      expect(result.enqueued).toBe(0);
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(after!.monitorNextCheckAt?.toISOString()).toBe(rescheduledAt.toISOString());
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER test_reschedule_stale_review_claim ON issues; DROP FUNCTION test_reschedule_stale_review_claim();"));
+    }
+  });
+
   it("preserves a concurrent reschedule when an old monitor is deferred for CI", async () => {
     const { companyId, issueId, nextCheckAt } = await seedFixture();
     const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
