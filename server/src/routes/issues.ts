@@ -3957,6 +3957,9 @@ export function issueRoutes(
       ) {
         return false;
       }
+      // OPE-15004: this is a wake-path gate, not review admission: it may share
+      // the process read cache. Either way it cannot decide the verdict — a
+      // premature wake still meets the fresh write gate before it can act.
       const admission = await readReviewAdmissionDecision({
         companyId: input.issue.companyId,
         issueId: input.issue.id,
@@ -15397,7 +15400,9 @@ export function issueRoutes(
       }
       if (transition.decision?.outcome === "changes_requested") {
         let diagnostic: Parameters<NonNullable<Parameters<typeof createReviewPullRequestCiResolver>[0]["onDiagnostic"]>>[0] | null = null;
-        const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, onDiagnostic: (value) => { diagnostic = value; } }))({
+        // OPE-15004: the write verdict gate is review admission — its reads are
+        // always fresh, never served from the read cache.
+        const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, admission: true, onDiagnostic: (value) => { diagnostic = value; } }))({
           companyId: existing.companyId,
           issueId: existing.id,
         });
@@ -16536,7 +16541,9 @@ export function issueRoutes(
             Object.assign(issueUpdateData, lockedTransition.patch);
             if (lockedTransition.decision?.outcome === "changes_requested") {
               let diagnostic: Parameters<NonNullable<Parameters<typeof createReviewPullRequestCiResolver>[0]["onDiagnostic"]>>[0] | null = null;
-              const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, onDiagnostic: (value) => { diagnostic = value; } }))({
+              // OPE-15004: the write verdict gate is review admission — its reads are
+              // always fresh, never served from the read cache.
+              const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, admission: true, onDiagnostic: (value) => { diagnostic = value; } }))({
                 companyId: lockedExisting.companyId,
                 issueId: lockedExisting.id,
               });
@@ -16784,7 +16791,9 @@ export function issueRoutes(
                 let admitReviewer = true;
                 const admissionCritical = updated.priority === "critical";
                 if (ciAdmissionCandidate) {
-                  const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+                  // OPE-15004: the hand-off admission decides whether the reviewer is
+                  // woken at all, so it reads fresh like the write verdict gate.
+                  const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, admission: true }))({
                     companyId: updated.companyId,
                     issueId: updated.id,
                   });
@@ -18061,7 +18070,9 @@ export function issueRoutes(
         })
         : null;
       if (isReviewCiWakeCandidate) {
-        const reviewCi = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+        // OPE-15004: the wake-path admission is the same green-head rule as the
+        // transactional hand-off above — it reads fresh, not from the cache.
+        const reviewCi = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, admission: true }))({
           companyId: issue.companyId,
           issueId: issue.id,
         });
