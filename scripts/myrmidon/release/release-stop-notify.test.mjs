@@ -54,11 +54,20 @@ case "$sub" in
       echo 1 >> "$SANDBOX/api-failures"
       exit 1
     fi
+    # Serialize reads with the issue create/close writes below: a scan that
+    # races a concurrent create must observe the fully written issue, never
+    # a transient (pre-write) state. Without this lock the overlap test could
+    # deduplicate against a stale snapshot and create the 100/101 duplicate
+    # pair observed in CI (runs 43779902791 and 44507283140).
+    while ! mkdir "$SANDBOX/issues-file.lock" 2>/dev/null; do
+      sleep 0.01
+    done
     if [ -n "$jq_filter" ]; then
-      result="$(jq -r "$jq_filter" "$SANDBOX/issues.json")"
+      result="$(jq -r "$jq_filter" "$SANDBOX/issues.json")" || { rmdir "$SANDBOX/issues-file.lock"; exit 1; }
     else
-      result="$(jq -r '.[].title' "$SANDBOX/issues.json")"
+      result="$(jq -r '.[].title' "$SANDBOX/issues.json")" || { rmdir "$SANDBOX/issues-file.lock"; exit 1; }
     fi
+    rmdir "$SANDBOX/issues-file.lock"
     trace "scan result=$result"
     printf '%s\\n' "$result" ;;
   label)
