@@ -38,6 +38,14 @@ test('a stalled issuance response body times out after headers', async () => {
   await assert.rejects(client.issue(), /timeout/i);
 });
 
+test('failed issuance cancels the unread upstream response body', async () => {
+  let cancelled = false;
+  const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'fixture',
+    request: async () => ({ ok: false, body: new ReadableStream({ cancel() { cancelled = true; } }) }) });
+  await assert.rejects(client.issue(), /issuance failed/);
+  assert.equal(cancelled, true);
+});
+
 test('oversized upstream response is rejected and the response stream is cancelled', async () => {
   let cancelled = false;
   const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'fixture',
