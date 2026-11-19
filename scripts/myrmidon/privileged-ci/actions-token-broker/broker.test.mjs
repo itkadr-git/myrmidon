@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { createBroker, createSingleHostBroker, createRecoveredSingleHostBroker } from './broker.mjs';
+import { createRecoveredSecureServer } from './tls.mjs';
+import { createCredentialStore } from './store.mjs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -60,6 +62,20 @@ test('recovery revokes retained credentials and blocks issuance when recovery fa
     const recovered = await createRecoveredSingleHostBroker(options);
     recovered.close();
     assert.deepEqual(revoked, ['fixture', 'fixture']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('secure server construction requires successful credential recovery', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-server-recovery-'));
+  const credentialKey = randomBytes(32), revoked = [];
+  const credentialPath = join(dir, 'credentials.sqlite');
+  const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'), credentialPath, credentialKey, installation: { issue: async () => ({ token: 'fixture' }), revoke: async token => { revoked.push(token); throw new Error('unavailable'); } }, audit: async () => {} };
+  try {
+    const store = createCredentialStore(credentialPath, credentialKey);
+    await store.put('retained', { token: 'fixture' }, 'owner');
+    store.close();
+    await assert.rejects(createRecoveredSecureServer({}, options), /recovery failed/);
+    assert.deepEqual(revoked, ['fixture']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
