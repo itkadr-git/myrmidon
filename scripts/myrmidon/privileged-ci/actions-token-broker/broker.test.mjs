@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { createBroker, createSingleHostBroker, createRecoveredSingleHostBroker, createSupervisedSingleHostBroker } from './broker.mjs';
-import { createRecoveredSecureServer } from './tls.mjs';
+import * as tls from './tls.mjs';
+const { createRecoveredSecureServer } = tls;
 import { createCredentialStore } from './store.mjs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -17,6 +18,21 @@ function jwt(jti, overrides = {}) {
   const input = [ { alg: 'RS256', kid: 'fixture' }, claims ].map(x => Buffer.from(JSON.stringify(x)).toString('base64url')).join('.');
   return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
 }
+
+test('audited TLS lifecycle retries recovery before constructing a server', async () => {
+  assert.equal(typeof tls.createAuditedSupervisedServer, 'function');
+  const dir = mkdtempSync(join(tmpdir(), 'broker-supervised-tls-'));
+  const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'), credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32), installation: { issue: async () => ({ token: 'fixture' }), revoke: async () => { throw new Error('offline'); } }, audit: async () => {} };
+  let delays = 0;
+  try {
+    const initial = createSingleHostBroker(options);
+    await initial.exchange(jwt('tls-supervisor-initial'));
+    initial.close();
+    const anchor = { read: () => ({ seq: 0, mac: '' }), compareAndSet: () => true };
+    await assert.rejects(tls.createAuditedSupervisedServer({}, { ...options, auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32), auditAnchor: anchor, alert: async () => {}, delay: async () => { delays++; throw new Error('retry observed'); } }), /retry observed/);
+    assert.equal(delays, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('supervised broker retries recovery while retaining exclusive ownership before serving', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-supervised-'));
