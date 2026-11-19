@@ -1,5 +1,5 @@
 {
-  "id": "bcc50678-5167-498e-8f0d-2aeb4eca2ea6",
+  "id": "f89adf4c-1ea4-47cf-9a40-104c3c241c5c",
   "prevId": "92ad3bc7-5818-438e-907f-37ab2c8eae06",
   "version": "7",
   "dialect": "postgresql",
@@ -35785,7 +35785,7 @@
           "type": "bigint",
           "primaryKey": false,
           "notNull": true,
-          "default": 0
+          "default": "0"
         },
         "last_status_decision_id": {
           "name": "last_status_decision_id",
