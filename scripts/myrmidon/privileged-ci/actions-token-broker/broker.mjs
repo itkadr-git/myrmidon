@@ -104,7 +104,15 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
   function assertIdle() { if (activeRequests) throw new Error('broker has in-flight requests'); }
   function shutdown() { assertIdle(); closed = true; }
   async function identity(jwt) {
-    const claims = await verifyIdentity(jwt, { policy: fixedPolicy, loadKeys, claimOnce });
+    const guardedClaim = async (...args) => {
+      try { return await claimOnce(...args); } catch (error) {
+        auditFailed = true;
+        try { await store.queueAlert('replay_unavailable'); } catch { /* External monitoring is required if storage fails. */ }
+        try { await alert('replay_unavailable'); } catch { /* Recovery retries the durable outbox. */ }
+        throw error;
+      }
+    };
+    const claims = await verifyIdentity(jwt, { policy: fixedPolicy, loadKeys, claimOnce: guardedClaim });
     if (typeof claims.run_id !== 'string' || !/^[1-9][0-9]*$/.test(claims.run_id) || typeof claims.run_attempt !== 'string' || !/^[1-9][0-9]*$/.test(claims.run_attempt)) throw new Error('identity rejected');
     return { owner: JSON.stringify([claims.repository_owner_id, claims.repository_id, claims.run_id, claims.run_attempt]), exp: claims.exp };
   }

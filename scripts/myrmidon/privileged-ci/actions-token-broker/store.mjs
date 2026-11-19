@@ -21,7 +21,7 @@ export function createCredentialStore(path, key) {
   const store = {
     hasRetainedCredentials() { return Boolean(db.prepare('SELECT 1 FROM credentials LIMIT 1').get()); },
     async queueAlert(event) {
-      if (!['issuance_ambiguous', 'credential_recovery_failed', 'audit_unavailable'].includes(event)) throw new Error('invalid recovery alert');
+      if (!['issuance_ambiguous', 'credential_recovery_failed', 'audit_unavailable', 'replay_unavailable'].includes(event)) throw new Error('invalid recovery alert');
       db.prepare('INSERT INTO recovery_alerts (event, generation) VALUES (?, ?) ON CONFLICT(event) DO UPDATE SET generation = excluded.generation').run(event, randomUUID());
     },
     async pendingAlerts() { return db.prepare('SELECT event FROM recovery_alerts ORDER BY event').all().map(row => row.event); },

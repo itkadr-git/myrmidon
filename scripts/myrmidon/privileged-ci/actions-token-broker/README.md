@@ -27,7 +27,10 @@ secret management, least privilege and key rotation.
   failure domain and further security review. Replay startup failures attempt a
   best-effort `replay_unavailable` alert; failed delivery is not durable, so an
   independent process monitor must detect and retry startup failures. Runtime replay
-  anchor failures reject the request but still need independent monitoring. The factory wires an
+  store failures latch the broker closed, queue `replay_unavailable` and attempt
+  immediate delivery; storage or delivery failure still needs independent monitoring.
+  Recovery retries the outbox, but operators must investigate the cause before restart.
+  The factory wires an
   experimental AES-GCM SQLite credential store when a credential path and key
   are provided. Its single-host locking and key custody need independent review.
   An experimental `createRecoveryWorker` provides a single quiesced recovery
