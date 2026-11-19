@@ -944,6 +944,25 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
 
+  it("rolls back a newly linked acceptance document and its epoch together", async () => {
+    const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-link-rollback-");
+    cleanups.push(() => dbh.cleanup());
+    const db = createDb(dbh.connectionString);
+    cleanups.push(async () => { await db.$client.end(); });
+    const issueId = randomUUID();
+    const docId = randomUUID();
+    await db.insert(companies).values({ id: companyA, name: "Company A" });
+    await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
+    await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a" });
+    const before = await issueAcceptanceSnapshotService(db).read(issueId);
+    await expect(db.transaction(async (tx) => {
+      await tx.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
+      throw new Error("abort link");
+    })).rejects.toThrow("abort link");
+    expect(await issueAcceptanceSnapshotService(db).read(issueId)).toEqual(before);
+    expect(await db.select().from(issueDocuments).where(eq(issueDocuments.issueId, issueId))).toHaveLength(0);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("does not commit a cross-company graph when a link races an issue company move", async () => {
     const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-company-race-");
     cleanups.push(() => dbh.cleanup());
