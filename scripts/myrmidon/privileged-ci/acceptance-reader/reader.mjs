@@ -11,7 +11,8 @@ export function authenticate(header, records, now = Date.now()) {
 
 export function createHandler({ records, readIssue, readDocument, audit = async () => {} }) {
   return async (req, res) => {
-    const companyId = authenticate(req.headers.authorization, records);
+    const authorizations = req.rawHeaders.filter((_, index) => index % 2 === 0 && req.rawHeaders[index].toLowerCase() === 'authorization').length;
+    const companyId = authorizations === 1 ? authenticate(req.headers.authorization, records) : null;
     const respond = async (status, body = {}) => {
       if (status === 200 && authenticate(req.headers.authorization, records) !== companyId) {
         status = 401;
