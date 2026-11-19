@@ -997,6 +997,41 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(await db.select().from(issueRecoveryActions)).toMatchObject([{ ownerType: "board", evidence: { runId: sourceRunId } }]);
   });
 
+  it("does not schedule quota recovery from an invalidated monitor claim", async () => {
+    const sourceRunId = randomUUID();
+    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture({
+      monitor: { serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME, externalRef: sourceRunId },
+    });
+    await db.insert(heartbeatRuns).values({
+      id: sourceRunId, companyId, agentId, status: "failed", errorCode: "provider_quota",
+      finishedAt: new Date("2026-04-11T12:00:00.000Z"), contextSnapshot: { issueId },
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    });
+    const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_invalidate_quota_claim() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_next_check_at = '${rescheduledAt.toISOString()}'::timestamptz,
+            monitor_wake_requested_at = NULL WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_invalidate_quota_claim AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_invalidate_quota_claim();
+    `));
+    try {
+      await heartbeatService(db, { executesRuns: false }).tickTimers(nextCheckAt);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, sourceRunId))).toHaveLength(0);
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue!.monitorNextCheckAt?.toISOString()).toBe(rescheduledAt.toISOString());
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_invalidate_quota_claim ON issues; DROP FUNCTION IF EXISTS test_invalidate_quota_claim();"));
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.retryOfRunId, sourceRunId));
+    }
+  });
+
   it("wakes a cross-agent review participant for provider quota monitors", async () => {
     const sourceRunId = randomUUID();
     const { companyId, issueId, agentId: assigneeAgentId } = await seedFixture({
