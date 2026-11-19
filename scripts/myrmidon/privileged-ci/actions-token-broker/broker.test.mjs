@@ -24,6 +24,18 @@ function jwt(jti, overrides = {}) {
   return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
 }
 
+test('supervised startup alerts when the credential store cannot be opened', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-store-unavailable-'));
+  const alerts = [];
+  try {
+    await assert.rejects(createSupervisedSingleHostBroker({
+      credentialPath: join(dir, 'credentials.sqlite'), credentialKey: Buffer.alloc(1),
+      alert: async event => alerts.push(event), delay: async () => {},
+    }), /invalid credential store configuration/);
+    assert.deepEqual(alerts, ['credential_recovery_failed']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('audited supervised startup refuses issuance without a credential anchor', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-missing-credential-anchor-'));
   let head = { seq: 0, mac: '' }, issues = 0;
