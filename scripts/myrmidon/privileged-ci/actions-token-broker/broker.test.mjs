@@ -88,6 +88,21 @@ test('identity expiring during reservation never contacts installation API', asy
   assert.equal(calls, 0);
 });
 
+test('identity expiring during anchored intent alerts while leaving issuance fenced', async () => {
+  let calls = 0;
+  const alerts = [], queued = [];
+  const store = { reserveIssuance: async () => {}, queueAlert: async event => queued.push(event) };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    anchoredIssuance: true, installation: { issue: async () => { calls++; } },
+    audit: async event => { if (event === 'issuance_pending') await new Promise(resolve => setTimeout(resolve, 2100)); },
+    alert: async event => alerts.push(event) });
+  const now = Math.floor(Date.now() / 1000);
+  await assert.rejects(broker.exchange(jwt('expires-during-intent', { iat: now, nbf: now, exp: now + 1 })));
+  assert.equal(calls, 0);
+  assert.ok(queued.includes('issuance_ambiguous'));
+  assert.ok(alerts.includes('issuance_ambiguous'));
+});
+
 test('identity expiring during upstream issuance cannot receive a credential', async () => {
   let revoked = 0, pending = false;
   const store = {
