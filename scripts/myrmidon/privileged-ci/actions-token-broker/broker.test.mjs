@@ -366,6 +366,25 @@ test('supervised broker retries recovery while retaining exclusive ownership bef
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('closing a broker with an in-flight issuance keeps exclusive ownership until it settles', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-close-inflight-'));
+  let releaseIssue, started;
+  const entered = new Promise(resolve => { started = resolve; });
+  const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'), credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32), installation: { issue: async () => { started(); return new Promise(resolve => { releaseIssue = resolve; }); }, revoke: async () => {} }, audit: async () => {} };
+  try {
+    const broker = createSingleHostBroker(options);
+    const exchange = broker.exchange(jwt('close-inflight'));
+    await entered;
+    assert.throws(() => broker.close(), /in.flight/);
+    assert.throws(() => createSingleHostBroker(options), /exclusive/);
+    releaseIssue({ token: 'fixture' });
+    await exchange;
+    broker.close();
+    const replacement = createSingleHostBroker(options);
+    replacement.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('recovery refuses to revoke credentials while another broker owns the store', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-exclusive-'));
   let revokes = 0;
