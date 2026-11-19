@@ -2,8 +2,8 @@
 
 This standalone gateway is not a production deployment. It exposes only the two
 company-bound GET projections in `reader.mjs`. The upstream must implement the
-expected issue and acceptance-document responses, including `issueId`,
-`companyId`, `key`, `id`, `latestRevisionId`, and `body` on documents. This
+atomic `acceptance-scenarios-snapshot` endpoint with its issue epoch and document
+revision generation. This
 contract has only been exercised against a fixture, not a live Myrmidon service.
 
 ## Operation / Запуск
@@ -49,10 +49,11 @@ rechecks credentials and document revision before response. Audit records contai
 only response status. TLS keys, credential store, config, audit and upstream are
 trusted operator assets; an operator or upstream compromise is outside this
 boundary. A shared filesystem must have coherent visibility for revocations.
-The repeated issue and document reads detect observed changes, but they are not
-an atomic snapshot: concurrent changes between reads or after the last check may
-escape detection. A live upstream must provide a verified transactional snapshot
-or equivalent consistency mechanism before this gateway is used for acceptance.
+Each upstream read is an atomic snapshot. The document response compares two
+snapshot pins, including the monotonic issue epoch, so an observed ABA transition
+fails closed. A write after the final check remains invisible: these two GETs
+cannot provide an atomic verify-and-use boundary. Do not use this interface as a
+privileged CI gate until the run-scoped verification/use contract is implemented.
 
 TLS alone does not establish network isolation: a runner must be prevented by
 network policy from reaching upstream directly. No such policy or live upstream

@@ -8,6 +8,7 @@ export function createUpstream({ origin, ca, cert, key }) {
   if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash || !ca || !cert || !key) throw new TypeError('invalid upstream configuration');
   const fetchJson = (path) => new Promise((resolve, reject) => {
     const req = request({ hostname: url.hostname, port: url.port || 443, path, method: 'GET', ca, cert, key, rejectUnauthorized: true, timeout: 5000, headers: { accept: 'application/json' } }, (res) => {
+      if (res.statusCode === 404) { res.resume(); resolve(null); return; }
       if (res.statusCode !== 200) { res.resume(); reject(new Error('upstream rejected request')); return; }
       let size = 0;
       const chunks = [];
@@ -25,14 +26,10 @@ export function createUpstream({ origin, ca, cert, key }) {
     req.on('error', reject);
     req.end();
   });
-  const checkedPath = (id, document) => {
-    if (typeof id !== 'string') throw new TypeError('invalid issue identity');
-    const path = `/api/issues/${id}${document ? '/documents/acceptance-scenarios' : ''}`;
-    if (!parsePath(path)) throw new TypeError('invalid issue identity');
-    return path;
-  };
   return Object.freeze({
-    readIssue: async (id) => fetchJson(checkedPath(id, false)),
-    readDocument: async (id) => fetchJson(checkedPath(id, true)),
+    readSnapshot: async (id) => {
+      if (typeof id !== 'string' || !parsePath(`/api/issues/${id}`)) throw new TypeError('invalid issue identity');
+      return fetchJson(`/api/issues/${id}/acceptance-scenarios-snapshot`);
+    },
   });
 }

@@ -9,7 +9,23 @@ export function authenticate(header, records, now = Date.now()) {
   return record.revoked === false && Number.isFinite(record.expiresAt) && now < record.expiresAt && typeof record.companyId === 'string' && record.companyId ? record.companyId : null;
 }
 
-export function createHandler({ records, credentialStore, readIssue, readDocument, audit = async () => {} }) {
+function validSnapshot(value) {
+  const issue = value?.issue;
+  const doc = value?.document;
+  return Boolean(issue && typeof issue.id === 'string' && typeof issue.identifier === 'string' &&
+    typeof issue.companyId === 'string' && typeof issue.version === 'string' && /^\d+$/.test(issue.version) &&
+    Object.hasOwn(value, 'document') && (doc === null || (doc && typeof doc.id === 'string' &&
+    typeof doc.latestRevisionId === 'string' && doc.latestRevisionId && Number.isInteger(doc.latestRevisionNumber) &&
+    doc.latestRevisionNumber > 0 && typeof doc.body === 'string')));
+}
+
+function pin(snapshot) {
+  const { issue, document } = snapshot;
+  return JSON.stringify([issue.id, issue.identifier, issue.companyId, BigInt(issue.version).toString(),
+    document && [document.id, document.latestRevisionId, document.latestRevisionNumber, document.body]]);
+}
+
+export function createHandler({ records, credentialStore, readSnapshot, audit = async () => {} }) {
   const checkCredential = (header) => credentialStore ? credentialStore.authenticate(header) : authenticate(header, records);
   return async (req, res) => {
     const authorizations = req.rawHeaders.filter((_, index) => index % 2 === 0 && req.rawHeaders[index].toLowerCase() === 'authorization').length;
@@ -36,17 +52,16 @@ export function createHandler({ records, credentialStore, readIssue, readDocumen
     const path = parsePath(req.url);
     if (req.method !== 'GET' || !path || Object.keys(req.headers).some((name) => name.includes('method-override') || name === 'x-http-method')) return respond(404);
     try {
-      const issue = await readIssue(path.issue);
-      if (!issue || issue.companyId !== companyId || typeof issue.id !== 'string' || typeof issue.identifier !== 'string' || (path.issue !== issue.id && path.issue !== issue.identifier)) return respond(404);
+      const snapshot = await readSnapshot(path.issue);
+      if (snapshot === null) return respond(404);
+      if (!validSnapshot(snapshot)) return respond(502);
+      const { issue, document } = snapshot;
+      if (issue.companyId !== companyId || (path.issue !== issue.id && path.issue !== issue.identifier)) return respond(404);
       if (!path.document) return respond(200, { identifier: issue.identifier, companyId: issue.companyId });
-      const first = await readDocument(issue.id);
-      const valid = (doc) => doc && doc.issueId === issue.id && doc.companyId === companyId && doc.key === 'acceptance-scenarios' && typeof doc.id === 'string' && typeof doc.latestRevisionId === 'string' && doc.latestRevisionId && typeof doc.body === 'string';
-      if (!valid(first)) return respond(404);
-      const second = await readDocument(issue.id);
-      if (!valid(second) || first.id !== second.id || first.latestRevisionId !== second.latestRevisionId || first.body !== second.body) return respond(409);
-      const currentIssue = await readIssue(issue.id);
-      if (!currentIssue || currentIssue.id !== issue.id || currentIssue.identifier !== issue.identifier || currentIssue.companyId !== companyId) return respond(409);
-      return respond(200, { id: first.id, latestRevisionId: first.latestRevisionId, body: first.body });
+      if (!document) return respond(404);
+      const current = await readSnapshot(issue.id);
+      if (!validSnapshot(current) || pin(snapshot) !== pin(current)) return respond(409);
+      return respond(200, { id: document.id, latestRevisionId: document.latestRevisionId, body: document.body });
     } catch {
       return respond(502);
     }

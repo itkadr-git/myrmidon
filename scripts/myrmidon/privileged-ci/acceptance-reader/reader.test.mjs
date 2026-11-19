@@ -72,10 +72,10 @@ test('document is withheld on an ABA change even when the visible issue and revi
   const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
   let version = 1;
   const server = createServer(createHandler({ records,
-    readIssue: async () => ({ id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: String(version) }),
-    readDocument: async () => {
-      version = 3; // An intervening change and reversal must still advance the generation.
-      return { id: 'doc-id', issueId: 'issue-id', companyId: 'company-a', key: 'acceptance-scenarios', latestRevisionId: 'rev-1', body: 'criteria' };
+    readSnapshot: async () => {
+      const snapshot = { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: String(version) }, document: { id: 'doc-id', latestRevisionId: 'rev-1', latestRevisionNumber: 1, body: 'criteria' } };
+      version = 3; // A -> B -> A preserves visible content but advances the epoch.
+      return snapshot;
     },
   }));
   server.listen(0, '127.0.0.1');
