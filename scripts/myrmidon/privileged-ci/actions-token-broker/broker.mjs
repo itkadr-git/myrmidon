@@ -259,9 +259,9 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         if (auditFailed) throw new Error('audit unavailable');
         // Protect the revocation fence against local store rollback as well.
         if (anchoredIssuance) await record('issuance_pending');
-        if (auditFailed || exp <= Math.floor(Date.now() / 1000)) throw new Error('audit unavailable or identity expired');
         let revocationAttempted = false;
         try {
+          if (auditFailed || exp <= Math.floor(Date.now() / 1000)) throw new Error('audit unavailable or identity expired');
           await store.withOwned(handle, owner, async credential => {
             revocationAttempted = true;
             await installation.revoke(credential.token);
