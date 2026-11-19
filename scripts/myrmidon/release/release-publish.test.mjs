@@ -200,6 +200,7 @@ function writeFakeGh(dir) {
   const bin = path.join(dir, "bin");
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(path.join(bin, "gh"), FAKE_GH, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "git"), '#!/usr/bin/env bash\nprintf "%s\\n" "$CHECKOUT_SHA"\n', { mode: 0o755 });
   return bin;
 }
 
@@ -255,9 +256,11 @@ function runScript(sb, tag, { extraEnv = {}, args = [] } = {}) {
     cwd: sb.dir,
     env: {
       ...process.env,
+      BASH_ENV: "",
       PATH: `${sb.bin}:${process.env.PATH}`,
       SANDBOX: sb.dir,
       GITHUB_REPOSITORY: REPO,
+      CHECKOUT_SHA: COMMIT,
       // offline digest simulation + fast gate polls (the defaults are sized
       // for CI; the tests must not sleep 20 s per poll)
       MYRMIDON_RELEASE_REGISTRY_STATE: path.join(sb.dir, "registry-state.json"),
@@ -296,6 +299,17 @@ const GREEN_RUNS = [
   run(COMMIT, ".github/workflows/myrmidon-dockergate.yml", "success"),
   run(COMMIT, ".github/workflows/myrmidon-fleetd.yml", "success"),
 ];
+
+describe("publish-github-release.sh: checkout binding", () => {
+  it("refuses publication when checkout differs from the resolved tag commit", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    fs.writeFileSync(path.join(sb.dir, "ref-tag.json"), JSON.stringify({ object: { sha: COMMIT, type: "commit" } }));
+    const result = runScript(sb, "myr-v1.6.0", { extraEnv: { CHECKOUT_SHA: TAG_OBJECT } });
+    assert.notEqual(result.code, 0, result.out);
+    assert.match(result.out, /checkout.*does not match.*tag commit/i);
+    assert.equal(mutations(sb), "");
+  });
+});
 
 describe("publish-github-release.sh: the CI gate", () => {
   it("refuses to publish when Myrmidon CI (tag) failed for the tag commit", () => {
