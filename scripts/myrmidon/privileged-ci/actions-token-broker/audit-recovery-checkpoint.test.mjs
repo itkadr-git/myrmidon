@@ -37,6 +37,27 @@ test('audit outage recovery preserves credential checkpoint across restart', asy
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('audit outage without credential anchor never recovers unverified credentials', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-recovery-no-anchor-'));
+  const credentialPath = join(dir, 'credentials.sqlite'), credentialKey = randomBytes(32);
+  const alerts = [], revoked = [];
+  try {
+    const store = createCredentialStore(credentialPath, credentialKey);
+    await store.put('untrusted', { token: 'fixture' }, 'owner');
+    store.close();
+    await assert.rejects(createAuditedSupervisedServer({}, {
+      auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32),
+      auditAnchor: { read: async () => { throw new Error('audit offline'); }, compareAndSet: async () => false },
+      credentialPath, credentialKey,
+      installation: { revoke: async token => revoked.push(token) }, alert: async event => alerts.push(event),
+    }), /audit offline/);
+    assert.deepEqual(revoked, []);
+    assert.ok(alerts.includes('credential_recovery_failed'));
+    const reopened = createCredentialStore(credentialPath, credentialKey);
+    try { assert.equal(reopened.hasRetainedCredentials(), true); } finally { reopened.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('audit outage and credential checkpoint mismatch never revoke untrusted restored state', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'audit-recovery-mismatch-'));
   const credentialPath = join(dir, 'credentials.sqlite'), credentialKey = randomBytes(32);
