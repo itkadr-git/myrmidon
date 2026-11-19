@@ -346,6 +346,48 @@ describe("release-stop-notify.sh (fake gh)", () => {
     assert.equal(matchingIssues[0].state, "open");
   });
 
+  // Deterministic reproduction of the failing interleaving behind the
+  // "issues 100/101" CI flake (PR #3086 run 43779902791, PR #4570 run
+  // 44507283140): the fake gh api scan used to read issues.json WITHOUT the
+  // issues-file lock the create/close handlers hold, so a scan that started
+  // while a create was in flight could observe the pre-write state and
+  // deduplicate against a stale snapshot. This test holds that lock from the
+  // outside (exactly like an in-flight create), starts a scan while the lock
+  // is held, and requires the scan to block until the fully written issue is
+  // published and then observe it.
+  it("fake gh api scan is serialized with a concurrent issue write (deterministic interleaving)", async () => {
+    const sb = makeSandbox();
+    const lockDir = path.join(sb.dir, "issues-file.lock");
+    const writer = spawn("bash", ["-c", 'mkdir "$SANDBOX/issues-file.lock" && sleep 0.5 && printf %s "[{\\"number\\":7,\\"title\\":\\"written\\",\\"state\\":\\"open\\"}]" > "$SANDBOX/issues.json" && rmdir "$SANDBOX/issues-file.lock"'], {
+      env: { ...process.env, SANDBOX: sb.dir },
+      stdio: "ignore",
+    });
+    try {
+      const deadline = Date.now() + 5000;
+      while (!fs.existsSync(lockDir)) {
+        if (Date.now() > deadline) throw new Error("writer did not acquire the issues-file lock in time");
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      const started = Date.now();
+      const scan = spawnSync("gh", [
+        "api", "--paginate",
+        "-H", "Accept: application/vnd.github+json",
+        `/repos/${REPO}/issues?state=all&per_page=100`,
+        "--jq", '.[] | select(.title == "written") | .number',
+      ], {
+        env: { ...process.env, SANDBOX: sb.dir, PATH: `${sb.bin}:${process.env.PATH}` },
+        encoding: "utf8",
+      });
+      const elapsed = Date.now() - started;
+      assert.equal(scan.status, 0, scan.stderr);
+      assert.match(scan.stdout, /^7/, `scan must observe the fully written issue, got: ${JSON.stringify(scan.stdout)}`);
+      assert.ok(elapsed >= 350, `scan returned after ${elapsed}ms without waiting for the writer lock; reads are not serialized with writes`);
+    } finally {
+      if (fs.existsSync(lockDir)) fs.rmdirSync(lockDir);
+      await new Promise((resolve) => writer.on("close", resolve));
+    }
+  });
+
   it("rescans after acquiring lock when another run created the issue and released the lock", () => {
     const sb = makeSandbox();
     const r = runScript(sb, { GH_LOCK_CREATE_INJECT_ISSUE: "y" });
