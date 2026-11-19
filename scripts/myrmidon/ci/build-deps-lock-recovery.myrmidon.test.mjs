@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -63,23 +63,30 @@ async function bounded(promise, message) {
 for (const [name, entries] of [
   ["malformed JSON", { "owner-corrupt.json": "{" }],
   ["missing pid", { "owner-corrupt.json": "{}" }],
-  ["unknown additional file", { "owner-corrupt.json": "{}", "unknown": "keep" }],
+  ["unknown additional file", null],
 ]) {
   test(`preserves lock with ${name} until manual removal`, async (t) => {
     const f = fixture(t);
+    let lockEntries = entries;
+    if (!lockEntries) {
+      const owner = spawnSync(process.execPath, ["-e", ""]);
+      assert.equal(owner.status, 0);
+      assert.throws(() => process.kill(owner.pid, 0), { code: "ESRCH" });
+      lockEntries = { "owner-dead.json": JSON.stringify({ pid: owner.pid }), unknown: "keep" };
+    }
     fs.mkdirSync(f.lock, { recursive: true });
-    for (const [file, content] of Object.entries(entries)) fs.writeFileSync(path.join(f.lock, file), content);
+    for (const [file, content] of Object.entries(lockEntries)) fs.writeFileSync(path.join(f.lock, file), content);
     const run = f.launch();
     await bounded(Promise.race([run.waiting, run.done.then((result) => { throw new Error(`exited before waiting: ${JSON.stringify(result)}`); })]), "waiting message timed out");
     assert.equal(fs.existsSync(path.join(f.root, "builds")), false);
-    assert.deepEqual(fs.readdirSync(f.lock).sort(), Object.keys(entries).sort());
-    for (const [file, content] of Object.entries(entries)) assert.equal(fs.readFileSync(path.join(f.lock, file), "utf8"), content);
+    assert.deepEqual(fs.readdirSync(f.lock).sort(), Object.keys(lockEntries).sort());
+    for (const [file, content] of Object.entries(lockEntries)) assert.equal(fs.readFileSync(path.join(f.lock, file), "utf8"), content);
     assert.equal(run.proc.kill("SIGTERM"), true);
     const stopped = await bounded(run.done, "helper did not terminate");
     assert.equal(stopped.code, 143, stopped.output);
     assert.equal(stopped.signal, null);
     assert.equal(fs.existsSync(path.join(f.root, "builds")), false);
-    assert.deepEqual(fs.readdirSync(f.lock).sort(), Object.keys(entries).sort());
+    assert.deepEqual(fs.readdirSync(f.lock).sort(), Object.keys(lockEntries).sort());
     fs.rmSync(f.lock, { recursive: true });
     const retry = await bounded(f.launch().done, "retry timed out");
     assert.equal(retry.code, 0, retry.output);
