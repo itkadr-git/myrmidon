@@ -1,7 +1,10 @@
 import https from 'node:https';
 import { createHandler } from './http.mjs';
 import { createRecoveredSingleHostBroker, createSupervisedSingleHostBroker } from './broker.mjs';
-import { createAuthenticatedAudit, createAsyncAuthenticatedAudit } from './authenticated-audit.mjs';
+import { createAuthenticatedAudit, createAsyncAuthenticatedAudit, PendingIssuanceError } from './authenticated-audit.mjs';
+import { createCredentialStore } from './store.mjs';
+import { acquireExclusiveStore } from './exclusive.mjs';
+import { createRecoveryWorker } from './recovery-worker.mjs';
 
 // The anchor must be independently durable and outside the audit database's failure domain.
 export async function createAuditedSupervisedServer(tls, { auditPath, auditKey, auditAnchor, ...options }) {
@@ -11,6 +14,20 @@ export async function createAuditedSupervisedServer(tls, { auditPath, auditKey, 
   try {
     audit = await createAsyncAuthenticatedAudit(auditPath, auditKey, auditAnchor);
   } catch (error) {
+    if (error instanceof PendingIssuanceError) {
+      // Recover known credentials under the same exclusive fence; never clear the
+      // anchored unknown issuance or allow this path to start a server.
+      let release, store;
+      try {
+        release = acquireExclusiveStore(options.credentialPath);
+        store = createCredentialStore(options.credentialPath, options.credentialKey);
+        await store.queueAlert('issuance_ambiguous');
+        const worker = createRecoveryWorker({ store, revoke: token => options.installation.revoke(token), alert: options.alert });
+        await worker.runOnce();
+      } catch {
+        try { await options.alert('credential_recovery_failed'); } catch { /* External monitoring remains required. */ }
+      } finally { try { store?.close(); } finally { release?.(); } }
+    }
     // Keep startup closed while retrying delivery; a process crash still requires external supervision.
     for (;;) {
       try { await options.alert('audit_unavailable'); break; } catch {

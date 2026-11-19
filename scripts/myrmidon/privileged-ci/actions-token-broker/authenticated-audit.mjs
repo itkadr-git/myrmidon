@@ -3,6 +3,8 @@ import { DatabaseSync } from 'node:sqlite';
 
 const events = new Set(['issued', 'revoked', 'exchange_failed', 'revoke_failed', 'issuance_ambiguous', 'issuance_pending', 'issuance_resolved']);
 
+export class PendingIssuanceError extends Error {}
+
 // Async CAS permits an anchor in a separately operated failure domain.
 export async function createAsyncAuthenticatedAudit(path, key, anchor) {
   if (typeof path !== 'string' || !path || path === ':memory:' || path.startsWith('file:') || !Buffer.isBuffer(key) || key.length !== 32 || typeof anchor?.read !== 'function' || typeof anchor?.compareAndSet !== 'function') throw new Error('invalid audit configuration');
@@ -32,7 +34,7 @@ export async function createAsyncAuthenticatedAudit(path, key, anchor) {
     db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; CREATE TABLE IF NOT EXISTS audit_events (seq INTEGER PRIMARY KEY, event TEXT NOT NULL, mac TEXT NOT NULL) STRICT');
     const head = verify();
     if (!equal(await anchor.read(), head)) throw new Error('audit integrity failure: anchor mismatch');
-    if (head.pending) throw new Error('pending issuance requires operator containment');
+    if (head.pending) throw new PendingIssuanceError('pending issuance requires operator containment');
   } catch (error) { db.close(); secret.fill(0); throw error; }
   return {
     async record(event) {
