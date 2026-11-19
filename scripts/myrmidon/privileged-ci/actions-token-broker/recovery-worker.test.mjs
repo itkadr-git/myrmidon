@@ -22,7 +22,7 @@ test('anchored pending intent retries ambiguous alert after outbox failure even 
   assert.equal(first.pending, true);
   assert.equal(second.alertFailed, true);
   assert.equal(queues, 2);
-  assert.deepEqual(alerts, ['issuance_ambiguous', 'issuance_ambiguous']);
+  assert.deepEqual(alerts, ['issuance_ambiguous', 'credential_recovery_failed', 'issuance_ambiguous', 'credential_recovery_failed']);
 });
 
 test('pending reservation read failure keeps known-token recovery retryable', async () => {
