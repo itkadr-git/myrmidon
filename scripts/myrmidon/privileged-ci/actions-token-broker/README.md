@@ -28,8 +28,9 @@ secret management, least privilege and key rotation.
   a supplied recovery pass and will not invoke its start callback while a pending
   issuance, failed revocation, or failed alert is reported. The experimental
   `createSupervisedSingleHostBroker` holds exclusive ownership through retries and
-  the broker lifetime. It is not wired into the TLS server or a deployment, and
-  its alert callback is not guaranteed delivery. Broker factories
+  the broker lifetime. `createAuditedSupervisedServer` connects that supervisor
+  to TLS and closes its broker and audit store with the server. It is not wired
+  into a deployment, and its alert callback is not guaranteed delivery. Broker factories
   hold a separate SQLite write lock across recovery and the broker lifetime; this
   is single-host cooperative exclusion only, requiring one canonical credential
   path and a filesystem with reliable SQLite locking. Direct store access and path

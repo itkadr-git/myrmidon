@@ -1,7 +1,24 @@
 import https from 'node:https';
 import { createHandler } from './http.mjs';
-import { createRecoveredSingleHostBroker } from './broker.mjs';
+import { createRecoveredSingleHostBroker, createSupervisedSingleHostBroker } from './broker.mjs';
 import { createAuthenticatedAudit } from './authenticated-audit.mjs';
+
+// The anchor must be independently durable and outside the audit database's failure domain.
+export async function createAuditedSupervisedServer(tls, { auditPath, auditKey, auditAnchor, ...options }) {
+  if (!auditAnchor || typeof auditAnchor.read !== 'function' || typeof auditAnchor.compareAndSet !== 'function') throw new Error('audit anchor required');
+  if (typeof options.alert !== 'function') throw new Error('recovery alert required');
+  const audit = createAuthenticatedAudit(auditPath, auditKey, auditAnchor);
+  let broker;
+  try {
+    broker = await createSupervisedSingleHostBroker({ ...options, audit: event => audit.record(event) });
+    const server = createSecureServer(tls, broker);
+    server.once('close', () => { try { broker.close(); } finally { audit.close(); } });
+    return server;
+  } catch (error) {
+    try { broker?.close(); } finally { audit.close(); }
+    throw error;
+  }
+}
 
 // The anchor must be independently durable and outside the audit database's failure domain.
 export async function createAuditedRecoveredServer(tls, { auditPath, auditKey, auditAnchor, ...options }) {
