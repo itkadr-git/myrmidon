@@ -23,7 +23,12 @@ export async function createAuditedSupervisedServer(tls, { auditPath, auditKey, 
         store = createCredentialStore(options.credentialPath, options.credentialKey);
         await store.queueAlert('issuance_ambiguous');
         const worker = createRecoveryWorker({ store, revoke: token => options.installation.revoke(token), alert: options.alert });
-        await worker.runOnce();
+        for (;;) {
+          const result = await worker.runOnce();
+          if (result.failed === 0 && !result.alertFailed) break;
+          if (typeof options.delay !== 'function') break;
+          await options.delay();
+        }
       } catch {
         try { await options.alert('credential_recovery_failed'); } catch { /* External monitoring remains required. */ }
       } finally { try { store?.close(); } finally { release?.(); } }

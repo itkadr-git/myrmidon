@@ -62,9 +62,9 @@ secret management, least privilege and key rotation.
   credential reservation is lost. This deliberately sacrifices availability:
   there is not yet a reviewed operator reconciliation procedure to clear it.
   The unsupervised and synchronous audited helpers do not provide this protection.
-  On a verified anchored pending intent, supervised TLS startup now performs one
-  recovery pass under the credential-store lock, retrying known-token revocation
-  and queuing an ambiguity alert, but still refuses to start. A failed pass needs
+  On a verified anchored pending intent, supervised TLS startup recovers under
+  the credential-store lock, retrying known-token revocation and alert delivery
+  with the configured delay, but still refuses to start. An interrupted pass needs
   an external restart/supervisor to retry; an unknown token cannot be recovered.
   Anchor mismatch or unavailable audit does not authorize this recovery path.
   Broker factories also fence new issuance and owner revocation while any durable
