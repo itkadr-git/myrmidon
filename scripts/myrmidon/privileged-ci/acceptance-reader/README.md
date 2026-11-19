@@ -57,8 +57,9 @@ The required wire endpoint is `GET /api/service/issues/{identifier-or-uuid}/acce
 It returns `{issue:{id,identifier,companyId,version},document:{id,latestRevisionId,latestRevisionNumber,body}}`
 (or a null document), with a strong ETag equal to the quoted revision ID. The
 reader forwards a single strong `If-Match`, rejects malformed or duplicate values,
-checks the upstream ETag and company, and returns one combined projection. The
-endpoint and its service actor do not exist in the current core; the board-only
+checks the upstream ETag and company, and returns one combined projection. A
+conditional issue-only request is also rejected if its revision does not match.
+The endpoint and its service actor do not exist in the current core; the board-only
 snapshot route is incompatible. mTLS alone is not the required service credential.
 
 The runner must capture the returned revision, verify it conditionally, and use

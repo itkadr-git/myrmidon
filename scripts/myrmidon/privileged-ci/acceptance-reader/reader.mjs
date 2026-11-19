@@ -54,11 +54,11 @@ export function createHandler({ records, credentialStore, readSnapshot, audit = 
       if (!validSnapshot(snapshot)) return respond(502);
       const { issue, document } = snapshot;
       if (issue.companyId !== companyId || (path.issue !== issue.id && path.issue !== issue.identifier)) return respond(404);
+      if (match && (!document || match !== `"${document.latestRevisionId}"`)) return respond(412);
       if (!path.document) return respond(200, { identifier: issue.identifier, companyId: issue.companyId });
       if (!document) return respond(404);
       if (!/^[A-Za-z0-9_-]+$/.test(document.latestRevisionId)) return respond(502);
       const etag = `"${document.latestRevisionId}"`;
-      if (match && match !== etag) return respond(412);
       return respond(200, { identifier: issue.identifier, companyId: issue.companyId, document: { id: document.id, revisionId: document.latestRevisionId, body: document.body } }, etag);
     } catch (error) {
       return respond(error?.code === 'PRECONDITION_FAILED' ? 412 : 502);
