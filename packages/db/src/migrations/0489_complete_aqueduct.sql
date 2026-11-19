@@ -91,6 +91,13 @@ BEGIN
     IF NOT FOUND OR "v_company_id" IS DISTINCT FROM NEW."company_id" THEN
       RAISE EXCEPTION 'acceptance link issue company mismatch';
     END IF;
+    -- Change the document row, not merely its lock: a stale repeatable-read
+    -- revision writer must get a serialization failure after link creation.
+    UPDATE "documents" SET "updated_at" = "updated_at"
+      WHERE "id" = NEW."document_id" AND "company_id" = NEW."company_id";
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'acceptance link document company mismatch';
+    END IF;
   END IF;
   RETURN NEW;
 END;
@@ -141,6 +148,22 @@ $trg$ LANGUAGE plpgsql;--> statement-breakpoint
 CREATE TRIGGER "documents_acceptance_epoch_trg"
   AFTER INSERT OR UPDATE OR DELETE ON "documents"
   FOR EACH ROW EXECUTE FUNCTION "trg_documents_acceptance_epoch"();--> statement-breakpoint
+-- Every revision writer participates in the document row serialization point,
+-- even when its transaction snapshot predates the acceptance link.
+CREATE OR REPLACE FUNCTION "trg_revision_document_fence"() RETURNS trigger AS $trg$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    UPDATE "documents" SET "updated_at" = "updated_at" WHERE "id" = OLD."document_id";
+  END IF;
+  IF TG_OP <> 'DELETE' AND (TG_OP = 'INSERT' OR NEW."document_id" IS DISTINCT FROM OLD."document_id") THEN
+    UPDATE "documents" SET "updated_at" = "updated_at" WHERE "id" = NEW."document_id";
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END;
+$trg$ LANGUAGE plpgsql;--> statement-breakpoint
+CREATE TRIGGER "revision_document_fence_trg"
+  BEFORE INSERT OR UPDATE OR DELETE ON "document_revisions"
+  FOR EACH ROW EXECUTE FUNCTION "trg_revision_document_fence"();--> statement-breakpoint
 CREATE OR REPLACE FUNCTION "trg_document_revisions_acceptance_epoch"() RETURNS trigger AS $trg$
 DECLARE
   "v_old_issue_id" uuid;
