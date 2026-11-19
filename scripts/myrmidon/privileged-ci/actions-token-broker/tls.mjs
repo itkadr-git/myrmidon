@@ -14,14 +14,15 @@ export async function createAuditedSupervisedServer(tls, { auditPath, auditKey, 
   try {
     audit = await createAsyncAuthenticatedAudit(auditPath, auditKey, auditAnchor);
   } catch (error) {
-    if (error instanceof PendingIssuanceError) {
-      // Recover known credentials under the same exclusive fence; never clear the
-      // anchored unknown issuance or allow this path to start a server.
+    // Audit failure must not prevent cleanup of known credentials. The exclusive
+    // store lock keeps this recovery from racing an active issuer; it never opens
+    // service or clears the unverified audit state.
+    if (options.credentialPath && options.credentialKey && typeof options.installation?.revoke === 'function') {
       let release, store;
       try {
         release = acquireExclusiveStore(options.credentialPath);
         store = createCredentialStore(options.credentialPath, options.credentialKey);
-        await store.queueAlert('issuance_ambiguous');
+        if (error instanceof PendingIssuanceError) await store.queueAlert('issuance_ambiguous');
         const worker = createRecoveryWorker({ store, revoke: token => options.installation.revoke(token), alert: options.alert });
         for (;;) {
           const result = await worker.runOnce();

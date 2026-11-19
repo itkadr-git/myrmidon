@@ -550,6 +550,27 @@ test('anchored pending startup retries failed known-token revocation without ope
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('anchor mismatch revokes retained known credentials without starting service', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-mismatch-recovery-'));
+  const credentialPath = join(dir, 'credentials.sqlite'), credentialKey = randomBytes(32);
+  const revoked = [], alerts = [];
+  try {
+    const store = createCredentialStore(credentialPath, credentialKey);
+    await store.put('known', { token: 'fixture-known' }, 'owner');
+    store.close();
+    await assert.rejects(tls.createAuditedSupervisedServer({}, {
+      auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32),
+      auditAnchor: { read: async () => ({ seq: 1, mac: 'a'.repeat(64) }), compareAndSet: async () => true },
+      credentialPath, credentialKey, installation: { revoke: async token => revoked.push(token) },
+      alert: async event => alerts.push(event),
+    }), /anchor mismatch/);
+    assert.deepEqual(revoked, ['fixture-known']);
+    assert.ok(alerts.includes('audit_unavailable'));
+    const reopened = createCredentialStore(credentialPath, credentialKey);
+    try { assert.equal(reopened.hasRetainedCredentials(), false); } finally { reopened.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('audited TLS startup reports an unavailable anchor before refusing service', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-anchor-alert-'));
   const alerts = [];

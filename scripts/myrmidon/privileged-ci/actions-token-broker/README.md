@@ -64,9 +64,12 @@ secret management, least privilege and key rotation.
   The unsupervised and synchronous audited helpers do not provide this protection.
   On a verified anchored pending intent, supervised TLS startup recovers under
   the credential-store lock, retrying known-token revocation and alert delivery
-  with the configured delay, but still refuses to start. An interrupted pass needs
-  an external restart/supervisor to retry; an unknown token cannot be recovered.
-  Anchor mismatch or unavailable audit does not authorize this recovery path.
+  with the configured delay, but still refuses to start. Audit startup failures,
+  including an anchor mismatch or unavailable anchor, also attempt known-token
+  recovery under that lock without clearing or trusting the failed audit state.
+  An interrupted pass needs an external restart/supervisor to retry; an unknown
+  token cannot be recovered. Missing or rolled-back local credentials remain
+  unknown and require independent operator containment.
   Broker factories also fence new issuance and owner revocation while any durable
   recovery alert remains undelivered, including an audit failure on a rejected
   request before a reservation exists. Recovery must deliver the outbox first.
