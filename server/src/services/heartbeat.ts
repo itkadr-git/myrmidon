@@ -2201,10 +2201,8 @@ export async function resolveExecutionRunAdapterConfig(input: {
   trustedEnvProjection?: Record<string, string>;
   trustedEnvSecretKeys?: string[];
   /**
-   * myrmidon(OPE-12932 KEY-TTL): a run-scoped secret_ref projection merged
-   * into the resolved env (lowest precedence — it never overrides a binding
-   * already present). The compiled config carries the reference, not the raw
-   * key; the secrets service resolves it once at dispatch.
+   * Server-owned run secret references. They remain references in the input;
+   * the dispatch-only config resolves them without overriding explicit bindings.
    */
   runScopedSecretEnv?: Record<string, unknown>;
 }) {
@@ -2513,10 +2511,8 @@ export async function resolveExecutionRunAdapterConfig(input: {
     };
     for (const key of input.trustedEnvSecretKeys ?? []) secretKeys.add(key);
   }
-  // myrmidon(OPE-12932 KEY-TTL): the run-scoped projection lands LAST — it is
-  // the reference (secret_ref) of a run credential, never a raw value, and it
-  // never overrides a value a card/environment/project/routine binding already
-  // provided for the same env name.
+  // Resolve only server-created run references at dispatch, never persisting the
+  // resolved value in the agent config. Explicit bindings keep precedence.
   if (
     allowTrustedEnvProjection &&
     input.runScopedSecretEnv &&
@@ -2527,10 +2523,12 @@ export async function resolveExecutionRunAdapterConfig(input: {
     for (const [key, ref] of Object.entries(input.runScopedSecretEnv)) {
       if (existingEnv[key] !== undefined) continue;
       projectedEnv[key] = ref;
-      secretKeys.add(key);
     }
     if (Object.keys(projectedEnv).length > 0) {
-      resolvedConfig.env = { ...existingEnv, ...projectedEnv };
+      const runResolution = await input.secretsSvc.resolveEnvBindings(input.companyId, projectedEnv);
+      resolvedConfig.env = { ...existingEnv, ...runResolution.env };
+      for (const key of runResolution.secretKeys) secretKeys.add(key);
+      manifest.push(...runResolution.manifest);
     }
   }
   // Pre-dispatch credential gate for codex_local: a managed Codex home with no

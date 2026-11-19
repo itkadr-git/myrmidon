@@ -165,28 +165,24 @@ describe("myrmidon(OPE-12932) resolveExecutionRunAdapterConfig runScopedSecretEn
           manifest: [],
         }),
       ),
-      resolveEnvBindings: async () => ({
-        env: {},
-        secretKeys: new Set<string>(),
+      resolveEnvBindings: async (_companyId: string, bindings: Record<string, unknown>) => ({
+        env: Object.fromEntries(Object.keys(bindings).map((key) => [key, "resolved-run-key"])),
+        secretKeys: new Set(Object.keys(bindings)),
         manifest: [],
       }),
     },
   });
 
-  it("merges the secret_ref into the resolved env as a reference, never a raw value", async () => {
-    // Canary: even if some layer resolved the secret value, it must never
-    // surface in the compiled runtime config.
-    resolveSecretValueMock.mockResolvedValue("«redacted:sk-…»");
+  it("keeps the reference separate from the ephemeral resolved dispatch config", async () => {
+    const runScopedSecretEnv = { MYRMIDON_LLM_API_KEY: { ...RUN_SCOPED_REF } };
     const { resolvedConfig, secretKeys } = await resolveExecutionRunAdapterConfig({
       ...baseInput(),
-      runScopedSecretEnv: {
-        MYRMIDON_LLM_API_KEY: { ...RUN_SCOPED_REF },
-      },
+      runScopedSecretEnv,
     } as never);
 
-    const env = resolvedConfig.env as Record<string, unknown>;
-    expect(env.MYRMIDON_LLM_API_KEY).toEqual(RUN_SCOPED_REF);
-    expect(JSON.stringify(resolvedConfig)).not.toContain("«redacted:sk-…»");
+    expect(runScopedSecretEnv.MYRMIDON_LLM_API_KEY).toEqual(RUN_SCOPED_REF);
+    expect(JSON.stringify(runScopedSecretEnv)).not.toContain("resolved-run-key");
+    expect((resolvedConfig.env as Record<string, unknown>).MYRMIDON_LLM_API_KEY).toBe("resolved-run-key");
     expect(secretKeys.has("MYRMIDON_LLM_API_KEY")).toBe(true);
   });
 
@@ -221,7 +217,7 @@ describe("myrmidon(OPE-12932) resolveExecutionRunAdapterConfig runScopedSecretEn
     expect(env.MYRMIDON_LLM_API_KEY).toBe("own-binding-value");
   });
 
-  it("keeps the compiled config free of raw values when a plain binding and a run ref coexist", async () => {
+  it("resolves only the run reference when a plain binding coexists", async () => {
     const { resolvedConfig } = await resolveExecutionRunAdapterConfig({
       ...baseInput(),
       executionRunConfig: {
@@ -234,7 +230,7 @@ describe("myrmidon(OPE-12932) resolveExecutionRunAdapterConfig runScopedSecretEn
 
     const env = resolvedConfig.env as Record<string, unknown>;
     expect(env.OTHER_KEY).toBe("plain");
-    expect(env.MYRMIDON_LLM_API_KEY).toEqual(RUN_SCOPED_REF);
+    expect(env.MYRMIDON_LLM_API_KEY).toBe("resolved-run-key");
   });
 });
 
