@@ -1263,6 +1263,38 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     expect(row!.companyId).toBe(companyA);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
+  it("fences a stale issue writer after an acceptance link is deleted", async () => {
+    const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-unlink-fence-");
+    cleanups.push(() => dbh.cleanup());
+    const db = createDb(dbh.connectionString);
+    cleanups.push(async () => { await db.$client.end(); });
+    const issueId = randomUUID();
+    const docId = randomUUID();
+    await db.insert(companies).values({ id: companyA, name: "Company A" });
+    await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
+    await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a" });
+    await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
+    let resume!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { resume = resolve; });
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const writer = db.transaction(async (tx) => {
+      await tx.execute(sqlTag`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
+      await tx.execute(sqlTag`SELECT id FROM issues WHERE id = ${issueId}::uuid`);
+      started();
+      await gate;
+      await tx.update(issues).set({ title: "Stale writer" }).where(eq(issues.id, issueId));
+    });
+    const outcome = writer.then(() => null, (error: unknown) => error);
+    try {
+      await ready;
+      await db.delete(issueDocuments).where(eq(issueDocuments.documentId, docId));
+    } finally {
+      resume();
+    }
+    expect(await outcome).toMatchObject({ cause: { code: "40001" } });
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("fences a stale old-issue writer after an acceptance link transfer", async () => {
     const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-transfer-fence-");
     cleanups.push(() => dbh.cleanup());
