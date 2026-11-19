@@ -298,6 +298,40 @@ describeEmbeddedPostgres("issue monitor that waits for subtasks", () => {
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
   });
 
+  it("does not defer a replacement monitor using an old unchanged snapshot", async () => {
+    const { companyId, agentId, epicId, childId } = await seedEpic();
+    await recordWake(companyId, epicId, agentId);
+    await armMonitor(epicId, at("12:30"));
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_replace_idle_monitor() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_next_check_at = '2026-04-11T13:30:00Z'::timestamptz,
+            monitor_wake_requested_at = NULL, monitor_notes = 'replacement evidence'
+          WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_replace_idle_monitor AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_replace_idle_monitor();
+    `));
+    try {
+      expect((await heartbeatService(db, { executesRuns: false }).tickTimers(at("12:31"))).enqueued).toBe(0);
+      const [epic] = await db.select().from(issues).where(eq(issues.id, epicId));
+      expect(epic.monitorNextCheckAt?.toISOString()).toBe("2026-04-11T13:30:00.000Z");
+      expect(epic.monitorNotes).toBe("replacement evidence");
+      expect(await activityActions(epicId, "issue.monitor_deferred")).toHaveLength(0);
+      await db.execute(sql.raw("DROP TRIGGER test_replace_idle_monitor ON issues; DROP FUNCTION test_replace_idle_monitor();"));
+      await db.insert(issueComments).values({ companyId, issueId: childId, authorUserId: "user-1", body: "New evidence" });
+      const heartbeat = heartbeatService(db, { executesRuns: false });
+      expect((await heartbeat.tickTimers(at("13:31"))).enqueued).toBe(1);
+      expect((await heartbeat.tickTimers(at("13:31"))).enqueued).toBe(0);
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_replace_idle_monitor ON issues; DROP FUNCTION IF EXISTS test_replace_idle_monitor();"));
+    }
+  });
+
   it("wakes the owner at the first term when it has no recorded wake, and records the snapshot", async () => {
     const { agentId, epicId } = await seedEpic();
     await armMonitor(epicId, at("12:30"));
