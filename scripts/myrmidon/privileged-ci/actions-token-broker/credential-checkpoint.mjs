@@ -7,7 +7,7 @@ export async function createCredentialCheckpoint(store, anchor, { provision = fa
   let head = await anchor.read();
   const digest = store.stateDigest();
   if (provision) {
-    if (head.seq !== 0 || head.mac !== '' || store.hasRetainedCredentials()) throw new Error('invalid credential checkpoint provisioning');
+    if (head.seq !== 0 || head.mac !== '' || store.hasRetainedCredentials() || (await store.pendingIssuances()).length || (await store.pendingAlerts()).length) throw new Error('invalid credential checkpoint provisioning');
     const initial = { seq: 1, mac: digest };
     if (await anchor.compareAndSet(head, initial) !== true) throw new Error('credential checkpoint provisioning failed');
     head = initial;
