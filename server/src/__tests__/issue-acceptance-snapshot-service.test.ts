@@ -1194,6 +1194,26 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     expect(await db.select().from(issueDocuments).where(eq(issueDocuments.issueId, issueId))).toHaveLength(0);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
+  it("rejects binding one acceptance document to two issues", async () => {
+    const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-double-link-");
+    cleanups.push(() => dbh.cleanup());
+    const db = createDb(dbh.connectionString);
+    cleanups.push(async () => { await db.$client.end(); });
+    const issueA = randomUUID();
+    const issueB = randomUUID();
+    const docId = randomUUID();
+    await db.insert(companies).values({ id: companyA, name: "Company A" });
+    await db.insert(issues).values([
+      { id: issueA, companyId: companyA, title: "A" },
+      { id: issueB, companyId: companyA, title: "B" },
+    ]);
+    await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a" });
+    await db.insert(issueDocuments).values({ companyId: companyA, issueId: issueA, documentId: docId, key: "acceptance-scenarios" });
+    await expect(db.insert(issueDocuments).values({ companyId: companyA, issueId: issueB, documentId: docId, key: "acceptance-scenarios" })).rejects.toThrow();
+    const [link] = await db.select().from(issueDocuments).where(eq(issueDocuments.documentId, docId));
+    expect(link!.issueId).toBe(issueA);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("does not commit a cross-company graph when a link races an issue company move", async () => {
     const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-company-race-");
     cleanups.push(() => dbh.cleanup());
