@@ -940,6 +940,49 @@ exit 97
     expect(rules).toEqual(["operator-ssh"]);
   });
 
+  it("does not delete an operator's indistinguishable rule after a real uncertain allow", async () => {
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-ufw-ambiguous-"));
+    const rules = join(dir, "rules");
+    const calls = join(dir, "calls");
+    writeFileSync(rules, "");
+    writeFileSync(join(dir, "sudo"), `#!/bin/sh
+printf '%s\\n' "$*" >> "$CALLS"
+case "$1" in
+  ufw)
+    shift
+    case "$1" in
+      status) printf 'Status: active\\n'; exit 0 ;;
+      allow) printf '22/tcp\\n' >> "$RULES"; exit 1 ;;
+      delete|--force) : > "$RULES"; exit 0 ;;
+    esac ;;
+  systemd-run|systemctl) printf 'active\\n'; exit 0 ;;
+esac
+exit 97
+`);
+    chmodSync(join(dir, "sudo"), 0o700);
+    try {
+      const ssh = new MockSshExecutor({ onCommand: (command) => {
+        const result = spawnSync("sh", ["-c", command], {
+          encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: calls, RULES: rules }, timeout: 5000,
+        });
+        return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", exitCode: result.status ?? 1 };
+      } });
+      const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+      const claim: any = {
+        job: { id: "job-real-ambiguous-rule", companyId: "c1", serverId: "s1" },
+        server: { hostname: "1.2.3.4", port: 22, username: "root" },
+        steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+      };
+      const result = await executor.execute(claim, createMockReporter().reporter);
+      expect(result.status).toBe("failed");
+      expect(readFileSync(calls, "utf8")).toMatch(/ufw allow/);
+      expect(result.error).toMatch(/ambiguous|unconfirmed|unsafe|unknown/i);
+      expect(readFileSync(rules, "utf8")).toBe("22/tcp\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("preserves an operator's concurrent rule when a partially applied SSH allow is rolled back", async () => {
     const rules = new Set(["operator-original"]);
     const ssh = new MockSshExecutor({ onCommand: (command) => {
