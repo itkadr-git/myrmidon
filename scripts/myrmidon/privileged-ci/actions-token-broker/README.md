@@ -23,7 +23,10 @@ secret management, least privilege and key rotation.
   filesystem; this does not support separate hosts. The factory wires an
   experimental AES-GCM SQLite credential store when a credential path and key
   are provided. Its single-host locking and key custody need independent review.
-  There is no recovery worker or deployment wiring. An experimental single-host
+  An experimental `createRecoveryWorker` provides a single quiesced recovery
+  pass with retryable alerts; it is not scheduled or wired into a deployment.
+  Callers must stop all issuers before running it. It does not clear ambiguous
+  reservations or provide guaranteed alert delivery. An experimental single-host
   HMAC-chained audit store is available via `createAuditedRecoveredServer`; it
   permits fixed event names only, checks integrity on startup and before each
   append, and needs a distinct server-held 32-byte key. The audited server now
