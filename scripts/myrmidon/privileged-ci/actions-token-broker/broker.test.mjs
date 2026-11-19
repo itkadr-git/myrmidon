@@ -32,6 +32,29 @@ test('identity expiring during reservation never contacts installation API', asy
   assert.equal(calls, 0);
 });
 
+test('identity expiring during upstream issuance cannot receive a credential', async () => {
+  let revoked = 0, pending = false;
+  const store = {
+    reserveIssuance: async () => { pending = true; },
+    resolveIssuance: async () => { pending = false; },
+    put: async () => {}, delete: async () => {}, queueAlert: async () => {},
+  };
+  const installation = {
+    issue: async retain => {
+      await new Promise(resolve => setTimeout(resolve, 2100));
+      await retain('fixture');
+      return { token: 'fixture', expiresAt: new Date(Date.now() + 60000).toISOString() };
+    },
+    revoke: async () => { revoked++; },
+  };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store, installation,
+    audit: async () => {}, alert: async () => {} });
+  const now = Math.floor(Date.now() / 1000);
+  await assert.rejects(broker.exchange(jwt('expires-during-issuance', { iat: now, nbf: now, exp: now + 1 })));
+  assert.equal(revoked, 1);
+  assert.equal(pending, true);
+});
+
 test('token expiring during issuance audit is not returned and is revoked', async () => {
   let revoked = 0, pending = false;
   const store = {
