@@ -175,9 +175,9 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
           throw new Error('credential storage failed');
         }
         try {
-          if (auditFailed) throw new Error('audit unavailable');
+          if (auditFailed || exp <= Math.floor(Date.now() / 1000)) throw new Error('audit unavailable or identity expired');
           await record('issued');
-          if (auditFailed) throw new Error('audit unavailable');
+          if (auditFailed || exp <= Math.floor(Date.now() / 1000)) throw new Error('audit unavailable or identity expired');
           if (credential.expiresAt !== undefined && Date.parse(credential.expiresAt) <= Date.now()) throw new Error('credential expired');
         } catch {
           // Keep the reservation even after successful revocation: audit failure
@@ -209,7 +209,7 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
             throw new Error('issuance audit finalization failed');
           }
         }
-        if (auditFailed || (credential.expiresAt !== undefined && Date.parse(credential.expiresAt) <= Date.now())) {
+        if (auditFailed || exp <= Math.floor(Date.now() / 1000) || (credential.expiresAt !== undefined && Date.parse(credential.expiresAt) <= Date.now())) {
           // Finalization may have yielded while another request detected audit failure,
           // or while the credential expired.
           // Retain a recovery fence where possible before revoking the known token.
