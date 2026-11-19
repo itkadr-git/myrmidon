@@ -38,6 +38,17 @@ test('a stalled issuance response body times out after headers', async () => {
   await assert.rejects(client.issue(), /timeout/i);
 });
 
+test('oversized upstream response is rejected and the response stream is cancelled', async () => {
+  let cancelled = false;
+  const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'fixture',
+    request: async () => ({ ok: true, body: new ReadableStream({
+      pull(controller) { controller.enqueue(new Uint8Array(131073)); },
+      cancel() { cancelled = true; },
+    }), json: async () => ({ token: 'fixture', expires_at: '2030-01-01T00:00:00Z', permissions: { contents: 'read' }, repositories: [{ id: 123 }] }) }) });
+  await assert.rejects(client.issue(), /response too large/);
+  assert.equal(cancelled, true);
+});
+
 test('a valid upstream token is retained before issuance returns', async () => {
   const events = [];
   const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'fixture', request: async () => ({ ok: true, json: async () => ({ token: 'known-fixture', expires_at: '2030-01-01T00:00:00Z', permissions: { contents: 'read' }, repositories: [{ id: 123 }] }) }) });
