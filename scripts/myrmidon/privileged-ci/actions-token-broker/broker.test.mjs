@@ -185,6 +185,23 @@ test('audit failure during reservation prevents an upstream token request', asyn
   assert.equal(issued, 0);
 });
 
+test('concurrent audit failure during anchored intent prevents upstream issuance', async () => {
+  let resume, entered;
+  const gate = new Promise(resolve => { resume = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  let issued = 0;
+  const store = { reserveIssuance: async () => {}, queueAlert: async () => {} };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store, anchoredIssuance: true,
+    installation: { issue: async () => { issued++; throw new Error('must not issue'); } },
+    audit: async event => { if (event === 'issuance_pending') { entered(); await gate; } if (event === 'exchange_failed') throw new Error('audit unavailable'); }, alert: async () => {} });
+  const pending = broker.exchange(jwt('anchor-race-valid'));
+  await started;
+  await assert.rejects(broker.exchange(jwt('anchor-race-invalid', { repository_id: '999' })));
+  resume();
+  await assert.rejects(pending);
+  assert.equal(issued, 0);
+});
+
 test('audit failure during issuance finalization prevents returning the token', async () => {
   let finalize, startedFinalize;
   const started = new Promise(resolve => { startedFinalize = resolve; });
