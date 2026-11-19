@@ -621,8 +621,35 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
   );
 
   it(
-    "invalidates a pin when a repeatable-read document writer overlaps link creation",
+    "rolls back an explicit issue epoch bump together with a failed document write",
     async () => {
+      const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-bump-rollback-");
+      cleanups.push(() => dbh.cleanup());
+      const db = createDb(dbh.connectionString);
+      const client = db.$client;
+      cleanups.push(async () => { await client.end(); });
+      const issueId = randomUUID();
+      const docId = randomUUID();
+      await db.insert(companies).values({ id: companyA, name: "Company A" });
+      await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task", identifier: "OPE-8803" });
+      await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a" });
+      const before = await issueAcceptanceSnapshotService(db).read(issueId);
+      await expect(db.transaction(async (tx) => {
+        await tx.execute(sqlTag`SELECT bump_issue_acceptance_epoch(${issueId}::uuid)`);
+        await tx.update(documents).set({ latestBody: "b" }).where(eq(documents.id, docId));
+        throw new Error("abort writer");
+      })).rejects.toThrow("abort writer");
+      const after = await issueAcceptanceSnapshotService(db).read(issueId);
+      expect(after!.issue.version).toBe(before!.issue.version);
+      const [document] = await db.select({ body: documents.latestBody }).from(documents).where(eq(documents.id, docId));
+      expect(document!.body).toBe("a");
+    },
+    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  );
+
+  it.each(["READ COMMITTED", "REPEATABLE READ"] as const)(
+    "invalidates a pin when a %s document writer overlaps link creation",
+    async (isolation) => {
       const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-link-race-");
       cleanups.push(() => dbh.cleanup());
       const db = createDb(dbh.connectionString);
@@ -641,7 +668,9 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
       const gate = new Promise<void>((resolve) => { release = resolve; });
       const ready = new Promise<void>((resolve) => { applied = resolve; });
       const writer = db.transaction(async (tx) => {
-        await tx.execute(sqlTag`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
+        await tx.execute(isolation === "REPEATABLE READ"
+          ? sqlTag`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`
+          : sqlTag`SET TRANSACTION ISOLATION LEVEL READ COMMITTED`);
         await tx.update(documents).set({ latestBody: "b" }).where(eq(documents.id, docId));
         applied();
         await gate;
@@ -663,9 +692,9 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
 
-  it(
-    "invalidates a pin when a repeatable-read revision writer overlaps link creation",
-    async () => {
+  it.each(["READ COMMITTED", "REPEATABLE READ"] as const)(
+    "invalidates a pin when a %s revision writer overlaps link creation",
+    async (isolation) => {
       const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-revision-race-");
       cleanups.push(() => dbh.cleanup());
       const db = createDb(dbh.connectionString);
@@ -684,7 +713,9 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
       const gate = new Promise<void>((resolve) => { release = resolve; });
       const ready = new Promise<void>((resolve) => { applied = resolve; });
       const writer = db.transaction(async (tx) => {
-        await tx.execute(sqlTag`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
+        await tx.execute(isolation === "REPEATABLE READ"
+          ? sqlTag`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`
+          : sqlTag`SET TRANSACTION ISOLATION LEVEL READ COMMITTED`);
         await tx.update(documentRevisions).set({ body: "b" }).where(eq(documentRevisions.id, revisionId));
         applied();
         await gate;
