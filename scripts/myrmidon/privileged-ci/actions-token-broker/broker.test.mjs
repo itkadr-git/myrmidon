@@ -79,6 +79,24 @@ test('undelivered runtime audit alert fences subsequent issuance', async () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('audit failure on a rejected request fences issuance until recovery after restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-rejected-audit-'));
+  let issued = 0, failAudit = true;
+  const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'), credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32),
+    installation: { issue: async () => { issued++; return { token: 'fixture' }; }, revoke: async () => {} },
+    audit: async () => { if (failAudit) throw new Error('audit unavailable'); }, alert: async () => { throw new Error('offline'); } };
+  try {
+    let broker = createSingleHostBroker(options);
+    await assert.rejects(broker.exchange(jwt('bad-identity', { repository_id: '999' })));
+    failAudit = false;
+    await assert.rejects(broker.exchange(jwt('after-rejected-audit')));
+    broker.close();
+    broker = createSingleHostBroker(options);
+    try { await assert.rejects(broker.exchange(jwt('after-rejected-audit-restart'))); } finally { broker.close(); }
+    assert.equal(issued, 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('failure to resolve issuance alerts and retains the token for recovery', async () => {
   const alerts = [];
   const retained = new Map();
