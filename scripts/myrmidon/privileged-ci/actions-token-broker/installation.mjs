@@ -86,6 +86,7 @@ export function createInstallationClient({ installationId, repositoryId, permiss
     async revoke(token) {
       if (typeof token !== 'string' || !token) throw new Error('invalid token');
       const response = await boundedRequest(`${API}/installation/token`, { method: 'DELETE', redirect: 'error', headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' } });
+      if (response.body) void response.body.cancel().catch(() => {});
       if (!response.ok) throw new Error('installation token revocation failed');
     },
   };
