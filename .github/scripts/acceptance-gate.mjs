@@ -20,6 +20,13 @@ export async function checkAcceptance({ pr, expectedBase, expectedHead, getDocum
   return { checked, skipped: false };
 }
 
+export function documentBody(key, doc, log = console.log) {
+  const safeId = /^[a-zA-Z0-9-]{1,100}$/;
+  if (!safeId.test(doc?.id ?? '') || !safeId.test(doc?.latestRevisionId ?? '')) throw Error(`${key}: missing or invalid document revision identity`);
+  log(`${key}: document=${doc.id} revision=${doc.latestRevisionId} (snapshot; later edits require rerun)`);
+  return doc.body;
+}
+
 async function json(url, token) {
   const response = await fetch(url, { headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'myrmidon-acceptance-gate', Accept: 'application/json' }, signal: AbortSignal.timeout(30000), redirect: 'error' });
   if (!response.ok) throw Error(`API request failed: ${response.status} ${new URL(url).pathname}`);
@@ -38,7 +45,7 @@ async function main() {
     const issue = await json(`${root}/api/issues/${key}`, MYRMIDON_API_KEY);
     if (issue.companyId !== MYRMIDON_COMPANY_ID || issue.identifier !== key) throw Error(`${key}: issue company or identifier mismatch`);
     const doc = await json(`${root}/api/issues/${key}/documents/acceptance-scenarios`, MYRMIDON_API_KEY);
-    return doc?.body;
+    return documentBody(key, doc);
   } });
   const latest = await json(prUrl, GH_TOKEN);
   if (latest.head?.sha !== HEAD_SHA || latest.base?.sha !== BASE_SHA || latest.title !== pr.title || latest.body !== pr.body) throw Error('PR head, base, title or body changed during verification');
