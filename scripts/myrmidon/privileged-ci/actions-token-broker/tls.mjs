@@ -6,6 +6,7 @@ import { createAuthenticatedAudit } from './authenticated-audit.mjs';
 // The anchor must be independently durable and outside the audit database's failure domain.
 export async function createAuditedRecoveredServer(tls, { auditPath, auditKey, auditAnchor, ...options }) {
   if (!auditAnchor || typeof auditAnchor.read !== 'function' || typeof auditAnchor.compareAndSet !== 'function') throw new Error('audit anchor required');
+  if (typeof options.alert !== 'function') throw new Error('recovery alert required');
   const audit = createAuthenticatedAudit(auditPath, auditKey, auditAnchor);
   try {
     const server = await createRecoveredSecureServer(tls, { ...options, audit: event => audit.record(event) });
