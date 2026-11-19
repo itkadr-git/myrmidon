@@ -670,7 +670,12 @@ describe("managed AI connections", () => {
 
   it("creates and hires agents with an authorized restricted shared connection", async () => {
     const { agentRoutes } = await import("../routes/agents.js");
-    await db.update(companies).set({ requireBoardApprovalForNewAgents: false }).where(eq(companies.id, companyId));
+    // Keep earlier tests' agents from exhausting free-tier capacity before the rollback trigger runs.
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Shared creation routes", issuePrefix: "SCR", requireBoardApprovalForNewAgents: false });
+    await db.insert(companyMemberships).values({ companyId, principalId: "alice", principalType: "user", status: "active", membershipRole: "member" });
+    const service = aiConnectionService(db);
+    const input = { companyId, adapterType: "claude_local", binding };
     const account = await service.save(companyId, "alice", { provider: "anthropic", method: "api_key", ownership: "shared", name: "Shared creation routes", apiKey: "fixture", agentIds: [], allAgents: false }, "fixture-create-routes");
     const selected = { ...binding, mode: "shared", ...account } as const;
     const app = express();
