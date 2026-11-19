@@ -32,6 +32,15 @@ test('authenticated HTTPS alert delivers only an allowlisted event and rejects n
       await sink('audit_unavailable');
       await assert.rejects(sink('secret token'));
       assert.deepEqual(received, [{ event: 'issuance_ambiguous' }, { event: 'issuance_ambiguous' }, { event: 'audit_unavailable' }]);
+      server.removeAllListeners('request');
+      server.on('request', (_req, res) => {
+        res.writeHead(200);
+        const timer = setInterval(() => res.write('x'), 10);
+        res.on('close', () => clearInterval(timer));
+        setTimeout(() => { clearInterval(timer); res.end(); }, 400);
+      });
+      const bounded = createAlertSink({ url: `https://server:${server.address().port}/alerts`, ca: file('ca.crt'), cert: file('client.crt'), key: file('client.key'), timeoutMs: 100, lookup: (_hostname, options, callback) => options.all ? callback(null, [{ address: '127.0.0.1', family: 4 }]) : callback(null, '127.0.0.1', 4) });
+      await assert.rejects(bounded('audit_unavailable'), /timeout/);
     } finally { await new Promise(resolve => server.close(resolve)); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
