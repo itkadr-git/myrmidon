@@ -166,6 +166,14 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
           try { await store.resolveIssuance(handle); }
           catch { await ambiguous(); throw new Error('issuance finalization failed'); }
         }
+        if (auditFailed) {
+          // Finalization may have yielded while another request detected audit failure.
+          // Retain a recovery fence where possible before revoking the known token.
+          if (durable) { try { await store.reserveIssuance(handle); } catch { /* Alert and process latch remain in force. */ } }
+          try { await installation.revoke(credential.token); await store.delete(handle); } catch { /* Retained token is retried during recovery. */ }
+          await ambiguous();
+          throw new Error('audit failed');
+        }
         return { handle, ...credential };
       });
     },

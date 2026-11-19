@@ -49,8 +49,8 @@ secret management, least privilege and key rotation.
   request before a reservation exists. Recovery must deliver the outbox first.
   If audit and outbox writes both fail, a process-local latch blocks later issuance
   until restart. An issuance checks the latch before and after its audit append
-  and revokes a known token if an earlier concurrent failure is observed; this
-  does not fence every possible race after audit append or across processes.
+  and again after reservation finalization, revoking a known token if a concurrent
+  failure is observed; this does not fence every possible race or across processes.
   An independent supervisor must stop service and investigate storage
   failure before restart; do not rely on it for cross-process containment.
   Broker factories
