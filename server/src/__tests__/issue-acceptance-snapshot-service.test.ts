@@ -973,15 +973,17 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     cleanups.push(async () => { await db.$client.end(); });
     const issueId = randomUUID();
     const docId = randomUUID();
+    const revisionId = randomUUID();
     await db.insert(companies).values([
       { id: companyA, name: "Company A" },
       { id: companyB, name: "Company B", issuePrefix: "BBB" },
     ]);
     await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
-    await db.insert(documents).values({ id: docId, companyId: companyB, latestBody: "foreign" });
+    await db.insert(documents).values({ id: docId, companyId: companyB, latestBody: "foreign", latestRevisionId: revisionId });
+    await db.insert(documentRevisions).values({ id: revisionId, companyId: companyB, documentId: docId, revisionNumber: 1, body: "foreign" });
     await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
     await expect(documentService(db).upsertIssueDocument({
-      issueId, key: "acceptance-scenarios", format: "markdown", body: "changed",
+      issueId, key: "acceptance-scenarios", format: "markdown", body: "changed", baseRevisionId: revisionId,
     })).rejects.toThrow();
     const [foreign] = await db.select().from(documents).where(eq(documents.id, docId));
     expect(foreign!.latestBody).toBe("foreign");
