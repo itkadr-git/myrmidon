@@ -65,7 +65,7 @@ describe("myrmidon(OPE-12932) findRunScopedGatewayKeyRef", () => {
 
     const ref = await findRunScopedGatewayKeyRef({} as never, COMPANY_ID, AGENT_ID, ENV_WITH_KEY_ENV);
 
-    expect(getByNameMock).toHaveBeenCalledWith(COMPANY_ID, `llm-gateway-key-${AGENT_ID}`);
+    expect(getByNameMock).toHaveBeenCalledWith(COMPANY_ID, `llm-gateway-run-${AGENT_ID}`);
     expect(ref).toEqual({
       envKey: "MYRMIDON_LLM_API_KEY",
       secretRef: { type: "secret_ref", secretId: SECRET_ID, version: "latest" },

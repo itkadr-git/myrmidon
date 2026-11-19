@@ -27,7 +27,7 @@
 
 import { and, eq, ne } from "drizzle-orm";
 import { agents, type Db } from "@myrmidon/db";
-import { agentKeySecretName, isAgentKeySecretName } from "@myrmidon/shared";
+import { runKeySecretName } from "../litellm-keys/run-keys.js";
 import { secretService } from "../../services/index.js";
 import { cardUsesLlmGateway } from "../bot-containers/profile-input.js";
 
@@ -191,23 +191,18 @@ function readVersion(value: unknown): number | "latest" | null {
 }
 
 /**
- * myrmidon(OPE-12932 KEY-TTL): the run-scoped secret_ref for an agent's
- * managed gateway key, for the run env. Returns null when the agent does not
- * hold a managed key (nothing bound, foreign settings) — the run simply gets
- * no key reference, like before. The lookup never reads the key value: the
- * run env carries the reference, and the secrets service resolves it once at
- * dispatch (audited, masked), so the raw key never enters the compiled config
- * or profile.
+ * The run-owned secret_ref for the current heartbeat, if it exists. The
+ * lookup never reads the key value; expiry and deletion make stale refs fail.
  */
 export async function findRunScopedGatewayKeyRef(
   db: Db,
   companyId: string,
-  agentId: string,
+  runId: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<RunScopedGatewayKeyRef | null> {
   const settings = readGatewayBotKeySettings(env);
   if (!settings.keyEnv) return null;
-  const secret = await secretService(db).getByName(companyId, agentKeySecretName({ agentId }));
+  const secret = await secretService(db).getByName(companyId, runKeySecretName(runId));
   if (!secret || secret.status !== "active" || secret.scope !== "company") return null;
   return {
     envKey: settings.keyEnv,
@@ -216,22 +211,16 @@ export async function findRunScopedGatewayKeyRef(
 }
 
 /**
- * myrmidon(OPE-12932 KEY-TTL): deletes the agent's managed gateway key secret,
- * which revokes the run-scoped projection with it — the next resolution of a
- * stale run ref fails with `secret_deleted` instead of authenticating. Best
- * effort by design: a missing secret (never created, already revoked) is
- * success, and a provider outage must not fail the run that is finishing.
- * Returns whether a secret was actually deleted.
+ * Deletes only the run-owned secret, leaving any persistent agent key intact.
+ * A missing secret or provider failure is treated as a best-effort no-op.
  */
 export async function removeRunScopedGatewayKeyRef(
   db: Db,
   companyId: string,
-  agentId: string,
-  env: NodeJS.ProcessEnv = process.env,
+  runId: string,
+  _env: NodeJS.ProcessEnv = process.env,
 ): Promise<boolean> {
-  const settings = readGatewayBotKeySettings(env);
-  const secretName = agentKeySecretName({ agentId });
-  if (!isAgentKeySecretName(secretName)) return false;
+  const secretName = runKeySecretName(runId);
   const secrets = secretService(db);
   const secret = await secrets.getByName(companyId, secretName).catch(() => null);
   if (!secret) return false;

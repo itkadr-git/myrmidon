@@ -27934,7 +27934,7 @@ export function heartbeatService(
       }
       const runScopedGatewayKeyRef =
         agent.adapterType === "hermes_gateway"
-          ? await findRunScopedGatewayKeyRef(db, agent.companyId, agent.id).catch(() => null)
+          ? await findRunScopedGatewayKeyRef(db, agent.companyId, run.id).catch(() => null)
           : null;
       const runScopedSecretEnv = runScopedGatewayKeyRef
         ? { [runScopedGatewayKeyRef.envKey]: runScopedGatewayKeyRef.secretRef }
