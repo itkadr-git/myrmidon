@@ -161,6 +161,15 @@ secret management, least privilege and key rotation.
   every issuer sharing the store before recovery because it also revokes active
   tokens. A successful upstream revoke followed by a failed database commit can
   require manual reconciliation.
+- The audit and replay anchors do not authenticate the credential database. After a
+  completed issuance, restoring an older valid credential database can erase both
+  the retained token and its reservation while the audit head still matches. On
+  restart recovery then sees no token to revoke and may allow issuance. The
+  characterization in `credential-rollback.test.mjs` demonstrates this gap; it is
+  not a passing containment criterion. Independent durable binding of credential
+  state to issuance/revocation transitions and crash-safe reconciliation are needed
+  before this prototype can be considered for live use. Do not restore or replace
+  the credential database to recover service.
 - Native GitHub issuance response bodies are capped at 128 KiB and an oversized
   stream is cancelled. Rejection remains ambiguous: the pre-existing issuance
   fence stays in place because GitHub may already have created a token. Injected
