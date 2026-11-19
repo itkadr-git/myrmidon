@@ -3,7 +3,8 @@ const API = 'https://api.github.com';
 // The transport, signing key and policy are supplied by the server, never by callers.
 export function createInstallationClient({ installationId, repositoryId, permissions, appJwt, request = fetch }) {
   if (!/^[1-9][0-9]*$/.test(installationId) || !Number.isSafeInteger(repositoryId) || repositoryId <= 0 || !permissions || !Object.keys(permissions).length || Object.values(permissions).some(value => !['read', 'write'].includes(value)) || typeof appJwt !== 'function') throw new Error('invalid installation policy');
-  const body = JSON.stringify({ repository_ids: [repositoryId], permissions: { ...permissions } });
+  const fixedPermissions = { ...permissions };
+  const body = JSON.stringify({ repository_ids: [repositoryId], permissions: fixedPermissions });
   return {
     async issue() {
       const jwt = await appJwt();
@@ -13,10 +14,10 @@ export function createInstallationClient({ installationId, repositoryId, permiss
       if (!response.ok) throw new Error('installation token issuance failed');
       const result = await response.json();
       if (typeof result.token !== 'string' || !result.token) throw new Error('invalid installation response');
-      const allowedPermissions = { ...permissions, metadata: 'read' };
+      const allowedPermissions = { ...fixedPermissions, metadata: 'read' };
       const scopeValid = result.permissions && typeof result.permissions === 'object' && !Array.isArray(result.permissions)
         && Object.entries(result.permissions).every(([name, value]) => allowedPermissions[name] === value)
-        && Object.entries(permissions).every(([name, value]) => result.permissions[name] === value)
+        && Object.entries(fixedPermissions).every(([name, value]) => result.permissions[name] === value)
         && Array.isArray(result.repositories) && result.repositories.length === 1 && result.repositories[0]?.id === repositoryId;
       if (!scopeValid || typeof result.expires_at !== 'string' || !Number.isFinite(Date.parse(result.expires_at)) || Date.parse(result.expires_at) <= Date.now()) {
         await this.revoke(result.token);
