@@ -19,12 +19,21 @@ CREATE TABLE "issue_acceptance_epochs" (
   "issue_id" uuid PRIMARY KEY,
   "epoch" bigint NOT NULL DEFAULT 0
 );--> statement-breakpoint
-CREATE OR REPLACE FUNCTION "bump_issue_acceptance_epoch"("p_issue_id" uuid) RETURNS void AS $bump$
+CREATE OR REPLACE FUNCTION "bump_issue_acceptance_epoch_internal"("p_issue_id" uuid) RETURNS void AS $bump$
 BEGIN
   INSERT INTO "issue_acceptance_epochs" ("issue_id", "epoch")
   VALUES ("p_issue_id", 1)
   ON CONFLICT ("issue_id") DO UPDATE
   SET "epoch" = "issue_acceptance_epochs"."epoch" + 1;
+END;
+$bump$ LANGUAGE plpgsql;--> statement-breakpoint
+-- Explicit writers lock the issue row; stale repeatable-read writers abort.
+CREATE OR REPLACE FUNCTION "bump_issue_acceptance_epoch"("p_issue_id" uuid) RETURNS void AS $bump$
+BEGIN
+  UPDATE "issues" SET "updated_at" = "updated_at" WHERE "id" = "p_issue_id";
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'cannot bump acceptance epoch for missing issue %', "p_issue_id";
+  END IF;
 END;
 $bump$ LANGUAGE plpgsql;--> statement-breakpoint
 CREATE OR REPLACE FUNCTION "trg_issue_acceptance_epoch_monotonic"() RETURNS trigger AS $trg$
@@ -60,9 +69,9 @@ CREATE TRIGGER "issue_acceptance_epoch_undelete_trg"
 CREATE OR REPLACE FUNCTION "trg_issues_acceptance_epoch"() RETURNS trigger AS $trg$
 BEGIN
   IF TG_OP = 'INSERT' THEN
-    PERFORM "bump_issue_acceptance_epoch"(NEW."id");
+    PERFORM "bump_issue_acceptance_epoch_internal"(NEW."id");
   ELSIF TG_OP = 'UPDATE' THEN
-    PERFORM "bump_issue_acceptance_epoch"(NEW."id");
+    PERFORM "bump_issue_acceptance_epoch_internal"(NEW."id");
   END IF;
   RETURN NULL;
 END;
@@ -74,19 +83,19 @@ CREATE OR REPLACE FUNCTION "trg_issue_documents_acceptance_epoch"() RETURNS trig
 BEGIN
   IF TG_OP = 'INSERT' THEN
     IF NEW."key" = 'acceptance-scenarios' THEN
-      PERFORM "bump_issue_acceptance_epoch"(NEW."issue_id");
+      PERFORM "bump_issue_acceptance_epoch_internal"(NEW."issue_id");
     END IF;
   ELSIF TG_OP = 'UPDATE' THEN
     IF OLD."key" = 'acceptance-scenarios' OR NEW."key" = 'acceptance-scenarios' THEN
       -- A transfer bumps both sides, exactly once each when they differ.
       IF OLD."issue_id" IS DISTINCT FROM NEW."issue_id" THEN
-        PERFORM "bump_issue_acceptance_epoch"(OLD."issue_id");
+        PERFORM "bump_issue_acceptance_epoch_internal"(OLD."issue_id");
       END IF;
-      PERFORM "bump_issue_acceptance_epoch"(NEW."issue_id");
+      PERFORM "bump_issue_acceptance_epoch_internal"(NEW."issue_id");
     END IF;
   ELSE
     IF OLD."key" = 'acceptance-scenarios' THEN
-      PERFORM "bump_issue_acceptance_epoch"(OLD."issue_id");
+      PERFORM "bump_issue_acceptance_epoch_internal"(OLD."issue_id");
     END IF;
   END IF;
   RETURN NULL;
@@ -105,7 +114,7 @@ BEGIN
     AND "key" = 'acceptance-scenarios'
   LIMIT 1;
   IF "v_issue_id" IS NOT NULL THEN
-    PERFORM "bump_issue_acceptance_epoch"("v_issue_id");
+    PERFORM "bump_issue_acceptance_epoch_internal"("v_issue_id");
   END IF;
   RETURN NULL;
 END;
@@ -125,7 +134,7 @@ BEGIN
     WHERE "d"."id" = NEW."document_id" AND "i"."key" = 'acceptance-scenarios'
     LIMIT 1;
     IF "v_new_issue_id" IS NOT NULL THEN
-      PERFORM "bump_issue_acceptance_epoch"("v_new_issue_id");
+      PERFORM "bump_issue_acceptance_epoch_internal"("v_new_issue_id");
     END IF;
   ELSIF TG_OP = 'UPDATE' THEN
     -- A revision moved between documents bumps both owners, exactly once
@@ -143,11 +152,11 @@ BEGIN
     LIMIT 1;
     IF "v_old_issue_id" IS DISTINCT FROM "v_new_issue_id" THEN
       IF "v_old_issue_id" IS NOT NULL THEN
-        PERFORM "bump_issue_acceptance_epoch"("v_old_issue_id");
+        PERFORM "bump_issue_acceptance_epoch_internal"("v_old_issue_id");
       END IF;
     END IF;
     IF "v_new_issue_id" IS NOT NULL THEN
-      PERFORM "bump_issue_acceptance_epoch"("v_new_issue_id");
+      PERFORM "bump_issue_acceptance_epoch_internal"("v_new_issue_id");
     END IF;
   ELSE
     SELECT "i"."issue_id" INTO "v_old_issue_id"
@@ -156,7 +165,7 @@ BEGIN
     WHERE "d"."id" = OLD."document_id" AND "i"."key" = 'acceptance-scenarios'
     LIMIT 1;
     IF "v_old_issue_id" IS NOT NULL THEN
-      PERFORM "bump_issue_acceptance_epoch"("v_old_issue_id");
+      PERFORM "bump_issue_acceptance_epoch_internal"("v_old_issue_id");
     END IF;
   END IF;
   RETURN NULL;
