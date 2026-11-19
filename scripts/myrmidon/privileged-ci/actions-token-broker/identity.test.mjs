@@ -38,6 +38,12 @@ test('rejects an untrusted caller workflow, subject or actor', async () => {
   await assert.rejects(verify(jwt({ ...claims, workflow_ref: undefined })));
 });
 
+test('rejects nonnumeric actor identity even when policy matches', async () => {
+  const invalidPolicy = { ...policy, actor_id: 'not-numeric' };
+  const invalidClaims = { ...claims, actor_id: 'not-numeric' };
+  await assert.rejects(verifyIdentity(jwt(invalidClaims), { policy: invalidPolicy, loadKeys: async () => [jwk], claimOnce: async () => true, now }));
+});
+
 test('rejects excessively long-lived or stale signed identities', async () => {
   const verify = token => verifyIdentity(token, { policy, loadKeys: async () => [jwk], claimOnce: async () => true, now });
   await assert.rejects(verify(jwt({ ...claims, exp: now + 365 * 86400 })));
