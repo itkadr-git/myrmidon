@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
-import { createBroker, createSingleHostBroker, createRecoveredSingleHostBroker } from './broker.mjs';
+import { createBroker, createSingleHostBroker, createRecoveredSingleHostBroker, createSupervisedSingleHostBroker } from './broker.mjs';
 import { createRecoveredSecureServer } from './tls.mjs';
 import { createCredentialStore } from './store.mjs';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -17,6 +17,28 @@ function jwt(jti, overrides = {}) {
   const input = [ { alg: 'RS256', kid: 'fixture' }, claims ].map(x => Buffer.from(JSON.stringify(x)).toString('base64url')).join('.');
   return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
 }
+
+test('supervised broker retries recovery while retaining exclusive ownership before serving', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-supervised-'));
+  let revokes = 0, delays = 0;
+  const alerts = [];
+  const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'), credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32), installation: { issue: async () => ({ token: 'fixture' }), revoke: async () => { if (++revokes === 1) throw new Error('offline'); } }, audit: async () => {}, alert: async event => alerts.push(event) };
+  try {
+    const initial = createSingleHostBroker(options);
+    await initial.exchange(jwt('supervisor-initial'));
+    initial.close();
+    const recovered = await createSupervisedSingleHostBroker({ ...options, delay: async () => {
+      delays++;
+      assert.throws(() => createSingleHostBroker(options), /exclusive/);
+    } });
+    try {
+      assert.equal(revokes, 2);
+      assert.equal(delays, 1);
+      assert.deepEqual(alerts, ['credential_recovery_failed']);
+      await recovered.exchange(jwt('supervisor-recovered'));
+    } finally { recovered.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('recovery refuses to revoke credentials while another broker owns the store', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-exclusive-'));
