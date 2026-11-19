@@ -117,22 +117,14 @@ describe("myrmidon(OPE-12932) removeRunScopedGatewayKeyRef", () => {
     expect(removeMock).not.toHaveBeenCalled();
   });
 
-  it("never deletes a foreign (operator-managed shared) secret name", async () => {
-    // agentKeySecretName always derives the managed name, so simulate the
-    // foreign-name guard by pointing getByName at the shared secret instead:
-    // the derived name is managed, so this exercises the happy path rather
-    // than the guard; the guard itself is covered by the name predicate test
-    // in the shared package (isAgentKeySecretName).
-    getByNameMock.mockResolvedValue(null);
-    expect(
-      await removeRunScopedGatewayKeyRef(
-        {} as never,
-        COMPANY_ID,
-        AGENT_ID,
-        ENV_WITH_KEY_ENV,
-      ),
-    ).toBe(false);
-    expect(removeMock).not.toHaveBeenCalled();
+  it("does not delete the persistent agent key when cleaning up a run", async () => {
+    getByNameMock.mockImplementation(async (_companyId: string, name: string) =>
+      name === `llm-gateway-key-${AGENT_ID}`
+        ? { id: SECRET_ID, status: "active", scope: "company" }
+        : null,
+    );
+    await removeRunScopedGatewayKeyRef({} as never, COMPANY_ID, AGENT_ID, ENV_WITH_KEY_ENV);
+    expect(removeMock).not.toHaveBeenCalledWith(SECRET_ID);
   });
 });
 
