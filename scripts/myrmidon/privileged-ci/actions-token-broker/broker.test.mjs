@@ -283,6 +283,43 @@ test('real lost upstream HTTP response fences issuance after SQLite and anchor r
   } finally { anchor.close(); await new Promise(resolve => server.close(resolve)); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('lost upstream response survives credential-store restart and recovery cannot revoke an unknown token', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-http-durable-loss-'));
+  const auditPath = join(dir, 'audit.sqlite'), anchorPath = join(dir, 'anchor.sqlite');
+  const credentialPath = join(dir, 'credentials.sqlite'), auditKey = randomBytes(32), credentialKey = randomBytes(32);
+  provisionSqliteAnchor(anchorPath);
+  let anchor = createSqliteAnchor(anchorPath), store = createCredentialStore(credentialPath, credentialKey);
+  let creates = 0, revokes = 0;
+  const server = createServer((req, res) => { creates++; req.resume(); req.on('end', () => res.socket.destroy()); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const installation = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'fixture',
+      request: (_url, options) => fetch(`http://127.0.0.1:${server.address().port}/`, options) });
+    const audit = await createAsyncAuthenticatedAudit(auditPath, auditKey, anchor);
+    const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store, anchoredIssuance: true,
+      installation, audit: event => audit.record(event), alert: async () => {} });
+    await assert.rejects(broker.exchange(jwt('durable-http-loss')));
+    assert.equal(creates, 1);
+    assert.equal((await store.pendingIssuances()).length, 1);
+    assert.ok((await store.pendingAlerts()).includes('issuance_ambiguous'));
+    store.close(); audit.close(); anchor.close();
+
+    store = createCredentialStore(credentialPath, credentialKey);
+    anchor = createSqliteAnchor(anchorPath);
+    const { createRecoveryWorker } = await import('./recovery-worker.mjs');
+    const alerts = [];
+    const worker = createRecoveryWorker({ store, anchoredPending: true,
+      revoke: async () => { revokes++; }, alert: async event => alerts.push(event) });
+    const result = await worker.runOnce();
+    assert.equal(result.pending, true);
+    assert.equal(result.failed, 0);
+    assert.equal(revokes, 0);
+    assert.ok(alerts.includes('issuance_ambiguous'));
+    assert.equal((await store.pendingIssuances()).length, 1);
+    await assert.rejects(createAsyncAuthenticatedAudit(auditPath, auditKey, anchor), /pending issuance/);
+  } finally { store.close(); anchor.close(); await new Promise(resolve => server.close(resolve)); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('storage and revoke failures leave independently anchored issuance fenced after restart', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-storage-revoke-anchor-'));
   const auditPath = join(dir, 'audit.sqlite'), anchorPath = join(dir, 'anchor.sqlite'), auditKey = randomBytes(32);
