@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { verifyIdentity } from './identity.mjs';
 import { createReplayStore } from './replay.mjs';
+import { createAnchoredReplayStore } from './anchored-replay.mjs';
 import { createCredentialStore } from './store.mjs';
 import { acquireExclusiveStore } from './exclusive.mjs';
 import { createRecoverySupervisor } from './recovery-supervisor.mjs';
@@ -12,13 +13,20 @@ export async function createSupervisedSingleHostBroker({ credentialPath, credent
   let store;
   try {
     store = createCredentialStore(credentialPath, credentialKey);
+    let replay;
     const supervisor = createRecoverySupervisor({
       store, delay, alert: options.alert,
       recover: async () => ({ ...await store.revokeRetained(token => options.installation.revoke(token)), pending: (await store.pendingIssuances()).length > 0, alertFailed: false }),
-      start: async () => createSingleHostBrokerWithStore({ ...options, store }),
+      start: async () => {
+        if (options.anchoredIssuance || options.replayAnchor || options.replayKey) {
+          replay = await createAnchoredReplayStore(options.replayPath, options.replayKey, options.replayAnchor);
+        }
+        return createSingleHostBrokerWithStore({ ...options, store, replay });
+      },
     });
-    const broker = await supervisor.run();
-    return { ...broker, close: () => { broker.assertIdle(); try { broker.close(); store.close(); } finally { release(); } } };
+    let broker;
+    try { broker = await supervisor.run(); } catch (error) { replay?.close(); throw error; }
+    return { ...broker, close: () => { broker.assertIdle(); try { broker.close(); replay?.close(); store.close(); } finally { release(); } } };
   } catch (error) {
     try { store?.close(); } finally { release(); }
     throw error;
@@ -34,22 +42,22 @@ export function createSingleHostBroker({ store, ...options }) {
   } catch (error) { release(); throw error; }
 }
 
-function createSingleHostBrokerWithStore({ replayPath, credentialPath, credentialKey, store: suppliedStore, ...options }) {
+function createSingleHostBrokerWithStore({ replayPath, credentialPath, credentialKey, store: suppliedStore, replay: suppliedReplay, ...options }) {
   if (typeof replayPath !== 'string' || !replayPath || replayPath === ':memory:' || replayPath.startsWith('file:')) throw new Error('persistent replay path required');
-  const replay = createReplayStore(replayPath);
+  const replay = suppliedReplay ?? createReplayStore(replayPath);
   let store;
   try {
     store = suppliedStore ?? createCredentialStore(credentialPath, credentialKey);
     if (!['reserveIssuance', 'resolveIssuance', 'pendingIssuances'].every(name => typeof store[name] === 'function')) throw new Error('durable issuance store required');
   } catch (error) {
-    replay.close();
+    if (!suppliedReplay) replay.close();
     throw error;
   }
   // A restarted unsupervised broker must not issue until retained credentials
   // have gone through recovery; owner revocation remains available.
   const recoveryRequired = store.hasRetainedCredentials();
   const broker = createBroker({ ...options, store, recoveryRequired, claimOnce: replay.claimOnce });
-  return { ...broker, close: () => { broker.shutdown(); replay.close(); if (!suppliedStore) store.close(); } };
+  return { ...broker, close: () => { broker.shutdown(); if (!suppliedReplay) replay.close(); if (!suppliedStore) store.close(); } };
 }
 
 // Call only while issuance is quiesced across all processes sharing the store.

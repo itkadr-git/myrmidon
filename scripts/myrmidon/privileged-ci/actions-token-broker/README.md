@@ -18,17 +18,14 @@ secret management, least privilege and key rotation.
 
 ## Current gaps / remaining gates
 
-- The single-host broker factory wires replay protection to a persistent SQLite
-  database. All broker processes must share that local database on a supported
-  filesystem; this does not support separate hosts. Replay state is not protected
-  by the audit anchor: deleting or restoring the replay database permits reuse of
-  an unexpired signed identity, even when the audit and anchor remain intact.
-  A rollback-resistant replay design is required before any live use; an anchored
-  audit head alone does not satisfy this requirement. `anchored-replay.mjs` is an
-  experimental append-only anchored replay store, tested for rollback and suffix
-  deletion but not wired into the broker; it requires its own independently
-  provisioned anchor, bounded retention and further security review. It is not a
-  mitigation for the running broker. The factory wires an
+- The supervised audited TLS path requires a separate replay key and independent
+  replay anchor and verifies the anchored replay log before serving. A rollback,
+  suffix deletion, unavailable anchor or interrupted anchor commit fails closed.
+  The unanchored single-host and synchronous helpers remain vulnerable to replay
+  database rollback and must not be used for live service. The append-only replay
+  log has no bounded retention, and the anchor needs a separately administered
+  failure domain and further security review. Replay startup failures still require
+  independent process monitoring and alerting. The factory wires an
   experimental AES-GCM SQLite credential store when a credential path and key
   are provided. Its single-host locking and key custody need independent review.
   An experimental `createRecoveryWorker` provides a single quiesced recovery
