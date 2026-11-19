@@ -369,6 +369,23 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
       expect(issue?.status).toBe("in_progress");
     });
 
+    it("the recovery sweep restores legacy continuation blocks and wakes the assignee", async () => {
+      const ctx = await seedCompanyAgentIssue("blocked");
+      await db.update(issues).set({ blockerMetadata: {
+        blockReason: "human_decision", externalRef: `continuation_cap:${ctx.issueId}`,
+      } }).where(eq(issues.id, ctx.issueId));
+      await seedContinuationRun({ ...ctx, minutesAgo: 90 });
+      await seedContinuationRun({ ...ctx, minutesAgo: 80 });
+      await seedContinuationRun({ ...ctx, minutesAgo: 70 });
+
+      await heartbeat.reconcileStrandedAssignedIssues({ issueIds: [ctx.issueId] });
+
+      const [issue] = await db.select().from(issues).where(eq(issues.id, ctx.issueId));
+      expect(issue?.status).toBe("in_progress");
+      expect(issue?.blockerMetadata).toBeNull();
+      expect(await runCount(ctx.agentId)).toBe(4);
+    });
+
     it("admits a retry after the cooldown even without new evidence", async () => {
       const ctx = await seedCompanyAgentIssue("in_progress");
       await seedContinuationRun({ ...ctx, minutesAgo: 90 });

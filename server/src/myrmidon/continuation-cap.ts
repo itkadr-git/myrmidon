@@ -20,9 +20,8 @@
 //      `in_review`, and the cap does not count it.
 //   2. Real cap: after MAX_CONTINUATIONS_WITHOUT_EXTERNAL_INPUT succeeded
 //      continuation runs of the same (agent, issue) with no external input
-//      between them, no further continuation is enqueued and the issue is
-//      moved to `blocked` with a system comment until an external event
-//      arrives.
+//      between them, further continuations are deferred for a cooldown; the
+//      issue stays actionable and external evidence resets the count.
 //
 // "External input" reuses the movement notion of the cooling guard
 // (wake-task-guard.ts `isRealTaskMovement`): a comment or a movement activity
