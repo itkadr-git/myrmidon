@@ -483,6 +483,21 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(ssh.hasExecuted(/sudo ufw (allow|default|--force enable|disable)/)).toBe(false);
   });
 
+  it("does not mutate the firewall when reading its original state times out", async () => {
+    const ssh = new MockSshExecutor({ timeoutCommands: [/^sudo ufw status$/] });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-firewall-status-timeout", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(ssh.hasExecuted("sudo ufw status")).toBe(true);
+    expect(ssh.hasExecuted(/sudo ufw (allow|default|--force enable|disable)/)).toBe(false);
+  });
+
   it("rejects contradictory firewall status before attempting hardening", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { stdout: "Status: active\nStatus: inactive\n", exitCode: 0 });
