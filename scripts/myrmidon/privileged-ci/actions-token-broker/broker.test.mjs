@@ -20,6 +20,21 @@ function jwt(jti, overrides = {}) {
   return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
 }
 
+test('restart without recovery refuses issuance while a previous credential is retained', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-restart-retained-'));
+  let issued = 0;
+  const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'), credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32),
+    installation: { issue: async () => { issued++; return { token: 'fixture' }; }, revoke: async () => {} }, audit: async () => {}, alert: async () => {} };
+  try {
+    const first = createSingleHostBroker(options);
+    await first.exchange(jwt('restart-retained-first'));
+    first.close();
+    const second = createSingleHostBroker(options);
+    try { await assert.rejects(second.exchange(jwt('restart-retained-second'))); } finally { second.close(); }
+    assert.equal(issued, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('lost storage-failure finalization acknowledgement fences later issuance when alert storage is down', async () => {
   let pending = false, issued = 0;
   const store = {
