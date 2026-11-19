@@ -34,6 +34,13 @@ test('lost issuance response blocks further issuance across restart', async () =
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('single-host broker rejects a supplied store without durable issuance reservations', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-unsafe-store-'));
+  try {
+    assert.throws(() => createSingleHostBroker({ replayPath: join(dir, 'replay.sqlite'), store: { put: async () => {} } }), /durable issuance/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('single-host broker persists replay claims across broker restarts', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-replay-'));
   const path = join(dir, 'replay.sqlite');
