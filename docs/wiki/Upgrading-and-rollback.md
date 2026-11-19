@@ -8,10 +8,10 @@ On a server installed with the one-line command, updating is the same
 command again:
 
 ```sh
-curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.9/install.sh | sudo bash
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.9-rc.13/install.sh | sudo bash -s -- --version myr-v1.6.9-rc.13
 ```
 
-The current release is 1.6.9 ([operator notes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/releases/1.6.9.md)). The installer is available
+The release candidate is 1.6.9-rc.13 ([operator notes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/releases/1.6.9.md)). The installer is available
 from release 1.6.5 onward; `releases/latest/download/install.sh` follows the
 latest stable release, so use the exact RC tag to install a candidate. The
 installer resolves the release, **dumps the database before anything changes**, switches to it and

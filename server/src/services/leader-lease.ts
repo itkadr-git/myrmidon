@@ -113,6 +113,7 @@ export function leaderLeaseService(db: Db, options: LeaderLeaseServiceOptions = 
   const lease = (name: BoardLeaseName, hooks: LeaderLeaseHooks = {}): LeaderLease => {
     const log = hooks.log ?? (() => {});
     let timer: NodeJS.Timeout | null = null;
+    let passInFlight = false;
     let epoch = 0;
     let lostController: AbortController | null = null;
     let ttlMs = defaultTtlMs;
@@ -211,6 +212,8 @@ export function leaderLeaseService(db: Db, options: LeaderLeaseServiceOptions = 
     };
 
     const pass = async () => {
+      if (passInFlight) return;
+      passInFlight = true;
       try {
         if (epoch === 0) {
           const acquired = await acquirePass();
@@ -231,6 +234,8 @@ export function leaderLeaseService(db: Db, options: LeaderLeaseServiceOptions = 
           bootId,
           err: err instanceof Error ? err.message : String(err),
         });
+      } finally {
+        passInFlight = false;
       }
     };
 

@@ -41,6 +41,17 @@ function gitDirOf(git, dir) {
   return r.status === 0 && r.stdout ? r.stdout : null;
 }
 
+/**
+ * True when a linked worktree inherited core.bare=true from its base. That happens
+ * when the base is bare and carries extensions.worktreeConfig=true: git never
+ * writes the admin dir's config.worktree in `worktree add`, so the copy answers
+ * rev-parse but is not a work tree (status, read-tree, checkout all refuse).
+ */
+function isBareWorktree(git, dir) {
+  const r = git(dir, ["rev-parse", "--is-bare-repository"], { allowFail: true });
+  return r.status === 0 && r.stdout === "true";
+}
+
 function commonDirOf(git, dir) {
   const r = git(dir, ["rev-parse", "--git-common-dir"], { allowFail: true });
   return r.status === 0 && r.stdout ? path.resolve(dir, r.stdout) : null;
@@ -77,6 +88,12 @@ function inspectCopy(git, dir, { expectedBranch } = {}) {
   if (!gitDir) return { broken: true, gitDir: null, branch: null, problems: [{ kind: "broken_git", detail: "git cannot read this copy" }] };
   const problems = [];
   for (const op of operationsInProgress(gitDir)) problems.push({ kind: op.kind, detail: op.kind.replace(/_/g, " "), abort: op.abort });
+  if (isBareWorktree(git, dir)) {
+    problems.push({
+      kind: "bare_worktree",
+      detail: "the copy inherits core.bare=true from its base (extensions.worktreeConfig) and is not a work tree",
+    });
+  }
   const unmerged = unmergedPaths(git, dir);
   if (unmerged.length > 0) problems.push({ kind: "unmerged_paths", detail: `${unmerged.length} unresolved path(s)`, count: unmerged.length });
   const head = git(dir, ["symbolic-ref", "--quiet", "--short", "HEAD"], { allowFail: true });
@@ -169,6 +186,10 @@ function recreateWorktree(ctx, git, dir, branch, commonDir) {
   if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
   git(commonDir, ["worktree", "prune"]);
   git(commonDir, ["worktree", "add", dir, branch]);
+  // A base with extensions.worktreeConfig=true hands the recreated copy its
+  // core.bare=true (git does not write config.worktree): undo that, or the copy
+  // is not a work tree again.
+  if (isBareWorktree(git, dir)) git(dir, ["config", "--worktree", "core.bare", "false"]);
 }
 
 /**
@@ -182,7 +203,7 @@ function recreateWorktree(ctx, git, dir, branch, commonDir) {
  */
 function recoverCopy(ctx, git, dir, opts) {
   const { key, expectedBranch = null, explicitBranch = false } = opts;
-  const state = inspectCopy(git, dir, { expectedBranch });
+  let state = inspectCopy(git, dir, { expectedBranch });
   const recovered = [];
   if (state.problems.length === 0) return { action: "ok", recovered, branch: state.branch };
 
@@ -194,6 +215,20 @@ function recoverCopy(ctx, git, dir, opts) {
     fs.renameSync(dir, moved);
     recovered.push({ problem: "broken_git", action: "moved_aside", detail: `unreadable git state; the copy is kept at ${moved}` });
     return { action: "fallthrough", recovered, movedTo: moved };
+  }
+
+  // A copy whose base carries extensions.worktreeConfig=true can inherit
+  // core.bare=true (git never writes the admin dir's config.worktree in
+  // `worktree add`). Refs resolve, but the copy is not a work tree, so nothing
+  // below (status, stash, abort) can run there. Fix the config first, let the
+  // caller materialize the checkout a fresh open would have created, then judge
+  // the copy again. Such a copy is a create that died in finish*: no operation
+  // can be in progress in a non-worktree, and nothing is reset or deleted.
+  if (isBareWorktree(git, dir)) {
+    git(dir, ["config", "--worktree", "core.bare", "false"]);
+    recovered.push({ problem: "bare_worktree", action: "worktree_config_fixed", detail: "wrote core.bare=false to the copy's config.worktree" });
+    if (typeof opts.materialize === "function") opts.materialize(dir);
+    state = inspectCopy(git, dir, { expectedBranch });
   }
 
   const halfWay = state.problems.filter(isHalfWay);
@@ -325,6 +360,7 @@ module.exports = {
   recoveredSummary,
   hasLiveProcess,
   isHalfWay,
+  isBareWorktree,
   commonDirOf,
   IDENTITY,
 };

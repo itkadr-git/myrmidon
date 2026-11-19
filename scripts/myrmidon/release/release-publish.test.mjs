@@ -221,7 +221,7 @@ function sandbox({ runs = [], releases = {}, changelog = CHANGELOG, auditReport 
   // Offline digest simulation for release-body.mjs (the same state shape the
   // real registry probe answers): every component present by default.
   const registryState = {};
-  for (const { repository } of COMPONENTS) registryState[repository] = `sha256:${repository.length}${"d".repeat(63)}`;
+  for (const { repository } of COMPONENTS) registryState[repository] = `sha256:${repository.length.toString(16).padStart(64, "d")}`;
   fs.writeFileSync(path.join(dir, "registry-state.json"), JSON.stringify(registryState));
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   fs.writeFileSync(path.join(dir, "mutations.log"), "");
@@ -1200,8 +1200,8 @@ describe("release-body.mjs: body construction", () => {
       `## changelog-en\n\n### Huge entry\n\n- ${"x".repeat(130000)}\n`,
     );
     const registryState = {
-      myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b",
-      "myrmidon-fleetd": "sha256:c", "myrmidon-hermes": "sha256:d",
+      myrmidon: `sha256:${"a".repeat(64)}`, "myrmidon-dockergate": `sha256:${"b".repeat(64)}`,
+      "myrmidon-fleetd": `sha256:${"c".repeat(64)}`, "myrmidon-hermes": `sha256:${"d".repeat(64)}`,
     };
     fs.writeFileSync(path.join(dir, "registry-state.json"), JSON.stringify(registryState));
     fs.writeFileSync(path.join(dir, "docs/myrmidon/CHANGELOG.md"), "# Changelog\n");
@@ -1229,8 +1229,8 @@ describe("release-body.mjs: body construction", () => {
       `## changelog-en\n\n### ${"Huge heading ".repeat(11000)}\n\n- entry\n`,
     );
     const registryState = {
-      myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b",
-      "myrmidon-fleetd": "sha256:c", "myrmidon-hermes": "sha256:d",
+      myrmidon: `sha256:${"a".repeat(64)}`, "myrmidon-dockergate": `sha256:${"b".repeat(64)}`,
+      "myrmidon-fleetd": `sha256:${"c".repeat(64)}`, "myrmidon-hermes": `sha256:${"d".repeat(64)}`,
     };
     fs.writeFileSync(path.join(dir, "registry-state.json"), JSON.stringify(registryState));
     fs.writeFileSync(path.join(dir, "docs/myrmidon/CHANGELOG.md"), "# Changelog\n");
@@ -1269,7 +1269,7 @@ describe("release-body.mjs: digest resolution (injected fetch)", () => {
       const repo = /\/v2\/itkadr-git\/([^/]+)\//.exec(url)[1];
       return {
         ok: true,
-        headers: { get: () => `sha256:${repo.length}${"c".repeat(63)}` },
+        headers: { get: () => `sha256:${repo.length.toString(16).padStart(64, "c")}` },
       };
     };
     return componentDigests("1.6.0", { fetchImpl }).then(({ rows, missing }) => {
@@ -1284,7 +1284,7 @@ describe("release-body.mjs: digest resolution (injected fetch)", () => {
   });
 
   it("reports the missing components instead of publishing partial digests", () => {
-    const fetchImpl = registryFetch({ myrmidon: "sha256:x", "myrmidon-hermes": "sha256:y" });
+    const fetchImpl = registryFetch({ myrmidon: `sha256:${"a".repeat(64)}`, "myrmidon-hermes": `sha256:${"b".repeat(64)}` });
     return componentDigests("1.6.0", { fetchImpl }).then(({ rows, missing }) => {
       assert.deepEqual(missing, ["dockergate", "fleetd"]);
       assert.equal(rows.length, 2);
@@ -1316,7 +1316,7 @@ describe("release manifest (release-components.json)", () => {
 
   it("an optional bot variant missing from the registry does not refuse the release", () => {
     const state = {
-      myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b", "myrmidon-fleetd": "sha256:c", "myrmidon-hermes": "sha256:d",
+      myrmidon: `sha256:${"a".repeat(64)}`, "myrmidon-dockergate": `sha256:${"b".repeat(64)}`, "myrmidon-fleetd": `sha256:${"c".repeat(64)}`, "myrmidon-hermes": `sha256:${"d".repeat(64)}`,
     };
     return componentDigests("1.6.2", { registryState: state }).then(({ missing, digests }) => {
       assert.deepEqual(missing, []);

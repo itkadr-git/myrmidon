@@ -52,7 +52,7 @@ export async function readSourceVerification(sha, api) {
     // Re-read the run after its jobs: a rerun that started during polling must
     // not let the previous attempt through. Changes are retried next poll.
     const current = await api(`/repos/${repository}/actions/runs/${run.id}`);
-    if (!trustedRun(current, sha, workflow.id) || current.run_attempt !== run.run_attempt) return undefined;
+    if (!trustedRun(current, sha, workflow.id) || current.id !== run.id || current.run_attempt !== run.run_attempt) return undefined;
     return { sha, runId: run.id, attempt: run.run_attempt, jobId: job.id };
   }
   if (job?.status === "completed" || run.status === "completed") {

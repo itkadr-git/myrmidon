@@ -51,6 +51,8 @@ const {
   scanRunnerUnrecognizedWorkspaceFolders,
   scanIdleOpenClones,
   pruneIdleOpenClones,
+  scanTaskClones,
+  assessClone,
   scanReviewerClones,
   pruneReviewerClones,
   isReviewerAgent,
@@ -2667,5 +2669,185 @@ describe("idle clones of open tasks (OPE-13411)", () => {
       const r = await run(["--dry-run", "--root", path.join(tmpDir, "ws"), "--idle-open-hours", "0"]);
       assert.equal(r.status, 2);
     });
+  });
+});
+describe("closed-task scan: bot linked worktrees with container gitdirs (OPE-14907)", () => {
+  const HOUR = 60 * 60 * 1000;
+  const git = (args, cwd) => {
+    const r = subprocess.spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8", env: GIT_ENV });
+    if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+    return r.stdout;
+  };
+
+  // <tmp>/agent/{workspace, hermes/.myrmidon/git-base/o/r.git}; the git-base's origin is the
+  // git:// "server" (the daemon rewrite), so a pushed branch proves against the server.
+  const makeBot = () => {
+    const server = path.join(tmpDir, "server.git");
+    git(["init", "-q", "--bare", "-b", "main", server]);
+    const seed = path.join(tmpDir, "seed");
+    git(["init", "-q", "-b", "main", seed]);
+    fs.writeFileSync(path.join(seed, "f.txt"), "one\n");
+    git(["add", "."], seed);
+    git(["commit", "-q", "-m", "one"], seed);
+    git(["push", "-q", server, "main"], seed);
+    const agent = path.join(tmpDir, "agent");
+    const base = path.join(agent, "hermes/.myrmidon/git-base/o/r.git");
+    fs.mkdirSync(path.dirname(base), { recursive: true });
+    git(["clone", "-q", "--bare", server, base]);
+    const workspace = path.join(agent, "workspace");
+    fs.mkdirSync(workspace, { recursive: true });
+    return { server, agent, base, workspace };
+  };
+
+  // A linked worktree of the git-base on its own pushed-or-not branch; then the `.git` file and
+  // the admin dir's `gitdir` record the CONTAINER paths, as on the bots volume: the host cannot
+  // read the clone without the /bot -> agent-root mapping (direct `git status` dies with
+  // "not a git repository", and the old closed scan returned clones=[] for it).
+  const addLinkedClone = (bot, name, { pushed = true, dirty = false, ageHours = 10 } = {}) => {
+    const dir = path.join(bot.workspace, name);
+    const branch = `task-${name}`;
+    git(["--git-dir", bot.base, "worktree", "add", "-q", "-b", branch, dir, "main"]);
+    fs.writeFileSync(path.join(dir, `${name}.txt`), "work\n");
+    git(["add", "."], dir);
+    git(["commit", "-q", "-m", `work ${name}`], dir);
+    if (pushed) git(["push", "-q", "origin", `${branch}:${branch}`], dir);
+    if (dirty) fs.writeFileSync(path.join(dir, "f.txt"), "changed\n");
+    fs.writeFileSync(path.join(dir, ".git"), `gitdir: /bot/hermes/.myrmidon/git-base/o/r.git/worktrees/${name}\n`);
+    fs.writeFileSync(path.join(bot.base, "worktrees", name, "gitdir"), `/bot/workspace/${name}/.git\n`);
+    age(bot, name, ageHours);
+    return dir;
+  };
+
+  // The clone looks untouched for `hours`: directory, its top-level entries and the worktree's
+  // own HEAD and reflog (the same clock the idle rule ages).
+  const age = (bot, name, hours) => {
+    const dir = path.join(bot.workspace, name);
+    const admin = path.join(bot.base, "worktrees", name);
+    const t = new Date(Date.now() - hours * HOUR);
+    for (const f of [...fs.readdirSync(dir).filter((e) => e !== ".git").map((e) => path.join(dir, e)), path.join(admin, "HEAD"), path.join(admin, "index"), path.join(admin, "logs", "HEAD")]) {
+      try { fs.utimesSync(f, t, t); } catch { /* absent */ }
+    }
+    fs.utimesSync(dir, t, t);
+  };
+
+  const scanClosed = (bot, ttlHours = 6) => scanTaskClones(bot.workspace, Date.now(), ttlHours);
+
+  it("scan and assess a clean pushed linked worktree whose gitdir is a container path", () => {
+    const bot = makeBot();
+    const dir = addLinkedClone(bot, "OPE-1");
+    const clones = scanClosed(bot);
+    assert.equal(clones.length, 1);
+    assert.equal(clones[0].path, dir);
+    const c = assessClone(clones[0]);
+    assert.equal(c.clean, true);
+    assert.equal(c.stash, false);
+    assert.equal(c.alternates, false);
+    assert.equal(c.pushed, true);
+    assert.equal(c.safeToRemove, true);
+    assert.equal(c.reason, "clean-pushed");
+    // Mapped: the removal can free the clone and exactly its own admin dir (removeWorktreeClone).
+    assert.equal(c.adminDir, path.join(bot.base, "worktrees", "OPE-1"));
+    assert.equal(c.commonDir, bot.base);
+  });
+
+  it("still scans an ordinary .git-directory clone, unchanged", () => {
+    const bot = makeBot();
+    const dir = path.join(bot.workspace, "OPE-2");
+    git(["clone", "-q", bot.server, dir]);
+    const t = new Date(Date.now() - 10 * HOUR);
+    fs.utimesSync(dir, t, t);
+    const clones = scanClosed(bot);
+    assert.equal(clones.length, 1);
+    assert.equal(clones[0].path, dir);
+    assert.equal(clones[0].adminDir, undefined);
+    const c = assessClone(clones[0]);
+    assert.equal(c.safeToRemove, true);
+    assert.equal(c.reason, "clean-pushed");
+  });
+
+  it("a dirty linked worktree is scanned but held for archive, not removal", () => {
+    const bot = makeBot();
+    addLinkedClone(bot, "OPE-3", { dirty: true });
+    const clones = scanClosed(bot);
+    assert.equal(clones.length, 1);
+    const c = assessClone(clones[0]);
+    assert.equal(c.clean, false);
+    assert.equal(c.pushed, false);
+    assert.equal(c.safeToRemove, false);
+    assert.equal(c.reason, "unsafe-archive");
+  });
+
+  it("an unpushed linked worktree is scanned but held for archive, not removal", () => {
+    const bot = makeBot();
+    addLinkedClone(bot, "OPE-4", { pushed: false });
+    const clones = scanClosed(bot);
+    assert.equal(clones.length, 1);
+    const c = assessClone(clones[0]);
+    assert.equal(c.clean, true);
+    assert.equal(c.pushed, false);
+    assert.equal(c.safeToRemove, false);
+    assert.equal(c.reason, "unsafe-archive");
+  });
+
+  it("keeps mapped paths through the production-like git wrapper, plan, archive and removal", async () => {
+    const bot = makeBot();
+    const clean = addLinkedClone(bot, "OPE-1");
+    const dirty = addLinkedClone(bot, "OPE-2", { dirty: true });
+    const bin = path.join(tmpDir, "bin");
+    fs.mkdirSync(bin);
+    // Like the deployed launcher, map the cwd's container gitfile even without caller env.
+    fs.writeFileSync(path.join(bin, "git"), `#!/bin/sh\nif [ -z "$GIT_DIR" ] && [ -f "$PWD/.git" ]; then\n  IFS= read -r pointer < "$PWD/.git"\n  case "$pointer" in 'gitdir: /bot/'*) export GIT_DIR="$TEST_AGENT_ROOT/\${pointer#gitdir: /bot/}" GIT_WORK_TREE="$PWD";; esac\nfi\nexec /usr/bin/git "$@"\n`, { mode: 0o755 });
+    const board = createServer((req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ status: "done" }));
+    });
+    await new Promise((resolve) => board.listen(0, "127.0.0.1", resolve));
+    const run = (mode) => new Promise((resolve, reject) => {
+      const child = subprocess.spawn(process.execPath, [path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs"), mode, "--root", bot.workspace, "--lock", path.join(tmpDir, "lock"), "--journal", path.join(tmpDir, "journal"), "--env", path.join(tmpDir, "none"), "--archive-root", path.join(tmpDir, "archives")], {
+        env: { ...GIT_ENV, PATH: `${bin}:${process.env.PATH}`, TEST_AGENT_ROOT: bot.agent, BOARD_API_URL: `http://127.0.0.1:${board.address().port}`, PAPERCLIP_API_KEY: "", MYRMIDON_HOST_GC_DOCKER: "/nonexistent-docker" },
+      });
+      let stdout = "", stderr = "";
+      child.stdout.on("data", (s) => { stdout += s; });
+      child.stderr.on("data", (s) => { stderr += s; });
+      child.on("error", reject);
+      child.on("close", (status) => resolve({ status, stdout, stderr }));
+    });
+    try {
+      const dry = await run("--dry-run");
+      assert.equal(dry.status, 0, dry.stderr);
+      const clones = JSON.parse(dry.stdout).plan.clones;
+      for (const [name, action] of [["OPE-1", "remove"], ["OPE-2", "archive-remove"]]) {
+        const item = clones.find((c) => c.name === name);
+        assert.ok(item, `missing ${name}`);
+        assert.equal(item.adminDir, path.join(bot.base, "worktrees", name));
+        assert.equal(item.commonDir, bot.base);
+        assert.equal(item.action, action);
+      }
+      assert.ok(fs.existsSync(clean) && fs.existsSync(dirty));
+      const apply = await run("--apply");
+      assert.equal(apply.status, 0, apply.stderr);
+      const events = fs.readFileSync(path.join(tmpDir, "journal"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      assert.ok(events.some((item) => item.event === "clone-archived" && item.path === dirty), JSON.stringify(events));
+      assert.equal(fs.existsSync(clean), false);
+      assert.equal(fs.existsSync(dirty), false);
+      assert.equal(fs.existsSync(path.join(bot.base, "worktrees", "OPE-1")), false);
+      assert.equal(fs.existsSync(path.join(bot.base, "worktrees", "OPE-2")), false);
+    } finally {
+      await new Promise((resolve) => board.close(resolve));
+    }
+  });
+
+  it("enters the closed-task pipeline for done and cancelled issues", async () => {
+    const bot = makeBot();
+    addLinkedClone(bot, "OPE-1");
+    for (const status of ["done", "cancelled"]) {
+      const { candidates } = await filterClosedTaskClones(scanClosed(bot), {
+        baseUrl: "http://board",
+        fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ status }) }),
+      });
+      assert.equal(candidates.length, 1);
+      assert.equal(candidates[0].identifier, "OPE-1");
+      assert.equal(candidates[0].issueStatus, status);
+    }
   });
 });

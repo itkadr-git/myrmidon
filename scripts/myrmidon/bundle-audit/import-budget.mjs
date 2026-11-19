@@ -31,9 +31,13 @@ function regexEnd(source, start) {
   return null;
 }
 
-function tokens(source) {
+function tokens(source, allowHashbang = false) {
   const result = [];
   let i = 0;
+  if (allowHashbang && source.startsWith('#!')) {
+    const end = source.search(/[\r\n\u2028\u2029]/);
+    i = end < 0 ? source.length : end;
+  }
   while (i < source.length) {
     const c = source[i];
     if (/\s/.test(c)) { i++; continue; }
@@ -133,7 +137,7 @@ function tokens(source) {
 }
 
 function imports(source) {
-  const t = tokens(source), found = [];
+  const t = tokens(source, true), found = [];
   const value = i => t[i]?.value;
   const literal = i => t[i]?.type === 'string';
   const add = (i, kind) => { if (literal(i)) found.push({ specifier: value(i), kind }); };

@@ -8,13 +8,28 @@
 // may be hours away. botd calls this verb when no run is going; a copy with a
 // process whose working directory is inside it is skipped.
 //
-// Only unfinished operations are repaired here (no branch policy: the registry
-// follows branch changes in `open`). The state is saved to refs/myr-ws/recovery/<KEY>
-// before anything is aborted, so no change is lost.
+// Only unfinished operations and bare-inherited copies are repaired here (no
+// branch policy: the registry follows branch changes in `open`). The state is
+// saved to refs/myr-ws/recovery/<KEY> before anything is aborted, so no change
+// is lost.
 
 const fs = require("node:fs");
 const open = require("./open.js");
 const recover = require("./recover.js");
+const sparse = require("./sparse.js");
+
+/**
+ * The checkout a bare-inherited class-E copy never got (its create died in
+ * finish*). Copies that already have a checkout are left alone. A review copy
+ * healed here becomes a normal sparse task copy; review mode re-creates it on
+ * demand (`open --review` warns when reusing).
+ */
+function repairMaterialize(git) {
+  return (wt) => {
+    if (git(wt, ["ls-files"], { allowFail: true }).stdout !== "") return;
+    sparse.checkoutTaskCopy(git, wt);
+  };
+}
 
 /** cli handler: ({ positionals, env }, deps) -> { repaired, skipped, errors, human } */
 async function repair({ positionals = [], env = process.env } = {}, deps = {}) {
@@ -34,13 +49,13 @@ async function repair({ positionals = [], env = process.env } = {}, deps = {}) {
         errors.push({ key: e.key, path: e.path, error: "git cannot read this copy; left untouched" });
         continue;
       }
-      if (!state.problems.some(recover.isHalfWay)) continue;
+      if (!state.problems.some((p) => recover.isHalfWay(p) || p.kind === "bare_worktree")) continue;
       const live = recover.hasLiveProcess(e.path, deps.procRoot);
       if (live !== false) {
         skipped.push({ key: e.key, path: e.path, reason: live === true ? "a process is running in the copy" : "cannot tell whether a process runs in the copy" });
         continue;
       }
-      const r = recover.recoverCopy(ctx, git, e.path, { key: e.key, expectedBranch: null, explicitBranch: false, baseTarget: null });
+      const r = recover.recoverCopy(ctx, git, e.path, { key: e.key, expectedBranch: null, explicitBranch: false, baseTarget: null, materialize: repairMaterialize(git) });
       repaired.push({ key: e.key, path: e.path, recovered: r.recovered, ...(r.recoveryRef ? { recoveryRef: r.recoveryRef } : {}) });
     } catch (err) {
       errors.push({ key: e.key, path: e.path, error: String((err && err.message) || err).slice(0, 400) });
