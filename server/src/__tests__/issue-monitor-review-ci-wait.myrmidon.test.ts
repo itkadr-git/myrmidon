@@ -354,6 +354,29 @@ describeEmbeddedPostgres("issue monitor that waits for the CI of a review (Revie
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
   });
 
+  it("does not defer a replacement monitor on stale CI access failure", async () => {
+    const { issueId } = await seed();
+    const replacementAt = new Date(TICK_AT.getTime() + 3_600_000);
+    mockReviewCi.resolveCi.mockImplementation(async () => {
+      await db.update(issues).set({
+        monitorNextCheckAt: replacementAt,
+        monitorWakeRequestedAt: null,
+        monitorNotes: "new evidence",
+      }).where(eq(issues.id, issueId));
+      return { state: "unknown", reason: "pull:http_404", pullRequestUrl: PR_URL, headSha: HEAD };
+    });
+
+    const result = await heartbeatService(db, { executesRuns: false }).tickTimers(TICK_AT);
+
+    expect(result.enqueued).toBe(0);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.monitorNextCheckAt?.toISOString()).toBe(replacementAt.toISOString());
+    expect(issue.monitorNotes).toBe("new evidence");
+    expect(issue.monitorAttemptCount).toBe(0);
+    expect(await activityOf(issueId, "issue.monitor_deferred")).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+  });
+
   it("keeps waiting while CI runs, exactly as before", async () => {
     const { issueId } = await seed();
     headCi({ state: "pending" });
