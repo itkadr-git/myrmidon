@@ -10,10 +10,19 @@ import { createCredentialCheckpoint, checkpointCredentialStore } from './credent
 // Retain exclusive ownership across all retries and for the broker lifetime.
 export async function createSupervisedSingleHostBroker({ credentialPath, credentialKey, store: suppliedStore, delay, ...options }) {
   if (suppliedStore || typeof delay !== 'function' || typeof options.alert !== 'function') throw new Error('supervised recovery dependencies required');
-  const release = acquireExclusiveStore(credentialPath);
+  let release;
+  try { release = acquireExclusiveStore(credentialPath); } catch (error) {
+    try { await options.alert('credential_recovery_failed'); } catch { /* Independent monitoring is required. */ }
+    throw error;
+  }
   let store;
   try {
-    store = createCredentialStore(credentialPath, credentialKey);
+    try {
+      store = createCredentialStore(credentialPath, credentialKey);
+    } catch (error) {
+      try { await options.alert('credential_recovery_failed'); } catch { /* Independent monitoring is required. */ }
+      throw error;
+    }
     if (options.credentialAnchor) {
       try {
         store = checkpointCredentialStore(store, await createCredentialCheckpoint(store, options.credentialAnchor));
