@@ -32,6 +32,7 @@ test('an independently retained audit head rejects suffix deletion on restart', 
     compareAndSet: (previous, next) => {
       if (JSON.stringify(head) !== JSON.stringify(previous)) throw new Error('anchor conflict');
       head = { ...next };
+      return true;
     },
   };
   try {

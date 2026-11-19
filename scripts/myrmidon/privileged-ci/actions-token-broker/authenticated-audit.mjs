@@ -40,7 +40,7 @@ export function createAuthenticatedAudit(path, key, anchor) {
         if (anchor && JSON.stringify(anchor.read()) !== JSON.stringify(oldHead)) throw new Error('audit integrity failure: anchor mismatch');
         db.prepare('INSERT INTO audit_events VALUES (?, ?, ?)').run(expected, event, newHead.mac);
         // An interrupted cross-store update leaves a mismatch and fails closed.
-        if (anchor) anchor.compareAndSet(oldHead, newHead);
+        if (anchor && anchor.compareAndSet(oldHead, newHead) !== true) throw new Error('audit anchor update failed');
         db.exec('COMMIT');
       } catch (error) { db.exec('ROLLBACK'); throw error; }
     },
