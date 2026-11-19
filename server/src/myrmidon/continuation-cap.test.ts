@@ -76,6 +76,25 @@ describe("countContinuationsWithoutExternalInput (OPE-11948 real attempt counter
     expect(countContinuationsWithoutExternalInput({ agentId: AGENT, runs: runsAt(30, 20, 10), moves: [move] })).toBe(2);
   });
 
+  it("does not cap three continuations that each moved the PR head", () => {
+    const head = (at: number): TaskMovement => ({
+      at, actorType: "system", actorId: "system:github-webhook", action: "issue.work_product_head_changed",
+    });
+    // A push during each run: the latest one is newer than every run's start.
+    const moves = [head(minutes(35).getTime()), head(minutes(25).getTime()), head(minutes(15).getTime())];
+    const count = countContinuationsWithoutExternalInput({ agentId: AGENT, runs: runsAt(30, 20, 10), moves });
+    expect(count).toBeLessThan(MAX_CONTINUATIONS_WITHOUT_EXTERNAL_INPUT);
+    expect(count).toBe(0);
+  });
+
+  it("still caps three continuations without a push or other input", () => {
+    const moves: TaskMovement[] = [
+      { at: minutes(25).getTime(), actorType: "system", actorId: "system:github-webhook", action: "issue.updated" },
+    ];
+    const count = countContinuationsWithoutExternalInput({ agentId: AGENT, runs: runsAt(30, 20, 10), moves });
+    expect(count).toBe(MAX_CONTINUATIONS_WITHOUT_EXTERNAL_INPUT);
+  });
+
   it("counts nothing when the external event is newer than every run", () => {
     const move: TaskMovement = { at: minutes(40).getTime(), actorType: "user", actorId: "user-1", action: "issue.comment_added" };
     expect(countContinuationsWithoutExternalInput({ agentId: AGENT, runs: runsAt(30, 20, 10), moves: [move] })).toBe(0);

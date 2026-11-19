@@ -6401,6 +6401,7 @@ function getActorIdentityPart(req: Request): string {
     }
     const key = await svc.createApiKey(id, req.body.name, req.body.scope, {
       responsibleUserId: req.actor.userId ?? null,
+      expiresAt: req.body.expiresAt ? new Date(req.body.expiresAt) : null,
     });
 
     await logActivity(db, {
@@ -6415,6 +6416,7 @@ function getActorIdentityPart(req: Request): string {
         name: key.name,
         scope: key.scope,
         responsibleUserId: key.responsibleUserId,
+        expiresAt: key.expiresAt ?? null,
       },
     });
 

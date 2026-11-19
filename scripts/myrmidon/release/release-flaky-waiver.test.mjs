@@ -9,6 +9,33 @@ const proof = {
 };
 const success = { head_sha: "abc123", run_attempt: 2, status: "completed", conclusion: "success" };
 
+test("rejects successful evidence when the live job failed", () => {
+  const run = { ...success, jobs: [{ id: 9, status: "completed", conclusion: "failure", run_attempt: 2 }] };
+  assert.throws(() => validateEvidence(proof, run, "abc123", proof.tag), /live job/);
+});
+
+test("rejects live jobs omitted from evidence", () => {
+  const run = { ...success, jobs: [
+    { id: 9, status: "completed", conclusion: "success", run_attempt: 2 },
+    { id: 10, status: "completed", conclusion: "success", run_attempt: 2 },
+  ] };
+  assert.throws(() => validateEvidence(proof, run, "abc123", proof.tag), /live job/);
+});
+
+test("rejects live jobs from a different attempt", () => {
+  const run = { ...success, jobs: [{ id: 9, status: "completed", conclusion: "success", run_attempt: 1 }] };
+  assert.throws(() => validateEvidence(proof, run, "abc123", proof.tag), /live job/);
+});
+
+test("accepts the complete successful live job set", () => {
+  const run = { ...success, jobs: [{ id: 9, status: "completed", conclusion: "success", run_attempt: 2 }] };
+  assert.doesNotThrow(() => validateEvidence(proof, run, "abc123", proof.tag));
+});
+
+test("preserves offline compatibility when live jobs are omitted", () => {
+  assert.doesNotThrow(() => validateEvidence(proof, success, "abc123", proof.tag));
+});
+
 test("accepts successful jobs on the exact evidenced rerun attempt", () => {
   assert.doesNotThrow(() => validateEvidence(proof, success, "abc123", proof.tag));
 });

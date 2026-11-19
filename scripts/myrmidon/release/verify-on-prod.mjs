@@ -58,8 +58,16 @@ export async function fetchReleaseTasks({
   pageSize = 100,
   fetchImpl = globalThis.fetch,
 }) {
+  if (!Number.isSafeInteger(pageSize) || pageSize <= 0) {
+    throw new Error("pageSize must be a positive safe integer");
+  }
   const issues = [];
-  for (let offset = 0; ; offset += pageSize) {
+  const seenIds = new Set();
+  // Fail closed even if the server keeps returning new full pages forever.
+  const maxPages = 10000;
+  for (let page = 0; page < maxPages; page += 1) {
+    const offset = page * pageSize;
+    if (!Number.isSafeInteger(offset)) throw new Error("pagination offset exceeds safe integer range");
     const batch = await request(
       { url: apiUrl, key: apiKey },
       `/api/companies/${encodeURIComponent(companyId)}/issues?labelId=${encodeURIComponent(labelId)}&limit=${pageSize}&offset=${offset}&view=compact`,
@@ -69,10 +77,16 @@ export async function fetchReleaseTasks({
     if (!Array.isArray(batch)) {
       throw new Error("expected array of issues from board API");
     }
+    for (const issue of batch) {
+      if (!issue || typeof issue.id !== "string" || !issue.id || seenIds.has(issue.id)) {
+        throw new Error("pagination returned a missing or repeated issue ID");
+      }
+      seenIds.add(issue.id);
+    }
     issues.push(...batch);
-    if (batch.length < pageSize) break;
+    if (batch.length < pageSize) return issues;
   }
-  return issues;
+  throw new Error("pagination exceeded maximum page count");
 }
 
 export async function verifyOnProduction({
@@ -149,9 +163,11 @@ export async function main(argv) {
   const apiKey = args["api-key"] === true || args["api-key"] === undefined
     ? process.env.PAPERCLIP_API_KEY
     : args["api-key"];
-  const pageSize = args["page-size"] && /^\d+$/.test(args["page-size"])
-    ? Number.parseInt(args["page-size"], 10)
-    : 100;
+  const rawPageSize = args["page-size"];
+  if (rawPageSize !== undefined && (typeof rawPageSize !== "string" || !/^\d+$/.test(rawPageSize) || !Number.isSafeInteger(Number(rawPageSize)) || Number(rawPageSize) <= 0)) {
+    throw new UsageError("--page-size must be a positive safe integer");
+  }
+  const pageSize = rawPageSize === undefined ? 100 : Number(rawPageSize);
   const report = await verifyOnProduction({
     version: args.version,
     label: args.label || args.version.split(".").slice(0, 2).join("."),

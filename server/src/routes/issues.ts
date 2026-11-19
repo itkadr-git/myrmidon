@@ -64,7 +64,6 @@ import { decideReviewReturnWake, recordSuppressedReviewReturn } from "../myrmido
 import {
   readReviewInfraCheckNames,
   readReviewReturnGuardEnabled,
-  reviewCommentReferencesCode,
   withChangesRequestedHeadSha,
 } from "../myrmidon/review-return-guard/policy.js";
 // myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): the review verdict is recorded as
@@ -463,6 +462,11 @@ import {
 import { externalObjectService } from "../services/external-objects.js";
 import { getExternalChannelBindingSummary } from "../services/chat-channel-binding.js";
 import { deliverAgentUnblockNotification, isStaleBlockGuardedTransition } from "../services/routable-blocked.js";
+import {
+  findLastExternalIssueEventAt,
+  findLastUnblockRequestWakeAt,
+  resolveUnblockEscalationAgentId,
+} from "../services/unblock-request-context.js";
 import { isRegisteredEventKey } from "../myrmidon/stale-block/index.js";
 import {
   BLOCKED_LOOP_SIGNATURE_KEY,
@@ -1616,6 +1620,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "execution_review_requested",
   "execution_verify_requested",
   "finish_successful_run_handoff",
+  "issue_monitor_due",
   "queued_run_stale_timeout",
   "goal_control",
   "heartbeat.disabled",
@@ -3834,6 +3839,12 @@ function logIssueListRequest(input: {
   });
 }
 
+function logReviewWriteCi(input: { issueId: string; runId: string | null | undefined; ci: Awaited<ReturnType<ReviewPullRequestCiResolver>>; diagnostic: { transportCalls: number; budget: { used: number; cap: number; windowMinutes: number } | null } | null }): void {
+  const reason = input.ci.reason?.match(/(?:budget_exhausted|budget_store_unavailable|network_error|http_401|http_403_rate_limited|http_403|http_429_rate_limited|skipped_rate_limited)/)?.[0] ?? null;
+  const headSha = input.ci.headSha && /^[a-f0-9]{40}$/i.test(input.ci.headSha) ? input.ci.headSha : null;
+  logger.info({ issueId: input.issueId, runId: input.runId ?? null, headSha, source: "review-recovery", state: input.ci.state, reason, transportCalls: input.diagnostic?.transportCalls ?? null, budget: input.diagnostic?.budget ?? null }, "review_write_ci_gate");
+}
+
 export function issueRoutes(
   db: Db,
   storage: StorageService,
@@ -3974,6 +3985,9 @@ export function issueRoutes(
       ) {
         return false;
       }
+      // OPE-15004: this is a wake-path gate, not review admission: it may share
+      // the process read cache. Either way it cannot decide the verdict — a
+      // premature wake still meets the fresh write gate before it can act.
       const admission = await readReviewAdmissionDecision({
         companyId: input.issue.companyId,
         issueId: input.issue.id,
@@ -13745,6 +13759,10 @@ export function issueRoutes(
         }
         createLabelNames = existingLabels.map((r) => r.name);
       }
+      if (req.actor.type === "agent") {
+        const { assertAutoSliceChildHasReleaseLabel } = await import("../myrmidon/swarm-claim/auto-slice-children.js");
+        assertAutoSliceChildHasReleaseLabel({ parentTitle: createParent?.title, labelNames: createLabelNames });
+      }
       if (
         !watchdogProductBugFollowUp &&
         !(await assertTaskWatchdogCreateIssueAllowed(
@@ -15774,11 +15792,15 @@ export function issueRoutes(
         }
       }
       if (transition.decision?.outcome === "changes_requested") {
-        const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+        let diagnostic: Parameters<NonNullable<Parameters<typeof createReviewPullRequestCiResolver>[0]["onDiagnostic"]>>[0] | null = null;
+        // OPE-15004: the write verdict gate is review admission — its reads are
+        // always fresh, never served from the read cache.
+        const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, admission: true, onDiagnostic: (value) => { diagnostic = value; } }))({
           companyId: existing.companyId,
           issueId: existing.id,
         });
-        if ((ci.state === "pending" || ci.state === "unknown") && !reviewCommentReferencesCode(transition.decision?.body)) {
+        logReviewWriteCi({ issueId: existing.id, runId: actor.runId, ci, diagnostic });
+        if (ci.state === "pending" || ci.state === "unknown") {
           throw unprocessable(
             ci.state === "pending"
               ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
@@ -17065,11 +17087,15 @@ export function issueRoutes(
               issueUpdateData.executionState = currentMergedState;
             }
             if (lockedTransition.decision?.outcome === "changes_requested") {
-              const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+              let diagnostic: Parameters<NonNullable<Parameters<typeof createReviewPullRequestCiResolver>[0]["onDiagnostic"]>>[0] | null = null;
+              // OPE-15004: the write verdict gate is review admission — its reads are
+              // always fresh, never served from the read cache.
+              const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, admission: true, onDiagnostic: (value) => { diagnostic = value; } }))({
                 companyId: lockedExisting.companyId,
                 issueId: lockedExisting.id,
               });
-              if ((ci.state === "pending" || ci.state === "unknown") && !reviewCommentReferencesCode(lockedTransition.decision?.body)) {
+              logReviewWriteCi({ issueId: lockedExisting.id, runId: actor.runId, ci, diagnostic });
+              if (ci.state === "pending" || ci.state === "unknown") {
                 throw unprocessable(
                   ci.state === "pending"
                     ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
@@ -17312,7 +17338,9 @@ export function issueRoutes(
                 let admitReviewer = true;
                 const admissionCritical = updated.priority === "critical";
                 if (ciAdmissionCandidate) {
-                  const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+                  // OPE-15004: the hand-off admission decides whether the reviewer is
+                  // woken at all, so it reads fresh like the write verdict gate.
+                  const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, admission: true }))({
                     companyId: updated.companyId,
                     issueId: updated.id,
                   });
@@ -17778,11 +17806,51 @@ export function issueRoutes(
       if (enteringBlocked) {
         const blockedIssue = issue;
         let ownerNotifiedAt: Date | null = null;
+        const blockedOwnerAgentId =
+          blockedIssue.unblockDescriptor && typeof blockedIssue.unblockDescriptor.owner === "object" &&
+          "agentId" in blockedIssue.unblockDescriptor.owner
+            ? blockedIssue.unblockDescriptor.owner.agentId
+            : null;
         await deliverAgentUnblockNotification({
           issue: blockedIssue,
           wakeup: heartbeat.wakeup,
           markNotified: async (blockedOwnerNotifiedAt) => {
             ownerNotifiedAt = blockedOwnerNotifiedAt;
+          },
+          // myrmidon(UNBLOCK-REQUEST-NO-SELF-WAKE): no wake of the assignee for its own
+          // block, and repeat wakes are throttled by nextCheckAt / 30 minutes.
+          nextCheckAt: (blockedIssue.blockerMetadata as { nextCheckAt?: string } | null | undefined)?.nextCheckAt ?? null,
+          lastWakeAt: (agentId) =>
+            findLastUnblockRequestWakeAt(db, { companyId: blockedIssue.companyId, issueId: blockedIssue.id, agentId }),
+          lastExternalEventAt: (ownerAgentId) =>
+            findLastExternalIssueEventAt(db, {
+              companyId: blockedIssue.companyId,
+              issueId: blockedIssue.id,
+              ignoreAgentIds: [ownerAgentId, blockedIssue.assigneeAgentId ?? ""],
+            }),
+          resolveEscalationAgentId: () =>
+            blockedIssue.assigneeAgentId
+              ? resolveUnblockEscalationAgentId(db, {
+                  companyId: blockedIssue.companyId,
+                  projectId: blockedIssue.projectId ?? null,
+                  assigneeAgentId: blockedIssue.assigneeAgentId,
+                })
+              : Promise.resolve(null),
+          onOutcome: async (outcome, detail) => {
+            if (outcome === "woken") return;
+            await logActivity(db, {
+              companyId: blockedIssue.companyId,
+              actorType: "system",
+              actorId: "system",
+              agentId: null,
+              runId: null,
+              action: `issue.unblock_request_${outcome}`,
+              entityType: "issue",
+              entityId: blockedIssue.id,
+              details: { ownerAgentId: detail.ownerAgentId, targetAgentId: detail.targetAgentId, blockedBy: blockedOwnerAgentId },
+            }).catch((err) => {
+              logger.warn({ err, issueId: blockedIssue.id }, "failed to log unblock request outcome");
+            });
           },
         });
         if (ownerNotifiedAt) {
@@ -18549,7 +18617,9 @@ export function issueRoutes(
         })
         : null;
       if (isReviewCiWakeCandidate) {
-        const reviewCi = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+        // OPE-15004: the wake-path admission is the same green-head rule as the
+        // transactional hand-off above — it reads fresh, not from the cache.
+        const reviewCi = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, admission: true }))({
           companyId: issue.companyId,
           issueId: issue.id,
         });

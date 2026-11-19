@@ -120,6 +120,41 @@ test("exit codes distinguish usage errors from gate failures", () => {
   assert.equal(EXIT_USAGE, 2);
 });
 
+test("invalid page sizes fail before requesting issues", async () => {
+  for (const pageSize of [0, -1, 1.5, NaN, Infinity]) {
+    let calls = 0;
+    await assert.rejects(fetchReleaseTasks({ apiUrl: "http://board.test", companyId: "c1", labelId: "l1", pageSize, fetchImpl: async () => { calls++; throw new Error("unexpected request"); } }), /pageSize/);
+    assert.equal(calls, 0);
+  }
+});
+
+test("repeated page fails without accepting an incomplete result", async () => {
+  let calls = 0;
+  const fetchImpl = async () => {
+    if (++calls > 3) throw new Error("request limit reached");
+    return { ok: true, json: async () => [{ id: "a", status: "done" }, { id: "b", status: "done" }] };
+  };
+  await assert.rejects(fetchReleaseTasks({ apiUrl: "http://board.test", companyId: "c1", labelId: "l1", pageSize: 2, fetchImpl }), /repeated issue ID/i);
+  assert.equal(calls, 2);
+});
+
+test("201 unique tasks include the unfinished task on the last page", async () => {
+  const issues = Array.from({ length: 201 }, (_, i) => ({ id: `id-${i}`, identifier: `OPE-${i}`, status: i === 200 ? "blocked" : "done" }));
+  const { fakeFetch, calls } = createFakeFetch({ issues });
+  const report = await verifyOnProduction({ version: "1.8.0", label: "1.8", healthUrl: "http://prod.test/api/health", apiUrl: "http://board.test", companyId: "c1", fetchImpl: fakeFetch });
+  assert.equal(report.tasks.length, 201);
+  assert.equal(report.verified, false);
+  assert.equal(calls.filter((c) => c.url.includes("/issues?")).length, 3);
+});
+
+test("exactly full last page is followed by an empty page", async () => {
+  const issues = Array.from({ length: 200 }, (_, i) => ({ id: `id-${i}`, status: "done" }));
+  const { fakeFetch, calls } = createFakeFetch({ issues });
+  const tasks = await fetchReleaseTasks({ apiUrl: "http://board.test", companyId: "c1", labelId: "l1", fetchImpl: fakeFetch });
+  assert.equal(tasks.length, 200);
+  assert.equal(calls.length, 3);
+});
+
 test("fetchReleaseTasks paginates across multiple pages until the last partial page", async () => {
   const issues = Array.from({ length: 250 }, (_, i) => ({
     id: `issue-${i + 1}`,

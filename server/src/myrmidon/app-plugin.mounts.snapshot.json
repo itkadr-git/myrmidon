@@ -69,7 +69,7 @@
   "api.use(myrmidonAutoUpdateRoutes(db))",
   "api.use(myrmidonRuntimeLimitsRoutes(db))",
   "api.use(myrmidonPauseGuardRoutes(db))",
-  "api.use(myrmidonRunPriorityRoutes(db))",
+  "api.use(myrmidonRunPriorityRoutes(db, opts.processBus ?? null))",
   "api.use(myrmidonRunStallRoutes(db))",
   "api.use(myrmidonCorpusRoutes(db, { ports: resolveCorpusPorts }))",
   "api.use(myrmidonProcessesRouter(db as any, opts.processSupervisor ?? null, opts.processBus ?? null))",

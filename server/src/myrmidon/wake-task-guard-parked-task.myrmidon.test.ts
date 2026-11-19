@@ -19,12 +19,14 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueWorkProducts,
   issues,
 } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../__tests__/helpers/embedded-postgres.js";
+import { openLoadByAgent } from "./swarm-claim/matcher.js";
 import {
   decideIssueCooling,
   isIssueCoolingDown,
@@ -273,6 +275,54 @@ describeEmbeddedPostgres("myrmidon(EMPTY-RUNS-1) parked task cooling against Pos
     expect((await isIssueCoolingDown(db, companyId, answered, settings, now)).cooling).toBe(false);
   });
 
+  /** The row the board writes when the head of the task's PR moves (webhook), under no run. */
+  async function logPrHeadChange(issueId: string, at: Date, details: Record<string, unknown> = { headShaChanged: true }) {
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "system",
+      actorId: "system:github-webhook",
+      action: "issue.work_product_head_changed",
+      entityType: "issue",
+      entityId: issueId,
+      details: { workProductId: randomUUID(), fromSha: "a".repeat(40), toSha: "b".repeat(40), ...details },
+      createdAt: at,
+    });
+  }
+
+  it("a pickup that pushed to the PR and handed the task back does not cool it (head change in the window)", async () => {
+    const now = new Date();
+    const issueId = await seedIssue("todo");
+    const at = new Date(now.getTime() - 20 * 60_000);
+    const runId = await seedAdvancedPickup(issueId, at);
+    await logRunActivity(issueId, runId, new Date(at.getTime() - 1_000), [handBack(runId), parkingNote]);
+    // the webhook reports the push after the run has ended, inside the 15 min late window
+    await logPrHeadChange(issueId, new Date(at.getTime() + 5 * 60_000));
+    expect((await isIssueCoolingDown(db, companyId, issueId, settings, now)).cooling).toBe(false);
+  });
+
+  it("the same pickup without a head change cools the task as before", async () => {
+    const now = new Date();
+    const issueId = await seedIssue("todo");
+    const at = new Date(now.getTime() - 5 * 60_000);
+    const runId = await seedAdvancedPickup(issueId, at);
+    await logRunActivity(issueId, runId, new Date(at.getTime() - 1_000), [handBack(runId), parkingNote]);
+    expect(await isIssueCoolingDown(db, companyId, issueId, settings, now)).toMatchObject({ cooling: true, staleCount: 1, reason: "no_progress" });
+  });
+
+  it("a head change outside the window of the run is not its progress", async () => {
+    const now = new Date();
+    const issueId = await seedIssue("todo");
+    const at = new Date(now.getTime() - 40 * 60_000);
+    const runId = await seedAdvancedPickup(issueId, at);
+    await logRunActivity(issueId, runId, new Date(at.getTime() - 1_000), [handBack(runId), parkingNote]);
+    await logPrHeadChange(issueId, new Date(at.getTime() + 16 * 60_000)); // 15 min late window is over
+    await logPrHeadChange(issueId, new Date(at.getTime() - 41_000 - 60_000)); // before the run started
+    // a row that does not say the head changed is no progress either
+    await logPrHeadChange(issueId, new Date(at.getTime() - 10_000), { headShaChanged: false });
+    expect(await isIssueCoolingDown(db, companyId, issueId, settings, new Date(at.getTime() + 10 * 60_000)))
+      .toMatchObject({ cooling: true, staleCount: 1, reason: "no_progress" });
+  });
+
   it("a task that is being worked on (in_progress) is not cooled by a quiet advanced run", async () => {
     const now = new Date();
     const issueId = await seedIssue("in_progress");
@@ -298,5 +348,180 @@ describeEmbeddedPostgres("myrmidon(EMPTY-RUNS-1) parked task cooling against Pos
       createdAt: new Date(now.getTime() - 60_000),
     });
     expect((await isIssueCoolingDown(db, companyId, issueId, settings, now)).cooling).toBe(false);
+  });
+});
+
+describeEmbeddedPostgres("myrmidon(CI-WAIT-NOT-LOAD) a task waiting for CI of its own PR is not cooled", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let companyId = "";
+  let agentId = "";
+  const settings = resolveSwarmSettings(undefined);
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-myrmidon-wake-guard-ciwait-");
+    db = createDb(tempDb.connectionString);
+    companyId = randomUUID();
+    agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId, name: "company-ci", issuePrefix: "WC", defaultResponsibleUserId: "user-a",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "agent-ci", role: "engineer", status: "active", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: { heartbeat: { enabled: true } }, permissions: {},
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  /** A todo task whose last automatic run succeeded without a visible result, with a PR in the given CI state. */
+  async function seedParkedTask(ciStatus: string | null, ci: { activeHead?: string; prHead?: string; observedAgoMin?: number } = {}) {
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: `Task ${issueId.slice(0, 4)}`, status: "todo", priority: "high",
+      assigneeAgentId: agentId,
+    });
+    if (ciStatus) {
+      await db.insert(issueWorkProducts).values({
+        id: randomUUID(), companyId, issueId, type: "pull_request", provider: "github", title: "PR",
+        status: "open", reviewState: "draft", externalId: `itkadr-git/myrmidon#pull/${Math.floor(Math.random() * 1e6)}`,
+        metadata: {
+          repository: "itkadr-git/myrmidon", number: 7, headSha: ci.prHead ?? "c".repeat(40),
+          activeCi: {
+            status: ciStatus, headSha: ci.activeHead ?? "c".repeat(40),
+            observedAt: new Date(Date.now() - (ci.observedAgoMin ?? 1) * 60_000).toISOString(),
+          },
+        },
+      });
+    }
+    const at = new Date(Date.now() - 5 * 60_000);
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId, companyId, agentId, invocationSource: "automation", status: "succeeded", livenessState: "advanced",
+      contextSnapshot: { issueId, wakeReason: "idle_pickup", source: "automation" },
+      contextIssueId: issueId, contextWakeReason: "idle_pickup",
+      startedAt: new Date(at.getTime() - 40_000), finishedAt: at,
+    });
+    await db.insert(activityLog).values({
+      companyId, actorType: "system", actorId: "swarm_claim", agentId, runId, action: "issue.swarm_claim.claimed",
+      entityType: "issue", entityId: issueId, details: { source: "checkout", leaseTtlSec: 900 },
+      createdAt: new Date(at.getTime() - 1_000),
+    });
+    return issueId;
+  }
+
+  it("a run without a visible result on a task with a PR in CI does not cool it", async () => {
+    for (const ci of ["queued", "in_progress"]) {
+      const issueId = await seedParkedTask(ci);
+      expect((await isIssueCoolingDown(db, companyId, issueId, settings, new Date())).cooling).toBe(false);
+    }
+  });
+
+  it("a stale activeCi (an old head, or never closed for hours) does not hold the cooling off", async () => {
+    const oldHead = await seedParkedTask("in_progress", { activeHead: "a".repeat(40), prHead: "c".repeat(40) });
+    expect(await isIssueCoolingDown(db, companyId, oldHead, settings, new Date()))
+      .toMatchObject({ cooling: true, reason: "no_progress" });
+    const old = await seedParkedTask("queued", { observedAgoMin: 3 * 60 });
+    expect(await isIssueCoolingDown(db, companyId, old, settings, new Date()))
+      .toMatchObject({ cooling: true, reason: "no_progress" });
+  });
+
+  it("the same run on a task whose PR has no CI running, or with no PR, still cools it", async () => {
+    for (const ci of ["completed", null]) {
+      const issueId = await seedParkedTask(ci);
+      expect(await isIssueCoolingDown(db, companyId, issueId, settings, new Date()))
+        .toMatchObject({ cooling: true, reason: "no_progress" });
+    }
+  });
+});
+
+// myrmidon(CI-WAIT-NOT-LOAD): the open load of the matcher, 16.11: 45 todo tasks with
+// an open PR in CI kept 8-13 of 14 engineers at the limit.
+describeEmbeddedPostgres("swarm open load: a task waiting for CI of its own PR", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  const companyId = randomUUID();
+  const REPO = "itkadr-git/myrmidon";
+  let prNumber = 1000;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-swarm-ci-wait-load-");
+    db = createDb(tempDb.connectionString);
+    await db.insert(companies).values({
+      id: companyId,
+      name: "CI wait load",
+      issuePrefix: `CW${companyId.replaceAll("-", "").slice(0, 5).toUpperCase()}`,
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  }, 60_000);
+
+  async function seedEngineer() {
+    const id = randomUUID();
+    await db.insert(agents).values({
+      id, companyId, name: `eng-${id.slice(0, 6)}`, role: "engineer", status: "idle",
+      adapterType: "paperclip_runner", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    return id;
+  }
+
+  /** A todo task of the agent with a PR; ciStatus null means no CI is running. */
+  async function seedTaskWithPr(agentId: string, input: { ciStatus: string | null; draft: boolean; ageMin: number; status?: string }) {
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: `task ${issueId.slice(0, 4)}`, status: input.status ?? "todo",
+      priority: "medium", assigneeAgentId: agentId, casteKey: "engineer",
+    });
+    const at = new Date(Date.now() - input.ageMin * 60_000);
+    const number = (prNumber += 1);
+    const headSha = randomUUID().replaceAll("-", "").padEnd(40, "a");
+    await db.insert(issueWorkProducts).values({
+      id: randomUUID(), companyId, issueId, type: "pull_request", provider: "github",
+      title: "PR", status: "open", reviewState: input.draft ? "draft" : "ready_for_review",
+      externalId: `${REPO}#pull/${number}`,
+      metadata: {
+        repository: REPO, number,
+        activeCi: input.ciStatus
+          ? { status: input.ciStatus, headSha, observedAt: at.toISOString() }
+          : { status: "completed", conclusion: "success", headSha, observedAt: at.toISOString() },
+      },
+      createdAt: at, updatedAt: at,
+    });
+    return issueId;
+  }
+
+  it("two todo tasks with a draft PR in CI do not count toward the limit", async () => {
+    const agentId = await seedEngineer();
+    await seedTaskWithPr(agentId, { ciStatus: "in_progress", draft: true, ageMin: 20 });
+    await seedTaskWithPr(agentId, { ciStatus: "queued", draft: true, ageMin: 20 });
+    expect((await openLoadByAgent(db, companyId)).get(agentId) ?? 0).toBe(0);
+  });
+
+  it("the same tasks without CI running keep counting", async () => {
+    const agentId = await seedEngineer();
+    await seedTaskWithPr(agentId, { ciStatus: null, draft: true, ageMin: 20 });
+    await seedTaskWithPr(agentId, { ciStatus: null, draft: true, ageMin: 20 });
+    expect((await openLoadByAgent(db, companyId)).get(agentId)).toBe(2);
+  });
+
+  it("a task with CI that was just pushed (inside the 15 minutes) still counts", async () => {
+    const agentId = await seedEngineer();
+    await seedTaskWithPr(agentId, { ciStatus: "in_progress", draft: true, ageMin: 2 });
+    expect((await openLoadByAgent(db, companyId)).get(agentId)).toBe(1);
+  });
+
+  it("a task without a PR keeps counting beside a task waiting for CI", async () => {
+    const agentId = await seedEngineer();
+    await seedTaskWithPr(agentId, { ciStatus: "in_progress", draft: false, ageMin: 20 });
+    await db.insert(issues).values({
+      id: randomUUID(), companyId, title: "plain", status: "todo", priority: "medium",
+      assigneeAgentId: agentId, casteKey: "engineer",
+    });
+    expect((await openLoadByAgent(db, companyId)).get(agentId)).toBe(1);
   });
 });

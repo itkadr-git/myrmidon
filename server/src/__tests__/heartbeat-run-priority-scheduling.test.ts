@@ -50,11 +50,17 @@ import {
   type RunAdmissionLimits,
 } from "../myrmidon/run-admission.js";
 import {
+  applyCompanyReleaseFocus,
   applyRunPrioritySettings,
   currentRunPrioritySettings,
   resetRunPriorityForTests,
 } from "../myrmidon/run-priority/state.js";
 import { runPriorityService } from "../myrmidon/run-priority/service.js";
+import { advanceFocusDeferredRuns } from "../myrmidon/run-priority/sync.js";
+import { registerSettingsAppliers } from "../myrmidon/settings-appliers/index.js";
+import { strictReleaseFocusRelease } from "../myrmidon/release-focus.js";
+import { createDiskBudgetGate } from "../myrmidon/disk-budget/disk-budget.js";
+import { setDiskBudgetGateForTests } from "../myrmidon/disk-budget/disk-budget-wiring.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -142,6 +148,7 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
 
   afterEach(async () => {
     await heartbeat.drainActiveRunExecutions();
+    setDiskBudgetGateForTests(null);
     runningProcesses.clear();
     resetRunPriorityForTests();
     resetSharedRunAdmissionForTests();
@@ -553,8 +560,8 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
   // myrmidon(OPE-13231): strict release focus at the run-start gate.
   async function seedFocusScenario(strict: boolean) {
     pinAdmission({ maxConcurrentRuns: 0 });
-    applyRunPrioritySettings({ ...defaultSettings(), currentRelease: "1.6.9", strictReleaseFocus: strict });
     const { companyId, agentId } = await seedCompanyAndAgent({ name: "Engineer", role: "engineer" });
+    applyCompanyReleaseFocus(new Map([[companyId, { currentRelease: "1.6.9", strictReleaseFocus: strict }]]));
     const colleague = randomUUID();
     await db.insert(agents).values({
       id: colleague, companyId, name: "Colleague", role: "engineer", status: "active",
@@ -614,17 +621,112 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
   });
 
   it("strict focus: the deferred run starts after the flag is switched off, without a restart", async () => {
-    const { agentId, otherIssueId } = await seedFocusScenario(true);
+    const { companyId, agentId, otherIssueId } = await seedFocusScenario(true);
     const run = await commentWake(agentId, otherIssueId);
     await sweep();
     expect((await runRow(run.id))?.status).toBe("scheduled_retry");
-    applyRunPrioritySettings({ ...defaultSettings(), currentRelease: "1.6.9", strictReleaseFocus: false });
+    applyCompanyReleaseFocus(new Map([[companyId, { currentRelease: "1.6.9", strictReleaseFocus: false }]]));
     await db.update(heartbeatRuns).set({ scheduledRetryAt: new Date(Date.now() - 1000) }).where(eq(heartbeatRuns.id, run.id));
     await heartbeat.promoteDueScheduledRetries();
     await sweep();
     expect(mockAdapterExecute).toHaveBeenCalled();
     expect(["running", "succeeded"]).toContain((await runRow(run.id))?.status);
   });
+
+  const actorUser = { actorType: "user" as const, actorId: "responsible-user", agentId: null, runId: null, agentApiKeyId: null };
+
+  it("strict focus: lifting the focus makes the deferred runs due at once, no waiting for the recheck ladder", async () => {
+    const { companyId, agentId, otherIssueId } = await seedFocusScenario(true);
+    const run = await commentWake(agentId, otherIssueId);
+    await sweep();
+    const parked = await runRow(run.id);
+    expect(parked?.status).toBe("scheduled_retry");
+    // The ladder parks it well into the future.
+    expect(parked!.scheduledRetryAt!.getTime()).toBeGreaterThan(Date.now() + 30_000);
+
+    const service = runPriorityService(db, {
+      env: {},
+      advanceDeferredRuns: () => advanceFocusDeferredRuns(db),
+    });
+    await service.updateCompany(companyId, { currentRelease: "1.6.9", strictReleaseFocus: false }, actorUser);
+    expect((await runRow(run.id))!.scheduledRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
+
+    await heartbeat.promoteDueScheduledRetries();
+    await sweep();
+    expect(mockAdapterExecute).toHaveBeenCalled();
+    expect(["running", "succeeded"]).toContain((await runRow(run.id))?.status);
+  }, 30_000);
+
+  it("only runs parked by the focus are advanced; a failed run's retry that copied the key keeps its real backoff", async () => {
+    const { companyId, agentId, otherIssueId } = await seedFocusScenario(true);
+    const parkedByFocus = await commentWake(agentId, otherIssueId);
+    await sweep();
+    const focusRow = await runRow(parkedByFocus.id);
+    expect(focusRow?.status).toBe("scheduled_retry");
+
+    // A retry of a failed run: the context (with the deferral key of the
+    // original) is copied, the due time is its own backoff.
+    const backoffAt = new Date(Date.now() + 10 * MINUTE_MS);
+    const retryId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: retryId, companyId, agentId, status: "scheduled_retry", invocationSource: "automation",
+      scheduledRetryAt: backoffAt, scheduledRetryReason: "transient_upstream_failure",
+      contextSnapshot: {
+        issueId: otherIssueId,
+        releaseFocusDeferral: { count: 1, firstDeferredAt: new Date().toISOString(), deferredAt: new Date().toISOString(), dueAt: new Date(Date.now() - 60_000).toISOString() },
+      },
+    });
+
+    const advanced = await advanceFocusDeferredRuns(db);
+    expect(advanced).toBe(1);
+    expect((await runRow(parkedByFocus.id))!.scheduledRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    expect((await runRow(retryId))!.scheduledRetryAt!.getTime()).toBe(backoffAt.getTime());
+  }, 30_000);
+
+  it("strict focus: a change of the current release advances the deferred runs too; an unrelated change does not", async () => {
+    const { companyId, agentId, otherIssueId } = await seedFocusScenario(true);
+    const run = await commentWake(agentId, otherIssueId);
+    await sweep();
+    const parkedAt = (await runRow(run.id))!.scheduledRetryAt!.getTime();
+    const service = runPriorityService(db, {
+      env: {},
+      advanceDeferredRuns: () => advanceFocusDeferredRuns(db),
+    });
+    await service.update({ roleWeights: { ...defaultSettings().roleWeights, engineer: 123 } }, actorUser);
+    expect((await runRow(run.id))!.scheduledRetryAt!.getTime()).toBe(parkedAt);
+    await service.updateCompany(companyId, { currentRelease: "1.7", strictReleaseFocus: true }, actorUser);
+    expect((await runRow(run.id))!.scheduledRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
+  }, 30_000);
+
+  it("another process sees a saved focus change through the settings_changed path, not through a direct apply", async () => {
+    const handlers: Array<(payload: unknown) => void> = [];
+    const bus = {
+      publish: async (_channel: "settings_changed", payload: unknown) => {
+        for (const handler of handlers) handler(payload);
+      },
+      subscribe: <T,>(_channel: "settings_changed", handler: (payload: T) => void) => {
+        handlers.push(handler as (payload: unknown) => void);
+        return () => undefined;
+      },
+    };
+    // The "other process": it listens on the bus and keeps its own memory.
+    registerSettingsAppliers(bus, { db: db as never });
+    const { companyId } = await seedFocusScenario(true);
+    expect(strictReleaseFocusRelease(companyId)).toBe("1.6.9");
+
+    // The writing process: its own apply never touches this memory.
+    const writer = runPriorityService(db, {
+      env: {},
+      // The writing process applies the stored row to ITS memory; keep ours untouched.
+      applyStored: async () => ({ ...defaultSettings(), currentRelease: "1.6.9", strictReleaseFocus: false }),
+      publishChanged: () => bus.publish("settings_changed", { changedKeys: ["runPriority"] }),
+    });
+    await writer.updateCompany(companyId, { currentRelease: "1.6.9", strictReleaseFocus: false }, actorUser);
+    await vi.waitFor(() => expect(strictReleaseFocusRelease(companyId)).toBeNull());
+
+    await writer.updateCompany(companyId, { strictReleaseFocus: true, currentRelease: "1.7" }, actorUser);
+    await vi.waitFor(() => expect(strictReleaseFocusRelease(companyId)).toBe("1.7"));
+  }, 30_000);
 
   it("strict focus: the deferred run starts once no open current-release task is left", async () => {
     const { agentId, otherIssueId, currentIssueId } = await seedFocusScenario(true);
@@ -704,7 +806,7 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
     await dueCycle(run.id);
     expect((await runRow(run.id))?.status).toBe("scheduled_retry");
     expect(mockAdapterExecute).not.toHaveBeenCalled();
-    applyRunPrioritySettings({ ...defaultSettings(), currentRelease: "1.6.9", strictReleaseFocus: false });
+    applyCompanyReleaseFocus(new Map([[companyId, { currentRelease: "1.6.9", strictReleaseFocus: false }]]));
     await dueCycle(run.id);
     // The queued-run staleness gate must not cancel the non-assignee run as a reassignment.
     const finalRow = await runRow(run.id);
@@ -790,5 +892,71 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
       .where(eq(activityLog.action, "instance.run_priority.updated"))
       .limit(1);
     expect(audit.length).toBeGreaterThan(0);
+  }, 30_000);
+
+  // myrmidon(OPE-13419): disk budget of the physical bot volume at the run-start gate.
+  function pinDiskBudget(state: { freePercent: number; gcOk: boolean; gcCalls: number }) {
+    setDiskBudgetGateForTests(
+      createDiskBudgetGate({
+        measure: async () => ({ freeBytes: state.freePercent * 10, totalBytes: 1000 }),
+        requestGc: async () => {
+          state.gcCalls += 1;
+          if (!state.gcOk) throw new Error("host gc request refused");
+          return true;
+        },
+      }),
+    );
+  }
+
+  it("disk budget: at 4.9% free a run is deferred with reason disk_budget, not failed, and host GC is asked once", async () => {
+    const { agentId, otherIssueId } = await seedFocusScenario(false);
+    const state = { freePercent: 4.9, gcOk: true, gcCalls: 0 };
+    pinDiskBudget(state);
+    const first = await commentWake(agentId, otherIssueId);
+    const second = await commentWake(agentId, otherIssueId);
+    await sweep();
+    for (const run of [first, second]) {
+      const row = await runRow(run.id);
+      if (!row) continue;
+      expect(["scheduled_retry", "cancelled"]).toContain(row.status);
+    }
+    const row = await runRow(first.id);
+    expect(row?.status).toBe("scheduled_retry");
+    expect(row?.scheduledRetryAt).not.toBeNull();
+    const marker = JSON.stringify(row?.contextSnapshot);
+    expect(marker).toContain("diskBudgetDeferral");
+    expect(marker).toContain("disk_budget");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect(state.gcCalls).toBe(1);
+  }, 30_000);
+
+  it("disk budget: the deferred run starts by itself once the volume is back at 5% free", async () => {
+    const { agentId, otherIssueId } = await seedFocusScenario(false);
+    const state = { freePercent: 4.9, gcOk: true, gcCalls: 0 };
+    pinDiskBudget(state);
+    const run = await commentWake(agentId, otherIssueId);
+    await sweep();
+    expect((await runRow(run.id))?.status).toBe("scheduled_retry");
+    state.freePercent = 5;
+    await db.update(heartbeatRuns).set({ scheduledRetryAt: new Date(Date.now() - 1000) }).where(eq(heartbeatRuns.id, run.id));
+    await heartbeat.promoteDueScheduledRetries();
+    await sweep();
+    // The run left the wait and was claimed (whatever the sandbox then does with it).
+    const started = await runRow(run.id);
+    expect(started?.startedAt).not.toBeNull();
+    expect(started?.status).not.toBe("scheduled_retry");
+    expect(started?.status).not.toBe("queued");
+  }, 30_000);
+
+  it("disk budget: a refused cleanup request does not fail the run; it stays deferred", async () => {
+    const { agentId, otherIssueId } = await seedFocusScenario(false);
+    const state = { freePercent: 3, gcOk: false, gcCalls: 0 };
+    pinDiskBudget(state);
+    const run = await commentWake(agentId, otherIssueId);
+    await sweep();
+    const row = await runRow(run.id);
+    expect(row?.status).toBe("scheduled_retry");
+    expect(JSON.stringify(row?.contextSnapshot)).toContain('"hostGc":"failed"');
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
   }, 30_000);
 });

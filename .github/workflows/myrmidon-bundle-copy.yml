@@ -1,0 +1,38 @@
+name: Myrmidon bundle copy verification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bundle-copy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require main workflow
+        run: test "$GITHUB_REF" = refs/heads/main
+
+      - name: Checkout PR 3836 fixed head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: 66707c986fdc519fa6484b5e1e63f2749e29fa56
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Verify checkout and run bundle copy test
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=66707c986fdc519fa6484b5e1e63f2749e29fa56
+          actual=$(git rev-parse HEAD)
+          printf 'Workflow SHA: %s\nExpected checkout SHA: %s\nActual checkout SHA: %s\nCommand: node --test scripts/bundle-copy.myrmidon.test.mjs\n' "$GITHUB_SHA" "$expected" "$actual"
+          test "$actual" = "$expected"
+          mkdir -p "$RUNNER_TEMP/bundle-copy-home" "$RUNNER_TEMP/bundle-copy-scratch"
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP/bundle-copy-home" TMPDIR="$RUNNER_TEMP/bundle-copy-scratch" PAPERCLIP_RUN_SCRATCH_DIR="$RUNNER_TEMP/bundle-copy-scratch" node --test scripts/bundle-copy.myrmidon.test.mjs

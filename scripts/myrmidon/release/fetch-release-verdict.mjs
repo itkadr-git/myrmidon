@@ -154,8 +154,15 @@ export async function run(args, deps = {}, fetchBoard = boardFetch) {
     log(`FETCH-VERDICT REFUSED: ${e.message}`);
     return 1;
   }
-  if (!verdict || typeof verdict !== "object" || !verdict.verdict) {
-    log("FETCH-VERDICT REFUSED: the release-verify route returned no verdict JSON");
+  if (
+    !verdict || typeof verdict !== "object" || Array.isArray(verdict) ||
+    !["confirmed", "failed"].includes(verdict.verdict) ||
+    typeof verdict.issueId !== "string" || !verdict.issueId.trim() ||
+    typeof verdict.checkedAt !== "string" || !verdict.checkedAt.trim() ||
+    (verdict.deployedVersion !== null && typeof verdict.deployedVersion !== "string") ||
+    (verdict.signature !== undefined && typeof verdict.signature !== "string")
+  ) {
+    log("FETCH-VERDICT REFUSED: the release-verify route returned invalid verdict JSON");
     return 1;
   }
   log(`fetch-verdict: verdict=${verdict.verdict} deployedVersion=${verdict.deployedVersion ?? "n/a"} checkedAt=${verdict.checkedAt ?? "n/a"} signature=${verdict.signature ? "present" : "ABSENT"}`);

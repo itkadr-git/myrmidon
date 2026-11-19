@@ -26,6 +26,7 @@ import {
   type SealedConnectorEvents,
 } from "./paperclip-cloud-connector.js";
 import { issueService } from "./issues.js";
+import { PR_HEAD_CHANGE_ACTIVITY_ACTION } from "./issue-rewake-throttle.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logger } from "../middleware/logger.js";
@@ -62,6 +63,7 @@ import {
   pullRequestWorkProductData,
 } from "../myrmidon/task-pr-sync/linking.js";
 import { workProductService } from "./work-products.js";
+import { githubDeliveryTransactionGate, githubPullRequestDeliveryQueue } from "./github-delivery-gate.js";
 import { lockObjectInTransaction, postgresErrorInfo, runTransactionWithRetry } from "./postgres-transaction-retry.js";
 
 type LeasedEvent = SealedConnectorEvents["events"][number];
@@ -1117,6 +1119,12 @@ export function githubConnectionEventService(
     invalidateCiCacheForHead(companyId, repository.toLowerCase(), headSha);
     // A rerequest carries no status: the cache is already dropped, nothing to deliver.
     if (!status) return;
+    // A completed check of the head may release a pull request the board parked after
+    // GitHub refused its merge ("... is queued"); the merger ignores every other one.
+    if (status === "completed") {
+      await sendOrDeferAction(afterCommit, companyId, "board merge check notice", () =>
+        notifyBoardMergeTrigger({ companyId, repository, number: pullRequestNumber, headSha, source: "check_completed" }));
+    }
 
     const active = status === "queued" || status === "in_progress";
     if (!active && !conclusion) return;
@@ -1298,6 +1306,38 @@ export function githubConnectionEventService(
     }));
   }
 
+  /**
+   * myrmidon(EMPTY-RUNS-1): one `issue.work_product_head_changed` row per work product whose PR head moved to
+   * `toSha`. The row is the board-side trace of a push (the wake-task guard and the rewake throttle read it as
+   * progress of the run that pushed). Nothing is written when the head stays the same or the event has no head.
+   */
+  async function recordPrHeadChanges(
+    companyId: string,
+    before: ReadonlyArray<{ id: string; issueId: string; headSha: string | null }>,
+    toSha: string | null,
+    deliveryId: string,
+    sender: string | null,
+    afterCommit?: DeliveryWakes,
+  ) {
+    if (!toSha) return;
+    for (const product of before) {
+      if (product.headSha === toSha) continue;
+      try {
+        const publications: ActivityPublication[] = [];
+        await logActivity(db, {
+          companyId, actorType: "system", actorId: "system:github-webhook",
+          action: PR_HEAD_CHANGE_ACTIVITY_ACTION, entityType: "issue", entityId: product.issueId,
+          details: { workProductId: product.id, headShaChanged: true, fromSha: product.headSha, toSha, deliveryId, ...(sender ? { sender } : {}) },
+        }, publications);
+        for (const publication of publications) {
+          await sendOrDeferAction(afterCommit, companyId, "PR head change activity publication", () => publishActivity(publication));
+        }
+      } catch (err) {
+        logger.warn({ err, companyId, workProductId: product.id }, "could not record a PR head change");
+      }
+    }
+  }
+
   async function applyPullRequestEvent(database: Db, companyId: string, event: LeasedEvent, afterCommit?: DeliveryWakes) {
     const snapshot = githubSnapshotUpdate(event.payload);
     if (!snapshot) return;
@@ -1329,8 +1369,14 @@ export function githubConnectionEventService(
       eq(externalObjects.objectType, "pull_request"),
       sql`lower(${externalObjects.externalId}) = lower(${snapshot.externalId})`,
     ));
+    // myrmidon(EMPTY-RUNS-1): a push moves `metadata.headSha` and leaves no other trace on the task; remember
+    // the old head to write the head-change row (see recordPrHeadChanges) once the new one is stored.
+    const prWorkProductWhere = and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.provider, "github"), sql`lower(${issueWorkProducts.externalId}) = lower(${snapshot.externalId})`);
+    const headBefore = await db.select({ id: issueWorkProducts.id, issueId: issueWorkProducts.issueId, headSha: sql<string | null>`${issueWorkProducts.metadata} ->> 'headSha'` })
+      .from(issueWorkProducts).where(prWorkProductWhere);
     await db.update(issueWorkProducts).set({ metadata: sql`(${issueWorkProducts.metadata} - 'activeCi') || ${JSON.stringify({ repository: snapshot.repository, number: snapshot.number, headSha: snapshot.data.headSha })}::jsonb`, updatedAt: appliedAt })
-      .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.provider, "github"), eq(issueWorkProducts.externalId, snapshot.externalId)));
+      .where(prWorkProductWhere);
+    await recordPrHeadChanges(companyId, headBefore, stringValue(snapshot.data.headSha), event.id, stringValue(event.payload.senderLogin), afterCommit);
     if (snapshot.merged && event.action === "closed") {
       const products = await database.select({ product: issueWorkProducts, issue: issues })
         .from(issueWorkProducts)
@@ -1643,24 +1689,32 @@ export function githubConnectionEventService(
         // a transaction Postgres rolled back for a deadlock or a serialization
         // failure runs again, a bounded number of times, from a clean slate.
         const lockKey = githubPullRequestLockKey(companyId, normalizedEvent.payload);
-        await runTransactionWithRetry(async () => {
-          postCommitWakes.length = 0;
-          postCommitPublications.length = 0;
-          await db.transaction(async (tx) => {
-            if (lockKey) await lockObjectInTransaction(tx, lockKey);
-            await applyAndFinalize(tx as unknown as Db);
+        // myrmidon(WEBHOOK-LOCK-POOL): the wait for the turn of the pull request and
+        // for a free transaction slot is here, in the process, before a pooled
+        // connection is taken; the advisory lock below only keeps the other api
+        // process apart. The pull request queue is entered first, so a delivery
+        // that waits for its pull request holds no slot.
+        const runDelivery = () => githubDeliveryTransactionGate.run(async () => {
+          await runTransactionWithRetry(async () => {
+            postCommitWakes.length = 0;
+            postCommitPublications.length = 0;
+            await db.transaction(async (tx) => {
+              if (lockKey) await lockObjectInTransaction(tx, lockKey);
+              await applyAndFinalize(tx as unknown as Db);
+            });
+          }, {
+            onRetry: ({ attempt, error }) => {
+              logger.warn({
+                companyId,
+                providerDeliveryId: event.id,
+                attempt,
+                pgCode: error.code,
+                pgMessage: error.message,
+              }, "GitHub delivery transaction rolled back by Postgres, running it again");
+            },
           });
-        }, {
-          onRetry: ({ attempt, error }) => {
-            logger.warn({
-              companyId,
-              providerDeliveryId: event.id,
-              attempt,
-              pgCode: error.code,
-              pgMessage: error.message,
-            }, "GitHub delivery transaction rolled back by Postgres, running it again");
-          },
         });
+        await (lockKey ? githubPullRequestDeliveryQueue.run(lockKey, runDelivery) : runDelivery());
       } else {
         await applyAndFinalize(db);
       }

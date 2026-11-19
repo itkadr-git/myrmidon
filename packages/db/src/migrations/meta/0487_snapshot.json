@@ -1,5 +1,5 @@
 {
-  "id": "49c3ea87-7793-495f-9360-875f3408377a",
+  "id": "92ad3bc7-5818-438e-907f-37ab2c8eae06",
   "prevId": "78c276ea-8260-4116-8e56-6d55e945f5bd",
   "version": "7",
   "dialect": "postgresql",
@@ -700,6 +700,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -880,12 +886,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'light'"
-        },
-        "step_model_rules": {
-          "name": "step_model_rules",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -26090,36 +26090,6 @@
         "runtime_mode_resolved_at": {
           "name": "runtime_mode_resolved_at",
           "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "step_class": {
-          "name": "step_class",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "step_model_group": {
-          "name": "step_model_group",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "step_model": {
-          "name": "step_model",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "step_model_reason": {
-          "name": "step_model_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "step_model_snapshot_json": {
-          "name": "step_model_snapshot_json",
-          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },

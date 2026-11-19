@@ -56,6 +56,10 @@ import {
   readLastMonitorObservation,
 } from "../myrmidon/issue-monitor-idle/store.js"; // myrmidon(MONITOR-IDLE-LOOP, OPE-13141)
 import { loadRunPullRequest } from "../myrmidon/run-pull-request.js";
+// myrmidon(1.8 KEY-TTL / OPE-12931): run-scoped LiteLLM credential minted at
+// run prep, revoked at every terminal run outcome.
+import { mintRunGatewayKey, revokeRunGatewayKey } from "../myrmidon/litellm-keys/run-keys.js";
+import { defaultAgentGatewayKeyDeps } from "../myrmidon/litellm-keys/agent-keys.js";
 import {
   claimGatewayRemoteClose,
   deriveTerminalCloseProvenance,
@@ -181,7 +185,12 @@ import {
   listOwnerChatTurnRunIds,
 } from "../myrmidon/chat-holds/chat-backed.js";
 // myrmidon(1.6.5 F-26 T5): taskless-wake gate + cooling (design §3.7, §4.3).
-import { tasklessGateReason, readSwarmSettings } from "../myrmidon/wake-task-guard.js";
+import { tasklessGateReason, readSwarmSettings, issueWaitsForOwnPrCi } from "../myrmidon/wake-task-guard.js";
+import {
+  decideWakeCiGate,
+  isWakeCiGatedReason,
+  readWakeCiUnreadyGateEnabled,
+} from "../myrmidon/wake-ci-unready-gate.js";
 import {
   CONTINUATION_CAP_COMMENT,
   MAX_CONTINUATIONS_WITHOUT_EXTERNAL_INPUT,
@@ -245,6 +254,7 @@ import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBinding
 import { listAdapterModels } from "../adapters/registry.js";
 import { resolveAdminAssistantAdapterConfig } from "../myrmidon/admin-assistant/router.js";
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
+import { readGatewayKeySettings } from "@myrmidon/shared";
 import {
   aiConnectionBindingSchema,
   applyDeveloperRunIsolation,
@@ -655,6 +665,7 @@ import {
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
+import { readRunIdsWithPrHeadChange } from "./pr-head-change-progress.js";
 
 let cachedFreezeThreshold: { value: number; expiresAt: number } | null = null;
 async function getCachedFreezeThreshold(settings: { getGeneral: () => Promise<{ issueRewakeFreezeThreshold?: number | null }> }): Promise<number> {
@@ -909,7 +920,7 @@ import {
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
-import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
+import { createRunSecretRedactionRegistry, redactRegisteredSecretValues } from "./run-secret-redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolvePaperclipRunnerIdleTimeoutMs,
@@ -1092,6 +1103,13 @@ import {
   readWakeBatchWindowMs,
   splitBatchedWakeRuns,
 } from "../myrmidon/wake-batch.js";
+// myrmidon(1.6.9, OPE-13419): disk budget of the physical bot volume at the run-start gate.
+import {
+  DISK_BUDGET_DEFERRAL_CONTEXT_KEY,
+  DISK_BUDGET_REASON,
+  diskBudgetDueAt,
+} from "../myrmidon/disk-budget/disk-budget.js";
+import { getDiskBudgetGate } from "../myrmidon/disk-budget/disk-budget-wiring.js";
 const RELEASE_FOCUS_CONTEXT_KEY = RELEASE_FOCUS_DEFERRAL_CONTEXT_KEY;
 // Recheck ladder of a deferred run, like the model channel pause: 2, 5, 10, then 30 minutes.
 const RELEASE_FOCUS_RECHECK_LADDER_MS = [2, 5, 10, 30].map((minutes) => minutes * 60_000);
@@ -1156,6 +1174,11 @@ import {
   appendOwnerViaBotBlock,
   buildOwnerViaBotPromptBlock,
 } from "../myrmidon/owner-delivery/owner-message.js";
+import {
+  interactionWakeBypassesDailyRunLimit,
+  readInteractionPendingWakeCardId,
+  resolveInteractionWakeBypassCap,
+} from "../myrmidon/interaction-wake-daily-limit.js";
 import {
   looksLikeOwnerExplainWake,
   looksLikePendingInteractionAddresseeWake,
@@ -12783,18 +12806,28 @@ export function heartbeatService(
     runId: string | null;
     activitySource: "manual" | "scheduled";
   }) {
-    await db
+    if (!input.claimed.monitorNextCheckAt) return { outcome: "skipped" as const, reason: "monitor_changed" };
+    const clearedPatch = buildIssueMonitorClearedPatch({
+      issue: input.claimed,
+      policy: input.policy,
+      clearReason: input.clearReason,
+      clearedAt: input.now,
+    });
+    const [cleared] = await db
       .update(issues)
       .set({
-        ...buildIssueMonitorClearedPatch({
-          issue: input.claimed,
-          policy: input.policy,
-          clearReason: input.clearReason,
-          clearedAt: input.now,
-        }),
+        ...clearedPatch,
+        executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(clearedPatch.executionState?.monitor ?? null)}::jsonb, true)`,
+        executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
         updatedAt: input.now,
       })
-      .where(eq(issues.id, input.claimed.id));
+      .where(and(
+        eq(issues.id, input.claimed.id),
+        eq(issues.monitorNextCheckAt, input.claimed.monitorNextCheckAt),
+        eq(issues.monitorWakeRequestedAt, input.now),
+      ))
+      .returning({ id: issues.id });
+    if (!cleared) return { outcome: "skipped" as const, reason: "monitor_changed" };
 
     await logActivity(db, {
       companyId: input.claimed.companyId,
@@ -12894,9 +12927,7 @@ export function heartbeatService(
       Boolean(reviewParticipantAgentId);
     const isReviewRecoveryMonitor =
       isProviderQuotaReviewMonitor || isReviewCiWaitMonitor;
-    const targetAgentId = isReviewRecoveryMonitor
-      ? reviewParticipantAgentId
-      : claimed.assigneeAgentId;
+    const targetAgentId = reviewParticipantAgentId ?? claimed.assigneeAgentId;
     if (!targetAgentId) {
       throw conflict("Issue monitor has no agent target");
     }
@@ -12953,18 +12984,26 @@ export function heartbeatService(
       limitMonitor?.serviceName === REVIEW_CI_WAIT_MONITOR_SERVICE_NAME &&
       !reviewParticipantAgentId
     ) {
-      await db
+      const clearedPatch = buildIssueMonitorClearedPatch({
+        issue: claimed,
+        policy,
+        clearReason: "dispatch_skipped",
+        clearedAt: input.now,
+      });
+      const [cleared] = await db
         .update(issues)
         .set({
-          ...buildIssueMonitorClearedPatch({
-            issue: claimed,
-            policy,
-            clearReason: "dispatch_skipped",
-            clearedAt: input.now,
-          }),
+          ...clearedPatch,
+          executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(clearedPatch.executionState?.monitor ?? null)}::jsonb, true)`,
+          executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
           updatedAt: input.now,
         })
-        .where(eq(issues.id, claimed.id));
+        .where(and(
+          eq(issues.id, claimed.id),
+          eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+          eq(issues.monitorWakeRequestedAt, input.now),
+        )).returning({ id: issues.id });
+      if (!cleared) return { outcome: "skipped" as const, reason: "monitor_changed" };
       await logActivity(db, {
         companyId: claimed.companyId,
         actorType: input.actorType,
@@ -13064,6 +13103,11 @@ export function heartbeatService(
           const { createReviewPullRequestCiResolver, createReviewHeadFailedChecksResolver } = await import(
             "../myrmidon/review-stage-recovery/github-ci.js"
           );
+          // OPE-15004: the monitor tick is a non-admission reader and shares the
+          // resolver's process read cache; its job is only to decide when the
+          // reviewer's own decision happens, and that decision meets the fresh
+          // write gate. A fresh read on every tick is what drained the shared
+          // review budget (OPE-12397 kept these reads cached).
           const ci = await createReviewPullRequestCiResolver({ db })({
             companyId: claimed.companyId,
             issueId: claimed.id,
@@ -13339,12 +13383,17 @@ export function heartbeatService(
           const backoffMs = Math.min(10 * 60_000, 30_000 * Math.pow(2, Math.min(attempt, 4)));
           const nextCheckAt = new Date(input.now.getTime() + backoffMs);
 
-          await db.update(issues).set({
+          const [deferred] = await db.update(issues).set({
             monitorNextCheckAt: nextCheckAt,
             monitorAttemptCount: nextAttemptCount,
             monitorWakeRequestedAt: null,
             updatedAt: input.now,
-          }).where(eq(issues.id, claimed.id));
+          }).where(and(
+            eq(issues.id, claimed.id),
+            eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+            eq(issues.monitorWakeRequestedAt, input.now),
+          )).returning({ id: issues.id });
+          if (!deferred) return { outcome: "skipped" as const, reason: "monitor_changed" };
 
           await logActivity(db, {
             companyId: claimed.companyId,
@@ -13545,17 +13594,25 @@ export function heartbeatService(
         });
       }
 
+      const triggeredPatch = buildIssueMonitorTriggeredPatch({
+        issue: claimed,
+        policy,
+        triggeredAt: input.now,
+      });
       await db
         .update(issues)
         .set({
-          ...buildIssueMonitorTriggeredPatch({
-            issue: claimed,
-            policy,
-            triggeredAt: input.now,
-          }),
+          ...triggeredPatch,
+          // A reassignment may have changed the review participant since claim.
+          executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(triggeredPatch.executionState?.monitor ?? null)}::jsonb, true)`,
+          executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
           updatedAt: new Date(),
         })
-        .where(eq(issues.id, claimed.id));
+        .where(and(
+          eq(issues.id, claimed.id),
+          eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+          eq(issues.monitorWakeRequestedAt, input.now),
+        ));
 
       await logActivity(db, {
         companyId: claimed.companyId,
@@ -13582,18 +13639,26 @@ export function heartbeatService(
     } catch (err) {
       if (err instanceof HttpError && err.status >= 400 && err.status < 500) {
         if (input.clearOnClientError) {
-          await db
+          const clearedPatch = buildIssueMonitorClearedPatch({
+            issue: claimed,
+            policy,
+            clearReason: "dispatch_skipped",
+            clearedAt: input.now,
+          });
+          const [cleared] = await db
             .update(issues)
             .set({
-              ...buildIssueMonitorClearedPatch({
-                issue: claimed,
-                policy,
-                clearReason: "dispatch_skipped",
-                clearedAt: input.now,
-              }),
+              ...clearedPatch,
+              executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(clearedPatch.executionState?.monitor ?? null)}::jsonb, true)`,
+              executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
               updatedAt: new Date(),
             })
-            .where(eq(issues.id, claimed.id));
+            .where(and(
+              eq(issues.id, claimed.id),
+              eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+              eq(issues.monitorWakeRequestedAt, input.now),
+            )).returning({ id: issues.id });
+          if (!cleared) return { outcome: "skipped" as const, reason: "monitor_changed" };
 
           await logActivity(db, {
             companyId: claimed.companyId,
@@ -14015,15 +14080,21 @@ export function heartbeatService(
           isNull(issues.assigneeUserId),
           sql`${issues.assigneeAgentId} is not null`,
           inArray(issues.status, ["in_progress", "in_review", "blocked"]),
-          // A review-stage monitor belongs to the active review participant;
-          // monitors on other statuses must not wake the returned assignee.
+          // A human review participant must not be replaced by the assignee.
+          // A provider-quota monitor kept only in execution_state names no
+          // persisted source run; the server-owned quota recovery cannot
+          // dispatch it, so the due set leaves it alone instead of waking the
+          // reviewer as an ordinary monitor.
           sql`not (
             ${issues.status} = 'in_review'
             and ${issues.executionState} ->> 'status' = 'pending'
             and ${issues.executionState} ->> 'currentStageType' = 'review'
-            and coalesce(${issues.executionPolicy} -> 'monitor' ->> 'serviceName', case when ${issues.executionState} -> 'monitor' ->> 'serviceName' = ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME} then ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME} end, '') not in (
-              ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME},
-              ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+            and (
+              coalesce(${issues.executionState} -> 'currentParticipant' ->> 'type', '') = 'user'
+              or (
+                coalesce(${issues.executionState} -> 'monitor' ->> 'serviceName', '') = ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+                and ${issues.executionPolicy} -> 'monitor' ->> 'serviceName' is distinct from ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+              )
             )
           )`,
           or(
@@ -14054,13 +14125,21 @@ export function heartbeatService(
               isNull(issues.assigneeUserId),
               sql`${issues.assigneeAgentId} is not null`,
               inArray(issues.status, ["in_progress", "in_review", "blocked"]),
+              // A human review participant must not be replaced by the assignee.
+              // A provider-quota monitor kept only in execution_state names no
+              // persisted source run; the server-owned quota recovery cannot
+              // dispatch it, so the due set leaves it alone instead of waking the
+              // reviewer as an ordinary monitor.
               sql`not (
                 ${issues.status} = 'in_review'
                 and ${issues.executionState} ->> 'status' = 'pending'
                 and ${issues.executionState} ->> 'currentStageType' = 'review'
-                and coalesce(${issues.executionPolicy} -> 'monitor' ->> 'serviceName', case when ${issues.executionState} -> 'monitor' ->> 'serviceName' = ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME} then ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME} end, '') not in (
-                  ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME},
-                  ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+                and (
+                  coalesce(${issues.executionState} -> 'currentParticipant' ->> 'type', '') = 'user'
+                  or (
+                    coalesce(${issues.executionState} -> 'monitor' ->> 'serviceName', '') = ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+                    and ${issues.executionPolicy} -> 'monitor' ->> 'serviceName' is distinct from ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+                  )
                 )
               )`,
               or(
@@ -15071,6 +15150,27 @@ export function heartbeatService(
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null);
       await closeWakeupOfTerminalRun(updated);
       scheduleRemoteGatewayCloseOfTerminalRun(updated, previousStatus?.status ?? null);
+      // myrmidon(1.8 KEY-TTL / OPE-12931): a genuine transition to a terminal
+      // status kills the run's LLM gateway key. setRunStatusFromLive can name
+      // a terminal status as its own source (idempotent "still failed"
+      // patches), so only a real status change revokes. Idempotent beside the
+      // dispatch-finally revoke: a second call deletes nothing.
+      if (
+        isHeartbeatRunTerminalStatus(updated.status) &&
+        (previousStatus?.status ?? null) !== updated.status
+      ) {
+        try {
+          await revokeRunGatewayKey(defaultAgentGatewayKeyDeps(db), {
+            companyId: updated.companyId,
+            runId: updated.id,
+          });
+        } catch (runKeyRevokeErr) {
+          logger.warn(
+            { err: runKeyRevokeErr, runId: updated.id, companyId: updated.companyId },
+            "failed to revoke heartbeat-run LLM gateway key",
+          );
+        }
+      }
     }
 
     return updated;
@@ -15166,6 +15266,27 @@ export function heartbeatService(
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null);
       await closeWakeupOfTerminalRun(updated);
       scheduleRemoteGatewayCloseOfTerminalRun(updated, previousStatus?.status ?? null);
+      // myrmidon(1.8 KEY-TTL / OPE-12931): a genuine transition to a terminal
+      // status kills the run's LLM gateway key. setRunStatusFromLive can name
+      // a terminal status as its own source (idempotent "still failed"
+      // patches), so only a real status change revokes. Idempotent beside the
+      // dispatch-finally revoke: a second call deletes nothing.
+      if (
+        isHeartbeatRunTerminalStatus(updated.status) &&
+        (previousStatus?.status ?? null) !== updated.status
+      ) {
+        try {
+          await revokeRunGatewayKey(defaultAgentGatewayKeyDeps(db), {
+            companyId: updated.companyId,
+            runId: updated.id,
+          });
+        } catch (runKeyRevokeErr) {
+          logger.warn(
+            { err: runKeyRevokeErr, runId: updated.id, companyId: updated.companyId },
+            "failed to revoke heartbeat-run LLM gateway key",
+          );
+        }
+      }
       return { run: updated, updated: true as const };
     }
 
@@ -15929,6 +16050,8 @@ export function heartbeatService(
       hasPauseHold: Boolean(pauseHold),
       hasActiveRoutineContinuation: Boolean(activeRoutineContinuation),
       hasOpenPullRequestWaitingForCi: Boolean(hasOpenPullRequestWaitingForCi),
+      // The board wakes an executor's `in_progress` task itself while the in-progress wake is on.
+      hasBoardContinuation: currentRunPrioritySettings().inProgressIdleWakeMinutes > 0,
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
     });
@@ -20042,6 +20165,37 @@ export function heartbeatService(
     return null;
   }
 
+  // myrmidon(INTERACTION-WAKES-DAILY-LIMIT): the daily cap verdict for one wake.
+  // A wake that announces a pending question card to its addressee passes the
+  // daily RUN limit (bounded per day, see interaction-wake-daily-limit.ts); every
+  // other wake, and the cost limit, are judged exactly as before.
+  async function getDailyCapBlockForWake(
+    agent: typeof agents.$inferSelect,
+    policy: ReturnType<typeof parseHeartbeatPolicy>,
+    wake: {
+      reason?: string | null;
+      contextSnapshot?: Record<string, unknown> | null;
+      payload?: Record<string, unknown> | null;
+    },
+    client: Pick<Db, "select"> = db,
+    excludeRunId: string | null = null,
+  ) {
+    const block = await getHeartbeatDailyCapBlock(agent, policy, { excludeRunId }, client);
+    if (!block || block.reason !== DAILY_RUN_LIMIT_RETRY_REASON) return block;
+    const cardId = readInteractionPendingWakeCardId(wake);
+    if (!cardId) return block;
+    const bypass = await interactionWakeBypassesDailyRunLimit(client, {
+      companyId: agent.companyId,
+      agentId: agent.id,
+      cardId,
+      cap: resolveInteractionWakeBypassCap(parseObject(parseObject(agent.runtimeConfig).heartbeat)),
+      window: currentUtcDayWindow(),
+      excludeRunId,
+    });
+    if (!bypass) return block;
+    return getHeartbeatDailyCapBlock(agent, policy, { checkRunCap: false, excludeRunId }, client);
+  }
+
   // myrmidon(OPE-11947): idle pickup asks for the cap verdict of one agent before it
   // offers the agent any task, instead of letting every offer end as a `skipped`
   // receipt row. It is the gate's own function over the agent's own policy.
@@ -20450,6 +20604,117 @@ export function heartbeatService(
             ),
           );
       }
+    }
+    return true;
+  }
+
+  // myrmidon(OPE-13419): disk budget at the one run-start gate. A queued run is
+  // not started and not cancelled while the physical bot volume has less than
+  // the minimum free percent (default 5): the same row waits in `scheduled_retry`
+  // (reason `disk_budget` in `contextSnapshot.diskBudgetDeferral` and in the run
+  // event), the due-retry sweep brings it back here and the volume is measured
+  // again, so the run resumes by itself once space is back. The first refusal
+  // asks the host for an extraordinary cleanup (single-flight and rate-limited
+  // in the gate; a failed request does not fail the run). The run's retry
+  // identity is left alone, as for the daily run limit. A wake made by a user is
+  // not held. An unmeasurable volume never blocks.
+  async function deferQueuedRunForDiskBudget(
+    run: typeof heartbeatRuns.$inferSelect,
+  ): Promise<boolean> {
+    let verdict: Awaited<ReturnType<ReturnType<typeof getDiskBudgetGate>["check"]>>;
+    try {
+      verdict = await getDiskBudgetGate().check();
+    } catch (error) {
+      logger.warn({ err: error, runId: run.id }, "disk budget check failed; not deferring");
+      return false;
+    }
+    if (!verdict.blocked) return false;
+    const wake = run.wakeupRequestId
+      ? await db
+          .select({ payload: agentWakeupRequests.payload })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+      : null;
+    if (parseObject(wake?.payload).manualUserWake === true) return false;
+    const now = new Date();
+    const context = parseObject(run.contextSnapshot);
+    const previous = parseObject(context[DISK_BUDGET_DEFERRAL_CONTEXT_KEY]);
+    const previousCount = Number(previous.count ?? 0);
+    const count = Number.isFinite(previousCount) ? previousCount : 0;
+    const isFirstDeferral = !previous.firstDeferredAt;
+    const dueAt = diskBudgetDueAt(now, count);
+    const freePercent = Math.round(verdict.freePercent * 10) / 10;
+    const deferred = await db
+      .update(heartbeatRuns)
+      .set({
+        status: "scheduled_retry",
+        scheduledRetryAt: dueAt,
+        ...runContextPersistenceFields({
+          ...context,
+          [DISK_BUDGET_DEFERRAL_CONTEXT_KEY]: {
+            reason: DISK_BUDGET_REASON,
+            count: count + 1,
+            firstDeferredAt: previous.firstDeferredAt ?? now.toISOString(),
+            deferredAt: now.toISOString(),
+            dueAt: dueAt.toISOString(),
+            freePercent,
+            minFreePercent: verdict.minFreePercent,
+            hostGc: verdict.gc,
+          },
+        }),
+        executionStatusDeliveryId: randomUUID(),
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.id, run.id),
+          eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.status, "queued"),
+        ),
+      )
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    // The run left `queued` under us (cancelled or deferred by a concurrent claim).
+    if (!deferred) return true;
+    // Once per run, not once per recheck: a re-park only moves the due time.
+    if (!isFirstDeferral) return true;
+    publishLiveEvent({
+      companyId: deferred.companyId,
+      type: "heartbeat.run.status",
+      payload: buildHeartbeatRunStatusLiveEventPayload(deferred),
+    });
+    await appendRunEvent(deferred, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: `Disk budget: ${freePercent}% free on the bot volume (minimum ${verdict.minFreePercent}%); the run waits until space is back (host cleanup: ${verdict.gc})`,
+      payload: {
+        reason: DISK_BUDGET_REASON,
+        freePercent,
+        minFreePercent: verdict.minFreePercent,
+        hostGc: verdict.gc,
+        scheduledRetryAt: dueAt.toISOString(),
+      },
+    });
+    // The wait is not execution: reset the issue lock (taken again at claim)
+    // unless the retry kind is only valid while it owns the lock.
+    const keepsIssueLock = [run.scheduledRetryReason, readNonEmptyString(context.retryReason)].some(
+      (reason) =>
+        reason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+        reason === AI_CONNECTION_BUSY_RETRY_REASON,
+    );
+    const issueId = readNonEmptyString(context.issueId);
+    if (!keepsIssueLock && issueId) {
+      await db
+        .update(issues)
+        .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: now })
+        .where(and(eq(issues.companyId, deferred.companyId), eq(issues.id, issueId), eq(issues.executionRunId, deferred.id)));
+      await db
+        .update(issues)
+        .set({ checkoutRunId: null, updatedAt: now })
+        .where(and(eq(issues.companyId, deferred.companyId), eq(issues.id, issueId), eq(issues.checkoutRunId, deferred.id)));
     }
     return true;
   }
@@ -20962,14 +21227,12 @@ export function heartbeatService(
       return null;
     }
 
-    const dailyCapBlock = await getHeartbeatDailyCapBlock(
+    const dailyCapBlock = await getDailyCapBlockForWake(
       agent,
       parseHeartbeatPolicy(agent),
-      {
-        excludeRunId: run.id,
-        checkRunCap: true,
-        checkCostCap: true,
-      },
+      { contextSnapshot: context },
+      db,
+      run.id,
     );
     if (dailyCapBlock) {
       // myrmidon(OPE-11718): the daily run limit defers the run to the reset.
@@ -20990,6 +21253,10 @@ export function heartbeatService(
 
     // myrmidon(OPE-13231): strict release focus.
     if (await deferQueuedRunForReleaseFocus(run)) return null;
+
+    // myrmidon(OPE-13419): below the minimum free space (default 5%) on the physical bot volume no run
+    // starts; it waits (reason disk_budget) while host GC is asked to clean up.
+    if (await deferQueuedRunForDiskBudget(run)) return null;
 
     const issueId = readNonEmptyString(context.issueId);
     if (issueId) {
@@ -21069,6 +21336,12 @@ export function heartbeatService(
       });
       if (staleness.outcome === "cancelled") {
         applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
+        if (staleness.errorCode === "issue_review_participant_changed" &&
+            readNonEmptyString(context.wakeReason) === "issue_monitor_due") {
+          // The cancellation transaction parked the handoff; drain that same
+          // durable intent instead of creating a second post-commit wake.
+          await releaseIssueExecutionAndPromote(run, { suppressImmediateRecovery: true });
+        }
         logger.info(
           { runId: run.id, issueId, errorCode: staleness.errorCode },
           "claimQueuedRun: cancelled stale queued run",
@@ -26459,6 +26732,7 @@ export function heartbeatService(
       }
       const runtime = await ensureRuntimeState(agent);
       const context = parseObject(run.contextSnapshot);
+      let issuedRunGatewayKey: string | null = null;
       const externalSessionOverride = parseObject(context.externalSession);
       const authorizeFailedChatRetryExecution = () =>
         db.transaction((tx) =>
@@ -29029,6 +29303,43 @@ export function heartbeatService(
         };
         secretKeys.add("PAPERCLIP_GITHUB_BROKER_TOKEN");
       }
+        // myrmidon(1.8 KEY-TTL / OPE-12931): the run talks to the LLM gateway
+        // under its own run-scoped virtual key: minted here for this runId
+        // only, projected into the adapter config env, and revoked at every
+        // terminal run outcome. Key management off (no gateway address or
+        // admin key secret) and hermes_gateway runs are skipped: the hermes
+        // lane gets its gateway credential from the bot-container profile
+        // compiler, which does not read adapter config env. Any failure here
+        // downgrades the run to "no run key" — run prep never fails for key
+        // management.
+        const runKeySettings = readGatewayKeySettings(process.env);
+        if (runKeySettings.canManageKeys && agent.adapterType !== "hermes_gateway") {
+          try {
+            const minted = await mintRunGatewayKey(defaultAgentGatewayKeyDeps(db), {
+              companyId: agent.companyId,
+              runId: run.id,
+            });
+            await createRunSecretRedactionRegistry(db).register(agent.companyId, run.id, minted.value);
+            const registeredRun = await getRun(run.id);
+            context.paperclipSecretRedactions = parseObject(registeredRun?.contextSnapshot).paperclipSecretRedactions;
+            issuedRunGatewayKey = minted.value;
+            const runKeyEnvName = runKeySettings.agentKeyEnv ?? "MYRMIDON_LLM_API_KEY";
+            runtimeConfig = {
+              ...runtimeConfig,
+              env: {
+                ...parseObject(runtimeConfig.env),
+                [runKeyEnvName]: minted.value,
+                ...(runKeySettings.baseUrl ? { MYRMIDON_LITELLM_BASE_URL: runKeySettings.baseUrl } : {}),
+              },
+            };
+            secretKeys.add(runKeyEnvName);
+          } catch (mintErr) {
+            logger.warn(
+              { err: mintErr, runId: run.id, companyId: agent.companyId },
+              "failed to mint heartbeat-run LLM gateway key; the run continues without one",
+            );
+          }
+        }
       context.paperclipEnvironment = {
         id: selectedEnvironment.id,
         name: selectedEnvironment.name,
@@ -29127,6 +29438,9 @@ export function heartbeatService(
         })(),
       };
       context.paperclipWorkspaces = buildRunWorkspaceHints(resolvedWorkspace);
+      // myrmidon(1.6.9 NO-COPIES-FOR-REVIEWERS-LEADS): the agent's role (its caste key) for the
+      // gateway adapter, whose execution context carries only id, name and adapter config of the agent.
+      context.paperclipAgentRole = agent.role ?? "";
       // myrmidon(1.6.5-BOT-DISK-H4b): the instance default repository, the gateway
       // adapter's last-resort source of the run's `workspace.repo` (after the
       // project workspace). Best effort: a settings read failure leaves it unset.
@@ -29609,7 +29923,10 @@ export function heartbeatService(
           await getCurrentUserRedactionOptions();
         const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
           const sanitizedChunk = compactRunLogChunk(
-            redactCurrentUserText(chunk, currentUserRedactionOptions),
+            redactRegisteredSecretValues(
+              redactCurrentUserText(chunk, currentUserRedactionOptions),
+              issuedRunGatewayKey ? [issuedRunGatewayKey] : [],
+            ),
           );
           if (sanitizedChunk) runGuard.event();
           // myrmidon(DM-PROGRESS): Hermes tool lines feed the step history of
@@ -31460,6 +31777,17 @@ export function heartbeatService(
             logger.warn(
               { err: revokeErr, runId: run.id, companyId: agent.companyId },
               "failed to revoke heartbeat-run MCP gateway tokens",
+            );
+          }
+          try {
+            await revokeRunGatewayKey(defaultAgentGatewayKeyDeps(db), {
+              companyId: agent.companyId,
+              runId: run.id,
+            });
+          } catch (runKeyRevokeErr) {
+            logger.warn(
+              { err: runKeyRevokeErr, runId: run.id, companyId: agent.companyId },
+              "failed to revoke heartbeat-run LLM gateway key",
             );
           }
         }
@@ -34014,6 +34342,71 @@ export function heartbeatService(
           });
           return null;
         }
+      }
+    }
+
+
+    // myrmidon(EMPTY-WAKES-CI-UNREADY): the one point where every automatic wake of a
+    // review participant or of an executor waiting for its own CI is decided. While the CI
+    // of the head is pending or cannot be read (GitHub limit), no wake row and no run is
+    // created; the sources ask again and `ci_completed` (not gated) wakes the task when
+    // the CI is final. A person's manual wake always passes.
+    if (
+      issueId &&
+      !opts.manualUserWake &&
+      opts.requestedByActorType !== "user" &&
+      readWakeCiUnreadyGateEnabled() &&
+      isWakeCiGatedReason(readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason)
+    ) {
+      const gatedReason = (readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason)!;
+      try {
+        const [gatedIssue] = await db
+          .select({
+            id: issues.id,
+            status: issues.status,
+            priority: issues.priority,
+            assigneeAgentId: issues.assigneeAgentId,
+            executionState: issues.executionState,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+          .limit(1);
+        if (gatedIssue) {
+          const { createReviewPullRequestCiResolver } = await import(
+            "../myrmidon/review-stage-recovery/github-ci.js"
+          );
+          const rateLimit = await import("./github-rate-limit.js");
+          // OPE-15004: the wake gate is a non-admission reader and shares the
+          // resolver's process read cache; it only defers a wake, it never
+          // decides the verdict (the fresh write gate does).
+          const decision = await decideWakeCiGate(
+            { agentId, companyId: agent.companyId, reason: gatedReason, issue: gatedIssue },
+            {
+              resolveCi: createReviewPullRequestCiResolver({ db }),
+              engineerWaitsForOwnPrCi: (companyId, id) => issueWaitsForOwnPrCi(db, companyId, id),
+              isRateLimited: rateLimit.isGitHubRateLimited,
+              rateLimitResetEpochSeconds: rateLimit.getGitHubRateLimitResetEpochSeconds,
+            },
+          );
+          if (decision.action === "defer") {
+            logger.info(
+              {
+                agentId,
+                issueId,
+                reason: gatedReason,
+                role: decision.role,
+                cause: decision.cause,
+                resumeAt: decision.resumeAt?.toISOString() ?? null,
+                counter: "myrmidon.heartbeat.wakes_deferred_ci_unready",
+              },
+              "myrmidon.wake_ci_unready: wake not created, the head CI is unfinished or unreadable",
+            );
+            return null;
+          }
+        }
+      } catch (err) {
+        // The gate must never kill a wake: an unexpected failure admits it as before.
+        logger.warn({ err, agentId, issueId }, "myrmidon.wake_ci_unready: gate failed, wake admitted");
       }
     }
 
@@ -36631,6 +37024,8 @@ export function heartbeatService(
                 status: heartbeatRuns.status,
                 errorCode: heartbeatRuns.errorCode,
                 finishedAt: heartbeatRuns.finishedAt,
+                startedAt: heartbeatRuns.startedAt,
+                createdAt: heartbeatRuns.createdAt,
                 contextSnapshot: heartbeatRuns.contextSnapshot,
                 stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
                 stderrExcerpt: heartbeatRuns.stderrExcerpt,
@@ -36688,6 +37083,35 @@ export function heartbeatService(
                 progressActivityRows,
                 () => agentId,
               );
+              // myrmidon(EMPTY-RUNS-1): a run that moved the head of the
+              // task's PR made progress, though the push leaves no row under it.
+              for (const runId of await readRunIdsWithPrHeadChange(
+                tx,
+                agent.companyId,
+                issue.id,
+                recentTerminalRuns,
+              )) {
+                runIdsWithIssueProgress.add(runId);
+              }
+              // myrmidon(OPE-14746): the streak the rewake throttle counts is
+              // streaks of runs that left nothing but their own words. A run
+              // whose only trace is its own comment ("waiting for ADM to
+              // restart CI", "disk quota") parked the task in place; it must
+              // not reset the throttle, or automatic continuations re-run the
+              // same parked task every minute. Everything the full progress
+              // read counts except `issue.comment_added` is substantive.
+              const runIdsWithNonCommentProgress = collectRunIdsWithIssueProgress(
+                progressActivityRows.filter((row) => row.action !== "issue.comment_added"),
+                () => agentId,
+              );
+              for (const runId of await readRunIdsWithPrHeadChange(
+                tx,
+                agent.companyId,
+                issue.id,
+                recentTerminalRuns,
+              )) {
+                runIdsWithNonCommentProgress.add(runId);
+              }
               const lastRunFinishedAt =
                 recentTerminalRuns[0]?.finishedAt ?? null;
               const latestRevision = readNonEmptyString(
@@ -36724,6 +37148,7 @@ export function heartbeatService(
                 freezeThreshold,
                 recentTerminalRuns,
                 runIdsWithIssueProgress,
+                runIdsWithNonCommentProgress,
                 // For an agent comment wake, the query excludes agent-authored
                 // activity while preserving genuinely new user/system input.
                 // Presentation/author metadata therefore cannot smuggle human
@@ -36883,10 +37308,10 @@ export function heartbeatService(
 
           const dailyCapBlock = opts.manualUserWake
             ? null
-            : await getHeartbeatDailyCapBlock(
+            : await getDailyCapBlockForWake(
               agent,
               policy,
-              {},
+              { reason, contextSnapshot: enrichedContextSnapshot, payload },
               tx,
             );
           if (dailyCapBlock) {
@@ -37394,10 +37819,10 @@ export function heartbeatService(
 
       const dailyCapBlock = opts.manualUserWake
         ? null
-        : await getHeartbeatDailyCapBlock(
+        : await getDailyCapBlockForWake(
           agent,
           policy,
-          {},
+          { reason, contextSnapshot: enrichedContextSnapshot, payload },
           tx,
         );
       if (dailyCapBlock) {

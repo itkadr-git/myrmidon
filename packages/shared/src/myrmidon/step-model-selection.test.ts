@@ -85,6 +85,24 @@ describe("resolveStepModelSelection", () => {
   });
 });
 
+describe("parallel run selection isolation", () => {
+  it("keeps each concurrent decision independent when rules change", async () => {
+    const rules = { modelGroup: "first", model: "model-a" };
+    const first = Promise.resolve().then(() => resolveStepModelSelection({ ...BASE, companyRule: { ...rules } }));
+    const second = Promise.resolve().then(() => resolveStepModelSelection({
+      ...BASE,
+      stepClass: "execution",
+      casteRule: { modelGroup: "second", model: "model-b" },
+    }));
+    const [review, execution] = await Promise.all([first, second]);
+    rules.model = "changed";
+    expect(review).toMatchObject({ stepClass: "review", modelGroup: "first", model: "model-a", reason: "company_rule" });
+    expect(execution).toMatchObject({ stepClass: "execution", modelGroup: "second", model: "model-b", reason: "caste_rule" });
+    expect(parseStepModelSelection(review)).toEqual(review);
+    expect(parseStepModelSelection(execution)).toEqual(execution);
+  });
+});
+
 describe("snapshot immutability", () => {
   it("rejects unknown extra keys (no secrets, no free-form growth)", () => {
     expect(

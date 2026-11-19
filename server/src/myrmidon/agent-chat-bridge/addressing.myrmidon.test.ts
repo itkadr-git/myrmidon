@@ -372,6 +372,39 @@ describe("myrmidon(X9a) resolveTelegramAddressee", () => {
   });
 
   describe("myrmidon(OPE-13033) resolveBridgeAddressee ambiguity and resolution", () => {
+    it("rejects mentions embedded in email and code-like fragments", async () => {
+      const nameDb = fakeDb({ [COMPANY_A]: [
+        { ...AGENT_A, name: "Mira", title: null, metadata: null, adapterConfig: null },
+      ] }).db;
+      const resolve = (text: string) => resolveBridgeAddressee(nameDb, {
+        companyId: COMPANY_A, endpointAgentId: AGENT_A.id, text,
+      });
+      for (const prefix of ["user", "2", "\u0416", "\u{10400}", "e\u0301", "_", "@", ".", "%", "+", "-"]) {
+        expect(await resolve(`${prefix}@Mira.example`), prefix).toEqual({ kind: "none" });
+      }
+      expect(await resolve("user@Mira.example then @Mira")).toEqual({
+        kind: "resolved", addressee: { agentId: AGENT_A.id, displayName: "Mira" },
+      });
+      for (const text of ["@Mira", "hello (@Mira)", "@Mira.example"]) {
+        expect(await resolve(text), text).toEqual({
+          kind: "resolved", addressee: { agentId: AGENT_A.id, displayName: "Mira" },
+        });
+      }
+    });
+
+    it("requires a complete name token, including hyphenated names", async () => {
+      const nameDb = fakeDb({ [COMPANY_A]: [
+        { ...AGENT_A, name: "Foo", title: null, metadata: null, adapterConfig: null },
+        { ...AGENT_B, name: "Foo-Bar", title: null, metadata: null, adapterConfig: null },
+      ] }).db;
+      const resolve = (text: string) => resolveBridgeAddressee(nameDb, {
+        companyId: COMPANY_A, endpointAgentId: AGENT_C.id, text,
+      });
+      expect(await resolve("@FooExtra hello")).toEqual({ kind: "none" });
+      expect(await resolve("@Foo-BarExtra hello")).toEqual({ kind: "none" });
+      expect(await resolve("@Foo hello")).toMatchObject({ kind: "resolved", addressee: { agentId: AGENT_A.id } });
+      expect(await resolve("@Foo-Bar hello")).toMatchObject({ kind: "resolved", addressee: { agentId: AGENT_B.id } });
+    });
     it("returns ambiguous with candidate names and IDs when multiple agents share the exact name or alias", async () => {
       const dbDuplicates = fakeDb({
         [COMPANY_A]: [

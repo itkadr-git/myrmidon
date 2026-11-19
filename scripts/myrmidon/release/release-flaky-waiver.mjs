@@ -30,6 +30,14 @@ export function validateEvidence(evidence, run, liveTagSha, tag) {
   if (run.head_sha !== evidence.headSha || Number(run.run_attempt) !== Number(evidence.attempt) || Number(evidence.attempt) <= Number(evidence.previousAttempt)) throw new Error("live run does not match the exact evidenced rerun attempt");
   if (run.status !== "completed" || run.conclusion !== "success") throw new Error("rerun is not completed successfully");
   if (!Array.isArray(evidence.jobs) || evidence.jobs.length === 0 || evidence.jobs.some((job) => job.status !== "completed" || job.conclusion !== "success" || Number(job.runAttempt) !== Number(evidence.attempt))) throw new Error("evidence must prove every job succeeded on the exact rerun attempt");
+  // Offline callers may omit jobs; when supplied, live results are authoritative.
+  if (Object.hasOwn(run, "jobs")) {
+    if (!Array.isArray(run.jobs) || run.jobs.length === 0 || run.jobs.some((job) =>
+      job.id == null || job.status !== "completed" || job.conclusion !== "success" ||
+      Number(job.run_attempt) !== Number(evidence.attempt) ||
+      !evidence.jobs.some((proof) => proof.id === job.id)
+    )) throw new Error("live jobs must all succeed on the exact attempt and appear in evidence");
+  }
 }
 export function waiverRecordFromEvidence(evidence, { reason, journal, actor = process.env.GITHUB_ACTOR || process.env.USER || "unknown", recordedAt = new Date().toISOString() }) {
   return {

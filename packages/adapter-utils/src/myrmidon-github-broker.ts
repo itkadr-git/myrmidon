@@ -366,10 +366,40 @@ function paperclipRepositoryFromOrigin(cwd, env, originalPath) {
   }
 }
 
+// Only known gh options may precede the first repository positional.
+function paperclipRepositoryFromPositional(args) {
+  if (args[0] !== 'repo' || !['view', 'clone'].includes(args[1])) return null;
+  const valued = new Set(['--branch', '-b', '--json', '--jq', '-q', '--template', '-t', '--upstream-remote-name', '-u']);
+  const switches = new Set(['--web', '-w', '--no-upstream']);
+  let positionalOnly = false;
+  for (let index = 2; index < args.length; index++) {
+    const arg = args[index];
+    if (!positionalOnly && arg === '--') { positionalOnly = true; continue; }
+    if (!positionalOnly && arg.startsWith('-')) {
+      if (valued.has(arg)) { index++; continue; }
+      if (switches.has(arg) || [...valued].some(flag => arg.startsWith(flag + '='))) continue;
+      return null;
+    }
+    const shorthand = /^(?:[A-Za-z0-9-]+\/[A-Za-z0-9._-]+|(?:www\.)?github\.com\/[A-Za-z0-9-]+\/[A-Za-z0-9._-]+)$/i.test(arg);
+    const url = args[1] === 'clone' && /^(?:https?:\/\/(?:www\.)?github\.com\/[A-Za-z0-9-]+\/[A-Za-z0-9._-]+|git@(?:www\.)?github\.com:[A-Za-z0-9-]+\/[A-Za-z0-9._-]+)$/i.test(arg);
+    return shorthand || url ? paperclipNormalizeRepository(arg) : null;
+  }
+  return null;
+}
+
 function paperclipTargetRepository(program, args, env, originalPath) {
   if (program === 'gh') {
     const explicit = paperclipRepositoryFromArgs(args) ?? (env.GH_REPO || null);
     if (explicit) return paperclipNormalizeRepository(explicit);
+    if (args[0] === 'api') {
+      for (const arg of args.slice(1)) {
+        if (arg === '--') break;
+        const match = /^\/?repos\/([^/?#]+)\/([^/?#]+)/.exec(arg);
+        if (match) return paperclipNormalizeRepository(match[1] + '/' + match[2]);
+      }
+    }
+    const positional = paperclipRepositoryFromPositional(args);
+    if (positional) return positional;
     return paperclipRepositoryFromOrigin(process.cwd(), env, originalPath);
   }
   const fromArgs = paperclipRepositoryFromGitArgs(args);

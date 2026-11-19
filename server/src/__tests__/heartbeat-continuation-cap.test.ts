@@ -26,7 +26,7 @@ import {
 import { heartbeatService, type WakeupOptions } from "../services/heartbeat.ts";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { runningProcesses } from "../adapters/index.ts";
-import { CONTINUATION_CAP_COMMENT } from "../myrmidon/continuation-cap.js";
+import { CONTINUATION_CAP_COMMENT, readContinuationCap } from "../myrmidon/continuation-cap.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -455,6 +455,23 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
       expect(skippedWith(await wakeRequests(ctx.agentId), "continuation_cap_reached")).toHaveLength(0);
       const [issue] = await db.select().from(issues).where(eq(issues.id, ctx.issueId));
       expect(issue?.blockerMetadata ?? null).toBeNull();
+    });
+
+    it("counts a PR head change by the webhook between the runs as external input: three runs with pushes are not capped", async () => {
+      const ctx = await seedCompanyAgentIssue("in_progress");
+      const { companyId, agentId, issueId } = ctx;
+      await seedThreeContinuationRuns(ctx);
+      await db.insert(activityLog).values([
+        { companyId, actorType: "system", actorId: "system:github-webhook", action: "issue.work_product_head_changed", entityType: "issue", entityId: issueId, createdAt: minutesAgo(45) },
+        { companyId, actorType: "system", actorId: "system:github-webhook", action: "issue.work_product_head_changed", entityType: "issue", entityId: issueId, createdAt: minutesAgo(35) },
+      ]);
+
+      const reading = await readContinuationCap(db, { companyId, issueId, agentId });
+
+      // Only the run after the latest push (30 minutes ago) counts.
+      expect(reading).toMatchObject({ count: 1, max: 3, capped: false });
+      expect(await continuationWake(agentId, issueId)).not.toBeNull();
+      expect(skippedWith(await wakeRequests(agentId), "continuation_cap_reached")).toHaveLength(0);
     });
 
     it("does not count a continuation that answers a resolved interaction card", async () => {

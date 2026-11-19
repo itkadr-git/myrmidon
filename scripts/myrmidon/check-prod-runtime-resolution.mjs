@@ -25,8 +25,9 @@
 //     whose `name` equals the specifier's package, resolved through its own
 //     `exports` map. Read that map, pick the target by
 //     `import`/`node`/`default` conditions (string targets and `./*`
-//     patterns included), then verify the target file exists and is
-//     compiled JS (not `.ts`, not under `/src/`). Reached package files are
+//     patterns included); without an exports map, resolve subpaths relative
+//     to the package root. Verify the target file exists and is compiled JS
+//     (not `.ts`, not under `/src/`). Reached package files are
 //     then walked recursively for their own imports;
 //   - compiled test artifacts (`*.test.js`, `*.myrmidon.test.js`) are never
 //     loaded by the production runtime and are skipped;
@@ -67,7 +68,7 @@ const TEST_ARTIFACT_EXT = /(?:^|\.)test\.js$|\.myrmidon\.test\.js$/;
  * Returns spans { start, end, value } so callers can inspect the code text
  * immediately around each literal.
  */
-export function scanCodeStringLiterals(text) {
+export function scanCodeStringLiterals(text, code = null) {
   const spans = [];
   const n = text.length;
   let i = 0;
@@ -76,25 +77,30 @@ export function scanCodeStringLiterals(text) {
   while (i < n) {
     const c = text[i];
     if (inLineComment) {
-      if (c === "\n") inLineComment = false;
+      if (c === "\n" || c === "\r") inLineComment = false;
+      else if (code) code[i] = " ";
       i += 1;
       continue;
     }
     if (inBlockComment) {
       if (c === "*" && text[i + 1] === "/") {
+        if (code) code[i] = code[i + 1] = " ";
         inBlockComment = false;
         i += 2;
         continue;
       }
+      if (code && c !== "\n" && c !== "\r") code[i] = " ";
       i += 1;
       continue;
     }
     if (c === "/" && text[i + 1] === "/") {
+      if (code) code[i] = code[i + 1] = " ";
       inLineComment = true;
       i += 2;
       continue;
     }
     if (c === "/" && text[i + 1] === "*") {
+      if (code) code[i] = code[i + 1] = " ";
       inBlockComment = true;
       i += 2;
       continue;
@@ -225,7 +231,9 @@ function lineAt(text, lineStarts, pos) {
  * with a string literal), "url" (new URL("...", import.meta.url)).
  */
 export function scanImports(text) {
-  const spans = scanCodeStringLiterals(text);
+  const code = text.split("");
+  const spans = scanCodeStringLiterals(text, code);
+  const context = code.join("");
   const lineStarts = [];
   for (let i = 0; i < text.length; i += 1) {
     if (text[i] === "\n") lineStarts.push(i + 1);
@@ -234,8 +242,8 @@ export function scanImports(text) {
   const seen = new Set();
   for (const span of spans) {
     if (span.value === "") continue;
-    const before = text.slice(Math.max(0, span.start - 80), span.start).replace(/\s+$/, "");
-    const after = text.slice(span.end, span.end + 60);
+    const before = context.slice(Math.max(0, span.start - 80), span.start).replace(/\s+$/, "");
+    const after = context.slice(span.end, span.end + 60);
     let kind = null;
     if (/import\s*\($/.test(before) && /^\s*[),]/.test(after)) {
       kind = "import"; // dynamic import("...")
@@ -318,26 +326,26 @@ function patternMatch(pattern, subpath) {
   return subpath.slice(head.length, subpath.length - tail.length);
 }
 
-function resolveConditions(obj) {
-  // Node picks the first matching condition in object insertion order;
-  // `types` is TypeScript-only and deliberately not a runtime condition.
-  for (const [key, value] of Object.entries(obj)) {
-    if (!RUNTIME_CONDITIONS.has(key)) continue;
-    if (typeof value === "string") return value;
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        const resolved =
-          typeof item === "string" ? item : item && typeof item === "object" ? resolveConditions(item) : null;
-        if (typeof resolved === "string") return resolved;
-      }
-      continue;
+function resolveConditions(value) {
+  if (value === null || typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    let result = null;
+    for (const item of value) {
+      const resolved = resolveConditions(item);
+      if (resolved === undefined) continue;
+      if (resolved !== null) return resolved;
+      result = null;
     }
-    if (value && typeof value === "object") {
-      const resolved = resolveConditions(value);
-      if (typeof resolved === "string") return resolved;
-    }
+    return result;
   }
-  return null;
+  if (typeof value !== "object") return null;
+  // Undefined means no condition matched; null is an explicit block.
+  for (const [key, target] of Object.entries(value)) {
+    if (!RUNTIME_CONDITIONS.has(key)) continue;
+    const resolved = resolveConditions(target);
+    if (resolved !== undefined) return resolved;
+  }
+  return undefined;
 }
 
 /**
@@ -353,38 +361,40 @@ export function matchExportsTarget(exportsField, main, subpath) {
       if (!/\.(?:js|mjs|cjs|ts|d\.ts)$/.test(entry)) entry += ".js";
       return entry;
     }
-    return subpath.slice(1); // "./lib/x.js" -> "lib/x.js"
+    return subpath.slice(2); // "./lib/x.js" -> "lib/x.js"
   }
   if (typeof exportsField === "string") {
     return subpath === "." ? exportsField : undefined;
   }
   if (Array.isArray(exportsField)) {
-    for (const item of exportsField) {
-      const resolved = matchExportsTarget(item, main, subpath);
-      if (typeof resolved === "string") return resolved;
-    }
-    return null;
+    return subpath === "." ? (resolveConditions(exportsField) ?? null) : undefined;
   }
   const keys = Object.keys(exportsField);
   const isSubpathMap = keys.length > 0 && keys.every((k) => k === "." || k.startsWith("./"));
   if (!isSubpathMap) {
     // Conditions object for the "." entry.
     if (subpath !== ".") return undefined;
-    return resolveConditions(exportsField);
+    return resolveConditions(exportsField) ?? null;
   }
-  const exact = exportsField[subpath];
-  if (exact !== undefined) {
-    return typeof exact === "string" ? exact : resolveConditions(exact);
+  if (Object.hasOwn(exportsField, subpath)) {
+    return resolveConditions(exportsField[subpath]) ?? null;
   }
-  for (const [key, value] of Object.entries(exportsField)) {
-    if (!key.includes("*")) continue;
-    const star = patternMatch(key, subpath);
-    if (star === null) continue;
-    const resolved = typeof value === "string" ? value : resolveConditions(value);
-    if (typeof resolved !== "string") continue;
-    return resolved.includes("*") ? resolved.replaceAll("*", star) : resolved;
+  let bestKey;
+  let bestMatch;
+  for (const key of keys) {
+    const starIndex = key.indexOf("*");
+    if (starIndex === -1 || key.indexOf("*", starIndex + 1) !== -1) continue;
+    const match = patternMatch(key, subpath);
+    if (match === null) continue;
+    const bestStar = bestKey?.indexOf("*") ?? -1;
+    if (bestKey === undefined || starIndex > bestStar || (starIndex === bestStar && key.length > bestKey.length)) {
+      bestKey = key;
+      bestMatch = match;
+    }
   }
-  return undefined;
+  if (bestKey === undefined) return undefined;
+  const target = resolveConditions(exportsField[bestKey]);
+  return typeof target === "string" ? target.replaceAll("*", bestMatch) : null;
 }
 
 function safeRealpath(p) {
@@ -572,7 +582,7 @@ function pluralRu(n, one, few, many) {
 
 function displayPath(file, cwd) {
   const rel = relative(cwd, file);
-  return rel.startsWith("..") ? file : rel;
+  return rel === ".." || rel.startsWith(`..${sep}`) ? file : rel;
 }
 
 export function formatFailures(failures, cwd = process.cwd()) {

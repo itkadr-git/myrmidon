@@ -74,7 +74,7 @@ export function extractChangelogSection(markdown, version) {
   if (start < 0) return null;
   const out = [];
   for (let i = start + 1; i < lines.length; i += 1) {
-    if (/^## /.test(lines[i])) break;
+    if (/^ {0,3}##[ \t]/.test(lines[i])) break;
     out.push(lines[i]);
   }
   const section = out.join("\n").trim();
@@ -86,6 +86,10 @@ const MANIFEST_ACCEPT =
   "application/vnd.docker.distribution.manifest.list.v2+json, " +
   "application/vnd.docker.distribution.manifest.v2+json";
 
+function validDigest(value) {
+  return typeof value === "string" && value.length === 71 && /^sha256:[0-9a-f]{64}$/i.test(value) && value.startsWith("sha256:") ? value : null;
+}
+
 /**
  * Resolves one component's index digest for the release version tag with the
  * read-only anonymous v2 API (the same probe as check-release-support.sh,
@@ -96,7 +100,7 @@ const MANIFEST_ACCEPT =
 export async function componentDigest(repository, version, { fetchImpl = fetch, registryState = null } = {}) {
   if (registryState) {
     // An offline simulation is authoritative: a repository it does not name is absent.
-    return Object.prototype.hasOwnProperty.call(registryState, repository) ? (registryState[repository] ?? null) : null;
+    return validDigest(Object.prototype.hasOwnProperty.call(registryState, repository) ? registryState[repository] : null);
   }
   const scope = `repository:itkadr-git/${repository}:pull`;
   const tokenUrl = `https://ghcr.io/token?scope=${encodeURIComponent(scope)}`;
@@ -109,7 +113,7 @@ export async function componentDigest(repository, version, { fetchImpl = fetch, 
       { headers: { Authorization: `Bearer ${token}`, Accept: MANIFEST_ACCEPT } },
     );
     if (!manifestResponse.ok) return null;
-    return manifestResponse.headers.get("docker-content-digest");
+    return validDigest(manifestResponse.headers.get("docker-content-digest"));
   } catch {
     return null;
   }

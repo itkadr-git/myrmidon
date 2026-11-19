@@ -15,6 +15,12 @@ Current implementation status:
 - Node.js 24.11+
 - pnpm 9+
 
+## Production Runtime Resolution
+
+The production runtime resolution check ignores JavaScript comments when it
+identifies import specifiers, including comments before unrelated strings.
+Run it with `node scripts/myrmidon/check-prod-runtime-resolution.mjs --dist server/dist`.
+
 ## Dependency Lockfile Policy
 
 GitHub Actions owns `pnpm-lock.yaml`.
@@ -61,7 +67,7 @@ This starts:
 
 `pnpm dev` runs the server in watch mode and restarts on changes from workspace packages (including adapter packages). Use `pnpm dev:once` to run without file watching.
 
-`pnpm dev:once` auto-applies pending local migrations by default before starting the dev server.
+`pnpm dev:once` auto-applies pending local migrations by default before starting the dev server. The dev runner stops before server startup if the migration status command fails or is terminated by a signal.
 
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Paperclip dev runner is already alive, Paperclip reports the existing process instead of starting a duplicate.
 

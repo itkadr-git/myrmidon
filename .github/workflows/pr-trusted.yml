@@ -293,6 +293,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -353,7 +354,7 @@ jobs:
         run: node --test ./scripts/__tests__/e2e-shard.test.mjs
 
       - name: Test release verify workflow wiring
-        run: node --test ./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/cloud-source-verification.test.mjs
+        run: node --test ./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/cloud-source-verification.test.mjs ./scripts/source-jobs-bound.myrmidon.test.mjs ./scripts/source-run-reread.test.mjs
 
       - name: Test standalone package build concurrency
         run: node --test ./scripts/__tests__/build-standalone-concurrency.test.mjs
@@ -416,6 +417,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       # Share the checked-in lockfile key with master. PR merge refs must not
@@ -522,6 +524,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       # Share the checked-in lockfile key with master. PR merge refs must not
@@ -654,6 +657,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       # Share the checked-in lockfile key with master. PR merge refs must not
@@ -746,6 +750,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       # Share the checked-in lockfile key with master. PR merge refs must not
@@ -830,6 +835,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       # Share the checked-in lockfile key with master. PR merge refs must not
@@ -886,6 +892,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       # Share the checked-in lockfile key with master. PR merge refs must not
@@ -983,6 +990,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
 
       # Share the checked-in lockfile key with master. PR merge refs must not

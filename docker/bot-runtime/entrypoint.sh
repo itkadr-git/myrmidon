@@ -793,16 +793,40 @@ git_objects_self_check() {
 # devbuild offload; other bot roles must not make an SSH/rsync startup probe.
 # MYRMIDON_DEVBUILD_CHECK=0 disables the probe (tests, manual runs).
 devbuild_self_check() {
-  local out_dir="${HERMES_HOME}/.myrmidon" now ok=false err=""
+  local out_dir="${HERMES_HOME}/.myrmidon" now ok=false err="" tmp_base="" chk_dir="" chk_ws=""
   [ -n "${DEVBUILD_HOST:-}" ] || return 0
   if ! command -v devbuild >/dev/null 2>&1; then
     err="no devbuild command on PATH (base image?) — DEVBUILD_HOST is set but nothing can use it"
     log "ERROR: devbuild self-check: ${err}"
-  elif err="$(DEVBUILD_WORKSPACE="${DEVBUILD_CHECK_WORKSPACE:-/workspace}" timeout 120 devbuild 'true' 2>&1)"; then
-    ok=true
-    log "devbuild self-check ok: ${DEVBUILD_USER:-devbuild}@${DEVBUILD_HOST} ${DEVBUILD_BASE:-/srv/devbuild}"
   else
-    log "ERROR: devbuild self-check failed: devbuild 'true' -> $(printf '%s' "${err}" | tail -n 2 | tr '\n' ' ')"
+    # myrmidon(1.6.9 DEVBUILD-SELFCHECK): devbuild rsyncs DEVBUILD_WORKSPACE to the
+    # build host, so the default probe runs on an EMPTY scratch directory — never
+    # on /workspace (3-7 GB per bot, 38 GB in 2 h on 15.11 filled the build host
+    # disk). The directory has a fixed basename so the host keeps one empty copy
+    # per bot instead of a new one per start. An explicit DEVBUILD_CHECK_WORKSPACE
+    # is respected as given.
+    if [ -z "${DEVBUILD_CHECK_WORKSPACE:-}" ]; then
+      tmp_base="${TMPDIR:-${HERMES_HOME}/cache/scratch}"
+      mkdir -p "${tmp_base}" 2>/dev/null || true
+      if chk_dir="$(mktemp -d "${tmp_base}/devbuild-check.XXXXXX" 2>/dev/null)" \
+        && chk_ws="${chk_dir}/devbuild-selfcheck" && mkdir -p "${chk_ws}"; then
+        :
+      else
+        chk_ws=""
+        err="cannot create the empty scratch directory under ${tmp_base} for the devbuild probe"
+      fi
+    else
+      chk_ws="${DEVBUILD_CHECK_WORKSPACE}"
+    fi
+    if [ -z "${chk_ws}" ]; then
+      log "ERROR: devbuild self-check failed: ${err}"
+    elif err="$(DEVBUILD_WORKSPACE="${chk_ws}" timeout 120 devbuild 'true' 2>&1)"; then
+      ok=true
+      log "devbuild self-check ok: ${DEVBUILD_USER:-devbuild}@${DEVBUILD_HOST} ${DEVBUILD_BASE:-/srv/devbuild}"
+    else
+      log "ERROR: devbuild self-check failed: devbuild 'true' -> $(printf '%s' "${err}" | tail -n 2 | tr '\n' ' ')"
+    fi
+    [ -z "${chk_dir}" ] || rm -rf "${chk_dir}"
   fi
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if mkdir -p "${out_dir}" 2>/dev/null; then

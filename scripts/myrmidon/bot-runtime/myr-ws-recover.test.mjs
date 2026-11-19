@@ -444,3 +444,96 @@ describe("myr-ws repair (botd) — copies nobody is about to open", { skip: !has
     assert.equal(JSON.parse(r.stdout).ok, true);
   });
 });
+
+describe("myr-ws repair (botd) — a copy that inherited core.bare=true from its base", { skip: !hasGit }, () => {
+  // Live shape (bot runner, git 2.34.1): the class-D base is bare and carries
+  // extensions.worktreeConfig=true, so a linked worktree inherits core.bare=true
+  // (git never writes the admin dir's config.worktree in `worktree add`). The
+  // copy answers rev-parse but is not a work tree; a create that died in
+  // finish* leaves a registered copy that contains only its .git file.
+  const repair = (args, extra) => wsRepair.repair({ positionals: args, env: ctx.env }, { ...ctx, ...extra });
+
+  /** The live-shaped base: bare + extensions.worktreeConfig=true. */
+  function bareBase() {
+    const base = baseOf();
+    ctx.ensureBase(REPO);
+    git(base, "config", "extensions.worktreeConfig", "true");
+    return base;
+  }
+  /** The corpse a failed open leaves on such a base, registered as class E. */
+  function bareCorpse(key) {
+    const base = bareBase();
+    const dir = path.join(ctx.workspaceRoot, key);
+    fs.mkdirSync(ctx.workspaceRoot, { recursive: true });
+    git(base, "worktree", "add", "--no-checkout", "-b", `bot/${key}`, dir, "refs/remotes/origin/main");
+    const regPath = path.join(ctx.home, "ws-registry.json");
+    const reg = fs.existsSync(regPath) ? JSON.parse(fs.readFileSync(regPath, "utf8")) : { version: 1, entries: [] };
+    reg.entries.push({ key, repo: REPO, path: dir, class: "E", branch: `bot/${key}`, openedAt: "2026-11-18T00:00:00Z" });
+    fs.writeFileSync(regPath, JSON.stringify(reg, null, 2));
+    return dir;
+  }
+  const adminDirOf = (dir) => fs.realpathSync(git(dir, "rev-parse", "--absolute-git-dir"));
+  /** A fake /proc with one idle process (cwd outside any copy): copies are not busy. */
+  function idleProc() {
+    const proc = path.join(ctx.root, "proc-idle");
+    fs.rmSync(proc, { recursive: true, force: true });
+    fs.mkdirSync(path.join(proc, "1000"), { recursive: true });
+    fs.symlinkSync(os.tmpdir(), path.join(proc, "1000", "cwd"));
+    return proc;
+  }
+
+  it("heals a registered half-created copy: work tree back, checkout materialized, nothing reset or deleted", async () => {
+    const dir = bareCorpse("ABC-331");
+    const head = git(dir, "rev-parse", "HEAD");
+    const originReadme = git(baseOf(), "show", "refs/remotes/origin/main:README.md");
+    assert.equal(git(dir, "rev-parse", "--is-bare-repository"), "true");
+    assert.deepEqual(fs.readdirSync(dir), [".git"]);
+    // a file the interrupted run wrote into the copy by hand: it must survive
+    fs.writeFileSync(path.join(dir, "notes.md"), "my notes\n");
+
+    const res = await repair([], { procRoot: idleProc() });
+    assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+    assert.equal(res.repaired.length, 1);
+    assert.equal(res.repaired[0].key, "ABC-331");
+    assert.deepEqual(
+      res.repaired[0].recovered.map((r) => [r.problem, r.action]),
+      [["bare_worktree", "worktree_config_fixed"]],
+    );
+    assert.match(res.human, /bare_worktree -> worktree_config_fixed/);
+
+    // a usable work tree: status runs, the checkout a fresh open would create is there
+    assert.equal(git(dir, "rev-parse", "--is-bare-repository"), "false");
+    assert.equal(git(dir, "rev-parse", "--abbrev-ref", "HEAD"), "bot/ABC-331");
+    assert.equal(git(dir, "rev-parse", "HEAD"), head, "HEAD is not moved");
+    assert.equal(fs.readFileSync(path.join(dir, "README.md"), "utf8"), `${originReadme}\n`);
+    assert.equal(fs.readFileSync(path.join(dir, "notes.md"), "utf8"), "my notes\n", "a user file of the copy survives");
+    // the index matches HEAD again: nothing staged as deleted, no unresolved stages
+    assert.equal(git(dir, "status", "--porcelain"), "?? notes.md");
+    assert.equal(git(dir, "ls-files", "-u"), "");
+    // the fix lives in the copy's config.worktree; the base stays bare and untouched
+    assert.match(fs.readFileSync(path.join(adminDirOf(dir), "config.worktree"), "utf8"), /bare\s*=\s*false/);
+    assert.equal(git(baseOf(), "rev-parse", "--is-bare-repository"), "true");
+    assert.equal(git(baseOf(), "config", "core.bare"), "true");
+    assert.ok(!fs.existsSync(path.join(baseOf(), "config.worktree")), "the common config must not gain a worktree file");
+
+    // idempotent: the next pass finds nothing to repair
+    const again = await repair([], { procRoot: idleProc() });
+    assert.equal(again.repaired.length, 0);
+    assert.match(again.human, /nothing to repair/);
+  });
+
+  it("does not touch a bare copy a process works in", async () => {
+    const dir = bareCorpse("ABC-332");
+    const proc = path.join(ctx.root, "proc");
+    fs.rmSync(proc, { recursive: true, force: true });
+    fs.mkdirSync(path.join(proc, "1001"), { recursive: true });
+    fs.symlinkSync(path.join(dir, "sub"), path.join(proc, "1001", "cwd"));
+    const res = await repair([], { procRoot: proc });
+    assert.equal(res.repaired.length, 0);
+    assert.equal(res.skipped.length, 1);
+    assert.match(res.skipped[0].reason, /process is running/);
+    // left exactly as it was
+    assert.equal(git(dir, "rev-parse", "--is-bare-repository"), "true");
+    assert.ok(!fs.existsSync(path.join(adminDirOf(dir), "config.worktree")));
+  });
+});

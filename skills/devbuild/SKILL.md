@@ -103,6 +103,7 @@ near-instant.
 | `rsync: command not found` | Image too old; needs `rsync` in the dev runtime image. |
 | First run is slow | Caches and the full repo (incl. `.git`) transfer once; subsequent runs transfer only the diff. |
 | Command not found remotely | The command runs in the VPS's own shell; check the toolchain exists there (`devbuild 'node --version'`). |
+| `vitest`/`tsc` not found remotely | The copy has no `node_modules`: the client installs them itself (`pnpm install --frozen-lockfile --prefer-offline` from the shared store). If that is switched off (`DEVBUILD_NO_AUTO_INSTALL=1`), run `devbuild 'pnpm install && …'`. |
 
 ## Limits
 

@@ -3,10 +3,18 @@
 #
 # MERGE-ON-RED-MAIN GATE (OPE-10789):
 # Prevents GitHub auto-merge (and bot direct merges) from merging pull requests
-# into `main` when the latest COMPLETED Myrmidon CI run on `main` is red
-# (failed, timed out, cancelled). OPE-12889: a queued/in_progress run is not red —
+# into `main` when the latest COMPLETED, non-cancelled Myrmidon CI run on `main`
+# is red (failure, timed_out, startup_failure). OPE-12889: a queued/in_progress run is not red —
 # the verdict is taken from the last completed main CI run, so the ~40-minute
 # main CI window after each merge no longer blocks green PRs.
+#
+# OPE-13461: `cancelled` and `skipped` runs give NO verdict. Merges into main come
+# every few minutes and each one cancels the running main CI (concurrency), so
+# most completed runs are `cancelled`. The verdict is the newest completed run
+# with a real result (success, or failure/timed_out/startup_failure = red);
+# cancelled/skipped runs are skipped over. Only runs created within
+# MAIN_GREEN_MAX_AGE_HOURS (default 24) count. If there is no such run at all,
+# the gate fails closed (RED, "no non-cancelled completed run").
 #
 # On 03.11 (OPE-10788), main broke at 12:34 IRK. GitHub native auto-merge
 # (autoMergeRequest) only evaluates PR-level status checks (e.g. CI result on the PR
@@ -24,7 +32,7 @@
 #   - Exits 0 (GREEN) when the verdict run has conclusion: success AND no open
 #     issue labelled `main-red` exists.
 #   - Exits 1 (RED) when the verdict run concluded with
-#     failure/cancelled/timed_out/etc. (no in-flight run on the current HEAD to
+#     failure/timed_out/startup_failure/etc. (no in-flight run on the current HEAD to
 #     defer to, and no completed success to fall back to), an issue labelled
 #     `main-red` is open, or no completed run exists at all (fail closed).
 #   - Fails closed (RED) on API / auth errors so network/token glitches never
@@ -40,6 +48,7 @@
 # Environment:
 #   GITHUB_REPOSITORY  owner/repo (defaults to origin)
 #   BASE_BRANCH        base branch to check (defaults to main)
+#   MAIN_GREEN_MAX_AGE_HOURS  age window for verdict runs (default 24)
 #   GH_TOKEN / GITHUB_TOKEN  GitHub token (read-only checks sufficient)
 
 set -euo pipefail
@@ -52,7 +61,7 @@ while (($#)); do
   case "$1" in
     --check) mode="check"; shift ;;
     --status) mode="status"; shift ;;
-    -h|--help) sed -n '2,46p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,54p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -108,30 +117,58 @@ fi
 # the ~40-minute main CI window after a merge does not block PRs.
 head_sha="$(gh api "repos/$repo/commits/$base_branch" --jq '.sha' 2>/dev/null || true)"
 
-runs_json="$(gh api "repos/$repo/actions/workflows/myrmidon-ci.yml/runs?branch=$base_branch&event=push&per_page=20" 2>/dev/null || true)"
+max_age_hours="${MAIN_GREEN_MAX_AGE_HOURS:-24}"
+[[ "$max_age_hours" =~ ^[0-9]+$ ]] || max_age_hours=24
 
-if [[ -z "$runs_json" || "$(jq -r '.workflow_runs // empty' <<<"$runs_json")" == "[]" ]]; then
-  runs_json="$(gh api "repos/$repo/actions/runs?branch=$base_branch&event=push&per_page=20" 2>/dev/null || true)"
+# OPE-13461: main CI runs are mostly cancelled by the next merge, so fetch a deep
+# history (per_page=100) and, when page 1 has no non-cancelled completed run,
+# a second page.
+fetch_runs() {
+  local page="$1" out
+  out="$(gh api "repos/$repo/actions/workflows/myrmidon-ci.yml/runs?branch=$base_branch&event=push&per_page=100&page=$page" 2>/dev/null || true)"
+  if [[ -z "$out" || "$(jq -r '.workflow_runs // empty' <<<"$out")" == "[]" ]]; then
+    out="$(gh api "repos/$repo/actions/runs?branch=$base_branch&event=push&per_page=100&page=$page" 2>/dev/null || true)"
+  fi
+  printf '%s' "$out"
+}
+
+has_verdict_run() {
+  jq -e --argjson maxage "$max_age_hours" '
+    [.workflow_runs[]? | select(.status == "completed"
+      and (.conclusion != null) and .conclusion != "cancelled" and .conclusion != "skipped"
+      and ((.created_at | fromdateiso8601) >= (now - $maxage * 3600)))] | length > 0
+  ' <<<"$1" >/dev/null 2>&1
+}
+
+runs_json="$(fetch_runs 1)"
+if ! has_verdict_run "$runs_json" && [[ "$(jq -r '(.workflow_runs // []) | length' <<<"$runs_json" 2>/dev/null || echo 0)" -ge 100 ]]; then
+  page2="$(fetch_runs 2)"
+  if [[ -n "$page2" ]]; then
+    runs_json="$(jq -s '{workflow_runs: ((.[0].workflow_runs // []) + (.[1].workflow_runs // []))}' <<<"$runs_json"$'\n'"$page2" 2>/dev/null || printf '%s' "$runs_json")"
+  fi
 fi
 
 select_completed="$(cat <<'JQ'
+  def fresh: ((.created_at | fromdateiso8601) >= (now - MAXAGE * 3600));
   def match_workflow:
     (.path == null or .path == ".github/workflows/myrmidon-ci.yml" or .name == null or .name == "Myrmidon CI");
   (
-    [.workflow_runs[]? | select(.head_branch == "BASEBRANCH" and (.event == null or .event == "push") and match_workflow and EXTRA and .status == "completed")]
+    [.workflow_runs[]? | select(.head_branch == "BASEBRANCH" and (.event == null or .event == "push") and match_workflow and EXTRA and .status == "completed" and fresh)]
     | sort_by(.created_at) | reverse | .[0]
   ) // (
-    [.workflow_runs[]? | select(.head_branch == "BASEBRANCH" and (.event == null or .event == "push") and EXTRA and .status == "completed")]
+    [.workflow_runs[]? | select(.head_branch == "BASEBRANCH" and (.event == null or .event == "push") and EXTRA and .status == "completed" and fresh)]
     | sort_by(.created_at) | reverse | .[0]
   ) // empty
 JQ
 )"
 
-latest_run="$(sed -e 's#BASEBRANCH#'"$base_branch"'#g' -e 's#EXTRA#true#' <<<"$select_completed" | jq -r "$(cat)" <<<"$runs_json")"
+# Verdict run: newest completed run that is NOT cancelled/skipped (OPE-13461).
+verdict_extra='(.conclusion != null and .conclusion != "cancelled" and .conclusion != "skipped")'
+latest_run="$(sed -e 's#BASEBRANCH#'"$base_branch"'#g' -e 's#MAXAGE#'"$max_age_hours"'#g' -e 's#EXTRA#'"$verdict_extra"'#' <<<"$select_completed" | jq -r "$(cat)" <<<"$runs_json")"
 
 # Latest COMPLETED run with conclusion success — the fallback verdict while the
 # current HEAD has CI in flight (OPE-12889 review).
-last_success="$(sed -e 's#BASEBRANCH#'"$base_branch"'#g' -e 's#EXTRA#.conclusion == "success"#' <<<"$select_completed" | jq -r "$(cat)" <<<"$runs_json")"
+last_success="$(sed -e 's#BASEBRANCH#'"$base_branch"'#g' -e 's#MAXAGE#'"$max_age_hours"'#g' -e 's#EXTRA#.conclusion == "success"#' <<<"$select_completed" | jq -r "$(cat)" <<<"$runs_json")"
 
 # Runs on the current HEAD that have not completed yet (queued/in_progress).
 # OPE-12889 review: their existence (not their state) decides whether the
@@ -154,7 +191,7 @@ head_newest="$(jq -r --arg sha "$head_sha" '
 pending_info="$(jq -r '
   (
     [.workflow_runs[]? | select(.status != "completed")]
-    | sort_by(.created_at) | reverse | .[0]
+    | sort_by(.created_at) | reverse | .[0] | select(. != null)
     | "run #\(.id) is \(.status)"
   ) // empty
 ' <<<"$runs_json")"
@@ -200,10 +237,15 @@ if [[ -n "$latest_run" && "$latest_run" != "null" ]]; then
       # HEAD moved past the completed success and nothing is in flight for it.
       if [[ -n "$head_newest" && "$head_newest" != "null" ]]; then
         h_conclusion="$(jq -r '.conclusion // "unknown"' <<<"$head_newest")"
-        if [[ "$h_conclusion" != "success" ]]; then
+        if [[ "$h_conclusion" != "success" && "$h_conclusion" != "cancelled" && "$h_conclusion" != "skipped" && "$h_conclusion" != "null" ]]; then
           h_id="$(jq -r '.id' <<<"$head_newest")"
           red_exit "latest completed run #$run_id is stale: run #$h_id on the current HEAD $head_sha concluded with $h_conclusion"
         fi
+      fi
+      # A cancelled/skipped newest HEAD run is not a verdict either (OPE-13461):
+      # it was superseded, so the last real result stays the verdict.
+      if [[ -n "$head_newest" && "$head_newest" != "null" ]]; then
+        green_exit "$run_id" "$run_sha" 0
       fi
       # Fail closed: HEAD moved but no CI run has even started for it yet.
       reason="head moved to $head_sha but no CI run has started or completed for it yet"
@@ -221,7 +263,11 @@ fi
 
 # Default: could not verify green status. A queued/in_progress-only history
 # (no completed run at all) also lands here and fails closed.
-reason="no completed Myrmidon CI run found for $base_branch${pending_info:+ ($pending_info)}"
+if jq -e '[.workflow_runs[]? | select(.status == "completed")] | length > 0' <<<"$runs_json" >/dev/null 2>&1; then
+  reason="no non-cancelled completed Myrmidon CI run (success/failure) for $base_branch within ${max_age_hours}h${pending_info:+ ($pending_info)}"
+else
+  reason="no completed Myrmidon CI run found for $base_branch${pending_info:+ ($pending_info)}"
+fi
 if [[ "$mode" == "status" ]]; then
   printf 'red:%s\n' "$reason"
   exit 0

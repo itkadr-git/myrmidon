@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { and, desc, eq, gte, inArray, lt, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import { resolveStatusOnResume } from "../myrmidon/pause-drain.js";
 import { versionKeyEtag } from "../middleware/version-key-etag.js";
 import {
@@ -192,6 +192,10 @@ interface AgentShortnameCollisionOptions {
   excludeAgentId?: string | null;
 }
 
+interface AgentNameCollisionOptions {
+  excludeAgentId?: string | null;
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -354,6 +358,17 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
     budgetMonthlyCents: Math.max(0, Math.floor(snapshot.budgetMonthlyCents)),
     metadata: isPlainRecord(snapshot.metadata) || snapshot.metadata === null ? snapshot.metadata : null,
   };
+}
+
+export function hasAgentNameCollision(
+  candidateName: string,
+  existingAgents: AgentShortnameRow[],
+  options?: AgentNameCollisionOptions,
+): boolean {
+  const normalizedCandidateName = candidateName.toLowerCase();
+  return existingAgents.some((agent) =>
+    agent.id !== options?.excludeAgentId && agent.name.toLowerCase() === normalizedCandidateName,
+  );
 }
 
 export function hasAgentShortnameCollision(
@@ -744,15 +759,18 @@ export function agentService(
     }
   }
 
-  async function assertCompanyShortnameAvailable(
+  async function assertCompanyAgentNameAvailable(
     companyId: string,
     candidateName: string,
-    options?: AgentShortnameCollisionOptions,
+    options?: AgentNameCollisionOptions,
+    dbClient: Db = db,
   ) {
-    const candidateShortname = normalizeAgentUrlKey(candidateName);
-    if (!candidateShortname) return;
+    const normalizedCandidateName = candidateName.toLowerCase();
+    await dbClient.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`agent-name:${companyId}:${normalizedCandidateName}`}, 0))`,
+    );
 
-    const existingAgents = await db
+    const existingAgents = await dbClient
       .select({
         id: agents.id,
         name: agents.name,
@@ -761,10 +779,11 @@ export function agentService(
       .from(agents)
       .where(eq(agents.companyId, companyId));
 
-    const hasCollision = hasAgentShortnameCollision(candidateName, existingAgents, options);
+    const hasCollision = hasAgentNameCollision(candidateName, existingAgents, options);
     if (hasCollision) {
       throw conflict(
-        `Agent shortname '${candidateShortname}' is already in use in this company`,
+        `Agent name '${candidateName}' is already in use in this company (case-insensitive)`,
+        { code: "agent_name_conflict" },
       );
     }
   }
@@ -1011,14 +1030,6 @@ export function agentService(
       await assertNoCycle(id, data.reportsTo);
     }
 
-    if (data.name !== undefined) {
-      const previousShortname = normalizeAgentUrlKey(existing.name);
-      const nextShortname = normalizeAgentUrlKey(data.name);
-      if (previousShortname !== nextShortname) {
-        await assertCompanyShortnameAvailable(existing.companyId, data.name, { excludeAgentId: id });
-      }
-    }
-
     if (Object.prototype.hasOwnProperty.call(data, "metadata")) {
       assertBuiltInAgentMetadataMutationAllowed(existing.metadata, data.metadata, options);
     }
@@ -1085,6 +1096,9 @@ export function agentService(
 
     type AgentUpdateResult = Awaited<ReturnType<typeof getById>>;
     const applyUpdate = async (txDb: Db): Promise<AgentUpdateResult> => {
+      if (data.name !== undefined) {
+        await assertCompanyAgentNameAvailable(existing.companyId, data.name, { excludeAgentId: id }, txDb);
+      }
       const updated = await txDb
         .update(agents)
         .set({ ...normalizedPatch, updatedAt: new Date() })
@@ -1206,12 +1220,6 @@ export function agentService(
         throw err;
       }
 
-      const existingAgents = await db
-        .select({ id: agents.id, name: agents.name, status: agents.status })
-        .from(agents)
-        .where(eq(agents.companyId, companyId));
-      const uniqueName = deduplicateAgentName(data.name, existingAgents);
-
       const role = data.role ?? "general";
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, { context: "create" });
       const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
@@ -1238,6 +1246,7 @@ export function agentService(
       });
       return db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        await assertCompanyAgentNameAvailable(companyId, data.name, undefined, txDb);
         // Consume the stored-session claim and create the fixed definition inside
         // the same transaction that inserts the binding. A rejected claim rolls
         // back the whole transaction and inserts no binding.
@@ -1253,7 +1262,6 @@ export function agentService(
           .insert(agents)
           .values({
             ...data,
-            name: uniqueName,
             companyId,
             role,
             adapterType,
@@ -1575,6 +1583,9 @@ export function agentService(
         if (!existing || existing.status !== "pending_approval") return null;
         const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload) : {};
         let patch = { ...approvedPatch } as Partial<typeof agents.$inferInsert>;
+        if (patch.name !== undefined) {
+          await assertCompanyAgentNameAvailable(existing.companyId, patch.name, { excludeAgentId: id }, txDb);
+        }
         let approvalBindingDecision: ClaudeOAuthBindingInvariantDecision | null = null;
         if (
           Object.prototype.hasOwnProperty.call(patch, "adapterConfig") &&
@@ -1709,7 +1720,7 @@ export function agentService(
       id: string,
       name: string,
       scope: AgentApiKeyScope = { kind: "standard" },
-      options?: { responsibleUserId?: string | null },
+      options?: { responsibleUserId?: string | null; expiresAt?: Date | null },
     ) => {
       const existing = await getById(id);
       if (!existing) throw notFound("Agent not found");
@@ -1731,6 +1742,7 @@ export function agentService(
           keyHash,
           responsibleUserId: options?.responsibleUserId?.trim() || null,
           scopeConfig: scope.kind === "standard" ? null : scope,
+          expiresAt: options?.expiresAt ?? null,
         })
         .returning()
         .then((rows) => rows[0]);
@@ -1741,6 +1753,7 @@ export function agentService(
         scope: normalizeAgentApiKeyScope(created.scopeConfig),
         responsibleUserId: created.responsibleUserId,
         token,
+        expiresAt: created.expiresAt ?? null,
         createdAt: created.createdAt,
       };
     },
@@ -1752,6 +1765,7 @@ export function agentService(
           name: agentApiKeys.name,
           responsibleUserId: agentApiKeys.responsibleUserId,
           scopeConfig: agentApiKeys.scopeConfig,
+          expiresAt: agentApiKeys.expiresAt,
           createdAt: agentApiKeys.createdAt,
           revokedAt: agentApiKeys.revokedAt,
         })
@@ -1762,6 +1776,30 @@ export function agentService(
           name: row.name,
           scope: normalizeAgentApiKeyScope(row.scopeConfig),
           responsibleUserId: row.responsibleUserId,
+          expiresAt: row.expiresAt ?? null,
+          createdAt: row.createdAt,
+          revokedAt: row.revokedAt,
+        }))),
+
+    listApiKeys: (id: string) =>
+      db
+        .select({
+          id: agentApiKeys.id,
+          name: agentApiKeys.name,
+          responsibleUserId: agentApiKeys.responsibleUserId,
+          scopeConfig: agentApiKeys.scopeConfig,
+          expiresAt: agentApiKeys.expiresAt,
+          createdAt: agentApiKeys.createdAt,
+          revokedAt: agentApiKeys.revokedAt,
+        })
+        .from(agentApiKeys)
+        .where(eq(agentApiKeys.agentId, id))
+        .then((rows) => rows.map((row) => ({
+          id: row.id,
+          name: row.name,
+          scope: normalizeAgentApiKeyScope(row.scopeConfig),
+          responsibleUserId: row.responsibleUserId,
+          expiresAt: row.expiresAt ?? null,
           createdAt: row.createdAt,
           revokedAt: row.revokedAt,
         }))),
@@ -1775,6 +1813,7 @@ export function agentService(
           name: agentApiKeys.name,
           responsibleUserId: agentApiKeys.responsibleUserId,
           scopeConfig: agentApiKeys.scopeConfig,
+          expiresAt: agentApiKeys.expiresAt,
           createdAt: agentApiKeys.createdAt,
           revokedAt: agentApiKeys.revokedAt,
         })
@@ -1785,6 +1824,7 @@ export function agentService(
           return row
             ? {
               ...row,
+              expiresAt: row.expiresAt ?? null,
               scope: normalizeAgentApiKeyScope(row.scopeConfig),
             }
             : null;
@@ -1797,6 +1837,20 @@ export function agentService(
         .where(and(eq(agentApiKeys.id, keyId), eq(agentApiKeys.agentId, agentId)))
         .returning();
       return rows[0] ?? null;
+    },
+
+    authenticateApiKey: async (token: string) => {
+      const tokenHash = hashToken(token);
+      const rows = await db
+        .select()
+        .from(agentApiKeys)
+        .where(and(eq(agentApiKeys.keyHash, tokenHash), isNull(agentApiKeys.revokedAt)));
+      const key = rows[0] ?? null;
+      if (!key) return null;
+      if (key.expiresAt && key.expiresAt.getTime() <= Date.now()) {
+        return null;
+      }
+      return key;
     },
 
     orgForCompany: async (companyId: string) => {
