@@ -166,7 +166,9 @@ BEGIN
     AND "key" = 'acceptance-scenarios'
   LIMIT 1;
   IF "v_issue_id" IS NOT NULL THEN
-    PERFORM "bump_issue_acceptance_epoch_internal"("v_issue_id");
+    -- Mutate the issue row as well as its epoch, so a stale issue writer
+    -- cannot commit against a snapshot preceding this document change.
+    PERFORM "bump_issue_acceptance_epoch"("v_issue_id");
   END IF;
   RETURN NULL;
 END;
