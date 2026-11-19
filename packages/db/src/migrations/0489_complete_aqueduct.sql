@@ -32,10 +32,11 @@ BEGIN
   SET "epoch" = "issue_acceptance_epochs"."epoch" + 1;
 END;
 $bump$ LANGUAGE plpgsql;--> statement-breakpoint
--- Explicit writers lock the issue row; stale repeatable-read writers abort.
+-- Explicit writers update the issue row to fence stale repeatable-read writers
+-- without assigning the user-visible updated_at timestamp.
 CREATE OR REPLACE FUNCTION "bump_issue_acceptance_epoch"("p_issue_id" uuid) RETURNS void AS $bump$
 BEGIN
-  UPDATE "issues" SET "updated_at" = "updated_at" WHERE "id" = "p_issue_id";
+  UPDATE "issues" SET "last_activity_at" = "last_activity_at" WHERE "id" = "p_issue_id";
   IF NOT FOUND THEN
     RAISE EXCEPTION 'cannot bump acceptance epoch for missing issue %', "p_issue_id";
   END IF;
