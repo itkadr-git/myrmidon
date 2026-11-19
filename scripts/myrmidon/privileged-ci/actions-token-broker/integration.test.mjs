@@ -37,7 +37,7 @@ test('HTTP exchange rejects signed identity confusion and replay before issuance
     assert.equal(issued.status, 200);
     assert.equal(issued.body.token, 'fixture-credential');
     assert.equal((await post('/exchange', { jwt: good })).status, 403);
-    for (const [field, value] of Object.entries({ iss: 'https://attacker.example', aud: 'wrong', repository_id: '999', repository_owner_id: '999', workflow_ref: 'wrong', job_workflow_ref: 'wrong', ref: 'refs/pull/1/merge', environment: 'wrong', event_name: 'pull_request', exp: now - 1, iat: now + 60, nbf: now + 60 })) {
+    for (const [field, value] of Object.entries({ iss: 'https://attacker.example', aud: 'wrong', repository_id: '999', repository_owner_id: '999', repository: 'fork/test', workflow_ref: 'wrong', workflow_sha: 'b'.repeat(40), job_workflow_ref: 'wrong', ref: 'refs/pull/1/merge', environment: 'wrong', event_name: 'pull_request', sub: 'repo:fork/test:environment:test', actor: 'attacker', actor_id: '999', exp: now - 1, iat: now + 60, nbf: now + 60 })) {
       const result = await post('/exchange', { jwt: encode({ ...base, jti: field, [field]: value }) });
       assert.equal(result.status, 403, field);
       assert.equal(JSON.stringify(result).includes('fixture-credential'), false);
