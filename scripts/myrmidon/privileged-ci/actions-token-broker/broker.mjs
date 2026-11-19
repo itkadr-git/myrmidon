@@ -117,7 +117,12 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         let credential;
         try {
           credential = await installation.issue(async token => {
-            await store.put(handle, { token }, owner);
+            try {
+              await store.put(handle, { token }, owner);
+            } catch {
+              // Retry transient failures while the rejected token is still known.
+              await store.put(handle, { token }, owner);
+            }
           });
         } catch {
           // The upstream may have created a token despite the failed response.
