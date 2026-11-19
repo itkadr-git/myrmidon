@@ -1,7 +1,7 @@
 import { createPublicKey, verify } from 'node:crypto';
 
 const ISSUER = 'https://token.actions.githubusercontent.com';
-const FIELDS = ['repository_id', 'repository_owner_id', 'repository', 'job_workflow_ref', 'ref', 'environment', 'event_name'];
+const FIELDS = ['repository_id', 'repository_owner_id', 'repository', 'job_workflow_ref', 'ref', 'environment', 'event_name', 'sub', 'workflow_ref', 'workflow_sha', 'actor', 'actor_id'];
 
 // claimOnce must atomically persist the JTI through its expiry, across restarts and instances.
 export async function verifyIdentity(token, { policy, loadKeys, claimOnce, now = Math.floor(Date.now() / 1000) }) {

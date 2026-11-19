@@ -6,7 +6,7 @@ import { verifyIdentity } from './identity.mjs';
 const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const jwk = { ...publicKey.export({ format: 'jwk' }), kid: 'fixture', alg: 'RS256', use: 'sig' };
 const now = Math.floor(Date.now() / 1000);
-const policy = { audience: 'isolated-broker', repository_id: '123', repository_owner_id: '456', repository: 'example/test', job_workflow_ref: 'example/test/.github/workflows/trusted.yml@refs/heads/main', ref: 'refs/heads/main', environment: 'test', event_name: 'push' };
+const policy = { audience: 'isolated-broker', repository_id: '123', repository_owner_id: '456', repository: 'example/test', job_workflow_ref: 'example/test/.github/workflows/trusted.yml@refs/heads/main', ref: 'refs/heads/main', environment: 'test', event_name: 'push', sub: 'repo:example/test:environment:test', workflow_ref: 'example/test/.github/workflows/caller.yml@refs/heads/main', workflow_sha: 'a'.repeat(40), actor: 'trusted', actor_id: '789' };
 const claims = { iss: 'https://token.actions.githubusercontent.com', aud: policy.audience, iat: now, nbf: now, exp: now + 60, jti: 'fixture-id', ...policy };
 function jwt(payload = claims, header = { alg: 'RS256', kid: 'fixture', typ: 'JWT' }, key = privateKey) {
   const input = [header, payload].map(x => Buffer.from(JSON.stringify(x)).toString('base64url')).join('.');
@@ -35,7 +35,7 @@ test('rejects an untrusted caller workflow, subject or actor', async () => {
   for (const field of Object.keys(caller)) {
     await assert.rejects(verify(jwt({ ...claims, ...caller, [field]: 'untrusted' })), field);
   }
-  await assert.rejects(verify(jwt(claims)));
+  await assert.rejects(verify(jwt({ ...claims, workflow_ref: undefined })));
 });
 
 test('rejects excessively long-lived or stale signed identities', async () => {
