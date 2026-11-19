@@ -60,6 +60,9 @@ secret management, least privilege and key rotation.
   before exiting, but this is best effort and cannot guarantee delivery across crash.
   An audit failure during issuance retains the reservation even when revocation
   succeeds, so further issuance stays fenced pending operator reconciliation.
+  Expiry or another failure after issuance also queues and attempts an ambiguity
+  alert even when the known token was successfully revoked; the intent remains
+  fenced until independently reviewed reconciliation.
   If finalization reports failure after deleting its reservation, the broker tries
   to recreate the fence before revocation and latches the running process closed.
   A crash or storage failure before that recreation can still leave no durable

@@ -211,7 +211,8 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
           try {
             await installation.revoke(credential.token);
             await store.delete(handle);
-          } catch { await ambiguous(); }
+          } catch { /* Recovery retries the retained credential. */ }
+          await ambiguous();
           throw new Error('audit failed');
         }
         if (durable) {
