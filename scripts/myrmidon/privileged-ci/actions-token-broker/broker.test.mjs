@@ -121,6 +121,30 @@ test('real lost upstream HTTP response fences issuance after SQLite and anchor r
   } finally { anchor.close(); await new Promise(resolve => server.close(resolve)); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('storage and revoke failures leave independently anchored issuance fenced after restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-storage-revoke-anchor-'));
+  const auditPath = join(dir, 'audit.sqlite'), anchorPath = join(dir, 'anchor.sqlite'), auditKey = randomBytes(32);
+  provisionSqliteAnchor(anchorPath);
+  let anchor = createSqliteAnchor(anchorPath), attempts = 0, revocations = 0;
+  try {
+    const audit = await createAsyncAuthenticatedAudit(auditPath, auditKey, anchor);
+    const store = {
+      reserveIssuance: async () => {},
+      put: async () => { attempts++; throw new Error('storage unavailable'); },
+      queueAlert: async () => { throw new Error('outbox unavailable'); },
+    };
+    const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store, anchoredIssuance: true,
+      installation: { issue: async () => ({ token: 'fixture' }), revoke: async () => { revocations++; throw new Error('revoke unavailable'); } },
+      audit: event => audit.record(event), alert: async () => { throw new Error('alert unavailable'); } });
+    await assert.rejects(broker.exchange(jwt('storage-revoke-fail')));
+    assert.equal(revocations, 1);
+    assert.equal(attempts, 2);
+    audit.close(); anchor.close();
+    anchor = createSqliteAnchor(anchorPath);
+    await assert.rejects(createAsyncAuthenticatedAudit(auditPath, auditKey, anchor), /pending issuance/);
+  } finally { anchor.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('failed revocation remains anchored across restart even if local reservation disappears', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-revoke-anchor-'));
   const path = join(dir, 'audit.sqlite'), auditKey = randomBytes(32);
