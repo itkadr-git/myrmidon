@@ -178,6 +178,7 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
           if (auditFailed) throw new Error('audit unavailable');
           await record('issued');
           if (auditFailed) throw new Error('audit unavailable');
+          if (credential.expiresAt !== undefined && Date.parse(credential.expiresAt) <= Date.now()) throw new Error('credential expired');
         } catch {
           // Keep the reservation even after successful revocation: audit failure
           // requires recovery and alert delivery before issuing again.
@@ -208,8 +209,9 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
             throw new Error('issuance audit finalization failed');
           }
         }
-        if (auditFailed) {
-          // Finalization may have yielded while another request detected audit failure.
+        if (auditFailed || (credential.expiresAt !== undefined && Date.parse(credential.expiresAt) <= Date.now())) {
+          // Finalization may have yielded while another request detected audit failure,
+          // or while the credential expired.
           // Retain a recovery fence where possible before revoking the known token.
           if (durable) { try { await store.reserveIssuance(handle); } catch { /* Alert and process latch remain in force. */ } }
           try { await installation.revoke(credential.token); await store.delete(handle); } catch { /* Retained token is retried during recovery. */ }
