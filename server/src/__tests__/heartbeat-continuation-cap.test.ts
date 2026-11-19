@@ -356,6 +356,19 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
   });
 
   describe("real attempt cap", () => {
+    it("the recovery sweep wakes unfinished work after the cooldown", async () => {
+      const ctx = await seedCompanyAgentIssue("in_progress");
+      await seedContinuationRun({ ...ctx, minutesAgo: 90 });
+      await seedContinuationRun({ ...ctx, minutesAgo: 80 });
+      await seedContinuationRun({ ...ctx, minutesAgo: 70 });
+
+      await heartbeat.reconcileStrandedAssignedIssues({ issueIds: [ctx.issueId] });
+
+      expect(await runCount(ctx.agentId)).toBe(4);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, ctx.issueId));
+      expect(issue?.status).toBe("in_progress");
+    });
+
     it("admits a retry after the cooldown even without new evidence", async () => {
       const ctx = await seedCompanyAgentIssue("in_progress");
       await seedContinuationRun({ ...ctx, minutesAgo: 90 });
