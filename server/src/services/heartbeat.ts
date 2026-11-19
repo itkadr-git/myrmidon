@@ -13126,11 +13126,16 @@ export function heartbeatService(
             ) === "quota_reached"
           ) {
             const quotaNextCheckAt = new Date(input.now.getTime() + REVIEW_WAKE_QUOTA_DEFER_MS);
-            await db.update(issues).set({
+            const [deferred] = await db.update(issues).set({
               monitorNextCheckAt: quotaNextCheckAt,
               monitorWakeRequestedAt: null,
               updatedAt: input.now,
-            }).where(eq(issues.id, claimed.id));
+            }).where(and(
+              eq(issues.id, claimed.id),
+              eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+              eq(issues.monitorWakeRequestedAt, input.now),
+            )).returning({ id: issues.id });
+            if (!deferred) return { outcome: "skipped" as const, reason: "monitor_changed" };
             await logActivity(db, {
               companyId: claimed.companyId,
               actorType: input.actorType,
