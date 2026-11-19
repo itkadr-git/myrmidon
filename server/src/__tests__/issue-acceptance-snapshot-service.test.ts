@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql as sqlTag } from "drizzle-orm";
 import { createDb } from "@myrmidon/db";
 import {
   companies,
@@ -616,6 +616,49 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
       await expect(sql.unsafe(`TRUNCATE "issue_acceptance_epochs"`)).rejects.toThrow();
       expect(await versionOf(issueA)).toBe(aBefore);
       expect(await versionOf(issueA)).not.toBe(pinA);
+    },
+    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "invalidates a pin when a repeatable-read document writer overlaps link creation",
+    async () => {
+      const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-link-race-");
+      cleanups.push(() => dbh.cleanup());
+      const db = createDb(dbh.connectionString);
+      const sql = db.$client as any;
+      cleanups.push(async () => { await sql.end(); });
+      const issueId = randomUUID();
+      const docId = randomUUID();
+      const revisionId = randomUUID();
+      await db.insert(companies).values({ id: companyA, name: "Company A" });
+      await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task", identifier: "OPE-8801" });
+      await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a", latestRevisionId: revisionId });
+      await db.insert(documentRevisions).values({ id: revisionId, companyId: companyA, documentId: docId, revisionNumber: 1, body: "a" });
+
+      let release!: () => void;
+      let applied!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const ready = new Promise<void>((resolve) => { applied = resolve; });
+      const writer = db.transaction(async (tx) => {
+        await tx.execute(sqlTag`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
+        await tx.update(documents).set({ latestBody: "b" }).where(eq(documents.id, docId));
+        applied();
+        await gate;
+        await tx.update(documents).set({ latestBody: "a" }).where(eq(documents.id, docId));
+      });
+      let pin: Awaited<ReturnType<ReturnType<typeof issueAcceptanceSnapshotService>["read"]>>;
+      try {
+        await ready;
+        await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
+        pin = await issueAcceptanceSnapshotService(db).read(issueId);
+        expect(pin!.document!.body).toBe("a");
+      } finally {
+        release();
+      }
+      await writer;
+      const after = await issueAcceptanceSnapshotService(db).read(issueId);
+      expect(after!.issue.version).not.toBe(pin!.issue.version);
     },
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
