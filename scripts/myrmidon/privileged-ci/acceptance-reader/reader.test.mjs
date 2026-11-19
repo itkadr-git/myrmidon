@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parsePath, authenticate } from './reader.mjs';
+import { parsePath, authenticate, createHandler } from './reader.mjs';
+import { createServer, get } from 'node:http';
+import { once } from 'node:events';
 import { createHash } from 'node:crypto';
 
 test('credential binding rejects expired revoked and wrong bearer', () => {
@@ -18,6 +20,28 @@ test('duplicate credential records fail closed, even when one is revoked or has 
   const record = { tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: 2000, revoked: false };
   assert.equal(authenticate(`Bearer ${token}`, [record, { ...record, revoked: true }], 1000), null);
   assert.equal(authenticate(`Bearer ${token}`, [record, { ...record, companyId: 'company-b' }], 1000), null);
+});
+
+test('gateway projects a company-bound issue and denies foreign issue', async (t) => {
+  const token = 'candidate-test-token';
+  const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
+  const server = createServer(createHandler({ records, readIssue: async (id) => ({ id, identifier: 'OPE-123', companyId: id === 'OPE-123' ? 'company-a' : 'company-b', secret: 'hidden' }) }));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const request = (path) => new Promise((resolve, reject) => {
+    get({ host: '127.0.0.1', port: server.address().port, path, headers: { authorization: `Bearer ${token}` } }, (res) => {
+      let body = '';
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    }).on('error', reject);
+  });
+  const allowed = await request('/api/issues/OPE-123');
+  assert.equal(allowed.status, 200);
+  assert.deepEqual(JSON.parse(allowed.body), { id: 'OPE-123', identifier: 'OPE-123', companyId: 'company-a' });
+  const denied = await request('/api/issues/OPE-124');
+  assert.equal(denied.status, 404);
+  assert.ok(!denied.body.includes('company-b'));
 });
 
 test('accepts only canonical issue and acceptance document paths', () => {
