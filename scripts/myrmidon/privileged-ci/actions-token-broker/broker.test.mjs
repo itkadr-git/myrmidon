@@ -101,6 +101,23 @@ test('audit failure on another request prevents an in-flight issuance from retur
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('audit failure during issuance finalization prevents returning the token', async () => {
+  let finalize, startedFinalize;
+  const started = new Promise(resolve => { startedFinalize = resolve; });
+  const gate = new Promise(resolve => { finalize = resolve; });
+  let revoked = 0;
+  const store = { reserveIssuance: async () => {}, resolveIssuance: async () => { startedFinalize(); await gate; }, put: async () => {}, delete: async () => {}, queueAlert: async () => {} };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    installation: { issue: async () => ({ token: 'fixture' }), revoke: async () => { revoked++; } },
+    audit: async event => { if (event === 'exchange_failed') throw new Error('audit unavailable'); }, alert: async () => {} });
+  const pending = broker.exchange(jwt('finalize-valid'));
+  await started;
+  await assert.rejects(broker.exchange(jwt('finalize-invalid', { repository_id: '999' })));
+  finalize();
+  await assert.rejects(pending);
+  assert.equal(revoked, 1);
+});
+
 test('audit and outbox failure on a rejected request fences subsequent issuance in the running process', async () => {
   let issued = 0, failAudit = true;
   const store = { reserveIssuance: async () => {}, resolveIssuance: async () => {}, put: async () => {}, queueAlert: async () => { throw new Error('disk offline'); } };
