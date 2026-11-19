@@ -151,7 +151,13 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         if (auditFailed || recoveryRequired) throw new Error('recovery required');
         const handle = randomUUID();
         const durable = typeof store.reserveIssuance === 'function';
-        if (durable) await store.reserveIssuance(handle);
+        if (durable) {
+          try { await store.reserveIssuance(handle); } catch {
+            // A committed reservation with a lost acknowledgement still needs recovery.
+            await ambiguous();
+            throw new Error('issuance reservation failed');
+          }
+        }
         // A concurrent audit failure may have occurred while reserving.
         // Keep the reservation for recovery instead of contacting GitHub.
         if (auditFailed) {

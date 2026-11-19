@@ -71,6 +71,8 @@ secret management, least privilege and key rotation.
   available. This is not sufficient if no credential was retained, or if audit and
   outbox writes both fail without a reservation: external supervision and
   investigation remain required before restart.
+  A failed issuance reservation, including a lost commit acknowledgement, also
+  latches issuance closed and queues an ambiguity alert; no GitHub request is made.
   An ambiguous issuance also latches the running broker closed even if its
   reservation and alert outbox are lost. This latch is process-local, not a
   substitute for independent durable containment across restart. The supervised
