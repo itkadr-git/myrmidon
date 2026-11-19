@@ -3,12 +3,18 @@ import { verifyIdentity } from './identity.mjs';
 import { createReplayStore } from './replay.mjs';
 import { createCredentialStore } from './store.mjs';
 
-export function createSingleHostBroker({ replayPath, credentialPath, credentialKey, store: suppliedStore, ...options }) {
+export function createSingleHostBroker({ store, ...options }) {
+  if (store) throw new Error('durable issuance store must be managed by broker');
+  return createSingleHostBrokerWithStore(options);
+}
+
+function createSingleHostBrokerWithStore({ replayPath, credentialPath, credentialKey, store: suppliedStore, ...options }) {
   if (typeof replayPath !== 'string' || !replayPath || replayPath === ':memory:' || replayPath.startsWith('file:')) throw new Error('persistent replay path required');
   const replay = createReplayStore(replayPath);
   let store;
   try {
     store = suppliedStore ?? createCredentialStore(credentialPath, credentialKey);
+    if (!['reserveIssuance', 'resolveIssuance', 'pendingIssuances'].every(name => typeof store[name] === 'function')) throw new Error('durable issuance store required');
   } catch (error) {
     replay.close();
     throw error;
@@ -25,7 +31,7 @@ export async function createRecoveredSingleHostBroker({ credentialPath, credenti
     const result = await store.revokeRetained(token => options.installation.revoke(token));
     if (result.failed) throw new Error('credential recovery failed');
     if ((await store.pendingIssuances()).length) throw new Error('ambiguous issuance requires operator containment');
-    const broker = createSingleHostBroker({ ...options, store });
+    const broker = createSingleHostBrokerWithStore({ ...options, store });
     return { ...broker, close: () => { broker.close(); store.close(); } };
   } catch (error) {
     store.close();

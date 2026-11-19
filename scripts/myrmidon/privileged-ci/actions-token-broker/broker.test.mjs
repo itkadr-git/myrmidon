@@ -45,7 +45,7 @@ test('single-host broker persists replay claims across broker restarts', async (
   const dir = mkdtempSync(join(tmpdir(), 'broker-replay-'));
   const path = join(dir, 'replay.sqlite');
   let issued = 0;
-  const options = { policy, loadKeys: async () => [key], installation: { issue: async () => { issued++; return { token: 'fixture', expiresAt: '2030-01-01T00:00:00Z' }; } }, store: { put: async () => {} }, audit: async () => {} };
+  const options = { policy, loadKeys: async () => [key], credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32), installation: { issue: async () => { issued++; return { token: 'fixture', expiresAt: '2030-01-01T00:00:00Z' }; } }, audit: async () => {} };
   try {
     const first = createSingleHostBroker({ ...options, replayPath: path });
     const token = jwt('persistent-jti');
