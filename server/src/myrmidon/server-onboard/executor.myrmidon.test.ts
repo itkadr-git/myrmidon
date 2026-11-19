@@ -521,6 +521,30 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(ssh.hasExecuted(/sudo ufw (allow|default|delete|--force enable|disable)/)).toBe(false);
   });
 
+  it("refuses firewall mutation when timer startup exits successfully without confirmation", async () => {
+    let timerStartAttempted = false;
+    const ssh = new MockSshExecutor({ onCommand: (command) => {
+      if (command.includes("start-myrmidon-firewall-timer")) {
+        timerStartAttempted = true;
+        return { exitCode: 0, stdout: "" };
+      }
+      return undefined;
+    } });
+    ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-firewall-timer-unconfirmed", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(timerStartAttempted).toBe(true);
+    expect(result.error).toMatch(/timer.*confirm/i);
+    expect(ssh.hasExecuted(/sudo ufw (allow|default|delete|--force enable|disable)/)).toBe(false);
+  });
+
   it("does not mutate UFW if the confirmed rollback timer dies before the liveness check", async () => {
     let allowAttempted = false;
     let livenessChecked = false;
