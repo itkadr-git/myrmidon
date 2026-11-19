@@ -15,6 +15,7 @@
 // - Step failure rolls back hardening changes and leaves server in needs_attention.
 
 import { generateSshKeyPair, sshPublicKey } from "./ssh-key.js";
+import { OnboardSshTransport } from "./ssh-transport.js";
 import type {
   SshConnectionOptions,
   SshExecutionResult,
@@ -60,7 +61,7 @@ export class FleetOnboardExecutor {
     if (this.deps.createSshExecutor) {
       return this.deps.createSshExecutor(options);
     }
-    throw new Error("No SSH executor provider configured for FleetOnboardExecutor");
+    return new OnboardSshTransport();
   }
 
   async execute(
