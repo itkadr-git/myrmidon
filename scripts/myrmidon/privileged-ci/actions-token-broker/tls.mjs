@@ -11,8 +11,13 @@ export async function createAuditedSupervisedServer(tls, { auditPath, auditKey, 
   try {
     audit = await createAsyncAuthenticatedAudit(auditPath, auditKey, auditAnchor);
   } catch (error) {
-    // No local outbox is available here; the supervisor must retry startup.
-    try { await options.alert('audit_unavailable'); } catch { /* Startup stays closed. */ }
+    // Keep startup closed while retrying delivery; a process crash still requires external supervision.
+    for (;;) {
+      try { await options.alert('audit_unavailable'); break; } catch {
+        if (typeof options.delay !== 'function') break;
+        await options.delay();
+      }
+    }
     throw error;
   }
   let broker;
