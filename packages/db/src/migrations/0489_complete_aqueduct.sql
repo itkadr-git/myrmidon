@@ -15,6 +15,22 @@ ALTER TABLE "issues" ADD COLUMN "acceptance_snapshot_version" bigint DEFAULT 0 N
 -- in the writer's
 -- snapshot. REPEATABLE READ direct SQL can miss a concurrently created link;
 -- these triggers alone do not cover every writer (see the reader README).
+-- Keep the acceptance owner on the document itself so revision writers need
+-- not rediscover it through a link invisible to their transaction snapshot.
+ALTER TABLE "documents" ADD COLUMN "acceptance_issue_id" uuid;--> statement-breakpoint
+CREATE UNIQUE INDEX "issues_id_company_acceptance_uq" ON "issues" ("id", "company_id");--> statement-breakpoint
+ALTER TABLE "documents" ADD CONSTRAINT "documents_acceptance_issue_company_fk"
+  FOREIGN KEY ("acceptance_issue_id", "company_id") REFERENCES "issues" ("id", "company_id");--> statement-breakpoint
+UPDATE "documents" AS d SET "acceptance_issue_id" = l."issue_id"
+  FROM "issue_documents" AS l
+  WHERE l."document_id" = d."id" AND l."key" = 'acceptance-scenarios'
+    AND l."company_id" = d."company_id";--> statement-breakpoint
+DO $check$ BEGIN
+  IF EXISTS (SELECT 1 FROM "issue_documents" l JOIN "documents" d ON d."id" = l."document_id"
+    WHERE l."key" = 'acceptance-scenarios' AND (d."acceptance_issue_id" IS DISTINCT FROM l."issue_id" OR d."company_id" IS DISTINCT FROM l."company_id")) THEN
+    RAISE EXCEPTION 'invalid existing acceptance document binding';
+  END IF;
+END $check$;--> statement-breakpoint
 CREATE TABLE "issue_acceptance_epochs" (
   "issue_id" uuid PRIMARY KEY,
   "epoch" bigint NOT NULL DEFAULT 0
@@ -85,7 +101,12 @@ CREATE OR REPLACE FUNCTION "trg_acceptance_link_issue_company"() RETURNS trigger
 DECLARE
   "v_company_id" uuid;
 BEGIN
-  IF NEW."key" = 'acceptance-scenarios' THEN
+  IF TG_OP <> 'INSERT' AND OLD."key" = 'acceptance-scenarios' AND
+     (TG_OP = 'DELETE' OR NEW."key" <> 'acceptance-scenarios' OR NEW."document_id" IS DISTINCT FROM OLD."document_id") THEN
+    UPDATE "documents" SET "acceptance_issue_id" = NULL
+      WHERE "id" = OLD."document_id" AND "acceptance_issue_id" = OLD."issue_id";
+  END IF;
+  IF TG_OP <> 'DELETE' AND NEW."key" = 'acceptance-scenarios' THEN
     SELECT "company_id" INTO "v_company_id" FROM "issues"
       WHERE "id" = NEW."issue_id" FOR UPDATE;
     IF NOT FOUND OR "v_company_id" IS DISTINCT FROM NEW."company_id" THEN
@@ -93,7 +114,7 @@ BEGIN
     END IF;
     -- Change the document row, not merely its lock: a stale repeatable-read
     -- revision writer must get a serialization failure after link creation.
-    UPDATE "documents" SET "updated_at" = "updated_at"
+    UPDATE "documents" SET "acceptance_issue_id" = NEW."issue_id"
       WHERE "id" = NEW."document_id" AND "company_id" = NEW."company_id";
     IF NOT FOUND THEN
       RAISE EXCEPTION 'acceptance link document company mismatch';
@@ -106,11 +127,11 @@ BEGIN
       RAISE EXCEPTION 'acceptance link revision company mismatch';
     END IF;
   END IF;
-  RETURN NEW;
+  RETURN COALESCE(NEW, OLD);
 END;
 $trg$ LANGUAGE plpgsql;--> statement-breakpoint
 CREATE TRIGGER "acceptance_link_issue_company_trg"
-  BEFORE INSERT OR UPDATE ON "issue_documents"
+  BEFORE INSERT OR UPDATE OR DELETE ON "issue_documents"
   FOR EACH ROW EXECUTE FUNCTION "trg_acceptance_link_issue_company"();--> statement-breakpoint
 CREATE OR REPLACE FUNCTION "trg_acceptance_company_move_guard"() RETURNS trigger AS $trg$
 BEGIN
@@ -160,11 +181,7 @@ CREATE OR REPLACE FUNCTION "trg_documents_acceptance_epoch"() RETURNS trigger AS
 DECLARE
   "v_issue_id" uuid;
 BEGIN
-  SELECT "issue_id" INTO "v_issue_id"
-  FROM "issue_documents"
-  WHERE "document_id" = COALESCE(NEW."id", OLD."id")
-    AND "key" = 'acceptance-scenarios'
-  LIMIT 1;
+  "v_issue_id" := COALESCE(NEW."acceptance_issue_id", OLD."acceptance_issue_id");
   IF "v_issue_id" IS NOT NULL THEN
     -- Mutate the issue row as well as its epoch, so a stale issue writer
     -- cannot commit against a snapshot preceding this document change.
