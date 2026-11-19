@@ -335,17 +335,17 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     mockSsh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "", exitCode: 1 });
     mockSsh.mockResponse("sudo ufw disable", { stdout: "Firewall stopped and disabled on system startup", exitCode: 0 });
 
+    const durablePair = defaultGenerateKeyPair();
     const executor = new FleetOnboardExecutor({
       createSshExecutor: () => mockSsh,
-      generateKeyPair: () => ({ publicKey: "pub", privateKey: "priv" }),
     });
     const mockReporter = createMockReporter();
     const claim: any = {
       job: { id: "job-3", companyId: "c1", serverId: "s3" },
-      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root", accessKeySecretKey: "fleet/key" },
       steps: ["connect", "preflight", "access", "harden", "verify"],
       options: { keepPassword: true },
-      secretValues: { bootstrapPassword: "pass" },
+      secretValues: { bootstrapPassword: "pass", accessKey: durablePair.privateKey },
     };
 
     const result = await executor.execute(claim, mockReporter.reporter);
