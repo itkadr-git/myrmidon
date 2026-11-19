@@ -164,7 +164,13 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         }
         if (durable) {
           try { await store.resolveIssuance(handle); }
-          catch { await ambiguous(); throw new Error('issuance finalization failed'); }
+          catch {
+            // Finalization failure can leave the reservation in an unknown state.
+            // Revoke immediately, but keep any retained token if revocation fails.
+            try { await installation.revoke(credential.token); await store.delete(handle); } catch { /* Recovery retries the retained credential. */ }
+            await ambiguous();
+            throw new Error('issuance finalization failed');
+          }
         }
         if (auditFailed) {
           // Finalization may have yielded while another request detected audit failure.
