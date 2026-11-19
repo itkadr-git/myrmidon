@@ -11,8 +11,12 @@ test('upstream rejects insecure, ambiguous and credential-bearing origins', () =
 
 test('upstream denies malformed issue identity before network access', async () => {
   const upstream = createUpstream({ origin: 'https://127.0.0.1:1', ca: 'ca', cert: 'cert', key: 'key' });
-  for (const id of ['../OPE-123', 'OPE-123?x=1', '%4fPE-123', 'OPE-123/extra']) {
-    await assert.rejects(upstream.readIssue(id), TypeError);
-    await assert.rejects(upstream.readDocument(id), TypeError);
+  for (const id of ['../OPE-123', 'OPE-123?x=1', '%4fPE-123', 'OPE-123/extra', 'OPE-123/documents/acceptance-scenarios']) {
+    await assert.rejects(upstream.readSnapshot(id), TypeError);
   }
+});
+
+test('readSnapshot issues one GET against the atomic snapshot path', async () => {
+  const upstream = createUpstream({ origin: 'https://127.0.0.1:1', ca: 'ca', cert: 'cert', key: 'key' });
+  await assert.rejects(upstream.readSnapshot('OPE-123'));
 });

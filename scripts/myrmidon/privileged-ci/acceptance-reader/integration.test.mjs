@@ -12,7 +12,7 @@ import { createPersistentCredentialStore } from './persistent-credentials.mjs';
 import { mkdirSync } from 'node:fs';
 import { createServer as createNetServer } from 'node:net';
 
-test('gateway to separate mTLS upstream: projections, tenant boundaries and TLS authentication', async (t) => {
+test('gateway to separate mTLS upstream: one atomic snapshot read per request, tenant boundaries and TLS authentication', async (t) => {
   const dir = mkdtempSync(join(process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || process.env.HOME, 'reader-integration-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const file = (name) => join(dir, name);
@@ -26,22 +26,38 @@ test('gateway to separate mTLS upstream: projections, tenant boundaries and TLS 
   const wrongTls = pair('wrong');
   const gatewayTls = pair('gateway');
   const id = '11111111-1111-1111-1111-111111111111';
+  const id3 = '33333333-3333-3333-3333-333333333333';
   const foreign = '22222222-2222-2222-2222-222222222222';
   let upstreamRequests = 0;
+  const requestedPaths = [];
+  // The upstream fixture implements the atomic snapshot contract: one response
+  // carries the minimal issue identity and the acceptance document.
   const upstream = createServer({ ...upstreamTls, ca: clientTls.cert, requestCert: true, rejectUnauthorized: true }, (req, res) => {
     upstreamRequests++;
+    requestedPaths.push(req.url);
+    const isDocumentless = req.url.includes('OPE-3') || req.url.includes(id3);
     const isForeign = req.url.includes(foreign) || req.url.includes('OPE-2');
-    const issue = { id: isForeign ? foreign : id, identifier: isForeign ? 'OPE-2' : 'OPE-1', companyId: isForeign ? 'other' : 'allowed', secret: 'private-relation' };
-    const doc = { id: 'doc', issueId: issue.id, companyId: issue.companyId, key: 'acceptance-scenarios', latestRevisionId: 'rev', body: 'criteria', secret: 'private-document' };
+    const isBroken = req.url.includes('OPE-9');
+    if (isBroken) {
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'upstream failure' }));
+      return;
+    }
+    const issue = isDocumentless
+      ? { id: id3, identifier: 'OPE-3', companyId: 'allowed', secret: 'private-relation' }
+      : { id: isForeign ? foreign : id, identifier: isForeign ? 'OPE-2' : 'OPE-1', companyId: isForeign ? 'other' : 'allowed', secret: 'private-relation' };
+    const document = isDocumentless
+      ? null
+      : { id: 'doc', latestRevisionId: 'rev', body: 'criteria', secret: 'private-document' };
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(req.url.endsWith('/acceptance-scenarios') ? doc : issue));
+    res.end(JSON.stringify({ issue, document }));
   });
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
   t.after(() => upstream.close());
   const origin = `https://localhost:${upstream.address().port}`;
   const adapter = createUpstream({ origin, ca: upstreamTls.cert, ...clientTls });
-  await assert.rejects(createUpstream({ origin, ca: wrongTls.cert, ...clientTls }).readIssue('OPE-1'));
-  await assert.rejects(createUpstream({ origin, ca: upstreamTls.cert, ...wrongTls }).readIssue('OPE-1'));
+  await assert.rejects(createUpstream({ origin, ca: wrongTls.cert, ...clientTls }).readSnapshot('OPE-1'));
+  await assert.rejects(createUpstream({ origin, ca: upstreamTls.cert, ...wrongTls }).readSnapshot('OPE-1'));
   const token = 'candidate-integration-token';
   const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'allowed', expiresAt: Date.now() + 60000, revoked: false }];
   const credentialDirectory = file('credentials');
@@ -61,16 +77,27 @@ test('gateway to separate mTLS upstream: projections, tenant boundaries and TLS 
     });
     req.on('error', reject); req.end();
   });
+  // Every allowed request is exactly one upstream read of the snapshot path.
   for (const identifier of ['OPE-1', id]) {
     assert.deepEqual(JSON.parse((await call(`/api/issues/${identifier}`)).body), { id, identifier: 'OPE-1', companyId: 'allowed' });
     assert.deepEqual(JSON.parse((await call(`/api/issues/${identifier}/documents/acceptance-scenarios`)).body), { id: 'doc', latestRevisionId: 'rev', body: 'criteria' });
   }
+  for (const requested of requestedPaths) {
+    assert.match(requested, /^\/api\/issues\/(?:OPE-1|11111111-1111-1111-1111-111111111111)\/acceptance-scenarios-snapshot$/);
+  }
+  // An issue whose snapshot carries no document still serves the issue projection.
+  assert.deepEqual(JSON.parse((await call('/api/issues/OPE-3')).body), { id: id3, identifier: 'OPE-3', companyId: 'allowed' });
+  assert.equal((await call('/api/issues/OPE-3/documents/acceptance-scenarios')).status, 404);
   for (const identifier of ['OPE-2', foreign]) {
     assert.equal((await call(`/api/issues/${identifier}`)).status, 404);
     assert.equal((await call(`/api/issues/${identifier}/documents/acceptance-scenarios`)).status, 404);
   }
+  // Upstream read failures never surface as a partial snapshot.
+  const broken = await call('/api/issues/OPE-9');
+  assert.equal(broken.status, 502);
+  assert.deepEqual(JSON.parse(broken.body), {});
   const before = upstreamRequests;
-  for (const path of ['/api/issues', '/api/issues?search=OPE', '/api/issues/OPE-1/documents/plan', '/api/secrets', '/api/agents', '/api/plugins', '/api/issues/%4fPE-1', '/api/issues/%254fPE-1', '/api/issues/OPE-1%2fdocuments%2facceptance-scenarios', '/api/issues/../OPE-1', '/api/issues/OPE-1?x=1']) assert.equal((await call(path)).status, 404, path);
+  for (const path of ['/api/issues', '/api/issues?search=OPE', '/api/issues/OPE-1/documents/plan', '/api/issues/OPE-1/acceptance-scenarios-snapshot', '/api/secrets', '/api/agents', '/api/plugins', '/api/issues/%4fPE-1', '/api/issues/%254fPE-1', '/api/issues/OPE-1%2fdocuments%2facceptance-scenarios', '/api/issues/../OPE-1', '/api/issues/OPE-1?x=1']) assert.equal((await call(path)).status, 404, path);
   for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']) assert.equal((await call('/api/issues/OPE-1', { method })).status, 404, method);
   for (const header of ['x-http-method-override', 'x-method-override', 'x-http-method']) assert.equal((await call('/api/issues/OPE-1', { headers: { authorization: `Bearer ${token}`, [header]: 'POST' } })).status, 404, header);
   for (const authorization of [undefined, 'Bearer invalid', 'Basic candidate']) assert.equal((await call('/api/issues/OPE-1', { headers: authorization ? { authorization } : {} })).status, 401);

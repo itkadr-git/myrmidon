@@ -9,7 +9,25 @@ export function authenticate(header, records, now = Date.now()) {
   return record.revoked === false && Number.isFinite(record.expiresAt) && now < record.expiresAt && typeof record.companyId === 'string' && record.companyId ? record.companyId : null;
 }
 
-export function createHandler({ records, credentialStore, readIssue, readDocument, audit = async () => {} }) {
+const ISSUE = '(?:[A-Z][A-Z0-9]*-[1-9][0-9]*|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
+const PATH = new RegExp(`^/api/issues/(${ISSUE})(/documents/acceptance-scenarios)?$`);
+
+export function parsePath(path) {
+  const match = PATH.exec(path);
+  return match ? { issue: match[1], document: Boolean(match[2]) } : null;
+}
+
+export function isIssueIdentity(value) {
+  return typeof value === 'string' && new RegExp(`^${ISSUE}$`).test(value);
+}
+
+// The gateway answers both of its runner-facing routes from ONE upstream read:
+// the atomic acceptance snapshot (a single SQL statement upstream), never from
+// two independent reads that could observe different moments. The stored
+// credential's company is checked against the snapshot before anything is
+// returned, and credential revocation is re-checked immediately before the
+// response, so revocation or expiry during the upstream read fails closed.
+export function createHandler({ records, credentialStore, readSnapshot, audit = async () => {} }) {
   const checkCredential = (header) => credentialStore ? credentialStore.authenticate(header) : authenticate(header, records);
   return async (req, res) => {
     const authorizations = req.rawHeaders.filter((_, index) => index % 2 === 0 && req.rawHeaders[index].toLowerCase() === 'authorization').length;
@@ -36,27 +54,18 @@ export function createHandler({ records, credentialStore, readIssue, readDocumen
     const path = parsePath(req.url);
     if (req.method !== 'GET' || !path || Object.keys(req.headers).some((name) => name.includes('method-override') || name === 'x-http-method')) return respond(404);
     try {
-      const issue = await readIssue(path.issue);
+      const snapshot = await readSnapshot(path.issue);
+      const issue = snapshot && snapshot.issue;
+      // Fail closed on anything that does not match the credential's company
+      // and the requested identity; unknown and foreign are the same 404.
       if (!issue || issue.companyId !== companyId || typeof issue.id !== 'string' || typeof issue.identifier !== 'string' || (path.issue !== issue.id && path.issue !== issue.identifier)) return respond(404);
       if (!path.document) return respond(200, { id: issue.id, identifier: issue.identifier, companyId: issue.companyId });
-      const first = await readDocument(issue.id);
-      const valid = (doc) => doc && doc.issueId === issue.id && doc.companyId === companyId && doc.key === 'acceptance-scenarios' && typeof doc.id === 'string' && typeof doc.latestRevisionId === 'string' && doc.latestRevisionId && typeof doc.body === 'string';
-      if (!valid(first)) return respond(404);
-      const second = await readDocument(issue.id);
-      if (!valid(second) || first.id !== second.id || first.latestRevisionId !== second.latestRevisionId || first.body !== second.body) return respond(409);
-      const currentIssue = await readIssue(issue.id);
-      if (!currentIssue || currentIssue.id !== issue.id || currentIssue.identifier !== issue.identifier || currentIssue.companyId !== companyId) return respond(409);
-      return respond(200, { id: first.id, latestRevisionId: first.latestRevisionId, body: first.body });
+      const document = snapshot.document;
+      if (!document || typeof document.id !== 'string' || typeof document.latestRevisionId !== 'string' || !document.latestRevisionId || typeof document.body !== 'string') return respond(404);
+      return respond(200, { id: document.id, latestRevisionId: document.latestRevisionId, body: document.body });
     } catch {
+      // A failed upstream read never yields a partial or mixed snapshot.
       return respond(502);
     }
   };
-}
-
-const ISSUE = '(?:[A-Z][A-Z0-9]*-[1-9][0-9]*|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
-const PATH = new RegExp(`^/api/issues/(${ISSUE})(/documents/acceptance-scenarios)?$`);
-
-export function parsePath(path) {
-  const match = PATH.exec(path);
-  return match ? { issue: match[1], document: Boolean(match[2]) } : null;
 }

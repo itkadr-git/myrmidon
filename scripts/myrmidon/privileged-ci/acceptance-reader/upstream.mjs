@@ -1,5 +1,5 @@
 import { request } from 'node:https';
-import { parsePath } from './reader.mjs';
+import { isIssueIdentity } from './reader.mjs';
 
 // Upstream is an operator-controlled mTLS endpoint, never a request-supplied URL.
 export function createUpstream({ origin, ca, cert, key }) {
@@ -25,14 +25,13 @@ export function createUpstream({ origin, ca, cert, key }) {
     req.on('error', reject);
     req.end();
   });
-  const checkedPath = (id, document) => {
-    if (typeof id !== 'string') throw new TypeError('invalid issue identity');
-    const path = `/api/issues/${id}${document ? '/documents/acceptance-scenarios' : ''}`;
-    if (!parsePath(path)) throw new TypeError('invalid issue identity');
-    return path;
+  const snapshotPath = (id) => {
+    if (!isIssueIdentity(id)) throw new TypeError('invalid issue identity');
+    return `/api/issues/${id}/acceptance-scenarios-snapshot`;
   };
   return Object.freeze({
-    readIssue: async (id) => fetchJson(checkedPath(id, false)),
-    readDocument: async (id) => fetchJson(checkedPath(id, true)),
+    // One request, one atomic snapshot: the issue identity and the document
+    // revision upstream always come from the same MVCC snapshot.
+    readSnapshot: async (id) => fetchJson(snapshotPath(id)),
   });
 }
