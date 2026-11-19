@@ -99,6 +99,19 @@ test('a failed alert must be delivered before a later clean recovery can start i
   assert.equal(starts, 1);
 });
 
+test('outbox failure attempts an independent alert and never starts issuance', async () => {
+  let starts = 0;
+  const alerts = [];
+  const store = { ...memoryOutbox(), queueAlert: async () => { throw new Error('disk offline'); } };
+  const supervisor = createRecoverySupervisor({
+    store, recover: async () => ({ failed: 1, pending: true, alertFailed: false }),
+    alert: async event => alerts.push(event), start: async () => { starts++; }, delay: async () => {},
+  });
+  await assert.rejects(supervisor.run());
+  assert.deepEqual(alerts, ['credential_recovery_failed']);
+  assert.equal(starts, 0);
+});
+
 test('ambiguous issuance remains stopped even when alert delivery fails', async () => {
   let attempts = 0, starts = 0;
   const supervisor = createRecoverySupervisor({
