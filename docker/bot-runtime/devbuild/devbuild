@@ -278,7 +278,12 @@ for root in "${local_mirror:-${hermes_home}/.myrmidon/git-objects}" "/cache/git"
         # a restrictive source mode (a bot-volume dir may be 0700) cannot lock
         # out the user that runs the remote command. The setgid on dirs keeps
         # new files group-shared between the two users.
-        rsync -a --info=stats0 --chmod=Dg+rwXs,Fg+rw \
+        # myrmidon(1.6.9 DEVBUILD-CACHE-TIMES): --omit-dir-times/--omit-link-times
+        # because the cache is re-synced by a DIFFERENT user than its creator,
+        # and setting directory/symlink mtimes needs ownership (code 23 "failed
+        # to set times"). File mtimes ARE kept — they drive the incremental
+        # quick-check, so the cache is not re-sent on every run.
+        rsync -a --info=stats0 --chmod=Dg+rwXs,Fg+rw --omit-dir-times --omit-link-times \
           -e "ssh ${SSH_OPTS[*]}" \
           "$src_mirror/" "$DEVBUILD_USER@$DEVBUILD_HOST:${devbuild_git}/${key}.git/"
       fi
@@ -327,12 +332,13 @@ if [ "$git_kind" = "worktree" ] && [ "$git_root" = "$(cd "$WORKSPACE_SRC" && pwd
   ssh "${SSH_OPTS[@]}" "$DEVBUILD_USER@$DEVBUILD_HOST" \
     "mkdir -p '$remote_base/worktrees/$wt_name' && { chmod 0775 '${DEVBUILD_CACHES}/git-wt/$bot_name' '$remote_base' '$remote_base/worktrees/$wt_name' 2>/dev/null || true; }"
   # DEVBUILD-CACHE-MODES (1.6.9): same shared-cache guarantee as the mirror
-  # sync above — see the comment there. The per-bot repo mirror to
-  # $dest_root below deliberately keeps the source modes untouched.
-  rsync -a --info=stats0 --chmod=Dg+rwXs,Fg+rw --exclude 'worktrees/' \
+  # sync above (group chmod plus omit dir/link times) — see the comments
+  # there. The per-bot repo mirror to $dest_root below deliberately keeps
+  # the source modes and times untouched.
+  rsync -a --info=stats0 --chmod=Dg+rwXs,Fg+rw --omit-dir-times --omit-link-times --exclude 'worktrees/' \
     -e "ssh ${SSH_OPTS[*]}" \
     "$git_common/" "$DEVBUILD_USER@$DEVBUILD_HOST:$remote_base/"
-  rsync -a --delete --info=stats0 --chmod=Dg+rwXs,Fg+rw \
+  rsync -a --delete --info=stats0 --chmod=Dg+rwXs,Fg+rw --omit-dir-times --omit-link-times \
     -e "ssh ${SSH_OPTS[*]}" \
     "$git_dir/" "$DEVBUILD_USER@$DEVBUILD_HOST:$remote_base/worktrees/$wt_name/"
   ssh "${SSH_OPTS[@]}" "$DEVBUILD_USER@$DEVBUILD_HOST" bash -s -- "$dest_root" "$remote_base" "$wt_name" <<'WTREWRITE'

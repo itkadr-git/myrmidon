@@ -13,6 +13,9 @@ import { fileURLToPath } from "node:url";
 // myrmidon(1.6.9 DEVBUILD-CACHE-MODES): the shared /srv/devcache git caches
 // must be synced with group read/write/traverse regardless of restrictive
 // source modes, while the per-bot repo mirror keeps its isolation.
+// myrmidon(1.6.9 DEVBUILD-CACHE-TIMES): the same syncs must omit directory
+// times so a second user can re-sync the cache (file times stay, so the
+// incremental quick-check keeps working).
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const DEVBUILD = path.join(ROOT, "docker/bot-runtime/devbuild/devbuild");
@@ -193,6 +196,8 @@ describe("devbuild worktree support", { skip: !hasGit || !hasBash }, () => {
       const mirror = path.join(tmp, "hermes/.myrmidon/git-objects/seed.git");
       fs.mkdirSync(path.join(mirror, "objects"), { recursive: true });
       fs.writeFileSync(path.join(clone, ".git/objects/info/alternates"), `${path.join(mirror, "objects")}\n`);
+      fs.mkdirSync(path.join(mirror, "objects"), { recursive: true });
+      fs.writeFileSync(path.join(clone, ".git/objects/info/alternates"), `${path.join(mirror, "objects")}\n`);
       try {
         const { r, calls } = run(clone);
         assert.equal(r.status, 0, r.stderr);
@@ -201,6 +206,32 @@ describe("devbuild worktree support", { skip: !hasGit || !hasBash }, () => {
         assert.ok(mirrorSyncs[0].includes("--chmod=Dg+rwXs,Fg+rw"), `mirror cache sync lacks the group chmod:\n${mirrorSyncs[0]}`);
       } finally {
         fs.rmSync(path.join(clone, ".git/objects/info/alternates"), { force: true });
+      }
+    });
+
+    // myrmidon(1.6.9 DEVBUILD-CACHE-TIMES): the shared cache is created by one
+    // user and re-synced by another (a build-user transport creates it, a
+    // devbuild transport updates it). Setting directory mtimes requires
+    // ownership, so the second user's rsync -a died with code 23 "failed to
+    // set times ... Operation not permitted" (eng-25/OPE-15169). The devcache
+    // syncs must omit directory times but KEEP file times — file mtimes are
+    // what the incremental quick-check uses, so dropping all times would
+    // re-send the whole cache on every run. The per-bot repo mirror is
+    // single-user and must stay untouched.
+    it("shared cache syncs omit dir times so a second user can re-sync; per-bot sync keeps times", () => {
+      const { r, calls } = run(wt);
+      assert.equal(r.status, 0, r.stderr);
+      const cacheSyncs = calls.split("\n").filter((l) => l.startsWith("RSYNC") && l.includes(":/srv/devcache/"));
+      assert.ok(cacheSyncs.length >= 2, `expected the git-wt base and admin-dir syncs, got:\n${calls}`);
+      for (const line of cacheSyncs) {
+        assert.ok(line.includes("--omit-dir-times"), `shared cache sync must omit dir times:\n${line}`);
+        assert.ok(line.includes("--omit-link-times"), `shared cache sync must omit symlink times too:\n${line}`);
+        assert.ok(!line.includes("--no-times"), `file times must be kept so incremental sync works:\n${line}`);
+      }
+      const botSyncs = calls.split("\n").filter((l) => l.startsWith("RSYNC") && l.includes(":/srv/devbuild/bot1/ABC-1/"));
+      assert.ok(botSyncs.length >= 1, `expected the per-bot sync, got:\n${calls}`);
+      for (const line of botSyncs) {
+        assert.ok(!line.includes("--omit-dir-times"), `per-bot sync must keep dir times:\n${line}`);
       }
     });
 
