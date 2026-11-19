@@ -137,6 +137,8 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         // Anchor the intent before contacting GitHub; a crash then blocks restart
         // even if the local reservation is later lost or rolled back.
         if (anchoredIssuance) await record('issuance_pending');
+        // Another request can fail audit while the anchor write is in flight.
+        if (auditFailed) throw new Error('audit unavailable');
         let credential, retained = false;
         try {
           credential = await installation.issue(async token => {
