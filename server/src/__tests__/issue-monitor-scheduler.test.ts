@@ -599,26 +599,34 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
   });
 
   it("does not repeat an admitted monitor wake when its claim is reclaimed before completion", async () => {
-    const { issueId, nextCheckAt } = await seedFixture();
-    const reclaimedAt = new Date(nextCheckAt.getTime() + 6 * 60_000);
-    await db.execute(sql.raw(`
-      CREATE FUNCTION test_reclaim_admitted_monitor() RETURNS trigger AS $$
-      BEGIN
-        UPDATE issues SET monitor_wake_requested_at = '${reclaimedAt.toISOString()}'::timestamptz
-        WHERE id = '${issueId}'::uuid;
-        RETURN NEW;
-      END; $$ LANGUAGE plpgsql;
-      CREATE TRIGGER test_reclaim_admitted_monitor AFTER INSERT ON agent_wakeup_requests
-      FOR EACH ROW EXECUTE FUNCTION test_reclaim_admitted_monitor();
-    `));
+    const { nextCheckAt } = await seedFixture();
+    let signalAdmission!: () => void;
+    let releaseAdmission!: () => void;
+    const admitted = new Promise<void>((resolve) => { signalAdmission = resolve; });
+    const released = new Promise<void>((resolve) => { releaseAdmission = resolve; });
+    let paused = false;
+    const pausedDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property !== "transaction") return Reflect.get(target, property, receiver);
+        return async (...args: Parameters<typeof db.transaction>) => {
+          const result = await db.transaction(...args);
+          if (!paused && (await db.select().from(agentWakeupRequests)).length > 0) {
+            paused = true;
+            signalAdmission();
+            await released;
+          }
+          return result;
+        };
+      },
+    });
+    const first = heartbeatService(pausedDb, { executesRuns: false }).tickTimers(nextCheckAt);
     try {
-      const scheduler = heartbeatService(db, { executesRuns: false });
-      expect((await scheduler.tickTimers(nextCheckAt)).enqueued).toBe(1);
-      await db.execute(sql.raw("DROP TRIGGER test_reclaim_admitted_monitor ON agent_wakeup_requests; DROP FUNCTION test_reclaim_admitted_monitor();"));
-      await scheduler.tickTimers(new Date(reclaimedAt.getTime() + 6 * 60_000));
+      await admitted;
+      await heartbeatService(db, { executesRuns: false }).tickTimers(new Date(nextCheckAt.getTime() + 6 * 60_000));
       expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
     } finally {
-      await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_reclaim_admitted_monitor ON agent_wakeup_requests; DROP FUNCTION IF EXISTS test_reclaim_admitted_monitor();"));
+      releaseAdmission();
+      await first;
       await db.delete(heartbeatRuns);
     }
   });
