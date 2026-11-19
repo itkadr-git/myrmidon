@@ -72,6 +72,8 @@ test('recovery alerts on pending ambiguous issuance after restart and keeps issu
     const broker = createSingleHostBroker(options);
     await assert.rejects(broker.exchange(jwt('recovery-alert')));
     broker.close();
+    assert.deepEqual(alerts, ['issuance_ambiguous']);
+    alerts.length = 0;
     await assert.rejects(createRecoveredSingleHostBroker(options), /ambiguous issuance/);
     assert.deepEqual(alerts, ['issuance_ambiguous']);
     const store = createCredentialStore(options.credentialPath, options.credentialKey);

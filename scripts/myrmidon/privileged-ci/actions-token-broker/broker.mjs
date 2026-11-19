@@ -48,7 +48,7 @@ export async function createRecoveredSingleHostBroker({ credentialPath, credenti
 }
 
 // The store must persist encrypted credentials and enforce owner-bound atomic access.
-export function createBroker({ policy, loadKeys, claimOnce, installation, store, audit }) {
+export function createBroker({ policy, loadKeys, claimOnce, installation, store, audit, alert }) {
   const fixedPolicy = Object.freeze({ ...policy });
   async function identity(jwt) {
     const claims = await verifyIdentity(jwt, { policy: fixedPolicy, loadKeys, claimOnce });
@@ -58,6 +58,10 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
   async function record(event) {
     // Audit receives only a fixed event name, never claims, errors or credentials.
     await audit(event);
+  }
+  async function ambiguous() {
+    try { await record('issuance_ambiguous'); } catch { /* Reservation remains pending. */ }
+    try { if (typeof alert === 'function') await alert('issuance_ambiguous'); } catch { /* Recovery retries from the reservation. */ }
   }
   async function guarded(event, operation) {
     try {
@@ -79,7 +83,7 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
           credential = await installation.issue();
         } catch {
           // The upstream may have created a token despite the failed response.
-          try { await record('issuance_ambiguous'); } catch { /* Reservation remains the durable stop signal. */ }
+          await ambiguous();
           throw new Error('issuance outcome unknown');
         }
         try {
@@ -89,7 +93,7 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
             await installation.revoke(credential.token);
             if (durable) await store.resolveIssuance(handle);
           } catch {
-            try { await record('issuance_ambiguous'); } catch { /* Reservation remains pending. */ }
+            await ambiguous();
           }
           throw new Error('credential storage failed');
         }
