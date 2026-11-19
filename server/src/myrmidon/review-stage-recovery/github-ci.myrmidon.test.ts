@@ -141,6 +141,25 @@ describe("resolvePullRequestHeadCi", () => {
     expect(queued).toEqual({ state: "pending", headSha: "abc123" });
   });
 
+  it("excludes a queued post-verdict workflow only with exact-head workflow provenance", async () => {
+    const label = { name: "sync review label", status: "queued", conclusion: null, check_suite: { id: 42 } };
+    const build = { name: "build", status: "completed", conclusion: "success" };
+    const workflowRuns = "/repos/acme/app/actions/runs?head_sha=abc123&per_page=100";
+    const resolve = (runs: unknown[], workflow: unknown) => resolvePullRequestHeadCi({
+      reference, token: "token", fetch: fakeFetch({
+        [PULL]: openPull,
+        [CHECK_RUNS]: { check_runs: [] },
+        [ALL_CHECK_RUNS]: { total_count: runs.length, check_runs: runs },
+        [workflowRuns]: workflow,
+      }),
+    });
+    const provenance = { total_count: 1, workflow_runs: [{ check_suite_id: 42, head_sha: "abc123", event: "pull_request", path: ".github/workflows/review-label-sync.yml" }] };
+    expect(await resolve([build, label], provenance)).toMatchObject({ state: "complete", finalCheckConclusion: "success" });
+    expect(await resolve([{ ...build, conclusion: "failure" }, label], provenance)).toMatchObject({ state: "complete", finalCheckConclusion: "failure" });
+    expect(await resolve([build, label], { total_count: 1, workflow_runs: [{ ...provenance.workflow_runs[0], path: ".github/workflows/ci.yml" }] })).toMatchObject({ state: "pending" });
+    expect(await resolve([build, label], { total_count: 2, workflow_runs: provenance.workflow_runs })).toMatchObject({ state: "unknown" });
+  });
+
   it("is not finished when `checks` failed but typecheck and tests are still queued", async () => {
     // OPE-8077 (#2027): the final check only appears when every lane it needs has ended, and the
     // other checks of the head are not what decides it, even if the server returns them.
