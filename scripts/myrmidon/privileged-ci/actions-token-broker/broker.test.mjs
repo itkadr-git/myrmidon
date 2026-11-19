@@ -20,6 +20,21 @@ function jwt(jti, overrides = {}) {
   return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
 }
 
+test('transient credential storage failure and failed revoke retain the known token for recovery', async () => {
+  let attempts = 0;
+  const retained = new Map();
+  const store = {
+    reserveIssuance: async () => {}, resolveIssuance: async () => assert.fail('must remain fenced'),
+    put: async (handle, credential) => { if (++attempts === 1) throw new Error('transient storage failure'); retained.set(handle, credential); },
+    queueAlert: async () => {},
+  };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true,
+    installation: { issue: async () => ({ token: 'known-fixture' }), revoke: async () => { throw new Error('offline'); } },
+    store, audit: async () => {}, alert: async () => {} });
+  await assert.rejects(broker.exchange(jwt('store-and-revoke-failure')));
+  assert.deepEqual([...retained.values()], [{ token: 'known-fixture' }]);
+});
+
 test('failure to resolve issuance alerts and retains the token for recovery', async () => {
   const alerts = [];
   const retained = new Map();
