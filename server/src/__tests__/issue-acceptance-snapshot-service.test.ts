@@ -1192,6 +1192,8 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     })).rejects.toThrow("abort link");
     expect(await issueAcceptanceSnapshotService(db).read(issueId)).toEqual(before);
     expect(await db.select().from(issueDocuments).where(eq(issueDocuments.issueId, issueId))).toHaveLength(0);
+    const rows = await db.execute(sqlTag`SELECT acceptance_issue_id FROM documents WHERE id = ${docId}::uuid`);
+    expect(rows[0]).toMatchObject({ acceptance_issue_id: null });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   it("rejects binding one acceptance document to two issues", async () => {
