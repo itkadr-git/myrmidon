@@ -28,6 +28,7 @@ export async function verifyIdentity(token, { policy, loadKeys, claimOnce, now =
   if (!Number.isSafeInteger(claims.exp) || !Number.isSafeInteger(claims.nbf) || !Number.isSafeInteger(claims.iat) || claims.exp <= now || claims.nbf > now || claims.iat > now || claims.exp <= claims.iat || claims.nbf > claims.exp || claims.exp - claims.iat > 600 || now - claims.iat > 600) return reject();
   if (typeof claims.jti !== 'string' || !claims.jti || claims.jti.length > 256) return reject();
   if (!/^[1-9][0-9]*$/.test(policy.repository_id) || !/^[1-9][0-9]*$/.test(policy.repository_owner_id) || !/^[1-9][0-9]*$/.test(policy.actor_id)) return reject();
+  if (typeof policy.workflow_sha !== 'string' || !/^[0-9a-f]{40}$/.test(policy.workflow_sha)) return reject();
   for (const field of FIELDS) if (typeof policy[field] !== 'string' || !policy[field] || claims[field] !== policy[field]) return reject();
   if (!await claimOnce(claims.jti, claims.exp)) return reject();
   return claims;
