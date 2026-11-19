@@ -99,6 +99,21 @@ test('concurrent audit failure during reservation alerts on the fenced intent', 
   assert.ok(alerts.includes('issuance_ambiguous'));
 });
 
+test('lost reservation acknowledgement alerts and fences further issuance', async () => {
+  let reserves = 0, calls = 0;
+  const alerts = [], queued = [];
+  const store = { reserveIssuance: async () => { reserves++; if (reserves === 1) throw new Error('ack lost'); },
+    resolveIssuance: async () => {}, put: async () => {}, queueAlert: async event => queued.push(event) };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    installation: { issue: async () => { calls++; return { token: 'fixture' }; } },
+    audit: async () => {}, alert: async event => alerts.push(event) });
+  await assert.rejects(broker.exchange(jwt('reservation-ack-lost')));
+  await assert.rejects(broker.exchange(jwt('reservation-ack-retry')));
+  assert.equal(calls, 0);
+  assert.ok(queued.includes('issuance_ambiguous'));
+  assert.ok(alerts.includes('issuance_ambiguous'));
+});
+
 test('concurrent audit failure during revocation reservation alerts on the retained fence', async () => {
   let release, reserved;
   const waiting = new Promise(resolve => { reserved = resolve; });
