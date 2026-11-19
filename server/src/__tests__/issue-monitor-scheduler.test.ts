@@ -466,8 +466,16 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
       expect(after!.monitorWakeRequestedAt?.toISOString()).toBe(newerClaimAt.toISOString());
       expect(after!.monitorNotes).toBe("new evidence");
-    } finally {
       await db.execute(sql.raw("DROP TRIGGER test_replace_claim_with_evidence ON issues; DROP FUNCTION test_replace_claim_with_evidence();"));
+      await db.update(issues).set({ monitorWakeRequestedAt: null }).where(eq(issues.id, issueId));
+      const scheduler = heartbeatService(db, { executesRuns: false });
+      expect((await scheduler.tickTimers(newerClaimAt)).enqueued).toBe(1);
+      expect((await scheduler.tickTimers(newerClaimAt)).enqueued).toBe(0);
+      const requests = await db.select().from(agentWakeupRequests);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.payload).toMatchObject({ monitorNotes: "new evidence" });
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_replace_claim_with_evidence ON issues; DROP FUNCTION IF EXISTS test_replace_claim_with_evidence();"));
       await db.delete(heartbeatRuns);
     }
   });
