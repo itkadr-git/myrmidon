@@ -22,7 +22,12 @@ export async function createAuditedSupervisedServer(tls, { auditPath, auditKey, 
       try {
         release = acquireExclusiveStore(options.credentialPath);
         store = createCredentialStore(options.credentialPath, options.credentialKey);
-        if (error instanceof PendingIssuanceError) await store.queueAlert('issuance_ambiguous');
+        if (error instanceof PendingIssuanceError) {
+          try { await store.queueAlert('issuance_ambiguous'); } catch {
+            // Outbox failure must not prevent revoking already known credentials.
+            try { await options.alert('credential_recovery_failed'); } catch { /* External monitoring remains required. */ }
+          }
+        }
         const worker = createRecoveryWorker({ store, revoke: token => options.installation.revoke(token), alert: options.alert });
         for (;;) {
           const result = await worker.runOnce();
