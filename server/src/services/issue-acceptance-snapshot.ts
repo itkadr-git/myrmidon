@@ -61,7 +61,7 @@ export function issueAcceptanceSnapshotService(db: Db) {
      * check, not an atomic publication or a run identity binding; see the
      * acceptance-reader README for the remaining security prerequisites.
      */
-    read: async (issueRef: string): Promise<IssueAcceptanceSnapshot | null> => {
+    read: async (issueRef: string, companyId?: string): Promise<IssueAcceptanceSnapshot | null> => {
       const ref = issueRef.trim();
       if (!ref) return null;
       const identity = isUuidLike(ref)
@@ -107,7 +107,7 @@ export function issueAcceptanceSnapshotService(db: Db) {
             eq(documentRevisions.body, documents.latestBody),
           ),
         )
-        .where(identity)
+        .where(companyId ? and(identity, eq(issues.companyId, companyId)) : identity)
         .limit(1);
       const row = rows[0];
       if (!row) return null;
