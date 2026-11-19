@@ -29,6 +29,16 @@ test('exchange and revoke use verified identity and redact audit', async () => {
   assert.deepEqual(events, ['issued', 'revoked']);
 });
 
+test('audit failure revokes an issued credential and removes its stored copy', async () => {
+  const entries = new Map(), revoked = [];
+  const store = { put: async (h, c) => entries.set(h, c), delete: async h => entries.delete(h) };
+  const installation = { issue: async () => ({ token: 'fixture', expiresAt: '2030-01-01T00:00:00Z' }), revoke: async token => revoked.push(token) };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, installation, store, audit: async () => { throw new Error('audit unavailable'); } });
+  await assert.rejects(broker.exchange(jwt('audit-failure')));
+  assert.deepEqual(revoked, ['fixture']);
+  assert.equal(entries.size, 0);
+});
+
 test('failed credential persistence attempts revocation', async () => {
   const revoked = [];
   const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, installation: { issue: async () => ({ token: 'fixture', expiresAt: '2030-01-01T00:00:00Z' }), revoke: async token => revoked.push(token) }, store: { put: async () => { throw new Error('storage down'); } }, audit: async () => {} });

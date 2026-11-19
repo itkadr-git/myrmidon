@@ -21,7 +21,16 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         try { await installation.revoke(credential.token); } catch { await record('revoke_failed'); }
         throw new Error('credential storage failed');
       }
-      await record('issued');
+      try {
+        await record('issued');
+      } catch {
+        // Keep the stored credential for recovery if revocation fails.
+        try {
+          await installation.revoke(credential.token);
+          await store.delete(handle);
+        } catch { /* The original audit failure remains the public error. */ }
+        throw new Error('audit failed');
+      }
       return { handle, ...credential };
     },
     async revoke(jwt, handle) {
