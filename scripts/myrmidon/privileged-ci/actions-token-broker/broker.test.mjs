@@ -426,6 +426,26 @@ test('lost storage-failure finalization acknowledgement fences later issuance wh
   assert.equal(issued, 1);
 });
 
+test('storage failure after issuance alerts and retains the fence even when revoke succeeds', async () => {
+  let pending = false, issued = 0, revoked = 0;
+  const alerts = [];
+  const store = {
+    reserveIssuance: async () => { if (pending) throw new Error('pending'); pending = true; },
+    resolveIssuance: async () => { pending = false; },
+    put: async () => { throw new Error('storage unavailable'); },
+    queueAlert: async event => alerts.push(event),
+  };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    installation: { issue: async () => { issued++; return { token: 'fixture' }; }, revoke: async () => { revoked++; } },
+    audit: async () => {}, alert: async event => alerts.push(event), anchoredIssuance: true });
+  await assert.rejects(broker.exchange(jwt('storage-fail-revoke-success')));
+  assert.equal(pending, true);
+  assert.ok(alerts.includes('issuance_ambiguous'));
+  await assert.rejects(broker.exchange(jwt('storage-fail-next')));
+  assert.equal(issued, 1);
+  assert.equal(revoked, 1);
+});
+
 test('transient credential storage failure and failed revoke retain the known token for recovery', async () => {
   let attempts = 0;
   const retained = new Map();
