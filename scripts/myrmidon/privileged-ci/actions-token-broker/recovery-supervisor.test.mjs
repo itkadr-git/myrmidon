@@ -1,6 +1,28 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRecoverySupervisor } from './recovery-supervisor.mjs';
+import { createCredentialStore } from './store.mjs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { randomBytes } from 'node:crypto';
+
+test('failed recovery alert survives a supervisor and store restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'recovery-outbox-'));
+  const path = join(dir, 'store.sqlite'), key = randomBytes(32);
+  let store = createCredentialStore(path, key), started = 0;
+  try {
+    const first = createRecoverySupervisor({ store, recover: async () => ({ failed: 1, pending: false, alertFailed: false }), alert: async () => { throw new Error('offline'); }, start: async () => { started++; }, delay: async () => first.stop() });
+    await assert.rejects(first.run(), /stopped/);
+    store.close();
+    store = createCredentialStore(path, key);
+    const delivered = [];
+    const second = createRecoverySupervisor({ store, recover: async () => ({ failed: 0, pending: false, alertFailed: false }), alert: async event => delivered.push(event), start: async () => { started++; }, delay: async () => {} });
+    await second.run();
+    assert.deepEqual(delivered, ['credential_recovery_failed']);
+    assert.equal(started, 1);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('recovery supervisor retries while issuance stays stopped, then starts exactly once', async () => {
   let attempts = 0, starts = 0;
