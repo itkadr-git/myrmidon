@@ -38,7 +38,11 @@ secret management, least privilege and key rotation.
   attempt an `audit_unavailable` notification, retrying with the supplied delay
   while the process remains alive. There is no local outbox at that point: an
   external supervisor must retry startup and alert on process failure; delivery
-  across a crash is not guaranteed. Broker factories
+  across a crash is not guaranteed. Runtime audit failures queue `audit_unavailable`
+  in the credential outbox and attempt immediate notification; delivery retries
+  only after audit startup succeeds, so an independently monitored process and
+  receiver remain mandatory. Outbox storage failure also needs external monitoring.
+  Broker factories
   hold a separate SQLite write lock across recovery and the broker lifetime; this
   is single-host cooperative exclusion only, requiring one canonical credential
   path and a filesystem with reliable SQLite locking. Direct store access and path

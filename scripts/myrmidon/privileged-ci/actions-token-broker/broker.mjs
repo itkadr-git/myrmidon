@@ -91,7 +91,11 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
   }
   async function record(event) {
     // Audit receives only a fixed event name, never claims, errors or credentials.
-    await audit(event);
+    try { await audit(event); } catch (error) {
+      try { await store.queueAlert('audit_unavailable'); } catch { /* Storage failure requires external supervision. */ }
+      try { await alert('audit_unavailable'); } catch { /* Recovery retries the durable outbox. */ }
+      throw error;
+    }
   }
   async function ambiguous() {
     // Keep the outbox entry even after immediate delivery: recovery acknowledges it.

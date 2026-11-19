@@ -17,7 +17,7 @@ export function createCredentialStore(path, key) {
   let active = false;
   const store = {
     async queueAlert(event) {
-      if (!['issuance_ambiguous', 'credential_recovery_failed'].includes(event)) throw new Error('invalid recovery alert');
+      if (!['issuance_ambiguous', 'credential_recovery_failed', 'audit_unavailable'].includes(event)) throw new Error('invalid recovery alert');
       db.prepare('INSERT OR IGNORE INTO recovery_alerts VALUES (?)').run(event);
     },
     async pendingAlerts() { return db.prepare('SELECT event FROM recovery_alerts ORDER BY event').all().map(row => row.event); },
