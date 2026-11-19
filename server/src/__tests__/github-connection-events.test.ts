@@ -124,7 +124,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
       id, provider: "github" as const, event: "pull_request", action: "synchronize", installationId: "101", repositoryId: "99", createdAt: "2026-11-16T12:00:00.000Z", bindingIds: [`${grantId}_101`],
       payload: { repository: "paperclipai/paperclip", number: 123, state: "open", merged: false, updatedAt: "2026-11-16T12:00:00.000Z", url: "https://github.com/paperclipai/paperclip/pull/123", headRef: "bot/GHE-1", headSha, senderLogin: "bot-eng" },
     });
-    const queue = [sync("delivery-sync-same", "a".repeat(40)), sync("delivery-sync-new", "b".repeat(40)), sync("delivery-sync-new-again", "b".repeat(40))];
+    const queue = [sync("delivery-sync-same", "a".repeat(40)), sync("delivery-sync-new", "b".repeat(40)), sync("delivery-sync-new-again", "b".repeat(40)), sync("delivery-sync-unrelated", "c".repeat(40))];
     const connector = { getCapabilities: vi.fn(async () => ["github.code" as const]), startAuthorization: vi.fn(), claim: vi.fn(), refresh: vi.fn(), revoke: vi.fn(), setWebhookBinding: vi.fn(async () => undefined), leaseEvents: vi.fn(async () => ({ leaseId: randomUUID(), events: [queue.shift()!] })), acknowledgeEvents: vi.fn(async () => 1) } as unknown as PaperclipCloudConnector;
     let currentTime = new Date("2026-11-16T12:00:05.000Z");
     const service = githubConnectionEventService(db, { connector, now: () => currentTime });
@@ -149,6 +149,12 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     currentTime = new Date("2026-11-16T12:01:00.000Z");
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, failed: 0 });
     expect(await headRows()).toHaveLength(1);
+
+    // A different monitor's deadline must not be shortened by a PR push.
+    await db.update(issues).set({ monitorNextCheckAt: deferredUntil, executionState: sql`jsonb_set(${issues.executionState}, '{monitor,serviceName}', '"External service"'::jsonb)` }).where(eq(issues.id, issueId));
+    currentTime = new Date("2026-11-16T12:01:30.000Z");
+    await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, failed: 0 });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.monitorNextCheckAt).toEqual(deferredUntil);
   });
 
   it("updates an agent-registered PR work product on synchronize and writes the head-change row (myrmidon AGENT-PR-WP-NORMALIZE)", async () => {
