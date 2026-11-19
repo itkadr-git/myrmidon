@@ -60,10 +60,14 @@ test('gateway to separate mTLS upstream: projections, tenant boundaries and TLS 
     assert.equal((await call(`/api/issues/${identifier}/documents/acceptance-scenarios`)).status, 404);
   }
   const before = upstreamRequests;
-  for (const path of ['/api/issues', '/api/issues/OPE-1/documents/plan', '/api/secrets', '/api/agents', '/api/plugins', '/api/issues/%4fPE-1', '/api/issues/OPE-1?x=1']) assert.equal((await call(path)).status, 404);
-  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']) assert.equal((await call('/api/issues/OPE-1', { method })).status, 404);
-  assert.equal((await call('/api/issues/OPE-1', { headers: { authorization: `Bearer ${token}`, 'x-http-method-override': 'POST' } })).status, 404);
+  for (const path of ['/api/issues', '/api/issues?search=OPE', '/api/issues/OPE-1/documents/plan', '/api/secrets', '/api/agents', '/api/plugins', '/api/issues/%4fPE-1', '/api/issues/%254fPE-1', '/api/issues/OPE-1%2fdocuments%2facceptance-scenarios', '/api/issues/../OPE-1', '/api/issues/OPE-1?x=1']) assert.equal((await call(path)).status, 404, path);
+  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']) assert.equal((await call('/api/issues/OPE-1', { method })).status, 404, method);
+  for (const header of ['x-http-method-override', 'x-method-override', 'x-http-method']) assert.equal((await call('/api/issues/OPE-1', { headers: { authorization: `Bearer ${token}`, [header]: 'POST' } })).status, 404, header);
+  for (const authorization of [undefined, 'Bearer invalid', 'Basic candidate']) assert.equal((await call('/api/issues/OPE-1', { headers: authorization ? { authorization } : {} })).status, 401);
   assert.equal(upstreamRequests, before);
+  records[0].expiresAt = Date.now() - 1;
+  assert.equal((await call('/api/issues/OPE-1')).status, 401);
+  records[0].expiresAt = Date.now() + 60000;
   records[0].revoked = true;
   assert.equal((await call('/api/issues/OPE-1')).status, 401);
   assert.equal(upstreamRequests, before);
