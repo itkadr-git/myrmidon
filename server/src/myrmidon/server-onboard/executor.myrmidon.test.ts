@@ -710,7 +710,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     };
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
-    expect(result.error).toMatch(/inactive.*refus/i);
+    expect(result.error).toBe("Firewall is inactive; refusing changes because its original disabled state cannot be safely restored");
     expect(ssh.hasExecuted(/start-myrmidon-firewall-timer/)).toBe(false);
     expect(ssh.hasExecuted(/sudo ufw (allow|default|delete|--force enable|disable)/)).toBe(false);
     expect(ssh.hasExecuted(/restore-myrmidon-firewall|pkill/)).toBe(false);
