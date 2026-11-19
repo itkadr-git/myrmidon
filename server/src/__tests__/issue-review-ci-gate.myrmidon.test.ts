@@ -372,6 +372,12 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     invalidateDuringRead = false;
     clearCiCacheForTests();
     await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
+    // A rerun can begin before its webhook arrives; the cached success is no
+    // longer proof that CI is complete, even though the SHA is unchanged.
+    checkState = "pending";
+    const delayedWebhook = await request(app).patch(`/api/issues/${issueId}`).send(decision);
+    expect(delayedWebhook.status, `rerun before webhook: ${JSON.stringify(delayedWebhook.body)}`).toBe(422);
+    checkState = "success";
     const response = await request(app).patch(`/api/issues/${issueId}`).send(decision);
     expect(response.status, JSON.stringify(response.body)).toBe(200);
   });
