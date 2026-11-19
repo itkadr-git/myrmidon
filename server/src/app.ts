@@ -69,6 +69,7 @@ import { environmentRuntimeService } from "./services/environment-runtime.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { blockerGraphRoutes } from "./routes/blocker-graph.js";
+import { issueAcceptanceSnapshotRoutes } from "./routes/issue-acceptance-snapshot.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { caseRoutes } from "./routes/cases.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
@@ -1489,6 +1490,9 @@ export async function createApp(
   // issue approval endpoints delegate to it. The intervening routers use distinct
   // route prefixes, so this dependency does not change issue-route precedence.
   api.use(blockerGraphRoutes(db));
+  // myrmidon(OPE-15134): the atomic acceptance snapshot for the acceptance-reader
+  // gateway; a distinct literal prefix, mounted before the issue router.
+  api.use(issueAcceptanceSnapshotRoutes(db));
   api.use(issueRoutes(db, opts.storageService, {
     chatRunRetries: chatChannels,
     feedbackExportService: opts.feedbackExportService,
