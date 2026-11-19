@@ -28,6 +28,16 @@ test('accepts signed pinned identity; rejects tampering and policy confusion', a
   await assert.rejects(verify(jwt({ ...claims, jti: 'future', nbf: now + 60 })));
 });
 
+test('rejects an untrusted caller workflow, subject or actor', async () => {
+  const caller = { sub: 'repo:example/test:environment:test', workflow_ref: 'example/test/.github/workflows/caller.yml@refs/heads/main', workflow_sha: 'a'.repeat(40), actor: 'trusted', actor_id: '789' };
+  const verify = token => verifyIdentity(token, { policy: { ...policy, ...caller }, loadKeys: async () => [jwk], claimOnce: async () => true, now });
+  await verify(jwt({ ...claims, ...caller }));
+  for (const field of Object.keys(caller)) {
+    await assert.rejects(verify(jwt({ ...claims, ...caller, [field]: 'untrusted' })), field);
+  }
+  await assert.rejects(verify(jwt(claims)));
+});
+
 test('rejects excessively long-lived or stale signed identities', async () => {
   const verify = token => verifyIdentity(token, { policy, loadKeys: async () => [jwk], claimOnce: async () => true, now });
   await assert.rejects(verify(jwt({ ...claims, exp: now + 365 * 86400 })));
