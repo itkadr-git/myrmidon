@@ -15792,6 +15792,7 @@ export function issueRoutes(
           );
         }
       }
+      let reviewCiAudit: { source: string; headSha: string | null } | null = null;
       if (transition.decision?.outcome === "changes_requested" || transition.decision?.outcome === "approved") {
         let diagnostic: Parameters<NonNullable<Parameters<typeof createReviewPullRequestCiResolver>[0]["onDiagnostic"]>>[0] | null = null;
         // OPE-15004: the write verdict gate is review admission — its reads are
@@ -15801,7 +15802,9 @@ export function issueRoutes(
           issueId: existing.id,
         });
         logReviewWriteCi({ issueId: existing.id, runId: actor.runId, ci, diagnostic });
-        if (ci.state === "pending" || ci.state === "unknown" || (transition.decision?.outcome === "approved" && ci.state === "complete" && ci.finalCheckConclusion !== "success")) {
+        reviewCiAudit = ci.reason === "budget_exhausted_cached_success" && transition.decision?.outcome === "changes_requested"
+          ? { source: "budget_exhausted_cached_success", headSha: ci.headSha } : null;
+        if (ci.state === "pending" || ci.state === "unknown" || (ci.state === "complete" && (ci.finalCheckConclusion !== "success" || (transition.decision?.outcome === "approved" && ci.reason === "budget_exhausted_cached_success")))) {
           if (ci.reason?.includes("budget_exhausted")) {
             // A triggered CI-wait monitor otherwise gets rearmed by the stale
             // monitor sweep and repeatedly wakes a reviewer who cannot decide.
@@ -16968,6 +16971,7 @@ export function issueRoutes(
               ...updateFields,
               identifier: updated.identifier,
               authorizationReason: issueMutationAuthorizationReason,
+              ...(reviewCiAudit ? { reviewCiAudit } : {}),
               changes,
               ...(reviewInteractionId ? { reviewInteractionId } : {}),
               ...(commentBody ? { source: "comment" } : {}),
@@ -17118,7 +17122,9 @@ export function issueRoutes(
                 issueId: lockedExisting.id,
               });
               logReviewWriteCi({ issueId: lockedExisting.id, runId: actor.runId, ci, diagnostic });
-              if (ci.state === "pending" || ci.state === "unknown" || (lockedTransition.decision?.outcome === "approved" && ci.state === "complete" && ci.finalCheckConclusion !== "success")) {
+              reviewCiAudit = ci.reason === "budget_exhausted_cached_success" && lockedTransition.decision?.outcome === "changes_requested"
+                ? { source: "budget_exhausted_cached_success", headSha: ci.headSha } : null;
+              if (ci.state === "pending" || ci.state === "unknown" || (ci.state === "complete" && (ci.finalCheckConclusion !== "success" || (lockedTransition.decision?.outcome === "approved" && ci.reason === "budget_exhausted_cached_success")))) {
                 throw unprocessable(
                   ci.state === "pending"
                     ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
@@ -18080,6 +18086,7 @@ export function issueRoutes(
             ...updateFields,
             identifier: issue.identifier,
             authorizationReason: issueMutationAuthorizationReason,
+            ...(reviewCiAudit ? { reviewCiAudit } : {}),
             changes: issueChanges,
             ...(blockedLoopSignature
               ? { [BLOCKED_LOOP_SIGNATURE_KEY]: blockedLoopSignature }

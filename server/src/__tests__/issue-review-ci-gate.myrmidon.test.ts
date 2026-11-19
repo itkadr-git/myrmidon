@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
-import { agentWakeupRequests, agents, companies, connectionEventDeliveries, heartbeatRuns, issueComments, issueWorkProducts, issues, toolGatewayRateLimitCounters } from "@myrmidon/db";
+import { activityLog, agentWakeupRequests, agents, companies, connectionEventDeliveries, heartbeatRuns, issueComments, issueWorkProducts, issues, toolGatewayRateLimitCounters } from "@myrmidon/db";
 import { describeEmbeddedPostgres, routeApp, seedCompanyWithBoardAccess, useEmbeddedPostgres } from "./helpers/route-test-harness.js";
 import { issueRoutes } from "../routes/issues.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
@@ -171,6 +171,15 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
       if (url === checkUrl) return Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "failure", head_sha: headSha }] });
       throw new Error("Unexpected external transport");
     });
+    const red = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
+    expect(red.status).toBe(422);
+    transport.mockImplementation(async (url) => {
+      if (url === pullUrl) return Response.json({ state: "open", head: { sha: headSha } });
+      if (url === workflowUrl) return Response.json([{ name: "ci.yml" }]);
+      if (url === checkUrl) return Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "success", head_sha: headSha }] });
+      throw new Error("Unexpected external transport");
+    });
+    transport.mockClear();
     const accepted = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
     await drainHeartbeatRunsToQuiescence(ctx.db, heartbeatService(ctx.db));
     expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
@@ -279,7 +288,7 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     transport.mockImplementation(async (url) => {
       if (url === pullUrl) return Response.json({ state: "open", head: { sha: headSha } });
       if (url === workflowUrl) return Response.json([{ name: "ci.yml" }]);
-      if (url === checkUrl) return Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "failure", head_sha: headSha }] });
+      if (url === checkUrl) return Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "success", head_sha: headSha }] });
       throw new Error("Unexpected external transport");
     });
     // The timer itself must resume review after the budget window; a manual
@@ -310,7 +319,7 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     expect(JSON.stringify(comments.body)).toContain("REQUEST CHANGES: preserve this finding");
   });
 
-  it.each(["approve", "changes"] as const)("admits %s against a fresh authoritative wake SUCCESS when review budget is exhausted", async (verdict) => {
+  it.each(["approve", "changes"] as const)("applies fail-closed %s policy to an authoritative cached SUCCESS when review budget is exhausted", async (verdict) => {
     const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Cached success admission");
     const author = randomUUID(), reviewer = randomUUID(), issueId = randomUUID(), runId = randomUUID(), stageId = randomUUID();
     const headSha = "f".repeat(40);
@@ -373,17 +382,22 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     invalidateDuringRead = false;
     clearCiCacheForTests();
     await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
-    // Neither a moved head nor a rerun needs to have delivered a webhook yet.
-    liveHeadSha = "b".repeat(40);
-    const delayedHeadWebhook = await request(app).patch(`/api/issues/${issueId}`).send(decision);
-    expect(delayedHeadWebhook.status, `head move before webhook: ${JSON.stringify(delayedHeadWebhook.body)}`).toBe(422);
-    liveHeadSha = headSha;
-    checkState = "pending";
-    const delayedWebhook = await request(app).patch(`/api/issues/${issueId}`).send(decision);
-    expect(delayedWebhook.status, `rerun before webhook: ${JSON.stringify(delayedWebhook.body)}`).toBe(422);
-    checkState = "success";
+    // An undelivered webhook cannot be ruled out when the budget is exhausted.
+    if (verdict === "approve") {
+      liveHeadSha = "b".repeat(40);
+      const delayedHeadWebhook = await request(app).patch(`/api/issues/${issueId}`).send(decision);
+      expect(delayedHeadWebhook.status).toBe(422);
+      liveHeadSha = headSha;
+      checkState = "pending";
+      const delayedWebhook = await request(app).patch(`/api/issues/${issueId}`).send(decision);
+      expect(delayedWebhook.status).toBe(422);
+    }
     const response = await request(app).patch(`/api/issues/${issueId}`).send(decision);
-    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.status, JSON.stringify(response.body)).toBe(verdict === "approve" ? 422 : 200);
+    if (verdict === "changes") {
+      const records = await ctx.db.select().from(activityLog).where(sql`${activityLog.entityId} = ${issueId} and ${activityLog.action} = 'issue.updated'`);
+      expect(records.some((record) => JSON.stringify(record.details?.reviewCiAudit) === JSON.stringify({ source: "budget_exhausted_cached_success", headSha }))).toBe(true);
+    }
   });
 
   it("rejects a verdict on stored wake evidence alone when the review budget is exhausted (OPE-15114)", async () => {

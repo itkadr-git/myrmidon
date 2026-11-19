@@ -756,7 +756,7 @@ export function createReviewPullRequestCiResolver(input: {
       if (fresh && head.reason?.includes("budget_exhausted")) {
         const snapshot = readFreshReviewCiSnapshot(companyId, reference, target.knownHeadSha);
         if (snapshot?.finalCheckConclusion === "success") {
-          return { ...snapshot, pullRequestUrl };
+          return { ...snapshot, pullRequestUrl, reason: "budget_exhausted_cached_success" };
         }
       }
       return {
