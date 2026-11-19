@@ -1,20 +1,9 @@
 ALTER TABLE "issues" ADD COLUMN "acceptance_snapshot_version" bigint DEFAULT 0 NOT NULL;--> statement-breakpoint
--- myrmidon(OPE-15134/OPE-15145): the acceptance snapshot epoch lives in its
--- own table, never on the issues row. Every bump is a single-row UPSERT on
--- issue_acceptance_epochs, so triggers nested anywhere in a bump chain run
--- normally: there is no shared guard state and no write back into the
--- issues table, which is what made earlier guard-based designs drop nested
--- writers or recurse. The epoch row survives issue delete+recreate (no
--- foreign key), a BEFORE UPDATE trigger rejects any attempt to wind the
--- counter back, and an AFTER DELETE trigger restores a deleted row at
--- epoch+1, so no writer can reset the generation. Writers bump it via
--- AFTER triggers on issues (insert/update), on issue_documents
--- (insert/update/delete, both OLD and NEW issues on a transfer), on
--- documents (insert/update/delete through the owning link), and on
--- document_revisions (insert/update/delete) when the owning link is visible
--- in the writer's
--- snapshot. REPEATABLE READ direct SQL can miss a concurrently created link;
--- these triggers alone do not cover every writer (see the reader README).
+-- myrmidon(OPE-15134/OPE-15145): a company-bound document owner and
+-- revision document fence serialize writers with acceptance link changes.
+-- Issue row fences invalidate stale REPEATABLE READ writers; the separate
+-- epoch survives issue deletion and detects committed ABA changes. Supported
+-- writers must leave these database constraints and triggers enabled.
 -- Keep the acceptance owner on the document itself so revision writers need
 -- not rediscover it through a link invisible to their transaction snapshot.
 ALTER TABLE "documents" ADD COLUMN "acceptance_issue_id" uuid;--> statement-breakpoint

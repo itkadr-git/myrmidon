@@ -44,9 +44,9 @@ export function issueAcceptanceSnapshotService(db: Db) {
      *
      * myrmidon(OPE-15145): every hop is tenant-bound to the issue's own
      * company_id. issue_documents and documents have independent foreign
-     * keys and no composite tenant constraint, so a link row owned by
-     * company A can point at a document owned by company B; a plain
-     * documents.id join would serve B's body under A's issue. The document
+     * keys. The database also enforces the acceptance binding on writes;
+     * these joins independently fail closed on inconsistent stored data.
+     * A plain documents.id join could otherwise serve a foreign body. The document
      * side is returned only when ALL of these hold on the same snapshot:
      *   - the link row matches issue_id, company_id and the fixed key;
      *   - the document matches id AND company_id;
@@ -56,14 +56,10 @@ export function issueAcceptanceSnapshotService(db: Db) {
      * Otherwise the document fails closed to null — never a foreign or
      * mixed body. A missing issue yields null.
      *
-     * The document carries `latestRevisionNumber`, the document's monotonic
-     * write generation: every accepted write mints a new revision row, moves
-     * latest_revision_id to it and increments the number, and numbers are
-     * never reused. Equality of (latestRevisionId, latestRevisionNumber)
-     * across two reads therefore proves no write occurred in between —
-     * including content reverts (A→B→A), which mint a new generation. That
-     * pair is the run-bound pin the acceptance gate compares before
-     * publishing or consuming a result (see the acceptance-reader README).
+     * The issue epoch, not revision-number equality alone, detects relevant
+     * intervening writes, including ABA. Verification is a point-in-time
+     * check, not an atomic publication or a run identity binding; see the
+     * acceptance-reader README for the remaining security prerequisites.
      */
     read: async (issueRef: string): Promise<IssueAcceptanceSnapshot | null> => {
       const ref = issueRef.trim();

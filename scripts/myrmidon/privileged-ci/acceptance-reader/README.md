@@ -26,12 +26,9 @@ exercised against a fixture, not a live Myrmidon service.
 
 ## Pin and verify
 
-Security limitation: the current issue epoch does not detect every concurrent
-mutation. A REPEATABLE READ document writer started before link creation can
-perform an A-to-B-to-A update after a pin without bumping that issue's epoch.
-The regression in `issue-acceptance-snapshot-service.test.ts` demonstrates
-this failure on PostgreSQL. Do not rely on verify for ABA detection or enable
-privileged CI until this defect is fixed and independently reviewed.
+Security limitation: the database writer protocol has targeted PostgreSQL
+regression coverage, but it and the consumer's check-and-use transaction still
+require independent review. Do not enable privileged CI on this basis.
 
 `GET /api/issues/{ref}/acceptance-snapshot` returns the minimal projection of
 that single snapshot — the full pin:
@@ -48,17 +45,20 @@ that single snapshot — the full pin:
 triggers on any insert/update of the issue row (company, identifier,
 anything), on insert/update/delete of the issue's `acceptance-scenarios`
 link row (both the old and the new issue on a transfer), and on
-insert/update/delete of the bound document and its revision rows when the
-link is visible to the writer's transaction. These triggers do not cover all
-writers: in particular, direct SQL using REPEATABLE READ can miss a link
-committed after its snapshot. Explicit issue-ID bumps in the document service
-cover those service paths, not arbitrary SQL or all import paths. The epoch
+insert/update/delete of the bound document and its revision rows. Acceptance
+links set a company-bound owner on the document in the same transaction;
+revision writers update that document row before writing. A stale REPEATABLE
+READ writer therefore encounters a serialization failure rather than missing
+an invisible concurrent link. Document changes fence on the owning issue row,
+and link triggers also bump old and new issue epochs. Supported writers must
+not disable triggers or bypass this database protocol; arbitrary superuser
+SQL is outside the threat model. The epoch
 survives delete+recreate: the epoch row has no foreign key to issues, a
 BEFORE UPDATE trigger rejects any attempt to wind it back, and an AFTER
 DELETE trigger restores a deleted row at epoch+1, so no writer can reset the
-generation and make a stale pin compare equal. Because a bump is a single-row
-upsert on the epochs table — never a guarded write back into the issues
-table — triggers nested anywhere in a bump chain run normally. The counter
+generation and make a stale pin compare equal. The internal bump uses a
+single-row upsert; explicit issue fences update the issue row and fail if it
+is missing. The counter
 is a decimal string, exact beyond 2^53 where JavaScript numbers collapse
 adjacent generations.
 
@@ -93,8 +93,8 @@ There is deliberately no "atomic at use" claim: an atomic commit of the
 verification with the publication of a CI verdict lives in the gate layer,
 which is out of scope for this gateway. What this gateway guarantees is
 exact: one MVCC snapshot per response and tenant confinement checked before
-any output. The conditional assertion cannot yet detect every relevant
-mutation; the security limitation above applies.
+any output. The writer protocol and consumer integration require independent
+review before this experimental endpoint is trusted.
 
 This contract also does not bind requests to one CI job: with the current
 operator-issued shared bearer, run binding is the caller's discipline. A
