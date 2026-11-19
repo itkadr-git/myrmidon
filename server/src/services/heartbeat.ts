@@ -4410,6 +4410,8 @@ export interface WakeupOptions {
     assigneeAgentId: string;
     statusVersion?: number;
   };
+  /** Internal monitor claim checked under the issue admission lock. */
+  monitorClaimGuard?: { issueId: string; scheduledAt: Date; claimedAt: Date; invalidated: boolean };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;
 }
@@ -13469,7 +13471,14 @@ export function heartbeatService(
           }
         }
 
+        const monitorClaimGuard = {
+          issueId: claimed.id,
+          scheduledAt: claimed.monitorNextCheckAt,
+          claimedAt: input.now,
+          invalidated: false,
+        };
         await enqueueWakeup(targetAgentId, {
+          monitorClaimGuard,
           source: input.source,
           triggerDetail: input.triggerDetail,
           reason: wakeReason,
@@ -13501,6 +13510,7 @@ export function heartbeatService(
             manualTrigger: input.activitySource === "manual",
           },
         });
+        if (monitorClaimGuard.invalidated) return { outcome: "skipped" as const, reason: "monitor_changed" };
       }
 
       const triggeredPatch = buildIssueMonitorTriggeredPatch({
@@ -34982,6 +34992,20 @@ export function heartbeatService(
           await tx.execute(
             sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
           );
+          if (opts.monitorClaimGuard) {
+            const guard = opts.monitorClaimGuard;
+            const [current] = await tx.select({ id: issues.id }).from(issues).where(and(
+              eq(issues.id, issueId),
+              eq(issues.companyId, agent.companyId),
+              eq(issues.id, guard.issueId),
+              eq(issues.monitorNextCheckAt, guard.scheduledAt),
+              eq(issues.monitorWakeRequestedAt, guard.claimedAt),
+            )).limit(1);
+            if (!current) {
+              guard.invalidated = true;
+              return { kind: "skipped" as const };
+            }
+          }
 
           if (executionWaitRequestId) {
             const [pending] = await tx.select().from(agentWakeupRequests).where(and(
