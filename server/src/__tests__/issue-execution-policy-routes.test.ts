@@ -344,6 +344,24 @@ describe("issue execution policy routes", () => {
     await import("../routes/issues.js");
   });
 
+  it("rejects malformed operator participant repair without updating the issue", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1",
+      executionState: {
+        status: "pending", currentStageId: "c808bd8d-4af3-41d1-8d5c-ec43d02188b1",
+        currentStageIndex: 0, currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "d674a53a-3abd-43fe-8f49-696a04937323" },
+        returnAssignee: null, completedStageIds: [], lastDecisionId: null,
+        lastDecisionOutcome: null, monitor: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    const res = await request(await createApp()).patch(`/api/issues/${issue.id}/execution-participants`)
+      .send({ returnAssignee: { type: "agent", agentId: "not-a-uuid" }, unexpected: true });
+    expect(res.status).toBe(400);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("clears return assignee when assigned executor is a reviewer", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",

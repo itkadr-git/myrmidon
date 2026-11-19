@@ -7,6 +7,7 @@ import {
 } from "./experimental-api-paths.js";
 import { Router } from "express";
 import { z } from "zod";
+import { executionParticipantsSchema } from "./execution-participants-schema.js";
 import {
   createAiConnectionSchema,
   aiConnectionLoginIntentSchema,
@@ -3994,7 +3995,7 @@ registry.registerPath({
   path: "/api/issues/{id}/execution-participants",
   tags: ["issues"],
   summary: "Operator: replace the execution stage participant or return assignee (e.g. a terminated agent)",
-  request: { params: z.object({ id: z.string() }) },
+  request: { params: z.object({ id: z.string() }), body: jsonBody(executionParticipantsSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
