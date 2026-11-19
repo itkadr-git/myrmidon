@@ -549,11 +549,10 @@ describe("createReviewPullRequestCiResolver", () => {
         return { orderBy: () => ({ limit: async () => rows }) };
       } }) }),
     } as never;
-    const calls: Array<{ path: string }> = [];
     const fetch = vi.fn(fakeFetch({
       [PULL]: { state: "open", head: { sha: "def456" } },
       ["/repos/acme/app/commits/def456/check-runs?check_name=CI%20result&filter=all&per_page=100"]: { check_runs: [{ id: 2, name: "CI result", status: "completed", conclusion: "success", head_sha: "def456" }] },
-    }, calls));
+    }));
     const resolver = createReviewPullRequestCiResolver({ db, fetch, tokenProvider: async () => "token", admission: true });
     await expect(resolver({ companyId: "company-1", issueId: "issue-1" })).resolves.toMatchObject({
       state: "unknown", headSha: "def456", reason: "head_moved",
