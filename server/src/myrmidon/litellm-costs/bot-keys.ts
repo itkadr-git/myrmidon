@@ -27,7 +27,7 @@
 
 import { and, eq, ne } from "drizzle-orm";
 import { agents, type Db } from "@myrmidon/db";
-import { runKeySecretName } from "../litellm-keys/run-keys.js";
+import { DEFAULT_RUN_KEY_ENV_NAME, runKeySecretName } from "../litellm-keys/run-keys.js";
 import { secretService } from "../../services/index.js";
 import { cardUsesLlmGateway } from "../bot-containers/profile-input.js";
 
@@ -200,12 +200,11 @@ export async function findRunScopedGatewayKeyRef(
   runId: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<RunScopedGatewayKeyRef | null> {
-  const settings = readGatewayBotKeySettings(env);
-  if (!settings.keyEnv) return null;
+  const keyEnv = readGatewayBotKeySettings(env).keyEnv ?? DEFAULT_RUN_KEY_ENV_NAME;
   const secret = await secretService(db).getByName(companyId, runKeySecretName(runId));
   if (!secret || secret.status !== "active" || secret.scope !== "company") return null;
   return {
-    envKey: settings.keyEnv,
+    envKey: keyEnv,
     secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
   };
 }
