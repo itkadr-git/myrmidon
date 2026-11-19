@@ -76,7 +76,7 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
 
       const withDocument = await issueAcceptanceSnapshotService(db).read(issue!.id);
       expect(withDocument).toEqual({
-        issue: { id: issue!.id, identifier: "OPE-7001", companyId: companyA, version: "1" },
+        issue: { id: issue!.id, identifier: "OPE-7001", companyId: companyA, version: "2" },
         // Revision evidence: the latest revision id and the monotonic
         // generation number are part of the snapshot.
         document: { id: docId, latestRevisionId: revisionId, latestRevisionNumber: 3, body: "acceptance body" },
@@ -89,7 +89,7 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
 
       const withoutDocument = await issueAcceptanceSnapshotService(db).read(bare!.id);
       expect(withoutDocument).toEqual({
-        issue: { id: bare!.id, identifier: "OPE-7002", companyId: companyA, version: "0" },
+        issue: { id: bare!.id, identifier: "OPE-7002", companyId: companyA, version: "1" },
         document: null,
       });
 
@@ -136,7 +136,7 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
 
       const snapshot = await issueAcceptanceSnapshotService(db).read(issue!.id);
       expect(snapshot).toEqual({
-        issue: { id: issue!.id, identifier: "OPE-8001", companyId: companyA, version: "1" },
+        issue: { id: issue!.id, identifier: "OPE-8001", companyId: companyA, version: "2" },
         document: null,
       });
     },
@@ -189,7 +189,7 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
 
       const snapshot = await issueAcceptanceSnapshotService(db).read(issue!.id);
       expect(snapshot).toEqual({
-        issue: { id: issue!.id, identifier: "OPE-8101", companyId: companyA, version: "1" },
+        issue: { id: issue!.id, identifier: "OPE-8101", companyId: companyA, version: "2" },
         document: null,
       });
     },
@@ -272,7 +272,7 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
       // document_id and exact body — the snapshot serves the revision body.
       const healthy = await seedGraph("OPE-8201", async () => {});
       expect(await issueAcceptanceSnapshotService(db).read(healthy.id)).toEqual({
-        issue: { id: healthy.id, identifier: "OPE-8201", companyId: companyA, version: "1" },
+        issue: { id: healthy.id, identifier: "OPE-8201", companyId: companyA, version: "2" },
         document: expect.objectContaining({ body: "body for OPE-8201" }),
       });
 
@@ -321,7 +321,7 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
         .values({ id: randomUUID(), companyId: companyA, title: "Task", identifier: "OPE-8301" })
         .returning();
       const versionOf = async () => (await issueAcceptanceSnapshotService(db).read(issue!.id))!.issue.version;
-      expect(await versionOf()).toBe("0");
+      expect(await versionOf()).toBe("1");
 
       // Link insert bumps.
       const docId = randomUUID();
@@ -337,29 +337,29 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
         documentId: docId,
         key: "acceptance-scenarios",
       });
-      expect(await versionOf()).toBe("1");
+      expect(await versionOf()).toBe("2");
 
       // Identity A->B->A still moves the version twice.
       await db.update(issues).set({ identifier: "OPE-8301-TMP" }).where(eq(issues.id, issue!.id));
-      expect(await versionOf()).toBe("2");
-      await db.update(issues).set({ identifier: "OPE-8301" }).where(eq(issues.id, issue!.id));
       expect(await versionOf()).toBe("3");
+      await db.update(issues).set({ identifier: "OPE-8301" }).where(eq(issues.id, issue!.id));
+      expect(await versionOf()).toBe("4");
 
       // Company A->B->A (the tenant move) moves it twice as well.
       await db.insert(companies).values({ id: companyB, name: "Company B", issuePrefix: "BBB" });
       await db.update(issues).set({ companyId: companyB }).where(eq(issues.id, issue!.id));
       expect((await issueAcceptanceSnapshotService(db).read(issue!.id))!.issue.companyId).toBe(companyB);
-      expect((await issueAcceptanceSnapshotService(db).read(issue!.id))!.issue.version).toBe("4");
-      await db.update(issues).set({ companyId: companyA }).where(eq(issues.id, issue!.id));
       expect((await issueAcceptanceSnapshotService(db).read(issue!.id))!.issue.version).toBe("5");
+      await db.update(issues).set({ companyId: companyA }).where(eq(issues.id, issue!.id));
+      expect((await issueAcceptanceSnapshotService(db).read(issue!.id))!.issue.version).toBe("6");
 
       // A bound-document update bumps through the documents trigger.
       await db.update(documents).set({ latestBody: "v2" }).where(eq(documents.id, docId));
-      expect(await versionOf()).toBe("6");
+      expect(await versionOf()).toBe("7");
 
       // Link delete bumps (a delete+recreate is a visible mutation).
       await db.delete(issueDocuments).where(eq(issueDocuments.documentId, docId));
-      expect(await versionOf()).toBe("7");
+      expect(await versionOf()).toBe("8");
     },
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
@@ -403,7 +403,7 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
         key: "acceptance-scenarios",
       });
       const versionOf = async () => (await issueAcceptanceSnapshotService(db).read(issueId))!.issue.version;
-      expect(await versionOf()).toBe("1");
+      expect(await versionOf()).toBe("2");
 
       // A nested writer (another trigger changing the link at trigger depth
       // 2) must still move the version; the guard is only against the bump
@@ -422,7 +422,7 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
           FOR EACH ROW EXECUTE FUNCTION acceptance_nest_writer();
       `);
       await sql.unsafe(`INSERT INTO acceptance_nest_probe (key) VALUES ('n1')`);
-      expect(await versionOf()).toBe("2");
+      expect(await versionOf()).toBe("3");
 
       // Concurrent bumps from two writers on the same issue serialize into
       // two increments.
@@ -436,7 +436,7 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
         writeDocument("c1"),
         db.update(issues).set({ title: "c1" }).where(eq(issues.id, issueId)),
       ]);
-      expect(await versionOf()).toBe("4");
+      expect(await versionOf()).toBe("6");
 
       // An uncommitted writer is invisible; its commit moves the version.
       let release!: () => void;
@@ -449,34 +449,108 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
       try {
         const during = await issueAcceptanceSnapshotService(db).read(issueId);
         expect(during.document!.body).toBe("c1");
-        expect(during.issue.version).toBe("4");
+        expect(during.issue.version).toBe("6");
       } finally {
         release();
       }
       await pending;
       const after = await issueAcceptanceSnapshotService(db).read(issueId);
       expect(after.document!.body).toBe("tx1");
-      expect(after.issue.version).toBe("5");
+      expect(after.issue.version).toBe("8");
 
       // Deleting the document cascades to its link row; the cascade delete
       // bumps the version and the snapshot loses the document.
       await db.delete(documents).where(eq(documents.id, docId));
       const cascaded = await issueAcceptanceSnapshotService(db).read(issueId);
       expect(cascaded.document).toBeNull();
-      expect(cascaded.issue.version).toBe("6");
+      expect(cascaded.issue.version).toBe("9");
 
-      // Direct resets are forbidden: the version is trigger-managed and
-      // monotonic, any writer trying to wind it back is rejected.
+      // Direct resets are forbidden: the epoch is trigger-managed and
+      // monotonic; any writer trying to wind it back is rejected.
       await expect(
-        db.update(issues).set({ acceptanceSnapshotVersion: BigInt("1") }).where(eq(issues.id, issueId)),
+        sql.unsafe(`UPDATE "issue_acceptance_epochs" SET "epoch" = 1 WHERE "issue_id" = '${issueId}'`),
       ).rejects.toThrow();
 
       // Bigint generations are exact beyond 2^53: adjacent values stay
-      // distinguishable where JS numbers would collapse. Setting the version
-      // is itself an issues-row update, so the trigger adds one on top.
-      await db.update(issues).set({ acceptanceSnapshotVersion: BigInt("9007199254740992") }).where(eq(issues.id, issueId));
+      // distinguishable where JS numbers would collapse.
+      await sql.unsafe(`UPDATE "issue_acceptance_epochs" SET "epoch" = 9007199254740992 WHERE "issue_id" = '${issueId}'`);
       const big = await issueAcceptanceSnapshotService(db).read(issueId);
-      expect(big.issue.version).toBe("9007199254740993");
+      expect(big.issue.version).toBe("9007199254740992");
+    },
+    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "nested writers inside the bump chain all bump, and epochs survive delete/recreate and revision ABA (OPE-15145)",
+    async () => {
+      const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-epoch-nest-");
+      cleanups.push(() => dbh.cleanup());
+      const db = createDb(dbh.connectionString);
+      const sql = db.$client as any;
+      cleanups.push(async () => {
+        await sql.end();
+      });
+
+      await db.insert(companies).values({ id: companyA, name: "Company A" });
+      const issueId = randomUUID();
+      const docId = randomUUID();
+      const revisionId = randomUUID();
+      await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task", identifier: "OPE-8501" });
+      await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "v1", latestRevisionId: revisionId });
+      await db.insert(documentRevisions).values({ id: revisionId, companyId: companyA, documentId: docId, revisionNumber: 1, body: "v1" });
+      await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
+      const read0 = await issueAcceptanceSnapshotService(db).read(issueId);
+      expect(read0.document!.body).toBe("v1");
+
+      // A trigger nested INSIDE the epoch bump (ON the epoch table) performs
+      // further capped bumps; every nested level must land (no guard state).
+      await sql.unsafe(`
+        CREATE FUNCTION nest_epoch_writer() RETURNS trigger AS $t$
+        BEGIN
+          IF NEW."epoch" < ${Number(read0.issue.version) + 3} THEN
+            PERFORM "bump_issue_acceptance_epoch"(NEW."issue_id");
+          END IF;
+          RETURN NULL;
+        END;
+        $t$ LANGUAGE plpgsql;
+        CREATE TRIGGER nest_epoch_trg
+          AFTER UPDATE ON "issue_acceptance_epochs"
+          FOR EACH ROW EXECUTE FUNCTION "nest_epoch_writer"();
+      `);
+      await sql.unsafe(`UPDATE "issue_acceptance_epochs" SET "epoch" = "epoch" + 1 WHERE "issue_id" = '${issueId}'`);
+      const nested = await issueAcceptanceSnapshotService(db).read(issueId);
+      expect(BigInt(nested.issue.version)).toBe(BigInt(read0.issue.version) + 3n);
+
+      // Revision-only ABA is visible: mutating and reverting a revision row
+      // moves the epoch each time.
+      const beforeRev = (await issueAcceptanceSnapshotService(db).read(issueId)).issue.version;
+      await sql.unsafe(`UPDATE "document_revisions" SET "body" = 'tampered' WHERE "id" = '${revisionId}'`);
+      const tampered = await issueAcceptanceSnapshotService(db).read(issueId);
+      expect(tampered.document).toBeNull();
+      expect(BigInt(tampered.issue.version)).toBeGreaterThan(BigInt(beforeRev));
+      await sql.unsafe(`UPDATE "document_revisions" SET "body" = 'v1' WHERE "id" = '${revisionId}'`);
+      const reverted = await issueAcceptanceSnapshotService(db).read(issueId);
+      expect(reverted.document!.body).toBe("v1");
+      expect(BigInt(reverted.issue.version)).toBeGreaterThan(BigInt(tampered.issue.version));
+
+      // Direct epoch resets and deletes fail closed: winding back raises,
+      // deleting restores the row at epoch+1.
+      await expect(
+        sql.unsafe(`UPDATE "issue_acceptance_epochs" SET "epoch" = 0 WHERE "issue_id" = '${issueId}'`),
+      ).rejects.toThrow();
+      await sql.unsafe(`DELETE FROM "issue_acceptance_epochs" WHERE "issue_id" = '${issueId}'`);
+      const afterDelete = await issueAcceptanceSnapshotService(db).read(issueId);
+      expect(BigInt(afterDelete.issue.version)).toBeGreaterThan(BigInt(reverted.issue.version));
+
+      // Deleting and recreating the issue with the same id and identifier
+      // continues the epoch instead of returning to a previous value.
+      const beforeRecreate = (await issueAcceptanceSnapshotService(db).read(issueId)).issue.version;
+      await db.delete(documents).where(eq(documents.id, docId));
+      await db.delete(issues).where(eq(issues.id, issueId));
+      await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task", identifier: "OPE-8501" });
+      const recreated = await issueAcceptanceSnapshotService(db).read(issueId);
+      expect(BigInt(recreated.issue.version)).toBeGreaterThan(BigInt(beforeRecreate));
+      expect(recreated.document).toBeNull();
     },
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );

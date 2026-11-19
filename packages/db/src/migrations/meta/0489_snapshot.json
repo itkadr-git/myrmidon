@@ -1,5 +1,5 @@
 {
-  "id": "f89adf4c-1ea4-47cf-9a40-104c3c241c5c",
+  "id": "e8dd0247-0bfa-4500-a03d-d019104c7a79",
   "prevId": "92ad3bc7-5818-438e-907f-37ab2c8eae06",
   "version": "7",
   "dialect": "postgresql",
@@ -30355,6 +30355,32 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.issue_acceptance_epochs": {
+      "name": "issue_acceptance_epochs",
+      "schema": "",
+      "columns": {
+        "issue_id": {
+          "name": "issue_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "epoch": {
+          "name": "epoch",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "0"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.issue_approvals": {
       "name": "issue_approvals",
       "schema": "",
@@ -35779,13 +35805,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
-        },
-        "acceptance_snapshot_version": {
-          "name": "acceptance_snapshot_version",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "0"
         },
         "last_status_decision_id": {
           "name": "last_status_decision_id",

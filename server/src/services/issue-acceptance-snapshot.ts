@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
-import { documentRevisions, documents, issueDocuments, issues } from "@myrmidon/db";
+import { documentRevisions, documents, issueAcceptanceEpochs, issueDocuments, issues } from "@myrmidon/db";
 import { isUuidLike } from "@myrmidon/shared";
 
 export interface IssueAcceptanceSnapshotIssue {
@@ -76,13 +76,17 @@ export function issueAcceptanceSnapshotService(db: Db) {
           issueId: issues.id,
           identifier: issues.identifier,
           companyId: issues.companyId,
-          issueVersion: issues.acceptanceSnapshotVersion,
+          issueEpoch: issueAcceptanceEpochs.epoch,
           documentId: documents.id,
           latestRevisionId: documents.latestRevisionId,
           latestRevisionNumber: documents.latestRevisionNumber,
           body: documentRevisions.body,
         })
         .from(issues)
+        .leftJoin(
+          issueAcceptanceEpochs,
+          eq(issueAcceptanceEpochs.issueId, issues.id),
+        )
         .leftJoin(
           issueDocuments,
           and(
@@ -117,7 +121,7 @@ export function issueAcceptanceSnapshotService(db: Db) {
           id: row.issueId,
           identifier: row.identifier,
           companyId: row.companyId,
-          version: String(row.issueVersion),
+          version: String(row.issueEpoch ?? 0),
         },
         // A document is present only when every tenant-bound hop produced a
         // complete, mutually consistent row — including a valid monotonic

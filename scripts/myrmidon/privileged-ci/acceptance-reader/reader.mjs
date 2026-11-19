@@ -34,11 +34,13 @@ function validIssue(issue) {
 }
 
 function validDocument(document) {
-  return document === null || document === undefined || (
-    typeof document.id === 'string' && typeof document.latestRevisionId === 'string' && document.latestRevisionId &&
+  // Strictly the explicit null or a complete valid object: undefined is a
+  // malformed payload, never silently "no document".
+  if (document === null) return true;
+  if (typeof document !== 'object') return false;
+  return typeof document.id === 'string' && typeof document.latestRevisionId === 'string' && document.latestRevisionId &&
     Number.isInteger(document.latestRevisionNumber) && document.latestRevisionNumber > 0 &&
-    typeof document.body === 'string'
-  );
+    typeof document.body === 'string';
 }
 
 function validSnapshot(snapshot) {

@@ -33,18 +33,21 @@ that single snapshot — the full pin:
 }
 ```
 
-`issue.version` is a per-issue monotonic mutation counter bumped by database
-triggers (migration 0489) on any update of the issue row (company,
-identifier, anything), on insert/update/delete of the issue's
-`acceptance-scenarios` link row (both the old and the new issue on a
-transfer), and on update of the document bound to the issue through that
-link. It covers every writer, including batch imports and future code, and
-it survives link/document delete+recreate: any A→B→A of identity, link or
-content moves the version. The counter is a decimal string, exact beyond
-2^53 where JavaScript numbers collapse adjacent generations. A BEFORE UPDATE
-trigger forbids winding it back, so no writer can reset the counter to make
-a stale pin compare equal; the recursion guard only suppresses the bump
-function's own re-entry, never nested writers in other triggers.
+`issue.version` is a per-issue monotonic epoch kept in its own
+`issue_acceptance_epochs` table (migration 0489) and bumped by database
+triggers on any insert/update of the issue row (company, identifier,
+anything), on insert/update/delete of the issue's `acceptance-scenarios`
+link row (both the old and the new issue on a transfer), and on
+insert/update/delete of the bound document and its revision rows. It covers
+every writer, including batch imports, future code and direct SQL, and it
+survives delete+recreate: the epoch row has no foreign key to issues, a
+BEFORE UPDATE trigger rejects any attempt to wind it back, and an AFTER
+DELETE trigger restores a deleted row at epoch+1, so no writer can reset the
+generation and make a stale pin compare equal. Because a bump is a single-row
+upsert on the epochs table — never a guarded write back into the issues
+table — triggers nested anywhere in a bump chain run normally. The counter
+is a decimal string, exact beyond 2^53 where JavaScript numbers collapse
+adjacent generations.
 
 `POST /api/issues/{ref}/acceptance-snapshot/verify` takes a previously pinned
 snapshot as its JSON body and performs the conditional assertion server-side.

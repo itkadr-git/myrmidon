@@ -184,6 +184,17 @@ test('bigint generations compare exactly beyond 2^53', async (t) => {
   assert.equal(typeof pinned.issue.version, 'string');
 });
 
+test('an explicit null document is valid but an absent one is a malformed pin', async (t) => {
+  const noDocument = { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: '1' }, document: null };
+  const request = await serve(t, { records: records(), readSnapshot: async () => noDocument });
+  const missing = await request('/api/issues/OPE-123/acceptance-snapshot/verify', { method: 'POST', body: '{"issue":{"id":"issue-id","identifier":"OPE-123","companyId":"company-a","version":"1"}}' });
+  assert.equal(missing.status, 400);
+  const explicit = await request('/api/issues/OPE-123/acceptance-snapshot/verify', { method: 'POST', body: noDocument });
+  assert.deepEqual(JSON.parse(explicit.body), { ok: true });
+  const upstreamMissingProp = await serve(t, { records: records(), readSnapshot: async () => ({ issue: noDocument.issue }) });
+  assert.equal((await upstreamMissingProp('/api/issues/OPE-123/acceptance-snapshot')).status, 502);
+});
+
 test('read errors never return a partial mixed snapshot', async (t) => {
   const request = await serve(t, { records: records(), readSnapshot: async () => { throw new Error('upstream read failed'); } });
   const pin = await request('/api/issues/OPE-123/acceptance-snapshot');
