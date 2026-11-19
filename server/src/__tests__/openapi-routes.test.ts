@@ -323,6 +323,20 @@ describe("openapi routes", () => {
     expect(dismiss.description).toContain("viewers may dismiss their own");
   });
 
+  it("documents the participant repair request body", () => {
+    const { spec } = loadSpecRoutes();
+    const repair = spec.paths["/api/issues/{id}/execution-participants"].patch;
+    const schema = repair.requestBody.content["application/json"].schema;
+    expect(schema.additionalProperties).toBe(false);
+    for (const key of ["returnAssignee", "currentParticipant"]) {
+      expect(schema.properties[key]).toMatchObject({
+        nullable: true, additionalProperties: false,
+        properties: { type: { enum: ["agent"] }, agentId: { type: "string", format: "uuid" } },
+        required: expect.arrayContaining(["type", "agentId"]),
+      });
+    }
+  });
+
   it("documents stalled-review decisions as board-only", () => {
     const { spec } = loadSpecRoutes();
     const stalledDecision = spec.paths["/api/issues/{id}/stalled-review-decision"].post;
