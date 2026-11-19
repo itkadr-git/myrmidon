@@ -7,6 +7,24 @@ import { join } from 'node:path';
 import { createCredentialStore } from './store.mjs';
 import { createRecoveryWorker } from './recovery-worker.mjs';
 
+test('anchored pending intent retries ambiguous alert after outbox failure even without local reservation', async () => {
+  let queues = 0;
+  const alerts = [];
+  const store = {
+    revokeRetained: async () => ({ revoked: 0, failed: 0 }),
+    pendingIssuances: async () => [],
+    queueAlert: async () => { queues++; throw new Error('outbox offline'); },
+    pendingAlertEntries: async () => [], pendingAlerts: async () => [],
+  };
+  const worker = createRecoveryWorker({ store, anchoredPending: true, revoke: async () => {}, alert: async event => alerts.push(event) });
+  const first = await worker.runOnce();
+  const second = await worker.runOnce();
+  assert.equal(first.pending, true);
+  assert.equal(second.alertFailed, true);
+  assert.equal(queues, 2);
+  assert.deepEqual(alerts, ['issuance_ambiguous', 'issuance_ambiguous']);
+});
+
 test('pending reservation read failure keeps known-token recovery retryable', async () => {
   let attempts = 0;
   const alerts = [];
