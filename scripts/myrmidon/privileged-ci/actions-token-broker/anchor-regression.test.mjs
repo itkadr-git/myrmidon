@@ -6,6 +6,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createAuthenticatedAudit } from './authenticated-audit.mjs';
+import { createAuditedRecoveredServer } from './tls.mjs';
+
+test('audited server refuses startup without an independent audit anchor', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-required-'));
+  try {
+    await assert.rejects(createAuditedRecoveredServer({}, {
+      auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32),
+    }), /audit anchor required/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('anchor CAS rejection must fail the audit append closed', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'audit-cas-'));
