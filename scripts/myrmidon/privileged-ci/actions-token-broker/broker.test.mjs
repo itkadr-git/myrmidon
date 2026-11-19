@@ -99,6 +99,28 @@ test('concurrent audit failure during reservation alerts on the fenced intent', 
   assert.ok(alerts.includes('issuance_ambiguous'));
 });
 
+test('concurrent audit failure during revocation reservation alerts on the retained fence', async () => {
+  let release, reserved;
+  const waiting = new Promise(resolve => { reserved = resolve; });
+  const barrier = new Promise(resolve => { release = resolve; });
+  const queued = [], alerts = [];
+  let calls = 0;
+  const store = { reserveIssuance: async () => { reserved(); await barrier; },
+    queueAlert: async event => queued.push(event), withOwned: async () => { calls++; } };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    installation: { revoke: async () => { calls++; } },
+    audit: async event => { if (event === 'exchange_failed') throw new Error('audit unavailable'); },
+    alert: async event => alerts.push(event) });
+  const revocation = broker.revoke(jwt('revocation-reservation-race'), 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+  await waiting;
+  await assert.rejects(broker.exchange('invalid'));
+  release();
+  await assert.rejects(revocation);
+  assert.equal(calls, 0);
+  assert.ok(queued.includes('credential_recovery_failed'));
+  assert.ok(alerts.includes('credential_recovery_failed'));
+});
+
 test('identity expiring during reservation never contacts installation API', async () => {
   let calls = 0;
   const store = { reserveIssuance: async () => { await new Promise(resolve => setTimeout(resolve, 2100)); },
