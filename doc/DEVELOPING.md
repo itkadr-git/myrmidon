@@ -65,7 +65,8 @@ API, parsing or validation error fails the gate. Its successful log reports
 live acceptance or deployment verification. Title and body edits rerun the gate;
 changes during a run fail it. Document changes do not trigger GitHub checks:
 maintainers must rerun the gate after an acceptance document changes and before
-merge. The commitperclip App private key remains more powerful than its minted
+merge. The log records the fetched document and revision IDs as a snapshot, not
+proof that the document remained unchanged afterwards. The commitperclip App private key remains more powerful than its minted
 installation token; activation requires independent review of its runner and
 key custody.
 
@@ -73,13 +74,21 @@ Before activation, ADM/Alex must configure both `myrmidon-acceptance-trusted`
 and `myrmidon-acceptance-external` environments with environment-scoped
 `MYRMIDON_ACCEPTANCE_API_URL`, `MYRMIDON_ACCEPTANCE_API_KEY` and
 `MYRMIDON_ACCEPTANCE_COMPANY_ID`. The external environment must require
-maintainer approval and prevent self-approval. Credentials must be restricted
-server-side to read-only issue and acceptance-document access in that company;
-a normal agent key is not proof of read-only access. Both environments must use
-an isolated, single-job ephemeral self-hosted runner in the `myrmidon-acceptance`
-group, labelled `myrmidon-acceptance-ephemeral`, restricted to this workflow,
-with internal network access. Never place the internal secret on a public GitHub runner. Do not
-activate until the credential restriction and runner isolation are verified.
+maintainer approval and prevent self-approval. A dedicated acceptance-reader
+capability or authenticated gateway must bind its credential immutably to one
+company, allow only GET issue and GET acceptance-scenarios, and deny all other
+routes and methods. It must enforce expiry, revocation, audit and response-size
+limits. Normal agent keys and read-only board keys do not satisfy this contract.
+The gate expects issue `identifier` and `companyId`, and document `id`, `body`
+and `latestRevisionId` at its existing API paths. Verify cross-company identifier
+and UUID requests, mutations before side effects, and access to other documents,
+secrets, agents and plugins are denied using the actual credential. If a gateway
+is used, block runner access to the board and authenticate and encrypt internal
+transport. Both environments must use an isolated, single-job ephemeral
+self-hosted runner in the `myrmidon-acceptance` group, labelled
+`myrmidon-acceptance-ephemeral`, restricted to this workflow. Never place the
+internal secret on a public GitHub runner. Do not activate until the credential
+restriction and runner isolation are verified.
 Allow only the reviewed acceptance and commitperclip workflow paths under the
 applicable Actions policy after security review. Do not change policies or
 secrets as part of this code change.
