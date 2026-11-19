@@ -207,6 +207,28 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockSsh.hasExecuted(/PasswordAuthentication no/)).toBe(false);
   });
 
+  it("fails onboarding with an ephemeral key even when password retention is requested", async () => {
+    const ssh = new VerifiedMockSsh();
+    ssh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
+    const executor = new FleetOnboardExecutor({
+      createSshExecutor: () => ssh,
+      generateKeyPair: () => ({ publicKey: "ssh-ed25519 test", privateKey: "private-key" }),
+    });
+    const claim: any = {
+      job: { id: "job-ephemeral-retained", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root", accessKeySecretKey: null },
+      steps: ["access"],
+      options: { keepPassword: true },
+      secretValues: { bootstrapPassword: "pass" },
+    };
+    const reporter = createMockReporter();
+    const result = await executor.execute(claim, reporter.reporter);
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("durable access key");
+    expect(reporter.completion?.status).toBe("failed");
+    expect(ssh.hasExecuted(/PasswordAuthentication no/)).toBe(false);
+  });
+
   it("fails preflight when disk usage exceeds 90%", async () => {
     const mockSsh = new VerifiedMockSsh();
     mockSsh.mockResponse(/ssh-keygen -l/, {
