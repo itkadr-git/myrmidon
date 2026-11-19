@@ -11,12 +11,21 @@ export function createRecoveryWorker({ store, revoke, alert }) {
         const pending = (await store.pendingIssuances()).length > 0;
         let alertFailed = false;
         for (const event of [pending && 'issuance_ambiguous', result.failed && 'credential_recovery_failed'].filter(Boolean)) {
-          await store.queueAlert(event);
+          try { await store.queueAlert(event); } catch {
+            // Outbox failure must not prevent a later known-token revoke retry.
+            alertFailed = true;
+            try { await alert(event); } catch { /* Independent monitoring is required. */ }
+          }
         }
-        for (const { event, generation } of await store.pendingAlertEntries()) {
-          try { await alert(event); await store.acknowledgeAlert(event, generation); } catch { alertFailed = true; }
+        try {
+          for (const { event, generation } of await store.pendingAlertEntries()) {
+            try { await alert(event); await store.acknowledgeAlert(event, generation); } catch { alertFailed = true; }
+          }
+          if ((await store.pendingAlerts()).length) alertFailed = true;
+        } catch {
+          alertFailed = true;
+          try { await alert('credential_recovery_failed'); } catch { /* Independent monitoring is required. */ }
         }
-        if ((await store.pendingAlerts()).length) alertFailed = true;
         return { ...result, pending, alertFailed };
       } finally { active = false; }
     },
