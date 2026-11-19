@@ -61,6 +61,22 @@ test('failed revocation remains anchored across restart even if local reservatio
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('failed revocation fences the running process even if its reservation and outbox disappear', async () => {
+  let issued = 0;
+  const store = {
+    reserveIssuance: async () => {}, resolveIssuance: async () => {},
+    queueAlert: async () => { throw new Error('storage unavailable'); },
+    withOwned: async (_handle, _owner, action) => action({ token: 'fixture' }),
+    put: async () => {},
+  };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    installation: { revoke: async () => { throw new Error('network down'); }, issue: async () => { issued++; return { token: 'fixture' }; } },
+    audit: async () => {}, alert: async () => { throw new Error('offline'); } });
+  await assert.rejects(broker.revoke(jwt('revoke-latch-first'), 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'));
+  await assert.rejects(broker.exchange(jwt('revoke-latch-next')));
+  assert.equal(issued, 0);
+});
+
 test('ambiguous issuance fences the running process even if its durable reservation disappears', async () => {
   let issued = 0;
   const store = {
