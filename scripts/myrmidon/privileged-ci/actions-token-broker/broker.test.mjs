@@ -79,6 +79,28 @@ test('undelivered runtime audit alert fences subsequent issuance', async () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('audit failure on another request prevents an in-flight issuance from returning a token', async () => {
+  let releaseIssue, startedIssue;
+  const started = new Promise(resolve => { startedIssue = resolve; });
+  const gate = new Promise(resolve => { releaseIssue = resolve; });
+  let revoked = 0, failAudit = true;
+  const dir = mkdtempSync(join(tmpdir(), 'broker-inflight-audit-'));
+  const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'), credentialPath: join(dir, 'credentials.sqlite'), credentialKey: randomBytes(32),
+    installation: { issue: async () => { startedIssue(); await gate; return { token: 'fixture' }; }, revoke: async () => { revoked++; } },
+    audit: async event => { if (event === 'exchange_failed' && failAudit) { failAudit = false; throw new Error('audit unavailable'); } }, alert: async () => {} };
+  try {
+    const broker = createSingleHostBroker(options);
+    try {
+      const pending = broker.exchange(jwt('inflight-valid'));
+      await started;
+      await assert.rejects(broker.exchange(jwt('inflight-invalid', { repository_id: '999' })));
+      releaseIssue();
+      await assert.rejects(pending);
+      assert.equal(revoked, 1);
+    } finally { broker.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('audit and outbox failure on a rejected request fences subsequent issuance in the running process', async () => {
   let issued = 0, failAudit = true;
   const store = { reserveIssuance: async () => {}, resolveIssuance: async () => {}, put: async () => {}, queueAlert: async () => { throw new Error('disk offline'); } };
