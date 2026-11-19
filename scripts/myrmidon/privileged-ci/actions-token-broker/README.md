@@ -44,11 +44,11 @@ secret management, least privilege and key rotation.
   or deployment wiring is provided. `createSqliteAnchor` is a durable CAS
   reference implementation for testing separate stores, not an independently
   operated anchor service: colocating it with the audit database does not protect
-  against rollback of the entire failure domain. A missing anchor row in an
-  existing table now fails closed; deletion of the entire database or table is
-  indistinguishable from first initialization and is not protected by this
-  reference implementation. A separately administered, independently durable
-  and authenticated service with controlled provisioning is still required.
+  against rollback of the entire failure domain. Explicit one-time provisioning
+  creates genesis; normal startup refuses a missing database, table or row. This
+  does not detect rollback or replacement of the entire anchor database. A
+  separately administered, independently durable and authenticated service
+  with controlled provisioning is still required.
   Host compromise, availability, alerting and remote collection remain
   unaddressed. Do not treat it as a production audit system.
   The experimental `createRecoveredSingleHostBroker` revokes stored tokens before
