@@ -69,6 +69,16 @@ test('rejects an identity that expires while JWKS is loading', async () => {
   assert.equal(claimed, false);
 });
 
+test('rejects an identity that expires while its replay claim is persisted', async () => {
+  const issued = Math.floor(Date.now() / 1000);
+  let claimed = false;
+  await assert.rejects(verifyIdentity(jwt({ ...claims, iat: issued, nbf: issued, exp: issued + 1 }), {
+    policy, loadKeys: async () => [jwk],
+    claimOnce: async () => { claimed = true; await new Promise(resolve => setTimeout(resolve, 2100)); return true; },
+  }));
+  assert.equal(claimed, true);
+});
+
 test('rejects excessively long-lived or stale signed identities', async () => {
   const verify = token => verifyIdentity(token, { policy, loadKeys: async () => [jwk], claimOnce: async () => true, now });
   await assert.rejects(verify(jwt({ ...claims, exp: now + 365 * 86400 })));
