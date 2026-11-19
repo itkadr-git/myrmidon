@@ -84,7 +84,9 @@ secret management, least privilege and key rotation.
   attempts direct notification but still reports an alert failure and remains
   closed. The normal recovery supervisor also keeps retrying known-token revocation when
   outbox writes or reads fail, without starting issuance; it retries unqueued alerts in
-  memory and attempts direct delivery. A crash can still lose those in-memory
+  memory and attempts direct delivery. A reservation read failure in the recovery
+  worker also remains fenced and retries known-token revocation; its direct failure
+  alert is best effort. A crash can still lose those in-memory
   alerts, so external monitoring is required. Direct notification is best effort,
   not a durable replacement.
   An interrupted pass needs an external restart/supervisor to retry; an unknown

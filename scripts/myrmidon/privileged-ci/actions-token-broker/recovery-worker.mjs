@@ -8,8 +8,12 @@ export function createRecoveryWorker({ store, revoke, alert }) {
       active = true;
       try {
         const result = await store.revokeRetained(revoke);
-        const pending = (await store.pendingIssuances()).length > 0;
-        let alertFailed = false;
+        let pending = true, alertFailed = false;
+        try { pending = (await store.pendingIssuances()).length > 0; } catch {
+          // Unknown reservation state remains fenced while known-token retries continue.
+          alertFailed = true;
+          try { await alert('credential_recovery_failed'); } catch { /* Independent monitoring is required. */ }
+        }
         for (const event of [pending && 'issuance_ambiguous', result.failed && 'credential_recovery_failed'].filter(Boolean)) {
           try { await store.queueAlert(event); } catch {
             // Outbox failure must not prevent a later known-token revoke retry.
