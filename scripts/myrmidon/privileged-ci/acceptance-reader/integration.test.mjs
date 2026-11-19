@@ -28,8 +28,10 @@ test('gateway to separate mTLS upstream: projections, tenant boundaries and TLS 
   const id = '11111111-1111-1111-1111-111111111111';
   const foreign = '22222222-2222-2222-2222-222222222222';
   let upstreamRequests = 0;
+  const upstreamState = { issue: 'original', document: 'original' };
   const upstream = createServer({ ...upstreamTls, ca: clientTls.cert, requestCert: true, rejectUnauthorized: true }, (req, res) => {
     upstreamRequests++;
+    if (req.method !== 'GET') upstreamState.document = 'mutated';
     const isForeign = req.url.includes(foreign) || req.url.includes('OPE-2');
     const issue = { id: isForeign ? foreign : id, identifier: isForeign ? 'OPE-2' : 'OPE-1', companyId: isForeign ? 'other' : 'allowed', secret: 'private-relation' };
     const doc = { id: 'doc', issueId: issue.id, companyId: issue.companyId, key: 'acceptance-scenarios', latestRevisionId: 'rev', body: 'criteria', secret: 'private-document' };
@@ -70,11 +72,13 @@ test('gateway to separate mTLS upstream: projections, tenant boundaries and TLS 
     assert.equal((await call(`/api/issues/${identifier}/documents/acceptance-scenarios`)).status, 404);
   }
   const before = upstreamRequests;
+  const stateBefore = structuredClone(upstreamState);
   for (const path of ['/api/issues', '/api/issues?search=OPE', '/api/issues/OPE-1/documents/plan', '/api/secrets', '/api/agents', '/api/plugins', '/api/issues/%4fPE-1', '/api/issues/%254fPE-1', '/api/issues/OPE-1%2fdocuments%2facceptance-scenarios', '/api/issues/../OPE-1', '/api/issues/OPE-1?x=1']) assert.equal((await call(path)).status, 404, path);
   for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']) assert.equal((await call('/api/issues/OPE-1', { method })).status, 404, method);
   for (const header of ['x-http-method-override', 'x-method-override', 'x-http-method']) assert.equal((await call('/api/issues/OPE-1', { headers: { authorization: `Bearer ${token}`, [header]: 'POST' } })).status, 404, header);
   for (const authorization of [undefined, 'Bearer invalid', 'Basic candidate']) assert.equal((await call('/api/issues/OPE-1', { headers: authorization ? { authorization } : {} })).status, 401);
   assert.equal(upstreamRequests, before);
+  assert.deepEqual(upstreamState, stateBefore);
   const expired = 'candidate-expired-token';
   store.issue({ tokenHash: createHash('sha256').update(expired).digest('hex'), companyId: 'allowed', expiresAt: Date.now() - 1 });
   assert.equal((await call('/api/issues/OPE-1', { headers: { authorization: `Bearer ${expired}` } })).status, 401);
