@@ -647,6 +647,47 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
 
+  it(
+    "rolls back a repeatable-read writer that bumps an issue after concurrent link creation",
+    async () => {
+      const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-explicit-bump-");
+      cleanups.push(() => dbh.cleanup());
+      const db = createDb(dbh.connectionString);
+      cleanups.push(async () => { await db.$client.end(); });
+      const issueId = randomUUID();
+      const docId = randomUUID();
+      await db.insert(companies).values({ id: companyA, name: "Company A" });
+      await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task", identifier: "OPE-8804" });
+      await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a" });
+
+      let resume!: () => void;
+      let started!: () => void;
+      const gate = new Promise<void>((resolve) => { resume = resolve; });
+      const ready = new Promise<void>((resolve) => { started = resolve; });
+      const writer = db.transaction(async (tx) => {
+        await tx.execute(sqlTag`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
+        await tx.execute(sqlTag`SELECT id FROM issues WHERE id = ${issueId}::uuid`);
+        started();
+        await gate;
+        await tx.execute(sqlTag`SELECT bump_issue_acceptance_epoch(${issueId}::uuid)`);
+        await tx.update(documents).set({ latestBody: "b" }).where(eq(documents.id, docId));
+      });
+      const outcome = writer.then(() => null, (error: unknown) => error);
+      try {
+        await ready;
+        await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
+      } finally {
+        resume();
+      }
+      const error = await outcome;
+      expect(error).not.toBeNull();
+      expect(error).toMatchObject({ cause: { code: "40001" } });
+      const [document] = await db.select({ body: documents.latestBody }).from(documents).where(eq(documents.id, docId));
+      expect(document!.body).toBe("a");
+    },
+    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  );
+
   it.each(["READ COMMITTED", "REPEATABLE READ"] as const)(
     "invalidates a pin when a %s document writer overlaps link creation",
     async (isolation) => {
