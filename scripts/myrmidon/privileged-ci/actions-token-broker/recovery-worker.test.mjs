@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -91,6 +92,24 @@ test('an alert queued during delivery remains pending after the earlier alert is
     });
     await worker.runOnce();
     assert.deepEqual(await store.pendingAlerts(), ['audit_unavailable']);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('recovery reports a missing retained token as failure and continues with other credentials', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'recovery-corrupt-'));
+  const path = join(dir, 'credentials.sqlite'), key = randomBytes(32);
+  const store = createCredentialStore(path, key);
+  try {
+    await store.put('bad', { other: 'invalid' }, 'owner');
+    await store.put('good', { token: 'valid-fixture' }, 'owner');
+    const revoked = [], alerts = [];
+    const worker = createRecoveryWorker({ store, revoke: async token => revoked.push(token), alert: async event => alerts.push(event) });
+    const result = await worker.runOnce();
+    assert.equal(result.failed, 1);
+    assert.deepEqual(revoked, ['valid-fixture']);
+    assert.ok(alerts.includes('credential_recovery_failed'));
+    const db = new DatabaseSync(path);
+    try { assert.equal(db.prepare('SELECT count(*) AS n FROM credentials').get().n, 1); } finally { db.close(); }
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
