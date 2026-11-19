@@ -3,16 +3,8 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 
-const mockIssueService = vi.hoisted(() => ({
-  getById: vi.fn(),
-}));
-
 const mockSnapshotService = vi.hoisted(() => ({
   read: vi.fn(),
-}));
-
-vi.mock("../services/issues.js", () => ({
-  issueService: () => mockIssueService,
 }));
 
 vi.mock("../services/issue-acceptance-snapshot.js", () => ({
@@ -55,6 +47,13 @@ async function createApp(actor: unknown) {
   return app;
 }
 
+function snapshotFor(issue: { id: string; identifier: string; companyId: string }) {
+  return {
+    issue: { id: issue.id, identifier: issue.identifier, companyId: issue.companyId },
+    document: { id: randomUUID(), latestRevisionId: randomUUID(), latestRevisionNumber: 3, body: "criteria" },
+  };
+}
+
 describe("GET /api/issues/:id/acceptance-scenarios-snapshot route (OPE-15134)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -62,11 +61,7 @@ describe("GET /api/issues/:id/acceptance-scenarios-snapshot route (OPE-15134)", 
 
   it("returns the minimal atomic snapshot and nothing else", async () => {
     const issue = { id: randomUUID(), identifier: "OPE-1", companyId: companyA };
-    mockIssueService.getById.mockResolvedValue(issue);
-    mockSnapshotService.read.mockResolvedValue({
-      issue: { id: issue.id, identifier: "OPE-1", companyId: companyA },
-      document: { id: randomUUID(), latestRevisionId: randomUUID(), body: "criteria" },
-    });
+    mockSnapshotService.read.mockResolvedValue(snapshotFor(issue));
 
     const app = await createApp(boardActor([companyA]));
     const res = await request(app).get(`/api/issues/${issue.identifier}/acceptance-scenarios-snapshot`);
@@ -75,15 +70,18 @@ describe("GET /api/issues/:id/acceptance-scenarios-snapshot route (OPE-15134)", 
     // Minimal fields only: no rich issue relations, no document metadata.
     expect(res.body).toEqual({
       issue: { id: issue.id, identifier: "OPE-1", companyId: companyA },
-      document: { id: expect.any(String), latestRevisionId: expect.any(String), body: "criteria" },
+      document: { id: expect.any(String), latestRevisionId: expect.any(String), latestRevisionNumber: expect.any(Number), body: "criteria" },
     });
     expect(Object.keys(res.body.issue).sort()).toEqual(["companyId", "id", "identifier"]);
-    expect(Object.keys(res.body.document).sort()).toEqual(["body", "id", "latestRevisionId"]);
+    expect(Object.keys(res.body.document).sort()).toEqual(["body", "id", "latestRevisionId", "latestRevisionNumber"]);
+    // The whole route is one snapshot read: the authorized row is the row
+    // that is served — there is no earlier, richer issue read.
+    expect(mockSnapshotService.read).toHaveBeenCalledTimes(1);
+    expect(mockSnapshotService.read).toHaveBeenCalledWith(issue.identifier);
   }, ROUTE_TEST_TIMEOUT_MS);
 
   it("carries document: null when the acceptance document is absent", async () => {
     const issue = { id: randomUUID(), identifier: "OPE-2", companyId: companyA };
-    mockIssueService.getById.mockResolvedValue(issue);
     mockSnapshotService.read.mockResolvedValue({
       issue: { id: issue.id, identifier: "OPE-2", companyId: companyA },
       document: null,
@@ -99,13 +97,13 @@ describe("GET /api/issues/:id/acceptance-scenarios-snapshot route (OPE-15134)", 
     });
   }, ROUTE_TEST_TIMEOUT_MS);
 
-  it("returns the identical 404 for a cross-tenant issue and an unknown issue", async () => {
+  it("returns the identical 404 for a cross-tenant issue and an unknown issue (OPE-15145)", async () => {
+    // The single snapshot row carries the tenant: when the row names a
+    // company the actor cannot access (an issue that moved, or another
+    // tenant's issue), the answer is the same 404 as for a missing issue —
+    // the access decision is made on the row that would have been served.
     const foreign = { id: randomUUID(), identifier: "OPE-9", companyId: companyB };
-    mockIssueService.getById.mockResolvedValueOnce(foreign).mockResolvedValueOnce(null);
-    mockSnapshotService.read.mockResolvedValue({
-      issue: { id: foreign.id, identifier: "OPE-9", companyId: companyB },
-      document: { id: randomUUID(), latestRevisionId: randomUUID(), body: "criteria" },
-    });
+    mockSnapshotService.read.mockResolvedValueOnce(snapshotFor(foreign)).mockResolvedValueOnce(null);
 
     const app = await createApp(boardActor([companyA]));
     const denied = await request(app).get("/api/issues/OPE-9/acceptance-scenarios-snapshot");
@@ -114,7 +112,6 @@ describe("GET /api/issues/:id/acceptance-scenarios-snapshot route (OPE-15134)", 
     expect(denied.status).toBe(404);
     expect(missing.status).toBe(404);
     expect(denied.body).toEqual(missing.body);
-    expect(mockSnapshotService.read).not.toHaveBeenCalled();
   }, ROUTE_TEST_TIMEOUT_MS);
 
   it("denies agents before resource access", async () => {
@@ -126,65 +123,25 @@ describe("GET /api/issues/:id/acceptance-scenarios-snapshot route (OPE-15134)", 
     const res = await request(app).get("/api/issues/OPE-1/acceptance-scenarios-snapshot");
 
     expect(res.status).toBe(403);
-    expect(mockIssueService.getById).not.toHaveBeenCalled();
+    expect(mockSnapshotService.read).not.toHaveBeenCalled();
   }, ROUTE_TEST_TIMEOUT_MS);
 
   it("denies anonymous actors with 401", async () => {
     const app = await createApp({ type: "none" });
     const res = await request(app).get("/api/issues/OPE-1/acceptance-scenarios-snapshot");
     expect(res.status).toBe(401);
-    expect(mockIssueService.getById).not.toHaveBeenCalled();
+    expect(mockSnapshotService.read).not.toHaveBeenCalled();
   }, ROUTE_TEST_TIMEOUT_MS);
 
   it("does not return a partial snapshot when the read model fails", async () => {
-    const issue = { id: randomUUID(), identifier: "OPE-1", companyId: companyA };
-    mockIssueService.getById.mockResolvedValue(issue);
+    const issueId = randomUUID();
     mockSnapshotService.read.mockRejectedValue(new Error("db unavailable"));
 
     const app = await createApp(boardActor([companyA]));
-    const res = await request(app).get(`/api/issues/${issue.identifier}/acceptance-scenarios-snapshot`);
+    const res = await request(app).get(`/api/issues/${issueId}/acceptance-scenarios-snapshot`);
 
     expect(res.status).not.toBe(200);
-    expect(JSON.stringify(res.body)).not.toContain(issue.id);
+    expect(JSON.stringify(res.body)).not.toContain(issueId);
     expect(JSON.stringify(res.body)).not.toContain("criteria");
-  }, ROUTE_TEST_TIMEOUT_MS);
-
-  it("returns the identical 404 when the snapshot tenant differs from the access-checked tenant (OPE-15145)", async () => {
-    // The issue was confirmed accessible in company A, but by the time the
-    // snapshot row was read the issue had moved to company B (or the snapshot
-    // otherwise names another tenant). Serving it would hand company B's
-    // document to an A actor: same 404 as an unknown issue, no disclosure.
-    const moved = { id: randomUUID(), identifier: "OPE-1", companyId: companyA };
-    mockIssueService.getById.mockResolvedValue(moved);
-    mockSnapshotService.read.mockResolvedValue({
-      issue: { id: moved.id, identifier: "OPE-1", companyId: companyB },
-      document: { id: randomUUID(), latestRevisionId: randomUUID(), body: "company-b criteria" },
-    });
-
-    const app = await createApp(boardActor([companyA]));
-    const denied = await request(app).get(`/api/issues/${moved.identifier}/acceptance-scenarios-snapshot`);
-    const missing = await request(app).get("/api/issues/OPE-404/acceptance-scenarios-snapshot");
-
-    expect(denied.status).toBe(404);
-    expect(missing.status).toBe(404);
-    expect(denied.body).toEqual(missing.body);
-    expect(JSON.stringify(denied.body)).not.toContain("company-b criteria");
-  }, ROUTE_TEST_TIMEOUT_MS);
-
-  it("returns the identical 404 when the snapshot identity differs from the access-checked issue (OPE-15145)", async () => {
-    // A→B→A churn or a substitute row: the snapshot must name the same issue
-    // id that passed the access check, never a look-alike row.
-    const issue = { id: randomUUID(), identifier: "OPE-1", companyId: companyA };
-    mockIssueService.getById.mockResolvedValue(issue);
-    mockSnapshotService.read.mockResolvedValue({
-      issue: { id: randomUUID(), identifier: "OPE-1", companyId: companyA },
-      document: { id: randomUUID(), latestRevisionId: randomUUID(), body: "criteria" },
-    });
-
-    const app = await createApp(boardActor([companyA]));
-    const denied = await request(app).get(`/api/issues/${issue.identifier}/acceptance-scenarios-snapshot`);
-
-    expect(denied.status).toBe(404);
-    expect(JSON.stringify(denied.body)).not.toContain("criteria");
   }, ROUTE_TEST_TIMEOUT_MS);
 });

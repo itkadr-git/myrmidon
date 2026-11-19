@@ -27,6 +27,10 @@ export function isIssueIdentity(value) {
 // credential's company is checked against the snapshot before anything is
 // returned, and credential revocation is re-checked immediately before the
 // response, so revocation or expiry during the upstream read fails closed.
+// The document projection carries the monotonic generation
+// (latestRevisionId, latestRevisionNumber): equality of that pair across two
+// reads proves no document write occurred in between — see the README
+// contract for the required pin/verify pattern before publishing a result.
 export function createHandler({ records, credentialStore, readSnapshot, audit = async () => {} }) {
   const checkCredential = (header) => credentialStore ? credentialStore.authenticate(header) : authenticate(header, records);
   return async (req, res) => {
@@ -64,7 +68,9 @@ export function createHandler({ records, credentialStore, readSnapshot, audit = 
       // anything is projected, whatever route was requested.
       const validIssue = issue && typeof issue.id === 'string' && typeof issue.identifier === 'string' && typeof issue.companyId === 'string';
       const validDocument = document === null || document === undefined || (
-        typeof document.id === 'string' && typeof document.latestRevisionId === 'string' && document.latestRevisionId && typeof document.body === 'string'
+        typeof document.id === 'string' && typeof document.latestRevisionId === 'string' && document.latestRevisionId &&
+        Number.isInteger(document.latestRevisionNumber) && document.latestRevisionNumber > 0 &&
+        typeof document.body === 'string'
       );
       if (!validIssue || !validDocument) return respond(502);
       // Fail closed on anything that does not match the credential's company
@@ -73,7 +79,7 @@ export function createHandler({ records, credentialStore, readSnapshot, audit = 
       if (!path.document) return respond(200, { id: issue.id, identifier: issue.identifier, companyId: issue.companyId });
       // A valid snapshot may carry no document yet; that is the 404 case.
       if (document === null || document === undefined) return respond(404);
-      return respond(200, { id: document.id, latestRevisionId: document.latestRevisionId, body: document.body });
+      return respond(200, { id: document.id, latestRevisionId: document.latestRevisionId, latestRevisionNumber: document.latestRevisionNumber, body: document.body });
     } catch {
       // A failed upstream read never yields a partial or mixed snapshot.
       return respond(502);

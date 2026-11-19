@@ -8,12 +8,12 @@ atomic snapshot endpoint `GET /api/issues/{id}/acceptance-scenarios-snapshot`
 ```json
 {
   "issue": { "id": "…", "identifier": "OPE-123", "companyId": "…" },
-  "document": { "id": "…", "latestRevisionId": "…", "body": "…" }
+  "document": { "id": "…", "latestRevisionId": "…", "latestRevisionNumber": 7, "body": "…" }
 }
 ```
 
 `document` is `null` when the issue has no `acceptance-scenarios` document.
-The upstream reads the issue row and the document row with a single SQL
+The upstream reads the issue row and the document graph with a single SQL
 statement, so both always come from one database snapshot; the gateway issues
 exactly one upstream read per runner request and never stitches independent
 reads into an answer. Upstream not-found is the identical `404` for foreign
@@ -21,6 +21,45 @@ and unknown issues (no existence oracle); network failures, `5xx`, oversized
 or invalid payloads are a bare `502` that never carries a partial body. This
 contract has only been exercised against a fixture, not a live Myrmidon
 service.
+
+## Result integrity contract (supported)
+
+The document carries a monotonic write generation. Every accepted document
+write mints a new revision row, moves `latest_revision_id` to it and
+increments `latest_revision_number`; revision ids and numbers are never
+reused, and reverting the content (A→B→A) mints a new revision and therefore
+a new generation. As a result, equality of the pin tuple
+
+    (issue.id, issue.identifier, issue.companyId,
+     document.id, document.latestRevisionId, document.latestRevisionNumber)
+
+across two fresh reads proves that no write to any of these occurred between
+the reads — including content reverts.
+
+A gate that wants a verified result MUST follow this pattern:
+
+1. **Pin.** Read the snapshot fresh; remember the pin tuple. If the document
+   is absent there is nothing to verify — fail the run for this issue.
+2. **Verify.** Immediately before producing the result, read the snapshot
+   fresh again and require the identical pin tuple. Any difference means a
+   write occurred: fail closed and do not publish.
+3. **Publish.** Name the verified pin tuple in the published evidence.
+4. **Use.** Anyone consuming the result re-reads the snapshot and requires
+   the identical pin tuple before relying on it.
+
+Step 2 is what excludes a late invalidation before the result, and step 4 is
+the atomic check at the use boundary: a verdict is only as current as the
+last read, and the tuple in the evidence lets a consumer detect staleness.
+
+This contract is read-only and honest about its boundary: it cannot detect a
+write that lands after the final read — publication must immediately follow
+the verifying read, and consumers must re-validate at use. It also does not
+bind the two reads to one CI job: with the current operator-issued shared
+bearer, run binding is the caller's discipline. A run-scoped single-job
+credential remains an operational prerequisite (tracked on the board under
+OPE-15135/OPE-15148); until it exists, privileged CI must not be enabled on
+the basis of this contract, and concurrent runners sharing a bearer are not
+isolated from each other.
 
 ## Operation / Запуск
 
@@ -67,11 +106,6 @@ config, audit and upstream are trusted operator assets; an operator or upstream
 compromise is outside this boundary. A shared filesystem must have coherent
 visibility for revocations.
 
-The snapshot is atomic only for the moment it was read: the issue identity and
-the document revision are mutually consistent, but any change committed after the
-snapshot is outside this guarantee. A CI gate that needs to detect later edits
-must re-read the snapshot and compare `latestRevisionId` itself.
-
 TLS alone does not establish network isolation: a runner must be prevented by
 network policy from reaching upstream directly. No such policy or live upstream
 integration has been demonstrated here. Do not deploy until these are verified,
@@ -82,4 +116,7 @@ are completed. No production credential has been issued by this component.
 
 `devbuild 'node --test scripts/myrmidon/privileged-ci/acceptance-reader/*.test.mjs'`
 uses a separate local TLS fixture with synthetic credentials. It is not a GitHub
-OIDC exchange, a production test, or proof of network isolation.
+OIDC exchange, a production test, or proof of network isolation. The fixture
+includes an executable ABA regression: three sequential reads across the
+mutations r1→r2→r1 expose three distinct pin tuples, which is exactly what the
+pin/verify contract above detects and a bare revision-id comparison would miss.

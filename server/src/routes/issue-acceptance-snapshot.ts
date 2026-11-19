@@ -1,21 +1,19 @@
 import { Router } from "express";
 import type { Db } from "@myrmidon/db";
 import { issueAcceptanceSnapshotService } from "../services/issue-acceptance-snapshot.js";
-import { issueService } from "../services/issues.js";
-import { assertAuthenticated, assertBoard, getAccessibleResource } from "./authz.js";
+import { assertAuthenticated, assertBoard, hasCompanyAccess } from "./authz.js";
 
 /**
  * myrmidon(OPE-15134): the atomic acceptance snapshot the acceptance-reader
- * gateway reads upstream. One response carries the minimal issue identity and
- * its acceptance document from a single SQL statement (one MVCC snapshot), so
- * a CI gate never stitches an issue from one moment to a document revision
- * from another. Board actors only; cross-tenant and missing issues are the
- * same 404 (no existence oracle); the response carries minimal fields only
- * and no rich issue relations.
+ * gateway reads upstream. One response carries the minimal issue identity
+ * and its acceptance document from a single SQL statement (one MVCC
+ * snapshot), so a CI gate never stitches an issue from one moment to a
+ * document revision from another. Board actors only; cross-tenant and
+ * missing issues are the identical 404 (no existence oracle); the response
+ * carries minimal fields only and no rich issue relations.
  */
 export function issueAcceptanceSnapshotRoutes(db: Db) {
   const router = Router();
-  const svc = issueService(db);
   const snapshots = issueAcceptanceSnapshotService(db);
 
   router.get("/issues/:id/acceptance-scenarios-snapshot", async (req, res) => {
@@ -24,24 +22,13 @@ export function issueAcceptanceSnapshotRoutes(db: Db) {
     assertAuthenticated(req);
     assertBoard(req);
     const id = String(req.params.id ?? "").trim();
-    const issue = await getAccessibleResource(
-      req,
-      res,
-      svc.getById(id),
-      "Issue not found",
-    );
-    if (!issue) return;
-    const snapshot = await snapshots.read(issue.id);
-    // The snapshot must name the SAME issue id and company that just passed
-    // the access check. If the issue moved between companies (or the row was
-    // substituted) after the check, this is the identical 404 — never the
-    // new company's document (OPE-15145). One MVCC read stays one read: the
-    // comparison runs on the same snapshot row that would be served.
-    if (
-      !snapshot ||
-      snapshot.issue.id !== issue.id ||
-      snapshot.issue.companyId !== issue.companyId
-    ) {
+    // One statement resolves the issue (canonical identifier or UUID) and
+    // reads the tenant-bound document graph; the access check then runs on
+    // the very row that would be served, so an issue moved between companies
+    // is never served to the previous tenant's actor (OPE-15145), and the
+    // response can never mix two read moments.
+    const snapshot = await snapshots.read(id);
+    if (!snapshot || !hasCompanyAccess(req, snapshot.issue.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }

@@ -44,7 +44,7 @@ test('gateway projects a company-bound issue from the atomic snapshot and denies
     records: records(),
     readSnapshot: async (ref) => ({
       issue: { id: 'OPE-123', identifier: 'OPE-123', companyId: ref === 'OPE-123' ? 'company-a' : 'company-b', secret: 'hidden' },
-      document: { id: 'doc-id', latestRevisionId: 'rev-1', body: 'criteria', secret: 'hidden' },
+      document: { id: 'doc-id', latestRevisionId: 'rev-1', latestRevisionNumber: 2, body: 'criteria', secret: 'hidden' },
     }),
   });
   const allowed = await request('/api/issues/OPE-123');
@@ -63,13 +63,13 @@ test('document response is the projected snapshot document with revision evidenc
       reads += 1;
       return {
         issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' },
-        document: { id: 'doc-id', latestRevisionId: 'rev-1', body: 'criteria', secret: 'hidden' },
+        document: { id: 'doc-id', latestRevisionId: 'rev-1', latestRevisionNumber: 2, body: 'criteria', secret: 'hidden' },
       };
     },
   });
   const allowed = await request('/api/issues/OPE-123/documents/acceptance-scenarios');
   assert.equal(allowed.status, 200);
-  assert.deepEqual(JSON.parse(allowed.body), { id: 'doc-id', latestRevisionId: 'rev-1', body: 'criteria' });
+  assert.deepEqual(JSON.parse(allowed.body), { id: 'doc-id', latestRevisionId: 'rev-1', latestRevisionNumber: 2, body: 'criteria' });
   assert.equal(reads, 1);
 });
 
@@ -78,7 +78,7 @@ test('a snapshot document is withheld when its tenant differs from the credentia
     records: records(),
     readSnapshot: async () => ({
       issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-b' },
-      document: { id: 'doc-id', latestRevisionId: 'rev-1', body: 'criteria' },
+      document: { id: 'doc-id', latestRevisionId: 'rev-1', latestRevisionNumber: 2, body: 'criteria' },
     }),
   });
   const result = await request('/api/issues/OPE-123/documents/acceptance-scenarios');
@@ -126,6 +126,10 @@ test('an invalid upstream payload fails as 502, never as a partial snapshot', as
     { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' }, document: { id: 'doc-id' } },
     { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' }, document: { id: 'doc-id', latestRevisionId: '', body: 'criteria' } },
     { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' }, document: { id: 'doc-id', latestRevisionId: 'rev-1' } },
+    { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' }, document: { id: 'doc-id', latestRevisionId: 'rev-1', body: 'criteria' } },
+    { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' }, document: { id: 'doc-id', latestRevisionId: 'rev-1', latestRevisionNumber: 0, body: 'criteria' } },
+    { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' }, document: { id: 'doc-id', latestRevisionId: 'rev-1', latestRevisionNumber: 'two', body: 'criteria' } },
+    { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' }, document: { id: 'doc-id', latestRevisionId: 'rev-1', latestRevisionNumber: -1, body: 'criteria' } },
   ]) {
     const request = await serve(t, {
       records: records(),

@@ -27,7 +27,11 @@ test('gateway to separate mTLS upstream: one atomic snapshot read per request, t
   const gatewayTls = pair('gateway');
   const id = '11111111-1111-1111-1111-111111111111';
   const id3 = '33333333-3333-3333-3333-333333333333';
+  const id5 = '55555555-5555-5555-5555-555555555555';
   const foreign = '22222222-2222-2222-2222-222222222222';
+  // Mutable document state for the ABA regression: every write mints a new
+  // (revisionId, revisionNumber) pair, mirroring the board's write path.
+  const aba = { revisionId: 'aba-r1', revisionNumber: 1, body: 'criteria-1' };
   let upstreamRequests = 0;
   const requestedPaths = [];
   // The upstream fixture implements the atomic snapshot contract with the
@@ -49,7 +53,8 @@ test('gateway to separate mTLS upstream: one atomic snapshot read per request, t
       return;
     }
     const isDocumentless = req.url.includes('OPE-3') || req.url.includes(id3);
-    const isKnown = req.url.includes('OPE-1') || req.url.includes(id) || isDocumentless;
+    const isAba = req.url.includes('OPE-5') || req.url.includes(id5);
+    const isKnown = req.url.includes('OPE-1') || req.url.includes(id) || isDocumentless || isAba;
     if (!isKnown) {
       // Foreign AND unknown issues are the identical upstream 404.
       res.writeHead(404, { 'content-type': 'application/json' });
@@ -58,10 +63,14 @@ test('gateway to separate mTLS upstream: one atomic snapshot read per request, t
     }
     const issue = isDocumentless
       ? { id: id3, identifier: 'OPE-3', companyId: 'allowed', secret: 'private-relation' }
-      : { id, identifier: 'OPE-1', companyId: 'allowed', secret: 'private-relation' };
+      : isAba
+        ? { id: id5, identifier: 'OPE-5', companyId: 'allowed', secret: 'private-relation' }
+        : { id, identifier: 'OPE-1', companyId: 'allowed', secret: 'private-relation' };
     const document = isDocumentless
       ? null
-      : { id: 'doc', latestRevisionId: 'rev', body: 'criteria', secret: 'private-document' };
+      : isAba
+        ? { id: 'aba-doc', latestRevisionId: aba.revisionId, latestRevisionNumber: aba.revisionNumber, body: aba.body, secret: 'private-document' }
+        : { id: 'doc', latestRevisionId: 'rev', latestRevisionNumber: 1, body: 'criteria', secret: 'private-document' };
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ issue, document }));
   });
@@ -93,11 +102,42 @@ test('gateway to separate mTLS upstream: one atomic snapshot read per request, t
   // Every allowed request is exactly one upstream read of the snapshot path.
   for (const identifier of ['OPE-1', id]) {
     assert.deepEqual(JSON.parse((await call(`/api/issues/${identifier}`)).body), { id, identifier: 'OPE-1', companyId: 'allowed' });
-    assert.deepEqual(JSON.parse((await call(`/api/issues/${identifier}/documents/acceptance-scenarios`)).body), { id: 'doc', latestRevisionId: 'rev', body: 'criteria' });
+    assert.deepEqual(JSON.parse((await call(`/api/issues/${identifier}/documents/acceptance-scenarios`)).body), { id: 'doc', latestRevisionId: 'rev', latestRevisionNumber: 1, body: 'criteria' });
   }
   for (const requested of requestedPaths) {
     assert.match(requested, /^\/api\/issues\/(?:OPE-1|11111111-1111-1111-1111-111111111111)\/acceptance-scenarios-snapshot$/);
   }
+  // ABA between requests, the reviewer's blocking finding: every document
+  // write mints a new (latestRevisionId, latestRevisionNumber) pair, so a
+  // content revert (r1 -> r2 -> r1) still changes the monotonic generation
+  // and a strict tuple equality across reads detects the change.
+  const readAba = async () => {
+    const result = await call('/api/issues/OPE-5/documents/acceptance-scenarios');
+    assert.equal(result.status, 200);
+    const document = JSON.parse(result.body);
+    assert.ok(Number.isInteger(document.latestRevisionNumber) && document.latestRevisionNumber > 0, 'monotonic generation is exposed');
+    return document;
+  };
+  const tupleOf = (document) => [document.latestRevisionId, document.latestRevisionNumber];
+  const first = await readAba();
+  aba.revisionId = 'aba-r2'; aba.revisionNumber = 2; aba.body = 'criteria-2';
+  const second = await readAba();
+  aba.revisionId = 'aba-r1'; aba.revisionNumber = 3; aba.body = 'criteria-1';
+  const third = await readAba();
+  assert.notDeepEqual(tupleOf(first), tupleOf(second));
+  assert.notDeepEqual(tupleOf(second), tupleOf(third));
+  assert.equal(first.latestRevisionId, third.latestRevisionId);
+  assert.notEqual(first.latestRevisionNumber, third.latestRevisionNumber, 'content ABA is still a new generation');
+  // Late invalidation before the result: pin with a first read, re-verify
+  // with a fresh read right before the result, and observe that a write
+  // after the verification changes the tuple — the gateway never claims
+  // post-publication invalidation, the contract requires the fresh re-check.
+  const pin = await readAba();
+  const verify = await readAba();
+  assert.deepEqual(tupleOf(pin), tupleOf(verify));
+  aba.revisionId = 'aba-r4'; aba.revisionNumber = 4; aba.body = 'criteria-4';
+  const after = await readAba();
+  assert.notDeepEqual(tupleOf(verify), tupleOf(after));
   // An issue whose snapshot carries no document still serves the issue projection.
   assert.deepEqual(JSON.parse((await call('/api/issues/OPE-3')).body), { id: id3, identifier: 'OPE-3', companyId: 'allowed' });
   assert.equal((await call('/api/issues/OPE-3/documents/acceptance-scenarios')).status, 404);

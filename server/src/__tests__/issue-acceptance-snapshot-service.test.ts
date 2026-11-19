@@ -77,9 +77,15 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
       const withDocument = await issueAcceptanceSnapshotService(db).read(issue!.id);
       expect(withDocument).toEqual({
         issue: { id: issue!.id, identifier: "OPE-7001", companyId: companyA },
-        // Revision evidence: the latest revision id is part of the snapshot.
-        document: { id: docId, latestRevisionId: revisionId, body: "acceptance body" },
+        // Revision evidence: the latest revision id and the monotonic
+        // generation number are part of the snapshot.
+        document: { id: docId, latestRevisionId: revisionId, latestRevisionNumber: 3, body: "acceptance body" },
       });
+
+      // The same snapshot is reachable by canonical identifier in the same
+      // single-statement read.
+      const byIdentifier = await issueAcceptanceSnapshotService(db).read("OPE-7001");
+      expect(byIdentifier).toEqual(withDocument);
 
       const withoutDocument = await issueAcceptanceSnapshotService(db).read(bare!.id);
       expect(withoutDocument).toEqual({
