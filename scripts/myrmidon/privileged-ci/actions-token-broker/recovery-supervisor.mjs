@@ -7,6 +7,7 @@ export function createRecoverySupervisor({ recover, start, alert, delay, store }
     async run() {
       if (running || started) throw new Error('recovery supervisor already running or started');
       running = true;
+      const stoppedError = new Error('recovery supervisor stopped');
       try {
         while (!stopped) {
           let result;
@@ -27,10 +28,10 @@ export function createRecoverySupervisor({ recover, start, alert, delay, store }
           }
           if (!stopped) await delay();
         }
-        throw new Error('recovery supervisor stopped');
+        throw stoppedError;
       } catch (error) {
-        // The outbox may itself be unavailable; notify independently before exiting.
-        if (!stopped) {
+        // An outbox failure still requires notification during shutdown.
+        if (error !== stoppedError) {
           try { await alert('credential_recovery_failed'); } catch { /* External process monitoring is still required. */ }
         }
         throw error;

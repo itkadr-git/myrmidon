@@ -123,6 +123,17 @@ test('outbox failure attempts an independent alert and never starts issuance', a
   assert.equal(starts, 0);
 });
 
+test('outbox failure during shutdown still attempts an independent alert', async () => {
+  const alerts = [];
+  const store = { ...memoryOutbox(), queueAlert: async () => { throw new Error('disk offline'); } };
+  const supervisor = createRecoverySupervisor({
+    store, recover: async () => { supervisor.stop(); return { failed: 1, pending: true, alertFailed: false }; },
+    alert: async event => alerts.push(event), start: async () => assert.fail('must stay stopped'), delay: async () => {},
+  });
+  await assert.rejects(supervisor.run(), /disk offline/);
+  assert.deepEqual(alerts, ['credential_recovery_failed']);
+});
+
 test('ambiguous issuance remains stopped even when alert delivery fails', async () => {
   let attempts = 0, starts = 0;
   const supervisor = createRecoverySupervisor({
