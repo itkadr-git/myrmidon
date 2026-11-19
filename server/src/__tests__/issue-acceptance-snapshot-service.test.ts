@@ -15,6 +15,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "@myrmidon/db/test-embedded-postgres";
 import { issueAcceptanceSnapshotService } from "../services/issue-acceptance-snapshot.js";
+import { documentService } from "../services/documents.js";
 
 const companyA = "11111111-1111-4111-8111-111111111111";
 const companyB = "22222222-2222-4222-8222-222222222222";
@@ -963,6 +964,27 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     await expect(db.insert(issueDocuments).values({
       companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios",
     })).rejects.toThrow();
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
+  it("rejects a supported writer reaching a foreign-company document", async () => {
+    const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-service-tenant-");
+    cleanups.push(() => dbh.cleanup());
+    const db = createDb(dbh.connectionString);
+    cleanups.push(async () => { await db.$client.end(); });
+    const issueId = randomUUID();
+    const docId = randomUUID();
+    await db.insert(companies).values([
+      { id: companyA, name: "Company A" },
+      { id: companyB, name: "Company B", issuePrefix: "BBB" },
+    ]);
+    await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
+    await db.insert(documents).values({ id: docId, companyId: companyB, latestBody: "foreign" });
+    await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
+    await expect(documentService(db).upsertIssueDocument({
+      issueId, key: "acceptance-scenarios", format: "markdown", body: "changed",
+    })).rejects.toThrow();
+    const [foreign] = await db.select().from(documents).where(eq(documents.id, docId));
+    expect(foreign!.latestBody).toBe("foreign");
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   it("fails closed when an explicit acceptance bump names a nonexistent issue", async () => {
