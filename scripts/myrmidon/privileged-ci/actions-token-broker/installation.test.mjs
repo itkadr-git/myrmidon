@@ -46,6 +46,22 @@ test('a valid upstream token is retained before issuance returns', async () => {
   assert.deepEqual(events, ['retained:known-fixture', 'returned:known-fixture']);
 });
 
+test('a token expiring during retention is not returned and is revoked', async () => {
+  const originalNow = Date.now;
+  const calls = [];
+  let now = Date.parse('2029-12-31T23:59:59Z');
+  Date.now = () => now;
+  try {
+    const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'fixture', request: async (_url, options) => {
+      calls.push(options.method);
+      if (options.method === 'DELETE') return { ok: true };
+      return { ok: true, json: async () => ({ token: 'fixture', expires_at: '2030-01-01T00:00:00Z', permissions: { contents: 'read' }, repositories: [{ id: 123 }] }) };
+    } });
+    await assert.rejects(client.issue(async () => { now += 2000; }), /expired/);
+    assert.deepEqual(calls, ['POST', 'DELETE']);
+  } finally { Date.now = originalNow; }
+});
+
 test('valid token retention failure attempts revocation without returning the token', async () => {
   const calls = [];
   const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'fixture', request: async (_url, options) => {
