@@ -167,9 +167,12 @@ secret management, least privilege and key rotation.
   restart recovery then sees no token to revoke and may allow issuance. The
   characterization in `credential-rollback.test.mjs` demonstrates this gap; it is
   not a passing containment criterion. `store.stateDigest()` computes a keyed,
-  deterministic digest of encrypted credential rows as a building block, but it
-  is not yet anchored or checked by any broker or recovery path and therefore
-  provides no rollback protection on its own. Independent durable binding of credential
+  deterministic digest of encrypted credential rows as a building block. The
+  experimental `credential-checkpoint.mjs` can detect a restored snapshot, and
+  `mutate` places a remote fence before a mutation so interruption fails closed.
+  Neither is connected to the broker or recovery path; the older `advance` helper
+  has a crash window and must not be used for containment. These primitives do not
+  yet provide rollback protection for service. Independent durable binding of credential
   state to issuance/revocation transitions and crash-safe reconciliation are needed
   before this prototype can be considered for live use. Do not restore or replace
   the credential database to recover service.

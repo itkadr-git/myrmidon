@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto';
+
 // A checkpoint anchor must be separately provisioned and protected from rollback.
 // This primitive alone does not make store updates atomic with the anchor.
 export async function createCredentialCheckpoint(store, anchor, { provision = false } = {}) {
@@ -12,10 +14,28 @@ export async function createCredentialCheckpoint(store, anchor, { provision = fa
   } else if (head.seq < 1 || head.mac !== digest) {
     throw new Error('credential checkpoint mismatch');
   }
-  let busy = false;
+  let busy = false, failed = false;
   return {
+    async mutate(operation) {
+      if (busy || failed || typeof operation !== 'function') throw new Error('credential checkpoint unavailable');
+      busy = true;
+      try {
+        // A durable random fence precedes the local mutation; any interruption
+        // leaves a mismatch that prevents restart, including a lost CAS reply.
+        const fence = { seq: head.seq + 1, mac: randomBytes(32).toString('hex') };
+        if (await anchor.compareAndSet(head, fence) !== true) throw new Error('credential checkpoint fence failed');
+        const result = await operation();
+        const next = { seq: fence.seq + 1, mac: store.stateDigest() };
+        if (await anchor.compareAndSet(fence, next) !== true) throw new Error('credential checkpoint update failed');
+        head = next;
+        return result;
+      } catch (error) {
+        failed = true;
+        throw error;
+      } finally { busy = false; }
+    },
     async advance(currentStore) {
-      if (busy || currentStore !== store) throw new Error('invalid credential checkpoint update');
+      if (busy || failed || currentStore !== store) throw new Error('invalid credential checkpoint update');
       busy = true;
       try {
         const next = { seq: head.seq + 1, mac: currentStore.stateDigest() };
