@@ -183,23 +183,28 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     diagnostic.mockClear();
     resetReviewCiCacheForTests();
     await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
+    const workflowRunsUrl = `https://api.github.com/repos/acme/app/actions/runs?head_sha=${headSha}&per_page=100`;
     transport.mockImplementation(async (url) => {
       if (url === pullUrl) return Response.json({ state: "open", head: { sha: headSha } });
       if (url === workflowUrl) return Response.json([{ name: "ci.yml" }]);
-      if (url === latestChecksUrl) return Response.json({ check_runs: [] });
-      if (url === checkUrl) return Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "success", head_sha: headSha }] });
+      if (url === latestChecksUrl) return Response.json({ total_count: 2, check_runs: [
+        { name: "build", status: "completed", conclusion: "success" },
+        { name: "sync review label", status: "queued", conclusion: null, check_suite: { id: 42 } },
+      ] });
+      if (url === workflowRunsUrl) return Response.json({ total_count: 1, workflow_runs: [{ check_suite_id: 42, head_sha: headSha, event: "pull_request", path: ".github/workflows/review-label-sync.yml" }] });
+      if (url === checkUrl) return Response.json({ check_runs: [] });
       throw new Error("Unexpected external transport");
     });
-    const success = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI passed" });
+    const success = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: server/src/example.ts:42 remains broken" });
     await drainHeartbeatRunsToQuiescence(ctx.db, heartbeatService(ctx.db));
     expect(success.status, JSON.stringify(success.body)).toBe(200);
     // OPE-15114: every admission reads GitHub afresh; the sweep that follows
     // the PATCH may read again, so only the admission's own read order is pinned.
     expect(transport.mock.calls.slice(0, 3).map(([url]) => url)).toEqual([pullUrl, workflowUrl, checkUrl]);
-    expect(unexpectedCalls(transport.mock.calls, [pullUrl, workflowUrl, checkUrl, latestChecksUrl])).toEqual([]);
-    expect(diagnostic.mock.calls.some(([fields]) => typeof fields === "object" && fields !== null &&
-      "transportCalls" in fields && fields.transportCalls === 3 &&
-      "budget" in fields && JSON.stringify(fields.budget) === JSON.stringify({ used: 3, cap: 2000, windowMinutes: 60 }))).toBe(true);
+    expect(unexpectedCalls(transport.mock.calls, [pullUrl, workflowUrl, checkUrl, latestChecksUrl, workflowRunsUrl])).toEqual([]);
+    expect(success.body.assigneeAgentId).toBe(author);
+    expect(success.body.executionState.lastDecisionOutcome).toBe("changes_requested");
+    expect(JSON.stringify(success.body)).toContain("server/src/example.ts:42 remains broken");
     expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, success.body])).not.toContain(canary);
   });
   it("rejects a verdict on stored wake evidence alone when the review budget is exhausted (OPE-15114)", async () => {
