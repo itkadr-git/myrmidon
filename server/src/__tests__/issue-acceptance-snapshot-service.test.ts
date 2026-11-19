@@ -841,6 +841,35 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
   );
 
   it(
+    "rejects cross-company issue links and revision writes at the database boundary",
+    async () => {
+      const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-tenant-boundary-");
+      cleanups.push(() => dbh.cleanup());
+      const db = createDb(dbh.connectionString);
+      cleanups.push(async () => { await db.$client.end(); });
+      const issueId = randomUUID();
+      const foreignDocId = randomUUID();
+      const ownDocId = randomUUID();
+      await db.insert(companies).values([
+        { id: companyA, name: "Company A" },
+        { id: companyB, name: "Company B", issuePrefix: "BBB" },
+      ]);
+      await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
+      await db.insert(documents).values([
+        { id: foreignDocId, companyId: companyB, latestBody: "foreign" },
+        { id: ownDocId, companyId: companyA, latestBody: "own" },
+      ]);
+      await expect(db.insert(issueDocuments).values({
+        companyId: companyA, issueId, documentId: foreignDocId, key: "acceptance-scenarios",
+      })).rejects.toThrow();
+      await expect(db.insert(documentRevisions).values({
+        companyId: companyB, documentId: ownDocId, revisionNumber: 1, body: "foreign",
+      })).rejects.toThrow();
+    },
+    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  );
+
+  it(
     "epoch rows are immutable: re-keying fails closed and company ABA invalidates the pin (OPE-15145)",
     async () => {
       const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-epoch-pk-");
