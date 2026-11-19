@@ -15808,6 +15808,7 @@ export function issueRoutes(
             await db.update(issueRows).set({
               monitorNextCheckAt: new Date(Date.now() + 61 * 60_000),
               monitorWakeRequestedAt: null,
+              executionState: sql`jsonb_set(${issueRows.executionState}, '{reviewCiBudgetDeferred}', 'true'::jsonb, true)`,
             }).where(and(
               eq(issueRows.id, existing.id),
               eq(issueRows.companyId, existing.companyId),

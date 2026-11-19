@@ -14,7 +14,7 @@ import {
   toolApplications,
   toolConnections,
 } from "@myrmidon/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { workProductService } from "../services/work-products.js";
 import { githubConnectionEventService } from "../services/github-connection-events.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
@@ -116,7 +116,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     await db.insert(issues).values({
       id: issueId, companyId, title: "PR task", status: "in_review", assigneeAgentId: agentId,
       monitorNextCheckAt: deferredUntil,
-      executionState: { status: "pending", currentStageId: null, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId, userId: null }, returnAssignee: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null, monitor: { status: "triggered", nextCheckAt: null, lastTriggeredAt: "2026-11-16T11:50:00.000Z", attemptCount: 1, notes: "Review CI wait", scheduledBy: "assignee", serviceName: "Review CI wait", externalRef: null, timeoutAt: null, maxAttempts: null, recoveryPolicy: null, clearedAt: null, clearReason: null } },
+      executionState: { reviewCiBudgetDeferred: true, status: "pending", currentStageId: null, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId, userId: null }, returnAssignee: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null, monitor: { status: "triggered", nextCheckAt: null, lastTriggeredAt: "2026-11-16T11:50:00.000Z", attemptCount: 1, notes: "Review CI wait", scheduledBy: "assignee", serviceName: "Review CI wait", externalRef: null, timeoutAt: null, maxAttempts: null, recoveryPolicy: null, clearedAt: null, clearReason: null } },
     });
     const [product] = await db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", externalId: "paperclipai/paperclip#pull/123", title: "PR #123", status: "open", metadata: { repository: "paperclipai/paperclip", number: 123, headSha: "a".repeat(40) } }).returning({ id: issueWorkProducts.id });
     await db.insert(externalObjects).values({ companyId, providerKey: "github", objectType: "pull_request", externalId: "paperclipai/paperclip#pull/123", statusKey: "open", statusCategory: "open", statusTone: "info", isTerminal: false, data: { provider: "github", owner: "paperclipai", repo: "paperclip", number: 123, state: "open" } });

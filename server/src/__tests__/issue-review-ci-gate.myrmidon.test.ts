@@ -242,6 +242,7 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     expect(after.status).toBe("in_review");
     expect(after.assigneeAgentId).toBe(author);
     expect(after.monitorNextCheckAt?.getTime()).toBeGreaterThan(Date.now() + 10 * 60_000);
+    expect(after.executionState).toMatchObject({ reviewCiBudgetDeferred: true });
     const scheduledAt = after.monitorNextCheckAt?.getTime();
     const wakesBefore = await ctx.db.select().from(agentWakeupRequests).where(sql`${agentWakeupRequests.agentId} = ${reviewer}`);
     const heartbeat = heartbeatService(ctx.db);
