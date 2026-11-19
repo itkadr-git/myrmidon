@@ -11,8 +11,10 @@ ALTER TABLE "issues" ADD COLUMN "acceptance_snapshot_version" bigint DEFAULT 0 N
 -- AFTER triggers on issues (insert/update), on issue_documents
 -- (insert/update/delete, both OLD and NEW issues on a transfer), on
 -- documents (insert/update/delete through the owning link), and on
--- document_revisions (insert/update/delete) — trigger-level tracking covers
--- every SQL writer, including batch imports and future code.
+-- document_revisions (insert/update/delete) when the owning link is visible
+-- in the writer's
+-- snapshot. REPEATABLE READ direct SQL can miss a concurrently created link;
+-- these triggers alone do not cover every writer (see the reader README).
 CREATE TABLE "issue_acceptance_epochs" (
   "issue_id" uuid PRIMARY KEY,
   "epoch" bigint NOT NULL DEFAULT 0

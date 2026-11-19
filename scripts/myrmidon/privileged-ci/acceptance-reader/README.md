@@ -48,8 +48,11 @@ that single snapshot — the full pin:
 triggers on any insert/update of the issue row (company, identifier,
 anything), on insert/update/delete of the issue's `acceptance-scenarios`
 link row (both the old and the new issue on a transfer), and on
-insert/update/delete of the bound document and its revision rows. It covers
-every writer, including batch imports, future code and direct SQL, and it
+insert/update/delete of the bound document and its revision rows when the
+link is visible to the writer's transaction. These triggers do not cover all
+writers: in particular, direct SQL using REPEATABLE READ can miss a link
+committed after its snapshot. Explicit issue-ID bumps in the document service
+cover those service paths, not arbitrary SQL or all import paths. The epoch
 survives delete+recreate: the epoch row has no foreign key to issues, a
 BEFORE UPDATE trigger rejects any attempt to wind it back, and an AFTER
 DELETE trigger restores a deleted row at epoch+1, so no writer can reset the
@@ -89,9 +92,9 @@ supported pattern is:
 There is deliberately no "atomic at use" claim: an atomic commit of the
 verification with the publication of a CI verdict lives in the gate layer,
 which is out of scope for this gateway. What this gateway guarantees is
-exact: one MVCC snapshot per response, tenant confinement checked before any
-output, and a server-side conditional assertion that detects every relevant
-mutation up to the moment of the verify.
+exact: one MVCC snapshot per response and tenant confinement checked before
+any output. The conditional assertion cannot yet detect every relevant
+mutation; the security limitation above applies.
 
 This contract also does not bind requests to one CI job: with the current
 operator-issued shared bearer, run binding is the caller's discipline. A
