@@ -47,6 +47,10 @@ secret management, least privilege and key rotation.
   Broker factories also fence new issuance and owner revocation while any durable
   recovery alert remains undelivered, including an audit failure on a rejected
   request before a reservation exists. Recovery must deliver the outbox first.
+  If audit and outbox writes both fail, a process-local latch blocks later issuance
+  until restart; this latch is not durable and cannot fence a request already in
+  flight. An independent supervisor must stop service and investigate storage
+  failure before restart; do not rely on it for cross-process containment.
   Broker factories
   hold a separate SQLite write lock across recovery and the broker lifetime; this
   is single-host cooperative exclusion only, requiring one canonical credential

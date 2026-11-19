@@ -84,6 +84,7 @@ export async function createRecoveredSingleHostBroker({ credentialPath, credenti
 // The store must persist encrypted credentials and enforce owner-bound atomic access.
 export function createBroker({ policy, loadKeys, claimOnce, installation, store, audit, alert }) {
   const fixedPolicy = Object.freeze({ ...policy });
+  let auditFailed = false;
   async function identity(jwt) {
     const claims = await verifyIdentity(jwt, { policy: fixedPolicy, loadKeys, claimOnce });
     if (typeof claims.run_id !== 'string' || !/^[1-9][0-9]*$/.test(claims.run_id) || typeof claims.run_attempt !== 'string' || !/^[1-9][0-9]*$/.test(claims.run_attempt)) throw new Error('identity rejected');
@@ -92,6 +93,7 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
   async function record(event) {
     // Audit receives only a fixed event name, never claims, errors or credentials.
     try { await audit(event); } catch (error) {
+      auditFailed = true;
       try { await store.queueAlert('audit_unavailable'); } catch { /* Storage failure requires external supervision. */ }
       try { await alert('audit_unavailable'); } catch { /* Recovery retries the durable outbox. */ }
       throw error;
@@ -115,6 +117,7 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
     async exchange(jwt) {
       return guarded('exchange_failed', async () => {
         const owner = await identity(jwt);
+        if (auditFailed) throw new Error('audit unavailable');
         const handle = randomUUID();
         const durable = typeof store.reserveIssuance === 'function';
         if (durable) await store.reserveIssuance(handle);
