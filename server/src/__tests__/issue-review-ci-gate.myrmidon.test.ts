@@ -85,7 +85,8 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
       "transportCalls" in fields && fields.transportCalls === 0 &&
       "budget" in fields && JSON.stringify(fields.budget) === JSON.stringify({ used: 2000, cap: 2000, windowMinutes: 60 }))).toBe(true);
     expect(rejected.status, JSON.stringify(rejected.body)).toBe(422);
-    expect(JSON.stringify(rejected.body)).toContain("CI status for the current pull request head is unavailable");
+    expect(JSON.stringify(rejected.body)).toContain("GitHub review budget exhausted");
+    expect(JSON.stringify(rejected.body)).toContain("backoff");
     expect(transport).not.toHaveBeenCalled();
     const [unchanged] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
     expect(unchanged?.status).toBe("in_review");
