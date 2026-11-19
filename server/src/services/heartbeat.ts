@@ -13366,7 +13366,7 @@ export function heartbeatService(
               return { outcome: "skipped" as const, reason: MONITOR_UNCHANGED_DEFER_REASON };
             }
             if (idleDecision.action === "clear") {
-              await db.update(issues).set({
+              const [cleared] = await db.update(issues).set({
                 ...buildIssueMonitorClearedPatch({
                   issue: claimed,
                   policy,
@@ -13374,7 +13374,12 @@ export function heartbeatService(
                   clearedAt: input.now,
                 }),
                 updatedAt: input.now,
-              }).where(eq(issues.id, claimed.id));
+              }).where(and(
+                eq(issues.id, claimed.id),
+                eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+                eq(issues.monitorWakeRequestedAt, input.now),
+              )).returning({ id: issues.id });
+              if (!cleared) return { outcome: "skipped" as const, reason: "monitor_changed" };
               await logActivity(db, {
                 companyId: claimed.companyId,
                 actorType: input.actorType,
