@@ -29,6 +29,9 @@ secret management, least privilege and key rotation.
 - Returned repository and permissions are checked against configured scope,
   but revocation failure after a rejected response still needs durable recovery.
   TLS helpers alone do not establish host isolation.
+- The prototype permits only `contents: read`; this is a restrictive test
+  profile, not an approved workflow policy or evidence that this permission is
+  sufficient for the eventual integration. Any expansion requires review.
 - Independent security review must be repeated on the final head. Live acceptance
   requires an authorized isolated test App, installation policy and genuine
   Actions OIDC; fixtures are not evidence of GitHub compatibility.

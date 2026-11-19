@@ -2,7 +2,7 @@ const API = 'https://api.github.com';
 
 // The transport, signing key and policy are supplied by the server, never by callers.
 export function createInstallationClient({ installationId, repositoryId, permissions, appJwt, request = fetch }) {
-  if (!/^[1-9][0-9]*$/.test(installationId) || !Number.isSafeInteger(repositoryId) || repositoryId <= 0 || !permissions || !Object.keys(permissions).length || Object.values(permissions).some(value => !['read', 'write'].includes(value)) || typeof appJwt !== 'function') throw new Error('invalid installation policy');
+  if (!/^[1-9][0-9]*$/.test(installationId) || !Number.isSafeInteger(repositoryId) || repositoryId <= 0 || !permissions || Object.keys(permissions).length !== 1 || permissions.contents !== 'read' || typeof appJwt !== 'function') throw new Error('invalid installation policy');
   const fixedPermissions = { ...permissions };
   const body = JSON.stringify({ repository_ids: [repositoryId], permissions: fixedPermissions });
   return {

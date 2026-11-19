@@ -2,6 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createInstallationClient } from './installation.mjs';
 
+test('server policy rejects permissions outside the prototype read-only profile', () => {
+  for (const permissions of [{ administration: 'write' }, { contents: 'write' }, { issues: 'read' }]) {
+    assert.throws(() => createInstallationClient({ installationId: '42', repositoryId: 123, permissions, appJwt: async () => 'fixture' }), /invalid installation policy/);
+  }
+});
+
 test('installation issuance uses only the configured repository and permissions', async () => {
   const calls = [];
   const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'app-fixture', request: async (url, init) => {
