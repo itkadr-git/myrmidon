@@ -135,6 +135,18 @@ test('audit failure during issuance finalization prevents returning the token', 
   assert.equal(revoked, 1);
 });
 
+test('audit and outbox failure fences subsequent owner revocation in the running process', async () => {
+  let revoked = 0, failAudit = true;
+  const store = { reserveIssuance: async () => {}, withOwned: async (_handle, _owner, action) => action({ token: 'fixture' }), resolveIssuance: async () => {}, queueAlert: async () => { throw new Error('disk offline'); } };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    installation: { revoke: async () => { revoked++; } },
+    audit: async () => { if (failAudit) throw new Error('audit offline'); }, alert: async () => { throw new Error('alert offline'); } });
+  await assert.rejects(broker.exchange(jwt('revocation-fence-invalid', { repository_id: '999' })));
+  failAudit = false;
+  await assert.rejects(broker.revoke(jwt('revocation-fence-next'), '00000000-0000-0000-0000-000000000000'));
+  assert.equal(revoked, 0);
+});
+
 test('audit and outbox failure on a rejected request fences subsequent issuance in the running process', async () => {
   let issued = 0, failAudit = true;
   const store = { reserveIssuance: async () => {}, resolveIssuance: async () => {}, put: async () => {}, queueAlert: async () => { throw new Error('disk offline'); } };
