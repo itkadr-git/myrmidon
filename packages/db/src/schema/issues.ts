@@ -47,6 +47,14 @@ export const issues = pgTable(
     description: text("description"),
     status: text("status").notNull().default("backlog"),
     statusVersion: bigint("status_version", { mode: "number" }).notNull().default(0),
+    // myrmidon(OPE-15134/OPE-15145): per-issue monotonic mutation counter for
+    // the acceptance snapshot pin. Bumped by database triggers (migration
+    // 0488) on any update of the issue row and on insert/update/delete of
+    // the issue's acceptance-scenarios link row or its bound document row,
+    // so pin-tuple equality across two reads of the atomic snapshot proves
+    // that none of the pinned identities/links/content changed in between —
+    // including A->B->A reverts, which still mint a new version.
+    acceptanceSnapshotVersion: bigint("acceptance_snapshot_version", { mode: "number" }).notNull().default(0),
     lastStatusDecisionId: uuid("last_status_decision_id"),
     workMode: text("work_mode").notNull().default("standard"),
     harnessKind: text("harness_kind"),

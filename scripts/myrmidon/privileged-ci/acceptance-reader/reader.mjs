@@ -10,27 +10,101 @@ export function authenticate(header, records, now = Date.now()) {
 }
 
 const ISSUE = '(?:[A-Z][A-Z0-9]*-[1-9][0-9]*|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
-const PATH = new RegExp(`^/api/issues/(${ISSUE})(/documents/acceptance-scenarios)?$`);
+const PIN_PATH = new RegExp(`^/api/issues/(${ISSUE})/acceptance-snapshot$`);
+const VERIFY_PATH = new RegExp(`^/api/issues/(${ISSUE})/acceptance-snapshot/verify$`);
+const VERIFY_BODY_LIMIT = 64 * 1024;
 
 export function parsePath(path) {
-  const match = PATH.exec(path);
-  return match ? { issue: match[1], document: Boolean(match[2]) } : null;
+  let match = PIN_PATH.exec(path);
+  if (match) return { issue: match[1], verify: false };
+  match = VERIFY_PATH.exec(path);
+  if (match) return { issue: match[1], verify: true };
+  return null;
 }
 
 export function isIssueIdentity(value) {
   return typeof value === 'string' && new RegExp(`^${ISSUE}$`).test(value);
 }
 
-// The gateway answers both of its runner-facing routes from ONE upstream read:
-// the atomic acceptance snapshot (a single SQL statement upstream), never from
-// two independent reads that could observe different moments. The stored
-// credential's company is checked against the snapshot before anything is
-// returned, and credential revocation is re-checked immediately before the
-// response, so revocation or expiry during the upstream read fails closed.
-// The document projection carries the monotonic generation
-// (latestRevisionId, latestRevisionNumber): equality of that pair across two
-// reads proves no document write occurred in between — see the README
-// contract for the required pin/verify pattern before publishing a result.
+function validIssue(issue) {
+  return Boolean(issue) && typeof issue.id === 'string' && typeof issue.identifier === 'string' &&
+    typeof issue.companyId === 'string' && Number.isInteger(issue.version) && issue.version >= 0;
+}
+
+function validDocument(document) {
+  return document === null || document === undefined || (
+    typeof document.id === 'string' && typeof document.latestRevisionId === 'string' && document.latestRevisionId &&
+    Number.isInteger(document.latestRevisionNumber) && document.latestRevisionNumber > 0 &&
+    typeof document.body === 'string'
+  );
+}
+
+function validSnapshot(snapshot) {
+  return Boolean(snapshot) && validIssue(snapshot.issue) && validDocument(snapshot.document);
+}
+
+// The pin tuple is the entire single-snapshot response: the issue identity
+// (including the trigger-bumped mutation version), and, when present, the
+// document identity, monotonic generation and body. Two responses with equal
+// canonical pins were read from moments between which no relevant mutation
+// committed — that equality is what POST /verify asserts server-side.
+function canonicalPin(snapshot) {
+  return JSON.stringify({
+    i: [snapshot.issue.id, snapshot.issue.identifier, snapshot.issue.companyId, snapshot.issue.version],
+    d: snapshot.document == null ? null : [
+      snapshot.document.id,
+      snapshot.document.latestRevisionId,
+      snapshot.document.latestRevisionNumber,
+      snapshot.document.body,
+    ],
+  });
+}
+
+// The minimal runner-facing projection of a valid snapshot: exactly the pin
+// fields, never upstream-only data.
+function project(snapshot) {
+  return {
+    issue: {
+      id: snapshot.issue.id,
+      identifier: snapshot.issue.identifier,
+      companyId: snapshot.issue.companyId,
+      version: snapshot.issue.version,
+    },
+    document: snapshot.document == null ? null : {
+      id: snapshot.document.id,
+      latestRevisionId: snapshot.document.latestRevisionId,
+      latestRevisionNumber: snapshot.document.latestRevisionNumber,
+      body: snapshot.document.body,
+    },
+  };
+}
+
+function readBody(req, limit = VERIFY_BODY_LIMIT) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        reject(new Error('request body too large'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
+// The gateway answers from ONE upstream read per request: the atomic
+// acceptance snapshot (a single SQL statement upstream). GET returns the
+// full pin projection; POST /verify is the server-side conditional
+// assertion — the gateway reads a fresh snapshot and compares the caller's
+// pinned snapshot on its own side. The stored credential's company is
+// checked before anything is returned, and credential revocation is
+// re-checked immediately before the response, so revocation or expiry
+// during the upstream read fails closed.
 export function createHandler({ records, credentialStore, readSnapshot, audit = async () => {} }) {
   const checkCredential = (header) => credentialStore ? credentialStore.authenticate(header) : authenticate(header, records);
   return async (req, res) => {
@@ -56,30 +130,36 @@ export function createHandler({ records, credentialStore, readSnapshot, audit = 
     };
     if (!companyId) return respond(401);
     const path = parsePath(req.url);
-    if (req.method !== 'GET' || !path || Object.keys(req.headers).some((name) => name.includes('method-override') || name === 'x-http-method')) return respond(404);
+    if ((req.method !== 'GET' && req.method !== 'POST') || !path || Object.keys(req.headers).some((name) => name.includes('method-override') || name === 'x-http-method')) return respond(404);
+    if (path.verify !== (req.method === 'POST')) return respond(404);
     try {
       const snapshot = await readSnapshot(path.issue);
       // Upstream not-found: the identical 404 for foreign and unknown issues.
       if (snapshot === null || snapshot === undefined) return respond(404);
-      const issue = snapshot.issue;
-      const document = snapshot.document;
       // A 200 payload that does not match the snapshot contract is an
       // upstream malfunction, not "not found": fail closed with 502 before
-      // anything is projected, whatever route was requested.
-      const validIssue = issue && typeof issue.id === 'string' && typeof issue.identifier === 'string' && typeof issue.companyId === 'string';
-      const validDocument = document === null || document === undefined || (
-        typeof document.id === 'string' && typeof document.latestRevisionId === 'string' && document.latestRevisionId &&
-        Number.isInteger(document.latestRevisionNumber) && document.latestRevisionNumber > 0 &&
-        typeof document.body === 'string'
-      );
-      if (!validIssue || !validDocument) return respond(502);
+      // anything is projected.
+      if (!validSnapshot(snapshot)) return respond(502);
       // Fail closed on anything that does not match the credential's company
       // and the requested identity; unknown and foreign are the same 404.
-      if (issue.companyId !== companyId || (path.issue !== issue.id && path.issue !== issue.identifier)) return respond(404);
-      if (!path.document) return respond(200, { id: issue.id, identifier: issue.identifier, companyId: issue.companyId });
-      // A valid snapshot may carry no document yet; that is the 404 case.
-      if (document === null || document === undefined) return respond(404);
-      return respond(200, { id: document.id, latestRevisionId: document.latestRevisionId, latestRevisionNumber: document.latestRevisionNumber, body: document.body });
+      if (snapshot.issue.companyId !== companyId || (path.issue !== snapshot.issue.id && path.issue !== snapshot.issue.identifier)) return respond(404);
+      if (!path.verify) return respond(200, project(snapshot));
+
+      // Server-side conditional assertion: the caller sends the snapshot it
+      // pinned; the gateway compares it against the fresh read. Match means
+      // "no relevant mutation committed between the pin and this verify" —
+      // the freshest statement this read-only gateway can make. The caller
+      // must use the result immediately and re-verify before any later use.
+      let pinned;
+      try {
+        pinned = JSON.parse(await readBody(req));
+      } catch {
+        return respond(400);
+      }
+      if (!validSnapshot(pinned)) return respond(400);
+      if (pinned.issue.companyId !== companyId || (path.issue !== pinned.issue.id && path.issue !== pinned.issue.identifier)) return respond(404);
+      if (canonicalPin(pinned) !== canonicalPin(snapshot)) return respond(409);
+      return respond(200, { ok: true });
     } catch {
       // A failed upstream read never yields a partial or mixed snapshot.
       return respond(502);

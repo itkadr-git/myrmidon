@@ -76,7 +76,7 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
 
       const withDocument = await issueAcceptanceSnapshotService(db).read(issue!.id);
       expect(withDocument).toEqual({
-        issue: { id: issue!.id, identifier: "OPE-7001", companyId: companyA },
+        issue: { id: issue!.id, identifier: "OPE-7001", companyId: companyA, version: 1 },
         // Revision evidence: the latest revision id and the monotonic
         // generation number are part of the snapshot.
         document: { id: docId, latestRevisionId: revisionId, latestRevisionNumber: 3, body: "acceptance body" },
@@ -89,7 +89,7 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
 
       const withoutDocument = await issueAcceptanceSnapshotService(db).read(bare!.id);
       expect(withoutDocument).toEqual({
-        issue: { id: bare!.id, identifier: "OPE-7002", companyId: companyA },
+        issue: { id: bare!.id, identifier: "OPE-7002", companyId: companyA, version: 0 },
         document: null,
       });
 
@@ -136,7 +136,7 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
 
       const snapshot = await issueAcceptanceSnapshotService(db).read(issue!.id);
       expect(snapshot).toEqual({
-        issue: { id: issue!.id, identifier: "OPE-8001", companyId: companyA },
+        issue: { id: issue!.id, identifier: "OPE-8001", companyId: companyA, version: 1 },
         document: null,
       });
     },
@@ -189,7 +189,7 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
 
       const snapshot = await issueAcceptanceSnapshotService(db).read(issue!.id);
       expect(snapshot).toEqual({
-        issue: { id: issue!.id, identifier: "OPE-8101", companyId: companyA },
+        issue: { id: issue!.id, identifier: "OPE-8101", companyId: companyA, version: 1 },
         document: null,
       });
     },
@@ -272,7 +272,7 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
       // document_id and exact body — the snapshot serves the revision body.
       const healthy = await seedGraph("OPE-8201", async () => {});
       expect(await issueAcceptanceSnapshotService(db).read(healthy.id)).toEqual({
-        issue: { id: healthy.id, identifier: "OPE-8201", companyId: companyA },
+        issue: { id: healthy.id, identifier: "OPE-8201", companyId: companyA, version: 1 },
         document: expect.objectContaining({ body: "body for OPE-8201" }),
       });
 
@@ -300,6 +300,66 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
           .where(eq(documents.id, docId));
       });
       expect((await issueAcceptanceSnapshotService(db).read(divergedBody.id))!.document).toBeNull();
+    },
+    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "bumps the issue version on every relevant mutation, including identity A->B->A (OPE-15145)",
+    async () => {
+      const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-snapshot-ver-");
+      cleanups.push(() => dbh.cleanup());
+      const db = createDb(dbh.connectionString);
+      const client = db.$client;
+      cleanups.push(async () => {
+        await (client as any).end();
+      });
+
+      await db.insert(companies).values({ id: companyA, name: "Company A" });
+      const [issue] = await db
+        .insert(issues)
+        .values({ id: randomUUID(), companyId: companyA, title: "Task", identifier: "OPE-8301" })
+        .returning();
+      const versionOf = async () => (await issueAcceptanceSnapshotService(db).read(issue!.id))!.issue.version;
+      expect(await versionOf()).toBe(0);
+
+      // Link insert bumps.
+      const docId = randomUUID();
+      await db.insert(documents).values({
+        id: docId,
+        companyId: companyA,
+        latestBody: "v1",
+        latestRevisionId: randomUUID(),
+      });
+      await db.insert(issueDocuments).values({
+        companyId: companyA,
+        issueId: issue!.id,
+        documentId: docId,
+        key: "acceptance-scenarios",
+      });
+      expect(await versionOf()).toBe(1);
+
+      // Identity A->B->A still moves the version twice.
+      await db.update(issues).set({ identifier: "OPE-8301-TMP" }).where(eq(issues.id, issue!.id));
+      expect(await versionOf()).toBe(2);
+      await db.update(issues).set({ identifier: "OPE-8301" }).where(eq(issues.id, issue!.id));
+      expect(await versionOf()).toBe(3);
+
+      // Company A->B->A (the tenant move) moves it twice as well.
+      await db.insert(companies).values({ id: companyB, name: "Company B", issuePrefix: "BBB" });
+      await db.update(issues).set({ companyId: companyB }).where(eq(issues.id, issue!.id));
+      expect((await issueAcceptanceSnapshotService(db).read(issue!.id))!.issue.companyId).toBe(companyB);
+      expect((await issueAcceptanceSnapshotService(db).read(issue!.id))!.issue.version).toBe(4);
+      await db.update(issues).set({ companyId: companyA }).where(eq(issues.id, issue!.id));
+      expect((await issueAcceptanceSnapshotService(db).read(issue!.id))!.issue.version).toBe(5);
+
+      // A bound-document update bumps through the documents trigger.
+      await db.update(documents).set({ latestBody: "v2" }).where(eq(documents.id, docId));
+      expect(await versionOf()).toBe(6);
+
+      // Link delete bumps (a delete+recreate is a visible mutation).
+      await db.delete(issueDocuments).where(eq(issueDocuments.documentId, docId));
+      expect(await versionOf()).toBe(7);
     },
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );

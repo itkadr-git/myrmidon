@@ -1,65 +1,82 @@
 # Acceptance reader (experimental)
 
-This standalone gateway is not a production deployment. It exposes only the two
-company-bound GET projections in `reader.mjs`. The upstream must implement the
-atomic snapshot endpoint `GET /api/issues/{id}/acceptance-scenarios-snapshot`
-(OPE-15134), which returns one JSON object:
+This standalone gateway is not a production deployment. It exposes exactly two
+runner-facing operations for one company-bound acceptance snapshot. The
+upstream must implement `GET /api/issues/{id}/acceptance-scenarios-snapshot`
+(OPE-15134) returning one JSON object:
 
 ```json
 {
-  "issue": { "id": "…", "identifier": "OPE-123", "companyId": "…" },
+  "issue": { "id": "…", "identifier": "OPE-123", "companyId": "…", "version": 7 },
   "document": { "id": "…", "latestRevisionId": "…", "latestRevisionNumber": 7, "body": "…" }
 }
 ```
 
 `document` is `null` when the issue has no `acceptance-scenarios` document.
-The upstream reads the issue row and the document graph with a single SQL
-statement, so both always come from one database snapshot; the gateway issues
-exactly one upstream read per runner request and never stitches independent
-reads into an answer. Upstream not-found is the identical `404` for foreign
-and unknown issues (no existence oracle); network failures, `5xx`, oversized
-or invalid payloads are a bare `502` that never carries a partial body. This
-contract has only been exercised against a fixture, not a live Myrmidon
-service.
+The upstream reads the issue row and the whole tenant-bound document graph
+with a single SQL statement, so the response always comes from one MVCC
+snapshot; the gateway issues exactly one upstream read per runner request.
+Upstream not-found is the identical `404` for foreign and unknown issues (no
+existence oracle); network failures, `5xx`, oversized or invalid payloads are
+a bare `502` that never carries a partial body. This contract has only been
+exercised against a fixture, not a live Myrmidon service.
 
-## Result integrity contract (supported)
+## Pin and verify
 
-The document carries a monotonic write generation. Every accepted document
-write mints a new revision row, moves `latest_revision_id` to it and
-increments `latest_revision_number`; revision ids and numbers are never
-reused, and reverting the content (A→B→A) mints a new revision and therefore
-a new generation. As a result, equality of the pin tuple
+`GET /api/issues/{ref}/acceptance-snapshot` returns the minimal projection of
+that single snapshot — the full pin:
 
-    (issue.id, issue.identifier, issue.companyId,
-     document.id, document.latestRevisionId, document.latestRevisionNumber)
+```json
+{
+  "issue": { "id": "…", "identifier": "OPE-123", "companyId": "…", "version": 7 },
+  "document": { "id": "…", "latestRevisionId": "…", "latestRevisionNumber": 7, "body": "…" }
+}
+```
 
-across two fresh reads proves that no write to any of these occurred between
-the reads — including content reverts.
+`issue.version` is a per-issue monotonic mutation counter bumped by database
+triggers (migration 0488) on any update of the issue row (company,
+identifier, anything), on insert/update/delete of the issue's
+`acceptance-scenarios` link row, and on update of the bound document row. It
+covers every writer, including batch imports and future code, and it survives
+link/document delete+recreate: any A→B→A of identity, link or content moves
+the version.
 
-A gate that wants a verified result MUST follow this pattern:
+`POST /api/issues/{ref}/acceptance-snapshot/verify` takes a previously pinned
+snapshot as its JSON body and performs the conditional assertion server-side:
+the gateway reads a fresh snapshot and compares the whole pin. The response
+is `200 { "ok": true }` when no relevant mutation committed between the pin
+and this verify, `409` when anything moved, `401` on expiry/revocation, and
+`502` on upstream failures. A tenant move makes the fresh read foreign, so
+every request fails closed with the identical `404`.
 
-1. **Pin.** Read the snapshot fresh; remember the pin tuple. If the document
-   is absent there is nothing to verify — fail the run for this issue.
-2. **Verify.** Immediately before producing the result, read the snapshot
-   fresh again and require the identical pin tuple. Any difference means a
-   write occurred: fail closed and do not publish.
-3. **Publish.** Name the verified pin tuple in the published evidence.
-4. **Use.** Anyone consuming the result re-reads the snapshot and requires
-   the identical pin tuple before relying on it.
+## Result semantics (read this before trusting a result)
 
-Step 2 is what excludes a late invalidation before the result, and step 4 is
-the atomic check at the use boundary: a verdict is only as current as the
-last read, and the tuple in the evidence lets a consumer detect staleness.
+A verify proves the pinned snapshot still equals the current state **as of
+that verify** — nothing more. Check and use are separate operations, and no
+read-only gateway can see a write that lands after its last read. The
+supported pattern is:
 
-This contract is read-only and honest about its boundary: it cannot detect a
-write that lands after the final read — publication must immediately follow
-the verifying read, and consumers must re-validate at use. It also does not
-bind the two reads to one CI job: with the current operator-issued shared
-bearer, run binding is the caller's discipline. A run-scoped single-job
-credential remains an operational prerequisite (tracked on the board under
-OPE-15135/OPE-15148); until it exists, privileged CI must not be enabled on
-the basis of this contract, and concurrent runners sharing a bearer are not
-isolated from each other.
+1. Pin with `GET`; remember the whole response.
+2. Immediately before producing or consuming a result, `POST /verify` with
+   the pin. On `409`/`401`/`502` fail closed.
+3. Publish the verified pin as the result's evidence.
+4. Use the result immediately after the verify. Any later reliance — a new
+   step, a re-run, a consumer — performs its own `POST /verify` first; the
+   evidence pin makes staleness detectable at any point.
+
+There is deliberately no "atomic at use" claim: an atomic commit of the
+verification with the publication of a CI verdict lives in the gate layer,
+which is out of scope for this gateway. What this gateway guarantees is
+exact: one MVCC snapshot per response, tenant confinement checked before any
+output, and a server-side conditional assertion that detects every relevant
+mutation up to the moment of the verify.
+
+This contract also does not bind requests to one CI job: with the current
+operator-issued shared bearer, run binding is the caller's discipline. A
+run-scoped single-job credential remains an operational prerequisite (tracked
+on the board under OPE-15135/OPE-15148); until it exists, privileged CI must
+not be enabled on the basis of this contract, and concurrent runners sharing
+a bearer are not isolated from each other.
 
 ## Operation / Запуск
 
@@ -117,6 +134,6 @@ are completed. No production credential has been issued by this component.
 `devbuild 'node --test scripts/myrmidon/privileged-ci/acceptance-reader/*.test.mjs'`
 uses a separate local TLS fixture with synthetic credentials. It is not a GitHub
 OIDC exchange, a production test, or proof of network isolation. The fixture
-includes an executable ABA regression: three sequential reads across the
-mutations r1→r2→r1 expose three distinct pin tuples, which is exactly what the
-pin/verify contract above detects and a bare revision-id comparison would miss.
+executes the full production path — pin, verify, content/link/company/identifier
+ABA (each detected), mutation after verify (detected at the next verify) — plus
+the tenant, credential-lifecycle and failure-class regressions.

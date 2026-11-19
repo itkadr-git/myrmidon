@@ -7,6 +7,8 @@ export interface IssueAcceptanceSnapshotIssue {
   id: string;
   identifier: string | null;
   companyId: string;
+  /** Monotonic per-issue mutation version bumped by DB triggers (migration 0488). */
+  version: number;
 }
 
 export interface IssueAcceptanceSnapshotDocument {
@@ -70,6 +72,7 @@ export function issueAcceptanceSnapshotService(db: Db) {
           issueId: issues.id,
           identifier: issues.identifier,
           companyId: issues.companyId,
+          issueVersion: issues.acceptanceSnapshotVersion,
           documentId: documents.id,
           latestRevisionId: documents.latestRevisionId,
           latestRevisionNumber: documents.latestRevisionNumber,
@@ -110,6 +113,7 @@ export function issueAcceptanceSnapshotService(db: Db) {
           id: row.issueId,
           identifier: row.identifier,
           companyId: row.companyId,
+          version: row.issueVersion,
         },
         // A document is present only when every tenant-bound hop produced a
         // complete, mutually consistent row — including a valid monotonic

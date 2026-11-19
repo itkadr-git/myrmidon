@@ -4264,7 +4264,7 @@ registry.registerPath({
   tags: ["issues"],
   summary: "Get the atomic acceptance snapshot for an issue",
   description:
-    "One response carries the minimal issue identity `{id, identifier, companyId}` and its `acceptance-scenarios` document `{id, latestRevisionId, latestRevisionNumber, body}` (or `document: null`) read by a single SQL statement, so the issue and the document revision always come from the same snapshot. `latestRevisionNumber` is the document's monotonic write generation: every write mints a new revision id and increments it, so equality of `(latestRevisionId, latestRevisionNumber)` across two reads proves no write occurred in between. Missing and cross-tenant issues are the identical 404 (no existence oracle).",
+    "One response carries the minimal issue identity `{id, identifier, companyId, version}` and its `acceptance-scenarios` document `{id, latestRevisionId, latestRevisionNumber, body}` (or `document: null`) read by a single SQL statement, so the issue and the document revision always come from the same snapshot. `version` is a per-issue monotonic mutation counter bumped by database triggers on issue/link/document changes, and `latestRevisionNumber` is the document's monotonic write generation; equality of the whole response across two reads proves none of them changed in between. Missing and cross-tenant issues are the identical 404 (no existence oracle).",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
