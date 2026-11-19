@@ -359,6 +359,37 @@ async function readHeadCi(input: {
     (entry) => asRecord(entry)?.name === REVIEW_CI_FINAL_CHECK_NAME,
   );
   if (hasAggregateRun) return settledHeadCi({ state: stateFromFinalCheck });
+  const pendingSuites = new Set(allRunsList.flatMap((entry) => {
+    const run = asRecord(entry);
+    const suite = asRecord(run?.check_suite);
+    return run?.status !== "completed" && typeof suite?.id === "number" ? [suite.id] : [];
+  }));
+  if (pendingSuites.size > 0) {
+    const workflows = await readGitHub(fetchImpl, `${apiBase}/repos/${repository}/actions/runs?head_sha=${encodeURIComponent(headSha)}&per_page=100`, input.token, "workflow_runs");
+    if (!workflows.ok) return workflows;
+    const payload = asRecord(workflows.json);
+    const workflowRuns = payload?.workflow_runs;
+    if (!Array.isArray(workflowRuns) || typeof payload?.total_count !== "number" || payload.total_count > workflowRuns.length) {
+      return { ok: false, reason: "workflow_runs:incomplete_payload" };
+    }
+    const excludedSuites = new Set(workflowRuns.flatMap((entry) => {
+      const run = asRecord(entry);
+      return typeof run?.check_suite_id === "number" && pendingSuites.has(run.check_suite_id) &&
+        run.head_sha === headSha && run.event === "pull_request" &&
+        run.path === ".github/workflows/review-label-sync.yml" ? [run.check_suite_id] : [];
+    }));
+    if (excludedSuites.size > 0) {
+      const relevant = allRunsList.filter((entry) => {
+        const suite = asRecord(asRecord(entry)?.check_suite);
+        return typeof suite?.id !== "number" || !excludedSuites.has(suite.id);
+      });
+      const green = relevant.length > 0 && relevant.every((entry) => {
+        const run = asRecord(entry);
+        return run?.status === "completed" && run.conclusion === "success";
+      });
+      return settledHeadCi(green ? { state: "complete", finalCheckConclusion: "success" } : { state: "pending" });
+    }
+  }
   return settledHeadCi({ state: pullRequestHeadCiStateFromAllChecks({ checkRuns: allRunsList }) });
 }
 

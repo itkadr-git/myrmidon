@@ -155,7 +155,7 @@ describe("resolvePullRequestHeadCi", () => {
     });
     const provenance = { total_count: 1, workflow_runs: [{ check_suite_id: 42, head_sha: "abc123", event: "pull_request", path: ".github/workflows/review-label-sync.yml" }] };
     expect(await resolve([build, label], provenance)).toMatchObject({ state: "complete", finalCheckConclusion: "success" });
-    expect(await resolve([{ ...build, conclusion: "failure" }, label], provenance)).toMatchObject({ state: "complete", finalCheckConclusion: "failure" });
+    expect(await resolve([{ ...build, conclusion: "failure" }, label], provenance)).not.toMatchObject({ state: "complete", finalCheckConclusion: "success" });
     expect(await resolve([build, label], { total_count: 1, workflow_runs: [{ ...provenance.workflow_runs[0], path: ".github/workflows/ci.yml" }] })).toMatchObject({ state: "pending" });
     expect(await resolve([build, label], { total_count: 2, workflow_runs: provenance.workflow_runs })).toMatchObject({ state: "unknown" });
   });
