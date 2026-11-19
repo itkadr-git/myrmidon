@@ -18,6 +18,22 @@ function jwt(jti, overrides = {}) {
   return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
 }
 
+test('lost issuance response blocks further issuance across restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-ambiguous-'));
+  const credentialKey = randomBytes(32);
+  let calls = 0;
+  const options = { policy, loadKeys: async () => [key], replayPath: join(dir, 'replay.sqlite'), credentialPath: join(dir, 'credentials.sqlite'), credentialKey, installation: { issue: async () => { calls++; throw new Error('response lost after create'); }, revoke: async () => {} }, audit: async () => {} };
+  try {
+    let broker = createSingleHostBroker(options);
+    await assert.rejects(broker.exchange(jwt('lost-response')));
+    broker.close();
+    broker = createSingleHostBroker(options);
+    await assert.rejects(broker.exchange(jwt('after-restart')));
+    broker.close();
+    assert.equal(calls, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('single-host broker persists replay claims across broker restarts', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-replay-'));
   const path = join(dir, 'replay.sqlite');
