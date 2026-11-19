@@ -24,8 +24,10 @@ secret management, least privilege and key rotation.
   The unanchored single-host and synchronous helpers remain vulnerable to replay
   database rollback and must not be used for live service. The append-only replay
   log has no bounded retention, and the anchor needs a separately administered
-  failure domain and further security review. Replay startup failures still require
-  independent process monitoring and alerting. The factory wires an
+  failure domain and further security review. Replay startup failures attempt a
+  best-effort `replay_unavailable` alert; failed delivery is not durable, so an
+  independent process monitor must detect and retry startup failures. Runtime replay
+  anchor failures reject the request but still need independent monitoring. The factory wires an
   experimental AES-GCM SQLite credential store when a credential path and key
   are provided. Its single-host locking and key custody need independent review.
   An experimental `createRecoveryWorker` provides a single quiesced recovery

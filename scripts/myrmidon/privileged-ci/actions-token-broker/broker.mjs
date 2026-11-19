@@ -19,7 +19,12 @@ export async function createSupervisedSingleHostBroker({ credentialPath, credent
       recover: async () => ({ ...await store.revokeRetained(token => options.installation.revoke(token)), pending: (await store.pendingIssuances()).length > 0, alertFailed: false }),
       start: async () => {
         if (options.anchoredIssuance || options.replayAnchor || options.replayKey) {
-          replay = await createAnchoredReplayStore(options.replayPath, options.replayKey, options.replayAnchor);
+          try {
+            replay = await createAnchoredReplayStore(options.replayPath, options.replayKey, options.replayAnchor);
+          } catch (error) {
+            try { await options.alert('replay_unavailable'); } catch { /* External monitoring must detect startup failure. */ }
+            throw error;
+          }
         }
         return createSingleHostBrokerWithStore({ ...options, store, replay });
       },
