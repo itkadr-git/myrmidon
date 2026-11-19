@@ -564,6 +564,40 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     }
   });
 
+  it("dispatches replacement evidence at the same schedule after an admitted wake", async () => {
+    const { issueId, nextCheckAt } = await seedFixture();
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_replace_evidence_on_admission() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.payload->>'monitorNotes' = 'Check deploy' THEN
+          UPDATE issues SET monitor_wake_requested_at = NULL, monitor_notes = 'replacement evidence'
+          WHERE id = '${issueId}'::uuid;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_replace_evidence_on_admission AFTER INSERT ON agent_wakeup_requests
+      FOR EACH ROW EXECUTE FUNCTION test_replace_evidence_on_admission();
+    `));
+    try {
+      const scheduler = heartbeatService(db, { executesRuns: false });
+      expect((await scheduler.tickTimers(nextCheckAt)).enqueued).toBe(1);
+      const [replacement] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(replacement!.monitorNotes).toBe("replacement evidence");
+      expect(replacement!.monitorNextCheckAt?.toISOString()).toBe(nextCheckAt.toISOString());
+      const retryAt = new Date(nextCheckAt.getTime() + 60_000);
+      expect((await scheduler.tickTimers(retryAt)).enqueued).toBe(1);
+      expect((await scheduler.tickTimers(retryAt)).enqueued).toBe(0);
+      const requests = await db.select().from(agentWakeupRequests);
+      expect(requests).toHaveLength(2);
+      expect(requests.map((request) => request.payload?.monitorNotes)).toEqual([
+        "Check deploy", "replacement evidence",
+      ]);
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_replace_evidence_on_admission ON agent_wakeup_requests; DROP FUNCTION IF EXISTS test_replace_evidence_on_admission();"));
+      await db.delete(heartbeatRuns);
+    }
+  });
+
   it("preserves a monitor rescheduled while its previous wake is enqueued", async () => {
     const { issueId, nextCheckAt } = await seedFixture();
     const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
