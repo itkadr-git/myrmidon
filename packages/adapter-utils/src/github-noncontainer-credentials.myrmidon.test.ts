@@ -270,6 +270,15 @@ process.stdout.write('token=' + (process.env.GH_TOKEN || '') + ' args=' + proces
     return { root, bin, repo, requests, env };
   }
 
+  it("forwards positional repo view and clone targets instead of origin", async () => {
+    const { bin, repo, requests, env } = await stagedRun({ originUrl: "https://github.com/owner-a/repo-a.git" });
+    for (const command of ["view", "clone"]) {
+      requests.length = 0;
+      await exec(path.join(bin, "gh"), ["repo", command, "owner-b/repo-b"], { cwd: repo, env });
+      expect(requests.map((request) => JSON.parse(request.body))).toEqual([{ repository: "owner-b/repo-b" }]);
+    }
+  });
+
   it("names the origin repository and installs the staged helper with useHttpPath", async () => {
     const { bin, repo, requests, env } = await stagedRun({ originUrl: "https://github.com/owner-a/repo-a.git" });
     const dump = await exec(path.join(bin, "git"), ["dump-env"], { cwd: repo, env });

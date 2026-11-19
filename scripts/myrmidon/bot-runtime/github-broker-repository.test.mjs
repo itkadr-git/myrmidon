@@ -250,6 +250,18 @@ describe("docker/bot-runtime/github-broker/gh", () => {
     });
   }
 
+  it("forwards positional repo view and clone targets instead of origin", async () => {
+    reply = { status: 200, body: available };
+    for (const command of ["view", "clone"]) {
+      requests = [];
+      const result = await run(GH_WRAPPER, ["repo", command, "owner-b/repo-b"], {
+        env: { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` }, cwd: ROOT,
+      });
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(JSON.parse(requests[0].body), { repository: "owner-b/repo-b" });
+    }
+  });
+
   it("runs gh without a token when the broker refuses", async () => {
     reply = { status: 200, body: { status: "unavailable", source: "app", reason: "not allowed", env: {} } };
     const result = await run(GH_WRAPPER, ["-R", "owner-b/repo-b", "pr", "list"], {
