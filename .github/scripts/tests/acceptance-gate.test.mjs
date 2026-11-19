@@ -14,6 +14,7 @@ test('missing and malformed documents fail closed', async () => {
   await assert.rejects(checkAcceptance(options(async () => null)), /document/i);
   await assert.rejects(checkAcceptance(options(async () => '{')), /JSON/i);
   await assert.rejects(checkAcceptance(options(async () => JSON.stringify({ scenarios: 'bad' }))), /scenarios/i);
+  await assert.rejects(checkAcceptance(options(async () => JSON.stringify({ scenarios: [] }))), /zero scenarios/i);
 });
 test('zero linked issues are explicitly skipped', async () => {
   const result = await checkAcceptance({ ...options(async () => { throw Error('unexpected'); }), pr: { ...pr, title: 'no issue' } });
