@@ -6,6 +6,25 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createCredentialStore } from './store.mjs';
 
+test('pending issuance survives restart and prevents another reservation until explicitly resolved', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-pending-'));
+  const path = join(dir, 'credentials.sqlite');
+  const key = randomBytes(32);
+  try {
+    let store = createCredentialStore(path, key);
+    await store.reserveIssuance('attempt-one');
+    await assert.rejects(store.reserveIssuance('attempt-two'), /pending issuance/);
+    store.close();
+    store = createCredentialStore(path, key);
+    assert.deepEqual(await store.pendingIssuances(), ['attempt-one']);
+    await assert.rejects(store.reserveIssuance('attempt-three'), /pending issuance/);
+    await store.resolveIssuance('attempt-one');
+    await store.reserveIssuance('attempt-four');
+    assert.deepEqual(await store.pendingIssuances(), ['attempt-four']);
+    store.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('operator recovery retries retained credentials after restart without exposing tokens', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-recovery-'));
   const path = join(dir, 'credentials.sqlite');
