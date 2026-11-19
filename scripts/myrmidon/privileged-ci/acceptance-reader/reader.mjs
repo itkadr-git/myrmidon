@@ -9,13 +9,27 @@ export function authenticate(header, records, now = Date.now()) {
   return record.revoked === false && Number.isFinite(record.expiresAt) && now < record.expiresAt && typeof record.companyId === 'string' && record.companyId ? record.companyId : null;
 }
 
-export function createHandler({ records, readIssue, readDocument }) {
+export function createHandler({ records, readIssue, readDocument, audit = async () => {} }) {
   return async (req, res) => {
-    const respond = (status, body = {}) => {
+    const companyId = authenticate(req.headers.authorization, records);
+    const respond = async (status, body = {}) => {
+      if (status === 200 && authenticate(req.headers.authorization, records) !== companyId) {
+        status = 401;
+        body = {};
+      }
+      try {
+        await audit({ status });
+      } catch {
+        status = 503;
+        body = {};
+      }
+      if (status === 200 && authenticate(req.headers.authorization, records) !== companyId) {
+        status = 401;
+        body = {};
+      }
       res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       res.end(JSON.stringify(body));
     };
-    const companyId = authenticate(req.headers.authorization, records);
     if (!companyId) return respond(401);
     const path = parsePath(req.url);
     if (req.method !== 'GET' || !path || Object.keys(req.headers).some((name) => name.includes('method-override') || name === 'x-http-method')) return respond(404);

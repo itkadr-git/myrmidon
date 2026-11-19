@@ -66,6 +66,27 @@ test('document response is company-bound, projected and rejects a changing revis
   assert.equal((await request()).status, 409);
 });
 
+test('revocation during upstream lookup fails closed and audit excludes request data', async (t) => {
+  const token = 'candidate-test-token';
+  const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
+  const events = [];
+  const server = createServer(createHandler({ records, audit: async (event) => events.push(event), readIssue: async () => {
+    records[0].revoked = true;
+    return { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', secret: 'hidden' };
+  } }));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const result = await new Promise((resolve, reject) => get({ host: '127.0.0.1', port: server.address().port, path: '/api/issues/OPE-123', headers: { authorization: `Bearer ${token}` } }, (res) => {
+    let body = ''; res.on('data', (chunk) => { body += chunk; }); res.on('end', () => resolve({ status: res.statusCode, body }));
+  }).on('error', reject));
+  assert.equal(result.status, 401);
+  assert.ok(!result.body.includes('issue-id'));
+  assert.equal(events.length, 1);
+  assert.ok(!JSON.stringify(events).includes(token));
+  assert.ok(!JSON.stringify(events).includes('hidden'));
+});
+
 test('accepts only canonical issue and acceptance document paths', () => {
   assert.deepEqual(parsePath('/api/issues/OPE-123'), { issue: 'OPE-123', document: false });
   assert.deepEqual(parsePath('/api/issues/OPE-123/documents/acceptance-scenarios'), { issue: 'OPE-123', document: true });
