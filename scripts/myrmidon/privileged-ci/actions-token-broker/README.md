@@ -41,7 +41,9 @@ secret management, least privilege and key rotation.
   across a crash is not guaranteed. Runtime audit failures queue `audit_unavailable`
   in the credential outbox and attempt immediate notification; delivery retries
   only after audit startup succeeds, so an independently monitored process and
-  receiver remain mandatory. Outbox storage failure also needs external monitoring.
+  receiver remain mandatory. Outbox storage failure also needs external monitoring;
+  a supervisor failure now attempts an independent immediate recovery-failure alert
+  before exiting, but this is best effort and cannot guarantee delivery across crash.
   An audit failure during issuance retains the reservation even when revocation
   succeeds, so further issuance stays fenced pending operator reconciliation.
   If finalization reports failure after deleting its reservation, the broker tries

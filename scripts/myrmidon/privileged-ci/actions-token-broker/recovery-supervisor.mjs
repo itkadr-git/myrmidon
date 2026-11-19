@@ -24,6 +24,12 @@ export function createRecoverySupervisor({ recover, start, alert, delay, store }
           if (!stopped) await delay();
         }
         throw new Error('recovery supervisor stopped');
+      } catch (error) {
+        // The outbox may itself be unavailable; notify independently before exiting.
+        if (!stopped) {
+          try { await alert('credential_recovery_failed'); } catch { /* External process monitoring is still required. */ }
+        }
+        throw error;
       } finally { running = false; }
     },
   };
