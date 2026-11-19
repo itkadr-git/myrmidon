@@ -10,6 +10,8 @@ import { createAsyncAuthenticatedAudit } from './authenticated-audit.mjs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createServer } from 'node:http';
+import { provisionSqliteAnchor, createSqliteAnchor } from './sqlite-anchor.mjs';
 
 const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const key = { ...publicKey.export({ format: 'jwk' }), kid: 'fixture', alg: 'RS256', use: 'sig' };
@@ -95,6 +97,28 @@ test('lost issuance response leaves anchored intent fenced across restart despit
     await assert.rejects(createAsyncAuthenticatedAudit(path, auditKey, anchor), /pending issuance/);
     assert.equal(calls, 1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('real lost upstream HTTP response fences issuance after SQLite and anchor restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-http-loss-'));
+  const auditPath = join(dir, 'audit.sqlite'), anchorPath = join(dir, 'anchor.sqlite'), auditKey = randomBytes(32);
+  provisionSqliteAnchor(anchorPath);
+  let anchor = createSqliteAnchor(anchorPath), upstreamCreates = 0;
+  const server = createServer((req, res) => { upstreamCreates++; req.resume(); req.on('end', () => res.socket.destroy()); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const installation = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'fixture',
+      request: (_url, options) => fetch(`http://127.0.0.1:${server.address().port}/`, options) });
+    const audit = await createAsyncAuthenticatedAudit(auditPath, auditKey, anchor);
+    const store = { reserveIssuance: async () => {}, queueAlert: async () => {} };
+    const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store, anchoredIssuance: true,
+      installation, audit: event => audit.record(event), alert: async () => {} });
+    await assert.rejects(broker.exchange(jwt('http-loss')));
+    assert.equal(upstreamCreates, 1);
+    audit.close(); anchor.close();
+    anchor = createSqliteAnchor(anchorPath);
+    await assert.rejects(createAsyncAuthenticatedAudit(auditPath, auditKey, anchor), /pending issuance/);
+  } finally { anchor.close(); await new Promise(resolve => server.close(resolve)); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('failed revocation remains anchored across restart even if local reservation disappears', async () => {
