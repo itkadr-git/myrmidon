@@ -22,8 +22,10 @@ export function createCredentialStore(path, key) {
     stateDigest() {
       if (active) throw new Error('store busy');
       const rows = db.prepare('SELECT handle, owner, nonce, ciphertext, tag FROM credentials ORDER BY handle').all();
-      const state = rows.map(row => [row.handle, row.owner, Buffer.from(row.nonce).toString('hex'), Buffer.from(row.ciphertext).toString('hex'), Buffer.from(row.tag).toString('hex')]);
-      return createHmac('sha256', secret).update('credential-state-v1\0').update(JSON.stringify(state)).digest('hex');
+      const credentials = rows.map(row => [row.handle, row.owner, Buffer.from(row.nonce).toString('hex'), Buffer.from(row.ciphertext).toString('hex'), Buffer.from(row.tag).toString('hex')]);
+      const pending = db.prepare('SELECT attempt FROM pending_issuance ORDER BY attempt').all().map(row => row.attempt);
+      const alerts = db.prepare('SELECT event, generation FROM recovery_alerts ORDER BY event').all().map(row => [row.event, row.generation]);
+      return createHmac('sha256', secret).update('credential-state-v2\0').update(JSON.stringify([credentials, pending, alerts])).digest('hex');
     },
     hasRetainedCredentials() { return Boolean(db.prepare('SELECT 1 FROM credentials LIMIT 1').get()); },
     async queueAlert(event) {
