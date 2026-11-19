@@ -106,6 +106,27 @@ test('document is withheld when the issue changes company during lookup', async 
   assert.ok(!result.body.includes('criteria'));
 });
 
+test('document with mismatched issue, company or key is never returned', async (t) => {
+  const token = 'candidate-test-token';
+  const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
+  let document = { id: 'doc-id', issueId: 'issue-id', companyId: 'company-a', key: 'acceptance-scenarios', latestRevisionId: 'rev-1', body: 'private-criteria' };
+  const server = createServer(createHandler({ records,
+    readIssue: async () => ({ id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' }),
+    readDocument: async () => document,
+  }));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  for (const change of [{ issueId: 'other-issue' }, { companyId: 'company-b' }, { key: 'plan' }]) {
+    document = { ...document, issueId: 'issue-id', companyId: 'company-a', key: 'acceptance-scenarios', ...change };
+    const result = await new Promise((resolve, reject) => get({ host: '127.0.0.1', port: server.address().port, path: '/api/issues/OPE-123/documents/acceptance-scenarios', headers: { authorization: `Bearer ${token}` } }, (res) => {
+      let body = ''; res.on('data', (chunk) => { body += chunk; }); res.on('end', () => resolve({ status: res.statusCode, body }));
+    }).on('error', reject));
+    assert.equal(result.status, 404);
+    assert.ok(!result.body.includes('private-criteria'));
+  }
+});
+
 test('duplicate authorization headers are rejected before upstream access', async (t) => {
   const token = 'candidate-test-token';
   const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
