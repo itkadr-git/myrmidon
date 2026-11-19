@@ -11,9 +11,9 @@ export function createRecoverySupervisor({ recover, start, alert, delay, store }
         while (!stopped) {
           let result;
           try { result = await recover(); } catch { result = { failed: 1, pending: false, alertFailed: false }; }
-          if (stopped) break;
           const clean = result && result.failed === 0 && result.pending === false && result.alertFailed === false;
           if (!clean) await store.queueAlert(result?.pending ? 'issuance_ambiguous' : 'credential_recovery_failed');
+          if (stopped) break;
           for (const event of await store.pendingAlerts()) {
             try { await alert(event); await store.acknowledgeAlert(event); } catch { /* Retry before starting. */ }
           }
