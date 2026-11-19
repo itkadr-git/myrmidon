@@ -682,6 +682,33 @@ exit 1
     }
   });
 
+  it("fails closed on conflicting status output from an executed firewall probe", async () => {
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-ufw-conflicting-status-"));
+    const calls = join(dir, "calls");
+    writeFileSync(join(dir, "sudo"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\nif [ "$*" = "ufw status" ]; then printf "Status: active\\nStatus: inactive\\n"; exit 0; fi\nexit 97\n');
+    chmodSync(join(dir, "sudo"), 0o700);
+    try {
+      const ssh = new MockSshExecutor({ onCommand: (command) => {
+        const result = spawnSync("sh", ["-c", command], {
+          encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: calls }, timeout: 5000,
+        });
+        return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", exitCode: result.status ?? 1 };
+      } });
+      const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+      const claim: any = {
+        job: { id: "job-conflicting-firewall-status", companyId: "c1", serverId: "s1" },
+        server: { hostname: "1.2.3.4", port: 22, username: "root" },
+        steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+      };
+      const result = await executor.execute(claim, createMockReporter().reporter);
+      expect(result.status).toBe("failed");
+      expect(result.error).toMatch(/status unconfirmed/i);
+      expect(readFileSync(calls, "utf8")).toBe("ufw status\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("leaves an actually executed inactive firewall status probe unchanged", async () => {
     const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-ufw-test-"));
     const calls = join(dir, "calls");
