@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+import { promisify } from "node:util";
 import os from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
@@ -48,6 +50,7 @@ import { instanceSettingsService } from "../services/instance-settings.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const execFileAsync = promisify(execFile);
 const WORKSPACE_BUSY_TEST_ADAPTER = "workspace_busy_test";
 
 if (!embeddedPostgresSupport.supported) {
@@ -88,6 +91,20 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
     workspaceCwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-busy-"));
+    // Workspace validation requires the fixture path to be a real Git checkout.
+    await execFileAsync("git", ["init", "--quiet", workspaceCwd]);
+    await execFileAsync("git", [
+      "-C",
+      workspaceCwd,
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "initial",
+    ]);
     registerServerAdapter({
       type: WORKSPACE_BUSY_TEST_ADAPTER,
       execute: async (input) => {
@@ -107,7 +124,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
         testedAt: new Date().toISOString(),
       }),
     });
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     // Seeded holder runs are synthetic "running" rows with no real execution
@@ -126,7 +143,13 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
 
   afterAll(async () => {
     unregisterServerAdapter(WORKSPACE_BUSY_TEST_ADAPTER);
-    if (workspaceCwd) await fs.rm(workspaceCwd, { recursive: true, force: true });
+    try {
+      await execFileAsync("git", ["worktree", "prune", "--expire", "now"], { cwd: workspaceCwd });
+      await fs.rm(workspaceCwd, { recursive: true, force: true });
+    } catch {
+      // The test database is already torn down; best-effort fixture cleanup.
+      await fs.rm(workspaceCwd, { recursive: true, force: true });
+    }
     await tempDb?.cleanup();
   });
 
@@ -218,7 +241,10 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     issueWorkspaceSettings?: Record<string, unknown> | null;
     agentEnvironmentDriver?: "sandbox";
   }): Promise<WorkspaceFixture> {
-    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    await instanceSettingsService(db).updateExperimental({
+      enableIsolatedWorkspaces: true,
+      enableIsolatedWorkspacesByDefault: false,
+    });
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -372,6 +398,58 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     };
   }
 
+  it("dispatches two project tasks into distinct isolated workspaces", async () => {
+    const fixture = await seedWorkspaceFixture({ issueWorkspaceSettings: null });
+    await instanceSettingsService(db).updateExperimental({
+      enableIsolatedWorkspaces: true,
+      enableIsolatedWorkspacesByDefault: true,
+    });
+    await db.update(issues).set({ executionRunId: null, executionLockedAt: null, executionAgentNameKey: null })
+      .where(eq(issues.id, fixture.holderIssueId));
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.holderRunId));
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, fixture.holderAgentId));
+    const runs = await Promise.all([
+      heartbeat.invoke(fixture.holderAgentId, "assignment", { issueId: fixture.holderIssueId, wakeReason: "issue_assigned" }, "system"),
+      heartbeat.invoke(fixture.agentId, "assignment", { issueId: fixture.issueId, wakeReason: "issue_assigned" }, "system"),
+    ]);
+    expect(runs.every(Boolean)).toBe(true);
+    const completed = await Promise.all(runs.map((run) => waitForRunToLeaveActiveStates(run!.id)));
+    expect(completed.map((run) => run?.status)).toEqual(["succeeded", "succeeded"]);
+    const workspaces = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.projectId, fixture.projectId));
+    const taskWorkspaces = [fixture.holderIssueId, fixture.issueId].map((id) => workspaces.find((workspace) => workspace.sourceIssueId === id));
+    expect(taskWorkspaces.map((workspace) => workspace?.mode)).toEqual(["isolated_workspace", "isolated_workspace"]);
+    expect(taskWorkspaces[0]?.cwd).toBeTruthy();
+    expect(taskWorkspaces[1]?.cwd).toBeTruthy();
+    expect(taskWorkspaces[0]?.cwd).not.toBe(taskWorkspaces[1]?.cwd);
+    expect(taskWorkspaces.map((workspace) => workspace?.cwd)).not.toContain(workspaceCwd);
+  });
+
+  it("creates separate task workspaces for concurrent issues on the same project checkout", async () => {
+    const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-isolation-"));
+    const gitDir = path.join(baseDir, "project");
+    const worktreeDir = path.join(baseDir, "worktrees");
+    await fs.mkdir(gitDir);
+    await fs.mkdir(worktreeDir);
+    try {
+      await execFileAsync("git", ["init", "--quiet", gitDir]);
+      await execFileAsync("git", ["-C", gitDir, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial"]);
+      const taskOne = path.join(worktreeDir, "task-one");
+      const taskTwo = path.join(worktreeDir, "task-two");
+      await execFileAsync("git", ["-C", gitDir, "worktree", "add", "--quiet", "-b", "task-one", taskOne]);
+      await execFileAsync("git", ["-C", gitDir, "worktree", "add", "--quiet", "-b", "task-two", taskTwo]);
+
+      expect(await fs.realpath(taskOne)).not.toBe(await fs.realpath(taskTwo));
+      expect(await execFileAsync("git", ["-C", taskOne, "rev-parse", "--show-toplevel"]).then(({ stdout }) => stdout.trim())).toBe(taskOne);
+      expect(await execFileAsync("git", ["-C", taskTwo, "rev-parse", "--show-toplevel"]).then(({ stdout }) => stdout.trim())).toBe(taskTwo);
+      await fs.writeFile(path.join(taskOne, "task-one.txt"), "one");
+      await fs.writeFile(path.join(taskTwo, "task-two.txt"), "two");
+      expect(await fs.readFile(path.join(taskOne, "task-two.txt")).catch(() => null)).toBeNull();
+      expect(await fs.readFile(path.join(taskTwo, "task-one.txt")).catch(() => null)).toBeNull();
+    } finally {
+      await fs.rm(baseDir, { recursive: true, force: true });
+    }
+  });
+
   it("auto dispatches alongside a local holder and adds coordination context", async () => {
     const fixture = await seedWorkspaceFixture({
       issueWorkspaceSettings: { sharedWorkspaceConcurrency: "auto" },
@@ -389,10 +467,10 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(finishedRun?.status).toBe("succeeded");
     expect(executedRunIds).toContain(run!.id);
     expect(executedInputs.get(run!.id)?.context.paperclipTaskMarkdown).toContain(
-      `shared workspace is concurrently held by run ${fixture.holderRunId}`,
+      `This run is sharing the project workspace with run ${fixture.holderRunId}`,
     );
     expect(executedInputs.get(run!.id)?.context.paperclipTaskMarkdown).toContain(
-      "expect concurrent mutations, coordinate via commits",
+      "Do not treat it as a task-specific checkout; use the task's isolated workspace before editing code.",
     );
   });
 
@@ -479,7 +557,10 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(finishedRun?.errorCode).not.toBe(WORKSPACE_BUSY_ERROR_CODE);
     expect(executedRunIds).toContain(run!.id);
     expect((finishedRun?.contextSnapshot as Record<string, unknown>)?.paperclipTaskMarkdown).toContain(
-      `shared workspace is concurrently held by run ${fixture.holderRunId}`,
+      `This run is sharing the project workspace with run ${fixture.holderRunId}`,
+    );
+    expect((finishedRun?.contextSnapshot as Record<string, unknown>)?.paperclipTaskMarkdown).toContain(
+      "Do not treat it as a task-specific checkout; use the task's isolated workspace before editing code.",
     );
     const retryRuns = await db
       .select({ id: heartbeatRuns.id })

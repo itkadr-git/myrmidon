@@ -308,6 +308,139 @@ describe("GET /api/myrmidon/bots/me/workspaces", () => {
     expect(keys).not.toContain("ABC-1");
   });
 
+  // myrmidon(OPE-13107): a review participant's copy is released when its review is over; the
+  // executor's copy is kept until the task returns to it. Board model: during a review the
+  // assignee is the reviewer and executionState.returnAssignee is the executor.
+  describe("review participant copies", () => {
+    const EXEC = OTHER_BOT_ID;
+    const R2 = "55555555-5555-4555-8555-555555555555";
+    const agent = (agentId: string) => ({ type: "agent", agentId });
+    const policy = (...reviewers: string[]) => ({
+      stages: [{ type: "review", participants: reviewers.map(agent) }],
+    });
+    const state = (current: string | null, returnTo: string) => ({
+      status: "pending",
+      currentParticipant: current ? agent(current) : null,
+      returnAssignee: agent(returnTo),
+    });
+    const actorOf = (agentId: string) => ({ ...botActor, agentId });
+    const run = async (rows: WorkspaceIssueRow[], actor = botActor) =>
+      (await request(harness({ issues: rows }).app(actor)).get(URL)).body;
+
+    it("the executor handed the task to review: the executor's copy is NOT closed", async () => {
+      // this bot is the executor; the row is a `lost` one (assignee = reviewer R2)
+      const row = issue({
+        identifier: "ABC-7",
+        status: "in_review",
+        assigneeAgentId: R2,
+        executionPolicy: policy(R2),
+        executionState: state(R2, BOT_ID),
+      });
+      const body = await run([row]);
+      expect(body.closedKeys).toEqual([]);
+    });
+
+    it("the reviewer asked for changes: the task is in_progress with the executor, the reviewer's copy is closed, the executor's is not", async () => {
+      const row = issue({
+        identifier: "ABC-8",
+        status: "in_progress",
+        assigneeAgentId: EXEC,
+        executionPolicy: policy(BOT_ID),
+        executionState: state(null, EXEC),
+      });
+      expect((await run([row])).closedKeys).toEqual(["ABC-8"]); // this bot = reviewer
+      const executorView = await run([{ ...row, assigneeAgentId: EXEC }], actorOf(EXEC));
+      expect(executorView.closedKeys).toEqual([]);
+      expect(executorView.protectKeys).toEqual(["ABC-8"]);
+    });
+
+    it("R1 passed the stage to R2: R1's copy is closed, R2's is not", async () => {
+      const row = issue({
+        identifier: "ABC-9",
+        status: "in_review",
+        assigneeAgentId: R2,
+        executionPolicy: policy(BOT_ID, R2),
+        executionState: state(R2, EXEC),
+      });
+      expect((await run([row])).closedKeys).toEqual(["ABC-9"]); // R1 = this bot
+      const r2 = await run([row], actorOf(R2));
+      expect(r2.closedKeys).toEqual([]);
+      expect(r2.protectKeys).toEqual(["ABC-9"]);
+    });
+
+    it("a bot outside the review stages never matches, whatever the row looks like", async () => {
+      const row = issue({
+        identifier: "ABC-10",
+        status: "in_review",
+        assigneeAgentId: R2,
+        executionPolicy: policy(R2),
+        executionState: state(R2, EXEC),
+      });
+      expect((await run([row])).closedKeys).toEqual([]);
+      const noPolicy = issue({ identifier: "ABC-11", status: "in_review", assigneeAgentId: R2, executionState: state(R2, EXEC) });
+      expect((await run([noPolicy])).closedKeys).toEqual([]);
+    });
+
+    it("the reviewer who is the current participant keeps the copy", async () => {
+      const row = issue({
+        identifier: "ABC-12",
+        status: "in_review",
+        assigneeAgentId: R2,
+        executionPolicy: policy(BOT_ID),
+        executionState: state(BOT_ID, EXEC),
+      });
+      expect((await run([row])).closedKeys).toEqual([]);
+    });
+
+    it("a former reviewer who stayed the assignee after a completed review stage: the copy is closed, not protected", async () => {
+      const row = issue({
+        identifier: "ABC-14",
+        status: "in_review",
+        assigneeAgentId: BOT_ID,
+        executionPolicy: policy(BOT_ID),
+        executionState: { status: "completed", currentParticipant: null, returnAssignee: agent(EXEC) },
+      });
+      const body = await run([row]);
+      expect(body.closedKeys).toEqual(["ABC-14"]);
+      expect(body.protectKeys).toEqual([]);
+      expect(body.workspaces.find((w: { key: string }) => w.key === "ABC-14")?.state).toBe("closing");
+    });
+
+    it("the same row for the executor (returnAssignee) or a pending participant keeps the copy protected", async () => {
+      const completed = issue({
+        identifier: "ABC-15",
+        status: "in_review",
+        assigneeAgentId: BOT_ID,
+        executionPolicy: policy(R2),
+        executionState: { status: "completed", currentParticipant: null, returnAssignee: agent(BOT_ID) },
+      });
+      const exec = await run([completed]);
+      expect(exec.closedKeys).toEqual([]);
+      expect(exec.protectKeys).toEqual(["ABC-15"]);
+      const pending = issue({
+        identifier: "ABC-16",
+        status: "in_review",
+        assigneeAgentId: BOT_ID,
+        executionPolicy: policy(BOT_ID),
+        executionState: { status: "pending", currentParticipant: agent(BOT_ID), returnAssignee: agent(EXEC) },
+      });
+      const rev = await run([pending]);
+      expect(rev.closedKeys).toEqual([]);
+      expect(rev.protectKeys).toEqual(["ABC-16"]);
+    });
+
+    it("a review stage of another type does not make the bot a review participant", async () => {
+      const row = issue({
+        identifier: "ABC-13",
+        status: "in_progress",
+        assigneeAgentId: EXEC,
+        executionPolicy: { stages: [{ type: "approval", participants: [agent(BOT_ID)] }] },
+        executionState: state(null, EXEC),
+      });
+      expect((await run([row])).closedKeys).toEqual([]);
+    });
+  });
+
   it("enabled=false switches the mechanism off: 503, so botd deletes nothing", async () => {
     const off = harness({ issues: [issue({ identifier: "ABC-1" })], settings: { enabled: false } });
     const res = await request(off.app(botActor)).get(URL);
@@ -331,7 +464,7 @@ describe("GET /api/myrmidon/bots/me/workspaces", () => {
 
   it("pressure is none without a dockergate snapshot, and passes the snapshot through when present", async () => {
     const none = await request(harness({}).app(botActor)).get(URL);
-    expect(none.body.pressure).toEqual({ quotaPercent: null, partitionPercent: 0, level: "none" });
+    expect(none.body.pressure).toEqual({ quotaPercent: null, partitionPercent: 0, level: "none", partitionMeasured: false });
 
     const snap = { quotaPercent: 93.5, partitionPercent: 88, level: "soft" as const };
     const withSnap = await request(harness({ pressure: async () => snap }).app(botActor)).get(URL);
@@ -585,6 +718,7 @@ describe("botWorkspacePressureFromPartition (BOT-DISK-H Д5)", () => {
       quotaPercent: null,
       partitionPercent: percent,
       level,
+      partitionMeasured: true,
     });
   });
 
@@ -596,6 +730,6 @@ describe("botWorkspacePressureFromPartition (BOT-DISK-H Д5)", () => {
     const res = await request(
       harness({ pressure: async () => botWorkspacePressureFromPartition(state(89)) }).app(botActor),
     ).get(URL);
-    expect(res.body.pressure).toEqual({ quotaPercent: null, partitionPercent: 89, level: "soft" });
+    expect(res.body.pressure).toEqual({ quotaPercent: null, partitionPercent: 89, level: "soft", partitionMeasured: true });
   });
 });

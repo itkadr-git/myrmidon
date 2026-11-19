@@ -56,7 +56,12 @@ export function botCanaryRuntimePort(db: Db, env: NodeJS.ProcessEnv = process.en
       // so the sweep's freshness window must not answer it with a stale
       // "recent_pass" — otherwise the wave marks the bot done on the old
       // image. Dedupe of identical work stays with the per-bot lock.
-      return applyBotContainerNow(agent, runtime, { env: envForApply, specImage: image, force: true });
+      // myrmidon(BOT-PROFILE-NO-RUN-INTERRUPT): drainBusy — an image rollout, the canary and a
+      // rollback are operator actions with their own step timeout and wave; they keep the
+      // drain-then-apply behaviour. A deferral here would be retried on the next tick forever
+      // (each tick refreshes updatedAt, so the step timeout never expires), and the watcher
+      // cannot finish it (it applies the card's image, not specImage).
+      return applyBotContainerNow(agent, runtime, { env: envForApply, specImage: image, force: true, drainBusy: true });
     },
     status: async (botKey: string) => {
       const runtime = getBotContainerRuntime();

@@ -119,7 +119,7 @@ describeEmbeddedPostgres("myrmidon(BOT-TUNING-C) card save rejects a wrong effor
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-effort-validation-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     if (savedAdapterModels === undefined) delete process.env.PAPERCLIP_ADAPTER_MODELS;

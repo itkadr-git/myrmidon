@@ -122,7 +122,7 @@ describeEmbeddedPostgres(
         "paperclip-u2-owner-delivery-",
       );
       db = createDb(tempDb.connectionString);
-    }, 30_000);
+    }, 60_000);
 
     beforeEach(async () => {
       for (const name of publicUrlEnvNames) delete process.env[name];

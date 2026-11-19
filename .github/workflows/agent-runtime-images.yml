@@ -10,8 +10,13 @@ on:
     tags: ["myr-v*"]
     paths:
       - "docker/agent-runtime/**"
+      - "docker/bot-runtime/myr-ws/**"
+      - "docker/bot-runtime/devbuild/**"
+      - "docker/bot-runtime/botd/**"
       - "tools/agent-shim/**"
       - "scripts/myrmidon/omp-image.test.mjs"
+      - "scripts/myrmidon/omp-prompt-patch.test.mjs"
+      - "scripts/myrmidon/patch-omp-cli.mjs"
       - ".github/workflows/agent-runtime-images.yml"
   workflow_dispatch:
     inputs:

@@ -359,8 +359,17 @@ export function fleetdBotContainerDriver(
     },
 
     async recreate(spec: BotContainerSpec): Promise<void> {
+      // myrmidon(OPE-12901): the fleetd recreate pulls the new image when the
+      // host does not have it yet, and a pull does not fit the 60 s default —
+      // wait as long as a start (the rc.27 rollout lost six fleetd bots to the
+      // default timeout; the retry passed once the images were on the host).
       await noticeSharedPackageCache();
-      await callVoid({ method: "POST", path: `/bots/${encodeURIComponent(spec.botKey)}/recreate`, body: { spec: toFleetdWireSpec(spec) } });
+      await callVoid({
+        method: "POST",
+        path: `/bots/${encodeURIComponent(spec.botKey)}/recreate`,
+        body: { spec: toFleetdWireSpec(spec) },
+        timeoutMs: START_TIMEOUT_MS,
+      });
     },
 
     async writeProfile(botKey: string, profile: CompiledProfile): Promise<void> {

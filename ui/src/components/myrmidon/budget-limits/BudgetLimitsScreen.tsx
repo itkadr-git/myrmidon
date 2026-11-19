@@ -30,11 +30,13 @@ import {
   type BudgetLimitsSignalOnlyView,
 } from "./budgetLimitsApi";
 import {
+  BUDGET_LIMIT_GROWTH_CONFIRM_PERCENT,
   actionLabelKey,
   buildBudgetLimitTree,
   centsToAmountText,
   formatCents,
   levelLabelKey,
+  limitGrowthPercent,
   modeLabelKey,
   nodeRefText,
   parseAmountToCents,
@@ -101,6 +103,7 @@ export function BudgetLimitsScreenView({
   const [addFreeRef, setAddFreeRef] = useState("");
   const [addError, setAddError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [confirmingKeys, setConfirmingKeys] = useState<Record<string, boolean>>({});
 
   const tree = buildBudgetLimitTree({
     limits: limits ?? [],
@@ -119,9 +122,35 @@ export function BudgetLimitsScreenView({
 
   const draftOf = (node: BudgetLimitNode): RowDraft => drafts[node.key] ?? defaultDraft(node);
 
+  const clearConfirmingKey = (key: string) => {
+    setConfirmingKeys((previous) => {
+      if (!previous[key]) return previous;
+      const next = { ...previous };
+      delete next[key];
+      return next;
+    });
+  };
+
   const patchDraft = (node: BudgetLimitNode, patch: Partial<RowDraft>) => {
     setFormError(null);
+    clearConfirmingKey(node.key);
     setDrafts((previous) => ({ ...previous, [node.key]: { ...(previous[node.key] ?? defaultDraft(node)), ...patch } }));
+  };
+
+  const executeSaveRow = (node: BudgetLimitNode, amountCents: number, draft: RowDraft) => {
+    setFormError(null);
+    clearConfirmingKey(node.key);
+    setDrafts((previous) => {
+      const next = { ...previous };
+      delete next[node.key];
+      return next;
+    });
+    onSaveLimit(node.level, node.ref, {
+      amountCents,
+      period: draft.period,
+      mode: draft.mode,
+      isActive: draft.isActive,
+    });
   };
 
   const saveRow = (node: BudgetLimitNode) => {
@@ -131,17 +160,33 @@ export function BudgetLimitsScreenView({
       setFormError(t(parsed.messageKey));
       return;
     }
+    const previousCents = node.limit?.amountCents ?? null;
+    const growth = limitGrowthPercent(previousCents, parsed.cents);
+    if (growth !== null && growth > BUDGET_LIMIT_GROWTH_CONFIRM_PERCENT) {
+      setFormError(null);
+      setConfirmingKeys((previous) => ({ ...previous, [node.key]: true }));
+      return;
+    }
+    executeSaveRow(node, parsed.cents, draft);
+  };
+
+  const confirmSaveRow = (node: BudgetLimitNode) => {
+    const draft = draftOf(node);
+    const parsed = parseAmountToCents(draft.amount);
+    if (!parsed.ok) {
+      setFormError(t(parsed.messageKey));
+      return;
+    }
+    executeSaveRow(node, parsed.cents, draft);
+  };
+
+  const cancelSaveRow = (node: BudgetLimitNode) => {
     setFormError(null);
+    clearConfirmingKey(node.key);
     setDrafts((previous) => {
       const next = { ...previous };
       delete next[node.key];
       return next;
-    });
-    onSaveLimit(node.level, node.ref, {
-      amountCents: parsed.cents,
-      period: draft.period,
-      mode: draft.mode,
-      isActive: draft.isActive,
     });
   };
 
@@ -371,29 +416,65 @@ export function BudgetLimitsScreenView({
                             </select>
                           </td>
                           <td className="py-2">
-                            <div className="flex items-center gap-2">
-                              <Button
-                                type="button"
-                                size="sm"
-                                disabled={pending || !parsed.ok}
-                                data-testid={`budget-limits-save-${node.key}`}
-                                onClick={() => saveRow(node)}
-                              >
-                                {node.limit ? t("budgetLimits.save") : t("budgetLimits.create")}
-                              </Button>
-                              {node.limit ? (
+                            {confirmingKeys[node.key] && node.limit && parsed.ok ? (
+                              <div className="space-y-1.5" data-testid={`budget-limits-confirm-panel-${node.key}`}>
+                                <p
+                                  className="text-xs font-medium text-muted-foreground"
+                                  data-testid={`budget-limits-confirm-message-${node.key}`}
+                                >
+                                  {t("budgetLimits.confirmGrowth", {
+                                    percent: limitGrowthPercent(node.limit.amountCents, parsed.cents) ?? 0,
+                                    previous: formatCents(node.limit.amountCents),
+                                    next: formatCents(parsed.cents),
+                                  })}
+                                </p>
+                                <div className="flex items-center gap-2">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    disabled={pending || !parsed.ok}
+                                    data-testid={`budget-limits-confirm-${node.key}`}
+                                    onClick={() => confirmSaveRow(node)}
+                                  >
+                                    {t("budgetLimits.confirm")}
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={pending}
+                                    data-testid={`budget-limits-cancel-${node.key}`}
+                                    onClick={() => cancelSaveRow(node)}
+                                  >
+                                    {t("budgetLimits.cancel")}
+                                  </Button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2">
                                 <Button
                                   type="button"
                                   size="sm"
-                                  variant="outline"
-                                  disabled={pending}
-                                  data-testid={`budget-limits-remove-${node.key}`}
-                                  onClick={() => onDeleteLimit(node.level, node.ref)}
+                                  disabled={pending || !parsed.ok}
+                                  data-testid={`budget-limits-save-${node.key}`}
+                                  onClick={() => saveRow(node)}
                                 >
-                                  {t("budgetLimits.remove")}
+                                  {node.limit ? t("budgetLimits.save") : t("budgetLimits.create")}
                                 </Button>
-                              ) : null}
-                            </div>
+                                {node.limit ? (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={pending}
+                                    data-testid={`budget-limits-remove-${node.key}`}
+                                    onClick={() => onDeleteLimit(node.level, node.ref)}
+                                  >
+                                    {t("budgetLimits.remove")}
+                                  </Button>
+                                ) : null}
+                              </div>
+                            )}
                           </td>
                         </tr>
                       );

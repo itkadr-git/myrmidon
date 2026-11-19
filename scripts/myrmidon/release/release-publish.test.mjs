@@ -33,6 +33,19 @@ const REPO = "itkadr-git/myrmidon";
 const COMMIT = "c78a6c9fde4992a98e5e76d3fd556e33bb87935a";
 const TAG_OBJECT = "0123456789abcdef0123456789abcdef01234567";
 
+// The shared HMAC secret the tests sign/verify the verdict with.  The real
+// key is the GitHub Actions secret MYRMIDON_RELEASE_VERIFICATION_KEY on the
+// release workflow; the tests only need a stable non-empty value.
+const VERIFICATION_KEY = "test-verification-key";
+// Sign exactly as the publish script verifies: HMAC-SHA256 over
+// verdict|deployedVersion|checkedAt|issueId, hex output.
+function signVerdict({ verdict, deployedVersion, checkedAt, issueId, key = VERIFICATION_KEY }) {
+  const canonical = `${verdict}|${deployedVersion}|${checkedAt}|${issueId}`;
+  return spawnSync("openssl", ["dgst", "-sha256", "-hmac", key, "-r"], {
+    input: canonical, encoding: "utf8",
+  }).stdout.trim().split(/\s+/)[0];
+}
+
 const CHANGELOG = `# Myrmidon changelog
 
 ## 1.6.0
@@ -208,22 +221,37 @@ function sandbox({ runs = [], releases = {}, changelog = CHANGELOG, auditReport 
   // Offline digest simulation for release-body.mjs (the same state shape the
   // real registry probe answers): every component present by default.
   const registryState = {};
-  for (const { repository } of COMPONENTS) registryState[repository] = `sha256:${repository.length}${"d".repeat(63)}`;
+  for (const { repository } of COMPONENTS) registryState[repository] = `sha256:${repository.length.toString(16).padStart(64, "d")}`;
   fs.writeFileSync(path.join(dir, "registry-state.json"), JSON.stringify(registryState));
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   fs.writeFileSync(path.join(dir, "mutations.log"), "");
+  // A default verified verdict (confirmed, matching the fake tag commit,
+  // SIGNED with the test HMAC key) so the publish-path tests reach the
+  // publish step; the verification-gate describe block overrides this with
+  // its own files via extraEnv.
+  const defaultVerdict = {
+    verdict: "confirmed",
+    deployedVersion: COMMIT,
+    checkedAt: "2026-11-13T16:00:00Z",
+    issueId: "5f38f2aa-381b-476c-97a8-d8ba190c099b",
+    reason: "all members present",
+  };
+  fs.writeFileSync(path.join(dir, "verification.json"), JSON.stringify({
+    ...defaultVerdict,
+    signature: signVerdict(defaultVerdict),
+  }));
   return { dir, bin };
 }
 
 // head_branch mirrors the GitHub API: for a push of tag myr-vX.Y.Z the runs
 // started by that push report head_branch = the tag; runs of the same commit
 // pushed to main earlier report head_branch = "main".
-const run = (sha, pathOfWf, conclusion, status = "completed", headBranch = "myr-v1.6.0") => ({
-  head_sha: sha, path: pathOfWf, status, conclusion, head_branch: headBranch,
+const run = (sha, pathOfWf, conclusion, status = "completed", headBranch = "myr-v1.6.0", event = "push") => ({
+  head_sha: sha, path: pathOfWf, status, conclusion, head_branch: headBranch, event,
 });
 
-function runScript(sb, tag, { extraEnv = {} } = {}) {
-  const result = spawnSync("bash", [SCRIPT, "--tag", tag], {
+function runScript(sb, tag, { extraEnv = {}, args = [] } = {}) {
+  const result = spawnSync("bash", [SCRIPT, "--tag", tag, ...args], {
     cwd: sb.dir,
     env: {
       ...process.env,
@@ -235,6 +263,16 @@ function runScript(sb, tag, { extraEnv = {} } = {}) {
       MYRMIDON_RELEASE_REGISTRY_STATE: path.join(sb.dir, "registry-state.json"),
       MYRMIDON_RELEASE_POLL_SECONDS: "0",
       MYRMIDON_RELEASE_POLL_MAX: "4",
+      // The verification gate is MANDATORY (OPE-13017): the publish-path
+      // tests below are not about the gate itself, so they carry the
+      // sandbox's default confirmed verdict; the verification-gate describe
+      // block overrides this with its own files via extraEnv. Tests that
+      // exercise the no-verdict refusal clear MYRMIDON_RELEASE_VERIFICATION_RESULT.
+      MYRMIDON_RELEASE_VERIFICATION_RESULT: path.join(sb.dir, "verification.json"),
+      // The HMAC shared secret for the verdict signature (the publish script
+      // refuses to publish without it — fail closed).  Tests that exercise
+      // the missing-key refusal clear this.
+      MYRMIDON_RELEASE_VERIFICATION_KEY: VERIFICATION_KEY,
       // RELEASE-PUBLISH-WAIT: the fake gh's runs-state switch (absent fixtures never read
       // it; 0 = the first runs read already answers "after")
       GH_RUNS_SWITCH_AFTER: "0",
@@ -432,19 +470,43 @@ describe("publish-github-release.sh: the CI gate", () => {
 
   // ---- TAG-CI (the 1.6.4 incident): the tag's own run is the ONLY source of green ----
 
-  it("CI gate no longer accepts the same-commit main run: the publish green comes from the tag's own run only", () => {
-    // 1.6.4 shape: the release commit's main-branch runs are green, but the
-    // tag has no CI run of its own yet (myrmidon-ci-tag.yml still starting).
-    // The old gate passed CI on the main run; the new gate waits for the
-    // TAG run and refuses when it never completes.
+  it("CI gate accepts a green push run of myrmidon-ci.yml of the same commit on a rel branch (CI-TAG-REUSE-BRANCH-RUN)", () => {
+    // The release tag sits on the head of rel/*, whose full CI is green; the
+    // tag has no CI run of its own (it reuses, or has not started yet).
+    const sb = sandbox({ runs: [
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "rel/1.6.6-fixes"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-dockergate.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-fleetd.yml", "success"),
+    ] });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.equal(code, 0, out);
+    assert.match(out, /Myrmidon CI \(branch run of the same commit\) success/);
+    assert.match(mutations(sb), /create tag=myr-v1\.6\.0/);
+  });
+
+  it("a green main-branch push run of the same commit also counts", () => {
     const sb = sandbox({ runs: [
       run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "main"),
       run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-dockergate.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-fleetd.yml", "success"),
     ] });
     const { code, out } = runScript(sb, "myr-v1.6.0");
-    assert.notEqual(code, 0, out);
-    assert.match(out, /no run of Myrmidon CI \(tag\) found|timed out waiting for Myrmidon CI \(tag\)/);
-    assert.equal(mutations(sb), "");
+    assert.equal(code, 0, out);
+  });
+
+  it("a red or pull_request run of myrmidon-ci.yml does not satisfy the gate (the tag run is still required)", () => {
+    for (const ci of [
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "failure", "completed", "rel/1.6.6-fixes"),
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "bot/x", "pull_request"),
+    ]) {
+      const sb = sandbox({ runs: [ci, run(COMMIT, ".github/workflows/myrmidon-image.yml", "success")] });
+      const { code, out } = runScript(sb, "myr-v1.6.0");
+      assert.notEqual(code, 0, out);
+      assert.match(out, /no run of Myrmidon CI \(tag\) found|timed out waiting for Myrmidon CI \(tag\)/);
+      assert.equal(mutations(sb), "");
+    }
   });
 
   it("publishes when the tag's own CI run is green even with no main-branch run at all", () => {
@@ -763,7 +825,7 @@ esac`;
 echo "curl $*" >> "$SANDBOX/calls.log"
 cat "$SANDBOX/health.json"`;
 
-  function promoteSandbox({ releases = {}, compare = { status: "identical", ahead_by: 0 }, health = { status: "ok", version: "1.6.0", commit: COMMIT } } = {}) {
+  function promoteSandbox({ releases = {}, compare = { status: "identical", ahead_by: 0 }, health = { status: "ok", version: "1.6.0", commit: COMMIT }, verifyReport } = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-promote-"));
     const bin = path.join(dir, "bin");
     fs.mkdirSync(bin, { recursive: true });
@@ -776,6 +838,19 @@ cat "$SANDBOX/health.json"`;
     fs.writeFileSync(path.join(dir, "tag-object.json"), JSON.stringify({ object: { sha: COMMIT, type: "commit" } }));
     fs.writeFileSync(path.join(dir, "calls.log"), "");
     fs.writeFileSync(path.join(dir, "mutations.log"), "");
+    if (verifyReport !== undefined) {
+      fs.writeFileSync(path.join(dir, "verify-on-prod.json"), JSON.stringify(verifyReport));
+    } else {
+      // The default sandbox carries a passing report for myr-v1.6.0 so the
+      // pre-existing cases keep exercising the health/tag gates.
+      fs.writeFileSync(path.join(dir, "verify-on-prod.json"), JSON.stringify({
+        version: "1.6.0",
+        label: "1.6",
+        verified: true,
+        checks: [{ name: "production-version", verified: true }, { name: "release-tasks", verified: true }],
+        tasks: [{ identifier: "OPE-1", title: "task", status: "done", verified: true }],
+      }));
+    }
     return { dir, bin };
   }
 
@@ -796,17 +871,61 @@ cat "$SANDBOX/health.json"`;
 
   const FINAL_RELEASE = { "myr-v1.6.0": { name: "Myrmidon 1.6.0", isPrerelease: false, isLatest: false } };
 
-  it("marks the release Latest when the board runs exactly this version", () => {
+  const REPORT = (sb) => path.join(sb.dir, "verify-on-prod.json");
+
+  it("marks the release Latest when the board runs exactly this version and every release task verified", () => {
     const sb = promoteSandbox({ releases: FINAL_RELEASE });
-    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health"]);
+    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health", "--verify-on-prod-report", REPORT(sb)]);
     assert.equal(code, 0, out);
     assert.match(mutations(sb), /edit target=myr-v1\.6\.0 latest=1/);
     assert.match(out, /now the Latest release/);
   });
 
+  it("refuses without the VERIFY-ON-PROD report (health alone is not task proof)", () => {
+    const sb = promoteSandbox({ releases: FINAL_RELEASE });
+    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health"]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /--verify-on-prod-report is required/);
+    assert.equal(mutations(sb), "", "the marker must not move");
+  });
+
+  it("refuses a report whose release tasks are not all verified", () => {
+    const sb = promoteSandbox({
+      releases: FINAL_RELEASE,
+      verifyReport: {
+        version: "1.6.0",
+        label: "1.6",
+        verified: false,
+        checks: [{ name: "production-version", verified: true }, { name: "release-tasks", verified: false }],
+        tasks: [{ identifier: "OPE-1", title: "task", status: "done", verified: true }, { identifier: "OPE-2", title: "task two", status: "in_progress", verified: false }],
+      },
+    });
+    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health", "--verify-on-prod-report", REPORT(sb)]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /not a passing report/);
+    assert.equal(mutations(sb), "", "the marker must not move");
+  });
+
+  it("refuses a report for another version", () => {
+    const sb = promoteSandbox({
+      releases: FINAL_RELEASE,
+      verifyReport: {
+        version: "1.5.0",
+        label: "1.5",
+        verified: true,
+        checks: [{ name: "production-version", verified: true }, { name: "release-tasks", verified: true }],
+        tasks: [{ identifier: "OPE-1", title: "task", status: "done", verified: true }],
+      },
+    });
+    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health", "--verify-on-prod-report", REPORT(sb)]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /not a passing report/);
+    assert.equal(mutations(sb), "");
+  });
+
   it("refuses when the production board runs another version", () => {
     const sb = promoteSandbox({ releases: FINAL_RELEASE, health: { status: "ok", version: "1.5.0", commit: COMMIT } });
-    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health"]);
+    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health", "--verify-on-prod-report", REPORT(sb)]);
     assert.notEqual(code, 0, out);
     assert.match(out, /board runs version 1\.5\.0, not 1\.6\.0/);
     assert.equal(mutations(sb), "", "the marker must not move");
@@ -814,7 +933,7 @@ cat "$SANDBOX/health.json"`;
 
   it("refuses a release candidate tag (an rc is the trial run, never Latest)", () => {
     const sb = promoteSandbox({ releases: { "myr-v1.6.0-rc.1": { name: "Myrmidon 1.6.0-rc.1 (RC 1)", isPrerelease: true } } });
-    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0-rc.1", "--health-url", "http://board/api/health"]);
+    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0-rc.1", "--health-url", "http://board/api/health", "--verify-on-prod-report", REPORT(sb)]);
     assert.notEqual(code, 0, out);
     assert.match(out, /only a final release tag/);
     assert.equal(mutations(sb), "");
@@ -822,7 +941,7 @@ cat "$SANDBOX/health.json"`;
 
   it("refuses a pre-release release object", () => {
     const sb = promoteSandbox({ releases: { "myr-v1.6.0": { name: "Myrmidon 1.6.0", isPrerelease: true } } });
-    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health"]);
+    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health", "--verify-on-prod-report", REPORT(sb)]);
     assert.notEqual(code, 0, out);
     assert.match(out, /is a pre-release/);
     assert.equal(mutations(sb), "");
@@ -830,7 +949,7 @@ cat "$SANDBOX/health.json"`;
 
   it("refuses when the release commit is not on main", () => {
     const sb = promoteSandbox({ releases: FINAL_RELEASE, compare: { status: "ahead", ahead_by: 2 } });
-    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health"]);
+    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health", "--verify-on-prod-report", REPORT(sb)]);
     assert.notEqual(code, 0, out);
     assert.match(out, /not on main/);
     assert.equal(mutations(sb), "");
@@ -838,7 +957,7 @@ cat "$SANDBOX/health.json"`;
 
   it("is idempotent: a release that is already Latest is left alone", () => {
     const sb = promoteSandbox({ releases: { "myr-v1.6.0": { name: "Myrmidon 1.6.0", isPrerelease: false, isLatest: true } } });
-    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health"]);
+    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health", "--verify-on-prod-report", REPORT(sb)]);
     assert.equal(code, 0, out);
     assert.match(out, /already Latest/);
     assert.equal(mutations(sb), "");
@@ -848,7 +967,7 @@ cat "$SANDBOX/health.json"`;
     const sb = promoteSandbox({ releases: FINAL_RELEASE });
     const env = { ...process.env };
     delete env.MYRMIDON_PROD_HEALTH_URL; delete env.HEALTH_URL; delete env.MYRMIDON_PROD_HEALTH_TOKEN_FILE; delete env.HEALTH_TOKEN_FILE;
-    const result = spawnSync("bash", [PROMOTE, "--tag", "myr-v1.6.0"], {
+    const result = spawnSync("bash", [PROMOTE, "--tag", "myr-v1.6.0", "--verify-on-prod-report", REPORT(sb)], {
       cwd: sb.dir,
       env: { ...env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir, GITHUB_REPOSITORY: REPO },
       encoding: "utf8",
@@ -862,27 +981,27 @@ cat "$SANDBOX/health.json"`;
     const sb = promoteSandbox({ releases: FINAL_RELEASE });
     const tokenFile = path.join(sb.dir, "token");
     fs.writeFileSync(tokenFile, "  abc123\n");
-    const withToken = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health", "--health-token-file", tokenFile]);
+    const withToken = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health", "--health-token-file", tokenFile, "--verify-on-prod-report", REPORT(sb)]);
     assert.equal(withToken.code, 0, withToken.out);
     assert.match(read(path.join(sb.dir, "calls.log")), /^curl -fsS --max-time 30 -H Authorization: Bearer abc123 http:\/\/board\/api\/health$/m);
 
     const sb2 = promoteSandbox({ releases: FINAL_RELEASE });
-    const noToken = runPromote(sb2, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health"]);
+    const noToken = runPromote(sb2, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health", "--verify-on-prod-report", REPORT(sb2)]);
     assert.equal(noToken.code, 0, noToken.out);
     assert.doesNotMatch(read(path.join(sb2.dir, "calls.log")), /Authorization/);
 
     const sb3 = promoteSandbox({ releases: FINAL_RELEASE });
     const empty = path.join(sb3.dir, "empty");
     fs.writeFileSync(empty, "\n");
-    const bad = runPromote(sb3, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health", "--health-token-file", empty]);
+    const bad = runPromote(sb3, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health", "--health-token-file", empty, "--verify-on-prod-report", REPORT(sb3)]);
     assert.notEqual(bad.code, 0);
     assert.match(bad.out, /token file is empty/);
     assert.equal(mutations(sb3), "");
   });
 
-  it("--skip-health-check moves the marker with a loud warning (rehearsed promotions only)", () => {
+  it("--skip-health-check moves the marker with a loud warning (rehearsed promotions only; the task report is still required)", () => {
     const sb = promoteSandbox({ releases: FINAL_RELEASE, health: { status: "ok", version: "9.9.9", commit: COMMIT } });
-    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--skip-health-check"]);
+    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--skip-health-check", "--verify-on-prod-report", REPORT(sb)]);
     assert.equal(code, 0, out);
     assert.match(out, /WARNING: --skip-health-check/);
     assert.match(mutations(sb), /edit target=myr-v1\.6\.0 latest=1/);
@@ -925,6 +1044,38 @@ describe("myrmidon-release.yml: the tag input wins over ref_name", () => {
     // The budget (20 s x 240 = 80 min) must stay inside the job's own timeout.
     assert.match(workflow, /timeout-minutes: 90/);
   });
+
+  // VERIFY-ON-PROD (OPE-13017 review): the publish script refuses without the
+  // shared HMAC secret, so the workflow MUST wire it from the repo secrets.
+  it("wires the verification signature secret into the publish step", () => {
+    assert.match(workflow, /MYRMIDON_RELEASE_VERIFICATION_KEY: \$\{\{ secrets\.MYRMIDON_RELEASE_VERIFICATION_KEY \}\}/);
+  });
+
+  // OPE-13017: the workflow must PRODUCE the signed verdict file, not only
+  // verify it: a step runs the fetch CLI against the production board and
+  // hands the file to the publish step via MYRMIDON_RELEASE_VERIFICATION_RESULT.
+  it("fetches the signed verdict from the board before publishing", () => {
+    assert.match(
+      workflow,
+      /node scripts\/myrmidon\/release\/fetch-release-verdict\.mjs/,
+      "the workflow must call the fetch CLI to obtain the signed verdict",
+    );
+    assert.match(
+      workflow,
+      /MYRMIDON_RELEASE_VERIFICATION_RESULT=\$RUNNER_TEMP\/release-verification\.json/,
+      "the fetched verdict file must be handed to the publish step via MYRMIDON_RELEASE_VERIFICATION_RESULT",
+    );
+    assert.match(
+      workflow,
+      /PAPERCLIP_API_KEY: \$\{\{ secrets\.PAPERCLIP_API_KEY \}\}/,
+      "the fetch step must be authenticated against the production board",
+    );
+    // The fetch step must run before the publish step.
+    const fetchIdx = workflow.indexOf("fetch-release-verdict.mjs");
+    const publishIdx = workflow.indexOf("Publish the GitHub Release");
+    assert.ok(fetchIdx !== -1 && publishIdx !== -1 && fetchIdx < publishIdx,
+      "fetch step must precede the publish step");
+  });
 });
 
 // TAG-CI (the 1.6.4 incident): the tag has its own un-cancellable CI run
@@ -952,6 +1103,18 @@ describe("myrmidon-ci-tag.yml: the tag CI is a separate un-cancellable run", () 
     }
     // every lane is mandatory for the result: nothing may skip
     assert.match(workflow, /all\(to_entries\[\]; \.value\.result == "success"\)/);
+  });
+
+  it("reuses the green branch CI run of the same commit: first job decides, lanes are gated, CI result honours the mode (CI-TAG-REUSE-BRANCH-RUN)", () => {
+    assert.match(workflow, /\njobs:\n  reuse-check:/);
+    assert.match(workflow, /tag-ci-reuse\.mjs/);
+    for (const lane of ["typecheck", "build", "tests", "tests-other", "tests-runner", "checks", "fleetd", "dockergate"]) {
+      const m = workflow.match(new RegExp(`\\n  ${lane}:\\n(?:    #[^\\n]*\\n)*    name: [^\\n]*\\n    needs: \\[reuse-check\\]\\n    if: \\$\\{\\{ needs\\.reuse-check\\.outputs\\.mode == 'full' \\}\\}`));
+      assert.ok(m, `lane ${lane} must need reuse-check and run only in full mode`);
+    }
+    assert.match(workflow, /needs: \[reuse-check, typecheck,/);
+    assert.match(workflow, /\.\["reuse-check"\]\.result == "success"/);
+    assert.match(workflow, /\.\["reuse-check"\]\.outputs\.mode == "reuse"/);
   });
 
   it("workflow_dispatch checks out the typed tag (the 1.6.4 manual re-run path)", () => {
@@ -1037,8 +1200,8 @@ describe("release-body.mjs: body construction", () => {
       `## changelog-en\n\n### Huge entry\n\n- ${"x".repeat(130000)}\n`,
     );
     const registryState = {
-      myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b",
-      "myrmidon-fleetd": "sha256:c", "myrmidon-hermes": "sha256:d",
+      myrmidon: `sha256:${"a".repeat(64)}`, "myrmidon-dockergate": `sha256:${"b".repeat(64)}`,
+      "myrmidon-fleetd": `sha256:${"c".repeat(64)}`, "myrmidon-hermes": `sha256:${"d".repeat(64)}`,
     };
     fs.writeFileSync(path.join(dir, "registry-state.json"), JSON.stringify(registryState));
     fs.writeFileSync(path.join(dir, "docs/myrmidon/CHANGELOG.md"), "# Changelog\n");
@@ -1066,8 +1229,8 @@ describe("release-body.mjs: body construction", () => {
       `## changelog-en\n\n### ${"Huge heading ".repeat(11000)}\n\n- entry\n`,
     );
     const registryState = {
-      myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b",
-      "myrmidon-fleetd": "sha256:c", "myrmidon-hermes": "sha256:d",
+      myrmidon: `sha256:${"a".repeat(64)}`, "myrmidon-dockergate": `sha256:${"b".repeat(64)}`,
+      "myrmidon-fleetd": `sha256:${"c".repeat(64)}`, "myrmidon-hermes": `sha256:${"d".repeat(64)}`,
     };
     fs.writeFileSync(path.join(dir, "registry-state.json"), JSON.stringify(registryState));
     fs.writeFileSync(path.join(dir, "docs/myrmidon/CHANGELOG.md"), "# Changelog\n");
@@ -1106,7 +1269,7 @@ describe("release-body.mjs: digest resolution (injected fetch)", () => {
       const repo = /\/v2\/itkadr-git\/([^/]+)\//.exec(url)[1];
       return {
         ok: true,
-        headers: { get: () => `sha256:${repo.length}${"c".repeat(63)}` },
+        headers: { get: () => `sha256:${repo.length.toString(16).padStart(64, "c")}` },
       };
     };
     return componentDigests("1.6.0", { fetchImpl }).then(({ rows, missing }) => {
@@ -1121,7 +1284,7 @@ describe("release-body.mjs: digest resolution (injected fetch)", () => {
   });
 
   it("reports the missing components instead of publishing partial digests", () => {
-    const fetchImpl = registryFetch({ myrmidon: "sha256:x", "myrmidon-hermes": "sha256:y" });
+    const fetchImpl = registryFetch({ myrmidon: `sha256:${"a".repeat(64)}`, "myrmidon-hermes": `sha256:${"b".repeat(64)}` });
     return componentDigests("1.6.0", { fetchImpl }).then(({ rows, missing }) => {
       assert.deepEqual(missing, ["dockergate", "fleetd"]);
       assert.equal(rows.length, 2);
@@ -1153,7 +1316,7 @@ describe("release manifest (release-components.json)", () => {
 
   it("an optional bot variant missing from the registry does not refuse the release", () => {
     const state = {
-      myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b", "myrmidon-fleetd": "sha256:c", "myrmidon-hermes": "sha256:d",
+      myrmidon: `sha256:${"a".repeat(64)}`, "myrmidon-dockergate": `sha256:${"b".repeat(64)}`, "myrmidon-fleetd": `sha256:${"c".repeat(64)}`, "myrmidon-hermes": `sha256:${"d".repeat(64)}`,
     };
     return componentDigests("1.6.2", { registryState: state }).then(({ missing, digests }) => {
       assert.deepEqual(missing, []);
@@ -1173,6 +1336,226 @@ describe("release manifest (release-components.json)", () => {
     assert.equal(manifest.version, "1.6.0");
     assert.deepEqual(Object.keys(manifest.components).sort(), ["board", "dockergate", "fleetd", "hermes"]);
     assert.match(manifest.components.dockergate.digest, /^sha256:/);
+  });
+});
+
+// VERIFY-ON-PROD (OPE-13017): the publish gate binds the release to the
+// immutable verified candidate.  The verification JSON is the SIGNED
+// response of POST /issues/:id/release-verify (OPE-13014): the verdict file
+// carries an HMAC-SHA256 signature over verdict|deployedVersion|checkedAt|
+// issueId, keyed with the shared secret MYRMIDON_RELEASE_VERIFICATION_KEY.
+// An unsigned or wrongly-signed confirmed JSON is FORGED and refuses the
+// publish (OPE-13017 review).
+describe("publish-github-release.sh: the release verification gate (OPE-13017)", () => {
+  const verificationFile = (sb, { verdict = "confirmed", deployedVersion = COMMIT, checkedAt = "2026-11-13T16:00:00Z", issueId = "5f38f2aa-381b-476c-97a8-d8ba190c099b", reason = "all members present", sign = true, key = VERIFICATION_KEY } = {}) => {
+    const file = path.join(sb.dir, "verification.json");
+    const body = { verdict, deployedVersion, checkedAt, issueId, reason };
+    if (sign) {
+      // Sign exactly as the release-verify step does: HMAC-SHA256 over
+      // verdict|deployedVersion|checkedAt|issueId with the given key.
+      body.signature = signVerdict({ verdict, deployedVersion, checkedAt, issueId, key });
+    }
+    fs.writeFileSync(file, JSON.stringify(body));
+    return file;
+  };
+
+  it("publishes with the verification signature when the gate passes (confirmed, matching SHA)", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const vf = verificationFile(sb);
+    const { code, out } = runScript(sb, "myr-v1.6.0", {
+      extraEnv: {
+        MYRMIDON_RELEASE_VERIFICATION_RESULT: vf,
+      },
+    });
+    assert.equal(code, 0, out);
+    assert.match(out, /gate: release verification confirmed/);
+    assert.match(out, /signature verified/);
+    const mut = mutations(sb);
+    assert.match(mut, /create tag=myr-v1\.6\.0/);
+    assert.match(mut, /## Release verification/);
+    assert.match(mut, /Commit: `c78a6c9fde4992a98e5e76d3fd556e33bb87935a`/);
+    assert.match(mut, /Verdict: confirmed/);
+    assert.match(mut, /Checked at: 2026-11-13T16:00:00Z/);
+  });
+
+  it("refuses a forged confirmed JSON — a verdict without a signature is unproven", () => {
+    // The OPE-13017 review gap: a caller could fabricate {verdict: confirmed,
+    // deployedVersion: <sha>} locally and the publisher accepted it.  The
+    // file MUST carry the HMAC signature of the release-verify step.
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const vf = verificationFile(sb, { sign: false });
+    const { code, out } = runScript(sb, "myr-v1.6.0", {
+      extraEnv: { MYRMIDON_RELEASE_VERIFICATION_RESULT: vf },
+    });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /carries NO signature.*NOT publishing/s);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("refuses a forged confirmed JSON — a signature made with the WRONG key does not verify", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const vf = verificationFile(sb, { key: "attacker-key" });
+    const { code, out } = runScript(sb, "myr-v1.6.0", {
+      extraEnv: { MYRMIDON_RELEASE_VERIFICATION_RESULT: vf },
+    });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /signature is INVALID.*NOT publishing/s);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("refuses to publish when the shared verification key is not configured (fail closed)", () => {
+    // No MYRMIDON_RELEASE_VERIFICATION_KEY: the signature cannot be checked,
+    // so the proof is absent — the publish must not proceed.
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const vf = verificationFile(sb);
+    const { code, out } = runScript(sb, "myr-v1.6.0", {
+      extraEnv: {
+        MYRMIDON_RELEASE_VERIFICATION_RESULT: vf,
+        MYRMIDON_RELEASE_VERIFICATION_KEY: "",
+      },
+    });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /MYRMIDON_RELEASE_VERIFICATION_KEY is not set.*NOT publishing/s);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("a signature over a TAMPERED verdict (edited field, original signature) does not verify", () => {
+    // The signer produced a confirmed verdict for COMMIT at T; an attacker
+    // edits a non-binding field (checkedAt) but keeps the ORIGINAL
+    // signature, hoping the file still looks signed.  The publish recomputes
+    // the HMAC over the file's own fields, so the signature no longer
+    // matches and the publish refuses.
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const genuine = { verdict: "confirmed", deployedVersion: COMMIT, checkedAt: "2026-11-13T16:00:00Z", issueId: "5f38f2aa-381b-476c-97a8-d8ba190c099b", reason: "all members present" };
+    const file = path.join(sb.dir, "verification.json");
+    const signature = signVerdict(genuine);
+    fs.writeFileSync(file, JSON.stringify({ ...genuine, checkedAt: "2026-11-13T17:00:00Z", signature }));
+    const { code, out } = runScript(sb, "myr-v1.6.0", {
+      extraEnv: { MYRMIDON_RELEASE_VERIFICATION_RESULT: file },
+    });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /signature is INVALID.*NOT publishing/s);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("refuses to publish without any verification source (the default tag-push invocation)", () => {
+    // The gate is MANDATORY (OPE-13017 acceptance): an ordinary invocation —
+    // no --verification-result, no env, no rehearsal escape — must NOT
+    // publish, even with green tag CI.
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_VERIFICATION_RESULT: "",
+      MYRMIDON_RELEASE_SKIP_VERIFICATION: "",
+    } });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /no release verification result.*NOT publishing/s);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("the deprecated --require-verification flag alone does not satisfy the gate", () => {
+    // Backward compat: the flag from the opt-in era is accepted but the gate
+    // still demands a verdict file.
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_VERIFICATION_RESULT: "",
+      MYRMIDON_RELEASE_SKIP_VERIFICATION: "",
+    }, args: ["--require-verification"] });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /--require-verification is deprecated/);
+    assert.match(out, /no release verification result.*NOT publishing/s);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("refuses to publish when the verification file does not exist", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const missing = path.join(sb.dir, "no-such-file.json");
+    const { code, out } = runScript(sb, "myr-v1.6.0", { args: ["--verification-result", missing] });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /does not exist.*NOT publishing/);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("refuses to publish when the verification verdict is not 'confirmed'", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const vf = verificationFile(sb, { verdict: "failed", reason: "member_missing_from_release" });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { args: ["--verification-result", vf] });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /verdict is 'failed'.*NOT publishing/);
+    assert.match(out, /member_missing_from_release/);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("refuses to publish when the verification deployedVersion does not match the tag commit (different SHA)", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const otherSha = "deadbeefcafebabe0123456789abcdef01234567";
+    const vf = verificationFile(sb, { deployedVersion: otherSha });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { args: ["--verification-result", vf] });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /deployedVersion 'deadbeefcafebabe0123456789abcdef01234567' does not match the tag commit 'c78a6c9fde4992a98e5e76d3fd556e33bb87935a'/);
+    assert.match(out, /NOT publishing/);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("a --verification-result file is always enforced — a wrong-SHA verdict refuses the publish", () => {
+    // The old backward-compat path (a file accepted but not enforced) is
+    // gone: any present file goes through the full gate.
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const otherSha = "deadbeefcafebabe0123456789abcdef01234567";
+    const vf = verificationFile(sb, { deployedVersion: otherSha });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { args: ["--verification-result", vf] });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /does not match the tag commit/);
+    assert.match(out, /NOT publishing/);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("publishes via the MYRMIDON_RELEASE_VERIFICATION_RESULT env var (the pipeline wiring seam)", () => {
+    // The release pipeline passes the verdict file through the env so the
+    // workflow needs no flag changes; the gate runs exactly as with
+    // --verification-result.
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const vf = verificationFile(sb);
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_VERIFICATION_RESULT: vf,
+    } });
+    assert.equal(code, 0, out);
+    assert.match(out, /gate: release verification confirmed/);
+    const mut = mutations(sb);
+    assert.match(mut, /create tag=myr-v1\.6\.0/);
+    assert.match(mut, /## Release verification/);
+  });
+
+  it("the rehearsal escape is a dry run — it validates the pipeline but creates no GitHub Release", () => {
+    // MYRMIDON_RELEASE_SKIP_VERIFICATION=1 (dry runs only): the full
+    // pipeline runs (CI gate, body build) but the script stops before any
+    // mutating gh call — an unverified release must never reach GitHub,
+    // whatever marker its body would carry (OPE-13017 review: the rehearsal
+    // escape must not be able to create or update a GitHub Release).
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_VERIFICATION_RESULT: "",
+      MYRMIDON_RELEASE_SKIP_VERIFICATION: "1",
+    } });
+    assert.equal(code, 0, out);
+    assert.match(out, /WARNING: MYRMIDON_RELEASE_SKIP_VERIFICATION=1/);
+    assert.match(out, /REHEARSAL — NOT PUBLISHING/);
+    assert.match(out, /NO GitHub Release was created or updated/);
+    // the dry-run body is printed for inspection
+    assert.match(out, /rehearsal dry run: the body that would have been published/);
+    // and, critically, NO mutation of GitHub: no release create/edit/upload
+    assert.equal(mutations(sb), "");
+  });
+
+  it("the verification section carries the immutable SHA bind in the release body", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const vf = verificationFile(sb);
+    const { code, out } = runScript(sb, "myr-v1.6.0", { args: ["--require-verification", "--verification-result", vf] });
+    assert.equal(code, 0, out);
+    const mut = mutations(sb);
+    // the body contains the exact commit SHA as the verification anchor
+    assert.match(mut, /Commit: `c78a6c9fde4992a98e5e76d3fd556e33bb87935a`/);
+    // and a board issue reference for traceability
+    assert.match(mut, /Board issue: 5f38f2aa-381b-476c-97a8-d8ba190c099b/);
   });
 });
 

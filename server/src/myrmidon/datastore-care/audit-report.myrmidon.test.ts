@@ -359,6 +359,39 @@ describe("myrmidon(DBC-4) audit criteria", () => {
     expect(criterion(fast, "growth-24h").verdict).toBe("warn");
   });
 
+  it("does not evaluate the growth criterion on a window shorter than one hour", () => {
+    // Right after a board restart the snapshot interval can be near zero; a
+    // tiny delta over a near-zero window used to inflate into a fake "+N %"
+    // daily growth warning on every rollout.
+    const previous = payload({
+      capturedAt: "2026-11-13T08:00:00.000Z",
+      databaseBytes: 1_000_000_000,
+    });
+
+    const short = evaluateCriteria(
+      payload({ capturedAt: "2026-11-13T08:30:00.000Z", databaseBytes: 1_000_920_000 }),
+      previous,
+    );
+    const shortGrowth = criterion(short, "growth-24h");
+    expect(shortGrowth.verdict).toBe("unknown");
+    expect(shortGrowth.value).toContain("0.5 ч");
+    expect(shortGrowth.detail).toContain("меньше 1 ч");
+
+    // Zero-length window (same timestamp) must not divide by zero either.
+    const zero = evaluateCriteria(
+      payload({ capturedAt: "2026-11-13T08:00:00.000Z", databaseBytes: 1_000_920_000 }),
+      previous,
+    );
+    expect(criterion(zero, "growth-24h").verdict).toBe("unknown");
+
+    // Exactly one hour is evaluable again.
+    const oneHour = evaluateCriteria(
+      payload({ capturedAt: "2026-11-13T09:00:00.000Z", databaseBytes: 1_001_000_000 }),
+      previous,
+    );
+    expect(criterion(oneHour, "growth-24h").verdict).toBe("ok");
+  });
+
   it("reports the missing top queries instead of pretending they are healthy", () => {
     const criteria = evaluateCriteria(
       payload({ statStatementsAvailable: false, topQueries: [], topQueriesTotalMs: 0 }),

@@ -47,6 +47,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { attentionRoutes } from "../routes/attention.js";
 import { attentionService, listRoleModelDownSince } from "../services/attention.js";
+import { hostDiskRuntime } from "../myrmidon/host-disk/index.js";
 import { listAttentionExhaustedRuns } from "../services/attention-exhausted-runs.js";
 import { agentService } from "../services/agents.js";
 import { ingestCloneReport, resetCloneHygieneStateForTests } from "../myrmidon/bot-containers/clone-hygiene.js";
@@ -73,7 +74,7 @@ describeEmbeddedPostgres("attention service", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-attention-service-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(inboxDismissals);
@@ -115,6 +116,32 @@ describeEmbeddedPostgres("attention service", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("shows one production bot partition card below 10% and clears it on recovery", async () => {
+    const { companyId } = await seedCompany();
+    const runtime = hostDiskRuntime(db).partition;
+    const measure = (freeBytes: number) => ({
+      mount: "/bots", totalBytes: 1000, usedBytes: 800, freeBytes,
+      usedPercent: 80, at: new Date().toISOString(),
+    });
+    try {
+      await runtime.updateFromPartition(measure(100));
+      let feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
+      expect(feed.items.filter((item) => item.dedupKey === "host_disk:partition:/bots")).toHaveLength(0);
+      await runtime.updateFromPartition(measure(99));
+      await runtime.updateFromPartition(measure(98));
+      feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
+      const cards = feed.items.filter((item) => item.dedupKey === "host_disk:partition:/bots");
+      expect(cards).toHaveLength(1);
+      expect(cards[0]?.severity).toBe("critical");
+      expect(cards[0]?.whyNow).toContain("less than 10% free space");
+      await runtime.updateFromPartition(measure(100));
+      feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
+      expect(feed.items.filter((item) => item.dedupKey === "host_disk:partition:/bots")).toHaveLength(0);
+    } finally {
+      runtime.markUnmeasured();
+    }
   });
 
   async function seedCompany(prefix = "ATN") {

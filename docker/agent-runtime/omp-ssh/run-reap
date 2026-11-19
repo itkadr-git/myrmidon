@@ -1,0 +1,86 @@
+#!/bin/sh
+set -eu
+
+target="${1:-}"
+if [ -z "$target" ]; then
+  echo "Usage: run-reap <task_dir>" >&2
+  exit 1
+fi
+
+if [ ! -d "$target" ]; then
+  echo "Stopped 0 process(es)"
+  exit 0
+fi
+
+# Canonical resolved directory without trailing slash
+target_real="$(cd "$target" 2>/dev/null && pwd -P || realpath "$target" 2>/dev/null || readlink -f "$target" 2>/dev/null || true)"
+target_real="${target_real%/}"
+target_raw="${target%/}"
+
+if [ -z "$target_real" ] || [ "$target_real" = "/" ] || [ "$target_raw" = "/" ]; then
+  echo "run-reap: invalid target directory: '$target'" >&2
+  exit 1
+fi
+
+my_pid="$$"
+parent_pid="${PPID:-0}"
+
+scan() {
+  for d in /proc/[0-9]*; do
+    [ -d "$d" ] || continue
+    pid="${d#/proc/}"
+    [ "$pid" = "1" ] && continue
+    [ "$pid" = "$my_pid" ] && continue
+    [ "$pid" = "$parent_pid" ] && continue
+
+    if [ -r "$d/comm" ]; then
+      comm=$(cat "$d/comm" 2>/dev/null || true)
+      [ "$comm" = "sshd" ] && continue
+    fi
+
+    if [ -e "$d/cwd" ]; then
+      proc_cwd=$(readlink "$d/cwd" 2>/dev/null || true)
+      case "$proc_cwd" in
+        "$target_real" | "$target_real"/* | "$target_raw" | "$target_raw"/*)
+          printf '%s ' "$pid"
+          ;;
+      esac
+    fi
+  done
+}
+
+first="$(scan)"
+if [ -z "$first" ]; then
+  echo "Stopped 0 process(es)"
+  exit 0
+fi
+
+# Send SIGTERM
+kill -TERM $first 2>/dev/null || true
+
+left="$first"
+waited=0
+while [ "$waited" -lt 5 ]; do
+  sleep 1
+  waited=$((waited + 1))
+  left="$(scan)"
+  [ -z "$left" ] && break
+done
+
+if [ -n "$left" ]; then
+  kill -KILL $left 2>/dev/null || true
+  sleep 1
+  left="$(scan)"
+  if [ -n "$left" ]; then
+    kill -KILL $left 2>/dev/null || true
+    sleep 1
+    left="$(scan)"
+  fi
+fi
+
+set -- $first
+found=$#
+set -- $left
+survivors=$#
+stopped=$((found - survivors))
+echo "Stopped $stopped process(es)"

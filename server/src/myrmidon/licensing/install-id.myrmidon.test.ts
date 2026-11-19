@@ -71,7 +71,7 @@ describeEmbeddedPostgres("installation id in the database", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-install-id-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(myrmidonInstallIdentity);

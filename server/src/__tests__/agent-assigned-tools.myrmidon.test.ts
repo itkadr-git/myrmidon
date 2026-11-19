@@ -39,7 +39,7 @@ describeEmbeddedPostgres("agent-assigned tool set matches the heartbeat digest a
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-agent-assigned-tools-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     if (originalApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;

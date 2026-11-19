@@ -260,7 +260,7 @@ describe("P6-25 pre-result native session recovery", () => {
         leaseExpiresAt: new Date(0),
       })),
     ]);
-  }, 30_000);
+  }, 60_000);
 
   afterAll(async () => temporary?.cleanup());
 
@@ -952,7 +952,7 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
           authorUserId: "responsible-user",
           body: "Verify the newest user instruction before completing this task.",
         });
-    }, 30_000);
+    }, 60_000);
 
     afterAll(async () => {
       if (

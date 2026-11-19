@@ -64,7 +64,7 @@ describeEmbeddedPostgres("tokens-trace persist compaction path (OPE-10727)", () 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-tokens-trace-persist-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   beforeEach(async () => {
     companyId = randomUUID();

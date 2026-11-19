@@ -83,7 +83,7 @@ describeEmbeddedPostgres("environment leases on cancel, pause and sweep (P1)", (
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-myrmidon-leases-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   const leaseStatusAtPromotion: Array<{ runId: string; statuses: string[] }> = [];
 

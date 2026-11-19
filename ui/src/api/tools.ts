@@ -5,6 +5,12 @@ import type {
   ComposioServicesResponse,
 } from "@/pages/apps/composio-services";
 import type {
+  ToolComplaint,
+  ToolComplaintStatus,
+  ToolComplaintsFeedResponse,
+} from "@myrmidon/shared";
+import { agentsApi, type AgentPermissionUpdate } from "@/api/agents";
+import type {
   ToolApplication,
   ToolConnection,
   ToolConnectionInstall,
@@ -80,6 +86,14 @@ import { api } from "./client";
  */
 
 export type ToolApplicationsResponse = { applications: ToolApplication[] };
+// myrmidon(1.7 TOOL-COMPLAINTS-UI, OPE-12229): re-exported for the complaints
+// panel consumers that read the complaint contracts off the tools API client.
+export type {
+  ToolComplaint,
+  ToolComplaintStatus,
+  ToolComplaintThresholdWarning,
+  ToolComplaintsFeedResponse,
+} from "@myrmidon/shared";
 export type ToolConnectionsResponse = { connections: ToolConnection[] };
 export type ToolCatalogResponse = { catalog: ToolCatalogEntry[] };
 export type ToolRuntimeSlotsResponse = { runtimeSlots: ToolRuntimeSlot[] };
@@ -603,4 +617,27 @@ export const toolsApi = {
         `/tool-gateway/audit?companyId=${encodeURIComponent(companyId)}&window=30d&limit=${Math.min(limit, 100)}`,
       )
       .then((res) => res.events),
+
+  // --- Tool complaints (myrmidon(1.7 TOOL-COMPLAINTS-UI, OPE-12229)) ---
+  /** The company's complaint feed plus one threshold warning per tool. */
+  listComplaints: (companyId: string) =>
+    api.get<ToolComplaintsFeedResponse>(
+      `/myrmidon/tool-complaints?companyId=${encodeURIComponent(companyId)}`,
+    ),
+  /** Triage one complaint through its lifecycle (acknowledge / resolve). */
+  updateComplaint: (companyId: string, id: string, status: ToolComplaintStatus) =>
+    api.patch<ToolComplaint>(
+      `/myrmidon/tool-complaints/${encodeURIComponent(id)}?companyId=${encodeURIComponent(companyId)}`,
+      { status },
+    ),
+  /**
+   * "Disable tool for agent": the complaints panel calls the agent's
+   * EXISTING permissions endpoint — the same one the agent card uses — with
+   * the tool removed from its toolAccess listing. No side path.
+   */
+  disableComplaintTool: (
+    agentId: string,
+    update: AgentPermissionUpdate,
+    companyId?: string,
+  ) => agentsApi.updatePermissions(agentId, update, companyId),
 };

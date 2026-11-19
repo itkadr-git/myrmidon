@@ -185,18 +185,87 @@ describe("BudgetLimitsScreenView — the limit tree", () => {
 });
 
 describe("BudgetLimitsScreenView — in-place editing", () => {
-  it("saves an edited amount for the row's level and ref", () => {
+  it("saves an edited amount within 10% growth for the row's level and ref", () => {
     const { onSaveLimit } = render({ limits: [COMPANY] });
-    setInput(byTestId<HTMLInputElement>("budget-limits-amount-nest:company"), "750");
+    setInput(byTestId<HTMLInputElement>("budget-limits-amount-nest:company"), "525");
     setSelect(byTestId<HTMLSelectElement>("budget-limits-mode-nest:company"), "hard");
     flushSync(() => byTestId<HTMLButtonElement>("budget-limits-save-nest:company").click());
 
     expect(onSaveLimit).toHaveBeenCalledWith("nest", "company", {
-      amountCents: 75000,
+      amountCents: 52500,
       period: "calendar_month_utc",
       mode: "hard",
       isActive: true,
     });
+  });
+
+  it("requires confirmation when limit grows by 50%, then saves once on confirm", () => {
+    const { onSaveLimit } = render({ limits: [COMPANY] });
+    setInput(byTestId<HTMLInputElement>("budget-limits-amount-nest:company"), "750");
+    flushSync(() => byTestId<HTMLButtonElement>("budget-limits-save-nest:company").click());
+
+    expect(onSaveLimit).not.toHaveBeenCalled();
+    expect(row("nest:company").textContent).toContain("Limit increases by 50%: from $500.00 to $750.00");
+
+    const confirmButton = byTestId<HTMLButtonElement>("budget-limits-confirm-nest:company");
+    expect(confirmButton.textContent).toBe("Confirm");
+    expect(byTestId<HTMLButtonElement>("budget-limits-cancel-nest:company").textContent).toBe("Cancel");
+
+    flushSync(() => confirmButton.click());
+    expect(onSaveLimit).toHaveBeenCalledTimes(1);
+    expect(onSaveLimit).toHaveBeenCalledWith("nest", "company", {
+      amountCents: 75000,
+      period: "calendar_month_utc",
+      mode: "soft",
+      isActive: true,
+    });
+  });
+
+  it("cancelling growth confirmation sends nothing and restores saved row state", () => {
+    const { onSaveLimit } = render({ limits: [COMPANY] });
+    setInput(byTestId<HTMLInputElement>("budget-limits-amount-nest:company"), "750");
+    flushSync(() => byTestId<HTMLButtonElement>("budget-limits-save-nest:company").click());
+
+    expect(onSaveLimit).not.toHaveBeenCalled();
+    flushSync(() => byTestId<HTMLButtonElement>("budget-limits-cancel-nest:company").click());
+
+    expect(onSaveLimit).not.toHaveBeenCalled();
+    expect(byTestId<HTMLInputElement>("budget-limits-amount-nest:company").value).toBe("500.00");
+    expect(container.querySelector("[data-testid='budget-limits-confirm-nest:company']")).toBeNull();
+  });
+
+  it("saves immediately without confirmation for 5% growth, 10% growth, decrease, 0 prior limit, or mode-only change", () => {
+    const { onSaveLimit } = render({
+      limits: [
+        COMPANY,
+        limit({ level: "caste", ref: "zero", amountCents: 0 }),
+      ],
+    });
+
+    // 5% growth (500 -> 525)
+    setInput(byTestId<HTMLInputElement>("budget-limits-amount-nest:company"), "525");
+    flushSync(() => byTestId<HTMLButtonElement>("budget-limits-save-nest:company").click());
+    expect(onSaveLimit).toHaveBeenCalledTimes(1);
+
+    // 10% exact growth (500 -> 550)
+    setInput(byTestId<HTMLInputElement>("budget-limits-amount-nest:company"), "550");
+    flushSync(() => byTestId<HTMLButtonElement>("budget-limits-save-nest:company").click());
+    expect(onSaveLimit).toHaveBeenCalledTimes(2);
+
+    // Decrease (500 -> 400)
+    setInput(byTestId<HTMLInputElement>("budget-limits-amount-nest:company"), "400");
+    flushSync(() => byTestId<HTMLButtonElement>("budget-limits-save-nest:company").click());
+    expect(onSaveLimit).toHaveBeenCalledTimes(3);
+
+    // Period/mode change only (amount unchanged)
+    setSelect(byTestId<HTMLSelectElement>("budget-limits-period-nest:company"), "lifetime");
+    flushSync(() => byTestId<HTMLButtonElement>("budget-limits-save-nest:company").click());
+    expect(onSaveLimit).toHaveBeenCalledTimes(4);
+
+    // Prior limit 0 -> 100
+    setInput(byTestId<HTMLInputElement>("budget-limits-amount-caste:zero"), "100");
+    flushSync(() => byTestId<HTMLButtonElement>("budget-limits-save-caste:zero").click());
+    expect(onSaveLimit).toHaveBeenCalledTimes(5);
   });
 
   it("creates the limit of a row that has none", () => {

@@ -37,7 +37,7 @@ describePg("decision retention", () => {
         target: instanceSettings.singletonKey,
         set: { general: { devflowHealth: { enabled: false } } },
       });
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(decisionArchiveNotificationOutbox);

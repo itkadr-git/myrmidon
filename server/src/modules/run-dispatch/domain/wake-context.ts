@@ -59,6 +59,22 @@ export function isNonAssigneeWorkspaceBusyRetry(
   );
 }
 
+/** myrmidon(OPE-13231): the run context key of a strict-release-focus deferral. */
+export const RELEASE_FOCUS_DEFERRAL_CONTEXT_KEY = "releaseFocusDeferral";
+
+/**
+ * True for a run parked by strict release focus. Its wake did not execute under
+ * assignee-ship (a mention or comment of a non-assignee), so the scheduled-retry
+ * gate must not read the mismatch as a reassignment; the deferral also writes no
+ * "became due" event, because it re-parks itself on every recheck.
+ */
+export function isReleaseFocusDeferral(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+): boolean {
+  const entry = contextSnapshot?.[RELEASE_FOCUS_DEFERRAL_CONTEXT_KEY];
+  return typeof entry === "object" && entry !== null;
+}
+
 export function extractWakeCommentIds(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ): string[] {

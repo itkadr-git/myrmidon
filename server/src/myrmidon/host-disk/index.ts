@@ -9,7 +9,6 @@ import { type HostDiskSweepResult } from "./state.js";
 import { partitionClientFromEnv } from "./dockergate.js";
 import { botPartitionThresholdRuntime } from "./partition.js";
 import { hostRootThresholdRuntime } from "./root.js";
-import { createOwnerTelegramNotifier } from "./owner-notify.js";
 
 /**
  * Entry point of the host disk signal (myrmidon BOT-DISK, part E).
@@ -45,12 +44,10 @@ export {
   hostRootThresholdRuntime,
   hostRootThresholdRuntimeForTest,
   resetHostRootThresholdRuntime,
-  HOST_ROOT_REPEAT_INTERVAL_MS,
 } from "./root.js";
 export type {
   HostRootThresholdRuntime,
   HostRootThresholdState,
-  HostRootNotifyInput,
 } from "./root.js";
 
 export interface HostDiskRuntime {
@@ -100,18 +97,11 @@ function createRuntime(db: Db, options: HostDiskRuntimeOptions = {}): HostDiskRu
   // with neither the client stays null and the sweep behaves as part E shipped it.
   const partitionClient = partitionClientFromEnv(env);
   const partitionRuntime = botPartitionThresholdRuntime(db, {
-    notifyOwner: createOwnerTelegramNotifier(db, {
-      listCompanyIds: () => settings.listCompanyIds(),
-    }),
     env,
   });
-  // myrmidon(1.6.8 OPE-12697, DISK-ALERT): the host root signal. The same
-  // Telegram outbox, the dedup rule lives in the runtime: at most once per
-  // hour per level. The notifier dispatches on the settings shape.
+  // myrmidon(1.6.8 OPE-12697, DISK-ALERT): the host root signal. Card only:
+  // the board does not message the owner, monitoring is the alert channel.
   const rootRuntime = hostRootThresholdRuntime(db, {
-    notify: createOwnerTelegramNotifier(db, {
-      listCompanyIds: () => settings.listCompanyIds(),
-    }),
     env,
   });
   const sweep = createHostDiskSweep({
@@ -120,6 +110,7 @@ function createRuntime(db: Db, options: HostDiskRuntimeOptions = {}): HostDiskRu
     resolveSettings: () => resolveSweepSettings(settingsPort, env),
     logActivity: (entry) => logActivity(db, entry),
     lastSignalAt: store.lastSignalAt,
+    listCompanyIds: () => settings.listCompanyIds(),
     logger,
     partitionClient,
     partitionRuntime,

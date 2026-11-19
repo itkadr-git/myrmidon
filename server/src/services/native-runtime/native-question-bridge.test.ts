@@ -62,7 +62,7 @@ describeEmbeddedPostgres("native question bridge", () => {
     temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-question-");
     db = createDb(temporary.connectionString);
     heartbeat = heartbeatService(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     // A cancelled or reaped run can promote and dispatch its agent's next

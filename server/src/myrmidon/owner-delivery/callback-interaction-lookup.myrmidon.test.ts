@@ -36,7 +36,7 @@ describeEmbeddedPostgres("callback interaction lookup (U2)", () => {
       "paperclip-u2-callback-lookup-",
     );
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();

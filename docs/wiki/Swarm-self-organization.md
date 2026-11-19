@@ -79,3 +79,9 @@ Three actions:
 - **The swarm is off.** Check the switch in "Instance → General →
   Self-organization (swarm)" — the journal on the same panel shows the last
   settings change and who made it.
+
+## Current-release focus and owner assignments
+
+When `general.runPriority.currentRelease` is set and the company has an open, visible issue with that exact label (case-insensitive, surrounding whitespace ignored), swarm matching and idle pickup exclude other release labels. Review participation is unaffected. This exact-label filter is separate from the run-priority scoring substring comparison.
+
+An explicit assignment by a board user is an exception only when the latest assignment audit record names the current agent and no later swarm claim exists. Automatic assignments do not qualify. Legacy assignments without matching audit evidence fail closed while focus is active: to restore the exception, a board user must explicitly reassign the issue (unassign it first if necessary so an assignment change is recorded). Once no current-release issues remain open, the filter no longer applies.

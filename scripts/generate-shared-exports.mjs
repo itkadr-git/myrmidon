@@ -38,19 +38,37 @@ export function generateBarrelContent(customRepoRoot) {
 
   // 1. Files in packages/shared/src/myrmidon/ (excluding index.ts and tests)
   if (existsSync(myrmidonDir)) {
-    const myrmidonDirEntries = readdirSync(myrmidonDir)
+    const myrmidonDirEntries = readdirSync(myrmidonDir, { withFileTypes: true })
       .filter(
         (f) =>
-          f.endsWith(".ts") &&
-          f !== "index.ts" &&
-          !f.endsWith(".test.ts") &&
-          !f.endsWith(".d.ts"),
+          f.isFile() &&
+          f.name.endsWith(".ts") &&
+          f.name !== "index.ts" &&
+          !f.name.endsWith(".test.ts") &&
+          !f.name.endsWith(".d.ts"),
       )
+      .map((f) => f.name)
       .sort();
 
     for (const f of myrmidonDirEntries) {
       const mod = f.replace(/\.ts$/, ".js");
       exports.push({ specifier: `./${mod}`, statement: `export * from "./${mod}";` });
+    }
+
+    // 1b. Subdirectory barrels: packages/shared/src/myrmidon/<dir>/index.ts
+    const subdirEntries = readdirSync(myrmidonDir, { withFileTypes: true })
+      .filter((f) => f.isDirectory())
+      .map((f) => f.name)
+      .sort();
+
+    for (const dir of subdirEntries) {
+      const barrelFile = join(myrmidonDir, dir, "index.ts");
+      if (existsSync(barrelFile)) {
+        exports.push({
+          specifier: `./${dir}/index.js`,
+          statement: `export * from "./${dir}/index.js";`,
+        });
+      }
     }
   }
 

@@ -38,7 +38,9 @@ type Line struct {
 	Field     string `json:"field,omitempty"`
 	FieldLen  int    `json:"fieldLen,omitempty"`
 	FieldHash string `json:"fieldHash,omitempty"`
-	// Detail is a fixed-vocabulary hint.
+	// Detail is a fixed-vocabulary hint. The one exception is
+	// disk_project_remove_failed, where it carries a bounded, single-line
+	// rendering of the removal error so the cause stays in the log.
 	Detail string `json:"detail,omitempty"`
 
 	UpstreamStatus int   `json:"upstreamStatus,omitempty"`

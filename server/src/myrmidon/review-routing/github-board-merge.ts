@@ -21,13 +21,14 @@
 // refused request is never retried inside the call. A fetch failure NEVER
 // guesses: it is `ok: false` and the caller does nothing this pass.
 
-import { and, eq, isNull } from "drizzle-orm";
-import { companySecrets, type Db } from "@myrmidon/db";
+import { and, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
+import { companySecrets, connectionEventDeliveries, type Db } from "@myrmidon/db";
 import type { ReviewRoutingBoardMergeMethod } from "@myrmidon/shared";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../../services/git-credentials.js";
 import { invalidateGitHubPullRequestCache } from "../../services/github-external-object-provider.js";
 import { gitHubApiBase } from "../../services/github-fetch.js";
 import { isGitHubRateLimited, recordGitHubRequest } from "../../services/github-rate-limit.js";
+import { withGitHubReviewBudget } from "../../services/github-review-budget.js";
 import { secretService } from "../../services/secrets.js";
 import { mintGitHubAppInstallationToken, type GitHubAppPermissions } from "../github-shared-identity/app-token.js";
 import { isRepositoryAllowed, normalizeGitHubRepository } from "../github-shared-identity/settings.js";
@@ -48,7 +49,7 @@ export type BoardMergeOutcome =
   /** The head moved since it was read: GitHub refused to merge a different commit (409). */
   | { status: "head_moved" }
   /** GitHub says the PR is not mergeable as it stands (405 / 422): required checks, protection, method. */
-  | { status: "refused"; httpStatus: number }
+  | { status: "refused"; httpStatus: number; /** myrmidon(OPE-13136): GitHub's own message, when it sent one. */ message?: string | null }
   /** No token, network, auth or rate limit: nothing happened. */
   | { status: "failed"; reason: string };
 
@@ -84,6 +85,12 @@ const NOT_A_VERDICT_CONCLUSIONS: ReadonlySet<string> = new Set(["cancelled", "sk
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+/** myrmidon(OPE-13136): GitHub's `message` of a refused merge, bounded for the activity log. */
+function refusalMessage(body: Record<string, unknown> | null): string | null {
+  const message = asString(body?.message);
+  return message ? message.slice(0, 500) : null;
 }
 
 function asString(value: unknown): string | null {
@@ -210,7 +217,10 @@ export function createGitHubBoardMergeClient(input: {
   tokenProvider?: (companyId: string, repository: string) => Promise<string | null>;
   hostname?: string;
 }): BoardMergeClient {
-  const fetchImpl: FetchLike = input.fetch ?? ((url, init) => fetch(url, init));
+  const transport: FetchLike = input.fetch ?? ((url, init) => fetch(url, init));
+  // myrmidon(OPE-13942): the board merge spends the same hourly App budget as the review readers; it is
+  // counted in the shared counter and gets the higher share, so review traffic stops first.
+  const fetchImpl: FetchLike = input.db ? withGitHubReviewBudget(input.db, "board-merge", transport) : transport;
   const apiBase = gitHubApiBase(input.hostname ?? "github.com");
   const tokenProvider =
     input.tokenProvider ??
@@ -393,14 +403,49 @@ export function createGitHubBoardMergeClient(input: {
       if (response.status === 401) forgetToken(companyId, repository);
       if (response.ok) {
         const body = asRecord(await response.json().catch(() => null));
-        if (body && body.merged === false) return { status: "refused", httpStatus: response.status };
+        if (body && body.merged === false) return { status: "refused", httpStatus: response.status, message: refusalMessage(body) };
         // myrmidon(OPE-12397): the provider's cached read of this PR still says "open".
         invalidateGitHubPullRequestCache(repository, number);
         return { status: "merged", sha: asString(body?.sha) };
       }
       if (response.status === 409) return { status: "head_moved" };
-      if (response.status === 405 || response.status === 422) return { status: "refused", httpStatus: response.status };
+      if (response.status === 405 || response.status === 422) {
+        // myrmidon(OPE-13136): keep GitHub's reason ("Required status check ... is expected"), it is the only clue.
+        const body = asRecord(await response.json().catch(() => null));
+        return { status: "refused", httpStatus: response.status, message: refusalMessage(body) };
+      }
       return { status: "failed", reason: `http_${response.status}` };
     },
+  };
+}
+
+/**
+ * myrmidon(OPE-13942): from the webhook receipts of the last 30 minutes — is any check run of this head
+ * still queued / waiting / requested (its newest event, per check run, is not `completed`)? Reads the
+ * board's own table, no GitHub request. No webhook about the head is "not known": false.
+ */
+export function createWebhookQueuedChecksReader(db: Db) {
+  return async (input: { companyId: string; repository: string; number: number; headSha: string }): Promise<boolean> => {
+    const rows = await db.select({
+      createdAt: connectionEventDeliveries.createdAt,
+      payload: connectionEventDeliveries.normalizedPayload,
+    }).from(connectionEventDeliveries).where(and(
+      eq(connectionEventDeliveries.companyId, input.companyId),
+      eq(connectionEventDeliveries.provider, "github"),
+      eq(connectionEventDeliveries.status, "processed"),
+      eq(connectionEventDeliveries.event, "check_run"),
+      gte(connectionEventDeliveries.createdAt, new Date(Date.now() - 30 * 60_000)),
+      sql`${connectionEventDeliveries.normalizedPayload}->>'headSha' = ${input.headSha}`,
+      sql`lower(${connectionEventDeliveries.normalizedPayload}->>'repository') = lower(${input.repository})`,
+    )).orderBy(desc(connectionEventDeliveries.createdAt)).limit(300);
+    const latest = new Map<string, string>();
+    for (const row of rows) {
+      const payload = asRecord(row.payload);
+      const id = asString(payload?.runId);
+      const status = asString(payload?.status);
+      if (!id || !status || latest.has(id)) continue; // newest first: the first seen is the latest
+      latest.set(id, status);
+    }
+    return [...latest.values()].some((status) => status === "queued" || status === "waiting" || status === "requested" || status === "pending");
   };
 }

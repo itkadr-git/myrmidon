@@ -34,7 +34,7 @@ describeEmbeddedPostgres("budget-limit admission against the real service (1.7 B
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-budget-limits-admission-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(litellmCostEvents);

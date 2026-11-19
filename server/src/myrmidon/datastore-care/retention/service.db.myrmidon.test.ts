@@ -14,6 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, companies, createDb } from "@myrmidon/db";
+import { eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -290,6 +291,35 @@ describeEmbeddedPostgres("myrmidon(1.6.5-F14B) retention pass gate report in set
       expect(lastRun.cursors?.[companyId]).toEqual({ createdAt: "2026-10-01T00:00:00.000Z", id: "uuid-1" });
       expect(datastoreRetentionMetrics.read().consecutiveTimeouts).toBe(0);
       expect(datastoreRetentionMetrics.read().timeoutsTotal).toBe(3);
+
+      // OPE-13146: the pass writes exactly one activity row per company per
+      // hourly bucket — a second pass within the same hour accumulates into
+      // the existing row instead of adding a new one.
+      const actionRows = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "datastore.retention_applied"));
+      expect(actionRows).toHaveLength(1);
+      const firstDetails = actionRows[0]!.details as Record<string, unknown>;
+      expect(firstDetails.compactedRows).toBe(50);
+      expect(firstDetails.freedBytes).toBe(1000);
+
+      passSpy.mockResolvedValueOnce({
+        compacted: 30,
+        freedBytes: 500,
+        timedOut: false,
+        perCompany: [{ companyId, compacted: 30, freedBytes: 500 }],
+        cursors: { [companyId]: { createdAt: "2026-10-01T00:00:00.000Z", id: "uuid-1" } },
+      });
+      await runtime.runOnce();
+      const actionRowsAfter = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "datastore.retention_applied"));
+      expect(actionRowsAfter).toHaveLength(1);
+      const mergedDetails = actionRowsAfter[0]!.details as Record<string, unknown>;
+      expect(mergedDetails.compactedRows).toBe(80);
+      expect(mergedDetails.freedBytes).toBe(1500);
     } finally {
       loggerWarnSpy.mockRestore();
       loggerErrorSpy.mockRestore();

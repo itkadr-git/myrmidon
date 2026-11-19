@@ -604,8 +604,82 @@ export async function terminateLocalService(
   throw new Error(`Failed to terminate local service ${target}${listener}`);
 }
 
-export async function readLocalServicePortOwner(port: number) {
-  if (!Number.isInteger(port) || port <= 0) return null;
+let lsofAvailableCache: boolean | null = null;
+
+export function resetLsofAvailabilityForTests() {
+  lsofAvailableCache = null;
+}
+
+export async function isLsofAvailable(): Promise<boolean> {
+  if (lsofAvailableCache !== null) return lsofAvailableCache;
+  try {
+    await execFileAsync("lsof", ["-v"]);
+    lsofAvailableCache = true;
+  } catch (error: any) {
+    if (error?.code === "ENOENT" || error?.code === 127 || error?.status === 127) {
+      lsofAvailableCache = false;
+    } else {
+      // Non-zero exit code or other error means binary exists
+      lsofAvailableCache = true;
+    }
+  }
+  return lsofAvailableCache;
+}
+
+async function readLinuxProcPortOwner(port: number): Promise<number | null> {
+  if (process.platform !== "linux") return null;
+  const wantHex = port.toString(16).toUpperCase().padStart(4, "0");
+  const targetInodes = new Set<string>();
+
+  for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+    try {
+      const content = await fs.readFile(table, "utf8");
+      for (const line of content.split("\n").slice(1)) {
+        const cols = line.trim().split(/\s+/);
+        if (cols.length < 10) continue;
+        const lastColon = cols[1]?.lastIndexOf(":");
+        if (lastColon === -1 || lastColon === undefined) continue;
+        const portHex = cols[1].slice(lastColon + 1).toUpperCase();
+        if (portHex !== wantHex) continue;
+        if (cols[3] !== "0A") continue;
+        const inode = cols[9];
+        if (inode && inode !== "0") {
+          targetInodes.add(inode);
+        }
+      }
+    } catch {
+      // proc table unreadable or missing
+    }
+  }
+
+  if (targetInodes.size === 0) return null;
+
+  try {
+    const entries = await fs.readdir("/proc");
+    for (const entry of entries) {
+      if (!/^\d+$/.test(entry)) continue;
+      const pid = Number.parseInt(entry, 10);
+      if (!Number.isInteger(pid) || pid <= 0) continue;
+      try {
+        const fds = await fs.readdir(`/proc/${entry}/fd`);
+        for (const fd of fds) {
+          try {
+            const link = await fs.readlink(`/proc/${entry}/fd/${fd}`);
+            const match = link.match(/^socket:\[(\d+)\]$/);
+            if (match?.[1] && targetInodes.has(match[1])) {
+              return pid;
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+  } catch {}
+
+  return null;
+}
+
+export async function readLocalServicePortOwner(port: number): Promise<number | null> {
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) return null;
   try {
     if (process.platform === "win32") {
       const { stdout } = await execFileAsync("netstat", ["-ano", "-p", "tcp"]);
@@ -623,12 +697,46 @@ export async function readLocalServicePortOwner(port: number) {
       }
       return null;
     }
-    const { stdout } = await execFileAsync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"]);
-    const firstPid = stdout
-      .split("\n")
-      .map((line) => Number.parseInt(line.trim(), 10))
-      .find((value) => Number.isInteger(value) && value > 0);
-    return firstPid ?? null;
+
+    if (process.platform === "linux") {
+      if (lsofAvailableCache !== false) {
+        try {
+          const { stdout } = await execFileAsync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"]);
+          lsofAvailableCache = true;
+          const firstPid = stdout
+            .split("\n")
+            .map((line) => Number.parseInt(line.trim(), 10))
+            .find((value) => Number.isInteger(value) && value > 0);
+          return firstPid ?? null;
+        } catch (error: any) {
+          if (error?.code === "ENOENT" || error?.code === 127 || error?.status === 127) {
+            lsofAvailableCache = false;
+          } else {
+            lsofAvailableCache = true;
+            return null;
+          }
+        }
+      }
+      return await readLinuxProcPortOwner(port);
+    }
+
+    if (lsofAvailableCache === false) return null;
+    try {
+      const { stdout } = await execFileAsync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"]);
+      lsofAvailableCache = true;
+      const firstPid = stdout
+        .split("\n")
+        .map((line) => Number.parseInt(line.trim(), 10))
+        .find((value) => Number.isInteger(value) && value > 0);
+      return firstPid ?? null;
+    } catch (error: any) {
+      if (error?.code === "ENOENT" || error?.code === 127 || error?.status === 127) {
+        lsofAvailableCache = false;
+        return null;
+      }
+      lsofAvailableCache = true;
+      return null;
+    }
   } catch {
     return null;
   }

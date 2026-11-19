@@ -22,7 +22,8 @@
 //    registers the runtime for the card's "Apply now" (routes-wiring.ts).
 //  - the container image builder and docker-compose network (G1).
 
-import type { Db } from "@myrmidon/db";
+import { heartbeatRuns, type Db } from "@myrmidon/db";
+import { and, eq } from "drizzle-orm";
 import { laneInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 PROCS-0.3A)
 import { maintenanceHeartbeatPort, maintenanceService } from "../maintenance/index.js";
 import { heartbeatService } from "../../services/index.js";
@@ -37,6 +38,7 @@ import type { BotContainerAgentConfig } from "./agent-config.js";
 import type { SharedMountSettings } from "@myrmidon/shared";
 import { botKeyLock, type BotKeyLock } from "./bot-key-lock.js";
 import type { BotContainerDriver } from "./driver.js";
+import { readAgentLiveRunActivity } from "../run-stall/sweep.js";
 import { isBotSkillBackimportEnabled } from "./skill-backimport.js";
 import { createDbBotSkillBackimportPorts } from "./skill-backimport-ports.js";
 import { containerOomRecorder } from "./container-oom-store.js";
@@ -93,7 +95,11 @@ export interface BotMaintenanceServiceSlice {
  */
 export function botMaintenancePortFromService(
   service: BotMaintenanceServiceSlice,
-  options: { sleep?: (ms: number) => Promise<void> } = {},
+  options: {
+    sleep?: (ms: number) => Promise<void>;
+    /** myrmidon(BOT-PROFILE-NO-RUN-INTERRUPT): live count of the agent's running runs (window-independent). */
+    activeRuns?: (agentId: string) => Promise<number>;
+  } = {},
 ): BotMaintenancePort {
   const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   return {
@@ -130,6 +136,7 @@ export function botMaintenancePortFromService(
     async exit(agentId, reason): Promise<void> {
       await service.exit({ type: "agent", id: agentId }, BOT_CONTAINER_ACTOR, reason);
     },
+    ...(options.activeRuns ? { activeRuns: options.activeRuns } : {}),
   };
 }
 
@@ -138,6 +145,16 @@ export function botMaintenancePortFromService(
 export function realBotMaintenancePort(db: Db): BotMaintenancePort {
   return botMaintenancePortFromService(
     maintenanceService(db, { heartbeat: maintenanceHeartbeatPort(heartbeatService(db)) }),
+    {
+      // myrmidon(BOT-PROFILE-NO-RUN-INTERRUPT): the run table, not a window's view.
+      activeRuns: async (agentId) => {
+        const rows = await db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "running")));
+        return rows.length;
+      },
+    },
   );
 }
 
@@ -282,6 +299,14 @@ export interface ApplyBotContainerOptions {
    * company-scoped reads behind the profiles are paid once per sweep.
    */
   pass?: BotProfilePass;
+  /**
+   * myrmidon(BOT-PROFILE-NO-RUN-INTERRUPT): true = a change that has to stop the
+   * gateway may drain and interrupt this agent's running run (the old behaviour).
+   * Default false: a running run is never touched, the pass is `deferred` and the
+   * deferred-rollout watcher retries it. Only the watcher past its soft timeout
+   * sets it.
+   */
+  drainBusy?: boolean;
 }
 
 /**
@@ -342,6 +367,9 @@ export async function applyBotContainerNow(
       driver: deps.driver,
       maintenance: deps.maintenance,
       activity: deps.activity,
+      busyPolicy: opts.drainBusy ? "drain" : "defer",
+      // myrmidon(OPE-13119): an unhealthy container with a live run waits.
+      ...(deps.db ? { readLiveRunActivity: (id: string) => readAgentLiveRunActivity(deps.db!, id) } : {}),
       // myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the catalog ports are
       // built per pass, bound to the agent's company; the flag itself is read
       // inside the reconciler (off = nothing here is touched). An agent whose
@@ -778,7 +806,8 @@ export function startBotContainerReconciliation(
         await runDeferredRolloutWatcher(deps.db, {
           maintenance: deps.maintenance,
           activity: deps.activity,
-          applyNow: (agent, applyOpts) => applyBotContainerNow(agent, deps, { env: opts.env, force: applyOpts.force }),
+          applyNow: (agent, applyOpts) =>
+            applyBotContainerNow(agent, deps, { env: opts.env, force: applyOpts.force, drainBusy: applyOpts.drainBusy }),
           readAgent: (agentId) =>
             deps.readAgent
               ? deps.readAgent(agentId)

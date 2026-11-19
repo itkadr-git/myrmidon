@@ -67,7 +67,26 @@ export interface BotMaintenancePort {
   enter(agentId: string, reason: string, drainTimeoutSec: number): Promise<MaintenanceEnterResult>;
   status(agentId: string): Promise<MaintenanceWindowView>;
   exit(agentId: string, reason: string): Promise<void>;
+  /**
+   * myrmidon(BOT-PROFILE-NO-RUN-INTERRUPT): the number of this agent's runs in
+   * flight RIGHT NOW, read from the run table and independent of any window.
+   * `status` cannot answer it: it reports the runs of an open window and says 0
+   * when there is none. Optional: a port without it (tests, fleetd wiring)
+   * keeps the drain-then-apply behaviour.
+   */
+  activeRuns?(agentId: string): Promise<number>;
 }
+
+/**
+ * How a change that has to stop the gateway treats this agent's running work.
+ *  - "defer" (the default of every sweep, canary, "Apply now", rotation): a
+ *    running run is never touched — the pass returns `deferred` without opening
+ *    a window, and the deferred-rollout watcher retries once the run ended.
+ *  - "drain": the old behaviour — open the window, wait for the run to drain,
+ *    interrupt it at the drain deadline. Used only by the watcher after the
+ *    soft timeout (a bot that never frees up must still converge).
+ */
+export type BotBusyPolicy = "defer" | "drain";
 
 export interface BotContainerActivitySink {
   record(entry: {
@@ -97,6 +116,22 @@ export interface ReconcileBotInput {
   maintenanceDrainTimeoutSec?: number;
   /** Test hook: replaces the real delay between drain polls. */
   sleep?: (ms: number) => Promise<void>;
+  /** myrmidon(BOT-PROFILE-NO-RUN-INTERRUPT): see {@link BotBusyPolicy}. Default "drain"
+   *  here; applyBotContainerNow passes "defer" unless the caller asks to drain. */
+  busyPolicy?: BotBusyPolicy;
+  /**
+   * myrmidon(OPE-13119): newest recorded progress (run event, output, useful
+   * action) across the agent's running runs, null when it has no running run.
+   * With it, an unhealthy container whose run progressed less than
+   * `liveRunGraceSec` ago is not recovered this pass (see the unhealthy branch).
+   * Absent = an unhealthy container is always recovered, as before.
+   */
+  readLiveRunActivity?: (agentId: string) => Promise<Date | null>;
+  /** Seconds of run silence after which an unhealthy container is recovered
+   *  anyway. Default {@link DEFAULT_HEALTH_LIVE_RUN_GRACE_SEC}. */
+  liveRunGraceSec?: number;
+  /** Test hook: the clock. */
+  now?: () => Date;
   /**
    * myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the company catalog side
    * of the bot-skill back-import, with the company this agent belongs to.
@@ -122,6 +157,15 @@ export type ReconcileOutcome =
   | { kind: "error"; message: string };
 
 export const DEFAULT_MAINTENANCE_DRAIN_TIMEOUT_SEC = 300;
+/** myrmidon(OPE-13119): an unhealthy container whose run wrote progress within this many seconds waits. */
+export const DEFAULT_HEALTH_LIVE_RUN_GRACE_SEC = 120;
+
+/** `MYRMIDON_BOT_HEALTH_LIVE_RUN_GRACE_SEC`: seconds, default 120; `0` switches the wait off; garbage keeps the default. */
+export function resolveHealthLiveRunGraceSec(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.MYRMIDON_BOT_HEALTH_LIVE_RUN_GRACE_SEC?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return DEFAULT_HEALTH_LIVE_RUN_GRACE_SEC;
+  return Math.min(Number(raw), 86_400);
+}
 const DRAIN_POLL_INTERVAL_MS = 2_000;
 /** How much longer than the drain timeout the reconciler keeps polling before
  *  giving up: R3's own tick (already running server-wide, started by
@@ -156,10 +200,18 @@ async function withAgentPaused(
     drainTimeoutSec: number;
     sleep: (ms: number) => Promise<void>;
     activity: BotContainerActivitySink;
+    /** myrmidon(BOT-PROFILE-NO-RUN-INTERRUPT): true = a run in flight means defer, never drain. */
+    deferWhenBusy?: boolean;
   },
   apply: () => Promise<void>,
 ): Promise<PausedResult> {
   const { agentId, botKey, reason, maintenance, drainTimeoutSec, sleep, activity } = params;
+  const busyReason = "the agent has a run in flight; the update is deferred until it ends";
+  // Cheap check before the window: a window pauses the agent's admission, which a
+  // busy agent does not need just to be told "later".
+  if (params.deferWhenBusy && maintenance.activeRuns && (await maintenance.activeRuns(agentId)) > 0) {
+    return { kind: "deferred", reason: busyReason };
+  }
   const entered = await maintenance.enter(agentId, reason, drainTimeoutSec);
   if (!entered.owned) {
     return {
@@ -168,6 +220,12 @@ async function withAgentPaused(
     };
   }
   try {
+    // The race the check above cannot close: a run admitted between it and the
+    // window. Re-read under the window (admission is paused from here on, so the
+    // answer cannot change upwards): a run found now is deferred, not drained.
+    if (params.deferWhenBusy && maintenance.activeRuns && (await maintenance.activeRuns(agentId)) > 0) {
+      return { kind: "deferred", reason: busyReason };
+    }
     const drain = await waitForZeroRunning(maintenance, agentId, drainTimeoutSec, sleep);
     if (drain.chatPreempted) {
       // myrmidon(CHAT-FIRST, OPE-3638): the owner started a chat turn inside
@@ -411,6 +469,19 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
       }
     }
 
+    // myrmidon(OPE-13119): Docker's probe times out under host load while the
+    // run still writes events; recovering then kills a live run. Wait one pass.
+    if (status.state === "unhealthy" && input.busyPolicy === "defer" && input.readLiveRunActivity) {
+      const graceSec = input.liveRunGraceSec ?? resolveHealthLiveRunGraceSec(input.env ?? process.env);
+      const lastAt = graceSec > 0 ? await input.readLiveRunActivity(agentId) : null;
+      const nowMs = (input.now ?? (() => new Date()))().getTime();
+      if (lastAt && nowMs - lastAt.getTime() < graceSec * 1000) {
+        const silentSec = Math.max(0, Math.round((nowMs - lastAt.getTime()) / 1000));
+        await info("health recovery deferred: live run", { silentSec, graceSec, state: status.state });
+        return { kind: "deferred", reason: "the container is unhealthy but its run is alive; recovery is retried on a later pass" };
+      }
+    }
+
     // Live container and the gateway has to go down: template drift, a
     // restart-class change, or Docker's health check gave up on it.
     const reason = drifted
@@ -418,7 +489,11 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
       : status.state === "unhealthy"
         ? `bot container health recovery (${botKey})`
         : `bot container profile update (${botKey})`;
-    const result = await withAgentPaused({ agentId, botKey, reason, maintenance, drainTimeoutSec, sleep, activity }, async () => {
+    const result = await withAgentPaused(
+      { agentId, botKey, reason, maintenance, drainTimeoutSec, sleep, activity, // An unhealthy gateway is recovered, not deferred: its "run" may be what is stuck.
+        deferWhenBusy: input.busyPolicy === "defer" && status.state !== "unhealthy",
+      },
+      async () => {
       if (drifted) {
         // Resource-only drift on a live container: update in place, then the
         // restart below still runs (restart-class change or unhealthy state).
@@ -435,7 +510,8 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
       }
       if (changeClass !== "none") await driver.writeProfile(botKey, profile);
       await driver.restart(botKey); // resolves once the gateway reports healthy, or throws
-    });
+      },
+    );
     // The window's own reason is what maintenance.enter received; the deferred
     // record's `reason` is the outcome explanation, so they carry different keys.
     const trigger = applyTrigger(status.state, drifted, changeClass);

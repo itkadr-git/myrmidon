@@ -4,12 +4,14 @@
 import { describe, expect, it } from "vitest";
 import {
   BUDGET_LIMIT_AMOUNT_MAX_CENTS,
+  BUDGET_LIMIT_GROWTH_CONFIRM_PERCENT,
   budgetLimitKey,
   buildBudgetLimitTree,
   centsToAmountText,
   flattenBudgetLimitTree,
   formatCents,
   levelLabelKey,
+  limitGrowthPercent,
   modeLabelKey,
   nodeRefText,
   parseAmountToCents,
@@ -93,6 +95,32 @@ describe("centsToAmountText / parseAmountToCents", () => {
       ok: true,
       cents: BUDGET_LIMIT_AMOUNT_MAX_CENTS,
     });
+  });
+});
+
+describe("limitGrowthPercent", () => {
+  it("computes the rounded percentage increase when next is larger than positive previous", () => {
+    expect(limitGrowthPercent(10000, 10999)).toBe(9.99);
+    expect(limitGrowthPercent(10000, 11000)).toBe(10);
+    expect(limitGrowthPercent(10000, 11001)).toBe(10.01);
+    expect(limitGrowthPercent(1000, 1500)).toBe(50);
+    expect(limitGrowthPercent(1000, 1050)).toBe(5);
+  });
+
+  it("returns null when previous limit is zero, negative, or not provided", () => {
+    expect(limitGrowthPercent(0, 10000)).toBeNull();
+    expect(limitGrowthPercent(-100, 10000)).toBeNull();
+    expect(limitGrowthPercent(null, 10000)).toBeNull();
+    expect(limitGrowthPercent(undefined, 10000)).toBeNull();
+  });
+
+  it("returns null on decrease or when amount stays the same", () => {
+    expect(limitGrowthPercent(10000, 5000)).toBeNull();
+    expect(limitGrowthPercent(10000, 10000)).toBeNull();
+  });
+
+  it("exports the threshold constant as 10%", () => {
+    expect(BUDGET_LIMIT_GROWTH_CONFIRM_PERCENT).toBe(10);
   });
 });
 

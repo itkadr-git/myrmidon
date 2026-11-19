@@ -40,6 +40,10 @@
 //   gateway_remote_close_done in the run-close ledger) are not probed again
 //   within the TTL: a gateway run id is never resurrected, so the answer
 //   cannot change.
+// - myrmidon(OPE-12964): an `unreachable` probe ends the pass. The remaining
+//   rows would answer the same, and the run start must not wait on up to 64
+//   sequential timeouts against a dark gateway. unreachable is never
+//   remembered, so the next pass retries.
 
 import { and, eq, gte, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { agents, heartbeatRunEvents, heartbeatRuns, type Db } from "@myrmidon/db";
@@ -351,9 +355,11 @@ export async function reconcileGatewaySlotsFromRows(
       continue;
     }
     if (probe.state === "unreachable") {
-      // Best-effort: an unreachable gateway must not block run starts.
+      // Best-effort: an unreachable gateway must not block run starts. The
+      // remaining rows would answer the same, so the pass ends here instead of
+      // paying one timeout per row (OPE-12964).
       result.unreachable += 1;
-      continue;
+      break;
     }
 
     // probe.state === "live": the gateway still occupies a slot for a run the

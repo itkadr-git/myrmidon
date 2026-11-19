@@ -3,6 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   createDb,
@@ -48,7 +49,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-dispatch-postgres-adapter-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(activityLog);
@@ -60,6 +61,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -521,6 +523,46 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
   });
 
   describe("cancelStaleQueuedRun", () => {
+    it("durably preserves monitor intent for the current reviewer when cancelling a stale run", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const reviewer = randomUUID();
+      await seedAgent({ id: reviewer, companyId, name: "Current reviewer" });
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_review", assigneeAgentId: agentId,
+        executionState: { status: "pending", currentStageId: randomUUID(), currentStageIndex: 0,
+          currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewer, userId: null },
+          returnAssignee: { type: "agent", agentId, userId: null }, reviewRequest: null,
+          completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null } });
+      const runId = await seedRun({ companyId, agentId, contextSnapshot: { issueId, wakeReason: "issue_monitor_due" } });
+      const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        companyId, runId, expectedStatus: "queued", now: new Date(),
+      });
+      expect(outcome).toMatchObject({ outcome: "cancelled", errorCode: "issue_review_participant_changed" });
+      const wakes = await db.select().from(agentWakeupRequests);
+      expect(wakes).toMatchObject([{ agentId: reviewer, status: "deferred_issue_execution",
+        reason: "issue_monitor_due", payload: { issueId, wakeReason: "issue_monitor_due" } }]);
+    });
+
+    it("does not duplicate a deferred reviewer wake when cancelling a stale monitor", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const reviewer = randomUUID();
+      await seedAgent({ id: reviewer, companyId, name: "Current reviewer" });
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_review", assigneeAgentId: agentId,
+        executionState: { status: "pending", currentStageId: randomUUID(), currentStageIndex: 0,
+          currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewer, userId: null },
+          returnAssignee: { type: "agent", agentId, userId: null }, reviewRequest: null,
+          completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null } });
+      await db.insert(agentWakeupRequests).values({ companyId, agentId: reviewer, source: "automation",
+        triggerDetail: "system", reason: "execution_review_requested", status: "deferred_issue_execution",
+        payload: { issueId } });
+      const runId = await seedRun({ companyId, agentId, contextSnapshot: { issueId, wakeReason: "issue_monitor_due" } });
+      expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        companyId, runId, expectedStatus: "queued", now: new Date(),
+      })).toMatchObject({ outcome: "cancelled", errorCode: "issue_review_participant_changed" });
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+    });
+
     it.each([
       { label: "chat source", source: "chat:slack", expected: "chat:slack" },
       {
@@ -595,6 +637,25 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0]);
     expect(persisted).toMatchObject({ status: "cancelled", errorCode: "queued_run_stale_timeout" });
     expect(persisted?.error).toContain("30 minutes");
+  });
+
+  // myrmidon(RESUME-AFTER-CANCEL): an old queued run of a paused agent waits for
+  // the resume; it is not expired, so no replacement wake is attempted.
+  it("does not expire an old queued run of a paused agent, and expires it once the agent is resumed", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    await db.update(agents).set({ status: "paused", pauseReason: "manual" }).where(eq(agents.id, agentId));
+    const now = new Date();
+    const runId = await seedRun({ companyId, agentId, now: new Date(now.getTime() - 31 * 60 * 1000) });
+    const input = { runId, companyId, expectedStatus: "queued" as const, staleAfterMs: 30 * 60 * 1000, now };
+
+    expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun(input)).toMatchObject({ outcome: "not_stale" });
+    const held = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0]);
+    expect(held?.status).toBe("queued");
+
+    await db.update(agents).set({ status: "idle", pauseReason: null }).where(eq(agents.id, agentId));
+    expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun(input)).toMatchObject({
+      outcome: "cancelled", errorCode: "queued_run_stale_timeout",
+    });
   });
 
   it("maps a reassigned issue into a stale queued-run decision", async () => {

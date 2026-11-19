@@ -965,6 +965,12 @@ describe("renderPaperclipWakePrompt", () => {
     };
     const ordinary = renderPaperclipWakePrompt(payload, { resumedSession: true });
     expect(ordinary).toContain("Execution contract:");
+    expect(ordinary).toContain("the board resumes a task in progress by itself");
+    expect(ordinary).toContain("set it only when you stop working on it");
+    expect(ordinary).toContain("set `blocked` with a named unblock owner/action, not `in_progress`");
+    expect(ordinary).toContain("Open the pull request at your first push on the task, at once: a draft while the work is not finished");
+    expect(ordinary).toContain("run `gh pr ready` and move the task to `in_review` with a reviewer");
+    expect(ordinary).not.toContain("only when a live continuation path exists");
     expect(ordinary).toContain("Create child issues from the approved plan");
     for (const resumedSession of [false, true]) {
       const chat = renderPaperclipWakePrompt(payload, {
@@ -1463,7 +1469,13 @@ describe("renderPaperclipWakePrompt", () => {
       "evidence, not valid liveness paths by themselves",
     );
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "keep `in_progress` only when a live continuation path exists",
+      "leave the issue `in_progress`: the board resumes a task in progress by itself",
+    );
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
+      "`todo` puts the issue back into the queue, so set it only when you stop working on it",
+    );
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
+      "do not end the heartbeat after the first piece of work if you can keep going in this same heartbeat",
     );
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
       "Prefer the smallest verification that proves the change",
@@ -3031,6 +3043,76 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Direct child issue summaries:");
     expect(prompt).toContain("PAP-101 Implement helper (done)");
     expect(prompt).toContain("Added the helper route and tests.");
+  });
+});
+
+describe("starter pack in the wake prompt (OPE-13086)", () => {
+  const STARTER_HEADER = "Starter pack (start here; do not re-explore the project):";
+  const basePayload = {
+    reason: "issue_assigned",
+    issue: {
+      id: "issue-1",
+      identifier: "PAP-200",
+      title: "Do the work",
+      status: "in_progress",
+      priority: "medium",
+      description: "Task description text.",
+    },
+    continuationSummary: {
+      key: "continuation-summary",
+      title: "Continuation Summary",
+      body: "# Continuation Summary\n\n## Next Action\n\n- Keep going.",
+      updatedAt: "2026-04-18T12:00:00.000Z",
+    },
+  };
+
+  it("renders the starter pack before the continuation summary and the task blocks", () => {
+    const prompt = renderPaperclipWakePrompt({
+      ...basePayload,
+      starterPack: {
+        key: "starter-pack",
+        title: "Starter pack",
+        body: "Files: server/src/a.ts\nRun: pnpm test a",
+        updatedAt: "2026-04-18T12:00:00.000Z",
+      },
+    });
+    expect(prompt).toContain(STARTER_HEADER);
+    expect(prompt).toContain("Files: server/src/a.ts");
+    expect(prompt.indexOf(STARTER_HEADER)).toBeGreaterThanOrEqual(0);
+    expect(prompt.indexOf(STARTER_HEADER)).toBeLessThan(
+      prompt.indexOf("Issue continuation summary:"),
+    );
+    expect(prompt.indexOf(STARTER_HEADER)).toBeLessThan(
+      prompt.indexOf("Issue description:"),
+    );
+    expect(prompt).not.toContain("[starter pack truncated]");
+  });
+
+  it("leaves the prompt unchanged when there is no starter pack", () => {
+    const without = renderPaperclipWakePrompt(basePayload);
+    expect(without).not.toContain("Starter pack");
+    expect(renderPaperclipWakePrompt({ ...basePayload, starterPack: null })).toBe(without);
+    expect(renderPaperclipWakePrompt({ ...basePayload, starterPack: { body: "   " } })).toBe(without);
+  });
+
+  it("does not repeat the starter pack body in the structured wake JSON", () => {
+    const json = stringifyPaperclipWakePayload({
+      ...basePayload,
+      starterPack: { key: "starter-pack", title: "Starter pack", body: "UNIQUE-PACK-BODY ".repeat(400) },
+    });
+    expect(json).not.toBeNull();
+    expect(json).not.toContain("UNIQUE-PACK-BODY");
+    expect(JSON.parse(json ?? "{}").starterPack).toBeNull();
+    expect(json).toContain("Keep going.");
+  });
+
+  it("truncates a 9000 character starter pack body to 8000 with a marker", () => {
+    const prompt = renderPaperclipWakePrompt({
+      ...basePayload,
+      starterPack: { key: "starter-pack", title: "Starter pack", body: "a".repeat(9_000) },
+    });
+    expect(prompt).toContain(`${"a".repeat(8_000)}\n[starter pack truncated]`);
+    expect(prompt).not.toContain("a".repeat(8_001));
   });
 });
 

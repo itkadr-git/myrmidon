@@ -114,6 +114,7 @@ import { extractReleasePrefix } from "../myrmidon/board-janitor/policy.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { assertTaskCardReady } from "../myrmidon/task-card-readiness/guard.js";
 import { requiresEngineer } from "../myrmidon/swarm-claim/requires-engineer.js";
+import { isLargeEngineeringTask } from "../myrmidon/plan-gate/large-task.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import {
@@ -133,7 +134,10 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
   type ParsedExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
-import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
+import {
+  archiveSharedExecutionWorkspacesForTerminalIssue,
+  mergeExecutionWorkspaceConfig,
+} from "./execution-workspaces.js";
 import { hasChatRunOwnedProviderInteraction } from "./chat-interaction-arbitration.js";
 import { readChatControlChronology } from "./chat-control-chronology.js";
 import { authorizeChatConversationForBoundRun } from "./native-runtime/chat-attachment-reuse.js";
@@ -1917,6 +1921,26 @@ type IssueUserContextInput = {
 type ProjectGoalReader = Pick<Db, "select">;
 type DbReader = Pick<Db, "select">;
 /** Conversation containers cannot acquire new child edges, even with the experiment disabled. */
+async function assertIssueParentDoesNotCreateCycle(db: Db, companyId: string, issueId: string, parentId: string | null | undefined) {
+  if (!parentId) return;
+  if (parentId === issueId) throw unprocessable("Issue parent cannot be itself");
+  const [cycle] = await db.select({ id: issues.id }).from(issues).where(and(
+    eq(issues.companyId, companyId),
+    sql<boolean>`exists (
+      with recursive descendants(id, path, depth) as (
+        select ${issues.id}::text, array[${issues.id}::text], 0
+        from ${issues} where ${issues.companyId} = ${companyId} and ${issues.id} = ${issueId}
+        union all
+        select child.id::text, descendants.path || child.id::text, descendants.depth + 1
+        from ${issues} child join descendants on child.parent_id::text = descendants.id
+        where child.company_id = ${companyId} and descendants.depth < 1000
+          and not child.id::text = any(descendants.path)
+      ) select 1 from descendants where id = ${parentId}
+    )`,
+  ));
+  if (cycle) throw unprocessable("An issue cannot be parented to one of its descendants");
+}
+/** Conversation containers cannot acquire new child edges, even with the experiment disabled. */
 async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: string | null) {
   if (!parentId) return;
   const [parent] = await db.select({ conversationAgentId: issues.conversationAgentId })
@@ -2051,6 +2075,34 @@ export type ChildIssueCompletionSummary = {
 function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   if (actorRunId) return checkoutRunId === actorRunId;
   return checkoutRunId == null;
+}
+
+/**
+ * myrmidon(OPE-12887): the stranded auto-policy's `disposition_blocked`
+ * handoff — the issue carries its own execution workflow, so the assignee
+ * stays and a `blocked` row with complete recovery metadata and the nearest
+ * lead as the blocker owner is written (`buildStrandedDispositionBlockedPatch`
+ * in `../myrmidon/stranded-autopolicy.ts`).
+ *
+ * That blocked row is a *recovery ownership* transfer to the lead, not a real
+ * pause: the lead is expected to act on the wake and the issue must be
+ * checkout-able by them (its `expectedStatuses` include `blocked`). Before
+ * this recognition, the lead's checkout hit the normal assignee guard — the
+ * stranded executor is still `assigneeAgentId` — and surfaced as an
+ * ownerless 409 ("another agent owns <task>"), leaving the recovery
+ * ownership stranded: the executor is not woken, the lead cannot take the
+ * issue, the operator must intervene manually.
+ */
+function isRecoveryDispositionBlocked(issue: {
+  status: string | null;
+  blockerMetadata: unknown;
+  unblockDescriptor: unknown;
+}): boolean {
+  if (issue.status !== "blocked") return false;
+  const metadata = issue.blockerMetadata as { blockReason?: unknown; owner?: unknown } | null | undefined;
+  if (metadata?.blockReason !== "recovery") return false;
+  const owner = metadata.owner as { agentId?: unknown } | null | undefined;
+  return typeof owner?.agentId === "string" && owner.agentId.length > 0 && issue.unblockDescriptor != null;
 }
 
 export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set([
@@ -10302,6 +10354,27 @@ export function issueService(db: Db) {
         }
 
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
+        const createLabelNames = inputLabelIds && inputLabelIds.length > 0
+          ? await tx
+              .select({ name: labels.name })
+              .from(labels)
+              .where(and(eq(labels.companyId, companyId), inArray(labels.id, inputLabelIds)))
+              .then((rows) => rows.map((row) => row.name))
+          : [];
+        if (
+          !initialPlan?.trim() &&
+          !issueData.workMode &&
+          (issueData.status === undefined || issueData.status === "backlog" || issueData.status === "todo") &&
+          isLargeEngineeringTask({
+            labels: createLabelNames,
+            assigneeAgentRole: issueData.assigneeAgentId
+              ? await tx.select({ role: agents.role }).from(agents).where(and(eq(agents.id, issueData.assigneeAgentId), eq(agents.companyId, companyId))).then((rows) => rows[0]?.role ?? null)
+              : null,
+            casteKey: issueData.casteKey ?? null,
+          })
+        ) {
+          issueData.workMode = "planning";
+        }
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
         let executionWorkspacePreference =
@@ -11270,6 +11343,7 @@ export function issueService(db: Db) {
         : null;
       if (data.parentId !== undefined && data.parentId !== existing.parentId) {
         await assertExecutionTaskParent(dbOrTx, existing.companyId, data.parentId);
+        await assertIssueParentDoesNotCreateCycle(dbOrTx, existing.companyId, id, data.parentId);
       }
       // 1.6.5 (F-27 rework 09.10): validate a changed caste against the
       // company's directory (design §2.1); null clears to the defaults.
@@ -11738,6 +11812,10 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        if (existing.status !== "done" && updated.status === "done") {
+          const { moveAutoSliceChildrenToEpic } = await import("../myrmidon/swarm-claim/auto-slice-children.js");
+          await moveAutoSliceChildrenToEpic(tx, updated);
+        }
         if (updated.assigneeAgentId !== existing.assigneeAgentId || updated.assigneeUserId !== existing.assigneeUserId) {
           const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
           await issueThreadInteractionService(tx).expireConnectionIntentsForOwnershipChange(updated);
@@ -11782,6 +11860,7 @@ export function issueService(db: Db) {
             }
           }
           if (updated.status === "done" || updated.status === "cancelled") {
+            await archiveSharedExecutionWorkspacesForTerminalIssue(tx, updated);
             await finalizeSummarySlotsForTerminalIssue(tx, updated);
             // myrmidon(DEFERRED-WAKE-LEAK): cancel all deferred executions for terminal issue
             await cancelDeferredExecutionsForTerminalIssue(
@@ -11889,6 +11968,23 @@ export function issueService(db: Db) {
             await finalizeStatusCardsForStalledGeneration(tx, updated);
           }
         }
+        // myrmidon(OPE-13081): plan gate on update. Cheap checks first; the DB
+        // lookups run only for a not-started task whose labels or assignee really changed.
+        const planGateCandidate =
+          updated.workMode === "standard" &&
+          (updated.status === "backlog" || updated.status === "todo");
+        let planGateLabelsChanged = false;
+        if (planGateCandidate && nextLabelIds !== undefined) {
+          const previousLabelIds = await tx
+            .select({ labelId: issueLabels.labelId })
+            .from(issueLabels)
+            .where(and(eq(issueLabels.companyId, existing.companyId), eq(issueLabels.issueId, updated.id)))
+            .then((rows: Array<{ labelId: string }>) => rows.map((row: { labelId: string }) => row.labelId));
+          const nextSet = new Set(nextLabelIds);
+          planGateLabelsChanged =
+            previousLabelIds.length !== nextSet.size ||
+            previousLabelIds.some((labelId: string) => !nextSet.has(labelId));
+        }
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(
             updated.id,
@@ -11896,6 +11992,32 @@ export function issueService(db: Db) {
             nextLabelIds,
             tx,
           );
+        }
+        const planGateAssigneeChanged =
+          issueData.assigneeAgentId !== undefined &&
+          (issueData.assigneeAgentId ?? null) !== (existing.assigneeAgentId ?? null);
+        if (planGateCandidate && (planGateLabelsChanged || planGateAssigneeChanged)) {
+          const labelNames = await tx
+            .select({ name: labels.name })
+            .from(issueLabels)
+            .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+            .where(and(eq(issueLabels.companyId, existing.companyId), eq(issueLabels.issueId, updated.id)))
+            .then((rows: Array<{ name: string }>) => rows.map((row: { name: string }) => row.name));
+          const assigneeRole = updated.assigneeAgentId
+            ? await tx.select({ role: agents.role }).from(agents).where(and(eq(agents.id, updated.assigneeAgentId), eq(agents.companyId, existing.companyId))).then((rows: Array<{ role: string }>) => rows[0]?.role ?? null)
+            : null;
+          if (isLargeEngineeringTask({ labels: labelNames, assigneeAgentRole: assigneeRole, casteKey: updated.casteKey })) {
+            const hasPlan = await tx
+              .select({ id: issueDocuments.id })
+              .from(issueDocuments)
+              .where(and(eq(issueDocuments.companyId, existing.companyId), eq(issueDocuments.issueId, updated.id), eq(issueDocuments.key, "plan")))
+              .limit(1)
+              .then((rows: Array<{ id: string }>) => rows.length > 0);
+            if (!hasPlan) {
+              await tx.update(issues).set({ workMode: "planning", updatedAt: new Date() }).where(eq(issues.id, updated.id));
+              updated.workMode = "planning";
+            }
+          }
         }
         if (blockedByIssueIds !== undefined) {
           await syncBlockedByIssueIds(
@@ -12206,6 +12328,11 @@ export function issueService(db: Db) {
           assigneeAgentId: issues.assigneeAgentId,
           startedAt: issues.startedAt,
           executionState: issues.executionState,
+          // myrmidon(OPE-12887): recognize the stranded-run recovery handoff so
+          // the blocker owner's checkout can claim the issue without hitting
+          // the normal assignee guard (409 deadlock fix).
+          blockerMetadata: issues.blockerMetadata,
+          unblockDescriptor: issues.unblockDescriptor,
         })
         .from(issues)
         .where(eq(issues.id, id))
@@ -12214,6 +12341,15 @@ export function issueService(db: Db) {
       await assertAssignableAgent(db, issueRow.companyId, agentId, {
         kind: "work",
       });
+
+      // myrmidon(OPE-12887): a `blocked` disposition handoff carries recovery
+      // metadata naming the nearest lead as blocker owner; when that owner
+      // checks out, the stale executor assignment must not hold the issue
+      // hostage behind the normal assignee guard.
+      const isRecoveryBlockerOwner =
+        isRecoveryDispositionBlocked(issueRow) &&
+        (issueRow.blockerMetadata as { owner?: { agentId?: unknown } }).owner
+          ?.agentId === agentId;
 
       const parsedExecutionState = parseIssueExecutionState(issueRow.executionState);
       const isReviewStage =
@@ -12320,6 +12456,10 @@ export function issueService(db: Db) {
         stageState?.currentParticipant?.type === "agent" &&
         stageState?.currentParticipant?.agentId === agentId;
       const nextStatus = keepInReview ? "in_review" : "in_progress";
+      // myrmidon(OPE-12887): taking over a recovery handoff consumes its
+      // blocked state — the same fields `issuesSvc.update` clears when a row
+      // leaves `blocked` — so the stale recovery metadata cannot survive the
+      // transition back to in_progress.
       const updated = await db
         .update(issues)
         .set({
@@ -12330,12 +12470,28 @@ export function issueService(db: Db) {
           status: nextStatus,
           startedAt: issueRow.startedAt ?? now,
           updatedAt: now,
+          ...(issueRow.status === "blocked"
+            ? {
+                blockerMetadata: null,
+                unblockDescriptor: null,
+                blockedTransitionAt: null,
+                blockedOwnerNotifiedAt: null,
+              }
+            : {}),
         })
         .where(
           and(
             eq(issues.id, id),
             inArray(issues.status, expectedStatuses),
-            or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+            // myrmidon(OPE-12887): the blocker owner may claim a recovery
+            // handoff regardless of the (stale) executor assignment; pinning
+            // status=blocked keeps the bypass from racing a concurrent
+            // reassignment.
+            or(
+              isNull(issues.assigneeAgentId),
+              sameRunAssigneeCondition,
+              ...(isRecoveryBlockerOwner ? [eq(issues.status, "blocked")] : []),
+            ),
             executionLockCondition,
           ),
         )

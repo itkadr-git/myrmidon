@@ -578,7 +578,7 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     db = createDb(tempDb.connectionString);
     costs = costService(db);
     finance = financeService(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(financeEvents);
@@ -593,6 +593,25 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("terminates issue-tree cost aggregation for self and multi-node cycles", async () => {
+    const companyId = randomUUID();
+    const rootId = randomUUID();
+    const childId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Cycle guard",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      { id: rootId, companyId, title: "root", status: "todo", priority: "medium", parentId: rootId },
+      { id: childId, companyId, title: "child", status: "todo", priority: "medium", parentId: rootId },
+    ]);
+    await db.update(issues).set({ parentId: childId }).where(eq(issues.id, rootId));
+    const summary = await costs.issueTreeSummary(companyId, rootId);
+    expect(summary.issueCount).toBe(2);
   });
 
   it("persists unpriced token usage without inflating monthly spend", async () => {

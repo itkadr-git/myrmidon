@@ -242,7 +242,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
   "- Leave durable progress in comments, documents, or work products, then update the issue to a clear final disposition before ending the heartbeat.",
   "- Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
-  "- Final disposition checklist: mark `done` when complete; use `in_review` only with a real reviewer, approval, interaction, or monitor path; use `blocked` only with first-class blockers or a named unblock owner/action; create delegated follow-up issues with blockers when another agent owns the next step; keep `in_progress` only when a live continuation path exists.",
+  "- Final disposition checklist: mark `done` when complete; use `in_review` only with a real reviewer, approval, interaction, or monitor path; use `blocked` only with first-class blockers or a named unblock owner/action; create delegated follow-up issues with blockers when another agent owns the next step; if you are the executor and the work is not finished, leave the issue `in_progress`: the board resumes a task in progress by itself (the in-progress wake, OPE-13202, a couple of minutes after a run that left real progress, otherwise after the idle window), and that is the live continuation path; `todo` puts the issue back into the queue, so set it only when you stop working on it; do not end the heartbeat after the first piece of work if you can keep going in this same heartbeat; if there is no next step for you (you wait for a person, access or a decision), set `blocked` with a named unblock owner/action, not `in_progress`. Open the pull request at your first push on the task, at once: a draft while the work is not finished (the board does not see a push to a branch that has no pull request, and it treats the task as having no progress). Keep the task `in_progress`, push the next commits into that pull request, and when the work is finished run `gh pr ready` and move the task to `in_review` with a reviewer.",
   "- Prefer the smallest verification that proves the change; do not default to full workspace typecheck/build/test on every heartbeat unless the task scope warrants it.",
   "- After 2 consecutive failures of the same control-plane write, stop retrying that write for the rest of the heartbeat. Continue useful work, report the failure in the final response, and rely on the adapter/runtime status channel as the sanctioned fallback.",
   "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
@@ -591,7 +591,7 @@ type PaperclipWakeExecutionPrincipal = {
 };
 
 type PaperclipWakeExecutionStage = {
-  wakeRole: "reviewer" | "approver" | "executor" | null;
+  wakeRole: "reviewer" | "approver" | "verifier" | "executor" | null;
   stageId: string | null;
   stageType: string | null;
   currentParticipant: PaperclipWakeExecutionPrincipal | null;
@@ -737,6 +737,14 @@ type PaperclipWakeContinuationSummary = {
   updatedAt: string | null;
 };
 
+type PaperclipWakeStarterPack = {
+  key: string | null;
+  title: string | null;
+  body: string;
+  bodyTruncated: boolean;
+  updatedAt: string | null;
+};
+
 type PaperclipWakeLivenessContinuation = {
   attempt: number | null;
   maxAttempts: number | null;
@@ -869,6 +877,7 @@ export type PaperclipWakePayload = {
   unresolvedBlockerSummaries: PaperclipWakeBlockerSummary[];
   executionStage: PaperclipWakeExecutionStage | null;
   continuationSummary: PaperclipWakeContinuationSummary | null;
+  starterPack: PaperclipWakeStarterPack | null;
   planReviewContext: PaperclipWakePlanReviewContext | null;
   documentReviewContext: PaperclipWakeDocumentReviewContext | null;
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
@@ -1348,6 +1357,21 @@ function normalizePaperclipWakeContinuationSummary(
     body,
     bodyTruncated: asBoolean(summary.bodyTruncated, false),
     updatedAt: asString(summary.updatedAt, "").trim() || null,
+  };
+}
+
+function normalizePaperclipWakeStarterPack(
+  value: unknown,
+): PaperclipWakeStarterPack | null {
+  const pack = parseObject(value);
+  const body = asString(pack.body, "").trim();
+  if (!body) return null;
+  return {
+    key: asString(pack.key, "").trim() || null,
+    title: asString(pack.title, "").trim() || null,
+    body,
+    bodyTruncated: asBoolean(pack.bodyTruncated, false),
+    updatedAt: asString(pack.updatedAt, "").trim() || null,
   };
 }
 
@@ -1885,6 +1909,7 @@ export function normalizePaperclipWakePayload(
   const continuationSummary = normalizePaperclipWakeContinuationSummary(
     payload.continuationSummary,
   );
+  const starterPack = normalizePaperclipWakeStarterPack(payload.starterPack);
   const planReviewContext = normalizePaperclipWakePlanReviewContext(
     payload.planReviewContext,
   );
@@ -1976,6 +2001,7 @@ export function normalizePaperclipWakePayload(
     !executionStage &&
     !reviewRecoveryInstruction &&
     !continuationSummary &&
+    !starterPack &&
     !planReviewContext &&
     !documentReviewContext &&
     !livenessContinuation &&
@@ -2022,6 +2048,7 @@ export function normalizePaperclipWakePayload(
     reviewDecisionRetryAttempt,
     reviewDecisionMaxRetries,
     continuationSummary,
+    starterPack,
     planReviewContext,
     documentReviewContext,
     annotationDeltas,
@@ -2083,6 +2110,11 @@ export function stringifyPaperclipWakePayload(
   const payload: Record<string, unknown> = { ...normalized };
   if (normalized.executionContinuation) {
     payload.executionContinuation = stripContinuationHistoryForJson(normalized.executionContinuation);
+  }
+  // OPE-13086: the prompt text already carries the starter pack as its first
+  // block; the structured JSON copy does not repeat it.
+  if (normalized.starterPack) {
+    payload.starterPack = null;
   }
   if (options.omitIssueDescription === true && normalized.issue) {
     payload.issue = {
@@ -2372,6 +2404,8 @@ export function renderWakeBlockDelta(
   return { blocks: rendered, digests };
 }
 
+const WAKE_STARTER_PACK_MAX_BODY_CHARS = 8_000;
+
 function renderPaperclipWakePromptBody(
   value: unknown,
   options: {
@@ -2528,7 +2562,7 @@ function renderPaperclipWakePromptBody(
         ]
       : includeExecutionContract
         ? [
-            `Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: \`done\`, \`in_review\` with a real reviewer/approval/interaction path, \`blocked\` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or \`in_progress\` only when a live continuation path exists. Immediately before returning, verify that ${PN} records one of those dispositions; a successful process exit or final response is not sufficient. If no valid disposition is recorded, record it now and do not end the run. After 2 consecutive failures of the same control-plane write, stop retrying it for the rest of the heartbeat, continue useful work, report the failure in the final response, and rely on the adapter/runtime status channel as the sanctioned fallback. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and \`Remaining\` bullets are evidence, not valid liveness paths by themselves.`,
+            `Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: \`done\`, \`in_review\` with a real reviewer/approval/interaction path, \`blocked\` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or \`in_progress\` when you are the executor and the work is not finished: the board resumes a task in progress by itself (the in-progress wake, OPE-13202, a couple of minutes after a run that left real progress, otherwise after the idle window), and that is the live continuation path. \`todo\` puts the issue back into the queue: set it only when you stop working on it. Do not end the heartbeat after the first piece of work if you can keep going in this same heartbeat. If there is no next step for you (you wait for a person, access or a decision), set \`blocked\` with a named unblock owner/action, not \`in_progress\`. Open the pull request at your first push on the task, at once: a draft while the work is not finished (the board does not see a push to a branch that has no pull request, and it treats the task as having no progress). Keep the task \`in_progress\`, push the next commits into that pull request, and when the work is finished run \`gh pr ready\` and move the task to \`in_review\` with a reviewer. Immediately before returning, verify that ${PN} records one of those dispositions; a successful process exit or final response is not sufficient. If no valid disposition is recorded, record it now and do not end the run. After 2 consecutive failures of the same control-plane write, stop retrying it for the rest of the heartbeat, continue useful work, report the failure in the final response, and rely on the adapter/runtime status channel as the sanctioned fallback. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and \`Remaining\` bullets are evidence, not valid liveness paths by themselves.`,
             "",
           ]
         : [];
@@ -2623,6 +2657,22 @@ function renderPaperclipWakePromptBody(
         ...executionContractLines,
         ...wakeSummaryLines,
       ];
+
+  // OPE-13086: the task starter pack is the first task block of the wake,
+  // ahead of the continuation context, description and continuation summary.
+  if (normalized.starterPack) {
+    const packBody =
+      normalized.starterPack.body.length > WAKE_STARTER_PACK_MAX_BODY_CHARS
+        ? normalized.starterPack.body.slice(0, WAKE_STARTER_PACK_MAX_BODY_CHARS)
+        : normalized.starterPack.body;
+    lines.push("", "Starter pack (start here; do not re-explore the project):", packBody);
+    if (
+      normalized.starterPack.bodyTruncated ||
+      normalized.starterPack.body.length > WAKE_STARTER_PACK_MAX_BODY_CHARS
+    ) {
+      lines.push("[starter pack truncated]");
+    }
+  }
 
   if (normalized.executionContinuation) {
     if (normalized.executionContinuation.interruptedRunId) {
@@ -3051,12 +3101,15 @@ function renderPaperclipWakePromptBody(
     lines.push("");
     if (
       executionStage.wakeRole === "reviewer" ||
-      executionStage.wakeRole === "approver"
+      executionStage.wakeRole === "approver" ||
+      executionStage.wakeRole === "verifier"
     ) {
       lines.push(
         `You are waking as the active ${executionStage.wakeRole} for this issue.`,
         "Do not execute the task itself or continue executor work.",
-        "Review the issue and choose one of the allowed actions above.",
+        executionStage.wakeRole === "verifier"
+          ? "Verify the deployed result and, when approving, record the deploy version and the check method the verification ran with."
+          : "Review the issue and choose one of the allowed actions above.",
         "If you request changes, the workflow routes back to the stored return assignee.",
         "",
       );

@@ -11,6 +11,7 @@ import {
   botDiskSettingsSchema,
   mergeBotDiskSettings,
   patchBotDiskSettingsSchema,
+  resolveBotDiskLayout,
   resolveBotDiskSettings,
 } from "./myrmidon-bot-disk.js";
 
@@ -147,5 +148,26 @@ describe("1.6.7-SETTINGS-BOTDISK-MERGE resolve of the C7 mechanics keys", () => 
     const next = mergeBotDiskSettings(base, { gitMigrationEnabled: null });
     expect("gitMigrationEnabled" in next).toBe(false);
     expect(next.hermesPruneEnabled).toBe(true);
+  });
+});
+
+// myrmidon(OPE-13110): an explicit empty mirror list turns the mirror off.
+describe("OPE-13110 gitMirrorRepos: explicit [] vs absent", () => {
+  const cache = { sharedPackageCachePath: "/srv/cache" };
+
+  it("an absent key (or null) gives the built-in default list", () => {
+    expect(resolveBotDiskLayout(cache).gitMirrorRepos).toEqual(["itkadr-git/myrmidon", "itkadr-git/myrmidon-deploy"]);
+    expect(resolveBotDiskLayout({ ...cache, gitMirrorRepos: null }).gitMirrorRepos).toHaveLength(2);
+  });
+
+  it("a stored [] is kept and gives no repositories", () => {
+    expect(resolveBotDiskLayout({ ...cache, gitMirrorRepos: [] }).gitMirrorRepos).toEqual([]);
+    expect(resolveBotDiskSettings({ stored: { ...cache, gitMirrorRepos: [] }, env: {} }).settings.gitMirrorRepos).toEqual([]);
+  });
+
+  it("a patch with [] stores [], a patch with null removes the key", () => {
+    const base = resolveBotDiskSettings({ stored: { ...cache, gitMirrorRepos: ["owner/repo"] }, env: {} }).settings;
+    expect(mergeBotDiskSettings(base, { gitMirrorRepos: [] }).gitMirrorRepos).toEqual([]);
+    expect("gitMirrorRepos" in mergeBotDiskSettings(base, { gitMirrorRepos: null })).toBe(false);
   });
 });

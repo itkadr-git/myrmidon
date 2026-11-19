@@ -19,7 +19,7 @@ describeEmbeddedPostgres("agent service resume with a live run", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-agent-resume-live-run-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(heartbeatRuns);

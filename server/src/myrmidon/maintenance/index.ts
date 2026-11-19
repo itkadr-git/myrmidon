@@ -1,6 +1,8 @@
 // Maintenance mode (R3) entry point. Design: docs/myrmidon/design/maintenance-mode.md
 
 import type { Db } from "@myrmidon/db";
+import { and, eq } from "drizzle-orm";
+import { issueWorkProducts } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 // Same entry point as the vendor server/src/index.ts, so startup tests that mock it keep working.
 import { heartbeatService } from "../../services/index.js";
@@ -11,7 +13,7 @@ import {
   type MaintenanceDocument,
 } from "./domain.js";
 import { getCachedMaintenanceDocument } from "./gate.js";
-import { maintenanceRetryContinuation } from "./interrupt-continuation.js"; // myrmidon(OPE-12802)
+import { maintenanceRetryContinuation } from "./interrupt-continuation.js"; // myrmidon(OPE-12802, OPE-13077)
 import { maintenanceRoutes } from "./routes.js";
 import { maintenanceService, type MaintenanceHeartbeatPort } from "./service.js";
 import { resolveZabbixSettings, zabbixMaintenanceHooks } from "./zabbix.js"; // myrmidon(1.7, OPE-4101)
@@ -62,8 +64,45 @@ async function scheduleRetryAfterDeadlock<T>(schedule: () => Promise<T>): Promis
   }
 }
 
+/**
+ * Read the task branch and head SHA from the issue's pull request work
+ * product, when the board knows them. Returns nulls when unknown.
+ * The newest PR work product by updatedAt is the current one.
+ */
+async function readTaskBranchHead(db: Db, companyId: string, issueId: string): Promise<{ headBranch: string | null; headSha: string | null }> {
+  try {
+    const rows = await db
+      .select({
+        status: issueWorkProducts.status,
+        metadata: issueWorkProducts.metadata,
+      })
+      .from(issueWorkProducts)
+      .where(
+        and(
+          eq(issueWorkProducts.companyId, companyId),
+          eq(issueWorkProducts.issueId, issueId),
+          eq(issueWorkProducts.type, "pull_request"),
+        ),
+      );
+    if (rows.length === 0) return { headBranch: null, headSha: null };
+    // Skip closed/merged PRs when an open one exists; otherwise take the newest row.
+    const open = rows.filter((row) => row.status !== "closed" && row.status !== "merged");
+    const candidates = open.length > 0 ? open : rows;
+    const headBranch = candidates
+      .map((row) => (row.metadata as Record<string, unknown> | null)?.headRef)
+      .find((value): value is string => typeof value === "string" && value.trim() !== "") ?? null;
+    const headSha = candidates
+      .map((row) => (row.metadata as Record<string, unknown> | null)?.headSha)
+      .find((value): value is string => typeof value === "string" && value.trim() !== "") ?? null;
+    return { headBranch, headSha };
+  } catch {
+    // An unreadable store must not fail the interrupt path.
+    return { headBranch: null, headSha: null };
+  }
+}
+
 /** Heartbeat operations for the mode, on top of the vendor cancel and bounded-retry paths. */
-export function maintenanceHeartbeatPort(heartbeat: ReturnType<typeof heartbeatService>): MaintenanceHeartbeatPort {
+export function maintenanceHeartbeatPort(heartbeat: ReturnType<typeof heartbeatService>, db?: Db): MaintenanceHeartbeatPort {
   return {
     async resumeQueuedRuns() {
       // Retries scheduled during the window are due already; promote them now
@@ -96,13 +135,37 @@ export function maintenanceHeartbeatPort(heartbeat: ReturnType<typeof heartbeatS
       if (stopped && (stopped.status === "running" || stopped.status === "queued")) {
         throw new Error(`run ${runId} is still ${stopped.status} after the maintenance interrupt`);
       }
+
+      // myrmidon(OPE-13077): when the board knows the task branch and head,
+      // name them in the continuation instruction so the retry can orient
+      // itself without re-discovering the branch.
+      let headBranch: string | null = null;
+      let headSha: string | null = null;
+      if (db && stopped) {
+        const contextSnapshot = stopped.contextSnapshot as Record<string, unknown> | null;
+        const issueId = typeof contextSnapshot?.issueId === "string" ? contextSnapshot.issueId : null;
+        if (issueId) {
+          const head = await readTaskBranchHead(db, stopped.companyId, issueId);
+          headBranch = head.headBranch;
+          headSha = head.headSha;
+        }
+      }
+
       const retry = await scheduleRetryAfterDeadlock(() =>
         heartbeat.scheduleBoundedRetry(runId, {
           retryReason: MAINTENANCE_RETRY_REASON,
           wakeReason: MAINTENANCE_RETRY_WAKE_REASON,
           delayMs: 0,
-          // myrmidon(OPE-12802): the retry continues from the saved work, it does not start over.
-          ...maintenanceRetryContinuation({ runId, windowId, lastUsefulActionAt: stopped?.lastUsefulActionAt }),
+          // myrmidon(OPE-12802, OPE-13077): the retry continues from the saved work, it does not start over.
+          ...maintenanceRetryContinuation({
+            runId,
+            windowId,
+            startedAt: stopped?.startedAt,
+            finishedAt: stopped?.finishedAt,
+            lastUsefulActionAt: stopped?.lastUsefulActionAt,
+            headBranch,
+            headSha,
+          }),
         }),
       );
       return { retryScheduled: retry.outcome === "scheduled" };
@@ -113,7 +176,7 @@ export function maintenanceHeartbeatPort(heartbeat: ReturnType<typeof heartbeatS
 function defaultService(db: Db) {
   // myrmidon(1.7, OPE-4101): resolve live so a UI change without a restart is
   // honored on the next maintenance open/close.
-  return maintenanceService(db, { heartbeat: maintenanceHeartbeatPort(heartbeatService(db)), hooks: zabbixMaintenanceHooks(resolveZabbixSettings()) });
+  return maintenanceService(db, { heartbeat: maintenanceHeartbeatPort(heartbeatService(db), db), hooks: zabbixMaintenanceHooks(resolveZabbixSettings()) });
 }
 
 /** Router for app.ts: GET/POST /api/myrmidon/maintenance. */

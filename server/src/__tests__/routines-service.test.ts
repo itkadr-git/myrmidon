@@ -55,7 +55,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     process.env.PAPERCLIP_API_URL = "http://localhost:3100";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-service-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     if (originalSecretsProviderEnv === undefined) {

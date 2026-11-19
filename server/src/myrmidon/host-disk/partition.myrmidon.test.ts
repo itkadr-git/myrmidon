@@ -19,7 +19,6 @@ import type { HostDiskSweepDeps } from "./sweep.js";
 import { createDockergateDiskClient, dockergateBaseUrl } from "./dockergate.js";
 import {
   botPartitionThresholdRuntimeForTest,
-  type BotPartitionNotifyInput,
 } from "./partition.js";
 import type { BotPartitionUsage } from "./dockergate.js";
 
@@ -54,11 +53,9 @@ function usage(usedPercent: number): BotPartitionUsage {
 function runtime(overrides: {
   stored?: unknown;
   env?: Record<string, string | undefined>;
-  notifyOwner?: (input: BotPartitionNotifyInput) => Promise<void>;
 } = {}) {
   return botPartitionThresholdRuntimeForTest({
     getBotDiskSettings: async () => overrides.stored,
-    notifyOwner: overrides.notifyOwner,
     env: overrides.env ?? {},
     now: () => new Date("2026-10-07T01:00:00Z"),
   });
@@ -185,50 +182,9 @@ describe("threshold boundaries 84/85/89/90/94/95", () => {
   });
 });
 
-describe("critical notification dedup", () => {
-  it("notifies the owner exactly once per crossing of the critical threshold", async () => {
-    const notifyOwner = vi.fn(async (_note: { level: string }) => undefined);
-    const rt = runtime({ notifyOwner });
-    await rt.updateFromPartition(usage(95));
-    expect(notifyOwner).toHaveBeenCalledTimes(1);
-    expect(notifyOwner.mock.calls[0][0].level).toBe("critical");
-    await rt.updateFromPartition(usage(96));
-    await rt.updateFromPartition(usage(97));
-    expect(notifyOwner).toHaveBeenCalledTimes(1);
-  });
-
-  it("a warn crossing sends nothing; the latch re-arms after dropping below the warn threshold", async () => {
-    const notifyOwner = vi.fn(async (_note: { level: string }) => undefined);
-    const rt = runtime({ notifyOwner });
-    await rt.updateFromPartition(usage(85));
-    await rt.updateFromPartition(usage(90));
-    expect(notifyOwner).not.toHaveBeenCalled();
-    await rt.updateFromPartition(usage(95));
-    expect(notifyOwner).toHaveBeenCalledTimes(1);
-    // Drop below the warn threshold: the latch resets; a new critical
-    // crossing notifies again.
-    await rt.updateFromPartition(usage(80));
-    await rt.updateFromPartition(usage(95));
-    expect(notifyOwner).toHaveBeenCalledTimes(2);
-  });
-
-  it("a failed notification does not latch (the next sweep retries)", async () => {
-    const notifyOwner = vi.fn(async () => {
-      throw new Error("telegram down");
-    });
-    const rt = runtime({ notifyOwner });
-    const state = await rt.updateFromPartition(usage(95));
-    expect(state.alertLevel).toBe("critical");
-    expect(state.criticalNotified).toBe(false);
-    await rt.updateFromPartition(usage(95));
-    expect(notifyOwner).toHaveBeenCalledTimes(2);
-  });
-});
-
 describe("no dockergate data: previous behaviour, marked not measured", () => {
   it("markUnmeasured resets the state: no card, pressure none", async () => {
-    const notifyOwner = vi.fn(async (_note: { level: string }) => undefined);
-    const rt = runtime({ notifyOwner });
+    const rt = runtime();
     await rt.updateFromPartition(usage(97));
     expect(rt.current().alertLevel).toBe("critical");
     const cleared = rt.markUnmeasured();
@@ -246,6 +202,7 @@ describe("no dockergate data: previous behaviour, marked not measured", () => {
       resolveSettings: async () => ({ usageThresholdPercent: 85 }),
       logActivity,
       lastSignalAt: async () => null,
+      listCompanyIds: async () => ["company-1"],
       logger: { error: vi.fn(), info: vi.fn(), debug: vi.fn() },
       measureUsage: async () => ({
         path: "/srv/data",
@@ -271,6 +228,7 @@ describe("no dockergate data: previous behaviour, marked not measured", () => {
       resolveSettings: async () => ({ usageThresholdPercent: 99 }),
       logActivity: vi.fn(async () => undefined),
       lastSignalAt: async () => null,
+      listCompanyIds: async () => ["company-1"],
       logger: { error: vi.fn(), info: vi.fn(), debug: vi.fn() },
       measureUsage: async () => ({
         path: "/srv/data",
@@ -296,6 +254,7 @@ describe("no dockergate data: previous behaviour, marked not measured", () => {
       resolveSettings: async () => ({ usageThresholdPercent: 99 }),
       logActivity: vi.fn(async () => undefined),
       lastSignalAt: async () => null,
+      listCompanyIds: async () => ["company-1"],
       logger: { error: vi.fn(), info: vi.fn(), debug: vi.fn() },
       measureUsage: async () => ({
         path: "/srv/data",

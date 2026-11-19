@@ -50,6 +50,22 @@ import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmi
 
 export type BotDiskView = ResolvedBotDiskSettings;
 
+/**
+ * myrmidon(OPE-13110): what the git mirror and the shared-cache roles are in
+ * force, defaults resolved, so the settings screen shows the truth instead of
+ * an empty field. Added to the GET answer only (PATCH answers {@link BotDiskView}).
+ */
+export interface BotDiskEffective {
+  /** At least one mirrored repository (false also when there is no shared cache path). */
+  gitMirrorEnabled: boolean;
+  gitMirrorRepos: string[];
+  /** The stored settings carry no `gitMirrorRepos` key, so the built-in list applies. */
+  gitMirrorReposIsDefault: boolean;
+  sharedCacheRoles: string[];
+}
+
+export type BotDiskReadView = BotDiskView & { effective: BotDiskEffective };
+
 /** Who changed the settings, for the activity log. */
 export interface BotDiskActor {
   actorType: "agent" | "user" | "system" | "plugin";
@@ -82,6 +98,8 @@ export interface BotDiskServiceDeps {
 export interface BotDiskService {
   /** Effective settings and where each value came from. */
   read(): Promise<BotDiskView>;
+  /** `read()` plus the effective git mirror / shared-cache roles (GET answer). */
+  readWithEffective(): Promise<BotDiskReadView>;
   /** Persist and audit a patch; returns the settings now in force. */
   update(patch: BotDiskSettingsPatch, actor: BotDiskActor): Promise<BotDiskView>;
 }
@@ -114,6 +132,26 @@ export function botDiskService(
     read: async (): Promise<BotDiskView> => {
       const general = await deps.settings.getGeneral();
       return resolveBotDiskSettings({ stored: general.botDisk, env });
+    },
+
+    readWithEffective: async (): Promise<BotDiskReadView> => {
+      const general = await deps.settings.getGeneral();
+      const view = resolveBotDiskSettings({ stored: general.botDisk, env });
+      const layout = resolveBotDiskLayout(general.botDisk);
+      const stored = general.botDisk;
+      const hasReposKey =
+        !!stored && typeof stored === "object" && !Array.isArray(stored) &&
+        (stored as Record<string, unknown>).gitMirrorRepos !== undefined &&
+        (stored as Record<string, unknown>).gitMirrorRepos !== null;
+      return {
+        ...view,
+        effective: {
+          gitMirrorEnabled: layout.gitMirrorRepos.length > 0,
+          gitMirrorRepos: layout.gitMirrorRepos,
+          gitMirrorReposIsDefault: !hasReposKey,
+          sharedCacheRoles: layout.sharedCacheRoles,
+        },
+      };
     },
 
     update: async (patch, actor) =>

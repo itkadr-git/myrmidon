@@ -478,7 +478,7 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
         projectId: nullableText("Project identifier for the new task."),
         initialPlan: nullableText("Relevant markdown plan to persist on the new task before it starts."),
         description: nullableText("Child task description."),
-        assigneeActorId: nullableText("Optional actor assignee.", 200),
+        assigneeActorId: nullableText("Optional agent assignee ID. Omit to assign the current agent.", 200),
         priority: { enum: ["critical", "high", "medium", "low"] },
         blockedByTaskIds: stringArray("Initial blocker task identifiers."),
       },

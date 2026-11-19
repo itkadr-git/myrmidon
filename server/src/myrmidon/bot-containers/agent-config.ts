@@ -8,7 +8,15 @@
 
 import type { BotContainerSpec, BotExtraMount, BotSharedMount } from "./driver.js";
 import { liveSavedSetting } from "../behavior-settings/live.js";
-import { BOT_KEY_PATTERN, isImageAllowed, parseImageAllowlist } from "./template.js";
+import {
+  BOT_KEY_PATTERN,
+  BOT_MOUNT_SOURCES_ENV,
+  BotContainerTemplateError,
+  isImageAllowed,
+  parseImageAllowlist,
+  parseMountSourceAllowlist,
+  validateExtraMounts,
+} from "./template.js";
 import type { SharedMountSettings } from "@myrmidon/shared";
 import { resolveBotSharedMount } from "./shared-mount.js";
 import { FLEET_HOST_NAME_PATTERN } from "./fleetd-hosts.js";
@@ -49,11 +57,21 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
  * quiet for whoever saved it. A card without a `container` block is fine, and
  * so is any other adapter type.
  */
+export interface BotContainerCardSaveOptions {
+  /**
+   * Whether to validate extraMounts sources.
+   * Defaults to true (e.g. for card creation and direct checks).
+   * In partial PATCH where extraMounts was not supplied, can be set to false.
+   */
+  validateExtraMounts?: boolean;
+}
+
 export function botContainerCardSaveProblem(
   adapterType: string | null | undefined,
   adapterConfig: Record<string, unknown> | null | undefined,
   env: NodeJS.ProcessEnv = process.env,
   ceilings?: BotResourceCeilings | null,
+  options?: BotContainerCardSaveOptions,
 ): string | null {
   if (adapterType !== HERMES_GATEWAY_ADAPTER_TYPE) return null;
   const raw = adapterConfig?.container;
@@ -91,6 +109,43 @@ export function botContainerCardSaveProblem(
   }
   const imageProblem = botContainerImageSaveProblem(raw.image, env);
   if (imageProblem) return imageProblem;
+  if (options?.validateExtraMounts !== false) {
+    const extraMountsProblem = botContainerExtraMountsSaveProblem(raw.extraMounts, env);
+    if (extraMountsProblem) return extraMountsProblem;
+  }
+  return null;
+}
+
+/**
+ * myrmidon(1.6.9, OPE-13074): why an enabled card's `container.extraMounts` may not
+ * be SAVED, or null. Uses the exact same allowlist parsing and validation
+ * (`validateExtraMounts`) as the container template builder, so saving a disallowed
+ * source fails immediately with 422 instead of crashing container build later.
+ */
+export function botContainerExtraMountsSaveProblem(
+  extraMounts: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (extraMounts === undefined || extraMounts === null) return null;
+  const parsed = readExtraMounts(extraMounts);
+  if (!parsed.ok) return `adapterConfig.${parsed.reason}`;
+  // A list saved from the UI wins over the environment.
+  const savedAllowlist = env === process.env ? liveSavedSetting<unknown>("bot_mount_sources") : undefined;
+  const allowlist = parseMountSourceAllowlist(
+    Array.isArray(savedAllowlist)
+      ? savedAllowlist.join(",")
+      : typeof savedAllowlist === "string"
+        ? savedAllowlist
+        : env[BOT_MOUNT_SOURCES_ENV],
+  );
+  try {
+    validateExtraMounts(parsed.mounts, allowlist);
+  } catch (err) {
+    if (err instanceof BotContainerTemplateError) {
+      return `adapterConfig.container: ${err.message}`;
+    }
+    throw err;
+  }
   return null;
 }
 

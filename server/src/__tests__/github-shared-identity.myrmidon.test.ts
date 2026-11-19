@@ -236,7 +236,7 @@ const support = await getEmbeddedPostgresTestSupport();
     vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-github-app-signing-secret");
     database = await startEmbeddedPostgresTestDatabase("paperclip-github-app-");
     db = createDb(database.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterAll(async () => {
     await database?.cleanup();

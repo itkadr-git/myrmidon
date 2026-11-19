@@ -90,7 +90,7 @@ describeEmbeddedPostgres(
         "paperclip-tg-proactivity-",
       );
       db = createDb(tempDb.connectionString);
-    }, 30_000);
+    }, 60_000);
 
     afterAll(async () => {
       await tempDb?.cleanup();

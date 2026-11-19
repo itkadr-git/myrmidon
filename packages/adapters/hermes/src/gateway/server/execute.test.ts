@@ -152,10 +152,10 @@ afterEach(() => {
 });
 
 describe("resolveSessionKey", () => {
-  it("gives developers a fresh session per run and never upgrades a card's run or none", () => {
-    for (const configuredStrategy of ["issue", "agent", "run"] as const) {
-      expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy, developerOnlyTaskSession: true })).toBe("run");
-    }
+  it("gives developers issue-scoped session by default, honors run or none, and maps agent to issue", () => {
+    expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy: "issue", developerOnlyTaskSession: true })).toBe("issue");
+    expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy: "agent", developerOnlyTaskSession: true })).toBe("issue");
+    expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy: "run", developerOnlyTaskSession: true })).toBe("run");
     // "none" is kept: the card asked for no session key at all.
     expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy: "none", developerOnlyTaskSession: true })).toBe("none");
   });
@@ -207,7 +207,7 @@ describe("parseSseFramesForTest", () => {
 });
 
 describe("execute", () => {
-  it("gives a developer a fresh session on every run while a non-developer keeps its configured session", async () => {
+  it("gives a developer an issue-scoped session while a non-developer keeps its configured session", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(
       String(input).endsWith("/v1/runs")
         ? { run_id: "run-hermes-1", status: "started" }
@@ -226,9 +226,9 @@ describe("execute", () => {
       ctx.context = { ...ctx.context, issueId };
       expect((await execute(ctx)).exitCode).toBe(0);
     };
-    // Developer cards on "issue" and "agent" (not yet switched to "run"): the
-    // board flag still gives every run its own session, across runs of one task
-    // and across tasks.
+    // Developer cards on "issue": same session key across runs of the same task.
+    // Developer cards on "agent": mapped to "issue".
+    // Developer cards on "run": stays on "run".
     await runWith({ sessionKeyStrategy: "issue", developerOnlyTaskSession: true }, "run-1", "task-A");
     await runWith({ sessionKeyStrategy: "issue", developerOnlyTaskSession: true }, "run-2", "task-A");
     await runWith({ sessionKeyStrategy: "agent", developerOnlyTaskSession: true }, "run-3", "task-B");
@@ -242,15 +242,15 @@ describe("execute", () => {
       .filter(([input]) => String(input).endsWith("/v1/runs"));
     const keys = runCalls.map(([, init]) => (init?.headers as Record<string, string>)["X-Hermes-Session-Key"]);
     expect(keys).toEqual([
-      "paperclip:run:run-1",
-      "paperclip:run:run-2",
-      "paperclip:run:run-3",
+      "paperclip:company:company-1:agent:agent-1:issue:task-A",
+      "paperclip:company:company-1:agent:agent-1:issue:task-A",
+      "paperclip:company:company-1:agent:agent-1:issue:task-B",
       "paperclip:run:run-4",
       "paperclip:company:company-1:agent:agent-1:issue:task-A",
       "paperclip:company:company-1:agent:agent-1",
     ]);
-    // No developer key is shared with another run.
-    expect(new Set(keys.slice(0, 4)).size).toBe(4);
+    // Developer runs of task-A share the session key.
+    expect(keys[0]).toBe(keys[1]);
     // Six full execute() calls in one test: the default 5 s is not enough.
   }, 30_000);
 
@@ -893,6 +893,51 @@ describe("execute", () => {
     expect(body.workspace).toEqual({ key: "ABC-101", repo: "acme/widgets" });
   });
 
+  it.each(["reviewer", "verifier"])("does not open a task copy for a %s wake of an execution stage (OPE-13410 item 6)", async (wakeRole) => {
+    const ctx = makeCtx(wsBaseConfig);
+    ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets.git", repoRef: "main" };
+    ctx.context.paperclipPullRequest = { repo: "acme/widgets", number: 5, headRef: "bot/ABC-101" };
+    ctx.context.executionStage = { wakeRole, stageType: "review" };
+    expect("workspace" in (await runAndReadBody(ctx))).toBe(false);
+  });
+
+  it.each([
+    ["a reviewer by role on ci_completed without wakeRole", "Hermes", "reviewer", "ci_completed"],
+    ["a reviewer by name (role qa) on ci_completed without wakeRole", "adm-dev-review-8", "qa", "ci_completed"],
+    ["a verifier by role", "Hermes", "verifier", "ci_completed"],
+    ["a lead by name on auto_slice_queue_shortage", "adm-dev-lead-4", "engineer", "auto_slice_queue_shortage"],
+    ["a lead by role", "Hermes", "lead", "auto_slice_queue_shortage"],
+  ])("does not open a task copy for %s (NO-COPIES-FOR-REVIEWERS-LEADS)", async (_label, name, role, wakeReason) => {
+    const ctx = makeCtx(wsBaseConfig);
+    ctx.agent.name = name;
+    ctx.context.paperclipAgentRole = role;
+    ctx.context.wakeReason = wakeReason;
+    ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets.git", repoRef: "main" };
+    expect("workspace" in (await runAndReadBody(ctx))).toBe(false);
+  });
+
+  it("opens the task copy for an engineer on any wake reason (NO-COPIES-FOR-REVIEWERS-LEADS)", async () => {
+    for (const wakeReason of ["ci_completed", "auto_slice_queue_shortage", "issue_assigned"]) {
+      const ctx = makeCtx(wsBaseConfig);
+      ctx.agent.name = "adm-dev-eng-3";
+      ctx.context.paperclipAgentRole = "engineer";
+      ctx.context.wakeReason = wakeReason;
+      ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+      ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets.git", repoRef: "main" };
+      expect((await runAndReadBody(ctx)).workspace).toEqual(fixture);
+    }
+  });
+
+  it("still opens the task copy for an executor wake of an execution stage", async () => {
+    const ctx = makeCtx(wsBaseConfig);
+    ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets.git", repoRef: "main" };
+    ctx.context.executionStage = { wakeRole: "executor", stageType: "review" };
+    expect((await runAndReadBody(ctx)).workspace).toEqual(fixture);
+  });
+
   it("overrides a workspace forged in payloadTemplate, and removes it when the task has no repository", async () => {
     const forged = { key: "EVIL-1", repo: "evil/repo", baseRef: "x" };
     const withRepo = makeCtx(wsBaseConfig);
@@ -1008,7 +1053,7 @@ describe("execute", () => {
     expect(runBodies[1]!.input).not.toContain(description);
   });
 
-  it("sends a developer the full brief and no previous-run content even when the board still holds a stored session", async () => {
+  it("resumes a stored session for a developer on issue strategy and gives a fresh session on run strategy", async () => {
     const description = "Task B must not inherit Task A context.";
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
       String(input).endsWith("/v1/runs")
@@ -1030,12 +1075,12 @@ describe("execute", () => {
       return ctx;
     };
 
-    // Developer on a card that still says "issue": the stored session is not resumed.
+    // Developer on a card that says "issue": the stored task session is resumed and the compact brief is used.
     expect((await execute(buildCtx(
       { sessionKeyStrategy: "issue", developerOnlyTaskSession: true },
       "paperclip:company:company-1:agent:agent-1:issue:task-B",
     ))).exitCode).toBe(0);
-    // Developer on a card already switched to "run".
+    // Developer on a card switched to "run": fresh session and full brief.
     expect((await execute(buildCtx(
       { sessionKeyStrategy: "run", developerOnlyTaskSession: true },
       "paperclip:run:earlier-run",
@@ -1050,11 +1095,17 @@ describe("execute", () => {
       .filter(([url]) => String(url).endsWith("/v1/runs"))
       .map(([, init]) => JSON.parse(String(init?.body)) as { input: string; session_id: string });
     expect(bodies).toHaveLength(3);
-    for (const body of bodies.slice(0, 2)) {
-      expect(body.input).toContain(description);
-      expect(body.input).not.toContain("Task B (compact)");
-      expect(body.session_id).toBe("paperclip:run:pc-run-1");
-    }
+    // Developer on "issue": compact brief and issue session
+    expect(bodies[0]!.input).toContain("Task B (compact)");
+    expect(bodies[0]!.input).not.toContain(description);
+    expect(bodies[0]!.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:task-B");
+
+    // Developer on "run": full brief and fresh run session
+    expect(bodies[1]!.input).toContain(description);
+    expect(bodies[1]!.input).not.toContain("Task B (compact)");
+    expect(bodies[1]!.session_id).toBe("paperclip:run:pc-run-1");
+
+    // Non-developer on "issue": compact brief and issue session
     expect(bodies[2]!.input).toContain("Task B (compact)");
     expect(bodies[2]!.input).not.toContain(description);
     expect(bodies[2]!.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:task-B");

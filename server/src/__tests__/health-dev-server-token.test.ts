@@ -104,6 +104,7 @@ describe("GET /health dev-server supervisor access", () => {
       expect(res.status).toBe(200);
       expect(res.body).toEqual({
         status: "ok",
+        version: null,
         deploymentMode: "authenticated",
         deploymentExposure: "private",
         localAiLoginSupported: true,

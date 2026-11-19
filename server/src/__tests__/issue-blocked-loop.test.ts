@@ -63,7 +63,7 @@ describeEmbeddedPostgres("blocked loop limiter (route level)", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-blocked-loop-routes-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     delete process.env[MAX_RETURNS_ENV];

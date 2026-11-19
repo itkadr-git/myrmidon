@@ -92,7 +92,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-issue-liveness-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     // Dependency reconciliation heals missing wakes by enqueuing an
@@ -1146,4 +1146,124 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     });
   });
 
+  describe("blockers-resolved backstop: one wake per resolution, and the continuation stop", () => {
+    const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
+
+    async function seedInProgressWithClosedBlocker() {
+      const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+      await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, fixture.blockedIssueId));
+      await db
+        .update(issues)
+        .set({ completedAt: minutesAgo(60) })
+        .where(eq(issues.id, fixture.blockerIssueId));
+      return fixture;
+    }
+
+    async function blockersResolvedWakes(companyId: string) {
+      return db.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.reason, "issue_blockers_resolved"),
+      ));
+    }
+
+    async function recordContinuationStop(companyId: string, agentId: string, issueId: string, at: Date) {
+      await db.insert(activityLog).values({
+        companyId, actorType: "system", actorId: "heartbeat", agentId, runId: null,
+        action: "issue.continuation_cap_reached", entityType: "issue", entityId: issueId, createdAt: at,
+      });
+    }
+
+    it("wakes an in_progress dependent with a closed blocker exactly once, even after its blocked cycle changes", async () => {
+      const { companyId, blockedIssueId } = await seedInProgressWithClosedBlocker();
+      const heartbeat = heartbeatService(db);
+
+      expect((await heartbeat.reconcileResolvedDependencyWakes()).healed).toBe(1);
+      await heartbeat.drainActiveRunExecutions();
+
+      // The continuation stop parks the issue as blocked and a later move
+      // changes `blockedTransitionAt`: the cycle key is new, the resolution is not.
+      await db.update(issues).set({ blockedTransitionAt: new Date() }).where(eq(issues.id, blockedIssueId));
+      const secondPass = await heartbeat.reconcileResolvedDependencyWakes();
+      const thirdPass = await heartbeatService(db).reconcileResolvedDependencyWakes();
+
+      expect(secondPass.healed).toBe(0);
+      expect(secondPass.existingWakeSkipped).toBe(1);
+      expect(thirdPass.healed).toBe(0);
+      expect(await blockersResolvedWakes(companyId)).toHaveLength(1);
+    });
+
+    it("does not wake a dependent the continuation stop parked, whatever the backstop emitted after the stop", async () => {
+      const { companyId, agentId, blockedIssueId } = await seedInProgressWithClosedBlocker();
+      await recordContinuationStop(companyId, agentId, blockedIssueId, minutesAgo(10));
+      // The backstop's own earlier emission and the agent's own chatter are not external input.
+      await db.insert(activityLog).values([
+        { companyId, actorType: "system", actorId: "issue_graph_liveness_backstop", agentId, action: "issue.blockers_resolved_wake_emitted", entityType: "issue", entityId: blockedIssueId, createdAt: minutesAgo(8) },
+        { companyId, actorType: "agent", actorId: agentId, agentId, action: "issue.updated", entityType: "issue", entityId: blockedIssueId, createdAt: minutesAgo(7) },
+      ]);
+      await db.insert(issueComments).values({
+        companyId, issueId: blockedIssueId, authorAgentId: agentId, authorType: "agent", body: "Still on it.", createdAt: minutesAgo(6),
+      });
+
+      const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
+
+      expect(result.healed).toBe(0);
+      expect(result.continuationStopSkipped).toBe(1);
+      expect(await blockersResolvedWakes(companyId)).toHaveLength(0);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(0);
+    });
+
+    it("wakes a stopped dependent as before when a new comment arrived after the stop", async () => {
+      const { companyId, agentId, blockedIssueId } = await seedInProgressWithClosedBlocker();
+      await recordContinuationStop(companyId, agentId, blockedIssueId, minutesAgo(10));
+      await db.insert(issueComments).values({
+        companyId, issueId: blockedIssueId, authorUserId: "board-user", authorType: "user", body: "New input.", createdAt: minutesAgo(5),
+      });
+
+      const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
+
+      expect(result.healed).toBe(1);
+      expect(result.continuationStopSkipped).toBe(0);
+      expect(await blockersResolvedWakes(companyId)).toHaveLength(1);
+    });
+
+    it("wakes a stopped dependent when the webhook reported a PR head change after the stop", async () => {
+      const { companyId, agentId, blockedIssueId } = await seedInProgressWithClosedBlocker();
+      await recordContinuationStop(companyId, agentId, blockedIssueId, minutesAgo(10));
+      await db.insert(activityLog).values({
+        companyId, actorType: "system", actorId: "system:github-webhook", action: "issue.work_product_head_changed",
+        entityType: "issue", entityId: blockedIssueId, createdAt: minutesAgo(5),
+      });
+
+      const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
+
+      expect(result.healed).toBe(1);
+      expect(result.continuationStopSkipped).toBe(0);
+    });
+
+    it("wakes a stopped dependent when a blocker was closed after the stop", async () => {
+      const { companyId, agentId, blockedIssueId, blockerIssueId } = await seedInProgressWithClosedBlocker();
+      await recordContinuationStop(companyId, agentId, blockedIssueId, minutesAgo(10));
+      await db.update(issues).set({ completedAt: minutesAgo(2) }).where(eq(issues.id, blockerIssueId));
+
+      expect((await heartbeatService(db).reconcileResolvedDependencyWakes()).healed).toBe(1);
+    });
+
+    it("wakes again when the blocker is reopened and closed again", async () => {
+      const { companyId, blockedIssueId, blockerIssueId } = await seedInProgressWithClosedBlocker();
+      const heartbeat = heartbeatService(db);
+      expect((await heartbeat.reconcileResolvedDependencyWakes()).healed).toBe(1);
+      await heartbeat.drainActiveRunExecutions();
+      expect((await heartbeat.reconcileResolvedDependencyWakes()).healed).toBe(0);
+
+      // Reopen (the issue service clears `completedAt`), then close again later.
+      await db.update(issues).set({ status: "todo", completedAt: null }).where(eq(issues.id, blockerIssueId));
+      expect((await heartbeat.reconcileResolvedDependencyWakes()).healed).toBe(0);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, blockerIssueId));
+      await db.update(issues).set({ blockedTransitionAt: new Date() }).where(eq(issues.id, blockedIssueId));
+
+      expect((await heartbeat.reconcileResolvedDependencyWakes()).healed).toBe(1);
+      expect(await blockersResolvedWakes(companyId)).toHaveLength(2);
+    });
+  });
 });

@@ -5,6 +5,7 @@ import {
   PR_WAIT_MAX_INTERVAL_MS,
   PR_WAIT_MIN_INTERVAL_MS,
   PR_WAIT_NO_SIGNAL_WAKE_AFTER_MS,
+  PR_WAIT_SETTLED_WAKE_AFTER_MS,
   ciPendingEvidenceContext,
   evaluatePrWaitMonitor,
   isPrWaitMonitor,
@@ -131,7 +132,8 @@ describe("evaluatePrWaitMonitor - unchanged state re-arms without waking the age
       updatedAt: minutesAgo(15),
       metadata: { lastCompletedCi: { conclusion: "success", headSha: HEAD, completedAt: minutesAgo(30).toISOString() } },
     });
-    expect(evaluate({ quietMinutes: 10, products: [known] })).toMatchObject({ action: "defer", ciState: "unknown" });
+    // myrmidon(EMPTY-RUNS-4): a finished CI the agent has seen is the settled state, not "no check data".
+    expect(evaluate({ quietMinutes: 10, products: [known] })).toMatchObject({ action: "defer", ciState: "settled" });
   });
 
   it("ignores CI that finished on a head the pull request no longer has", () => {
@@ -206,6 +208,137 @@ describe("evaluatePrWaitMonitor - wakes the agent with the observed change", () 
   it("never wakes for the safety period while the board knows the CI is running", () => {
     const running = { activeCi: { status: "in_progress", headSha: HEAD, observedAt: minutesAgo(2).toISOString() } };
     expect(evaluate({ quietMinutes: 45, products: [product({ metadata: running })] }).action).toBe("defer");
+  });
+});
+
+// myrmidon(EMPTY-RUNS-4): CI of the current head finished and the agent has seen
+// it - the wait is for a review or a merge, which the board records itself. The
+// 30-minute safety wake of the "no check data" state must not fire here.
+describe("evaluatePrWaitMonitor - settled CI waits for review or merge without waking the agent", () => {
+  const SETTLED_MIN = PR_WAIT_SETTLED_WAKE_AFTER_MS / MIN;
+  const MERGE_WATCH = {
+    kind: null,
+    serviceName: "GitHub PR merge",
+    notes: "Merge-watch after APPROVE; close the task once PR #7 is merged",
+    timeoutAt: null,
+  };
+
+  /** CI of HEAD finished long before any `quietMinutes` used below, so the agent has seen it. */
+  function settled(overrides: Partial<PrWaitProductFact> & { metadata?: Record<string, unknown> } = {}): PrWaitProductFact {
+    const { metadata, ...rest } = overrides;
+    return product({
+      updatedAt: minutesAgo(SETTLED_MIN + 200),
+      metadata: {
+        lastCompletedCi: { conclusion: "success", headSha: HEAD, completedAt: minutesAgo(SETTLED_MIN + 200).toISOString() },
+        ...(metadata ?? {}),
+      },
+      ...rest,
+    });
+  }
+
+  it("does not wake after the 30-minute safety period and re-arms with the capped interval", () => {
+    const delays = [35, 45, 150].map((quiet) => {
+      const decision = evaluate({ quietMinutes: quiet, products: [settled()], monitor: MERGE_WATCH });
+      expect(decision).toMatchObject({ action: "defer", ciState: "settled" });
+      return decision.action === "defer" ? decision.delayMs : -1;
+    });
+    expect(delays).toEqual([35 * MIN, 45 * MIN, PR_WAIT_MAX_INTERVAL_MS]);
+  });
+
+  it("still wakes for news: a merge, a re-run of CI, a review, a conflict", () => {
+    const merged = evaluate({ quietMinutes: 45, products: [settled({ status: "merged", updatedAt: minutesAgo(5) })] });
+    expect(merged).toMatchObject({ action: "wake", change: { kind: "state_changed", signals: [{ kind: "pr_merged" }] } });
+
+    const rerun = evaluate({
+      quietMinutes: 45,
+      products: [settled({ metadata: { lastCompletedCi: { conclusion: "failure", headSha: HEAD, completedAt: minutesAgo(5).toISOString() } } })],
+    });
+    expect(rerun).toMatchObject({ action: "wake", change: { signals: [{ kind: "ci_completed", conclusion: "failure" }] } });
+
+    const reviewed = evaluate({ quietMinutes: 45, products: [settled({ reviewState: "changes_requested", updatedAt: minutesAgo(5) })] });
+    expect(reviewed).toMatchObject({ action: "wake", change: { signals: [{ kind: "review_submitted" }] } });
+
+    const conflict = evaluate({ quietMinutes: 45, products: [settled({ updatedAt: minutesAgo(5), metadata: { mergeable: "CONFLICTING" } })] });
+    expect(conflict).toMatchObject({ action: "wake", change: { signals: [{ kind: "merge_conflict" }] } });
+  });
+
+  it("waits for a new CI run of the head as a running CI, not as a settled one", () => {
+    const running = settled({
+      metadata: { lastCompletedCi: null, activeCi: { status: "in_progress", headSha: HEAD, observedAt: minutesAgo(3).toISOString() } },
+    });
+    expect(evaluate({ quietMinutes: 45, products: [running] })).toMatchObject({ action: "defer", ciState: "pending" });
+  });
+
+  it("keeps the 30-minute safety wake when the finished CI belongs to a head the pull request no longer has", () => {
+    const moved = settled({
+      metadata: { headSha: HEAD, lastCompletedCi: { conclusion: "success", headSha: OLD_HEAD, completedAt: minutesAgo(SETTLED_MIN + 200).toISOString() } },
+    });
+    const decision = evaluate({ quietMinutes: 45, products: [moved] });
+    expect(decision).toMatchObject({ action: "wake", change: { kind: "no_signal" } });
+    if (decision.action === "wake") expect(decision.change.summary).toContain("holds no check-run data");
+  });
+
+  it("judges several rows of one pull request by the row that carries its finished CI", () => {
+    // The row the agent registered: no number, no external id, a stale head, no CI marks.
+    const registeredByAgent: PrWaitProductFact = {
+      type: "pull_request",
+      provider: "github",
+      status: "open",
+      reviewState: "none",
+      url: "https://github.com/company-a/example.com/pull/7",
+      updatedAt: minutesAgo(SETTLED_MIN + 300),
+      metadata: { repo: "company-a/example.com", prNumber: 7, headSha: OLD_HEAD },
+    };
+    expect(evaluate({ quietMinutes: 45, products: [registeredByAgent, settled()] })).toMatchObject({
+      action: "defer",
+      ciState: "settled",
+    });
+    expect(evaluate({ quietMinutes: 45, products: [settled(), registeredByAgent] })).toMatchObject({
+      action: "defer",
+      ciState: "settled",
+    });
+  });
+
+  it("keeps the 30-minute safety wake while another pull request of the task has no check data", () => {
+    const second = product({
+      url: "https://github.com/company-a/example.com/pull/8",
+      updatedAt: minutesAgo(SETTLED_MIN + 200),
+      metadata: { number: 8 },
+    });
+    expect(evaluate({ quietMinutes: 20, products: [settled(), second] })).toMatchObject({ action: "defer", ciState: "unknown" });
+    expect(evaluate({ quietMinutes: 45, products: [settled(), second] })).toMatchObject({
+      action: "wake",
+      change: { kind: "no_signal" },
+    });
+  });
+
+  it("lands the backstop wake on its threshold and names the finished CI when it fires", () => {
+    const before = evaluate({ quietMinutes: SETTLED_MIN - 20, products: [settled()] });
+    expect(before).toMatchObject({ action: "defer", ciState: "settled", delayMs: 20 * MIN });
+
+    const decision = evaluate({ quietMinutes: SETTLED_MIN, products: [settled()] });
+    expect(decision.action).toBe("wake");
+    if (decision.action !== "wake") return;
+    expect(decision.change.kind).toBe("no_signal");
+    expect(decision.change.signals).toEqual([]);
+    expect(decision.change.quietForMs).toBe(PR_WAIT_SETTLED_WAKE_AFTER_MS);
+    expect(decision.change.summary).toContain("CI had already finished");
+    expect(decision.change.summary).toContain("company-a/example.com#7");
+    expect(decision.change.summary).toContain("success");
+    expect(decision.change.summary).not.toContain("holds no check-run data");
+  });
+
+  it("does not postpone the hard deadline of the agent", () => {
+    const deadline = new Date(NOW.getTime() + 3 * MIN).toISOString();
+    const decision = evaluate({ quietMinutes: 45, products: [settled()], monitor: { ...MERGE_WATCH, timeoutAt: deadline } });
+    expect(decision).toMatchObject({ action: "defer", ciState: "settled" });
+    if (decision.action === "defer") expect(decision.nextCheckAt.toISOString()).toBe(deadline);
+  });
+
+  it("keeps the 30-minute safety wake for a pull request the board holds no check data for", () => {
+    expect(PR_WAIT_SETTLED_WAKE_AFTER_MS).toBeGreaterThan(PR_WAIT_NO_SIGNAL_WAKE_AFTER_MS);
+    const decision = evaluate({ quietMinutes: 45, monitor: MERGE_WATCH });
+    expect(decision).toMatchObject({ action: "wake", change: { kind: "no_signal" } });
   });
 });
 

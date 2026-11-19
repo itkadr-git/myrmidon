@@ -139,7 +139,10 @@ import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
+  findIssueBlockersResolvedWakeSince,
+  findLatestBlockerResolvedAt,
 } from "../issue-dependency-wakeups.js";
+import { isIssueInContinuationStop } from "../../myrmidon/continuation-cap.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
 import {
@@ -1261,6 +1264,7 @@ export function recoveryService(
       retryReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON ||
       wakeReason === "execution_review_requested" ||
       wakeReason === "execution_approval_requested" ||
+      wakeReason === "execution_verify_requested" ||
       // A continuation wake that carried the reviewer stage context (a
       // reviewer woken as the issue assignee).
       (retryReason === "issue_continuation_needed" &&
@@ -4543,7 +4547,8 @@ export function recoveryService(
     const retryReason = context.retryReason;
     if (retryReason !== EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON &&
         wakeReason !== "execution_review_requested" &&
-        wakeReason !== "execution_approval_requested") return false;
+        wakeReason !== "execution_approval_requested" &&
+        wakeReason !== "execution_verify_requested") return false;
     const issue = await db.query.issues.findFirst({
       where: and(eq(issues.companyId, input.companyId), eq(issues.id, issueId)),
     });
@@ -4802,6 +4807,24 @@ export function recoveryService(
     scheduledRetryReason?: string | null;
     hasPendingCi?: boolean;
   }) {
+    // Recovery must not take ownership away from a live assignee. The issue
+    // checkout lock can be transiently absent while checkout is being claimed;
+    // a queued/running wake is the authoritative signal to leave it untouched.
+    const liveAssigneeWork = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, input.issue.companyId),
+        ...(input.issue.assigneeAgentId
+          ? [eq(heartbeatRuns.agentId, input.issue.assigneeAgentId)]
+          : []),
+        inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issue.id}`,
+        sql`${heartbeatRuns.contextSnapshot} ->> 'source' IS DISTINCT FROM ${STRANDED_AUTO_POLICY_RETRY_SOURCE}`,
+      ))
+      .limit(1);
+    if (liveAssigneeWork.length > 0) return null;
+
     // myrmidon(OPE-10045): a pending review stage whose reviewer run ended
     // without a decision first waits for CI on the PR head, then gets one more
     // explicit decision request. Only after that is it escalated, and the
@@ -5510,7 +5533,7 @@ export function recoveryService(
             if (!current) return { outcome: "skipped" as const };
             if (
               current.status === "blocked" &&
-              current.assigneeAgentId === input.issue.assigneeAgentId &&
+              current.assigneeAgentId === null &&
               (current.blockerMetadata?.owner as { agentId?: string } | undefined)?.agentId === ownerAgentId
             ) {
               return { outcome: "already_applied" as const, issue: current };
@@ -7754,6 +7777,7 @@ export function recoveryService(
       checked: 0,
       healed: 0,
       existingWakeSkipped: 0,
+      continuationStopSkipped: 0,
       livePathSkipped: 0,
       interactionSkipped: 0,
       pauseHoldSkipped: 0,
@@ -7918,6 +7942,42 @@ export function recoveryService(
           });
         if (existingWake) {
           result.existingWakeSkipped += 1;
+          continue;
+        }
+
+        // One wake per resolution. The cycle key above changes when the
+        // dependent re-enters `blocked` (the continuation stop does that), so
+        // look for a wake after the close of the newest blocker whatever its
+        // cycle. A blocker that was reopened and closed again has a newer
+        // close stamp, so it wakes again.
+        const blockersResolvedAt = await findLatestBlockerResolvedAt(db, {
+          companyId,
+          blockerIssueIds: readiness.blockerIssueIds,
+        });
+        if (
+          blockersResolvedAt &&
+          (await findIssueBlockersResolvedWakeSince(db, {
+            companyId,
+            agentId,
+            dependentIssueId: candidate.id,
+            since: blockersResolvedAt,
+          }))
+        ) {
+          result.existingWakeSkipped += 1;
+          continue;
+        }
+
+        // A task the continuation stop parked stays parked until an external
+        // event; the backstop is not one.
+        if (
+          await isIssueInContinuationStop(db, {
+            companyId,
+            issueId: candidate.id,
+            agentId,
+            blockersResolvedAt,
+          })
+        ) {
+          result.continuationStopSkipped += 1;
           continue;
         }
 
@@ -8445,7 +8505,7 @@ export function recoveryService(
   // `run_guard_stop_needs_input`, once per issue per 30 minutes. Callers: the guard
   // stop handling in heartbeat.ts and the stranded sweep below.
   async function wakeManagerForRunGuardStop(input: {
-    issue: { id: string; companyId: string; assigneeAgentId: string | null };
+    issue: { id: string; companyId: string; projectId?: string | null; assigneeAgentId: string | null };
     latestRun: { id: string; errorCode?: string | null; resultJson?: unknown };
     stopText?: string | null;
   }) {
@@ -8454,13 +8514,13 @@ export function recoveryService(
     // Only a task the escalation actually blocked is worth the manager's attention: a
     // deferred review stage or a rerouted task keeps its status and its own path.
     const current = await db
-      .select({ status: issues.status })
+      .select({ status: issues.status, projectId: issues.projectId })
       .from(issues)
       .where(and(eq(issues.companyId, input.issue.companyId), eq(issues.id, input.issue.id)))
       .then((rows) => rows[0] ?? null);
     if (current?.status !== "blocked") return null;
     return wakeManagerForRunGuardStopImpl(db, deps.enqueueWakeup, {
-      issue: input.issue,
+      issue: { ...input.issue, projectId: input.issue.projectId ?? current.projectId },
       latestRun: input.latestRun,
       stopReason,
       stopText: input.stopText ?? buildRunGuardStopComment(input.latestRun),

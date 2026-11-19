@@ -47,10 +47,15 @@ describe("maintenance interrupt retry claim", () => {
     expect(schedule).toHaveBeenCalledTimes(1);
   });
 
-  // myrmidon(OPE-12802): the retry must carry the "continue, do not restart" instruction.
+  // myrmidon(OPE-12802, OPE-13077): the retry must carry the "continue, do not restart" instruction.
   it("hands the retry an instruction to continue from the interrupted run", async () => {
     const schedule = vi.fn().mockResolvedValue({ outcome: "scheduled" });
-    const cancelRun = vi.fn().mockResolvedValue({ status: "cancelled", lastUsefulActionAt: new Date("2026-11-12T01:50:00.000Z") });
+    const cancelRun = vi.fn().mockResolvedValue({
+      status: "cancelled",
+      startedAt: new Date("2026-11-12T01:00:00.000Z"),
+      finishedAt: new Date("2026-11-12T01:17:00.000Z"),
+      lastUsefulActionAt: new Date("2026-11-12T01:50:00.000Z"),
+    });
     const p = maintenanceHeartbeatPort({ cancelRun, scheduleBoundedRetry: schedule } as unknown as Heartbeat);
 
     await p.interruptRunForMaintenance!("run-7", "window-9");
@@ -66,7 +71,43 @@ describe("maintenance interrupt retry claim", () => {
     );
     const opts = schedule.mock.calls[0]![1] as { livenessContinuationInstruction: string };
     expect(opts.livenessContinuationInstruction).toContain("window-9");
-    expect(opts.livenessContinuationInstruction).toContain("2026-11-12T01:50:00.000Z");
-    expect(opts.livenessContinuationInstruction).toContain("Не начинай заново");
+    expect(opts.livenessContinuationInstruction).toContain("2026-11-12T01:00:00.000Z");
+    expect(opts.livenessContinuationInstruction).toContain("2026-11-12T01:17:00.000Z");
+    expect(opts.livenessContinuationInstruction).toContain("17 min");
+    expect(opts.livenessContinuationInstruction).toContain("Do not start over");
+  });
+
+  it("includes branch and head SHA in the instruction when the board knows them", async () => {
+    const schedule = vi.fn().mockResolvedValue({ outcome: "scheduled" });
+    const cancelRun = vi.fn().mockResolvedValue({
+      status: "cancelled",
+      companyId: "company-1",
+      contextSnapshot: { issueId: "issue-1" },
+      startedAt: new Date("2026-11-12T01:00:00.000Z"),
+      finishedAt: new Date("2026-11-12T01:17:00.000Z"),
+      lastUsefulActionAt: new Date("2026-11-12T01:50:00.000Z"),
+    });
+    const db = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            {
+              status: "open",
+              metadata: {
+                headRef: "bot/OPE-13077",
+                headSha: "abc123",
+              },
+            },
+          ]),
+        }),
+      }),
+    };
+    const p = maintenanceHeartbeatPort({ cancelRun, scheduleBoundedRetry: schedule } as unknown as Heartbeat, db as any);
+
+    await p.interruptRunForMaintenance!("run-7", "window-9");
+
+    const opts = schedule.mock.calls[0]![1] as { livenessContinuationInstruction: string };
+    expect(opts.livenessContinuationInstruction).toContain("bot/OPE-13077");
+    expect(opts.livenessContinuationInstruction).toContain("abc123");
   });
 });

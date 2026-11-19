@@ -27,6 +27,7 @@
 // "External input" reuses the movement notion of the cooling guard
 // (wake-task-guard.ts `isRealTaskMovement`): a comment or a movement activity
 // by a user or by a different agent, a blocker resolved, a PR/CI sync event.
+// A change of the PR head (`issue.work_product_head_changed`) counts too.
 // The agent's own comments and updates and system bookkeeping do not count.
 
 import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
@@ -38,6 +39,7 @@ import {
   isRealTaskMovement,
   type TaskMovement,
 } from "./wake-task-guard.js";
+import { PR_HEAD_CHANGE_ACTIVITY_ACTION } from "../services/issue-rewake-throttle.js";
 
 export const CONTINUATION_WAKE_REASON = "issue_continuation_needed";
 
@@ -67,7 +69,15 @@ export const CONTINUATION_CAP_UNBLOCK_ACTION =
 
 /** Movement actions that count as external input: the cooling guard's list plus an assignment. */
 const EXTERNAL_INPUT_ACTIVITY_ACTIONS: string[] = [...MOVEMENT_ACTIVITY_ACTIONS, "issue.assigned"];
-const EXTERNAL_INPUT_SYSTEM_ACTIONS: string[] = [...EXTERNAL_SYSTEM_MOVEMENTS];
+// A change of the head of the task's pull request (a push the webhook saw) is
+// real progress outside the agent's own chatter, so it restarts the count. It
+// is local to this cap: the cooling guard's movement list is left as it was.
+const EXTERNAL_INPUT_SYSTEM_ACTIONS: string[] = [...EXTERNAL_SYSTEM_MOVEMENTS, PR_HEAD_CHANGE_ACTIVITY_ACTION];
+
+function isExternalInput(move: TaskMovement, agentId: string): boolean {
+  if (isRealTaskMovement(move, agentId)) return true;
+  return move.actorType === "system" && move.action === PR_HEAD_CHANGE_ACTIVITY_ACTION;
+}
 
 export interface ContinuationIssueFacts {
   status: string;
@@ -106,7 +116,7 @@ export function countContinuationsWithoutExternalInput(input: {
 }): number {
   let lastExternalAt = Number.NEGATIVE_INFINITY;
   for (const move of input.moves) {
-    if (isRealTaskMovement(move, input.agentId) && move.at > lastExternalAt) lastExternalAt = move.at;
+    if (isExternalInput(move, input.agentId) && move.at > lastExternalAt) lastExternalAt = move.at;
   }
   let count = 0;
   for (const run of input.runs) {
@@ -138,7 +148,7 @@ export interface ContinuationCapReading {
  */
 async function loadExternalMovements(
   db: Db,
-  input: { companyId: string; issueId: string; agentId: string; since: Date },
+  input: { companyId: string; issueId: string; agentId: string; since: Date; ignoreActions?: readonly string[] },
 ): Promise<TaskMovement[]> {
   const comments = await db
     .select({
@@ -180,7 +190,15 @@ async function loadExternalMovements(
         eq(activityLog.entityType, "issue"),
         eq(activityLog.entityId, input.issueId),
         gt(activityLog.createdAt, input.since),
-        inArray(activityLog.action, EXTERNAL_INPUT_ACTIVITY_ACTIONS),
+        // The system actions of the list below must pass this filter too: a
+        // row the filter drops never reaches the `or` branch (the PR head
+        // change was dropped here, so a push did not reset the count).
+        inArray(
+          activityLog.action,
+          [...new Set([...EXTERNAL_INPUT_ACTIVITY_ACTIONS, ...EXTERNAL_INPUT_SYSTEM_ACTIONS])].filter(
+            (action) => !input.ignoreActions?.includes(action),
+          ),
+        ),
         or(
           eq(activityLog.actorType, "user"),
           and(eq(activityLog.actorType, "agent"), ne(activityLog.actorId, input.agentId)),
@@ -241,6 +259,47 @@ export async function readContinuationCap(
   });
   const count = countContinuationsWithoutExternalInput({ agentId: input.agentId, runs, moves });
   return { count, max, capped: count >= max };
+}
+
+/** Activity the stop writes when it parks an issue. */
+export const CONTINUATION_CAP_STOP_ACTIVITY_ACTION = "issue.continuation_cap_reached";
+
+/**
+ * True while the issue sits in a continuation stop: the latest stop record is
+ * for this agent and no external input came after it. External input is the
+ * same notion the cap counts (a comment or movement by a user or another
+ * agent, a PR/CI sync event, a PR head change), plus a blocker closed after
+ * the stop (`blockersResolvedAt`). The wake the dependency backstop emitted
+ * itself is not input: it is the producer of the loop, so it is ignored here.
+ * A change of assignee leaves the stop at once (the stop belongs to one agent).
+ */
+export async function isIssueInContinuationStop(
+  db: Db,
+  input: { companyId: string; issueId: string; agentId: string; blockersResolvedAt?: Date | null },
+): Promise<boolean> {
+  const [stop] = await db
+    .select({ at: activityLog.createdAt, agentId: activityLog.agentId })
+    .from(activityLog)
+    .where(
+      and(
+        eq(activityLog.companyId, input.companyId),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, input.issueId),
+        eq(activityLog.action, CONTINUATION_CAP_STOP_ACTIVITY_ACTION),
+      ),
+    )
+    .orderBy(desc(activityLog.createdAt))
+    .limit(1);
+  if (!stop || stop.agentId !== input.agentId) return false;
+  if (input.blockersResolvedAt && input.blockersResolvedAt.getTime() > stop.at.getTime()) return false;
+  const moves = await loadExternalMovements(db, {
+    companyId: input.companyId,
+    issueId: input.issueId,
+    agentId: input.agentId,
+    since: stop.at,
+    ignoreActions: ["issue.blockers_resolved_wake_emitted"],
+  });
+  return !moves.some((move) => isExternalInput(move, input.agentId));
 }
 
 /**

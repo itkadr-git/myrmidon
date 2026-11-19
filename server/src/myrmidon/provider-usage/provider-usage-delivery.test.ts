@@ -52,7 +52,7 @@ describeEmbeddedPostgres("provider usage owner warning delivery", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-provider-usage-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   beforeEach(() => {
     mockRejectFirstComment.value = false;

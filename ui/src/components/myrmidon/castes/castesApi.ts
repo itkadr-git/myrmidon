@@ -96,3 +96,33 @@ export const castesApi = {
       ...(reassignTo ? { reassignTo } : {}),
     }),
 };
+
+// myrmidon(1.8 CASTE-MODEL-EVAL OPE-12948): read-only client for the per-caste
+// model comparison (GET /castes/:key/model-eval, served by OPE-12933). The
+// ranking belongs to the server: `suggestedModel` is the best free enabled
+// model by its scoring; the UI never re-ranks over it, only derives a
+// fallback highlight when an older server omits the field.
+export interface CasteModelEvalResultView {
+  model: string;
+  /** Reference-run aggregate score for this model (higher is better). */
+  score: number;
+  free: boolean;
+  enabled: boolean;
+}
+
+export interface CasteModelEvalView {
+  /** One row per compared model, as the reference run scored it. */
+  results: CasteModelEvalResultView[];
+  /** Server-chosen best free enabled model; null when nothing qualifies. */
+  suggestedModel: string | null;
+}
+
+export const casteModelEvalQueryKey = (companyId: string, casteKey: string) =>
+  ["myrmidon", "castes", companyId, casteKey, "model-eval"] as const;
+
+export const casteModelEvalApi = {
+  view: (companyId: string, casteKey: string) =>
+    api.get<CasteModelEvalView>(
+      `${base(companyId)}/${encodeURIComponent(casteKey)}/model-eval`,
+    ),
+};

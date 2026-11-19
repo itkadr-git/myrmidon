@@ -34,7 +34,7 @@ describeEmbeddedPostgres("run-dispatch: failedBeforeModel on queue timeout (OPE-
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-dispatch-fbm-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(activityLog);

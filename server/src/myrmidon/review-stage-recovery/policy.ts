@@ -207,6 +207,47 @@ export function decideReviewAdmission(facts: ReviewAdmissionFacts): ReviewAdmiss
   return "admit";
 }
 
+/**
+ * myrmidon(EMPTY-RUNS-2B): what one tick of the board's "Review CI wait"
+ * monitor does with the reviewer.
+ *
+ * The hand-off does not wake a reviewer onto a red head (`wait_red` above) and
+ * arms this monitor instead. The tick, however, only asked "is CI still
+ * running?": a finished head — red included — woke the reviewer ten minutes
+ * later with "do not wait for CI, submit the decision now". The reviewer of a
+ * head that is red because main is red could only return the task, and the
+ * executor then ran to find nothing to fix.
+ *
+ * The tick now applies the admission rule of the hand-off: while CI runs (or
+ * is unreadable) the monitor is re-armed as before; while the finished head is
+ * red it is re-armed too; a green head, a critical issue, a task without a
+ * pull request or without hosted CI wake the reviewer as before. The wait on a
+ * red head is bounded by the same budget as the CI wait of a review stage
+ * (`REVIEW_CI_WAIT_MAX_ATTEMPTS` ticks of the monitor): past it the reviewer is
+ * woken as before, so a red head nobody fixes never parks the task for good.
+ * A tick whose CI is still running is never a wake, at any attempt, exactly as
+ * before.
+ */
+export type ReviewCiWaitTickDecision = "wait_for_ci" | "wait_red" | "wake";
+
+export function decideReviewCiWaitTick(
+  facts: ReviewAdmissionFacts & {
+    /** 1-based number of this tick among the ticks of the monitor. */
+    attempt: number;
+  },
+): ReviewCiWaitTickDecision {
+  if (isReviewCiWaiting(facts.ci)) return "wait_for_ci";
+  if (facts.critical) return "wake";
+  if (
+    facts.ci === "complete" &&
+    facts.headFinalCheck === "red" &&
+    facts.attempt <= REVIEW_CI_WAIT_MAX_ATTEMPTS
+  ) {
+    return "wait_red";
+  }
+  return "wake";
+}
+
 /** Error code of a run the maintenance drain interrupted (myrmidon/maintenance/domain.ts). */
 const MAINTENANCE_INTERRUPTED_ERROR_CODE = "myrmidon_maintenance_interrupted";
 

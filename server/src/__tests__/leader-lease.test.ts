@@ -111,16 +111,128 @@ describeDb("leader-lease protocol (PROCS-1.7)", () => {
     expect(rows[0].holderBootId).toBe(a.bootId);
   });
 
-  it("renew: the holder extends the lease, epoch increments", async () => {
+  it("renew: the holder extends the lease, the epoch stays (OPE-13146)", async () => {
     await cleanLeases();
     const svc = leaderLeaseService(db, { ttlMs: 5_000, renewIntervalMs: 100 });
     const lease = svc.lease("scheduler");
     lease.start();
-    // First pass acquires (epoch 1), every renew pass runs the same UPDATE so
-    // the epoch keeps incrementing per §5.3.
-    await until(() => expect(lease.currentEpoch()).toBeGreaterThanOrEqual(2));
+    // First pass acquires (epoch 1). A renewal by the same owner must keep
+    // the epoch — the epoch fences a handover, and an unchanged owner is
+    // not a handover (OPE-13146: the per-renew epoch bump produced 34k
+    // noise activity rows/day).
+    await until(() => expect(lease.isLeader()).toBe(true));
     lease.stop();
-    expect(lease.isLeader()).toBe(true);
+    const epochAfterAcquire = lease.currentEpoch();
+    expect(epochAfterAcquire).toBe(1);
+    // Drive one more renew pass manually: expiry moves forward, epoch stays.
+    const [rowBefore] = await db.select().from(boardLeases);
+    lease.start();
+    await until(() =>
+      expect(lease.currentEpoch()).toBe(epochAfterAcquire),
+    );
+    lease.stop();
+    const [rowAfter] = await db.select().from(boardLeases);
+    expect(Number(rowAfter.epoch)).toBe(epochAfterAcquire);
+    expect(rowAfter.expiresAt.getTime()).toBeGreaterThanOrEqual(rowBefore.expiresAt.getTime());
+  });
+
+  it("renew: onLeaderChanged fires only when the epoch actually changes (OPE-13146)", async () => {
+    await cleanLeases();
+    const svc = leaderLeaseService(db, { ttlMs: 5_000, renewIntervalMs: 100 });
+    const seen: Array<{ holder: string; epoch: number }> = [];
+    const lease = svc.lease("scheduler", {
+      onLeaderChanged: (holder, epoch) => { seen.push({ holder, epoch }); },
+    });
+    lease.start();
+    await until(() => expect(lease.isLeader()).toBe(true));
+    // Let several renew passes run; every one keeps the same owner+epoch, so
+    // the hook must stay silent after the initial acquire notification.
+    await new Promise((r) => setTimeout(r, 500));
+    lease.stop();
+    const acquireNotifications = seen.filter((s) => s.holder === svc.bootId);
+    expect(acquireNotifications.length).toBe(1);
+    expect(seen.every((s) => s.epoch === 1)).toBe(true);
+  });
+
+  it("expire+reacquire: same holder after expiry gets a new epoch and notification", async () => {
+    await cleanLeases();
+    const svc = leaderLeaseService(db, { ttlMs: 200, renewIntervalMs: 100 });
+    const seen: Array<{ holder: string; epoch: number }> = [];
+    const lease = svc.lease("scheduler", {
+      onLeaderChanged: (holder, epoch) => { seen.push({ holder, epoch }); },
+    });
+    lease.start();
+    await until(() => expect(lease.isLeader()).toBe(true));
+    expect(lease.currentEpoch()).toBe(1);
+    lease.stop(); // freeze renewals; the row will expire after 200 ms
+
+    // Wait past the TTL so the row is expired, then run a renew pass: the
+    // same holder must still get a new fencing epoch because the lease had
+    // expired.
+    await new Promise((r) => setTimeout(r, 350));
+    lease.start();
+    await until(() => expect(lease.currentEpoch()).toBe(2));
+    lease.stop();
+
+    const selfEvents = seen.filter((s) => s.holder === svc.bootId);
+    expect(selfEvents.length).toBe(2);
+    expect(selfEvents[0].epoch).toBe(1);
+    expect(selfEvents[1].epoch).toBe(2);
+  });
+
+  it("overlapping acquisition passes emit a single acquisition notification", async () => {
+    await cleanLeases();
+    const svc = leaderLeaseService(db, { ttlMs: 60_000, renewIntervalMs: 30 });
+    const seen: number[] = [];
+    const acquired: number[] = [];
+    const lease = svc.lease("scheduler", {
+      onLeaderChanged: (_holder, epoch) => seen.push(epoch),
+      onAcquired: (epoch) => acquired.push(epoch),
+    });
+    let unlock!: () => void;
+    let locked!: () => void;
+    const ready = new Promise<void>((resolve) => { locked = resolve; });
+    const gate = new Promise<void>((resolve) => { unlock = resolve; });
+    const blocker = db.transaction(async (tx) => {
+      await tx.execute(sql`LOCK TABLE board_leases IN ACCESS EXCLUSIVE MODE`);
+      locked();
+      await gate;
+    });
+    await ready;
+    try {
+      lease.start();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    } finally {
+      lease.stop();
+      unlock();
+      await blocker;
+    }
+    await until(() => expect(lease.isLeader()).toBe(true));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(acquired).toEqual([1]);
+    expect(seen).toEqual([1]);
+  });
+
+  it("renew before expiry: same holder keeps epoch, no extra notification", async () => {
+    await cleanLeases();
+    const svc = leaderLeaseService(db, { ttlMs: 5_000, renewIntervalMs: 100 });
+    const seen: Array<{ holder: string; epoch: number }> = [];
+    const lease = svc.lease("scheduler", {
+      onLeaderChanged: (holder, epoch) => { seen.push({ holder, epoch }); },
+    });
+    lease.start();
+    await until(() => expect(lease.isLeader()).toBe(true));
+    const epochAfterAcquire = lease.currentEpoch();
+    expect(epochAfterAcquire).toBe(1);
+
+    // Drive several renew passes well before the 5 s TTL: epoch must stay 1
+    // and no additional onLeaderChanged fires.
+    await new Promise((r) => setTimeout(r, 500));
+    lease.stop();
+    expect(lease.currentEpoch()).toBe(1);
+    const selfEvents = seen.filter((s) => s.holder === svc.bootId);
+    expect(selfEvents.length).toBe(1);
+    expect(selfEvents[0].epoch).toBe(1);
   });
 
   it("expire: a stalled holder is displaced after the TTL", async () => {

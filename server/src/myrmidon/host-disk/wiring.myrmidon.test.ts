@@ -61,6 +61,7 @@ describe("myrmidon(BOT-DISK E): a sweep through the real wiring", () => {
       resolveSettings: () => resolveSweepSettings(settings, {}),
       logActivity,
       lastSignalAt: async () => null,
+      listCompanyIds: async () => ["company-1"],
       logger: { error: vi.fn(), info: vi.fn(), debug: vi.fn() },
       measureUsage: async () => ({
         path: "/srv/data",
@@ -113,6 +114,7 @@ describe("myrmidon(BOT-DISK E): a sweep through the real wiring", () => {
       resolveSettings: () => resolveSweepSettings(settings, {}),
       logActivity: vi.fn(async () => ({})),
       lastSignalAt: async () => null,
+      listCompanyIds: async () => ["company-1"],
       logger: { error: vi.fn(), info: vi.fn(), debug: vi.fn() },
       measureUsage: async () => ({
         path: "/srv/data",
@@ -170,6 +172,7 @@ describe("myrmidon(BOT-DISK E): paths from the environment", () => {
       resolveSettings: async () => ({ usageThresholdPercent: 85 }),
       logActivity: vi.fn(async () => ({})),
       lastSignalAt: async () => null,
+      listCompanyIds: async () => ["company-1"],
       logger: { error: vi.fn(), info: vi.fn(), debug: vi.fn() },
       measureUsage,
       now: () => new Date("2026-10-08T12:00:00.000Z"),

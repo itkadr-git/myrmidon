@@ -51,7 +51,7 @@ describeEmbeddedPostgres(
         "paperclip-x8g-board-links-",
       );
       db = createDb(tempDb.connectionString);
-    }, 20_000);
+    }, 60_000);
 
     afterAll(async () => {
       if (previousPublicUrl === undefined) delete process.env.PAPERCLIP_PUBLIC_URL;

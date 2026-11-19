@@ -833,7 +833,7 @@ describeEmbeddedPostgres("myrmidon(1.6.8 SCENT-AUTHZ OPE-12698): scent refresh b
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-scent-authz-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(activityLog);

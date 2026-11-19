@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { applyRunPrioritySettings, currentRunPrioritySettings } from "../myrmidon/run-priority/state.js";
 import {
   activityLog,
   agents,
@@ -79,6 +80,8 @@ async function deleteHeartbeatRunsAfterEvents(db: ReturnType<typeof createDb>) {
 }
 
 describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
+  // These tests cover the corrective finish-handoff wake: run them with the board in-progress wake off (with it on, in_progress is a valid outcome).
+  applyRunPrioritySettings({ ...currentRunPrioritySettings({}), inProgressIdleWakeMinutes: 0 });
   let db!: ReturnType<typeof createDb>;
   let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -87,7 +90,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-responsible-user-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     mockAdapterExecute.mockClear();

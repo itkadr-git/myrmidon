@@ -41,7 +41,7 @@ describeEmbeddedPostgres("run context columns backfill job", () => {
       runtimeConfig: {},
       permissions: {},
     });
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(heartbeatRuns);

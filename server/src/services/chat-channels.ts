@@ -292,7 +292,10 @@ import {
 // bridge seam, so a channel connector can serve it.
 import { stripLeadingMentionToken as x9StripAddressToken } from "../myrmidon/channel-connectors/bridge/addressing.js";
 import { resolveBridgedAddressee } from "../myrmidon/channel-connectors/bridge/agent-bridge.js";
-import type { TelegramAddressee } from "../myrmidon/channel-connectors/bridge/addressing.js";
+import type {
+  TelegramAddressee,
+  BridgeAddresseeResult,
+} from "../myrmidon/channel-connectors/bridge/addressing.js";
 // myrmidon(1.7-ACTIVE-CHANNEL): Telegram inbound activity tracking.
 import { markOwnerActivityBestEffort } from "../myrmidon/owner-active-channel/store.js";
 // myrmidon(U2): company-wide interaction lookup for callbacks on cards
@@ -1211,6 +1214,7 @@ type ProviderEffectPayload = {
   text: string;
   fallbackText?: string;
   settleDelivery: boolean;
+  filteredDeliveryError?: string;
   completeConversationId?: string;
   resourceId?: string;
   runtimeGeneration: number;
@@ -1485,6 +1489,7 @@ function providerEffectPayload(
     "authorizationMode",
     "userId",
     "fallbackText",
+    "filteredDeliveryError",
     "completeConversationId",
     "resourceId",
   ] as const) {
@@ -5731,10 +5736,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 const [settled] = await tx
                   .update(chatDeliveries)
                   .set({
-                    state: "processed",
+                    state: payload.filteredDeliveryError ? "filtered" : "processed",
                     processedAt: new Date(),
                     nextAttemptAt: null,
-                    redactedError: null,
+                    redactedError: payload.filteredDeliveryError ?? null,
                     updatedAt: new Date(),
                   })
                   .where(
@@ -16215,11 +16220,54 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         (x8Dm.applies || addressed) &&
         principalResolution.userId !== null
       ) {
-        x9Addressee = await resolveBridgedAddressee(db, {
+        const x9Result: BridgeAddresseeResult = await resolveBridgedAddressee(db, {
           companyId: endpoint.companyId,
           endpointAgentId: endpoint.assignedAgentId,
           text: message.text,
         });
+        if (x9Result.kind === "ambiguous" || x9Result.kind === "invalid_id") {
+          const candidateList = x9Result.kind === "ambiguous"
+            ? x9Result.candidates.map((c) => `${c.name} (${c.agentId})`).join(", ")
+            : "";
+          const refusalText = x9Result.kind === "ambiguous"
+            ? `Ambiguous mention "@${x9Result.handle}": multiple agents match (${candidateList}). Please specify by agent ID.`
+            : "Invalid or unavailable agent ID.";
+          const refusalError = x9Result.kind === "ambiguous"
+            ? `Ambiguous agent mention: @${x9Result.handle}`
+            : "Invalid or unavailable agent ID";
+          const effectContext =
+            runtimeContext ??
+            runtimeContextForRecord(
+              (await endpointRecord(endpoint.id)) ??
+                (() => {
+                  throw new Error("Chat endpoint is unavailable");
+                })(),
+            );
+          const effect = await db.transaction((tx) =>
+            stageProviderEffect(tx, {
+              endpoint,
+              deliveryId: activeDelivery.id,
+              principalId: principalResolution.principal.id,
+              providerActionId: `provider_effect:delivery:${activeDelivery.id}`,
+              payload: {
+                version: 1,
+                effect: "thread_message",
+                threadId: thread.id,
+                text: refusalText,
+                settleDelivery: true,
+                filteredDeliveryError: refusalError,
+                resourceId: resource.id,
+              },
+              runtimeContext: effectContext,
+            }),
+          );
+          if (effect) {
+            await processProviderEffect(effect.id, thread);
+          }
+          return;
+        } else if (x9Result.kind === "resolved") {
+          x9Addressee = x9Result.addressee;
+        }
       }
       if (x8Dm.detachExisting) {
         existingConversation = null;
@@ -36916,7 +36964,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         persisted.transportPart ||
         persisted.card ||
         persisted.interactionId ||
-        !discordMarkdownRequiresAttachment(persisted.text)
+        !(await discordMarkdownRequiresAttachment(persisted.text))
       ) {
         return publication;
       }
@@ -36943,7 +36991,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           currentPayload.card ||
           currentPayload.interactionId ||
           !["pending", "retry"].includes(current.state) ||
-          !discordMarkdownRequiresAttachment(currentPayload.text)
+          !(await discordMarkdownRequiresAttachment(currentPayload.text))
         ) {
           return current;
         }

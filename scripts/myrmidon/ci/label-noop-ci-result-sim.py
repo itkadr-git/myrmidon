@@ -1,311 +1,197 @@
 #!/usr/bin/env python3
 """scripts/myrmidon/ci/label-noop-ci-result-sim.py
 
-OPE-12841 behavioural execution engine for myrmidon-ci.yml.
+OPE-12841 / CI-LABEL-NOOP-KEEPS-RESULT behavioural check of the label
+handling of myrmidon-ci.yml.
 
-Instead of asserting on workflow source strings, this script EXECUTES the
-job graph of `.github/workflows/myrmidon-ci.yml`: it parses the workflow
-YAML, reads each job's real `if:`/`name:` expressions, translates the
-GitHub Actions expression language to Python, and evaluates it against
-concrete event contexts (a `labeled` run with `review-approved`, a real
-push/merge-queue run, a red plan). Job conclusions follow GitHub's needs
-semantics (a skipped gate -> skipped; a failed/cancelled need fails the
-summary unless the gate keeps it running). The checks each event would
-publish on the PR head are collected, and a branch-ruleset reader keeps
-only checks named `CI result` — the required check the merge gate reads.
-The merge gate is satisfied only when the latest completed `CI result`
-on the head is `success`; `skipped`/`cancelled`/`failure` and a missing
-check keep the PR blocked.
+History. OPE-12841: a `labeled` run for a label other than `full-ci` skipped
+every job, and the skipped `CI result` check counted as passed (PR #2965
+merged on a cancelled head). The first fix renamed the job in noop runs; the
+noop run then became the NEWEST run of the workflow on the head, the required
+`CI result` was read as "expected" and green PRs (#3147, #3088, #3095) could
+not be merged. Now the main workflow has no `labeled` trigger at all: a label
+creates no run of it, the verdict of the last real run stays, and the
+OPE-12841 protection holds by construction. `full-ci` is handled by
+myrmidon-ci-full-label.yml, which re-runs the real run.
 
-The script also proves its own teeth: it re-runs the PR #2965 scenario
-against a mutated workflow whose ci-result job carries the static
-required name (the pre-fix shape) and requires the simulator to show the
-PR being waved through in that case.
+The script reads the workflow YAML and executes the trigger match plus the
+ruleset reading of the required check:
+  - an event creates a run of a workflow only if its `on:` lists the event
+    and action (pull_request: types);
+  - a run publishes `CI result` (static job name, `!cancelled()` gate) with its
+    real verdict; the ruleset reads the newest `CI result` of the head
+    (`success`/`skipped` satisfy, others block), no check = pending.
+Teeth: with `labeled` put back into the types of the main workflow, the
+simulator must show a noop run that is the newest run without a `CI result`
+(the defect), i.e. report the head as `expected`.
 
-Exit code 0 only when every required scenario and the teeth check pass.
-Used by label-noop-ci-result.test.mjs (node --test, same pattern as
-workflow-concurrency.test.mjs -> check-workflow-concurrency.py).
+Exit code 0 only when every scenario and the teeth check pass.
 """
 
 import copy
-import re
 import sys
 
 import yaml
 
-WORKFLOW = ".github/workflows/myrmidon-ci.yml"
+MAIN = ".github/workflows/myrmidon-ci.yml"
+FULL_LABEL = ".github/workflows/myrmidon-ci-full-label.yml"
 REQUIRED_NAME = "CI result"
 
 
-class ExprError(Exception):
-    pass
+def on_block(doc):
+    # PyYAML reads the key `on` as boolean True.
+    return doc.get(True) or doc.get("on") or {}
 
 
-def translate(expr):
-    """Translate a GitHub Actions expression to Python source."""
-    expr = expr.strip()
-    expr = re.sub(r"!\s*(?=[A-Za-z(])", " not ", expr)  # `!` but not `!=`
-    expr = re.sub(r"&&", " and ", expr)
-    expr = re.sub(r"\|\|", " or ", expr)
-    expr = re.sub(r"\bcancelled\(\s*\)", " cancelled_var ", expr)
-    expr = re.sub(r"\bgithub\.event\.label\.name\b", " label ", expr)
-    expr = re.sub(r"\bgithub\.event\.action\b", " action ", expr)
-    expr = re.sub(r"\bgithub\.event_name\b", " event_name ", expr)
-    expr = re.sub(
-        r"\bgithub\.event\.pull_request\.labels\*\.name\b", " labels ", expr
-    )
-    expr = re.sub(r"\bneeds\.plan\.outputs\.tier\b", " tier ", expr)
-    expr = re.sub(r"\bneeds\.plan\.result\b", " plan_result ", expr)
-    # contains(<identifier>, 'literal') -> substring test.
-    expr = re.sub(
-        r"contains\(\s*([A-Za-z_][A-Za-z0-9_]*),\s*'([^']*)'\s*\)",
-        r" ('\2' in \1) ",
-        expr,
-    )
-    return expr
+def creates_run(doc, event, action):
+    """Does this event start a run of the workflow (trigger match only)?"""
+    block = on_block(doc)
+    if isinstance(block, str):
+        block = {block: None}
+    if isinstance(block, list):
+        block = {name: None for name in block}
+    if event not in block:
+        return False
+    cfg = block[event]
+    if event == "pull_request":
+        types = (cfg or {}).get("types") or ["opened", "synchronize", "reopened"]
+        return action in types
+    return True
 
 
-def evaluate(expr, ctx):
-    """Evaluate a stripped GitHub Actions expression against a context."""
-    source = translate(expr)
-    env = dict(ctx)
-    env["__builtins__"] = {}
-    try:
-        return eval(source, env)  # noqa: S307 - expressions from our own workflow
-    except Exception as exc:
-        raise ExprError(f"cannot evaluate {expr!r} as {source!r}: {exc}") from exc
+def full_label_job_runs(doc, label):
+    """Does the full-label workflow's job run for this label?"""
+    job = next(iter((doc.get("jobs") or {}).values()))
+    gate = str(job.get("if", "")).strip()
+    if gate.startswith("${{") and gate.endswith("}}"):
+        gate = gate[3:-2].strip()
+    if gate == "github.event.label.name == 'full-ci'":
+        return label == "full-ci"
+    raise SystemExit(f"FAIL: unrecognised gate in the full-label job: {gate!r}")
 
 
-def strip_template(value):
-    value = str(value).strip()
-    if value.startswith("${{") and value.endswith("}}"):
-        return value[3:-2].strip()
-    return value
+def head_state(main_doc, events, real_run):
+    """Required-check state on the head after `events` (list of (event, action, label)).
 
-
-def job_conclusion(needs_results):
-    """GitHub needs semantics once a job's gate let it run."""
-    if any(result == "cancelled" for result in needs_results.values()):
-        return "cancelled"
-    if any(result == "failure" for result in needs_results.values()):
-        return "failure"
-    return "success"
-
-
-def execute_workflow(jobs, ctx):
-    """Execute the job graph; return {job: conclusion} in scheduling order."""
-    runs = {}
-    for name, job in jobs.items():
-        if name == "report-main":
-            continue  # main-branch reporting, never part of a PR head check set
-        needs = job.get("needs") or []
-        needs_results = {dep: runs.get(dep, "skipped") for dep in needs}
-        local = dict(ctx)
-        local["cancelled_var"] = any(
-            result == "cancelled" for result in needs_results.values()
-        )
-        gate = job.get("if")
-        if gate is not None and not evaluate(strip_template(gate), local):
-            runs[name] = "skipped"
-            continue
-        if name == "plan":
-            # The tier-selection script's own exit code stands in for the
-            # plan logic (outside this workflow's scope); the gate above
-            # already skipped the job on label-noop events.
-            runs[name] = ctx["plan_conclusion"]
-        else:
-            runs[name] = job_conclusion(needs_results)
-    return runs
-
-
-def published_checks(jobs, ctx, runs):
-    """The check runs this event publishes on the head, in job order."""
-    checks = []
-    for name, job in jobs.items():
-        if name in ("ci-result", "report-main"):
-            continue
-        if runs.get(name) != "skipped":
-            # Lane checks have non-required names; their exact names do not
-            # matter to the ruleset, only that they are not `CI result`.
-            checks.append((f"job:{name}", runs[name]))
-    ci = jobs["ci-result"]
-    local = dict(ctx)
-    needs_results = {
-        dep: runs.get(dep, "skipped") for dep in (ci.get("needs") or [])
-    }
-    local["cancelled_var"] = any(
-        result == "cancelled" for result in needs_results.values()
-    )
-    gate = ci.get("if")
-    if gate is not None and not evaluate(strip_template(gate), local):
-        conclusion = "skipped"
-    else:
-        conclusion = job_conclusion(needs_results)
-    raw_name = str(ci.get("name", REQUIRED_NAME)).strip()
-    if raw_name.startswith("${{") and raw_name.endswith("}}"):
-        check_name = str(evaluate(strip_template(raw_name), ctx))
-    else:
-        check_name = raw_name
-    checks.append((check_name, conclusion))
-    return checks
-
-
-def ruleset_gate(checks, head_run_conclusion):
-    """Execute GitHub branch-ruleset semantics for the required check.
-
-    `head_run_conclusion`: conclusion of the real push-run `CI result`
-    check already on this head (None = that run has not completed yet).
-    GitHub's branch ruleset treats BOTH `success` and `skipped` of the
-    required check (`CI result`) as satisfied (which is why a skipped
-    `CI result` waved PR #2965 through auto-merge). A check under any
-    other name is ignored by the ruleset, leaving the existing real check
-    on the head as the verdict. `cancelled`, `failure` or missing keep
-    the PR blocked.
+    `real_run`: conclusion of the newest real run's `CI result`
+    (None = still running, 'success', 'cancelled', 'failure').
+    A run created by a label event is a noop run: no job has a name
+    `CI result` and the newest run of the workflow is that one.
     """
-    published_required = [c for c in checks if c[0] == REQUIRED_NAME]
-    if published_required:
-        # The newest completed check with the required name overwrites the
-        # head's required check; GitHub treats `success` and `skipped` as
-        # satisfying the required status check.
-        latest = published_required[-1][1]
-        return "satisfied" if latest in ("success", "skipped") else "blocked"
-    if head_run_conclusion is None:
+    state = real_run
+    newest_is_noop = False
+    for event, action, _label in events:
+        if creates_run(main_doc, event, action):
+            newest_is_noop = True
+    if newest_is_noop:
+        return "expected"
+    if state is None:
         return "pending"
-    return "satisfied" if head_run_conclusion == "success" else "blocked"
+    return "satisfied" if state in ("success", "skipped") else "blocked"
 
 
-# (event_name, action, label, tier, plan_conclusion, head_run_conclusion,
-#  expected_ruleset_gate)
-SCENARIOS = [
-    # PR #2965 replay: the push run was cancelled, then `review-approved`
-    # was labelled. The noop run must not hand the merge gate a pass.
-    (
-        "pull_request", "labeled", "review-approved", None, "success",
-        "cancelled", "blocked",
-    ),
-    # Same labeled event while the real run is still in progress: the
-    # required check does not exist as completed, merge stays blocked.
-    (
-        "pull_request", "labeled", "review-approved", None, "success",
-        None, "pending",
-    ),
-    # A cancelled full run must not be overridden to a pass either: the
-    # noop run publishes no required check, cancelled keeps blocking.
-    (
-        "pull_request", "labeled", "review-approved", None, "success",
-        "skipped", "blocked",
-    ),
-    # A real run whose plan went red fails the summary -> blocked, never a
-    # satisfying skipped check (the rejected needs.plan.result re-gate).
-    (
-        "push", None, None, "full", "failure", "cancelled", "blocked",
-    ),
-    # A green merge-queue candidate satisfies the gate (regression guard:
-    # the fix must not break real runs).
-    (
-        "merge_group", None, None, "full", "success", "cancelled", "satisfied",
-    ),
-    # A `full-ci` labeled run is a real run and republishes `CI result`.
-    (
-        "pull_request", "labeled", "full-ci", "full", "success", "cancelled",
-        "satisfied",
-    ),
+# (label, real_run_conclusion, expected state of the required check)
+LABEL_SCENARIOS = [
+    # The #3147 case: green real run, board labels the PR review-approved.
+    ("review-approved", "success", "satisfied"),
+    ("needs-rebase", "success", "satisfied"),
+    ("review-in-progress", "success", "satisfied"),
+    # OPE-12841 / PR #2965: the real run was cancelled, a label arrives: the
+    # label must not make the check pass.
+    ("review-approved", "cancelled", "blocked"),
+    ("review-approved", None, "pending"),
+    ("review-approved", "failure", "blocked"),
 ]
 
 
-def run_scenarios(jobs):
+def run_scenarios(main_doc, full_doc):
     failures = []
-    for index, (event_name, action, label, tier, plan_conclusion,
-                head_run, expected) in enumerate(SCENARIOS):
-        ctx = {
-            "event_name": event_name,
-            "action": action,
-            "label": label,
-            "labels": [label] if label else [],
-            "tier": tier,
-            "plan_result": plan_conclusion,
-            "plan_conclusion": plan_conclusion,
-        }
-        runs = execute_workflow(jobs, ctx)
-        checks = published_checks(jobs, ctx, runs)
-        gate = ruleset_gate(checks, head_run)
-        required_names = [name for name, _ in checks if name == REQUIRED_NAME]
-        ok = gate == expected
-        if event_name == "pull_request" and action == "labeled" and label != "full-ci":
-            ok = ok and not required_names
+    for index, (label, real, expected) in enumerate(LABEL_SCENARIOS):
+        state = head_state(main_doc, [("pull_request", "labeled", label)], real)
+        ok = state == expected
         print(
             f"[{'ok' if ok else 'FAIL'}] scenario {index}: "
-            f"{event_name}/{action or '-'}/{label or '-'} tier={tier} "
-            f"plan={plan_conclusion} head_run={head_run or 'in-progress'} "
-            f"published={checks} ruleset={gate} expected={expected}"
-            + ("" if not required_names else f" required-name-published={required_names}")
+            f"pull_request/labeled/{label} real_run={real or 'in-progress'} "
+            f"ruleset={state} expected={expected}"
         )
         if not ok:
             failures.append(index)
+    # full-ci: no run of the main workflow from the event itself, the
+    # full-label workflow's job runs for it only.
+    index = len(LABEL_SCENARIOS)
+    ok = (
+        not creates_run(main_doc, "pull_request", "labeled")
+        and creates_run(full_doc, "pull_request", "labeled")
+        and full_label_job_runs(full_doc, "full-ci")
+        and not full_label_job_runs(full_doc, "review-approved")
+        and not full_label_job_runs(full_doc, "needs-rebase")
+    )
+    print(
+        f"[{'ok' if ok else 'FAIL'}] scenario {index}: full-ci handled only by the "
+        f"full-label workflow, its job skips every other label"
+    )
+    if not ok:
+        failures.append(index)
+    # The full-label workflow must not be able to publish the required check.
+    names = [str(job.get("name", "")) for job in (full_doc.get("jobs") or {}).values()]
+    ok = REQUIRED_NAME not in names and full_doc.get("name") != main_doc.get("name")
+    print(f"[{'ok' if ok else 'FAIL'}] scenario {index + 1}: full-label workflow has another name and no `{REQUIRED_NAME}` job")
+    if not ok:
+        failures.append(index + 1)
     return failures
 
 
-def run_teeth(jobs):
-    """Prove the simulator detects the original defect.
-
-    Mutate ci-result back to the pre-fix shape (static required name) and
-    require the PR #2965 replay to come out SATISFIED — i.e. the merge
-    would be waved through without tests. If the mutated workflow does not
-    satisfy the gate, the simulator lost its teeth.
-    """
-    mutated = copy.deepcopy(jobs)
-    mutated["ci-result"]["name"] = REQUIRED_NAME
-    ctx = {
-        "event_name": "pull_request",
-        "action": "labeled",
-        "label": "review-approved",
-        "labels": ["review-approved"],
-        "tier": None,
-        "plan_result": "success",
-        "plan_conclusion": "success",
-    }
-    runs = execute_workflow(mutated, ctx)
-    checks = published_checks(mutated, ctx, runs)
-    gate = ruleset_gate(checks, "cancelled")
-    names = [name for name, _ in checks if name == REQUIRED_NAME]
-    ok = gate == "satisfied" and names == [REQUIRED_NAME]
+def run_teeth(main_doc, full_doc):
+    """With `labeled` back in the main workflow the defect must reproduce."""
+    mutated = copy.deepcopy(main_doc)
+    block = on_block(mutated)
+    block["pull_request"]["types"] = list(block["pull_request"]["types"]) + ["labeled"]
+    state = head_state(mutated, [("pull_request", "labeled", "review-approved")], "success")
+    ok = state == "expected"
     print(
-        f"[{'ok' if ok else 'FAIL'}] teeth: pre-fix shape (static '{REQUIRED_NAME}' "
-        f"name) on the review-approved noop run publishes {checks} "
-        f"-> ruleset {gate}; the defect must reproduce as 'satisfied'"
+        f"[{'ok' if ok else 'FAIL'}] teeth: `labeled` back in the trigger types -> a green head "
+        f"becomes '{state}'; the defect must reproduce as 'expected'"
     )
     return 0 if ok else 1
 
 
+def load(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return yaml.safe_load(handle)
+    except OSError as exc:
+        print(f"FAIL: cannot read workflow {path}: {exc}", file=sys.stderr)
+        raise SystemExit(2)
+
+
 def parse_args(argv):
     args = list(argv)
-    workflow = WORKFLOW
+    main, full = MAIN, FULL_LABEL
     if "--workflow" in args:
-        index = args.index("--workflow")
-        workflow = args[index + 1]
-        del args[index : index + 2]
+        i = args.index("--workflow")
+        main = args[i + 1]
+        del args[i : i + 2]
+    if "--full-label-workflow" in args:
+        i = args.index("--full-label-workflow")
+        full = args[i + 1]
+        del args[i : i + 2]
     if args:
         print(f"unknown arguments: {args}", file=sys.stderr)
         raise SystemExit(2)
-    return workflow
+    return main, full
 
 
 def main(argv=None):
-    workflow = parse_args(sys.argv[1:] if argv is None else argv)
-    try:
-        with open(workflow, encoding="utf-8") as handle:
-            doc = yaml.safe_load(handle)
-    except OSError as exc:
-        print(f"FAIL: cannot read workflow {workflow}: {exc}", file=sys.stderr)
+    main_path, full_path = parse_args(sys.argv[1:] if argv is None else argv)
+    main_doc, full_doc = load(main_path), load(full_path)
+    jobs = main_doc.get("jobs") or {}
+    ci = jobs.get("ci-result")
+    if ci is None or str(ci.get("name", "")).strip() != REQUIRED_NAME:
+        print("FAIL: ci-result must keep the static name `CI result`", file=sys.stderr)
         return 2
-    jobs = doc.get("jobs") or {}
-    if "ci-result" not in jobs:
-        print("FAIL: no ci-result job in the workflow", file=sys.stderr)
-        return 2
-    failures = run_scenarios(jobs)
-    teeth_exit = run_teeth(jobs)
-    if teeth_exit != 0:
-        failures.append(len(SCENARIOS))
+    failures = run_scenarios(main_doc, full_doc)
+    if run_teeth(main_doc, full_doc) != 0:
+        failures.append(-1)
     if failures:
         print(f"FAILED: {failures}", file=sys.stderr)
         return 1

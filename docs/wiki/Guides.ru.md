@@ -46,6 +46,8 @@
 
 - [Планировщик чата с доской: текст владельца в предложенный эпик (CTO-CHAT B)](Cto-chat-planner.ru)
 
+- [Этап проверки выполнения (VERIFY-ON-PROD)](Verify-execution-stage.ru)
+
 
 
 ### Telegram и каналы
@@ -247,6 +249,8 @@
 - [Баннер обслуживания](Maintenance-banner.ru)
 
 - [Очистка рабочих копий после слияния](Workspace-cleanup.ru)
+
+- [Чекпоинты turn'ов рабочих областей](Workspace-turn-checkpoints.ru)
 
 - [Хранение резервных копий базы данных](Backup-retention.ru)
 

@@ -141,9 +141,8 @@ export function myrmidonModelProviderRoutes(db: Db, env: NodeJS.ProcessEnv = pro
   const deps: ModelProviderRoutesWithSyncDeps = {
     service: modelProviderService,
     getLitellmSync: syncForCompany,
-    // A provider change only CHECKS the agent key lists (dry run) and logs the
-    // difference. Rewriting the lists of every restricted key is an explicit
-    // admin action (POST .../litellm/keys/allowlist-sync?apply=true).
+    // Registry changes reconcile only models named by agent cards. They never
+    // widen keys with the full company registry.
     refreshAgentAllowlists: async (companyId) => {
       const result = await updateAgentAllowlistsForCompany(
         db,
@@ -151,12 +150,11 @@ export function myrmidonModelProviderRoutes(db: Db, env: NodeJS.ProcessEnv = pro
         companyId,
         [],
         [],
-        false,
-        { apply: false },
+        { cardModelsOnly: true, apply: true },
       );
       logger.info(
         { companyId, ...summarizeAllowlistResult(result) },
-        "litellm agent key allowlists checked after a provider change (dry run, nothing applied)",
+        "litellm agent key allowlists reconciled after a provider change",
       );
       return result;
     },
@@ -250,8 +248,7 @@ export function createPluginProviderModelSync(
         companyId,
         companyPluginModelNames,
         [],
-        false,
-        { includeRegistryModels: false },
+        { cardModelsOnly: true },
       );
     },
     async remove(companyId, plugin) {
@@ -286,8 +283,7 @@ export function createPluginProviderModelSync(
         companyId,
         [...stillOwnedNames],
         removableModelNames,
-        true,
-        { includeRegistryModels: false },
+        { cardModelsOnly: true },
       );
     },
   };

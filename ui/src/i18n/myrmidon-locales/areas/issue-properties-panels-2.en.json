@@ -263,6 +263,7 @@
         "sections": {
           "relationships": "Relationships",
           "execution": "Execution",
+          "releaseComposition": "Release composition",
           "workspace": "Workspace",
           "work": "Work",
           "triage": "Triage",

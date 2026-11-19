@@ -27,9 +27,16 @@ interface IssueExecutionPolicy {
 
 interface IssueExecutionStage {
   id: string;                                 // автоматически генерируемый UUID
-  type: "review" | "approval";                // вид этапа
+  type: "review" | "approval" | "verify";     // вид этапа
   approvalsNeeded: 1;                         // несколько приёмок пока не поддерживается
   participants: IssueExecutionStageParticipant[];
+  requirements?: IssueExecutionStageRequirements;
+}
+
+interface IssueExecutionStageRequirements {
+  deployVersion?: boolean;                    // требует версию выкачки при подтверждении
+  checkMethod?: boolean;                      // требует способ проверки при подтверждении
+  skip?: boolean;                             // разрешает пропуск verify для задач без кода
 }
 
 interface IssueExecutionStageParticipant {
@@ -51,7 +58,7 @@ interface IssueExecutionState {
   status: "idle" | "pending" | "changes_requested" | "completed";
   currentStageId: string | null;
   currentStageIndex: number | null;
-  currentStageType: "review" | "approval" | null;
+  currentStageType: "review" | "approval" | "verify" | null;
   currentParticipant: IssueExecutionStagePrincipal | null;
   returnAssignee: IssueExecutionStagePrincipal | null;
   completedStageIds: string[];
@@ -70,7 +77,7 @@ interface IssueExecutionDecision {
   companyId: string;
   issueId: string;
   stageId: string;
-  stageType: "review" | "approval";
+  stageType: "review" | "approval" | "verify";
   actorAgentId: string | null;
   actorUserId: string | null;
   outcome: "approved" | "changes_requested";
@@ -146,7 +153,38 @@ interface IssueExecutionDecision {
 ```
 Исполнитель завершает → приёмщик подписывает → done.
 
-**Несколько ревьюеров/приёмщиков:**
+**Ревью + Проверка (Задачи выпуска / VERIFY-ON-PROD):**
+```json
+{
+  "stages": [
+    {
+      "type": "review",
+      "participants": [{ "type": "agent", "agentId": "reviewer-agent-id" }]
+    },
+    {
+      "type": "verify",
+      "participants": [{ "type": "agent", "agentId": "verifier-agent-id" }],
+      "requirements": {
+        "deployVersion": true,
+        "checkMethod": true,
+        "skip": false
+      }
+    }
+  ]
+}
+```
+Исполнитель завершает → ревьюер кода одобряет → PR слит / релиз выкачен → проверяющий подтверждает на выкаченной версии → done.
+
+### Этап проверки (VERIFY-ON-PROD)
+
+Этап `verify` валидирует фактическое поведение на развернутом окружении перед закрытием задач выпуска:
+1. **Независимость проверяющего**: Проверяющий обязан отличаться от исполнителя задачи (`assignee` или `returnAssignee`). Самопроверка блокируется валидацией рантайма (`422 Unprocessable Entity`).
+2. **Обязательные свидетельства**: Комментарий подтверждения проверяющего обязан содержать проверенную версию выкачки (`Deploy version: <версия>`) и способ проверки (`Check method: <метод>`). Для выпускных задач эти свидетельства обязательны по умолчанию.
+3. **Отказ и путь возврата**: При обнаружении дефекта проверяющий переводит задачу в `in_progress` с комментарием (`changes_requested`). Рантайм возвращает задачу исходному исполнителю (`returnAssignee`). При повторной сдаче (`PATCH status: "in_review"`) задача возвращается напрямую на активный этап verify.
+4. **Настройка пропуска**: Для задач документации, руководств или конфигурации без выката кода указывается `requirements: { "skip": true }`.
+5. **Гейт закрытия (Done Gate)**: Задачи выпуска с кодом не могут быть закрыты напрямую в `done` без пройденного этапа проверки или явного `skip: true`.
+
+**Несколько ревьюеров/приёмщиков/проверяющих:**
 Каждый этап поддерживает нескольких участников. Рантайм выбирает одного действующего, исключая исходного исполнителя, чтобы предотвратить само-ревью.
 
 ## Обязательный комментарий

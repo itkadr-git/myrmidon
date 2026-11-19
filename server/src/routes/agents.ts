@@ -1,4 +1,4 @@
-import { enrichWithPoolModels } from "../myrmidon/model-providers/pool-models.js";
+import { enrichWithPoolModels, mergeLitellmChatGptPoolModels } from "../myrmidon/model-providers/pool-models.js";
 import { listOpenRouterModels } from "../services/openrouter-models.js";
 import { notModifiedOrSetEtag } from "../middleware/version-key-etag.js";
 // myrmidon(B1c): product name in user-facing runner errors; see product.ts.
@@ -21,7 +21,7 @@ import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@myrmidon/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
-import { activityLog, agentWakeupRequests, agents as agentsTable, chatConversations, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@myrmidon/db";
+import { activityLog, agentWakeupRequests, agents as agentsTable, chatConversations, companies, heartbeatRuns, issues as issuesTable, litellmModels, projects as projectsTable } from "@myrmidon/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import { toolConnections } from "@myrmidon/db";
 import { sha256Digest } from "../services/feedback-redaction.js";
@@ -559,6 +559,8 @@ export function agentRoutes(
      * then a no-op, which keeps the pre-directory behavior exactly.
      */
     casteDirectory?: AgentCasteDirectoryPort;
+    syncAgentModelAllowlist?: (input: { companyId: string; agentId: string; db: Db }) => Promise<void>;
+    onAgentModelAllowlistSyncFailure?: (input: { companyId: string; agentId: string; error: unknown }) => void;
     agentsModule?: AgentsModule;
   } = {},
 ) {
@@ -630,6 +632,8 @@ export function agentRoutes(
       if (!decommission) throw new Error(DECOMMISSION_UNSUPPORTED_MESSAGE);
       await (runtime.lock ?? botKeyLock).run(botKey, () => decommission.call(runtime.driver, botKey));
     },
+    syncAgentModelAllowlist: options.syncAgentModelAllowlist,
+    onAgentModelAllowlistSyncFailure: options.onAgentModelAllowlistSyncFailure,
     agentsModule: agentsMod,
   });
   const access = accessService(db);
@@ -2582,6 +2586,7 @@ export function agentRoutes(
     adapterConfig: Record<string, unknown>;
     constraintAdapterConfig?: Record<string, unknown>;
     agentId?: string;
+    validateExtraMounts?: boolean;
   }): Promise<Record<string, unknown>> {
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       input.companyId,
@@ -2598,6 +2603,7 @@ export function agentRoutes(
         ? { ...input.constraintAdapterConfig, ...normalizedAdapterConfig }
         : normalizedAdapterConfig,
       input.agentId,
+      { validateExtraMounts: input.validateExtraMounts },
     );
     return normalizePaperclipRunnerAdapterConfig(
       input.adapterType ?? "",
@@ -2814,6 +2820,7 @@ export function agentRoutes(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
     agentId?: string,
+    options?: { validateExtraMounts?: boolean },
   ) {
     // myrmidon(OPE-12337): refuse limits exceeding enrolled dockergate ceilings.
     let ceilings: BotResourceCeilings | null = null;
@@ -2830,7 +2837,7 @@ export function agentRoutes(
       }
     }
     // myrmidon(1.6.4-BOT-CONTAINER-CARD, OPE-12337): refuse a container block the reconciler could never apply or exceeding ceilings.
-    const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig, process.env, ceilings);
+    const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig, process.env, ceilings, options);
     if (containerProblem) throw unprocessable(`Invalid hermes_gateway adapterConfig: ${containerProblem}`);
     const localProblem = localAdapterConfigProblem(adapterType, adapterConfig);
     if (localProblem) throw unprocessable(`Invalid ${adapterType} adapterConfig: ${localProblem}`);
@@ -3511,9 +3518,16 @@ export function agentRoutes(
       return;
     }
     const rawModels = refresh
-      ? await refreshAdapterModels(modelAdapterType)
-      : await listAdapterModels(modelAdapterType, companyId);
-    const models = await enrichWithPoolModels(db, companyId, rawModels);
+      ? await refreshAdapterModels(modelAdapterType, companyId, db)
+      : await listAdapterModels(modelAdapterType, companyId, db);
+    let models = await enrichWithPoolModels(db, companyId, rawModels);
+    if (modelAdapterType === "hermes_gateway") {
+      const catalogRows = await db
+        .select({ modelName: litellmModels.modelName })
+        .from(litellmModels)
+        .orderBy(litellmModels.modelName);
+      models = mergeLitellmChatGptPoolModels(models, catalogRows.map((row) => row.modelName));
+    }
     res.json(models);
   });
 
@@ -5951,11 +5965,22 @@ function getActorIdentityPart(req: Request): string {
           rawEffectiveAdapterConfig,
         ),
       );
+      const incomingContainer =
+        requestedAdapterConfig &&
+        typeof requestedAdapterConfig.container === "object" &&
+        requestedAdapterConfig.container !== null &&
+        !Array.isArray(requestedAdapterConfig.container)
+          ? (requestedAdapterConfig.container as Record<string, unknown>)
+          : null;
+      const incomingExtraMountsSupplied =
+        (incomingContainer !== null && hasOwn(incomingContainer, "extraMounts")) ||
+        (requestedAdapterConfig !== null && hasOwn(requestedAdapterConfig, "extraMounts"));
       const normalizedEffectiveAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
         companyId: existing.companyId,
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
         agentId: existing.id,
+        validateExtraMounts: incomingExtraMountsSupplied,
       });
       assertLocalAdapterSecurityChangeAllowed(
         req,
@@ -5963,7 +5988,13 @@ function getActorIdentityPart(req: Request): string {
         asRecord(existing.adapterConfig),
         normalizedEffectiveAdapterConfig,
       );
-      patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
+      const modelOnlyPatch = requestedAdapterType === "hermes_gateway"
+        && !changingAdapterType && !replaceAdapterConfig && requestedAdapterConfig !== null
+        && Object.keys(requestedAdapterConfig).length === 1 && hasOwn(requestedAdapterConfig, "model");
+      // Validate the normalized config, but keep legacy bindings byte-for-byte on a model-only edit.
+      patchData.adapterConfig = modelOnlyPatch
+        ? rawEffectiveAdapterConfig
+        : syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
       assertExternalInstructionsAdmin(req, {
         ...existing,
         adapterConfig: patchData.adapterConfig,
@@ -6146,7 +6177,11 @@ function getActorIdentityPart(req: Request): string {
     // wake it back up itself — queued runs and any assigned todo/in_progress
     // issue stranded without one. Best-effort: a wake failure must not fail
     // the resume response itself. Logic: myrmidon/pause-drain.ts.
-    await heartbeat.resumeAgentAfterPause(id).catch((err) => {
+    const resumeActor = getActorInfo(req);
+    await heartbeat.resumeAgentAfterPause(
+      id,
+      { operatorUserId: resumeActor.actorType === "user" ? resumeActor.actorId : null },
+    ).catch((err) => {
       logger.warn({ err, agentId: id }, "pause-resume wake failed after agent resume");
     });
 
@@ -6366,6 +6401,7 @@ function getActorIdentityPart(req: Request): string {
     }
     const key = await svc.createApiKey(id, req.body.name, req.body.scope, {
       responsibleUserId: req.actor.userId ?? null,
+      expiresAt: req.body.expiresAt ? new Date(req.body.expiresAt) : null,
     });
 
     await logActivity(db, {
@@ -6380,6 +6416,7 @@ function getActorIdentityPart(req: Request): string {
         name: key.name,
         scope: key.scope,
         responsibleUserId: key.responsibleUserId,
+        expiresAt: key.expiresAt ?? null,
       },
     });
 
@@ -6689,6 +6726,15 @@ function getActorIdentityPart(req: Request): string {
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
       externalSession: req.body.externalSession,
+      // myrmidon(OPE-12929): the optional not-before instant rides into the
+      // run context (top-level field or payload field) and the dispatcher
+      // holds the queued run back until it is reached.
+      notBefore:
+        typeof req.body.notBefore === "string" && req.body.notBefore.length > 0
+          ? req.body.notBefore
+          : typeof wakePayload?.notBefore === "string" && wakePayload.notBefore.length > 0
+            ? wakePayload.notBefore
+            : null,
       contextSnapshot: {
         triggeredBy: req.actor.type,
         originIdentityContextId: req.actor.identityContextId ?? null,
@@ -6809,6 +6855,7 @@ function getActorIdentityPart(req: Request): string {
       reason: unknown;
       payload: unknown;
       idempotencyKey: unknown;
+      notBefore: unknown;
       forceFreshSession: unknown;
       triggerDetail: unknown;
       debug: unknown;
@@ -6840,6 +6887,11 @@ function getActorIdentityPart(req: Request): string {
     };
     if (typeof body.reason === "string" && body.reason.length > 0) {
       wakeOpts.reason = body.reason;
+    }
+    // myrmidon(OPE-12929): the legacy invoke endpoint carries the optional
+    // not-before instant the same way the validated wakeup route does.
+    if (typeof body.notBefore === "string" && body.notBefore.length > 0) {
+      wakeOpts.notBefore = body.notBefore;
     }
     if (body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)) {
       wakeOpts.payload = req.actor.type === "agent"

@@ -53,7 +53,7 @@ describeEmbeddedPostgres("skip idle timer heartbeats (M3)", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-myrmidon-idle-skip-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     if (previous === undefined) delete process.env.MYRMIDON_SKIP_IDLE_HEARTBEATS;

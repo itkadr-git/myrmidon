@@ -248,6 +248,8 @@ workflow повторяет
 ключа и лимиты ресурсов на VPS — часть оператора флота (D). В apt-набор образа добавлен
 `rsync` для транспорта.
 
+Если в удалённой копии есть `package.json` и `pnpm-lock.yaml`, но нет `node_modules`, клиент сам выполняет там `pnpm install --frozen-lockfile --prefer-offline` из общего склада перед командой (1.6.9 DEVBUILD-AUTO-INSTALL; выключатель `DEVBUILD_NO_AUTO_INSTALL=1`).
+
 **Ключ через env, самопроверка старта, потолок кучи локальных запусков (1.6.5 DEVBUILD-IN-BOTS).**
 Три дополнения снимают требование монтирования ключа и делают случайные локальные
 тяжёлые запуски переживаемыми:
@@ -571,6 +573,12 @@ loopback и стримит один кусок в секунду, чтобы п�
   `/scratch/<name>`. Флаги `--filter`, `--depth`, `--mirror` и `--bare`
   игнорируются с сообщением — объекты уже есть в базе. Настоящий git лежит в
   `/opt/paperclip/libexec/git` вне PATH.
+- `myr-ws open <KEY> <owner/repo> --review [--branch <ветка PR>]` открывает
+  копию для ревью: worktree без рабочего каталога (только файл `.git`,
+  килобайты), без установки зависимостей, git-хуки выключены; ветка сначала
+  обновляется с remote. Читать через `git diff origin/main...HEAD` и
+  `git show HEAD:<путь>`; нет ветки на remote — ошибка, если не задан
+  `--branch`.
 - Команды `myr-ws`: `open <KEY> [owner/repo] [--base <ref>] [--scratch]`,
   `list`, `close <KEY> [--force]`, `restore <KEY>`, `migrate`; общий флаг
   `--json`. Коды выхода: `0` — ок, `2` — неверные аргументы, `3` — отказ по

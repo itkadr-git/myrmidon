@@ -34,6 +34,8 @@ export interface AgentGatewayKeyView {
     utilizationPercent: number | null;
     status: "ok" | "near_cap" | "exhausted" | "unknown";
   } | null;
+  /** The key's deadline (OPE-12930 KEY-TTL), ISO 8601; null when unknown. */
+  expiresAt?: string | null;
 }
 
 export interface ServiceKeyBudgetView {

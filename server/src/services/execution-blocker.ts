@@ -23,6 +23,8 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   conversationResetCommentId?: string | null;
   /** myrmidon(L2): true when the caller is checking an explicitly authorized wake. */
   explicitWake?: boolean;
+  /** myrmidon(RESUME-AFTER-CANCEL): the bypass applies only to holds of a cancelled run. */
+  cancelledRunOnly?: boolean;
 }): Promise<ExecutionBlocker | null> {
   const [conversation] = await db.select({ agentId: issues.conversationAgentId,
     boundaryId: issues.conversationBoundaryCommentId }).from(issues).where(and(
@@ -68,7 +70,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   if (options?.explicitWake) {
     let blocking: typeof first | null = null;
     for (const candidate of candidates) {
-      if (!(await explicitWakeBypassesSettledHold(db, companyId, candidate))) { blocking = candidate; break; }
+      if (!(await explicitWakeBypassesSettledHold(db, companyId, candidate, { cancelledRunOnly: options.cancelledRunOnly }))) { blocking = candidate; break; }
     }
     if (!blocking) return null;
     action = blocking;

@@ -13,6 +13,7 @@ import {
   redactSensitiveValueOccurrences,
 } from "./redact-sensitive.js";
 import { recordResponsibleUserDenialOnActiveRun } from "../services/responsible-user-denial-run-outcomes.js";
+import { postgresErrorInfo } from "../services/postgres-transaction-retry.js";
 import { recordAuth401 } from "../myrmidon/auth-401-burst/index.js";
 
 export interface ErrorContext {
@@ -20,6 +21,7 @@ export interface ErrorContext {
     message: string;
     stack?: string;
     name?: string;
+    db?: { code: string; message: string; severity?: string; table?: string; constraint?: string };
     details?: unknown;
     raw?: unknown;
   };
@@ -231,6 +233,19 @@ export function errorHandler(
             ...(Array.isArray(responseDetails?.violations)
               ? { violations: responseDetails.violations }
               : {}),
+            // myrmidon(1.8 RELEASE-STAGE): the structured release denials —
+            // the incomplete gate keys of a publication refusal and the
+            // role/action of an authority refusal — are renderable facts the
+            // clients and tests read at the top level.
+            ...(Array.isArray(responseDetails?.incomplete)
+              ? { incomplete: responseDetails.incomplete }
+              : {}),
+            ...(typeof responseDetails?.role === "string"
+              ? { role: responseDetails.role }
+              : {}),
+            ...(typeof responseDetails?.action === "string"
+              ? { action: responseDetails.action }
+              : {}),
             ...(!redactedSkillPolicyDenial &&
             !workspaceRepairPreconditionFailure &&
             responseDetailsValue
@@ -278,13 +293,21 @@ export function errorHandler(
   }
 
   const reportableError = sanitizeSecretSensitiveError(req, rootError);
+  // myrmidon(EMPTY-RUNS-3): a failed query reaches here wrapped; the reason
+  // (code and text of the Postgres error) is on its cause.
+  const dbErrorInfo = err instanceof Error ? postgresErrorInfo(err) : null;
   attachErrorContext(
     req,
     res,
     isSecretSensitiveHttpRequest(req.method, req.originalUrl)
       ? { message: reportableError.message, name: reportableError.name }
       : err instanceof Error
-        ? { message: err.message, stack: err.stack, name: err.name }
+        ? {
+            message: err.message,
+            stack: err.stack,
+            name: err.name,
+            ...(dbErrorInfo ? { db: dbErrorInfo } : {}),
+          }
         : {
             message: String(err),
             raw: err,

@@ -14,6 +14,7 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueComments,
+  issueWorkProducts,
   issues,
 } from "@myrmidon/db";
 import {
@@ -22,6 +23,11 @@ import {
   swarmCoolingPeriodMs,
   type SwarmSettings,
 } from "@myrmidon/shared";
+import {
+  ISSUE_PROGRESS_ACTIVITY_ACTIONS,
+  collectRunIdsWithIssueProgress,
+} from "../services/issue-rewake-throttle.js";
+import { readRunIdsWithPrHeadChange } from "../services/pr-head-change-progress.js";
 
 export interface TasklessWakeContext {
   source: string | null | undefined;
@@ -225,12 +231,41 @@ export function isInfraRun(row: {
   return false;
 }
 
+/**
+ * A succeeded run the cooling takes for a healthy one: its liveness says it
+ * advanced the task, completed it or scheduled its own follow-up.
+ *
+ * myrmidon(EMPTY-RUNS-1): for a task that sits in `todo`, "advanced" alone is
+ * not proof. Run liveness counts every activity row attributed to the run, the
+ * board's own rows included (the checkout claim, the tool delivery, the echo of
+ * the final text), so a run that took the task, found nothing to do and handed
+ * it back is "advanced" exactly like a run that did the work. On 13.11 500 of
+ * 539 succeeded runs without a result carried that state, this cooling never
+ * started for them, and three service bots re-picked ten parked tasks 176
+ * times in eight hours. When the reader established that the run left no
+ * issue-visible progress (`madeIssueProgress === false`, see
+ * `isIssueCoolingDown`), such a run is not healthy. `undefined` — the reader
+ * did not look — keeps the liveness verdict, as before.
+ */
+function isHealthySucceededRun(
+  row: { status: string; livenessState: string | null; madeIssueProgress?: boolean },
+  issueStatus: string,
+): boolean {
+  if (row.status !== "succeeded") return false;
+  if (!HEALTHY_LIVENESS.has(row.livenessState ?? "")) return false;
+  if (issueStatus === "todo" && row.livenessState === "advanced" && row.madeIssueProgress === false) {
+    return false;
+  }
+  return true;
+}
+
 function runIsStale(
   row: {
     status: string;
     livenessState: string | null;
     errorCode?: string | null;
     cancellationCode?: string | null;
+    madeIssueProgress?: boolean;
   },
   issueStatus: string,
 ): boolean {
@@ -241,7 +276,7 @@ function runIsStale(
   return (
     row.status === "succeeded" &&
     issueStatus === "todo" &&
-    !HEALTHY_LIVENESS.has(row.livenessState ?? "")
+    !isHealthySucceededRun(row, issueStatus)
   );
 }
 
@@ -255,6 +290,13 @@ export interface CoolingRun {
   finishedAt: Date | null;
   startedAt: Date | null;
   createdAt: Date;
+  /**
+   * myrmidon(EMPTY-RUNS-1): did the run leave issue-visible progress behind
+   * (`collectRunIdsWithIssueProgress` of issue-rewake-throttle.ts)? `false`
+   * makes an "advanced" run of a `todo` task stale; `undefined` (not read)
+   * leaves the liveness verdict alone.
+   */
+  madeIssueProgress?: boolean;
 }
 
 /** One candidate task-movement record (comment or activity) with its actor. */
@@ -355,7 +397,7 @@ export function decideIssueCooling(input: {
   for (let i = 0; i < runs.length; i += 1) {
     const row = runs[i]!;
     if (row.status === "cancelled" || isInfraRun(row)) continue;
-    const healthy = row.status === "succeeded" && HEALTHY_LIVENESS.has(row.livenessState ?? "");
+    const healthy = isHealthySucceededRun(row, issueStatus);
     if (healthy) break;
     if (i > 0 && row.finishedAt) {
       const newer = runs[i - 1]!;
@@ -380,9 +422,49 @@ export function decideIssueCooling(input: {
         ? "blocked"
         : last.livenessState === "needs_followup"
           ? "needs_followup"
-          : last.status,
+          : last.status === "succeeded" && last.livenessState === "advanced"
+            ? "no_progress"
+            : last.status,
     nextWakeAt: new Date(deadline),
   };
+}
+
+/**
+ * myrmidon(CI-WAIT-NOT-LOAD): does the task have an open GitHub PR (draft or
+ * ready) whose CI is queued or in_progress on a known head right now? No age
+ * threshold: unlike the load discount of the matcher, "no progress" must not
+ * be declared at all while the PR is waiting for CI.
+ */
+/** An activeCi observation older than this is treated as never closed. */
+const CI_WAIT_COOLING_MAX_AGE_MS = 2 * 3_600_000;
+
+export async function issueWaitsForOwnPrCi(db: Db, companyId: string, issueId: string): Promise<boolean> {
+  const products = await db
+    .select({ status: issueWorkProducts.status, metadata: issueWorkProducts.metadata })
+    .from(issueWorkProducts)
+    .where(and(
+      eq(issueWorkProducts.companyId, companyId),
+      eq(issueWorkProducts.issueId, issueId),
+      eq(issueWorkProducts.type, "pull_request"),
+      eq(issueWorkProducts.provider, "github"),
+    ));
+  return products.some((product) => {
+    if (product.status !== "open") return false;
+    const meta = product.metadata as Record<string, unknown> | null;
+    const ci = meta?.activeCi && typeof meta.activeCi === "object" ? meta.activeCi as Record<string, unknown> : null;
+    if (!ci || !(ci.status === "queued" || ci.status === "in_progress")) return false;
+    const ciHead = typeof ci.headSha === "string" ? ci.headSha.trim().toLowerCase() : "";
+    if (!ciHead) return false;
+    // The CI must belong to the CURRENT head of the PR (same rule as the
+    // matcher): a record left for an older head proves nothing.
+    const currentHead = typeof meta?.headSha === "string" ? meta.headSha.trim().toLowerCase() : "";
+    if (currentHead && currentHead !== ciHead) return false;
+    // A record that no completion event ever closed must not hold the task out
+    // of the cooling for ever: an observation older than the cap is ignored.
+    const observedAt = typeof ci.observedAt === "string" ? Date.parse(ci.observedAt) : NaN;
+    if (Number.isFinite(observedAt) && Date.now() - observedAt > CI_WAIT_COOLING_MAX_AGE_MS) return false;
+    return true;
+  });
 }
 
 /**
@@ -405,6 +487,7 @@ export async function isIssueCoolingDown(
 
     const rows = await db
       .select({
+        id: heartbeatRuns.id,
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
         errorCode: heartbeatRuns.errorCode,
@@ -446,10 +529,76 @@ export async function isIssueCoolingDown(
       finishedAt,
     );
     const moves = await taskMovements(db, companyId, issueId, oldestFinished);
-    return decideIssueCooling({ issueStatus: issueRow.status, runs: rows, moves, settings, now });
+    const runs = await withIssueProgress(db, companyId, issueId, issueRow.status, rows);
+    const decision = decideIssueCooling({ issueStatus: issueRow.status, runs, moves, settings, now });
+    // myrmidon(CI-WAIT-NOT-LOAD): a task that went back to todo only because
+    // its own PR waits for CI is not parked. The run left nothing visible
+    // because there was nothing to do until CI ends, and ci_completed wakes
+    // the task by itself. Freezing it hid 8-13 of 14 engineers from the swarm
+    // on 16.11. Other reasons (blocked, failed, ...) keep their cooling.
+    if (decision.cooling && decision.reason === "no_progress" && (await issueWaitsForOwnPrCi(db, companyId, issueId))) {
+      return NOT_COOLING;
+    }
+    return decision;
   } catch {
     return NOT_COOLING;
   }
+}
+
+/**
+ * myrmidon(EMPTY-RUNS-1): mark which "advanced" runs really left issue-visible
+ * progress on the task, with the rewake throttle's own read
+ * (`collectRunIdsWithIssueProgress`): the board's bookkeeping, the echo of the
+ * final text, a release and a hand-back to the queue with its parking note are
+ * not progress. The activity is read only where it can change the decision —
+ * the task is in `todo` and at least one succeeded run is "advanced"; every
+ * other run goes through unmarked. A run that moved the head of the task's PR
+ * (a head-change row inside its window, any actor) made progress too.
+ */
+async function withIssueProgress<T extends CoolingRun & { id: string }>(
+  db: Db,
+  companyId: string,
+  issueId: string,
+  issueStatus: string,
+  rows: T[],
+): Promise<T[]> {
+  if (issueStatus !== "todo") return rows;
+  const advanced = rows.filter(
+    (row) => row.status === "succeeded" && row.livenessState === "advanced",
+  );
+  if (advanced.length === 0) return rows;
+  const agentIdByRunId = new Map<string, string | null>();
+  for (const row of advanced) agentIdByRunId.set(row.id, row.agentId);
+  const activity = await db
+    .select({
+      runId: activityLog.runId,
+      action: activityLog.action,
+      // Only the two JSON paths the progress read looks at, as the throttle does.
+      changes: sql<unknown>`${activityLog.details} -> 'changes'`,
+      source: sql<string | null>`${activityLog.details} ->> 'source'`,
+    })
+    .from(activityLog)
+    .where(
+      and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, issueId),
+        inArray(activityLog.runId, advanced.map((row) => row.id)),
+        inArray(activityLog.action, ISSUE_PROGRESS_ACTIVITY_ACTIONS),
+      ),
+    );
+  const withProgress = collectRunIdsWithIssueProgress(
+    activity,
+    (runId) => agentIdByRunId.get(runId) ?? null,
+  );
+  // A hand-back leaves no row about the code the run pushed to the task's PR; the board records the move of the
+  // PR head (any actor, up to PR_HEAD_CHANGE_LATE_WINDOW_MS after the run) and that is the run's progress.
+  for (const runId of await readRunIdsWithPrHeadChange(db, companyId, issueId, advanced)) {
+    withProgress.add(runId);
+  }
+  return rows.map((row) =>
+    agentIdByRunId.has(row.id) ? { ...row, madeIssueProgress: withProgress.has(row.id) } : row,
+  );
 }
 
 /** Movement candidates after `since` with their actors: comments and movement activity. */

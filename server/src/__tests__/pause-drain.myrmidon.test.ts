@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issues } from "@myrmidon/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -37,7 +38,7 @@ describeEmbeddedPostgres("resumeAgentAfterPause (L3)", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-myrmidon-pause-drain-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   beforeEach(() => {
     vi.mocked(logger.warn).mockClear();
@@ -93,14 +94,16 @@ describeEmbeddedPostgres("resumeAgentAfterPause (L3)", () => {
   }
 
   async function seedLiveRun(input: { companyId: string; agentId: string; issueId: string; status: string }) {
+    const id = randomUUID();
     await db.insert(heartbeatRuns).values({
-      id: randomUUID(),
+      id,
       companyId: input.companyId,
       agentId: input.agentId,
       status: input.status,
       invocationSource: "automation",
       contextSnapshot: { issueId: input.issueId },
     });
+    return id;
   }
 
   // myrmidon(L1): a stranded issue's most recent run -- the one the agent's
@@ -176,6 +179,81 @@ describeEmbeddedPostgres("resumeAgentAfterPause (L3)", () => {
       agentId,
       expect.objectContaining({ idempotencyKey: `pause_resume:${inProgressId}` }),
     );
+  });
+
+  // myrmidon(RESUME-AFTER-CANCEL): lifting the pause is the operator's explicit
+  // act, so the wake it issues is attributed to that user.
+  it("carries the operator who lifted the pause as a marker, and keeps the wake a system wake", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    const deps = fakeDeps();
+
+    await resumeAgentAfterPause(deps, agentId, { operatorUserId: "user-op" });
+    await resumeAgentAfterPause(deps, agentId);
+
+    expect(deps.enqueueWakeup).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({
+        reason: "pause_resume",
+        requestedByActorType: "system",
+        requestedByActorId: "pause_resume",
+        resumedByUserId: "user-op",
+        contextSnapshot: expect.objectContaining({ issueId }),
+      }),
+    );
+    // Without an identifiable user the marker is absent.
+    expect(deps.enqueueWakeup.mock.calls[1]![1]).not.toHaveProperty("resumedByUserId");
+  });
+
+  // myrmidon(RESUME-QUEUE-AGE): the resume restarts the wait of the agent's queued
+  // runs (stamp read by the stale-run age rule); other agents' runs and runs that
+  // are not queued are left alone.
+  it("stamps the agent's queued runs with the resume time before promoting them", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const other = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    const queued = await seedLiveRun({ companyId, agentId, issueId, status: "queued" });
+    const running = await seedLiveRun({ companyId, agentId, issueId, status: "running" });
+    const otherIssue = await seedIssue({ companyId: other.companyId, agentId: other.agentId, status: "in_progress" });
+    const otherQueued = await seedLiveRun({ companyId: other.companyId, agentId: other.agentId, issueId: otherIssue, status: "queued" });
+    const stampAtPromotion: unknown[] = [];
+    const deps = fakeDeps({
+      startNextQueuedRunForAgent: async () => {
+        const [row] = await db.select({ snapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.id, queued));
+        stampAtPromotion.push((row?.snapshot as Record<string, unknown>)?.queueWaitResumedAtMs);
+        return [];
+      },
+    });
+    const before = Date.now();
+
+    await resumeAgentAfterPause(deps, agentId);
+
+    expect(typeof stampAtPromotion[0]).toBe("number");
+    expect(Number.isSafeInteger(stampAtPromotion[0])).toBe(true);
+    expect(stampAtPromotion[0] as number).toBeGreaterThanOrEqual(before - 1000);
+    const snapshots = await db.select({ id: heartbeatRuns.id, snapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns);
+    const byId = new Map(snapshots.map((row) => [row.id, row.snapshot as Record<string, unknown>]));
+    expect(byId.get(queued)?.issueId).toBe(issueId);
+    expect(byId.get(running)).not.toHaveProperty("queueWaitResumedAtMs");
+    expect(byId.get(otherQueued)).not.toHaveProperty("queueWaitResumedAtMs");
+  });
+
+  // myrmidon(RESUME-QUEUE-AGE): a failed stamp is logged and does not stop the resume.
+  it("still promotes the queue and wakes issues when the stamp update fails, and logs a warning", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    const deps = fakeDeps({ startNextQueuedRunForAgent: async () => [{ id: "run-1" }] });
+    const failingDb = Object.assign(Object.create(db), {
+      update: () => { throw new Error("stamp failed"); },
+    });
+    const warn = vi.mocked(logger.warn);
+
+    const result = await resumeAgentAfterPause({ ...deps, db: failingDb }, agentId);
+
+    expect(result.queuedRunsPromoted).toBe(1);
+    expect(result.strandedIssuesWoken).toBe(1);
+    expect(deps.enqueueWakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({ contextSnapshot: expect.objectContaining({ issueId }) }));
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ agentId }), expect.stringContaining("stamp"));
   });
 
   it("ignores issues outside todo/in_progress", async () => {

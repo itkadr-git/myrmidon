@@ -32,7 +32,7 @@ describeEmbeddedPostgres("open blocker transitions (OPE-9556)", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-open-blocker-trans-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueRelations);

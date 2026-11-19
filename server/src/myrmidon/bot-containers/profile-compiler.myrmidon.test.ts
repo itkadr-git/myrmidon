@@ -337,6 +337,39 @@ describe("myrmidon(MEMORY-CENTRAL-A) compileHermesProfile — local memory off",
   });
 });
 
+// myrmidon(DEV-NO-HINDSIGHT, OPE-13087-B): when hindsightMemory is false,
+// developers get no Hindsight memory provider in their Hermes profile.
+describe("myrmidon(DEV-NO-HINDSIGHT) compileHermesProfile — hindsightMemory", () => {
+  it("omits provider: 'hindsight' when hindsightMemory is false", () => {
+    const profile = compileHermesProfile(baseInput({ hindsightMemory: false }));
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).not.toContain('provider: "hindsight"');
+    expect(yaml).not.toContain("memory:");
+  });
+
+  it("omits provider: 'hindsight' but keeps local memory flags when disableLocalMemory is true and hindsightMemory is false", () => {
+    const profile = compileHermesProfile(
+      baseInput({ hindsightMemory: false, instanceDefaults: { disableLocalMemory: true } }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).not.toContain('provider: "hindsight"');
+    expect(yaml).toContain('memory:\n  memory_enabled: false\n  user_profile_enabled: false');
+  });
+
+  it("writes provider: 'hindsight' when hindsightMemory is unset or true", () => {
+    for (const hindsightMemory of [undefined, true]) {
+      const yaml = fileByPath(compileHermesProfile(baseInput({ hindsightMemory })).files, "hermes/config.yaml").content;
+      expect(yaml).toContain('memory:\n  provider: "hindsight"');
+    }
+  });
+
+  it("leaves the hindsight config.json untouched when hindsightMemory is false", () => {
+    const profile = compileHermesProfile(baseInput({ hindsightMemory: false }));
+    const json = JSON.parse(fileByPath(profile.files, "hermes/hindsight/config.json").content);
+    expect(json.mode).toBe("local_external");
+  });
+});
+
 // myrmidon(TOOL-DIET): agent.disabled_tools — single tools kept out of the model's schema.
 describe("myrmidon(TOOL-DIET) compileHermesProfile — disabled tools", () => {
   const yamlOf = (input: HermesProfileInput) => fileByPath(compileHermesProfile(input).files, "hermes/config.yaml").content;

@@ -22,10 +22,13 @@
 // a repository without a mirror, a clone that decides the storage of its own
 // objects (--dissociate, --shared/--local/--mirror, --filter) — runs the real
 // git unchanged: same argv, same environment, same stdio, same exit status.
-// A clone that only NAMES a reference or limits its history (--reference,
-// --reference-if-able, --depth, --shallow-since, --shallow-exclude, --no-local)
-// does not decide the storage: the wrapper still adds --reference-if-able next
-// to the caller's own options. The contract is the same as the hermes wrapper
+// A clone that only NAMES a reference (--reference, --reference-if-able,
+// --no-local) keeps those options alongside --reference-if-able.
+// When a mirror exists, shallow clone options (--depth, --shallow-since,
+// --shallow-exclude, --shallow-submodules) are stripped so the clone borrows
+// objects from the mirror and receives full history without shallow limits.
+// When no mirror exists, the shallow options remain unchanged.
+// The contract is the same as the hermes wrapper
 // (docker/bot-runtime/git-reference/git, myrmidon 1.6.5 BOT-DISK-C/G): a clone
 // never fails because of this wrapper.
 //
@@ -92,7 +95,9 @@ function mirrorFor(repo, root = MIRROR_ROOT) {
   return isMirror(dir) ? dir : null;
 }
 
-/** argv with `--reference-if-able <mirror>` after `clone` when it applies, else argv unchanged. */
+/** argv with `--reference-if-able <mirror>` after `clone` when it applies, else argv unchanged.
+ * When a mirror exists, shallow clone options (--depth, --shallow-*) are removed so the
+ * clone receives full history without duplicating objects already stored in the mirror. */
 function rewriteArgs(argv, root = MIRROR_ROOT) {
   let i = 0;
   while (i < argv.length && argv[i].startsWith("-")) {
@@ -119,7 +124,7 @@ function rewriteArgs(argv, root = MIRROR_ROOT) {
   const repo = githubRepo(repoUrl);
   const mirror = repo && mirrorFor(repo, root);
   if (!mirror) return argv;
-  return [...argv.slice(0, cloneAt + 1), "--reference-if-able", mirror, ...argv.slice(cloneAt + 1)];
+  return [...argv.slice(0, cloneAt + 1), "--reference-if-able", mirror, ...stripShallowArgs(argv.slice(cloneAt + 1))];
 }
 
 // Global options that take their value as the NEXT argument.
@@ -130,6 +135,37 @@ const CLONE_WITH_VALUE = new Set([
   "--separate-git-dir", "--depth", "--shallow-since", "--shallow-exclude", "--filter", "-j", "--jobs",
   "--template", "-c", "--config", "--server-option", "--bundle-uri", "--ref-format", "--revision",
 ]);
+// Shallow options that take their value as the NEXT argument.
+const SHALLOW_WITH_VALUE = new Set(["--depth", "--shallow-since", "--shallow-exclude"]);
+
+/** Strips `--depth`, `--shallow-*` and their values from clone arguments. */
+function stripShallowArgs(args) {
+  const result = [];
+  for (let j = 0; j < args.length; j++) {
+    const arg = args[j];
+    if (arg === "--") {
+      result.push(...args.slice(j));
+      break;
+    }
+    if (arg.startsWith("-")) {
+      if (SHALLOW_WITH_VALUE.has(arg)) {
+        if (j + 1 < args.length) j += 1;
+        continue;
+      }
+      if (arg.startsWith("--depth=") || arg.startsWith("--shallow-")) {
+        continue;
+      }
+      result.push(arg);
+      if (CLONE_WITH_VALUE.has(arg) && j + 1 < args.length) {
+        j += 1;
+        result.push(args[j]);
+      }
+      continue;
+    }
+    result.push(arg);
+  }
+  return result;
+}
 // Clone options that decide the storage of the clone's own objects: leave such
 // a clone alone (our --reference-if-able would contradict the choice, and
 // --filter keeps objects out on purpose).
@@ -156,4 +192,4 @@ function main() {
 }
 
 if (require.main === module) main();
-module.exports = { githubRepo, isMirror, mirrorFor, rewriteArgs };
+module.exports = { githubRepo, isMirror, mirrorFor, rewriteArgs, stripShallowArgs };

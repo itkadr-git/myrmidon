@@ -60,7 +60,7 @@ describeEmbeddedPostgres("heartbeat private-task suppression (1.7 PRIVATE-TASKS 
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-private-tasks-heartbeat-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db, { runtimeEnv: { ...process.env, MYRMIDON_IN_WORKTREE: "false" } });
-  }, 30_000);
+  }, 60_000);
 
   beforeEach(() => {
     mockAdapterExecute.mockClear();

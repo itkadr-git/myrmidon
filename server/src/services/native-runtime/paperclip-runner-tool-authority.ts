@@ -690,6 +690,7 @@ export class PaperclipRunnerToolAuthority {
             parentId: existingChild.parentId,
             status: existingChild.status,
             assigneeActorId: existingChild.assigneeAgentId,
+            assigneeAgentName: assignee.name,
           },
         };
       }
@@ -788,6 +789,7 @@ export class PaperclipRunnerToolAuthority {
           projectId: child.projectId,
           status: childStatus,
           assigneeActorId: child.assigneeAgentId,
+          assigneeAgentName: assignee.name,
         },
       };
     }) as Record<string, unknown>;

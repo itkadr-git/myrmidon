@@ -532,6 +532,7 @@ load_config() {
   PREVIOUS_FILE="$STATE_DIR/previous-digest"
   PREVIOUS_IMAGE_FILE="$STATE_DIR/previous-image"
   HISTORY_FILE="$STATE_DIR/history.log"
+  RELEASE_STEPS_LOG="$STATE_DIR/release-steps.log"
 }
 
 compose() {
@@ -974,6 +975,48 @@ record_history() {
   printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >>"$HISTORY_FILE"
 }
 
+MYR_STEP_ATTEMPT_ID=""
+MYR_STEP_CURRENT=""
+
+step_begin() {
+  local step="$1" detail="${2:-}"
+  mkdir -p "$STATE_DIR" || return 1
+  if [[ -z "$MYR_STEP_ATTEMPT_ID" ]]; then
+    MYR_STEP_ATTEMPT_ID="${BASHPID:-$$}-$(date -u +%Y%m%dT%H%M%S%N)"
+  fi
+  MYR_STEP_CURRENT="$step"
+  printf '%s attempt=%s step-begin %s %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MYR_STEP_ATTEMPT_ID" "$step" "$detail" >>"$RELEASE_STEPS_LOG"
+}
+
+step_end_ok() {
+  [[ -n "$MYR_STEP_CURRENT" ]] || return 0
+  printf '%s attempt=%s step-end %s ok %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MYR_STEP_ATTEMPT_ID" "$MYR_STEP_CURRENT" "${1:-}" >>"$RELEASE_STEPS_LOG"
+  MYR_STEP_CURRENT=""
+}
+
+step_end_error() {
+  [[ -n "$MYR_STEP_CURRENT" ]] || return 0
+  printf '%s attempt=%s step-end %s error %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MYR_STEP_ATTEMPT_ID" "$MYR_STEP_CURRENT" "${1:-failed}" >>"$RELEASE_STEPS_LOG"
+  MYR_STEP_CURRENT=""
+}
+
+release_steps_flush() {
+  local sig="${1:-EXIT}" status="${2:-0}"
+  [[ -n "$MYR_STEP_CURRENT" ]] || return 0
+  if [[ "$sig" == INT || "$sig" == TERM ]]; then
+    printf '%s attempt=%s step-end %s interrupted signal=%s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MYR_STEP_ATTEMPT_ID" "$MYR_STEP_CURRENT" "$sig" >>"$RELEASE_STEPS_LOG"
+  elif ((status != 0)); then
+    step_end_error "exit-status=$status"
+  else
+    printf '%s attempt=%s step-end %s interrupted unexpected-exit=0\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MYR_STEP_ATTEMPT_ID" "$MYR_STEP_CURRENT" >>"$RELEASE_STEPS_LOG"
+  fi
+  MYR_STEP_CURRENT=""
+}
 # --- COMPOSE-SET-ANCHOR (the 07.10 drift) -------------------------------------
 # myrmidon(COMPOSE-SET-ANCHOR): a release deploy can itself change the set of
 # compose files the board runs from (COMPOSE_FILES, the board image override
@@ -2292,7 +2335,7 @@ release_deploy_lock() {
   # "unbound variable" under set -u on bash 5.2 (CI printed
   # "deploy.sh: line 1: lock_file: unbound variable" for every test).
   sig="${1:-EXIT}"
-  trap - EXIT INT TERM
+  release_steps_flush "$sig"
   if [[ -n "${MYR_DEPLOY_LOCK_FILE:-}" && -f "$MYR_DEPLOY_LOCK_FILE" ]]; then
     flock -u 200 2>/dev/null || true
     exec 200>&- 2>/dev/null || true

@@ -1020,7 +1020,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       );
       db = createDb(tempDb.connectionString);
     }
-  }, 30_000);
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();
@@ -1490,14 +1490,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   ) {
     const endpoint = await service.get(endpointId);
     let conversation: typeof chatConversations.$inferSelect | undefined;
-    await vi.waitFor(async () => {
-      conversation = await db
-        .select()
-        .from(chatConversations)
-        .where(eq(chatConversations.endpointId, endpointId))
-        .then((rows) => rows.at(-1));
-      expect(conversation).toBeDefined();
-    });
+    await vi.waitFor(
+      async () => {
+        conversation = await db
+          .select()
+          .from(chatConversations)
+          .where(eq(chatConversations.endpointId, endpointId))
+          .then((rows) => rows.at(-1));
+        expect(conversation).toBeDefined();
+      },
+      // CI shards run this file alongside several workers against one embedded
+      // Postgres; the default 1s waitFor budget is smaller than a single loaded
+      // drain round-trip. Wait on the durable row with an explicit budget
+      // instead of depending on machine timing.
+      { timeout: 20_000, interval: 100 },
+    );
     if (!conversation) throw new Error("Expected setup conversation");
     const fakeRuntime = service.runtime as unknown as FakeChatSdkRuntime;
     const callbacks = fakeRuntime.configurations.get(endpointId)?.callbacks;
@@ -1549,31 +1556,38 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     // separate async steps. Wait for the exact final publication before the
     // setup test checks the round-trip proof, instead of relying on the
     // current drain timing.
-    await vi.waitFor(async () => {
-      // The scheduler may have handed the publication to its endpoint worker
-      // between the initial drain and this assertion. Join another drain on
-      // each retry so the setup proof observes the durable outbox state, not
-      // the scheduler's transient hand-off window.
-      await service.processPendingPublications();
-      const publication = await db
-        .select({
-          id: chatPublications.id,
-        })
-        .from(chatPublications)
-        .where(
-          and(
-            eq(chatPublications.endpointId, endpointId),
-            eq(chatPublications.conversationId, conversation.id),
-            eq(chatPublications.state, "published"),
-            isNotNull(chatPublications.commentId),
-            sql`${chatPublications.payload}->>'interactionId' is null`,
-            sql`${chatPublications.payload}->>'progressState' is null`,
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0]);
-      expect(publication).toBeDefined();
-    });
+    await vi.waitFor(
+      async () => {
+        // The scheduler may have handed the publication to its endpoint worker
+        // between the initial drain and this assertion. Join another drain on
+        // each retry so the setup proof observes the durable outbox state, not
+        // the scheduler's transient hand-off window.
+        await service.processPendingPublications();
+        const publication = await db
+          .select({
+            id: chatPublications.id,
+          })
+          .from(chatPublications)
+          .where(
+            and(
+              eq(chatPublications.endpointId, endpointId),
+              eq(chatPublications.conversationId, conversation.id),
+              eq(chatPublications.state, "published"),
+              isNotNull(chatPublications.commentId),
+              sql`${chatPublications.payload}->>'interactionId' is null`,
+              sql`${chatPublications.payload}->>'progressState' is null`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0]);
+        expect(publication).toBeDefined();
+      },
+      // Setup joins the async publication path of a fully loaded shard; the
+      // default 1s waitFor budget expires while a single drain is still in
+      // flight (observed 2.3s for one case under CI load). Give the durable
+      // row an explicit budget and rejoin the drain on each retry.
+      { timeout: 30_000, interval: 100 },
+    );
     const providerRuntime = fakeRuntime.endpoints.get(endpointId);
     if (providerRuntime) providerRuntime.posts.length = 0;
   }
@@ -12032,11 +12046,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       availability: "available",
       enabled: false,
     });
-    await vi.waitFor(async () => {
-      await expect(service.listResources(endpoint.id)).resolves.toEqual([
-        expect.objectContaining({ label: "#c-lifecycle" }),
-      ]);
-    });
+    await vi.waitFor(
+      async () => {
+        await expect(service.listResources(endpoint.id)).resolves.toEqual([
+          expect.objectContaining({ label: "#c-lifecycle" }),
+        ]);
+      },
+      { timeout: 20_000, interval: 100 },
+    );
     await service.replaceResources(endpoint.id, [
       { id: resource.id, enabled: true },
     ]);
@@ -19316,6 +19333,22 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       trigger: "subscribed_message",
     });
 
+    // The burst rows carry nextAttemptAt = Date.now() + 750ms (the Teams
+    // reorder window). On a slow host the wall clock can already be past that
+    // deadline by the time the first sweep runs, which would process the
+    // burst here and defeat the "held until due" assertion (soak v7 RUN 6).
+    // Pin the hold window into the future so the first sweep deterministically
+    // observes the burst as not-yet-due; the release below then exercises the
+    // provider-time ordered drain.
+    await db
+      .update(chatDeliveries)
+      .set({ nextAttemptAt: new Date(Date.now() + 60_000) })
+      .where(
+        and(
+          eq(chatDeliveries.endpointId, endpoint.id),
+          inArray(chatDeliveries.state, ["received", "retry"]),
+        ),
+      );
     await service.processPendingDeliveries();
     expect(wakeup).not.toHaveBeenCalled();
     await db
@@ -34990,7 +35023,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       Promise.race([
         providerAcknowledgement.then(() => "acknowledged" as const),
         new Promise<"timed_out">((resolve) =>
-          setTimeout(() => resolve("timed_out"), 250),
+          setTimeout(() => resolve("timed_out"), 5_000),
         ),
       ]),
     ).resolves.toBe("acknowledged");
@@ -46032,26 +46065,40 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           await acquired;
           const command = f.interaction("close");
           delivery = f.adapter.handleGatewayInteraction(command);
-          await expect.poll(() => command.deferReply.mock.calls.length).toBe(1);
+          // The acknowledgement is the control-plane response that must win
+          // before the DB lock is observed; use an explicit budget rather than
+          // Vitest's short default poll timeout under loaded CI shards.
           await expect
-            .poll(async () => {
-              try {
-                await db.transaction(async (tx) => {
-                  await tx
-                    .select()
-                    .from(chatEndpoints)
-                    .where(eq(chatEndpoints.id, f.endpoint.id))
-                    .for("no key update", { noWait: true });
-                });
-                return false;
-              } catch (error) {
-                const code =
-                  (error as { code?: unknown; cause?: { code?: unknown } })
-                    .cause?.code ?? (error as { code?: unknown }).code;
-                if (code !== "55P03") throw error;
-                return true;
-              }
+            .poll(() => command.deferReply.mock.calls.length, {
+              timeout: 20_000,
+              interval: 100,
             })
+            .toBe(1);
+          await expect
+            .poll(
+              async () => {
+                try {
+                  await db.transaction(async (tx) => {
+                    await tx
+                      .select()
+                      .from(chatEndpoints)
+                      .where(eq(chatEndpoints.id, f.endpoint.id))
+                      .for("no key update", { noWait: true });
+                  });
+                  return false;
+                } catch (error) {
+                  const code =
+                    (error as { code?: unknown; cause?: { code?: unknown } })
+                      .cause?.code ?? (error as { code?: unknown }).code;
+                  if (code !== "55P03") throw error;
+                  return true;
+                }
+              },
+              // The blocked DB wait is held by a live transaction on the loaded
+              // shard; give the lock probe the same explicit budget as the
+              // acknowledgement poll above.
+              { timeout: 20_000, interval: 100 },
+            )
             .toBe(true);
           expect(command.editReply).not.toHaveBeenCalled();
           if (loss === "retired runtime")
@@ -47122,11 +47169,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       Promise.race([
         first.then(() => "acknowledged" as const),
         new Promise<"timed_out">((resolve) =>
-          setTimeout(() => resolve("timed_out"), 250),
+          // 5s matches the other loaded-host acknowledgement races in this
+          // file; the post hook below stays blocked the whole time, so any
+          // resolution within the budget still proves the decoupling.
+          setTimeout(() => resolve("timed_out"), 5_000),
         ),
       ]),
     ).resolves.toBe("acknowledged");
-    await vi.waitFor(() => expect(postEntered).toHaveBeenCalledTimes(1));
+    // CI shards run this file alongside several workers against one embedded
+    // Postgres; the default 1s waitFor budget is smaller than a single loaded
+    // admission round-trip. Wait on the hook with an explicit budget instead
+    // of depending on machine timing.
+    await vi.waitFor(
+      () => expect(postEntered).toHaveBeenCalledTimes(1),
+      { timeout: 20_000, interval: 100 },
+    );
     const concurrentRetry = callbacks.onSlashCommand(slashEvent);
     releasePost();
     await Promise.all([first, concurrentRetry]);
@@ -47143,7 +47200,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         text: "Starting a task…",
       },
     ]);
-    await vi.waitFor(() => expect(wakeup).toHaveBeenCalledTimes(1));
+    // CI shards run this file alongside several workers against one embedded
+    // Postgres; the default 1s waitFor budget is smaller than a single loaded
+    // admission round-trip. Wait on the durable wake with an explicit budget
+    // instead of depending on machine timing.
+    await vi.waitFor(
+      () => expect(wakeup).toHaveBeenCalledTimes(1),
+      { timeout: 20_000, interval: 100 },
+    );
     const conversations = await service.listConversations(endpoint.id);
     expect(conversations).toEqual([
       expect.objectContaining({
@@ -47160,28 +47224,35 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     // The wake callback runs before slash admission commits its terminal
     // receipt. Observe that exact durable receipt before simulating an
     // operator resolution, rather than racing the final admission write.
-    const [action] = await vi.waitFor(async () => {
-      const actions = await db
-        .select()
-        .from(chatActions)
-        .where(
-          and(
-            eq(chatActions.endpointId, endpoint.id),
-            eq(chatActions.kind, "slash_task_start"),
-          ),
-        );
-      expect(actions).toEqual([
-        expect.objectContaining({
-          kind: "slash_task_start",
-          status: "processed",
-          result: expect.objectContaining({
-            threadId: starterThreadId,
-            providerMessageId: "outbound-1",
+    const [action] = await vi.waitFor(
+      async () => {
+        const actions = await db
+          .select()
+          .from(chatActions)
+          .where(
+            and(
+              eq(chatActions.endpointId, endpoint.id),
+              eq(chatActions.kind, "slash_task_start"),
+            ),
+          );
+        expect(actions).toEqual([
+          expect.objectContaining({
+            kind: "slash_task_start",
+            status: "processed",
+            result: expect.objectContaining({
+              threadId: starterThreadId,
+              providerMessageId: "outbound-1",
+            }),
           }),
-        }),
-      ]);
-      return actions;
-    });
+        ]);
+        return actions;
+      },
+      // CI shards run this file alongside several workers against one
+      // embedded Postgres; the default 1s waitFor budget is smaller than a
+      // single loaded admission round-trip. Observe the durable receipt with
+      // an explicit budget instead of depending on machine timing.
+      { timeout: 20_000, interval: 100 },
+    );
 
     await db
       .update(chatActions)
@@ -67828,104 +67899,116 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
     );
 
-    it("retries an unknown subscription mutation after restart using freshly observed options, not a recovered confirmation flag", async () => {
-      const lane = await draftFixture();
-      try {
-        await db
-          .delete(chatActions)
-          .where(
-            and(
-              eq(chatActions.endpointId, lane.endpoint.id),
-              eq(chatActions.kind, "telegram_stop_subscription"),
-            ),
-          );
-        lane.setSubscriptionInfo({});
-        lane.setMaintenanceHook(async (method) => {
-          if (method === "setWebhook")
-            throw new Error("Synthetic unknown subscription response");
-          return undefined;
-        });
-        await lane.processSubscriptionAttempt();
-        const [action] = await db
-          .select()
-          .from(chatActions)
-          .where(
-            and(
-              eq(chatActions.endpointId, lane.endpoint.id),
-              eq(chatActions.kind, "telegram_maintenance"),
-              sql`${chatActions.payload}->>'operation' = 'stop_subscription'`,
-            ),
-          );
-        expect(action).toMatchObject({
-          status: "failed",
-          result: { retryable: true, providerConfirmed: false },
-        });
-        expect((await lane.send("unknown-subscription"))?.state).toBe(
-          "published",
-        );
-        expect(lane.requests).toHaveLength(1);
-        expect(lane.requests[0]!.method.endsWith("Draft")).toBe(false);
-        await lane.context.service.processPendingDeliveries();
-        expect(
-          lane.maintenanceRequests.filter(
-            ({ method }) => method === "setWebhook",
-          ),
-        ).toHaveLength(1);
-        await lane.restart();
-        lane.setSubscriptionInfo({
-          allowed_updates: ["message", "chat_member"],
-        });
-        lane.setMaintenanceHook(undefined);
-        await db
-          .update(chatActions)
-          .set({
-            result: {
-              ...action!.result,
-              providerConfirmed: true,
-              retryAt: new Date(0).toISOString(),
-            },
-          })
-          .where(eq(chatActions.id, action!.id));
-        await Promise.all([
-          lane.context.service.processPendingDeliveries(),
-          lane.context.service.processPendingDeliveries(),
-        ]);
-        const mutations = lane.maintenanceRequests.filter(
-          ({ method }) => method === "setWebhook",
-        );
-        expect(mutations).toHaveLength(2);
-        expect(mutations[1]!.body.allowed_updates).toEqual([
-          "message",
-          "chat_member",
-          "stopped_message_generation",
-        ]);
-        const [receipt] = await db
-          .select()
-          .from(chatActions)
-          .where(
-            and(
-              eq(chatActions.endpointId, lane.endpoint.id),
-              eq(chatActions.kind, "telegram_stop_subscription"),
-            ),
-          );
-        expect(receipt?.status).toBe("processed");
-        const serialized = JSON.stringify(receipt);
-        expect(serialized).not.toContain(lane.configuredWebhook.url);
-        expect(serialized).not.toContain(lane.configuredWebhook.secret_token);
-        lane.requests.length = 0;
-        lane.setHook(async (method, body) => {
-          if (method.endsWith("Draft"))
-            expect((await lane.deliver(Number(body.draft_id))).status).toBe(
-              200,
+    it(
+      "retries an unknown subscription mutation after restart using freshly observed options, not a recovered confirmation flag",
+      async () => {
+        const lane = await draftFixture();
+        try {
+          await db
+            .delete(chatActions)
+            .where(
+              and(
+                eq(chatActions.endpointId, lane.endpoint.id),
+                eq(chatActions.kind, "telegram_stop_subscription"),
+              ),
             );
-        });
-        expect((await lane.send("repaired-after-unknown"))?.state).toBe(
-          "cancelled",
-        );
-      } finally {
-        await lane.close();
-      }
-    });
+          lane.setSubscriptionInfo({});
+          lane.setMaintenanceHook(async (method) => {
+            if (method === "setWebhook")
+              throw new Error("Synthetic unknown subscription response");
+            return undefined;
+          });
+          await lane.processSubscriptionAttempt();
+          const [action] = await db
+            .select()
+            .from(chatActions)
+            .where(
+              and(
+                eq(chatActions.endpointId, lane.endpoint.id),
+                eq(chatActions.kind, "telegram_maintenance"),
+                sql`${chatActions.payload}->>'operation' = 'stop_subscription'`,
+              ),
+            );
+          expect(action).toMatchObject({
+            status: "failed",
+            result: { retryable: true, providerConfirmed: false },
+          });
+          await db
+            .update(chatActions)
+            .set({
+              result: {
+                ...action!.result,
+                retryAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+              },
+            })
+            .where(eq(chatActions.id, action!.id));
+          expect((await lane.send("unknown-subscription"))?.state).toBe(
+            "published",
+          );
+          expect(lane.requests).toHaveLength(1);
+          expect(lane.requests[0]!.method.endsWith("Draft")).toBe(false);
+          await lane.context.service.processPendingDeliveries();
+          expect(
+            lane.maintenanceRequests.filter(
+              ({ method }) => method === "setWebhook",
+            ),
+          ).toHaveLength(1);
+          await lane.restart();
+          lane.setSubscriptionInfo({
+            allowed_updates: ["message", "chat_member"],
+          });
+          lane.setMaintenanceHook(undefined);
+          await db
+            .update(chatActions)
+            .set({
+              result: {
+                ...action!.result,
+                providerConfirmed: true,
+                retryAt: new Date(0).toISOString(),
+              },
+            })
+            .where(eq(chatActions.id, action!.id));
+          await Promise.all([
+            lane.context.service.processPendingDeliveries(),
+            lane.context.service.processPendingDeliveries(),
+          ]);
+          const mutations = lane.maintenanceRequests.filter(
+            ({ method }) => method === "setWebhook",
+          );
+          expect(mutations).toHaveLength(2);
+          expect(mutations[1]!.body.allowed_updates).toEqual([
+            "message",
+            "chat_member",
+            "stopped_message_generation",
+          ]);
+          const [receipt] = await db
+            .select()
+            .from(chatActions)
+            .where(
+              and(
+                eq(chatActions.endpointId, lane.endpoint.id),
+                eq(chatActions.kind, "telegram_stop_subscription"),
+              ),
+            );
+          expect(receipt?.status).toBe("processed");
+          const serialized = JSON.stringify(receipt);
+          expect(serialized).not.toContain(lane.configuredWebhook.url);
+          expect(serialized).not.toContain(lane.configuredWebhook.secret_token);
+          lane.requests.length = 0;
+          lane.setHook(async (method, body) => {
+            if (method.endsWith("Draft"))
+              expect((await lane.deliver(Number(body.draft_id))).status).toBe(
+                200,
+              );
+          });
+          expect((await lane.send("repaired-after-unknown"))?.state).toBe(
+            "cancelled",
+          );
+        } finally {
+          await lane.close();
+        }
+      },
+    );
 
     it("returns 503 on failed Stop commit and accepts the exact verified retry before final send", async () => {
       const lane = await draftFixture();
@@ -69598,6 +69681,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           await retirePublicationFixture(restarted ?? service, endpoint.id);
         }
       },
+      // Each variant boots a full service, restarts it mid-test and drains the
+      // pending-publication lanes 20+ times over ~100KB payloads. Under the
+      // soak/serial-shard load the github variant was observed crossing the
+      // global 15s testTimeout (15.1s) while its slack sibling passed in 6.4s
+      // (OPE-12858, loop run 3). 30s matches the config's hookTimeout headroom
+      // and still catches a genuinely hung test.
+      30_000,
     );
 
     it("preserves an accepted native Slack response whose rendered mentions exceed the Markdown cap", async () => {

@@ -253,7 +253,7 @@ describe("reviewed external-chat execution binding", () => {
         providerMessageId: "review-message",
         direction: "inbound",
       });
-  }, 30_000);
+  }, 60_000);
   afterAll(async () => {
     await temporary?.cleanup();
   });

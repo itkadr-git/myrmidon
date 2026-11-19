@@ -62,7 +62,7 @@ describeEmbeddedPostgres("pending interaction wake sweep", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-pending-interaction-wake-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(agentWakeupRequests);

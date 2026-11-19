@@ -102,6 +102,8 @@ export type ScheduledRetryFacts = {
   issueHiddenAt?: Date | null;
 
   isNonAssigneeWorkspaceBusyRetry: boolean;
+  /** myrmidon(OPE-13231): the run is parked by strict release focus; ownership facts stay as they were. */
+  isReleaseFocusDeferral?: boolean;
   reviewParticipant: ReviewParticipantFacts;
   activePauseHold: PauseHoldFacts | null;
   dependenciesBlocked: DependencyBlockFacts | null;
@@ -177,12 +179,20 @@ export type QueuedRunFacts = {
    */
   isUnblockOwnerWake?: boolean;
   /**
+   * myrmidon(OPE-13095): the run is the starter-pack scout's wake
+   * (`starter_pack_scout`) on a new engineer task. The scout is not the assignee
+   * and must be allowed to start; the assignee does not change.
+   */
+  isStarterPackScoutWake?: boolean;
+  /**
    * myrmidon(OPE-11948): the run is an automatic `issue_continuation_needed`
    * wake of the system — no comment, no resume intent, no interaction. It is
    * only worth starting while the issue is todo or in_progress.
    */
   isAutomaticContinuationWake?: boolean;
   isNonAssigneeWorkspaceBusyRetry: boolean;
+  /** myrmidon(OPE-13231): the run was parked by strict release focus and keeps its original ownership facts. */
+  isReleaseFocusDeferral?: boolean;
 
   resumeIntent: boolean;
   wakeCommentIdPresent: boolean;
@@ -202,6 +212,7 @@ type OwnershipFacts = {
   runAgentId: string;
   issueAssigneeAgentId: string | null;
   isNonAssigneeWorkspaceBusyRetry: boolean;
+  isReleaseFocusDeferral?: boolean;
   isInteractionWake?: boolean;
   // myrmidon(P2): pending interaction addressee wake bypass
   isPendingInteractionAddresseeWake?: boolean;
@@ -212,6 +223,8 @@ type OwnershipFacts = {
   isRunGuardStopNeedsInputWake?: boolean;
   // myrmidon(UNBLOCK-OWNER-WAKE): the block owner's unblock wake
   isUnblockOwnerWake?: boolean;
+  // myrmidon(OPE-13095): the starter-pack scout's wake on a new engineer task
+  isStarterPackScoutWake?: boolean;
 };
 
 type OwnershipOutcome = "current_owner" | "reassigned";
@@ -224,6 +237,7 @@ type OwnershipOutcome = "current_owner" | "reassigned";
 function decideIssueOwnership(facts: OwnershipFacts): OwnershipOutcome {
   if (facts.issueAssigneeAgentId === facts.runAgentId) return "current_owner";
   if (facts.isNonAssigneeWorkspaceBusyRetry) return "current_owner";
+  if (facts.isReleaseFocusDeferral) return "current_owner";
   if (facts.isInteractionWake) return "current_owner";
   // myrmidon(P2): the addressee of a pending interaction is often not the assignee
   if (facts.isPendingInteractionAddresseeWake) return "current_owner";
@@ -232,6 +246,7 @@ function decideIssueOwnership(facts: OwnershipFacts): OwnershipOutcome {
   if (facts.isAuthorizedSourceScopedRecovery) return "current_owner";
   if (facts.isRunGuardStopNeedsInputWake) return "current_owner";
   if (facts.isUnblockOwnerWake) return "current_owner";
+  if (facts.isStarterPackScoutWake) return "current_owner";
   return "reassigned";
 }
 
@@ -386,6 +401,7 @@ export function decideScheduledRetryGate(
     runAgentId: facts.runAgentId,
     issueAssigneeAgentId: facts.issueAssigneeAgentId,
     isNonAssigneeWorkspaceBusyRetry: facts.isNonAssigneeWorkspaceBusyRetry,
+    isReleaseFocusDeferral: facts.isReleaseFocusDeferral,
     isCurrentReviewParticipant:
       facts.reviewParticipant.isInReview &&
       facts.reviewParticipant.hasParticipant &&
@@ -623,10 +639,24 @@ export function decideQueuedRunStaleness(
     };
   }
 
+  // Monitor wakes belong to the review participant, not the return assignee.
+  if (facts.wakeReason === "issue_monitor_due" &&
+      decideReviewParticipant({ ...facts.reviewParticipant, runAgentId: facts.runAgentId,
+        bypass: facts.wakeCommentIdPresent }) === "participant_changed") {
+    return {
+      stale: true,
+      errorCode: "issue_review_participant_changed",
+      reason: "Cancelled because the in-review participant changed before the queued run could start",
+      details: { issueId: facts.issueId, currentStageType: facts.reviewParticipant.currentStageType,
+        currentParticipant: facts.reviewParticipant.currentParticipant },
+    };
+  }
+
   const ownership = decideIssueOwnership({
     runAgentId: facts.runAgentId,
     issueAssigneeAgentId: facts.issueAssigneeAgentId,
     isNonAssigneeWorkspaceBusyRetry: facts.isNonAssigneeWorkspaceBusyRetry,
+    isReleaseFocusDeferral: facts.isReleaseFocusDeferral,
     isInteractionWake: facts.isInteractionWake,
     // myrmidon(P2): forward the addressee bypass; this call site lists bypasses explicitly
     isPendingInteractionAddresseeWake: facts.isPendingInteractionAddresseeWake,
@@ -638,6 +668,7 @@ export function decideQueuedRunStaleness(
     isProductiveContinuationRecovery: facts.isProductiveContinuationRecovery,
     isRunGuardStopNeedsInputWake: facts.isRunGuardStopNeedsInputWake,
     isUnblockOwnerWake: facts.isUnblockOwnerWake,
+    isStarterPackScoutWake: facts.isStarterPackScoutWake,
   });
   if (ownership === "reassigned") {
     return {
@@ -683,8 +714,20 @@ export function decideQueuedRunStaleness(
     // Cancelling the run as terminal drops the addressee's only chance to
     // answer: the same false cancellation the ownership bypass (P2) already
     // prevents for a non-assignee addressee.
+    //
+    // myrmidon(RUN-SETUP-STALE-TASK / CLOSED-TASK-COMMENT-RUN): an assignment wake
+    // carries the hand-off comment, and an assignee comment wake on a closed task
+    // has no active execution continuation. When the task closed while that run
+    // waited for the agent's slot, the comment bypass let the run start and it
+    // then failed setup (`continuation_task_ownership_changed`, 17 failed runs in
+    // 7 days). For the assignee, a comment wake no longer bypasses terminal status;
+    // non-assignees still bypass.
     terminalBypass:
-      facts.resumeIntent || facts.wakeCommentIdPresent || facts.isPendingInteractionAddresseeWake === true,
+      facts.resumeIntent ||
+      (facts.wakeCommentIdPresent &&
+        facts.wakeReason !== "issue_assigned" &&
+        facts.runAgentId !== facts.issueAssigneeAgentId) ||
+      facts.isPendingInteractionAddresseeWake === true,
   });
   if (statusOutcome === "terminal") {
     return {

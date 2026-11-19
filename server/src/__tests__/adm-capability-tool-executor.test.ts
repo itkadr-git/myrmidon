@@ -84,7 +84,7 @@ describeEmbeddedPostgres("adm capability tool executor (OPE-12766)", () => {
       .returning()
       .then((rows) => rows[0]!);
     connectionId = connection.id;
-  }, 20_000);
+  }, 60_000);
 
   afterAll(async () => {
     await db.delete(toolConnections).where(eq(toolConnections.companyId, companyId));

@@ -440,13 +440,31 @@ func (rs *reqState) a9(ctx context.Context, st *runtime, rt *route.Route, bs *bo
 		cleanupCtx, cancel := context.WithTimeout(ctx, def)
 		err := rs.g.opt.Disk.Remove(cleanupCtx, rt.BotKey)
 		cancel()
-		if err != nil {
-			rs.g.log.Write(Line{Level: LevelError, Event: "disk_project_remove_failed", BotKey: rt.BotKey, Reason: "delete"})
-		} else {
+		switch {
+		case err == nil:
 			rs.g.log.Write(Line{Event: "disk_project_removed", BotKey: rt.BotKey})
+		case errors.Is(err, disk.ErrBotDirStillExists):
+			// The expected case on a recreate: the volume outlives the
+			// container, so the quota mapping stays until the host GC
+			// removes the directory. Not an error.
+			rs.g.log.Write(Line{Event: "disk_project_still_has_directory", BotKey: rt.BotKey})
+		default:
+			// A real failure of the removal: keep the cause, bounded and
+			// single-line, in Detail.
+			rs.g.log.Write(Line{Level: LevelError, Event: "disk_project_remove_failed", BotKey: rt.BotKey, Reason: "delete", Detail: logCause(err)})
 		}
 	}
 	return nil
+}
+
+// logCause renders an error as a single-line, bounded cause for a log Detail.
+func logCause(err error) string {
+	s := strings.Join(strings.Fields(err.Error()), " ")
+	const maxCause = 120
+	if len(s) > maxCause {
+		s = s[:maxCause] + "…"
+	}
+	return s
 }
 
 // has not been started.

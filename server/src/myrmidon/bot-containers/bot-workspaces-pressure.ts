@@ -19,6 +19,7 @@ export function botWorkspacePressureFromPartition(
     quotaPercent: null,
     partitionPercent: Math.min(100, Math.max(0, partition.usedPercent)),
     level: pressureLevel(partition.usedPercent, settings),
+    partitionMeasured: true,
   };
 }
 

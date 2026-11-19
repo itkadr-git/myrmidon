@@ -102,7 +102,7 @@ describeEmbeddedPostgres("myrmidon(HERMES-GATEWAY-CLOSE) close the gateway run o
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-gateway-run-close-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   beforeEach(() => {
     probeStates = new Map();

@@ -121,7 +121,7 @@ describeEmbeddedPostgres("run start dispatch, notify mode: two processes, one da
         .set({ general: { processes: { runStartDispatch: "notify", queuedResweepSec: 30 } } })
         .where(eq(instanceSettings.singletonKey, "default"));
     }
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     resetSharedRunAdmissionForTests();

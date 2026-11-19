@@ -39,7 +39,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers ignore connection health
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-heartbeat-runtime-mcp-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     if (originalApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;

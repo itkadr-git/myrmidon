@@ -268,13 +268,31 @@ export function calculateCiResultLatency(jobs, {
   }
 
   const latencySeconds = Math.round((ciStartTime - latestEndTime) / 1000);
-  const passed = latencySeconds <= maxLatencySec;
+
+  // Time the CI result job spent in `queued` waiting for a free runner
+  // (created_at -> started_at of the job itself). A runner queue clogged by
+  // other PRs is not a defect of this run, so it is split off the latency.
+  const ciCreatedTime = ciJob.created_at ? new Date(ciJob.created_at).getTime() : NaN;
+  let queueWaitSeconds = 0;
+  if (!isNaN(ciCreatedTime) && ciCreatedTime <= ciStartTime) {
+    queueWaitSeconds = Math.round((ciStartTime - ciCreatedTime) / 1000);
+  }
+  // Latency that the runner queue does not explain: the gap between the last
+  // predecessor and the moment the job was queued. This part stays
+  // fail-closed (the job must not hang before it reaches the queue).
+  const residualLatencySeconds = latencySeconds - queueWaitSeconds;
+  const queueDelayed = latencySeconds > maxLatencySec && queueWaitSeconds > 0;
+  const passed = residualLatencySeconds <= maxLatencySec;
 
   return {
     ciStart: ciJob.started_at,
     lastPredecessorEnd: latestJob.completed_at,
     lastPredecessorJob: latestJob.name,
     latencySeconds,
+    queueWaitSeconds,
+    residualLatencySeconds,
+    queueDelayed,
+    runnerName: ciJob.runner_name || null,
     maxLatencySec,
     passed,
     evaluatedJobsCount: completedPredecessors.length,
@@ -325,10 +343,12 @@ export function main(args = process.argv.slice(2)) {
         workflow: workflowType || 'ci',
         maxLatencySec: maxLatency || 120,
       });
-      if (result.passed) {
+      if (result.passed && result.queueDelayed) {
+        console.log(`::warning::CI result start latency ${result.latencySeconds}s > ${result.maxLatencySec}s was caused by the runner queue: the job waited ${result.queueWaitSeconds}s in queued before runner "${result.runnerName || 'unknown'}" took it; residual latency ${result.residualLatencySeconds}s <= ${result.maxLatencySec}s relative to predecessor "${result.lastPredecessorJob}". Not a failure.`);
+      } else if (result.passed) {
         console.log(`PASS: CI result start latency is ${result.latencySeconds}s (<= ${result.maxLatencySec}s) relative to predecessor "${result.lastPredecessorJob}" (${result.evaluatedJobsCount} predecessor jobs evaluated).`);
       } else {
-        console.error(`ERROR: CI result start latency exceeded threshold: ${result.latencySeconds}s > ${result.maxLatencySec}s relative to predecessor "${result.lastPredecessorJob}".`);
+        console.error(`ERROR: CI result start latency exceeded threshold: ${result.latencySeconds}s > ${result.maxLatencySec}s relative to predecessor "${result.lastPredecessorJob}" (runner queue explains ${result.queueWaitSeconds}s, ${result.residualLatencySeconds}s remain).`);
         process.exit(1);
       }
     } catch (err) {

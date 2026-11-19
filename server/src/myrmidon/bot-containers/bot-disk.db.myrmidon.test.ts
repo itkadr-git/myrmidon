@@ -128,9 +128,24 @@ describeEmbeddedPostgres("myrmidon(BOT-DISK-A) bot disk settings in the database
     expect(general.botDisk).toBeUndefined();
 
     const res = await request(app(board(companyId, false))).get(URL).expect(200);
-    expect(res.body).toEqual({
+    expect(res.body).toMatchObject({
       settings: { enabled: true, idleTtlMs: BOT_DISK_DEFAULT_IDLE_TTL_MS },
       sources: { enabled: "default", idleTtlMs: "default" },
+    });
+  });
+
+  // myrmidon(OPE-13110): a general PATCH names botDisk keys one by one.
+  it("a general PATCH of one botDisk key keeps the other stored keys", async () => {
+    const settings = instanceSettingsService(db);
+    await settings.updateGeneral({
+      botDisk: { sharedPackageCachePath: "/srv/cache", gitMirrorRepos: ["itkadr-git/myrmidon"] },
+    } as never);
+    await settings.updateGeneral({ botDisk: { scratchTtlHours: 12 } } as never);
+    const general = await settings.getGeneral();
+    expect(general.botDisk).toMatchObject({
+      sharedPackageCachePath: "/srv/cache",
+      gitMirrorRepos: ["itkadr-git/myrmidon"],
+      scratchTtlHours: 12,
     });
   });
 });

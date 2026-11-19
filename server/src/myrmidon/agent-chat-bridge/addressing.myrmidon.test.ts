@@ -14,12 +14,14 @@ import {
   findMention,
   readTelegramAliases,
   resolveTelegramAddressee,
+  resolveBridgeAddressee,
 } from "./addressing.js";
 
 interface AgentRow {
   id: string;
   name: string;
   title: string | null;
+  status?: string;
   metadata: unknown;
   adapterConfig: unknown;
 }
@@ -31,6 +33,22 @@ interface AgentRow {
  */
 function fakeDb(rowsByCompany: Record<string, AgentRow[]>) {
   const captured: { fields?: Record<string, unknown>; where?: SQL } = {};
+  const query = (condition: SQL) => {
+    captured.where = condition;
+    const rendered = new PgDialect().sqlToQuery(condition);
+    const companyId = rendered.params[0];
+    const rows =
+      (typeof companyId === "string" && rowsByCompany[companyId]) ?? [];
+    const promise = Promise.resolve(rows);
+    return {
+      orderBy() {
+        return promise;
+      },
+      then: promise.then.bind(promise),
+      catch: promise.catch.bind(promise),
+      finally: promise.finally.bind(promise),
+    };
+  };
   const chain = {
     select(fields: Record<string, unknown>) {
       captured.fields = fields;
@@ -40,12 +58,7 @@ function fakeDb(rowsByCompany: Record<string, AgentRow[]>) {
       return chain;
     },
     where(condition: SQL) {
-      captured.where = condition;
-      const rendered = new PgDialect().sqlToQuery(condition);
-      const companyId = rendered.params[0];
-      const rows =
-        (typeof companyId === "string" && rowsByCompany[companyId]) ?? [];
-      return Promise.resolve(rows);
+      return query(condition);
     },
   };
   return { db: chain as unknown as Db, captured };
@@ -58,6 +71,7 @@ const AGENT_A = {
   id: "agent-a-id",
   name: "Agent A",
   title: "Support Lead",
+  status: "active",
   metadata: { telegramAliases: ["support", "helpdesk"] },
   adapterConfig: {},
 };
@@ -65,6 +79,7 @@ const AGENT_B = {
   id: "agent-b-id",
   name: "Agent B",
   title: null,
+  status: "active",
   metadata: null,
   adapterConfig: { telegramAliases: ["writer"] },
 };
@@ -72,6 +87,7 @@ const AGENT_C = {
   id: "agent-c-id",
   name: "Agent_C",
   title: "Analyst",
+  status: "active",
   metadata: null,
   adapterConfig: null,
 };
@@ -83,6 +99,7 @@ const dbHandle = fakeDb({
       id: "agent-other-company",
       name: "Agent A",
       title: "Support Lead",
+      status: "active",
       metadata: { telegramAliases: ["support"] },
       adapterConfig: {},
     },
@@ -352,5 +369,157 @@ describe("myrmidon(X9a) resolveTelegramAddressee", () => {
     );
     expect(result.addressee?.agentId).toBe("agent-a-id");
     expect(result.consumedText).toBe("status please");
+  });
+
+  describe("myrmidon(OPE-13033) resolveBridgeAddressee ambiguity and resolution", () => {
+    it("rejects mentions embedded in email and code-like fragments", async () => {
+      const nameDb = fakeDb({ [COMPANY_A]: [
+        { ...AGENT_A, name: "Mira", title: null, metadata: null, adapterConfig: null },
+      ] }).db;
+      const resolve = (text: string) => resolveBridgeAddressee(nameDb, {
+        companyId: COMPANY_A, endpointAgentId: AGENT_A.id, text,
+      });
+      for (const prefix of ["user", "2", "\u0416", "\u{10400}", "e\u0301", "_", "@", ".", "%", "+", "-"]) {
+        expect(await resolve(`${prefix}@Mira.example`), prefix).toEqual({ kind: "none" });
+      }
+      expect(await resolve("user@Mira.example then @Mira")).toEqual({
+        kind: "resolved", addressee: { agentId: AGENT_A.id, displayName: "Mira" },
+      });
+      for (const text of ["@Mira", "hello (@Mira)", "@Mira.example"]) {
+        expect(await resolve(text), text).toEqual({
+          kind: "resolved", addressee: { agentId: AGENT_A.id, displayName: "Mira" },
+        });
+      }
+    });
+
+    it("requires a complete name token, including hyphenated names", async () => {
+      const nameDb = fakeDb({ [COMPANY_A]: [
+        { ...AGENT_A, name: "Foo", title: null, metadata: null, adapterConfig: null },
+        { ...AGENT_B, name: "Foo-Bar", title: null, metadata: null, adapterConfig: null },
+      ] }).db;
+      const resolve = (text: string) => resolveBridgeAddressee(nameDb, {
+        companyId: COMPANY_A, endpointAgentId: AGENT_C.id, text,
+      });
+      expect(await resolve("@FooExtra hello")).toEqual({ kind: "none" });
+      expect(await resolve("@Foo-BarExtra hello")).toEqual({ kind: "none" });
+      expect(await resolve("@Foo hello")).toMatchObject({ kind: "resolved", addressee: { agentId: AGENT_A.id } });
+      expect(await resolve("@Foo-Bar hello")).toMatchObject({ kind: "resolved", addressee: { agentId: AGENT_B.id } });
+    });
+    it("returns ambiguous with candidate names and IDs when multiple agents share the exact name or alias", async () => {
+      const dbDuplicates = fakeDb({
+        [COMPANY_A]: [
+          {
+            id: "agent-1",
+            name: "DuplicateName",
+            title: "Engineer",
+            status: "active",
+            metadata: null,
+            adapterConfig: null,
+          },
+          {
+            id: "agent-2",
+            name: "DuplicateName",
+            title: "Tester",
+            status: "active",
+            metadata: null,
+            adapterConfig: null,
+          },
+        ],
+      }).db;
+
+      const input = {
+        companyId: COMPANY_A,
+        text: "@duplicatename привет",
+        endpointAgentId: "agent-1",
+      };
+      const result = await resolveBridgeAddressee(dbDuplicates, input);
+      const repeatedResult = await resolveBridgeAddressee(dbDuplicates, input);
+
+      expect(result).toEqual({
+        kind: "ambiguous",
+        handle: "duplicatename",
+        candidates: [
+          { agentId: "agent-1", name: "DuplicateName" },
+          { agentId: "agent-2", name: "DuplicateName" },
+        ],
+      });
+      expect(repeatedResult).toEqual(result);
+    });
+
+    it("resolves unique name even if same name exists in another company", async () => {
+      const dbTwoCompanies = fakeDb({
+        [COMPANY_A]: [
+          {
+            id: "agent-co-a",
+            name: "UniqueInCompany",
+            title: "Lead",
+            status: "active",
+            metadata: null,
+            adapterConfig: null,
+          },
+        ],
+        [COMPANY_B]: [
+          {
+            id: "agent-co-b",
+            name: "UniqueInCompany",
+            title: "Lead",
+            status: "active",
+            metadata: null,
+            adapterConfig: null,
+          },
+        ],
+      }).db;
+
+      const result = await resolveBridgeAddressee(dbTwoCompanies, {
+        companyId: COMPANY_A,
+        text: "@uniqueincompany hello",
+        endpointAgentId: "agent-co-a",
+      });
+
+      expect(result).toEqual({
+        kind: "resolved",
+        addressee: {
+          agentId: "agent-co-a",
+          displayName: "UniqueInCompany",
+        },
+      });
+    });
+
+    it("resolves unique active agent when another agent with same name is retired", async () => {
+      const dbWithRetired = fakeDb({
+        [COMPANY_A]: [
+          {
+            id: "agent-active",
+            name: "Worker",
+            title: "Dev",
+            status: "active",
+            metadata: null,
+            adapterConfig: null,
+          },
+          {
+            id: "agent-retired",
+            name: "Worker (retired)",
+            title: "Dev",
+            status: "active",
+            metadata: null,
+            adapterConfig: null,
+          },
+        ],
+      }).db;
+
+      const result = await resolveBridgeAddressee(dbWithRetired, {
+        companyId: COMPANY_A,
+        text: "@worker hello",
+        endpointAgentId: "agent-active",
+      });
+
+      expect(result).toEqual({
+        kind: "resolved",
+        addressee: {
+          agentId: "agent-active",
+          displayName: "Worker",
+        },
+      });
+    });
   });
 });

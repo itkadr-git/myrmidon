@@ -86,6 +86,7 @@ does not require host filesystem access. See the fleetd configuration reference 
 - [Shared package cache and git objects](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/bot-disk-cache.md)
 - [Host disk usage signal](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/host-disk.md)
 - [Workspace cleanup after merge](Workspace-cleanup)
+- [Workspace turn checkpoints](Workspace-turn-checkpoints)
 - [Stack registry](Stack-registry)
 - [Fleet dashboard data: VictoriaMetrics + Zabbix connections, snapshot API, selfcheck](Fleet-dashboard-monitoring)
 - [Maintenance banner](Maintenance-banner)

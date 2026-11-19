@@ -619,3 +619,52 @@ describe("botd rules: unsafe git is kept while a run is live (or unknown)", () =
     assert.deepEqual(ops(plan({ scratch: [dir], run: IDLE }, d, NOW).actions), [[OPS.archiveRemove, "/workspace/work"]]);
   });
 });
+
+const { resolvePressure } = await import(path.join(ROOT, "docker/bot-runtime/botd/lib/loop.js"));
+
+// myrmidon(OPE-13107): behavioural test on the real chain resolvePressure -> rules.plan.
+// A closed copy of a bot whose volume is over the threshold is released at once
+// (graceClosingMs = 0); without pressure the usual grace applies. A dirty copy goes
+// through the archive, never a plain remove.
+describe("botd rules: closed copy under real volume pressure (OPE-13107)", () => {
+  const UNMEASURED = { quotaPercent: null, partitionPercent: 0, level: "none" };
+  const volume = (percent) => ({ totalBytes: 1000 * GIB, usedBytes: (percent * 1000 * GIB) / 100 });
+  // closed 5 minutes ago: inside the 30-minute grace
+  const run = (percent, wtOver) => {
+    const { pressure } = resolvePressure(UNMEASURED, volume(percent));
+    const d = {
+      ...desired({ workspaces: [ws("ABC-1", "closing", 5 * MIN)] }),
+      pressure,
+    };
+    return { pressure, out: plan({ worktrees: [wt("ABC-1", wtOver)] }, d, NOW) };
+  };
+
+  it("volume at or above the threshold: the closed copy is released with no grace", () => {
+    for (const percent of [85, 92]) {
+      const { pressure, out } = run(percent, { clean: true, pushed: true });
+      assert.equal(pressure.partitionPercent, percent);
+      assert.notEqual(pressure.level, "none");
+      assert.deepEqual(ops(out.actions), [[OPS.remove, "/workspace/ABC-1"]], `${percent}%`);
+    }
+  });
+
+  it("dirty closed copy under pressure goes through the archive, not a plain remove", () => {
+    const { out } = run(92, { clean: false, pushed: true });
+    assert.deepEqual(ops(out.actions), [[OPS.archiveRemove, "/workspace/ABC-1"]]);
+    const unpushed = run(92, { clean: true, pushed: false });
+    assert.deepEqual(ops(unpushed.out.actions), [[OPS.archiveRemove, "/workspace/ABC-1"]]);
+  });
+
+  it("without pressure the closed copy waits out the usual grace (clean and dirty)", () => {
+    for (const over of [{ clean: true, pushed: true }, { clean: false, pushed: false }]) {
+      const { pressure, out } = run(40, over);
+      assert.equal(pressure.level, "none");
+      assert.deepEqual(out.actions, []);
+    }
+  });
+
+  it("with no pressure the same copy is released once the grace has passed", () => {
+    const d = { ...desired({ workspaces: [ws("ABC-1", "closing", 31 * MIN)] }), pressure: resolvePressure(UNMEASURED, volume(40)).pressure };
+    assert.deepEqual(ops(plan({ worktrees: [wt("ABC-1", { clean: false })] }, d, NOW).actions), [[OPS.archiveRemove, "/workspace/ABC-1"]]);
+  });
+});

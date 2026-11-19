@@ -66,6 +66,7 @@ export const THROTTLED_ISSUE_REWAKE_REASONS: ReadonlySet<string> = new Set([
   // холостые петли «агент будится по своей же задаче без прогресса».
   "swarm_matched",
   "idle_pickup",
+  "in_progress_no_run",
   "issue_disposition_repair",
   "queued_run_stale_timeout",
 ]);
@@ -162,13 +163,57 @@ function isSelfReassignment(row: IssueActivitySample, agentId: string): boolean 
 }
 
 /**
+ * Fields an `issue.updated` row carries when a run only hands its task back to
+ * the queue: the status move, the execution lock its checkout took, and the
+ * assignment bookkeeping. Any other field next to them is a real change.
+ */
+const RETURN_TO_QUEUE_BOOKKEEPING_FIELDS: ReadonlySet<string> = new Set([
+  "status",
+  "statusVersion",
+  "checkoutRunId",
+  "executionRunId",
+  "executionLockedAt",
+  "executionAgentNameKey",
+  "assigneeAgentId",
+  "assigneeUserId",
+  "responsibleUserId",
+]);
+
+/**
+ * `issue.updated` that only put the task the run had taken back into the queue:
+ * `in_progress -> todo` with nothing but the execution lock and the assignment
+ * bookkeeping changing alongside. The checkout moved the task to `in_progress`,
+ * this row moves it back, so the run leaves the task exactly where it found it.
+ * A hand-over to another agent in the same PATCH, or any other field changing
+ * with the status, is a real change and is not covered. Neither is any other
+ * status pair (`blocked -> todo` unblocks the task, `backlog -> todo` starts it).
+ *
+ * myrmidon(EMPTY-RUNS-1): the 13.11 loop of the service bots. A bot took its
+ * own `todo` task, wrote "no new data, leaving it in todo" and PATCHed it back
+ * to `todo`; that PATCH counted as progress, the no-progress streak never
+ * started, and three bots ran 176 such pickups on ten tasks in eight hours.
+ */
+export function isReturnToQueue(row: IssueActivitySample, agentId: string): boolean {
+  if (row.action !== "issue.updated") return false;
+  const changes = readRecord(row.changes);
+  if (!changes) return false;
+  const status = readRecord(changes.status);
+  if (!status || status.from !== "in_progress" || status.to !== "todo") return false;
+  if (!Object.keys(changes).every((field) => RETURN_TO_QUEUE_BOOKKEEPING_FIELDS.has(field))) {
+    return false;
+  }
+  const assignee = readRecord(changes.assigneeAgentId);
+  return !assignee || assignee.to === agentId;
+}
+
+/**
  * Does this activity, attributed to a run of `agentId`, count as issue-visible
  * progress of that run? The listed actions do, except the run's own bookkeeping:
  * the echo of its final text (`run_presentation_resolver` comment), the release
- * of the task and the assignment back to itself. The 07.11 adm loop was exactly
- * that: every run released the task, assigned it to itself and got its answer
- * echoed as a comment, so every run looked like progress and the streak never
- * started.
+ * of the task, the assignment back to itself and the hand-back of the task to
+ * the queue (`isReturnToQueue`). The 07.11 adm loop was exactly that: every run
+ * released the task, assigned it to itself and got its answer echoed as a
+ * comment, so every run looked like progress and the streak never started.
  */
 export function isIssueProgressActivity(row: IssueActivitySample, agentId: string): boolean {
   if (!ISSUE_PROGRESS_ACTIVITY_ACTIONS.includes(row.action)) return false;
@@ -177,7 +222,110 @@ export function isIssueProgressActivity(row: IssueActivitySample, agentId: strin
     return false;
   }
   if (isSelfReassignment(row, agentId)) return false;
+  if (isReturnToQueue(row, agentId)) return false;
   return true;
+}
+
+/** One issue activity row attributed to a run. */
+export interface IssueRunActivitySample extends IssueActivitySample {
+  runId: string | null;
+}
+
+/**
+ * The runs among `rows` that left issue-visible progress behind.
+ *
+ * Row by row this is `isIssueProgressActivity`. One rule needs the whole run:
+ * a run that handed its task back to the queue (`isReturnToQueue`) says with
+ * that very move that it has nothing more to do on the task now, so a comment
+ * it writes next to the move is the note it parks the task with, not progress.
+ * Anything durable it left besides comments (a document, a work product, a
+ * sub-task, a blocker, a monitor, an interaction, a real field change) still
+ * counts, and so does every comment of a run that did not hand the task back.
+ *
+ * `agentIdOfRun` names the agent a run belongs to; the own-bookkeeping rules
+ * compare against it. Rows without a run id are ignored.
+ */
+export function collectRunIdsWithIssueProgress(
+  rows: readonly IssueRunActivitySample[],
+  agentIdOfRun: (runId: string) => string | null | undefined,
+): Set<string> {
+  const parkedRunIds = new Set<string>();
+  for (const row of rows) {
+    if (row.runId && isReturnToQueue(row, agentIdOfRun(row.runId) ?? "")) {
+      parkedRunIds.add(row.runId);
+    }
+  }
+  const withProgress = new Set<string>();
+  for (const row of rows) {
+    if (!row.runId) continue;
+    if (row.action === "issue.comment_added" && parkedRunIds.has(row.runId)) continue;
+    if (isIssueProgressActivity(row, agentIdOfRun(row.runId) ?? "")) {
+      withProgress.add(row.runId);
+    }
+  }
+  return withProgress;
+}
+
+/**
+ * myrmidon(EMPTY-RUNS-1): the activity row the board writes when the head of the
+ * task's pull request moves (`metadata.headSha` of the `pull_request` work
+ * product changes, see github-connection-events.ts). An engineer's run pushes
+ * commits to the PR and hands the task back to `todo`; the push leaves no row
+ * under the run (the board learns of it from GitHub), so this row is the only
+ * trace of the code work. Deliberately not part of ISSUE_PROGRESS_ACTIVITY_ACTIONS
+ * and ISSUE_NEW_INPUT_ACTIVITY_ACTIONS: it carries no run id, and as new input it
+ * would wake and thaw the very tasks it is only meant to explain.
+ */
+export const PR_HEAD_CHANGE_ACTIVITY_ACTION = "issue.work_product_head_changed";
+
+/**
+ * How long after a run ends a PR head change is still credited to that run. The
+ * webhook (or the reconciliation of the PR) reports a push with a delay, so the
+ * row can land after the run is already finished.
+ */
+export const PR_HEAD_CHANGE_LATE_WINDOW_MS = 15 * 60_000;
+
+/** The span of one run, as the head-change credit needs it. */
+export interface RunSpan {
+  id: string;
+  createdAt?: Date | null;
+  startedAt?: Date | null;
+  finishedAt?: Date | null;
+}
+
+/**
+ * The runs that moved the head of the task's PR. One head change is credited to
+ * one run: the run whose span [start, end] holds the change (the latest started,
+ * if spans overlap); otherwise the run that ended last before the change, when
+ * the change comes at most PR_HEAD_CHANGE_LATE_WINDOW_MS after its end. A run
+ * that has not finished ends at `now`. A run with neither start nor creation
+ * time is never credited.
+ */
+export function collectRunIdsWithPrHeadChange(
+  runs: readonly RunSpan[],
+  headChangeTimes: readonly Date[],
+  now: Date = new Date(),
+): Set<string> {
+  const spans = runs.flatMap((run) => {
+    const from = (run.startedAt ?? run.createdAt)?.getTime();
+    if (from === undefined) return [];
+    return [{ id: run.id, from, to: (run.finishedAt ?? now).getTime() }];
+  });
+  const credited = new Set<string>();
+  for (const change of headChangeTimes) {
+    const at = change.getTime();
+    let owner: { id: string; from: number; to: number } | undefined;
+    for (const span of spans) {
+      if (at >= span.from && at <= span.to && (!owner || span.from > owner.from)) owner = span;
+    }
+    if (!owner) {
+      for (const span of spans) {
+        if (span.to < at && at <= span.to + PR_HEAD_CHANGE_LATE_WINDOW_MS && (!owner || span.to > owner.to)) owner = span;
+      }
+    }
+    if (owner) credited.add(owner.id);
+  }
+  return credited;
 }
 
 export interface IssueRewakeCandidateInput {
@@ -216,6 +364,19 @@ export interface IssueRewakeThrottleInput {
   recentTerminalRuns: RecentIssueRunSample[];
   /** Runs among the sample that produced issue-visible progress. */
   runIdsWithIssueProgress: ReadonlySet<string>;
+  /**
+   * Runs among the sample that left progress other than their own comment
+   * (a status move, a document, a work product, a monitor, ...). When given,
+   * the no-progress streak breaks on this set instead of
+   * `runIdsWithIssueProgress`: myrmidon(OPE-14746) an engineer run that only
+   * parks the task in place with a comment ("CI red, waiting for ADM to
+   * restart", "disk quota, waiting for space") leaves no issue-visible
+   * change the next event-free wake could build on, so it must not reset the
+   * rewake throttle; on 17.11 such comment-only parked runs kept the streak
+   * at zero and let automatic continuations re-run the same task every minute
+   * (32 of 38 empty engineer runs in two hours sat in such repeat series).
+   */
+  runIdsWithNonCommentProgress?: ReadonlySet<string>;
   /** New issue input landed after the newest run finished. */
   hasNewIssueInputSinceLastRun: boolean;
 }
@@ -260,11 +421,13 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
   if (input.hasNewIssueInputSinceLastRun) return { blocked: false, noProgressStreak: 0 };
 
   let noProgressStreak = 0;
+  const substantiveProgress =
+    input.runIdsWithNonCommentProgress ?? input.runIdsWithIssueProgress;
   for (const run of runs) {
     // Ordinary failed/cancelled/interrupted runs break the no-op streak;
     // a single stale timeout may retry once without cooldown.
     if (run.status !== "succeeded" || !run.finishedAt) break;
-    if (input.runIdsWithIssueProgress.has(run.id)) break;
+    if (substantiveProgress.has(run.id)) break;
     noProgressStreak += 1;
   }
 

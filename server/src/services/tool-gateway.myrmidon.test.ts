@@ -104,7 +104,7 @@ describeEmbeddedPostgres("myrmidon(1.6-AUTONOMY-GW) gateway enforcement", () => 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-tool-gateway-autonomy-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   beforeAll(async () => {
     const server = createServer((req: IncomingMessage, res) => {

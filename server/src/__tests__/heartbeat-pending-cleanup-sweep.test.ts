@@ -59,7 +59,7 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-pending-cleanup-sweep-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   beforeEach(() => {
     vi.mocked(logger.warn).mockClear();

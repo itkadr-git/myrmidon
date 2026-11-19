@@ -116,7 +116,7 @@ describeEmbeddedPostgres("myrmidon(S4) agent does not change its own configurati
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-agent-self-update-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     if (savedAdapterModels === undefined) delete process.env.PAPERCLIP_ADAPTER_MODELS;

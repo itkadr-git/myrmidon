@@ -31,7 +31,7 @@ describeEmbeddedPostgres("legacy blocked inventory", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-legacy-blocked-inventory-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueThreadInteractions);

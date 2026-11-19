@@ -9,6 +9,13 @@
 import type { BotDiskSettingsPatch } from "@myrmidon/shared";
 import { api } from "@/api/client";
 
+export interface BotDiskEffective {
+  gitMirrorEnabled: boolean;
+  gitMirrorRepos: string[];
+  gitMirrorReposIsDefault: boolean;
+  sharedCacheRoles: string[];
+}
+
 export interface BotDiskView {
   settings: {
     enabled: boolean;
@@ -49,6 +56,7 @@ export interface BotDiskView {
     partitionCriticalPercent?: number;
   };
   sources: Record<"enabled" | "idleTtlMs", "settings" | "env" | "default">;
+  effective?: BotDiskEffective;
 }
 
 export const botDiskQueryKey = ["myrmidon", "bot-disk"] as const;

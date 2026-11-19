@@ -24,6 +24,8 @@
 // `general.datastoreCare.retention.contextLastRun`, so the panel and a restart see
 // the same numbers.
 
+import { and, eq, gte } from "drizzle-orm";
+import { activityLog } from "@myrmidon/db";
 import { logger } from "../../../middleware/logger.js";
 import type { Db } from "@myrmidon/db";
 import {
@@ -248,26 +250,62 @@ export function createDatastoreCareRetentionRuntime(
     };
     await writeRetentionLastRun(settings, lastRun);
 
+    // OPE-13146: coalesce the per-company lines into one hourly rollup per
+    // company. The sweep runs every few minutes; writing one activity row
+    // per pass per company produced thousands of near-duplicate lines a day.
+    // A row older than the hourly bucket is the rollup for the previous
+    // hour — the sums accumulate in `details.compactedRows` / `freedBytes`.
+    const HOURLY_MS = 3_600_000;
+    const rollupWindowStart = new Date(Math.floor(checkedAt.getTime() / HOURLY_MS) * HOURLY_MS);
     if (result.compacted > 0) {
-      // One `datastore.retention_applied` line per company that had work,
-      // carrying its row count and freed bytes (the acceptance record).
       for (const company of result.perCompany) {
         try {
-          await logActivity(db, {
-            companyId: company.companyId,
-            actorType: "system",
-            actorId: "myrmidon-datastore-care",
-            action: DATASTORE_RETENTION_APPLIED_ACTION,
-            entityType: "datastore",
-            entityId: "heartbeat_runs.context_snapshot",
-            details: {
-              ranAt: checkedAt.toISOString(),
-              compactedRows: company.compacted,
-              freedBytes: company.freedBytes,
-              heartbeatRunContextDays: resolved.heartbeatRunContextDays,
-              statementTimeoutYield: result.timedOut,
-            },
-          });
+          const [existing] = await db
+            .select({ id: activityLog.id, details: activityLog.details })
+            .from(activityLog)
+            .where(
+              and(
+                eq(activityLog.companyId, company.companyId),
+                eq(activityLog.action, DATASTORE_RETENTION_APPLIED_ACTION),
+                eq(activityLog.entityType, "datastore"),
+                eq(activityLog.entityId, "heartbeat_runs.context_snapshot"),
+                gte(activityLog.createdAt, rollupWindowStart),
+              ),
+            )
+            .limit(1);
+          if (existing) {
+            const prev = (existing.details ?? {}) as Record<string, unknown>;
+            const prevCompacted = typeof prev.compactedRows === "number" ? prev.compactedRows : 0;
+            const prevFreed = typeof prev.freedBytes === "number" ? prev.freedBytes : 0;
+            await db
+              .update(activityLog)
+              .set({
+                details: {
+                  ...prev,
+                  compactedRows: prevCompacted + company.compacted,
+                  freedBytes: prevFreed + company.freedBytes,
+                  lastPassAt: checkedAt.toISOString(),
+                  statementTimeoutYield: result.timedOut,
+                },
+              })
+              .where(eq(activityLog.id, existing.id));
+          } else {
+            await logActivity(db, {
+              companyId: company.companyId,
+              actorType: "system",
+              actorId: "myrmidon-datastore-care",
+              action: DATASTORE_RETENTION_APPLIED_ACTION,
+              entityType: "datastore",
+              entityId: "heartbeat_runs.context_snapshot",
+              details: {
+                ranAt: checkedAt.toISOString(),
+                compactedRows: company.compacted,
+                freedBytes: company.freedBytes,
+                heartbeatRunContextDays: resolved.heartbeatRunContextDays,
+                statementTimeoutYield: result.timedOut,
+              },
+            });
+          }
         } catch (err) {
           logger.warn({ err }, "datastore care: retention_applied activity line failed");
         }

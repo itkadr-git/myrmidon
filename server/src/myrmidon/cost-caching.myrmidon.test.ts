@@ -111,7 +111,7 @@ describeEmbeddedPostgres("prompt cache lookup (1.2-COST-CACHING B)", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-cost-caching-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(heartbeatRuns);

@@ -602,6 +602,8 @@ export {
 
 export {
   executionWorkspaceConfigSchema,
+  executionWorkspaceTurnRestoreSchema,
+  executionWorkspaceTurnDiffQuerySchema,
   reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
@@ -613,6 +615,8 @@ export {
   executionWorkspaceCloseLinkedIssueSchema,
   executionWorkspaceCloseReadinessSchema,
   executionWorkspaceCloseReadinessStateSchema,
+  type ExecutionWorkspaceTurnRestore,
+  type ExecutionWorkspaceTurnDiffQuery,
   type ReconcileExecutionWorkspaceBranch,
   type UpdateExecutionWorkspace,
   type WorkspaceOverviewQuery,

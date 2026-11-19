@@ -1,7 +1,7 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, gte, inArray, like, or, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import type { Db } from "@myrmidon/db";
-import { agentWakeupRequests } from "@myrmidon/db";
+import { agentWakeupRequests, issues } from "@myrmidon/db";
 
 export const ISSUE_BLOCKERS_RESOLVED_WAKE_REASON = "issue_blockers_resolved";
 
@@ -244,4 +244,62 @@ export async function findExistingIssueBlockersResolvedWakeForReadyState(
     }),
   );
   return covering ?? null;
+}
+
+/**
+ * Moment the newest blocker of the set was closed: the latest `completedAt` or
+ * `cancelledAt` among the blockers. The issue service stamps it on every close
+ * and clears it on a reopen, so a blocker that was reopened and closed again
+ * has a newer stamp. `null` when no blocker has a stamp (old rows).
+ */
+export async function findLatestBlockerResolvedAt(
+  db: Db,
+  input: { companyId: string; blockerIssueIds: string[] },
+): Promise<Date | null> {
+  const ids = [...new Set(input.blockerIssueIds.filter(Boolean))];
+  if (ids.length === 0) return null;
+  const rows = await db
+    .select({ completedAt: issues.completedAt, cancelledAt: issues.cancelledAt })
+    .from(issues)
+    .where(and(eq(issues.companyId, input.companyId), inArray(issues.id, ids)));
+  let latest: Date | null = null;
+  for (const row of rows) {
+    for (const stamp of [row.completedAt, row.cancelledAt]) {
+      if (stamp && (!latest || stamp.getTime() > latest.getTime())) latest = stamp;
+    }
+  }
+  return latest;
+}
+
+/**
+ * A `issue_blockers_resolved` wake for this dependent and agent that was
+ * requested at or after `since` (the close of the newest blocker), whatever the
+ * blocked-cycle stamp of its key. The wake for one resolution is single: moving
+ * the dependent to `blocked` again (for example the continuation stop) changes
+ * `blockedTransitionAt`, which changes the cycle key, so the key alone does not
+ * stop the backstop from waking the same resolution over and over.
+ */
+export async function findIssueBlockersResolvedWakeSince(
+  db: Db,
+  input: { companyId: string; agentId: string; dependentIssueId: string; since: Date },
+) {
+  const rows = await db
+    .select({ id: agentWakeupRequests.id })
+    .from(agentWakeupRequests)
+    .where(
+      and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        eq(agentWakeupRequests.agentId, input.agentId),
+        eq(agentWakeupRequests.reason, ISSUE_BLOCKERS_RESOLVED_WAKE_REASON),
+        inArray(agentWakeupRequests.status, [...IDEMPOTENT_DEPENDENCY_WAKE_STATUSES]),
+        gte(agentWakeupRequests.requestedAt, input.since),
+        or(
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.dependentIssueId}`,
+          like(agentWakeupRequests.idempotencyKey, `${ISSUE_BLOCKERS_RESOLVED_WAKE_REASON}:state:${input.dependentIssueId}:%`),
+          like(agentWakeupRequests.idempotencyKey, `${ISSUE_BLOCKERS_RESOLVED_WAKE_REASON}:${input.dependentIssueId}:%`),
+        ),
+      ),
+    )
+    .limit(1);
+  return rows[0] ?? null;
 }

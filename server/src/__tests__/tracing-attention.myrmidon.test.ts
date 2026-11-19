@@ -61,7 +61,7 @@ describeEmbeddedPostgres("tracing health attention feed card (TRACING-HEALTH par
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-tracing-attention-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     resetTracingHealthSignals();

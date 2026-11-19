@@ -1,0 +1,113 @@
+{
+  "task": "OPE-12179 part 3: board start was/stale measurement",
+  "tree": "pristine origin/main @ 6df7ee5df3d2ad8381ff24e39e70f5d7192099d3 (gitless copy during runs, commit stamped via MYRMIDON_BUILD_COMMIT)",
+  "dist": "esbuild transform of server/src (type-checkless; full tsc OOMs in the 4 GiB agent container)",
+  "harness": "scripts/myrmidon/measure-board-start.mjs --runs 3 --port 3199, embedded PGlite, SERVE_UI=false, MYRMIDON_DEPLOYMENT_MODE=local_trusted, MYRMIDON_DEPLOYMENT_EXPOSURE=private",
+  "protocol": "four interleaved blocks: bare, tsx, bare, tsx (order alternated to expose machine drift)",
+  "blocks": [
+    {
+      "label": "bare-1 (СТАЛО)",
+      "cmd": "node server/dist/index.js",
+      "runs": [
+        {
+          "run": 1,
+          "seconds": 15.827,
+          "cold": true
+        },
+        {
+          "run": 2,
+          "seconds": 17.128,
+          "cold": false
+        },
+        {
+          "run": 3,
+          "seconds": 14.079,
+          "cold": false
+        }
+      ],
+      "summary": {
+        "minSeconds": 14.079,
+        "medianSeconds": 15.827,
+        "maxSeconds": 17.128
+      }
+    },
+    {
+      "label": "tsx-1 (БЫЛО)",
+      "cmd": "node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js",
+      "runs": [
+        {
+          "run": 1,
+          "seconds": 21.759,
+          "cold": true
+        },
+        {
+          "run": 2,
+          "seconds": 22.176,
+          "cold": false
+        },
+        {
+          "run": 3,
+          "seconds": 19.222,
+          "cold": false
+        }
+      ],
+      "summary": {
+        "minSeconds": 19.222,
+        "medianSeconds": 21.759,
+        "maxSeconds": 22.176
+      }
+    },
+    {
+      "label": "bare-2 (СТАЛО)",
+      "cmd": "node server/dist/index.js",
+      "runs": [
+        {
+          "run": 1,
+          "seconds": 15.113,
+          "cold": true
+        },
+        {
+          "run": 2,
+          "seconds": 14.006,
+          "cold": false
+        },
+        {
+          "run": 3,
+          "seconds": 15.096,
+          "cold": false
+        }
+      ],
+      "summary": {
+        "minSeconds": 14.006,
+        "medianSeconds": 15.096,
+        "maxSeconds": 15.113
+      }
+    },
+    {
+      "label": "tsx-2 (БЫЛО)",
+      "cmd": "node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js",
+      "runs": [
+        {
+          "run": 1,
+          "seconds": 18.258,
+          "cold": true
+        },
+        {
+          "run": 2,
+          "seconds": 20.227,
+          "cold": false
+        },
+        {
+          "run": 3,
+          "seconds": 19.002,
+          "cold": false
+        }
+      ],
+      "summary": {
+        "minSeconds": 18.258,
+        "medianSeconds": 19.002,
+        "maxSeconds": 20.227
+      }
+    }
+  ]
+}

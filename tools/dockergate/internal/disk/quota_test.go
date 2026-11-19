@@ -457,3 +457,74 @@ func TestPut_FileWriteFailureStopsBeforeXfsQuota(t *testing.T) {
 		t.Errorf("only the state may be asked, journal %q", f.journal())
 	}
 }
+
+// Remove refuses to drop the project-table entries while the bot directory
+// still exists (the recreate case). The refusal is typed so the caller can
+// tell the expected case from a real failure (OPE-12959).
+func TestRemove_RefusesWhileBotDirectoryExists(t *testing.T) {
+	q, f := newQuota(t, stateOn)
+	if err := q.Remove(context.Background(), qKeyA); !errors.Is(err, ErrBotDirStillExists) {
+		t.Fatalf("err %v, want ErrBotDirStillExists", err)
+	}
+	if n := len(f.journal()); n != 0 {
+		t.Errorf("xfs_quota was asked, journal %q", f.journal())
+	}
+	for _, p := range []string{q.ProjectsFile, q.ProjidFile} {
+		if _, statErr := os.Stat(p); !errors.Is(statErr, os.ErrNotExist) {
+			t.Errorf("%s was written", p)
+		}
+	}
+}
+
+// Remove of a bot whose directory is gone drops both table entries and
+// clears the limits of its project id.
+func TestRemove_DropsEntriesAndClearsLimits(t *testing.T) {
+	q, f := newQuota(t, stateOn)
+	if _, err := q.Ensure(context.Background(), qKeyA); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(q.VolumeRoot, qKeyA)); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Remove(context.Background(), qKeyA); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{q.ProjectsFile, q.ProjidFile} {
+		if b := read(t, p); strings.Contains(b, qKeyA) {
+			t.Errorf("%s still names %s:\n%s", p, qKeyA, b)
+		}
+	}
+	joined := strings.Join(f.journal(), "\n")
+	if !strings.Contains(joined, "limit -p bhard=0 bsoft=0") {
+		t.Errorf("limits were not cleared, journal:\n%s", joined)
+	}
+}
+
+// A bot that never had project entries removes nothing and asks xfs_quota
+// about nothing.
+func TestRemove_UnknownBotIsANoOp(t *testing.T) {
+	q, f := newQuota(t, stateOn)
+	if err := os.RemoveAll(filepath.Join(q.VolumeRoot, qKeyB)); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Remove(context.Background(), qKeyB); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(f.journal()); n != 0 {
+		t.Errorf("xfs_quota was asked, journal %q", f.journal())
+	}
+}
+
+// A bot directory that cannot be inspected is a real failure, not the typed
+// refusal. chmod 0o000 does not stop root (CI runs as root), so fail the
+// stat via a missing volume root instead.
+func TestRemove_UninspectableDirectoryIsARealFailure(t *testing.T) {
+	q, _ := newQuota(t, stateOn)
+	if err := os.RemoveAll(q.VolumeRoot); err != nil {
+		t.Fatal(err)
+	}
+	err := q.Remove(context.Background(), qKeyA)
+	if err == nil || errors.Is(err, ErrBotDirStillExists) {
+		t.Fatalf("err %v, want a real failure", err)
+	}
+}

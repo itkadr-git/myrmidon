@@ -20,6 +20,8 @@ import {
   readInputLimitHint,
   trimTextToChars,
 } from "@myrmidon/adapter-utils/input-limit";
+// myrmidon(RUN-GUARD-HINT): the hint text is shared with the omp adapter.
+import { buildRunGuardHintMessage, type RunGuardHintReason } from "@myrmidon/adapter-utils/run-guard-hint";
 import {
   asNumber,
   asString,
@@ -308,12 +310,12 @@ function issueIdFromContext(ctx: AdapterExecutionContext): string | null {
 /**
  * The session key strategy a run actually uses.
  *
- * Owner decisions: 05.11 isolation applies only to developers, 06.11 developers
- * do not load previous runs at all. The board sets `developerOnlyTaskSession`
- * (derived from the agent, never from the card) for developer runs; those get a
- * fresh Hermes session per run (`run`), never `issue` (a task session that
- * carries earlier runs' history) or `agent`. A card that already says `run` or
- * `none` is never upgraded. Every other agent keeps its configured strategy.
+ * Alex 06.11, clarified 14.11: developers get no Hindsight memory; the task session
+ * continues between runs (strategy `issue`); never an agent-wide session.
+ *
+ * The board sets `developerOnlyTaskSession` (derived from the agent, never from the card)
+ * for developer runs. Developers respect the session key strategy from the card (`issue`,
+ * `run`, `none`); `agent` is replaced with `issue`.
  *
  * Kept in step with `resolveDeveloperSessionKeyStrategy` in @myrmidon/shared,
  * which this package deliberately does not import.
@@ -323,7 +325,10 @@ export function resolveEffectiveSessionKeyStrategy(input: {
   developerOnlyTaskSession?: boolean;
 }): SessionKeyStrategy {
   if (input.developerOnlyTaskSession !== true) return input.configuredStrategy;
-  return input.configuredStrategy === "none" ? "none" : "run";
+  if (input.configuredStrategy === "run" || input.configuredStrategy === "none") {
+    return input.configuredStrategy;
+  }
+  return "issue";
 }
 
 export function resolveSessionKey(input: {
@@ -478,7 +483,7 @@ function buildInput(
     configuredStrategy: normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy),
     developerOnlyTaskSession: ctx.config.developerOnlyTaskSession === true,
   });
-  // A developer run (effective strategy "run") never resumes: it gets the full
+  // A run with effective strategy "run" never resumes: it gets the full
   // task brief, whatever session id the board still has stored.
   const resumedSession =
     (sessionKeyStrategy === "issue" || sessionKeyStrategy === "agent") &&
@@ -643,12 +648,40 @@ function deriveWorkspaceRepoName(repoUrl: string): string | null {
   return WS_REPO_NAME_RE.test(name) ? name : null;
 }
 
+function isReviewerWake(context: Record<string, unknown>): boolean {
+  const wake = parseObject(context.paperclipWake);
+  const stage = parseObject(context.executionStage ?? wake.executionStage);
+  const role = asString(stage.wakeRole, "").trim().toLowerCase();
+  return role === "reviewer" || role === "verifier";
+}
+
+// myrmidon(1.6.9 NO-COPIES-FOR-REVIEWERS-LEADS): an agent that does not write code gets no full task
+// copy on ANY wake. The wake reason does not tell: a reviewer is woken with `ci_completed` without
+// `wakeRole`, a lead with `auto_slice_queue_shortage` on an epic it executes. The agent is told by its
+// role (caste key, `context.paperclipAgentRole`, set by the board) or, as the board has no reviewer role
+// and reviewers have `qa`, by the `-review-` / `-reviewer-` / `-verifier-` / `-lead-` part of its name.
+const NON_CODING_ROLES = new Set(["reviewer", "verifier", "lead"]);
+const NON_CODING_NAME_RE = /(?:^|[-_ ])(?:review|reviewer|verifier|lead)(?:[-_ ]|\d|$)/i;
+
+function isNonCodingAgent(context: Record<string, unknown>, agentName: string): boolean {
+  const role = asString(context.paperclipAgentRole, "").trim().toLowerCase();
+  return NON_CODING_ROLES.has(role) || NON_CODING_NAME_RE.test(agentName);
+}
+
 function buildWorkspaceField(
   context: Record<string, unknown>,
+  agentName = "",
 ): { key: string; repo: string; baseRef?: string; branch?: string } | undefined {
   const wake = parseObject(context.paperclipWake);
   const key = asString(parseObject(wake.issue).identifier, "").trim();
   if (!WS_ISSUE_KEY_RE.test(key)) return undefined;
+  // myrmidon(1.6.9, OPE-13410 item 6): a reviewer / verifier wake of an execution stage gets no
+  // task copy by default. Every review run used to open a full worktree (~0.5 GB) before the
+  // model started; the reviewer reads the PR through `gh pr diff`, `gh pr view` and
+  // `gh api repos/<repo>/contents/<path>?ref=<sha>`. A reviewer that really needs files opens a
+  // copy itself (`myr-ws open <KEY> <repo> --review`, or without --review to run tests) and closes it
+  // after the verdict (`myr-ws close <KEY>`).
+  if (isReviewerWake(context) || isNonCodingAgent(context, agentName)) return undefined;
   // The task's own pull request decides the repository and the branch: the project is only the
   // fallback. A PR of one repository on a project bound to another (OPE-7967: PR #82 of
   // myrmidon-deploy under a project of myrmidon) must open the PR's repository on the PR's
@@ -764,7 +797,7 @@ function buildRunBody(
   // myrmidon(1.6.5 BOT-DISK-H5a): same discipline for the `workspace` field —
   // derived from the run context only, set after the spread (a card cannot
   // forge it), `undefined` when the task has no repository.
-  const workspaceField = buildWorkspaceField(ctx.context);
+  const workspaceField = buildWorkspaceField(ctx.context, ctx.agent.name);
   // myrmidon(GITHUB-SHARED-IDENTITY): same forgery rule as github_broker —
   // set unconditionally after the payloadTemplate spread, so a card's attempt
   // to inject launcher content is deleted (`undefined` drops the key); only
@@ -1098,47 +1131,9 @@ function popGuardToolArguments(state: ExecutionState, name: string): unknown {
 // agent dialog (POST /v1/runs/{id}/steer), using the epic's phrasing. The hint
 // fires exactly once per run (RunGuard refuses to hint the same reason twice
 // and state.runGuardHintSent blocks a second steer).
-/** myrmidon(OPE-12878): every hint-before-stop reason the gateway can steer.
- * `repeated_tool_call` / `model_call_limit` come from the RunGuard,
- * `repeated_tool_failure` from the same-call tool failure guard (OPE-12796). */
-export type RunGuardHintReason = "repeated_tool_call" | "model_call_limit" | "repeated_tool_failure";
-
-export function buildRunGuardHintMessage(hint: {
-  reason: RunGuardHintReason;
-  tool?: string;
-  repeatCount?: number;
-  modelCalls?: number;
-  remaining?: number;
-  /** myrmidon(OPE-12878): the failing call's preview and error text, set by
-   * the tool failure guard's hint. */
-  callPreview?: string;
-  errorText?: string | null;
-}): string {
-  // myrmidon(OPE-12799): the wrap-up message, sent while the run still has calls
-  // left. The next run starts in a fresh session and sees only what is pushed and
-  // what is written on the task, so the agent is told to put its work there.
-  if (hint.reason === "model_call_limit" && typeof hint.remaining === "number" && hint.remaining > 0) {
-    return (
-      `Защита: до остановки прогона осталось ${hint.remaining} вызовов модели. ` +
-      "Сохрани сделанное сейчас: закоммить и запушь изменения в ветку задачи, затем напиши комментарий в задаче — " +
-      "что сделано, что осталось и с чего продолжить. Следующий прогон начнётся с чистой сессии и увидит только " +
-      "запушенные коммиты и этот комментарий. Если задача закончена — заверши её как обычно."
-    );
-  }
-  if (hint.reason === "repeated_tool_call") {
-    const tool = hint.tool ?? "инструмент";
-    const count = hint.repeatCount ?? 3;
-    return `Защита: вызываешь ${tool} с теми же аргументами ${count}-й раз — смени подход: читай другое место или другим инструментом, переходи к правке по задаче`;
-  }
-  if (hint.reason === "repeated_tool_failure") {
-    const tool = hint.tool ?? "инструмент";
-    const count = hint.repeatCount ?? 3;
-    const call = hint.callPreview ? ` (${hint.callPreview})` : "";
-    const err = hint.errorText ? ` Ошибка: ${hint.errorText}.` : "";
-    return `Защита: ${tool}${call} упал с той же ошибкой ${count}-й раз подряд.${err} Смени подход: исправь причину сбоя, используй другой инструмент или путь — повтор того же вызова остановит прогон`;
-  }
-  return "Защита: лимит вызовов модели, записей не было — переходи к правке по месту из задачи или опиши блокер в комментарии";
-}
+// The text itself is in @myrmidon/adapter-utils/run-guard-hint, shared with the
+// omp adapter; it is re-exported here for the callers and tests of this module.
+export { buildRunGuardHintMessage, type RunGuardHintReason };
 
 async function sendRunGuardHint(input: {
   ctx: AdapterExecutionContext;

@@ -129,6 +129,8 @@ import {
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
+  executionWorkspaceTurnRestoreSchema,
+  executionWorkspaceTurnDiffQuerySchema,
   // Environments
   createEnvironmentSchema,
   cancelEnvironmentCustomImageSetupSessionSchema,
@@ -1855,7 +1857,11 @@ registry.registerPath({
     200: r.ok(
       z.object({
         status: z.enum(["ok", "unhealthy"]),
-        version: z.string().optional(),
+        // Release version: the same value the CI image workflow writes to the
+        // image's `org.opencontainers.image.version` label. Null when the
+        // build carries no release stamp (local development). Present on
+        // every response shape, including redacted ones.
+        version: z.string().nullable(),
         // Running build commit (full git SHA), or null when git metadata is
         // unavailable. Present on every response shape, including redacted ones.
         commit: z.string().nullable(),
@@ -1931,7 +1937,7 @@ registry.registerPath({
         "application/json": {
           schema: z.object({
             status: z.literal("unhealthy"),
-            version: z.string(),
+            version: z.string().nullable(),
             serverVersion: z.string(),
             commit: z.string().nullable(),
             error: z.literal("database_unreachable"),
@@ -4081,10 +4087,47 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/issues/{id}/release-status",
+  tags: ["issues"],
+  summary: "Release membership status for the issue's pull request work products",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({ refreshPullRequests: z.enum(["true"]).optional() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 500: r.serverError },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/release-verify",
+  tags: ["issues"],
+  summary: "Verify the deployed release composition against the pull request work products of EVERY issue carrying the release label and persist the verdict",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({ refreshPullRequests: z.enum(["true"]).optional() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 500: r.serverError },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/issues/{id}/ci-status",
   tags: ["issues"],
   summary: "CI status on the exact head of the issue's pull request",
   request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/release-status",
+  tags: ["issues"],
+  summary:
+    "Release membership: whether each merged pull request of the issue is reachable from the release refs of the issue's release label",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({ refreshPullRequests: z.enum(["true"]).optional() }),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
@@ -8673,6 +8716,55 @@ registry.registerPath({
   summary: "List workspace operations",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+// OPE-12738 per-turn checkpoint introspection + restore.
+registry.registerPath({
+  method: "get",
+  path: "/api/execution-workspaces/{id}/turn-checkpoints",
+  tags: ["execution-workspaces"],
+  summary: "List per-turn checkpoint refs recorded on the workspace worktree for one run",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({ runId: z.string().uuid() }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/execution-workspaces/{id}/turn-checkpoints/diff",
+  tags: ["execution-workspaces"],
+  summary: "Diff two per-turn checkpoints of one run",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: executionWorkspaceTurnDiffQuerySchema,
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/execution-workspaces/{id}/turn-checkpoints/restore",
+  tags: ["execution-workspaces"],
+  summary: "Restore the working worktree to a previous turn's checkpoint",
+  description:
+    "Rewinds tracked working files and the index to the snapshot ref " +
+    "refs/myrmidon/turns/<runId>/<turnN> without moving the branch ref or " +
+    "touching untracked foreign edits. Refuses with 409 while the worktree is " +
+    "claimed by another active run.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(executionWorkspaceTurnRestoreSchema),
+  },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({

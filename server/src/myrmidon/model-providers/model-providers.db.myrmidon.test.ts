@@ -87,7 +87,7 @@ describeEmbeddedPostgres("myrmidon(1.6.1 MODEL-PROVIDERS) service over the datab
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-model-providers-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(modelProviderModels);

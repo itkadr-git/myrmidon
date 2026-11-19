@@ -140,6 +140,9 @@ done
   || die "--resolution must be tag or sha (what deploy.sh resolved the release by)"
 [[ -n "$res_ref" ]] || die "--ref is required (the release tag, or the commit short sha)"
 load_config "$config"
+# The step journal: an open step must never survive the process. The preflight
+# subshell below installs its own trap on its own copy of the trap table.
+trap 'release_steps_flush EXIT' EXIT
 require_cmd docker curl jq
 
 # --- settings (see deploy.env.example) ---------------------------------------
@@ -631,6 +634,7 @@ bots="$(list_bots)" \
   || die "cannot read the agents list from $BOARD_API_URL (company $BOARD_COMPANY_ID): the bot cards are the board's data"
 
 if [[ "$phase" != "cards" ]]; then
+step_begin "bot-config" "dockergate config + enrollment"
 # --- 3. images[] + check-config + SIGHUP (old bot images stay) -----------------
 mapfile -t NEW_REFS < <(for name in $(tr ',' ' ' <<<"$MYR_BOT_COMPONENTS"); do [[ -n "${BOT_IMAGE_BY_NAME[$name]:-}" ]] && printf '%s\n' "${BOT_IMAGE_BY_NAME[$name]}"; done)
 dockergate_add_images "$MYR_BOT_DOCKERGATE_CONFIG" "${NEW_REFS[@]}"
@@ -670,6 +674,7 @@ if [[ -n "$bots" ]]; then
 else
   bot_log "no eligible bots on the board (company $BOARD_COMPANY_ID): nothing to enroll, nothing to switch"
 fi
+step_end_ok "config complete"
 fi # phase != cards
 
 if [[ "$phase" == "config" ]]; then
@@ -1129,6 +1134,7 @@ stayed_deferred=0
 deferred_tail=()
 declare -A deferred_reasons=()
 batch_no=0
+step_begin "bot-cards" "total=$total batches=$batches"
 if ((total > 0)); then
   wait_for_maintenance_leaving || true
 fi
@@ -1265,6 +1271,7 @@ finalize_rollout() {
 
   bot_log "bot image rollout complete: $v_switched bot(s) on the release images, journal $MYR_BOT_ROLLOUT_LOG"
   journal "rollout complete: $v_switched bot(s) on the release images ($resolution $res_ref)"
+  step_end_ok "bots switched=$v_switched deferred=$v_deferred"
 
   # DEPLOY-HYGIENE (OPE-5107): the bots moved to the release images — free the
   # disk of the superseded ones (older than MYRMIDON_DEPLOY_IMAGE_KEEP previous

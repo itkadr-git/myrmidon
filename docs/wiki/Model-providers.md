@@ -55,3 +55,13 @@ with the `litellm_model_name` the gateway registration (part B) will use.
 7. To roll back, disable the provider model, confirm its board-owned LiteLLM deployment is removed, then unset the admin-key setting. Existing unrelated LiteLLM models and agent-key allowlists remain untouched.
 
 The sync sends the resolved provider credential value to LiteLLM. LiteLLM stores and encrypts that value. The sync never sends `secrets/<name>` as a provider credential reference. Agent keys with an empty model list mean ALL models and are not changed by the board sync. For restricted keys, the sync adds or removes only models owned by the board provider registry.
+
+## Selecting a ChatGPT pool model
+
+The Hermes gateway agent-card model picker includes `chatgpt-pool/*` groups
+from the board's synchronized LiteLLM catalog, alongside existing choices.
+Open the agent card, select a model and save; the selection changes the model
+setting without intentionally changing other adapter settings or secret bindings.
+Discovery and agent-key provisioning are managed separately. After deployment,
+an operator can start the next agent run and check LiteLLM for the selected
+model using that agent's key; do not expose the key in logs or screenshots.
