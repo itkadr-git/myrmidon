@@ -17,6 +17,14 @@ test('a stalled issuance request is aborted and treated as ambiguous', async () 
 import assert from 'node:assert/strict';
 import { createInstallationClient } from './installation.mjs';
 
+test('a stalled response body aborts the upstream connection on timeout', async () => {
+  let aborted = false;
+  const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'fixture', requestTimeoutMs: 20,
+    request: async (_url, { signal }) => ({ ok: true, json: async () => new Promise((_resolve, reject) => signal.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')); }, { once: true })) }) });
+  await assert.rejects(client.issue(), /timeout|aborted/i);
+  assert.equal(aborted, true);
+});
+
 test('a stalled issuance response body times out after headers', async () => {
   const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'fixture', requestTimeoutMs: 20,
     request: async () => ({ ok: true, json: async () => new Promise(() => {}) }) });
