@@ -135,6 +135,22 @@ test('audit failure during issuance finalization prevents returning the token', 
   assert.equal(revoked, 1);
 });
 
+test('lost revocation finalization acknowledgement and failed outbox fence later issuance', async () => {
+  let pending = false, issued = 0;
+  const store = {
+    reserveIssuance: async () => { if (pending) throw new Error('pending'); pending = true; },
+    resolveIssuance: async () => { pending = false; throw new Error('ack lost'); },
+    withOwned: async (_handle, _owner, action) => action({ token: 'fixture' }),
+    put: async () => {}, queueAlert: async () => { throw new Error('outbox unavailable'); },
+  };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    installation: { revoke: async () => {}, issue: async () => { issued++; return { token: 'fixture' }; } },
+    audit: async () => {}, alert: async () => { throw new Error('offline'); } });
+  await assert.rejects(broker.revoke(jwt('revoke-lost-ack'), '00000000-0000-0000-0000-000000000000'));
+  await assert.rejects(broker.exchange(jwt('revoke-lost-ack-next')));
+  assert.equal(issued, 0);
+});
+
 test('audit and outbox failure fences subsequent owner revocation in the running process', async () => {
   let revoked = 0, failAudit = true;
   const store = { reserveIssuance: async () => {}, withOwned: async (_handle, _owner, action) => action({ token: 'fixture' }), resolveIssuance: async () => {}, queueAlert: async () => { throw new Error('disk offline'); } };
