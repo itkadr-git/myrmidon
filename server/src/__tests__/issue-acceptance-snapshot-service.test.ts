@@ -438,15 +438,22 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
       ]);
       expect(await versionOf()).toBe("6");
 
-      // An uncommitted writer is invisible; its commit moves the version.
+      // An uncommitted writer is invisible until commit; the read is
+      // barriered on the writer itself, not on timing: the writer signals
+      // after BOTH updates have executed while its transaction is still
+      // open, and only then does the read run.
       let release!: () => void;
       const gate = new Promise<void>((resolve) => { release = resolve; });
+      let markApplied!: () => void;
+      const applied = new Promise<void>((resolve) => { markApplied = resolve; });
       const pending = db.transaction(async (tx) => {
         await tx.update(documentRevisions).set({ body: "tx1" }).where(eq(documentRevisions.id, revisionId));
         await tx.update(documents).set({ latestBody: "tx1", latestRevisionId: revisionId }).where(eq(documents.id, docId));
+        markApplied();
         await gate;
       });
       try {
+        await applied;
         const during = await issueAcceptanceSnapshotService(db).read(issueId);
         expect(during.document!.body).toBe("c1");
         expect(during.issue.version).toBe("6");
@@ -609,6 +616,51 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
       await expect(sql.unsafe(`TRUNCATE "issue_acceptance_epochs"`)).rejects.toThrow();
       expect(await versionOf(issueA)).toBe(aBefore);
       expect(await versionOf(issueA)).not.toBe(pinA);
+    },
+    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "epoch rows are immutable: re-keying fails closed and company ABA invalidates the pin (OPE-15145)",
+    async () => {
+      const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-epoch-pk-");
+      cleanups.push(() => dbh.cleanup());
+      const db = createDb(dbh.connectionString);
+      const sql = db.$client as any;
+      cleanups.push(async () => {
+        await sql.end();
+      });
+
+      await db.insert(companies).values([
+        { id: companyA, name: "Company A" },
+        { id: companyB, name: "Company B", issuePrefix: "BBB" },
+      ]);
+      const issueX = randomUUID();
+      const docId = randomUUID();
+      const revisionId = randomUUID();
+      await db.insert(issues).values({ id: issueX, companyId: companyA, title: "Task", identifier: "OPE-8701" });
+      await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "v1", latestRevisionId: revisionId });
+      await db.insert(documentRevisions).values({ id: revisionId, companyId: companyA, documentId: docId, revisionNumber: 1, body: "v1" });
+      await db.insert(issueDocuments).values({ companyId: companyA, issueId: issueX, documentId: docId, key: "acceptance-scenarios" });
+      const pinX = await issueAcceptanceSnapshotService(db).read(issueX);
+      const freeY = randomUUID();
+
+      // Moving an existing epoch row to another issue id must be rejected;
+      // otherwise a PK shuffle plus a company A->B->A could hand a stale
+      // pin its old snapshot back.
+      await expect(
+        sql.unsafe(`UPDATE "issue_acceptance_epochs" SET "issue_id" = '${freeY}' WHERE "issue_id" = '${issueX}'`),
+      ).rejects.toThrow();
+      expect(
+        (await sql.unsafe(`SELECT "issue_id" FROM "issue_acceptance_epochs" WHERE "issue_id" = '${issueX}'`)).length,
+      ).toBe(1);
+
+      // Company A->B->A invalidates the pin even though every identity field
+      // returns to its old value.
+      await db.update(issues).set({ companyId: companyB }).where(eq(issues.id, issueX));
+      await db.update(issues).set({ companyId: companyA }).where(eq(issues.id, issueX));
+      const after = await issueAcceptanceSnapshotService(db).read(issueX);
+      expect(after.issue.version).not.toBe(pinX.issue.version);
     },
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );

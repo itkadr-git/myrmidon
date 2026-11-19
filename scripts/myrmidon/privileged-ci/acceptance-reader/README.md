@@ -1,5 +1,8 @@
 # Acceptance reader (experimental)
 
+Operator documentation (EN/RU): [docs/myrmidon/acceptance-reader.md](../../../../docs/myrmidon/acceptance-reader.md)
+and [acceptance-reader.ru.md](../../../../docs/myrmidon/acceptance-reader.ru.md).
+
 This standalone gateway is not a production deployment. It exposes exactly two
 runner-facing operations for one company-bound acceptance snapshot. The
 upstream must implement `GET /api/issues/{id}/acceptance-scenarios-snapshot`

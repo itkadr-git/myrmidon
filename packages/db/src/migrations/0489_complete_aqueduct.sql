@@ -27,6 +27,11 @@ END;
 $bump$ LANGUAGE plpgsql;--> statement-breakpoint
 CREATE OR REPLACE FUNCTION "trg_issue_acceptance_epoch_monotonic"() RETURNS trigger AS $trg$
 BEGIN
+  IF NEW."issue_id" IS DISTINCT FROM OLD."issue_id" THEN
+    -- Re-keying an epoch row would let a PK shuffle plus an identity ABA
+    -- hand a stale pin its old snapshot back; the row key is immutable.
+    RAISE EXCEPTION 'issue acceptance epochs are keyed by issue_id: re-keying from % to % is forbidden', OLD."issue_id", NEW."issue_id";
+  END IF;
   IF NEW."epoch" < OLD."epoch" THEN
     RAISE EXCEPTION 'issue acceptance epoch is trigger-managed and monotonic: direct decrease from % to % is forbidden', OLD."epoch", NEW."epoch";
   END IF;
