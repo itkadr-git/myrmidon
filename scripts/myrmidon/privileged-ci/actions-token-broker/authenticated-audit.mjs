@@ -3,8 +3,10 @@ import { DatabaseSync } from 'node:sqlite';
 
 const events = new Set(['issued', 'revoked', 'exchange_failed', 'revoke_failed']);
 
-// The HMAC key must be distinct from the credential encryption key.
-export function createAuthenticatedAudit(path, key) {
+// The HMAC key must be distinct from the credential encryption key. Optional
+// anchor is experimental: it must be an independently durable, synchronous CAS
+// service. Without one, suffix deletion and rollback remain undetectable.
+export function createAuthenticatedAudit(path, key, anchor) {
   if (typeof path !== 'string' || !path || path === ':memory:' || path.startsWith('file:') || !Buffer.isBuffer(key) || key.length !== 32) throw new Error('invalid audit configuration');
   const secret = Buffer.from(key);
   const db = new DatabaseSync(path);
@@ -24,7 +26,8 @@ export function createAuthenticatedAudit(path, key) {
   }
   try {
     db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; CREATE TABLE IF NOT EXISTS audit_events (seq INTEGER PRIMARY KEY, event TEXT NOT NULL, mac TEXT NOT NULL) STRICT');
-    verify();
+    const { previous, expected } = verify();
+    if (anchor && JSON.stringify(anchor.read()) !== JSON.stringify({ seq: expected - 1, mac: previous })) throw new Error('audit integrity failure: anchor mismatch');
   } catch (error) { db.close(); secret.fill(0); throw error; }
   return {
     async record(event) {
@@ -32,7 +35,12 @@ export function createAuthenticatedAudit(path, key) {
       db.exec('BEGIN IMMEDIATE');
       try {
         const { previous, expected } = verify();
-        db.prepare('INSERT INTO audit_events VALUES (?, ?, ?)').run(expected, event, digest(expected, event, previous));
+        const oldHead = { seq: expected - 1, mac: previous };
+        const newHead = { seq: expected, mac: digest(expected, event, previous) };
+        if (anchor && JSON.stringify(anchor.read()) !== JSON.stringify(oldHead)) throw new Error('audit integrity failure: anchor mismatch');
+        db.prepare('INSERT INTO audit_events VALUES (?, ?, ?)').run(expected, event, newHead.mac);
+        // An interrupted cross-store update leaves a mismatch and fails closed.
+        if (anchor) anchor.compareAndSet(oldHead, newHead);
         db.exec('COMMIT');
       } catch (error) { db.exec('ROLLBACK'); throw error; }
     },
