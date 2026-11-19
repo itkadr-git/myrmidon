@@ -42,6 +42,9 @@ export async function createAuditedSupervisedServer(tls, { auditPath, auditKey, 
       } catch {
         try { await options.alert('credential_recovery_failed'); } catch { /* External monitoring remains required. */ }
       } finally { try { store?.close(); } finally { release?.(); } }
+    } else {
+      // Without these dependencies no known credentials can be recovered.
+      try { await options.alert('credential_recovery_failed'); } catch { /* External monitoring remains required. */ }
     }
     // Keep startup closed while retrying delivery; a process crash still requires external supervision.
     while (!auditAlertDelivered) {
