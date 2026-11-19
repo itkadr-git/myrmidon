@@ -49,7 +49,7 @@ async function createApp(actor: unknown) {
 
 function snapshotFor(issue: { id: string; identifier: string; companyId: string }) {
   return {
-    issue: { id: issue.id, identifier: issue.identifier, companyId: issue.companyId, version: 1 },
+    issue: { id: issue.id, identifier: issue.identifier, companyId: issue.companyId, version: "1" },
     document: { id: randomUUID(), latestRevisionId: randomUUID(), latestRevisionNumber: 3, body: "criteria" },
   };
 }
@@ -69,7 +69,7 @@ describe("GET /api/issues/:id/acceptance-scenarios-snapshot route (OPE-15134)", 
     expect(res.status, res.text).toBe(200);
     // Minimal fields only: no rich issue relations, no document metadata.
     expect(res.body).toEqual({
-      issue: { id: issue.id, identifier: "OPE-1", companyId: companyA, version: expect.any(Number) },
+      issue: { id: issue.id, identifier: "OPE-1", companyId: companyA, version: expect.any(String) },
       document: { id: expect.any(String), latestRevisionId: expect.any(String), latestRevisionNumber: expect.any(Number), body: "criteria" },
     });
     expect(Object.keys(res.body.issue).sort()).toEqual(["companyId", "id", "identifier", "version"]);
@@ -83,7 +83,7 @@ describe("GET /api/issues/:id/acceptance-scenarios-snapshot route (OPE-15134)", 
   it("carries document: null when the acceptance document is absent", async () => {
     const issue = { id: randomUUID(), identifier: "OPE-2", companyId: companyA };
     mockSnapshotService.read.mockResolvedValue({
-      issue: { id: issue.id, identifier: "OPE-2", companyId: companyA, version: 0 },
+      issue: { id: issue.id, identifier: "OPE-2", companyId: companyA, version: "0" },
       document: null,
     });
 
@@ -92,7 +92,7 @@ describe("GET /api/issues/:id/acceptance-scenarios-snapshot route (OPE-15134)", 
 
     expect(res.status, res.text).toBe(200);
     expect(res.body).toEqual({
-      issue: { id: issue.id, identifier: "OPE-2", companyId: companyA, version: 0 },
+      issue: { id: issue.id, identifier: "OPE-2", companyId: companyA, version: "0" },
       document: null,
     });
   }, ROUTE_TEST_TIMEOUT_MS);

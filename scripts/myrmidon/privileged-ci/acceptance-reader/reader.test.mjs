@@ -11,7 +11,7 @@ const hash = () => createHash('sha256').update(token).digest('hex');
 const records = (companyId = 'company-a') => [{ tokenHash: hash(), companyId, expiresAt: Date.now() + 60000, revoked: false }];
 
 const snapshot = (over = {}) => ({
-  issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: 3, ...over.issue },
+  issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: '3', ...over.issue },
   document: { id: 'doc-id', latestRevisionId: 'rev-1', latestRevisionNumber: 2, body: 'criteria', secret: 'hidden', ...over.document },
 });
 
@@ -62,7 +62,7 @@ test('pin route returns the full single-snapshot projection', async (t) => {
   assert.equal(result.status, 200);
   const body = JSON.parse(result.body);
   assert.deepEqual(body, {
-    issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: 3 },
+    issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: '3' },
     document: { id: 'doc-id', latestRevisionId: 'rev-1', latestRevisionNumber: 2, body: 'criteria' },
   });
   // Runner-facing projection must not leak upstream-only fields.
@@ -78,10 +78,10 @@ test('verify asserts the pinned snapshot server-side against a fresh read', asyn
   current = snapshot({ document: { id: 'doc-id', latestRevisionId: 'rev-2', latestRevisionNumber: 3, body: 'criteria' } });
   assert.equal((await request('/api/issues/OPE-123/acceptance-snapshot/verify', { method: 'POST', body: pin })).status, 409);
   // Issue identity ABA moves the version: still rejected.
-  current = snapshot({ issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: 4 } });
+  current = snapshot({ issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: '4' } });
   assert.equal((await request('/api/issues/OPE-123/acceptance-snapshot/verify', { method: 'POST', body: pin })).status, 409);
   // A fresh pin matches again — including after an A->B->A revert.
-  current = snapshot({ issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: 5 } });
+  current = snapshot({ issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: '5' } });
   const rePin = JSON.parse((await request('/api/issues/OPE-123/acceptance-snapshot')).body);
   assert.deepEqual(JSON.parse((await request('/api/issues/OPE-123/acceptance-snapshot/verify', { method: 'POST', body: rePin })).body), { ok: true });
 });
@@ -109,7 +109,7 @@ test('revocation during upstream lookup fails closed and audit excludes request 
     audit: async (event) => events.push(event),
     readSnapshot: async () => {
       mutable[0].revoked = true;
-      return { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: 1 }, document: null };
+      return { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: '1' }, document: null };
     },
   });
   const result = await request('/api/issues/OPE-123/acceptance-snapshot');
@@ -140,7 +140,7 @@ test('handler accepts the immutable credential store and observes revocation', a
   const store = createCredentialStore(records());
   const request = await serve(t, {
     credentialStore: store,
-    readSnapshot: async () => ({ issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: 1 }, document: null }),
+    readSnapshot: async () => ({ issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: '1' }, document: null }),
   });
   assert.equal((await request('/api/issues/OPE-123/acceptance-snapshot')).status, 200);
   store.revoke(hash());
@@ -153,22 +153,41 @@ test('an invalid upstream payload fails as 502, never as a partial snapshot', as
     { issue: null },
     { issue: { id: 'issue-id', identifier: 'OPE-123' } },
     { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a' } },
-    { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: 1 }, document: { id: 'doc-id' } },
-    { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: 1 }, document: { id: 'doc-id', latestRevisionId: 'rev-1', latestRevisionNumber: 0, body: 'criteria' } },
+    // The document property must be present and explicitly null or valid:
+    // a missing property is a corrupted payload, not "no document".
+    { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: '1' } },
+    { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: '1' }, document: { id: 'doc-id' } },
+    { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: '1' }, document: { id: 'doc-id', latestRevisionId: 'rev-1', latestRevisionNumber: 0, body: 'criteria' } },
   ]) {
     const request = await serve(t, { records: records(), readSnapshot: async () => bad });
-    for (const path of ['/api/issues/OPE-123/acceptance-snapshot', '/api/issues/OPE-123/acceptance-snapshot/verify']) {
-      const result = await request(path, path.endsWith('/verify') ? { method: 'POST', body: {} } : {});
-      assert.equal(result.status, 502, `${path} ${JSON.stringify(bad)}`);
-      assert.deepEqual(JSON.parse(result.body), {});
-    }
+    // The pin path fails on the invalid upstream payload itself.
+    const pinResult = await request('/api/issues/OPE-123/acceptance-snapshot');
+    assert.equal(pinResult.status, 502, JSON.stringify(bad));
+    assert.deepEqual(JSON.parse(pinResult.body), {});
+    // Verify with a well-formed pin still reaches the upstream and fails
+    // closed on its invalid payload.
+    const verifyResult = await request('/api/issues/OPE-123/acceptance-snapshot/verify', { method: 'POST', body: snapshot() });
+    assert.equal(verifyResult.status, 502, JSON.stringify(bad));
+    assert.deepEqual(JSON.parse(verifyResult.body), {});
   }
+});
+
+test('bigint generations compare exactly beyond 2^53', async (t) => {
+  // 9007199254740992 and 9007199254740993 collapse to the same JS number;
+  // the string generation must keep them distinct.
+  let current = snapshot({ issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: '9007199254740993' } });
+  const request = await serve(t, { records: records(), readSnapshot: async () => current });
+  const pinned = JSON.parse((await request('/api/issues/OPE-123/acceptance-snapshot')).body);
+  assert.equal(pinned.issue.version, '9007199254740993');
+  current = snapshot({ issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: '9007199254740994' } });
+  assert.equal((await request('/api/issues/OPE-123/acceptance-snapshot/verify', { method: 'POST', body: pinned })).status, 409);
+  assert.equal(typeof pinned.issue.version, 'string');
 });
 
 test('read errors never return a partial mixed snapshot', async (t) => {
   const request = await serve(t, { records: records(), readSnapshot: async () => { throw new Error('upstream read failed'); } });
   const pin = await request('/api/issues/OPE-123/acceptance-snapshot');
-  const verify = await request('/api/issues/OPE-123/acceptance-snapshot/verify', { method: 'POST', body: {} });
+  const verify = await request('/api/issues/OPE-123/acceptance-snapshot/verify', { method: 'POST', body: snapshot() });
   assert.equal(pin.status, 502);
   assert.equal(verify.status, 502);
   assert.deepEqual(JSON.parse(pin.body), {});

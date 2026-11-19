@@ -7,8 +7,12 @@ export interface IssueAcceptanceSnapshotIssue {
   id: string;
   identifier: string | null;
   companyId: string;
-  /** Monotonic per-issue mutation version bumped by DB triggers (migration 0488). */
-  version: number;
+  /**
+   * Monotonic per-issue mutation version bumped by DB triggers (migration
+   * 0489). A decimal string: bigint generations beyond 2^53 must stay exact
+   * for the reader's pin comparison.
+   */
+  version: string;
 }
 
 export interface IssueAcceptanceSnapshotDocument {
@@ -113,7 +117,7 @@ export function issueAcceptanceSnapshotService(db: Db) {
           id: row.issueId,
           identifier: row.identifier,
           companyId: row.companyId,
-          version: row.issueVersion,
+          version: String(row.issueVersion),
         },
         // A document is present only when every tenant-bound hop produced a
         // complete, mutually consistent row — including a valid monotonic

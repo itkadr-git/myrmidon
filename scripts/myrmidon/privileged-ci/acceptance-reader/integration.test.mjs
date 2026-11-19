@@ -33,9 +33,9 @@ test('gateway to separate mTLS upstream: production pin/verify path, tenant boun
   // bumps `version` alongside the document generation, mirroring the board
   // triggers: no ABA class is invisible.
   const state = {
-    'OPE-1': { issue: { id, identifier: 'OPE-1', companyId: 'allowed', version: 1 }, document: { id: 'doc', latestRevisionId: 'rev', latestRevisionNumber: 1, body: 'criteria', secret: 'private-document' } },
-    'OPE-3': { issue: { id: id3, identifier: 'OPE-3', companyId: 'allowed', version: 1 }, document: null },
-    'OPE-5': { issue: { id: id5, identifier: 'OPE-5', companyId: 'allowed', version: 1 }, document: { id: 'aba-doc', latestRevisionId: 'p1', latestRevisionNumber: 1, body: 'criteria-1', secret: 'private-document' } },
+    'OPE-1': { issue: { id, identifier: 'OPE-1', companyId: 'allowed', version: '1' }, document: { id: 'doc', latestRevisionId: 'rev', latestRevisionNumber: 1, body: 'criteria', secret: 'private-document' } },
+    'OPE-3': { issue: { id: id3, identifier: 'OPE-3', companyId: 'allowed', version: '1' }, document: null },
+    'OPE-5': { issue: { id: id5, identifier: 'OPE-5', companyId: 'allowed', version: '1' }, document: { id: 'aba-doc', latestRevisionId: 'p1', latestRevisionNumber: 1, body: 'criteria-1', secret: 'private-document' } },
   };
   let upstreamRequests = 0;
   const requestedPaths = [];
@@ -116,7 +116,7 @@ test('gateway to separate mTLS upstream: production pin/verify path, tenant boun
     return JSON.parse(result.body);
   };
   const verify = (pinned, ref = 'OPE-5') => call(`/api/issues/${ref}/acceptance-snapshot/verify`, { method: 'POST', body: pinned });
-  const bump = () => { state['OPE-5'].issue.version += 1; };
+  const bump = () => { state['OPE-5'].issue.version = String(Number(state['OPE-5'].issue.version) + 1); };
 
   const pinned0 = await pin();
   assert.deepEqual(JSON.parse((await verify(pinned0)).body), { ok: true });
@@ -167,6 +167,29 @@ test('gateway to separate mTLS upstream: production pin/verify path, tenant boun
   state['OPE-5'].document = { id: 'aba-doc', latestRevisionId: 'p4', latestRevisionNumber: 4, body: 'criteria-4', secret: 'private-document' };
   bump();
   assert.equal((await verify(pinned4)).status, 409);
+
+  // Controlled race: the verify request header arrives first, the body is
+  // delayed, and the upstream mutates in between. The gateway must read and
+  // validate the bounded body BEFORE the fresh snapshot, so the comparison
+  // sees the mutation: 409, never a stale 200.
+  const racePin = await pin();
+  assert.deepEqual(JSON.parse((await verify(racePin)).body), { ok: true });
+  const raced = await new Promise((resolve, reject) => {
+    const payload = JSON.stringify(racePin);
+    const req = request({ host: '127.0.0.1', servername: 'localhost', port: gateway.address().port, ca: gatewayTls.cert, path: '/api/issues/OPE-5/acceptance-snapshot/verify', method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' } }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode, body: data }));
+    });
+    req.on('error', reject);
+    req.write(payload.slice(0, 20));
+    setTimeout(() => {
+      state['OPE-5'].document = { id: 'aba-doc', latestRevisionId: 'p5', latestRevisionNumber: 5, body: 'criteria-5', secret: 'private-document' };
+      bump();
+      req.end(payload.slice(20));
+    }, 150);
+  });
+  assert.equal(raced.status, 409, raced.body);
 
   // Foreign and unknown issues are the identical 404.
   const foreign404 = await call(`/api/issues/${foreign}/acceptance-snapshot`);

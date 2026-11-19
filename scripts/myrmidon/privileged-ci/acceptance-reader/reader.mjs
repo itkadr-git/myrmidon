@@ -27,8 +27,10 @@ export function isIssueIdentity(value) {
 }
 
 function validIssue(issue) {
+  // version is a decimal bigint string: exact beyond 2^53, where JS numbers
+  // collapse adjacent generations.
   return Boolean(issue) && typeof issue.id === 'string' && typeof issue.identifier === 'string' &&
-    typeof issue.companyId === 'string' && Number.isInteger(issue.version) && issue.version >= 0;
+    typeof issue.companyId === 'string' && typeof issue.version === 'string' && /^\d+$/.test(issue.version);
 }
 
 function validDocument(document) {
@@ -40,7 +42,12 @@ function validDocument(document) {
 }
 
 function validSnapshot(snapshot) {
-  return Boolean(snapshot) && validIssue(snapshot.issue) && validDocument(snapshot.document);
+  // Strict schema: the document property must be present and explicitly
+  // null or valid — a missing property is a corrupted payload, never
+  // silently "no document".
+  return Boolean(snapshot) && validIssue(snapshot.issue) &&
+    Object.prototype.hasOwnProperty.call(snapshot, 'document') &&
+    validDocument(snapshot.document);
 }
 
 // The pin tuple is the entire single-snapshot response: the issue identity
@@ -49,8 +56,10 @@ function validSnapshot(snapshot) {
 // canonical pins were read from moments between which no relevant mutation
 // committed — that equality is what POST /verify asserts server-side.
 function canonicalPin(snapshot) {
+  // BigInt-normalize the version: leading zeros cannot create distinct
+  // pins for the same generation.
   return JSON.stringify({
-    i: [snapshot.issue.id, snapshot.issue.identifier, snapshot.issue.companyId, snapshot.issue.version],
+    i: [snapshot.issue.id, snapshot.issue.identifier, snapshot.issue.companyId, BigInt(snapshot.issue.version).toString()],
     d: snapshot.document == null ? null : [
       snapshot.document.id,
       snapshot.document.latestRevisionId,
@@ -133,6 +142,18 @@ export function createHandler({ records, credentialStore, readSnapshot, audit = 
     if ((req.method !== 'GET' && req.method !== 'POST') || !path || Object.keys(req.headers).some((name) => name.includes('method-override') || name === 'x-http-method')) return respond(404);
     if (path.verify !== (req.method === 'POST')) return respond(404);
     try {
+      // For verify, take and validate the bounded request body BEFORE the
+      // fresh upstream read, so a slow client cannot pin the comparison to
+      // a moment older than its own evidence.
+      let pinned;
+      if (path.verify) {
+        try {
+          pinned = JSON.parse(await readBody(req));
+        } catch {
+          return respond(400);
+        }
+        if (!validSnapshot(pinned)) return respond(400);
+      }
       const snapshot = await readSnapshot(path.issue);
       // Upstream not-found: the identical 404 for foreign and unknown issues.
       if (snapshot === null || snapshot === undefined) return respond(404);
@@ -145,18 +166,11 @@ export function createHandler({ records, credentialStore, readSnapshot, audit = 
       if (snapshot.issue.companyId !== companyId || (path.issue !== snapshot.issue.id && path.issue !== snapshot.issue.identifier)) return respond(404);
       if (!path.verify) return respond(200, project(snapshot));
 
-      // Server-side conditional assertion: the caller sends the snapshot it
-      // pinned; the gateway compares it against the fresh read. Match means
-      // "no relevant mutation committed between the pin and this verify" —
-      // the freshest statement this read-only gateway can make. The caller
-      // must use the result immediately and re-verify before any later use.
-      let pinned;
-      try {
-        pinned = JSON.parse(await readBody(req));
-      } catch {
-        return respond(400);
-      }
-      if (!validSnapshot(pinned)) return respond(400);
+      // Server-side conditional assertion: the caller's pinned snapshot was
+      // validated before the fresh read; compare now. Match means "no
+      // relevant mutation committed between the pin and this verify" — the
+      // freshest statement this read-only gateway can make. The caller must
+      // use the result immediately and re-verify before any later use.
       if (pinned.issue.companyId !== companyId || (path.issue !== pinned.issue.id && path.issue !== pinned.issue.identifier)) return respond(404);
       if (canonicalPin(pinned) !== canonicalPin(snapshot)) return respond(409);
       return respond(200, { ok: true });

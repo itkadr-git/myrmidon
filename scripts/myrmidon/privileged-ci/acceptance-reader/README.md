@@ -7,7 +7,7 @@ upstream must implement `GET /api/issues/{id}/acceptance-scenarios-snapshot`
 
 ```json
 {
-  "issue": { "id": "…", "identifier": "OPE-123", "companyId": "…", "version": 7 },
+  "issue": { "id": "…", "identifier": "OPE-123", "companyId": "…", "version": "7" },
   "document": { "id": "…", "latestRevisionId": "…", "latestRevisionNumber": 7, "body": "…" }
 }
 ```
@@ -28,26 +28,35 @@ that single snapshot — the full pin:
 
 ```json
 {
-  "issue": { "id": "…", "identifier": "OPE-123", "companyId": "…", "version": 7 },
+  "issue": { "id": "…", "identifier": "OPE-123", "companyId": "…", "version": "7" },
   "document": { "id": "…", "latestRevisionId": "…", "latestRevisionNumber": 7, "body": "…" }
 }
 ```
 
 `issue.version` is a per-issue monotonic mutation counter bumped by database
-triggers (migration 0488) on any update of the issue row (company,
+triggers (migration 0489) on any update of the issue row (company,
 identifier, anything), on insert/update/delete of the issue's
-`acceptance-scenarios` link row, and on update of the bound document row. It
-covers every writer, including batch imports and future code, and it survives
-link/document delete+recreate: any A→B→A of identity, link or content moves
-the version.
+`acceptance-scenarios` link row (both the old and the new issue on a
+transfer), and on update of the document bound to the issue through that
+link. It covers every writer, including batch imports and future code, and
+it survives link/document delete+recreate: any A→B→A of identity, link or
+content moves the version. The counter is a decimal string, exact beyond
+2^53 where JavaScript numbers collapse adjacent generations. A BEFORE UPDATE
+trigger forbids winding it back, so no writer can reset the counter to make
+a stale pin compare equal; the recursion guard only suppresses the bump
+function's own re-entry, never nested writers in other triggers.
 
 `POST /api/issues/{ref}/acceptance-snapshot/verify` takes a previously pinned
-snapshot as its JSON body and performs the conditional assertion server-side:
-the gateway reads a fresh snapshot and compares the whole pin. The response
-is `200 { "ok": true }` when no relevant mutation committed between the pin
-and this verify, `409` when anything moved, `401` on expiry/revocation, and
-`502` on upstream failures. A tenant move makes the fresh read foreign, so
-every request fails closed with the identical `404`.
+snapshot as its JSON body and performs the conditional assertion server-side.
+The gateway reads and validates the bounded request body **first**, then
+reads the fresh snapshot, then compares the whole pin — a slow client cannot
+pin the comparison to a moment older than its own evidence. The response is
+`200 { "ok": true }` when no relevant mutation committed between the pin and
+this verify, `409` when anything moved, `400` for a malformed pin, `401` on
+expiry/revocation, and `502` on upstream failures. A tenant move makes the
+fresh read foreign, so every request fails closed with the identical `404`.
+The pin schema is strict: a missing `document` property is a corrupted
+payload, never silently "no document".
 
 ## Result semantics (read this before trusting a result)
 
