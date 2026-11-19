@@ -76,6 +76,17 @@ describeDb("heartbeat run credential lifecycle", () => {
     throw new Error(`run ${runId} did not reach expected state`);
   }
 
+  it("mints a run-owned gateway credential for Hermes gateway runs", async () => {
+    const { agentId } = await setup("console.log('unused')");
+    await db.update(agents).set({
+      adapterType: "hermes_gateway",
+      adapterConfig: { apiBaseUrl: "http://127.0.0.1:1", timeoutSec: 1 },
+    }).where(eq(agents.id, agentId));
+    const run = (await heartbeat.invoke(agentId, "on_demand", {}, "manual"))!;
+    await heartbeat.drainActiveRunExecutions();
+    expect(gateway.issued.has(run.id)).toBe(true);
+  }, 45_000);
+
   it("issues a fresh credential for the next run and rejects the revoked one", async () => {
     const { agentId } = await setup("console.log('finished')");
     const first = (await heartbeat.invoke(agentId, "on_demand", {}, "manual"))!;
