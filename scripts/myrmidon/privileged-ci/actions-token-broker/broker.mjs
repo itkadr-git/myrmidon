@@ -67,6 +67,8 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
     await audit(event);
   }
   async function ambiguous() {
+    // Keep the outbox entry even after immediate delivery: recovery acknowledges it.
+    try { if (typeof store.queueAlert === 'function') await store.queueAlert('issuance_ambiguous'); } catch { /* Reservation remains pending. */ }
     try { await record('issuance_ambiguous'); } catch { /* Reservation remains pending. */ }
     try { if (typeof alert === 'function') await alert('issuance_ambiguous'); } catch { /* Recovery retries from the reservation. */ }
   }
