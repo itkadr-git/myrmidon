@@ -105,6 +105,19 @@ test('duplicate authorization headers are rejected before upstream access', asyn
   assert.equal(reads, 0);
 });
 
+test('rejects an upstream issue that does not match the requested identifier', async (t) => {
+  const token = 'candidate-test-token';
+  const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'company-a', expiresAt: Date.now() + 60000, revoked: false }];
+  const server = createServer(createHandler({ records, readIssue: async () => ({ id: 'issue-id', identifier: 'OPE-999', companyId: 'company-a' }) }));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const status = await new Promise((resolve, reject) => get({ host: '127.0.0.1', port: server.address().port, path: '/api/issues/OPE-123', headers: { authorization: `Bearer ${token}` } }, (res) => {
+    res.resume(); res.on('end', () => resolve(res.statusCode));
+  }).on('error', reject));
+  assert.equal(status, 404);
+});
+
 test('accepts only canonical issue and acceptance document paths', () => {
   assert.deepEqual(parsePath('/api/issues/OPE-123'), { issue: 'OPE-123', document: false });
   assert.deepEqual(parsePath('/api/issues/OPE-123/documents/acceptance-scenarios'), { issue: 'OPE-123', document: true });
