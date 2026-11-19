@@ -944,6 +944,32 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
 
+  it.each(["issue", "document"] as const)(
+    "rejects changing the company of a linked %s at the database boundary",
+    async (target) => {
+      const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-company-move-");
+      cleanups.push(() => dbh.cleanup());
+      const db = createDb(dbh.connectionString);
+      cleanups.push(async () => { await db.$client.end(); });
+      const issueId = randomUUID();
+      const docId = randomUUID();
+      await db.insert(companies).values([
+        { id: companyA, name: "Company A" },
+        { id: companyB, name: "Company B", issuePrefix: "BBB" },
+      ]);
+      await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
+      await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a" });
+      await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
+      const before = await issueAcceptanceSnapshotService(db).read(issueId);
+      const move = target === "issue"
+        ? db.update(issues).set({ companyId: companyB }).where(eq(issues.id, issueId))
+        : db.update(documents).set({ companyId: companyB }).where(eq(documents.id, docId));
+      await expect(move).rejects.toThrow();
+      expect(await issueAcceptanceSnapshotService(db).read(issueId)).toEqual(before);
+    },
+    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  );
+
   it(
     "epoch rows are immutable: re-keying fails closed and company ABA invalidates the pin (OPE-15145)",
     async () => {
