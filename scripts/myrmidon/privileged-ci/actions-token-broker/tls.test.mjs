@@ -9,6 +9,33 @@ import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { createBroker } from './broker.mjs';
 import { createAuditedSupervisedServer, createSecureServer } from './tls.mjs';
 
+test('missing audit anchor alerts and attempts known-token recovery before refusing startup', async () => {
+  const scratch = process.env.PAPERCLIP_RUN_SCRATCH_DIR || process.env.PAPERCLIP_SCRATCH_DIR || join(homedir(), '.cache', 'myrmidon-broker-tests');
+  mkdirSync(scratch, { recursive: true, mode: 0o700 });
+  const dir = mkdtempSync(join(scratch, 'broker-missing-audit-anchor-'));
+  const { createCredentialStore } = await import('./store.mjs');
+  const { createCredentialCheckpoint, checkpointCredentialStore } = await import('./credential-checkpoint.mjs');
+  let head = { seq: 0, mac: '' };
+  const credentialAnchor = { read: async () => ({ ...head }), compareAndSet: async (previous, next) => {
+    if (JSON.stringify(previous) !== JSON.stringify(head)) return false;
+    head = { ...next }; return true;
+  } };
+  const credentialPath = join(dir, 'credentials.sqlite'), credentialKey = randomBytes(32);
+  const alerts = [], revoked = [];
+  try {
+    const raw = createCredentialStore(credentialPath, credentialKey);
+    const store = checkpointCredentialStore(raw, await createCredentialCheckpoint(raw, credentialAnchor, { provision: true }));
+    await store.put('handle', { token: 'fixture-token' }, 'owner');
+    store.close();
+    await assert.rejects(createAuditedSupervisedServer({}, {
+      auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32), credentialPath, credentialKey, credentialAnchor,
+      installation: { revoke: async token => revoked.push(token) }, alert: async event => alerts.push(event),
+    }), /audit anchor required/);
+    assert.deepEqual(revoked, ['fixture-token']);
+    assert.ok(alerts.includes('audit_unavailable'));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('audit startup failure alerts when known-token recovery dependencies are missing', async () => {
   const alerts = [];
   const auditAnchor = { read: async () => { throw new Error('anchor unavailable'); }, compareAndSet: async () => true };
