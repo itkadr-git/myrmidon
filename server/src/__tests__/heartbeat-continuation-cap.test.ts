@@ -356,6 +356,18 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
   });
 
   describe("real attempt cap", () => {
+    it("does not invent a human decision for an unfinished issue with an open PR", async () => {
+      const ctx = await seedCompanyAgentIssue("in_progress");
+      await seedPullRequestWorkProduct({ ...ctx, headSha: "4b27a2c0b2428ab1352c8af64cb8bd40328b4f3b" });
+      await seedThreeContinuationRuns(ctx);
+
+      await continuationWake(ctx.agentId, ctx.issueId);
+
+      const [issue] = await db.select().from(issues).where(eq(issues.id, ctx.issueId));
+      expect(issue?.status).toBe("in_progress");
+      expect(issue?.blockerMetadata?.blockReason).not.toBe("human_decision");
+    });
+
     it("stops after three continuations that only carry the agent's own activity, and parks the issue", async () => {
       const ctx = await seedCompanyAgentIssue("in_progress");
       const { companyId, agentId, issueId } = ctx;
