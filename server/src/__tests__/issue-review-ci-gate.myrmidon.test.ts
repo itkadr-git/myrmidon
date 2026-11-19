@@ -328,9 +328,10 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewer, status: "succeeded", contextSnapshot: { issueId } });
     await ctx.db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", title: "Synthetic PR", url: "https://github.com/acme/app/pull/7", status: "open", isPrimary: true, metadata: { repo: "acme/app", number: 7, headSha } });
     let checkState: "success" | "failure" | "pending" | "missing" = "success";
+    let liveHeadSha = headSha;
     let invalidateDuringRead = false;
     const wakeFetch = vi.fn(async (url: string) => {
-      if (url.includes("/pulls/7")) return Response.json({ state: "open", head: { sha: headSha, ref: "branch" } });
+      if (url.includes("/pulls/7")) return Response.json({ state: "open", head: { sha: liveHeadSha, ref: "branch" } });
       if (url.includes("/check-runs")) {
         if (invalidateDuringRead) invalidateCiCacheForHead(companyId, "acme/app", headSha);
         return Response.json({ total_count: checkState === "missing" ? 0 : 1, check_runs: checkState === "missing" ? [] : [{ id: 1, name: "CI result", status: checkState === "pending" ? "in_progress" : "completed", conclusion: checkState === "pending" ? null : checkState, head_sha: headSha, html_url: "https://github.com/acme/app/actions/runs/1", started_at: new Date().toISOString(), completed_at: new Date().toISOString() }] });
@@ -372,8 +373,11 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     invalidateDuringRead = false;
     clearCiCacheForTests();
     await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
-    // A rerun can begin before its webhook arrives; the cached success is no
-    // longer proof that CI is complete, even though the SHA is unchanged.
+    // Neither a moved head nor a rerun needs to have delivered a webhook yet.
+    liveHeadSha = "b".repeat(40);
+    const delayedHeadWebhook = await request(app).patch(`/api/issues/${issueId}`).send(decision);
+    expect(delayedHeadWebhook.status, `head move before webhook: ${JSON.stringify(delayedHeadWebhook.body)}`).toBe(422);
+    liveHeadSha = headSha;
     checkState = "pending";
     const delayedWebhook = await request(app).patch(`/api/issues/${issueId}`).send(decision);
     expect(delayedWebhook.status, `rerun before webhook: ${JSON.stringify(delayedWebhook.body)}`).toBe(422);
