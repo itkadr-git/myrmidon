@@ -16,6 +16,7 @@ export function createCredentialStore(path, key) {
   db.exec('CREATE TABLE IF NOT EXISTS recovery_alerts (event TEXT PRIMARY KEY) STRICT');
   let active = false;
   const store = {
+    hasRetainedCredentials() { return Boolean(db.prepare('SELECT 1 FROM credentials LIMIT 1').get()); },
     async queueAlert(event) {
       if (!['issuance_ambiguous', 'credential_recovery_failed', 'audit_unavailable'].includes(event)) throw new Error('invalid recovery alert');
       db.prepare('INSERT OR IGNORE INTO recovery_alerts VALUES (?)').run(event);

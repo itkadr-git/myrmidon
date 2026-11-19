@@ -47,7 +47,11 @@ secret management, least privilege and key rotation.
   If finalization reports failure after deleting its reservation, the broker tries
   to recreate the fence before revocation and latches the running process closed.
   A crash or storage failure before that recreation can still leave no durable
-  fence; external supervision and investigation remain required before restart.
+  reservation. An unsupervised broker reopening a store with retained credentials
+  now refuses new issuance until restarted through recovery; owner revocation stays
+  available. This is not sufficient if no credential was retained, or if audit and
+  outbox writes both fail without a reservation: external supervision and
+  investigation remain required before restart.
   Broker factories also fence new issuance and owner revocation while any durable
   recovery alert remains undelivered, including an audit failure on a rejected
   request before a reservation exists. Recovery must deliver the outbox first.

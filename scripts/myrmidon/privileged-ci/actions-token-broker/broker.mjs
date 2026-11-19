@@ -45,7 +45,10 @@ function createSingleHostBrokerWithStore({ replayPath, credentialPath, credentia
     replay.close();
     throw error;
   }
-  const broker = createBroker({ ...options, store, claimOnce: replay.claimOnce });
+  // A restarted unsupervised broker must not issue until retained credentials
+  // have gone through recovery; owner revocation remains available.
+  const recoveryRequired = store.hasRetainedCredentials();
+  const broker = createBroker({ ...options, store, recoveryRequired, claimOnce: replay.claimOnce });
   return { ...broker, close: () => { replay.close(); if (!suppliedStore) store.close(); } };
 }
 
@@ -82,7 +85,7 @@ export async function createRecoveredSingleHostBroker({ credentialPath, credenti
 }
 
 // The store must persist encrypted credentials and enforce owner-bound atomic access.
-export function createBroker({ policy, loadKeys, claimOnce, installation, store, audit, alert }) {
+export function createBroker({ policy, loadKeys, claimOnce, installation, store, audit, alert, recoveryRequired = false }) {
   const fixedPolicy = Object.freeze({ ...policy });
   let auditFailed = false;
   async function identity(jwt) {
@@ -117,7 +120,7 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
     async exchange(jwt) {
       return guarded('exchange_failed', async () => {
         const owner = await identity(jwt);
-        if (auditFailed) throw new Error('audit unavailable');
+        if (auditFailed || recoveryRequired) throw new Error('recovery required');
         const handle = randomUUID();
         const durable = typeof store.reserveIssuance === 'function';
         if (durable) await store.reserveIssuance(handle);
