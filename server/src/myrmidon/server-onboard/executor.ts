@@ -99,13 +99,34 @@ export class FleetOnboardExecutor {
         throw new Error("No authentication credentials provided in claim secret values");
       }
 
+      const connectVerified = async (options: SshConnectionOptions): Promise<SshExecutor> => {
+        let verified = false;
+        const verifyHost = options.hostVerifier;
+        const checkedOptions: SshConnectionOptions = {
+          ...options,
+          hostVerifier: async (fingerprint) => {
+            const accepted = !!verifyHost && await verifyHost(fingerprint);
+            verified = accepted;
+            return accepted;
+          },
+        };
+        const ssh = await this.getSsh(checkedOptions);
+        try {
+          await ssh.connect(checkedOptions);
+          if (!verified) throw new Error("SSH transport did not provide a verified host key");
+          return ssh;
+        } catch (error) {
+          await ssh.disconnect().catch(() => {});
+          throw error;
+        }
+      };
+
       for (const step of steps) {
         currentStep = step;
 
         switch (step) {
           case "connect": {
-            activeSsh = await this.getSsh(connOptions);
-            await activeSsh.connect(connOptions);
+            activeSsh = await connectVerified(connOptions);
 
             // The transport callback runs before credentials are sent. Do not
             // execute remote commands to discover the host identity.
@@ -128,8 +149,7 @@ export class FleetOnboardExecutor {
 
           case "preflight": {
             if (!activeSsh) {
-              activeSsh = await this.getSsh(connOptions);
-              await activeSsh.connect(connOptions);
+              activeSsh = await connectVerified(connOptions);
             }
 
             // 1. Disk check (threshold >= 90%)
@@ -166,8 +186,7 @@ export class FleetOnboardExecutor {
 
           case "access": {
             if (!activeSsh) {
-              activeSsh = await this.getSsh(connOptions);
-              await activeSsh.connect(connOptions);
+              activeSsh = await connectVerified(connOptions);
             }
 
             // Key install
@@ -196,8 +215,7 @@ export class FleetOnboardExecutor {
               hostVerifier: connOptions.hostVerifier,
               privateKey: activePrivateKey,
             };
-            const verifySsh = await this.getSsh(keyConnOptions);
-            await verifySsh.connect(keyConnOptions);
+            const verifySsh = await connectVerified(keyConnOptions);
             const verifyRes = await verifySsh.execute('echo "myrmidon-key-verify"');
             if (verifyRes.exitCode !== 0 || !verifyRes.stdout.includes("myrmidon-key-verify")) {
               throw new Error("Key verification failed: unable to verify SSH login using the installed key");
@@ -237,8 +255,7 @@ export class FleetOnboardExecutor {
 
           case "harden": {
             if (!activeSsh) {
-              activeSsh = await this.getSsh(connOptions);
-              await activeSsh.connect(connOptions);
+              activeSsh = await connectVerified(connOptions);
             }
 
             // Firewall allow-before-deny with rollback timer:
@@ -254,8 +271,7 @@ export class FleetOnboardExecutor {
 
             // 4. Verify connectivity using fresh connection
             try {
-              const testSsh = await this.getSsh(connOptions);
-              await testSsh.connect(connOptions);
+              const testSsh = await connectVerified(connOptions);
               const testPing = await testSsh.execute('echo "ufw-connectivity-ok"');
               if (testPing.exitCode !== 0 || !testPing.stdout.includes("ufw-connectivity-ok")) {
                 throw new Error("Connectivity test failed after firewall enablement");
@@ -284,8 +300,7 @@ export class FleetOnboardExecutor {
 
           case "role": {
             if (!activeSsh) {
-              activeSsh = await this.getSsh(connOptions);
-              await activeSsh.connect(connOptions);
+              activeSsh = await connectVerified(connOptions);
             }
 
             const role = claim.options.role ?? "generic";
@@ -307,13 +322,11 @@ export class FleetOnboardExecutor {
               throw new Error("Final verification requires SSH key credentials");
             }
             if (!activeSsh) {
-              activeSsh = await this.getSsh(connOptions);
-              await activeSsh.connect(connOptions);
+              activeSsh = await connectVerified(connOptions);
             }
 
             // Verify key login
-            const testKeySsh = await this.getSsh(connOptions);
-            await testKeySsh.connect(connOptions);
+            const testKeySsh = await connectVerified(connOptions);
             const echoRes = await testKeySsh.execute('echo "onboard-verified"');
             if (echoRes.exitCode !== 0) {
               throw new Error("Final verification failed: unable to run commands via SSH key");
@@ -327,8 +340,7 @@ export class FleetOnboardExecutor {
           case "cleanup": {
             // Decommission step
             if (!activeSsh) {
-              activeSsh = await this.getSsh(connOptions);
-              await activeSsh.connect(connOptions);
+              activeSsh = await connectVerified(connOptions);
             }
 
             // No ownership inventory is available yet; fail closed rather than deleting

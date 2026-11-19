@@ -246,7 +246,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
   });
 
   it("fails preflight when disk usage cannot be determined", async () => {
-    const mockSsh = new MockSshExecutor();
+    const mockSsh = new VerifiedMockSsh();
     mockSsh.mockResponse("df -P /", { stdout: "", stderr: "df failed", exitCode: 1 });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => mockSsh });
     const mockReporter = createMockReporter();
@@ -406,7 +406,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
   });
 
   it("handles decommission job cleanup step", async () => {
-    const mockSsh = new MockSshExecutor();
+    const mockSsh = new VerifiedMockSsh();
     mockSsh.mockResponse(/docker stop/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse(/sed -i/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse(/sudo ufw delete allow/, { stdout: "", exitCode: 0 });
