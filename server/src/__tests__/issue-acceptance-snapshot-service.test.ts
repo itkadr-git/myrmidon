@@ -944,6 +944,17 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
 
+  it("fails closed when an explicit acceptance bump names a nonexistent issue", async () => {
+    const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-missing-issue-");
+    cleanups.push(() => dbh.cleanup());
+    const db = createDb(dbh.connectionString);
+    cleanups.push(async () => { await db.$client.end(); });
+    const missingIssueId = randomUUID();
+    await expect(db.execute(sqlTag`SELECT bump_issue_acceptance_epoch(${missingIssueId}::uuid)`)).rejects.toThrow();
+    const rows = await db.execute(sqlTag`SELECT issue_id FROM issue_acceptance_epochs WHERE issue_id = ${missingIssueId}::uuid`);
+    expect(rows).toHaveLength(0);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("rolls back a newly linked acceptance document and its epoch together", async () => {
     const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-link-rollback-");
     cleanups.push(() => dbh.cleanup());
