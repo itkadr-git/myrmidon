@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
-import { agents, companies, connectionEventDeliveries, heartbeatRuns, issueWorkProducts, issues, toolGatewayRateLimitCounters } from "@myrmidon/db";
+import { agents, companies, connectionEventDeliveries, heartbeatRuns, issueComments, issueWorkProducts, issues, toolGatewayRateLimitCounters } from "@myrmidon/db";
 import { describeEmbeddedPostgres, routeApp, seedCompanyWithBoardAccess, useEmbeddedPostgres } from "./helpers/route-test-harness.js";
 import { issueRoutes } from "../routes/issues.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
@@ -205,6 +205,8 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     expect(success.body.assigneeAgentId).toBe(author);
     expect(success.body.executionState.lastDecisionOutcome).toBe("changes_requested");
     expect(JSON.stringify(success.body)).toContain("server/src/example.ts:42 remains broken");
+    const comments = await ctx.db.select().from(issueComments).where(sql`${issueComments.issueId} = ${issueId}`);
+    expect(comments.some((comment) => comment.authorAgentId === reviewer && comment.body.includes("server/src/example.ts:42 remains broken"))).toBe(true);
     expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, success.body])).not.toContain(canary);
   });
   it("rejects a verdict on stored wake evidence alone when the review budget is exhausted (OPE-15114)", async () => {
