@@ -21,6 +21,28 @@ function jwt(jti, overrides = {}) {
   return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
 }
 
+test('token expiring during issuance audit is not returned and is revoked', async () => {
+  let revoked = 0, pending = false;
+  const store = {
+    reserveIssuance: async () => { pending = true; },
+    resolveIssuance: async () => { pending = false; },
+    put: async () => {}, delete: async () => {}, queueAlert: async () => {},
+  };
+  const installation = {
+    issue: async retain => {
+      const credential = { token: 'fixture', expiresAt: new Date(Date.now() + 100).toISOString() };
+      await retain(credential.token);
+      return credential;
+    },
+    revoke: async () => { revoked++; },
+  };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store, installation,
+    audit: async event => { if (event === 'issued') await new Promise(resolve => setTimeout(resolve, 200)); }, alert: async () => {} });
+  await assert.rejects(broker.exchange(jwt('expired-during-audit')));
+  assert.equal(revoked, 1);
+  assert.equal(pending, true);
+});
+
 test('lost issuance response leaves anchored intent fenced across restart despite lost local reservation', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'broker-anchored-intent-'));
   const path = join(dir, 'audit.sqlite'), auditKey = randomBytes(32);
