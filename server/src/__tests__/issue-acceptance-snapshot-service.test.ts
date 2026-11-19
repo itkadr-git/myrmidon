@@ -945,6 +945,50 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );
 
+  it("invalidates the acceptance pin or rejects an old repeatable-read revision insert after linking", async () => {
+    const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-old-insert-");
+    cleanups.push(() => dbh.cleanup());
+    const db = createDb(dbh.connectionString);
+    cleanups.push(async () => { await db.$client.end(); });
+    const issueId = randomUUID();
+    const docId = randomUUID();
+    await db.insert(companies).values({ id: companyA, name: "Company A" });
+    await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
+    await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a" });
+
+    let resume!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { resume = resolve; });
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const writer = db.transaction(async (tx) => {
+      await tx.execute(sqlTag`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
+      await tx.execute(sqlTag`SELECT id FROM documents WHERE id = ${docId}::uuid`);
+      started();
+      await gate;
+      await tx.insert(documentRevisions).values({
+        companyId: companyA, documentId: docId, revisionNumber: 1, body: "a",
+      });
+    });
+    const outcome = writer.then(() => null, (error: unknown) => error);
+    let pin: string;
+    try {
+      await ready;
+      await db.insert(issueDocuments).values({
+        companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios",
+      });
+      pin = (await issueAcceptanceSnapshotService(db).read(issueId))!.issue.version;
+    } finally {
+      resume();
+    }
+    const error = await outcome;
+    const after = await issueAcceptanceSnapshotService(db).read(issueId);
+    if (error) {
+      expect(error).toMatchObject({ cause: { code: "40001" } });
+    } else {
+      expect(after!.issue.version).not.toBe(pin!);
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("fails closed when an old repeatable-read writer races a link with a foreign revision", async () => {
     const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-foreign-race-");
     cleanups.push(() => dbh.cleanup());
