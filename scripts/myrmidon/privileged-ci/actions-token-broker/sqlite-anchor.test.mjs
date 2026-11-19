@@ -45,3 +45,17 @@ test('anchor CAS rejects stale writers and persists the winning head', () => {
     c.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('missing anchor row is not silently recreated as a fresh genesis', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anchor-missing-'));
+  const path = join(dir, 'anchor.sqlite');
+  try {
+    const anchor = createSqliteAnchor(path);
+    assert.equal(anchor.compareAndSet({ seq: 0, mac: '' }, { seq: 1, mac: 'a'.repeat(64) }), true);
+    anchor.close();
+    const db = new DatabaseSync(path);
+    db.exec('DELETE FROM audit_anchor');
+    db.close();
+    assert.throws(() => createSqliteAnchor(path), /anchor/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
