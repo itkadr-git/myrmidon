@@ -8,6 +8,13 @@ import { DatabaseSync } from 'node:sqlite';
 import { createAuthenticatedAudit } from './authenticated-audit.mjs';
 import { createSqliteAnchor } from './sqlite-anchor.mjs';
 
+test('opening a missing anchor fails rather than silently provisioning genesis', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'anchor-unprovisioned-'));
+  try {
+    assert.throws(() => createSqliteAnchor(join(dir, 'missing.sqlite')), /provision|missing/i);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('durable separate anchor rejects audit suffix deletion after both stores restart', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'anchor-durable-'));
   const path = join(dir, 'audit.sqlite');
