@@ -1,3 +1,7 @@
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { MockSshExecutor } from "../../services/fleet/mock-ssh-executor.js";
 import { defaultGenerateKeyPair, FleetOnboardExecutor, type ExecutorReporter } from "./executor.js";
@@ -572,6 +576,36 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(livenessChecked).toBe(true);
     expect(allowAttempted).toBe(false);
     expect(ssh.hasExecuted(/sudo ufw (default|--force enable|disable)/)).toBe(false);
+  });
+
+  it("leaves an actually executed inactive firewall status probe unchanged", async () => {
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-ufw-test-"));
+    const calls = join(dir, "calls");
+    const sudo = join(dir, "sudo");
+    writeFileSync(sudo, '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\nif [ "$*" = "ufw status" ]; then printf "Status: inactive\\n"; exit 0; fi\nexit 97\n');
+    chmodSync(sudo, 0o700);
+    try {
+      const ssh = new MockSshExecutor({ onCommand: (command) => {
+        if (command !== "sudo ufw status") throw new Error(`Unexpected remote command: ${command}`);
+        const result = spawnSync("sh", ["-c", command], {
+          encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: calls },
+        });
+        return { stdout: result.stdout, stderr: result.stderr, exitCode: result.status ?? 1 };
+      } });
+      const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+      const claim: any = {
+        job: { id: "job-inactive-real-probe", companyId: "c1", serverId: "s1" },
+        server: { hostname: "1.2.3.4", port: 22, username: "root" },
+        steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+      };
+      const result = await executor.execute(claim, createMockReporter().reporter);
+      expect(result.status).toBe("failed");
+      expect(result.error).toMatch(/inactive.*refus/i);
+      expect(readFileSync(calls, "utf8")).toBe("ufw status\n");
+      expect(ssh.executedCommands.map((entry) => entry.command)).toEqual(["sudo ufw status"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("fails closed without mutating an initially disabled firewall", async () => {
