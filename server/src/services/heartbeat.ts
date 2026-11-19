@@ -12972,6 +12972,11 @@ export function heartbeatService(
           const { createReviewPullRequestCiResolver, createReviewHeadFailedChecksResolver } = await import(
             "../myrmidon/review-stage-recovery/github-ci.js"
           );
+          // OPE-15004: the monitor tick is a non-admission reader and shares the
+          // resolver's process read cache; its job is only to decide when the
+          // reviewer's own decision happens, and that decision meets the fresh
+          // write gate. A fresh read on every tick is what drained the shared
+          // review budget (OPE-12397 kept these reads cached).
           const ci = await createReviewPullRequestCiResolver({ db })({
             companyId: claimed.companyId,
             issueId: claimed.id,
@@ -34187,6 +34192,9 @@ export function heartbeatService(
             "../myrmidon/review-stage-recovery/github-ci.js"
           );
           const rateLimit = await import("./github-rate-limit.js");
+          // OPE-15004: the wake gate is a non-admission reader and shares the
+          // resolver's process read cache; it only defers a wake, it never
+          // decides the verdict (the fresh write gate does).
           const decision = await decideWakeCiGate(
             { agentId, companyId: agent.companyId, reason: gatedReason, issue: gatedIssue },
             {

@@ -19,6 +19,14 @@ repository of each operation**, so the two never mix.
 
 ## How it works
 
+For `gh repo view OWNER/REPO` and `gh repo clone OWNER/REPO`, the broker
+uses the positional repository rather than the working directory's origin.
+An explicit `-R`/`--repo` or `GH_REPO` takes precedence; `gh api
+repos/OWNER/REPO` also selects the endpoint repository. Other commands do not
+treat branch names such as `origin/main` as repositories. When no target is
+specified, the broker falls back to origin. These rules apply to the container
+wrapper and the staged local/SSH launcher.
+
 - **Registration.** The one-click path: in Company settings → **Shared GitHub
   authorization** click **Create GitHub App**, confirm the dialog (owner —
   your personal account or an organization, the App name `Myrmidon —
