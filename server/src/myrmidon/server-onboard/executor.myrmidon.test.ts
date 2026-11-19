@@ -170,7 +170,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
   });
 
   it("never disables password authentication for a key generated only in executor memory", async () => {
-    const mockSsh = new MockSshExecutor();
+    const mockSsh = new VerifiedMockSsh();
     mockSsh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
     const executor = new FleetOnboardExecutor({
       createSshExecutor: () => mockSsh,
@@ -186,6 +186,8 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     };
     const result = await executor.execute(claim, mockReporter.reporter);
     expect(result.status).toBe("failed");
+    expect(result.error).toContain("durable access key");
+    expect(mockSsh.hasExecuted('echo "myrmidon-key-verify"')).toBe(true);
     expect(mockSsh.hasExecuted(/PasswordAuthentication no/)).toBe(false);
   });
 
@@ -247,7 +249,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
   });
 
   it("stops before key verification when authorized_keys installation fails", async () => {
-    const mockSsh = new MockSshExecutor();
+    const mockSsh = new VerifiedMockSsh();
     mockSsh.mockResponse(/mkdir -p ~\/\.ssh/, { stdout: "", stderr: "permission denied", exitCode: 1 });
     mockSsh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
     const executor = new FleetOnboardExecutor({
@@ -265,6 +267,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
 
     const result = await executor.execute(claim, mockReporter.reporter);
     expect(result.status).toBe("failed");
+    expect(result.error).toContain("SSH key installation failed");
     expect(mockSsh.hasExecuted('echo "myrmidon-key-verify"')).toBe(false);
     expect(mockReporter.completion?.status).toBe("failed");
   });
