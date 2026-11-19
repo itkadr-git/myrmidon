@@ -1175,6 +1175,22 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     expect(rows[0]).toMatchObject({ acceptance_issue_id: issueId });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
+  it("rejects clearing a linked document owner outside the link protocol", async () => {
+    const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-owner-bypass-");
+    cleanups.push(() => dbh.cleanup());
+    const db = createDb(dbh.connectionString);
+    cleanups.push(async () => { await db.$client.end(); });
+    const issueId = randomUUID();
+    const docId = randomUUID();
+    await db.insert(companies).values({ id: companyA, name: "Company A" });
+    await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
+    await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "a" });
+    await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
+    await expect(db.execute(sqlTag`UPDATE documents SET acceptance_issue_id = NULL WHERE id = ${docId}::uuid`)).rejects.toThrow();
+    const rows = await db.execute(sqlTag`SELECT acceptance_issue_id FROM documents WHERE id = ${docId}::uuid`);
+    expect(rows[0]).toMatchObject({ acceptance_issue_id: issueId });
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("rolls back a newly linked acceptance document and its epoch together", async () => {
     const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-link-rollback-");
     cleanups.push(() => dbh.cleanup());
