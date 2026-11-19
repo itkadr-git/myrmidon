@@ -1,6 +1,30 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { dirname, resolve } from 'node:path';
+
+function checkScriptGraph(entry) {
+  const seen = new Set();
+  const visit = (url) => {
+    const path = fileURLToPath(url);
+    if (seen.has(path)) return;
+    seen.add(path);
+    const source = readFileSync(path, 'utf8');
+    assert.doesNotMatch(source, /(?:node:)?child_process|\b(?:eval|Function)\s*\(|\bimport\s*\(/, `${path} must not execute dynamic code`);
+    for (const match of source.matchAll(/\b(?:import|export)\s+(?:[^'";]*?\s+from\s+)?['"](\.[^'"]+)['"]/g)) {
+      visit(pathToFileURL(resolve(dirname(path), match[1])));
+    }
+  };
+  visit(entry);
+  return seen;
+}
+
+test('review gate and all local imports cannot execute PR code', () => {
+  const scripts = checkScriptGraph(new URL('../run-quality-gates.mjs', import.meta.url));
+  assert.ok(scripts.has(fileURLToPath(new URL('../check-pr-dependencies.mjs', import.meta.url))));
+  assert.ok(scripts.has(fileURLToPath(new URL('../check-pr-release-bootstrap.mjs', import.meta.url))));
+});
 
 for (const name of ['myrmidon-acceptance-scenarios.yml', 'commitperclip-review.yml']) {
   test(`${name} uses only base code in privileged jobs`, () => {
