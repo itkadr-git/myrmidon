@@ -148,6 +148,23 @@ test('audit failure on a rejected request fences issuance until recovery after r
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('failed issuance finalization immediately revokes the known token while retaining the fence', async () => {
+  const retained = new Map(), revoked = [], pending = new Set();
+  const store = {
+    reserveIssuance: async handle => pending.add(handle),
+    resolveIssuance: async () => { throw new Error('storage unavailable'); },
+    put: async (handle, credential) => retained.set(handle, credential),
+    delete: async handle => retained.delete(handle), queueAlert: async () => {},
+  };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    installation: { issue: async () => ({ token: 'fixture' }), revoke: async token => revoked.push(token) },
+    audit: async () => {}, alert: async () => {} });
+  await assert.rejects(broker.exchange(jwt('finalization-revoke')));
+  assert.deepEqual(revoked, ['fixture']);
+  assert.equal(retained.size, 0);
+  assert.equal(pending.size, 1);
+});
+
 test('failure to resolve issuance alerts and retains the token for recovery', async () => {
   const alerts = [];
   const retained = new Map();
