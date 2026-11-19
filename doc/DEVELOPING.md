@@ -21,6 +21,16 @@ The production runtime resolution check ignores JavaScript comments when it
 identifies import specifiers, including comments before unrelated strings.
 Run it with `node scripts/myrmidon/check-prod-runtime-resolution.mjs --dist server/dist`.
 
+## Review CI Fallback
+
+When a pull request has no aggregate `CI result`, the review gate reads its
+latest check runs. A queued check suite is excluded only when a GitHub Actions
+workflow run on the exact head identifies the `pull_request` workflow at
+`.github/workflows/review-label-sync.yml`. This post-verdict workflow must not
+block the verdict it waits for. Missing or incomplete workflow provenance fails
+closed. After exclusion, every remaining check must be completed successfully;
+failed, cancelled, and pending checks still block the transition.
+
 ## Dependency Lockfile Policy
 
 GitHub Actions owns `pnpm-lock.yaml`.
