@@ -1,4 +1,4 @@
-import { execFile, spawn } from "node:child_process";
+import { ChildProcess, execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
@@ -8207,6 +8207,15 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     expect(persisted?.port).toBe(originalPort);
     expect(persisted?.providerRef).toBe(originalProviderRef);
     await expect(fetch(service!.url!)).resolves.toMatchObject({ ok: true });
+
+    // A late exit from the pre-restart child must not unregister its adopted
+    // replacement, even though both records have the same runtime service ID.
+    const handles = (process as unknown as { _getActiveHandles(): unknown[] })._getActiveHandles();
+    const originalChild = handles.find((handle): handle is ChildProcess =>
+      handle instanceof ChildProcess && handle.pid === Number(originalProviderRef),
+    );
+    expect(originalChild).toBeDefined();
+    originalChild!.emit("exit", 0, null);
 
     await resetRuntimeServicesForTests({ terminateProcesses: true });
     leasedRunIds.delete(runId);
