@@ -21,6 +21,7 @@ test('worker retries revocation and pending alert after restart without clearing
     const first = await worker.runOnce();
     assert.equal(first.failed, 1);
     assert.equal(first.alertFailed, true);
+    assert.deepEqual(await store.pendingAlerts(), ['issuance_ambiguous']);
     store.close();
     store = createCredentialStore(path, key);
     const next = createRecoveryWorker({ store, revoke: async () => { revokes++; }, alert: async () => { alerts++; } });
