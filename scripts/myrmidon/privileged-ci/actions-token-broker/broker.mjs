@@ -3,6 +3,27 @@ import { verifyIdentity } from './identity.mjs';
 import { createReplayStore } from './replay.mjs';
 import { createCredentialStore } from './store.mjs';
 import { acquireExclusiveStore } from './exclusive.mjs';
+import { createRecoverySupervisor } from './recovery-supervisor.mjs';
+
+// Retain exclusive ownership across all retries and for the broker lifetime.
+export async function createSupervisedSingleHostBroker({ credentialPath, credentialKey, store: suppliedStore, delay, ...options }) {
+  if (suppliedStore || typeof delay !== 'function' || typeof options.alert !== 'function') throw new Error('supervised recovery dependencies required');
+  const release = acquireExclusiveStore(credentialPath);
+  let store;
+  try {
+    store = createCredentialStore(credentialPath, credentialKey);
+    const supervisor = createRecoverySupervisor({
+      store, delay, alert: options.alert,
+      recover: async () => ({ ...await store.revokeRetained(token => options.installation.revoke(token)), pending: (await store.pendingIssuances()).length > 0, alertFailed: false }),
+      start: async () => createSingleHostBrokerWithStore({ ...options, store }),
+    });
+    const broker = await supervisor.run();
+    return { ...broker, close: () => { try { broker.close(); store.close(); } finally { release(); } } };
+  } catch (error) {
+    try { store?.close(); } finally { release(); }
+    throw error;
+  }
+}
 
 export function createSingleHostBroker({ store, ...options }) {
   if (store) throw new Error('durable issuance store must be managed by broker');
