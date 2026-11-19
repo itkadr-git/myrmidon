@@ -158,38 +158,45 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
       { companyId, provider: "github", providerDeliveryId: "synthetic-pr", event: "pull_request", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha } },
       { companyId, provider: "github", providerDeliveryId: "synthetic-check", event: "check_run", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, headSha, checkName: "CI result", status: "completed", conclusion: "failure" } },
     ]);
-    // OPE-15114: the matching verdict stands only after a fresh head
-    // confirmation; the CI read itself stays on the webhook evidence. The gate
-    // evaluates the resolver for the unlocked and the locked transition.
+    // Each admission must read the head and CI afresh, including locked sweeps.
+    const workflowUrl = "https://api.github.com/repos/acme/app/contents/.github/workflows";
+    const checkUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?check_name=CI%20result&filter=all&per_page=100`;
+    const latestChecksUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?filter=latest&per_page=100`;
     await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
-    transport.mockImplementationOnce(async () => Response.json({ state: "open", head: { sha: headSha } }));
-    transport.mockImplementationOnce(async () => Response.json({ state: "open", head: { sha: headSha } }));
+    transport.mockImplementation(async (url) => {
+      if (url === pullUrl) return Response.json({ state: "open", head: { sha: headSha } });
+      if (url === workflowUrl) return Response.json([{ name: "ci.yml" }]);
+      if (url === latestChecksUrl) return Response.json({ check_runs: [] });
+      if (url === checkUrl) return Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "failure", head_sha: headSha }] });
+      throw new Error("Unexpected external transport");
+    });
     const accepted = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
     await drainHeartbeatRunsToQuiescence(ctx.db, heartbeatService(ctx.db));
     expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
     expect(accepted.body.status).toBe("in_progress");
-    // The admission read GitHub fresh, starting with the current head.
-    expect(transport).toHaveBeenCalled();
-    expect(transport.mock.calls[0]?.[0]).toBe(pullUrl);
+    expect(transport.mock.calls.slice(0, 3).map(([url]) => url)).toEqual([pullUrl, workflowUrl, checkUrl]);
+    expect(unexpectedCalls(transport.mock.calls, [pullUrl, workflowUrl, checkUrl, latestChecksUrl])).toEqual([]);
+    expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, accepted.body])).not.toContain(canary);
     await ctx.db.update(issues).set({ status: "in_review", executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewer, userId: null }, returnAssignee: { type: "agent", agentId: author, userId: null }, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null } }).where(sql`${issues.id} = ${issueId}`);
     await ctx.db.delete(connectionEventDeliveries).where(sql`${connectionEventDeliveries.companyId} = ${companyId}`);
     transport.mockReset();
     diagnostic.mockClear();
     resetReviewCiCacheForTests();
     await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
-    transport.mockImplementationOnce(async () => Response.json({ state: "open", head: { sha: headSha } }));
-    transport.mockImplementationOnce(async () => Response.json([{ name: "ci.yml" }]));
-    transport.mockImplementationOnce(async () => Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "success", head_sha: headSha }] }));
-    transport.mockImplementationOnce(async () => Response.json({ check_runs: [] }));
+    transport.mockImplementation(async (url) => {
+      if (url === pullUrl) return Response.json({ state: "open", head: { sha: headSha } });
+      if (url === workflowUrl) return Response.json([{ name: "ci.yml" }]);
+      if (url === latestChecksUrl) return Response.json({ check_runs: [] });
+      if (url === checkUrl) return Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "success", head_sha: headSha }] });
+      throw new Error("Unexpected external transport");
+    });
     const success = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI passed" });
     await drainHeartbeatRunsToQuiescence(ctx.db, heartbeatService(ctx.db));
-    const checkUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?check_name=CI%20result&filter=all&per_page=100`;
     expect(success.status, JSON.stringify(success.body)).toBe(200);
-    const workflowUrl = "https://api.github.com/repos/acme/app/contents/.github/workflows";
     // OPE-15114: every admission reads GitHub afresh; the sweep that follows
     // the PATCH may read again, so only the admission's own read order is pinned.
     expect(transport.mock.calls.slice(0, 3).map(([url]) => url)).toEqual([pullUrl, workflowUrl, checkUrl]);
-    expect(unexpectedCalls(transport.mock.calls, [pullUrl, workflowUrl, checkUrl])).toEqual([]);
+    expect(unexpectedCalls(transport.mock.calls, [pullUrl, workflowUrl, checkUrl, latestChecksUrl])).toEqual([]);
     expect(diagnostic.mock.calls.some(([fields]) => typeof fields === "object" && fields !== null &&
       "transportCalls" in fields && fields.transportCalls === 3 &&
       "budget" in fields && JSON.stringify(fields.budget) === JSON.stringify({ used: 3, cap: 2000, windowMinutes: 60 }))).toBe(true);
