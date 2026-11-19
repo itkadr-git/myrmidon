@@ -136,6 +136,21 @@ test('concurrent audit failure during revocation reservation alerts on the retai
   assert.ok(alerts.includes('credential_recovery_failed'));
 });
 
+test('lost revocation reservation acknowledgement alerts and fences issuance', async () => {
+  let reserves = 0, calls = 0;
+  const alerts = [], queued = [];
+  const store = { reserveIssuance: async () => { reserves++; if (reserves === 1) throw new Error('ack lost'); },
+    resolveIssuance: async () => {}, put: async () => {}, queueAlert: async event => queued.push(event) };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    installation: { issue: async () => { calls++; return { token: 'fixture' }; } },
+    audit: async () => {}, alert: async event => alerts.push(event) });
+  await assert.rejects(broker.revoke(jwt('revoke-reservation-ack-lost'), 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'));
+  await assert.rejects(broker.exchange(jwt('revoke-reservation-ack-retry')));
+  assert.equal(calls, 0);
+  assert.ok(queued.includes('credential_recovery_failed'));
+  assert.ok(alerts.includes('credential_recovery_failed'));
+});
+
 test('identity expiring during reservation never contacts installation API', async () => {
   let calls = 0;
   const store = { reserveIssuance: async () => { await new Promise(resolve => setTimeout(resolve, 2100)); },
