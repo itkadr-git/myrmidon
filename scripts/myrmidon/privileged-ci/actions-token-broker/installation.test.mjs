@@ -1,0 +1,19 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createInstallationClient } from './installation.mjs';
+
+test('installation issuance uses only the configured repository and permissions', async () => {
+  const calls = [];
+  const client = createInstallationClient({ installationId: '42', repositoryId: 123, permissions: { contents: 'read' }, appJwt: async () => 'app-fixture', request: async (url, init) => {
+    calls.push({ url, init });
+    return { ok: true, json: async () => ({ token: 'issued-fixture', expires_at: '2030-01-01T00:00:00Z' }) };
+  } });
+  const token = await client.issue();
+  assert.equal(token.token, 'issued-fixture');
+  assert.equal(calls[0].url, 'https://api.github.com/app/installations/42/access_tokens');
+  assert.deepEqual(JSON.parse(calls[0].init.body), { repository_ids: [123], permissions: { contents: 'read' } });
+  await client.revoke(token.token);
+  assert.equal(calls[1].url, 'https://api.github.com/installation/token');
+  assert.equal(calls[1].init.method, 'DELETE');
+  assert.equal(calls[1].init.headers.authorization, 'Bearer issued-fixture');
+});
