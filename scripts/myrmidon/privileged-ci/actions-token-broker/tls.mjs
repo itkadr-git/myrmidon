@@ -14,6 +14,9 @@ export async function createAuditedSupervisedServer(tls, { auditPath, auditKey, 
   try {
     audit = await createAsyncAuthenticatedAudit(auditPath, auditKey, auditAnchor);
   } catch (error) {
+    // Signal the audit outage before recovery can enter an unbounded retry loop.
+    let auditAlertDelivered = false;
+    try { await options.alert('audit_unavailable'); auditAlertDelivered = true; } catch { /* Retry after recovery; external monitoring remains required. */ }
     // Audit failure must not prevent cleanup of known credentials. The exclusive
     // store lock keeps this recovery from racing an active issuer; it never opens
     // service or clears the unverified audit state.
@@ -40,11 +43,10 @@ export async function createAuditedSupervisedServer(tls, { auditPath, auditKey, 
       } finally { try { store?.close(); } finally { release?.(); } }
     }
     // Keep startup closed while retrying delivery; a process crash still requires external supervision.
-    for (;;) {
-      try { await options.alert('audit_unavailable'); break; } catch {
-        if (typeof options.delay !== 'function') break;
-        await options.delay();
-      }
+    while (!auditAlertDelivered) {
+      if (typeof options.delay !== 'function') break;
+      await options.delay();
+      try { await options.alert('audit_unavailable'); auditAlertDelivered = true; } catch { /* Retry while startup remains closed. */ }
     }
     throw error;
   }

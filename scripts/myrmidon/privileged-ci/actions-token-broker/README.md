@@ -47,9 +47,10 @@ secret management, least privilege and key rotation.
   HTTPS; failures remain queued for retry, and a lost response can cause duplicates.
   This callback requires an independently operated, monitored receiver and has not
   been wired into a deployment. A successful HTTP response does not itself prove
-  durable alert storage or operator notification. Audit startup failures also
-  attempt an `audit_unavailable` notification, retrying with the supplied delay
-  while the process remains alive. There is no local outbox at that point: an
+ durable alert storage or operator notification. Audit startup failures also
+ attempt an `audit_unavailable` notification before known-token recovery can
+ enter its retry loop, retrying failed delivery with the supplied delay
+ after recovery while the process remains alive. There is no local outbox at that point: an
   external supervisor must retry startup and alert on process failure; delivery
   across a crash is not guaranteed. Runtime audit failures queue `audit_unavailable`
   in the credential outbox and attempt immediate notification; delivery retries
