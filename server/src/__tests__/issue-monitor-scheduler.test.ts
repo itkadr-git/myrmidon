@@ -443,6 +443,35 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     }
   });
 
+  it("does not wake an old claim when new evidence replaces it at the same schedule", async () => {
+    const { issueId, nextCheckAt } = await seedFixture();
+    const newerClaimAt = new Date(nextCheckAt.getTime() + 60_000);
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_replace_claim_with_evidence() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_wake_requested_at = '${newerClaimAt.toISOString()}'::timestamptz,
+            monitor_notes = 'new evidence'
+          WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_replace_claim_with_evidence AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_replace_claim_with_evidence();
+    `));
+    try {
+      const result = await heartbeatService(db, { executesRuns: false }).tickTimers(nextCheckAt);
+      expect(result.enqueued).toBe(0);
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(after!.monitorWakeRequestedAt?.toISOString()).toBe(newerClaimAt.toISOString());
+      expect(after!.monitorNotes).toBe("new evidence");
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER test_replace_claim_with_evidence ON issues; DROP FUNCTION test_replace_claim_with_evidence();"));
+      await db.delete(heartbeatRuns);
+    }
+  });
+
   it("preserves a concurrent reschedule when an old monitor is deferred for CI", async () => {
     const { companyId, issueId, nextCheckAt } = await seedFixture();
     const rescheduledAt = new Date(nextCheckAt.getTime() + 3_600_000);
