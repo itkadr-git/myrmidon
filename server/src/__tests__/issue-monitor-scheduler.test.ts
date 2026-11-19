@@ -435,6 +435,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       expect(after!.monitorNextCheckAt?.toISOString()).toBe(rescheduledAt.toISOString());
     } finally {
       await db.execute(sql.raw("DROP TRIGGER test_reschedule_stale_review_claim ON issues; DROP FUNCTION test_reschedule_stale_review_claim();"));
+      await db.delete(heartbeatRuns);
     }
   });
 
@@ -466,6 +467,32 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       expect(normalizeIssueExecutionPolicy(after!.executionPolicy)?.monitor?.nextCheckAt).toBe(rescheduledAt.toISOString());
     } finally {
       await db.execute(sql.raw("DROP TRIGGER test_reschedule_on_claim ON issues; DROP FUNCTION test_reschedule_on_claim();"));
+    }
+  });
+
+  it("does not release a newer claim when a manual wake fails", async () => {
+    const { issueId, nextCheckAt } = await seedFixture({ agentStatus: "paused" });
+    const newerClaimAt = new Date(nextCheckAt.getTime() + 60_000);
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_replace_manual_monitor_claim() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_wake_requested_at = '${newerClaimAt.toISOString()}'::timestamptz
+          WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_replace_manual_monitor_claim AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_replace_manual_monitor_claim();
+    `));
+    try {
+      await expect(heartbeatService(db).triggerIssueMonitor(issueId, {
+        now: nextCheckAt, actorType: "user", actorId: "local-board",
+      })).rejects.toThrow();
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(after!.monitorWakeRequestedAt?.toISOString()).toBe(newerClaimAt.toISOString());
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER test_replace_manual_monitor_claim ON issues; DROP FUNCTION test_replace_manual_monitor_claim();"));
     }
   });
 
