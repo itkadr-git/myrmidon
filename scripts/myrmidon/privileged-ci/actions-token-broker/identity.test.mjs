@@ -44,6 +44,13 @@ test('rejects nonnumeric actor identity even when policy matches', async () => {
   await assert.rejects(verifyIdentity(jwt(invalidClaims), { policy: invalidPolicy, loadKeys: async () => [jwk], claimOnce: async () => true, now }));
 });
 
+test('rejects a matching caller workflow SHA that is not a full commit hash', async () => {
+  for (const sha of ['main', 'abc123', 'g'.repeat(40)]) {
+    const configured = { ...policy, workflow_sha: sha };
+    await assert.rejects(verifyIdentity(jwt({ ...claims, workflow_sha: sha }), { policy: configured, loadKeys: async () => [jwk], claimOnce: async () => true, now }));
+  }
+});
+
 test('rejects excessively long-lived or stale signed identities', async () => {
   const verify = token => verifyIdentity(token, { policy, loadKeys: async () => [jwk], claimOnce: async () => true, now });
   await assert.rejects(verify(jwt({ ...claims, exp: now + 365 * 86400 })));
