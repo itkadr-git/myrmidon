@@ -77,6 +77,28 @@ test('runtime replay anchor failure alerts and fences issuance after anchor reco
   assert.deepEqual(alerts, ['replay_unavailable']);
 });
 
+test('concurrent audit failure during reservation alerts on the fenced intent', async () => {
+  let release, reserved;
+  const waiting = new Promise(resolve => { reserved = resolve; });
+  const barrier = new Promise(resolve => { release = resolve; });
+  const queued = [], alerts = [];
+  let calls = 0;
+  const store = { reserveIssuance: async () => { reserved(); await barrier; },
+    queueAlert: async event => queued.push(event) };
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    installation: { issue: async () => { calls++; } },
+    audit: async event => { if (event === 'exchange_failed') throw new Error('audit unavailable'); },
+    alert: async event => alerts.push(event) });
+  const exchange = broker.exchange(jwt('reservation-race'));
+  await waiting;
+  await assert.rejects(broker.exchange('invalid'));
+  release();
+  await assert.rejects(exchange);
+  assert.equal(calls, 0);
+  assert.ok(queued.includes('issuance_ambiguous'));
+  assert.ok(alerts.includes('issuance_ambiguous'));
+});
+
 test('identity expiring during reservation never contacts installation API', async () => {
   let calls = 0;
   const store = { reserveIssuance: async () => { await new Promise(resolve => setTimeout(resolve, 2100)); },
