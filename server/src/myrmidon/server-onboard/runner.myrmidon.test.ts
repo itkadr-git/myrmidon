@@ -3,7 +3,7 @@ import { Server } from "ssh2";
 import { describe, expect, it } from "vitest";
 import { runOnboardOnce } from "./runner.js";
 
-it("runs the claimed job through real SSH and rejects a changed host before authentication", async () => {
+it.each(["changed", "rejected"] as const)("runs real SSH and rejects a %s host identity before authentication", async (reason) => {
   const hostKey = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs1", format: "pem" });
   let attempts = 0;
   const server = new Server({ hostKeys: [hostKey] }, (client) => {
@@ -18,9 +18,10 @@ it("runs the claimed job through real SSH and rejects a changed host before auth
     const path = new URL(String(input)).pathname;
     if (path.endsWith("/claim")) return Response.json({
       job: { id: "job", companyId: "company" },
-      server: { hostname: "127.0.0.1", port: address.port, username: "test", hostKeyFingerprint: "SHA256:not-the-host-key" },
+      server: { hostname: "127.0.0.1", port: address.port, username: "test", hostKeyFingerprint: reason === "changed" ? "SHA256:not-the-host-key" : null },
       steps: ["connect"], options: { keepPassword: true }, secretValues: { bootstrapPassword: "test-password" },
     });
+    if (path.endsWith("/host-key")) return Response.json({ accepted: false });
     if (path.endsWith("/report")) { reports.push(JSON.parse(String(init?.body))); return Response.json({}); }
     throw new Error(`unexpected request: ${path}`);
   };

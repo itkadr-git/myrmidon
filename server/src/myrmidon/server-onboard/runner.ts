@@ -25,8 +25,9 @@ export async function runOnboardOnce(options: RunnerOptions): Promise<boolean> {
   await executor.execute(claim, {
     async pinHostKey(fingerprint) {
       try {
-        await post(`${jobPath}/host-key`, { companyId: options.companyId, fingerprint });
-        return true;
+        const response = await post(`${jobPath}/host-key`, { companyId: options.companyId, fingerprint });
+        const result: unknown = await response.json();
+        return typeof result === "object" && result !== null && "accepted" in result && result.accepted === true;
       } catch { return false; }
     },
     async reportStep(step, result, detail) {
