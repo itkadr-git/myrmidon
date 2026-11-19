@@ -40,6 +40,11 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Title/body of the triggering event itself: the gate binds its
+          # result to these values and fails closed when the live PR has
+          # moved on (stale or overlapping edited runs).
+          EVENT_TITLE: ${{ github.event.pull_request.title }}
+          EVENT_BODY: ${{ github.event.pull_request.body }}
           MYRMIDON_API_URL: ${{ secrets.MYRMIDON_ACCEPTANCE_API_URL }}
           MYRMIDON_API_KEY: ${{ secrets.MYRMIDON_ACCEPTANCE_API_KEY }}
           MYRMIDON_COMPANY_ID: ${{ vars.MYRMIDON_ACCEPTANCE_COMPANY_ID }}
