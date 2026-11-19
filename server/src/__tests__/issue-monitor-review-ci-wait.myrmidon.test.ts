@@ -389,6 +389,41 @@ describeEmbeddedPostgres("issue monitor that waits for the CI of a review (Revie
     await db.delete(heartbeatRuns);
   });
 
+  it("preserves a concurrent review budget backoff after a claimed CI lookup finishes", async () => {
+    const { issueId } = await seed();
+    const backoffAt = new Date(TICK_AT.getTime() + 61 * 60_000);
+    let releaseLookup!: () => void;
+    let lookupStarted!: () => void;
+    const started = new Promise<void>((resolve) => { lookupStarted = resolve; });
+    const release = new Promise<void>((resolve) => { releaseLookup = resolve; });
+    mockReviewCi.resolveCi.mockImplementationOnce(async () => {
+      lookupStarted();
+      await release;
+      return { state: "pending", pullRequestUrl: PR_URL, headSha: HEAD };
+    });
+    const scheduler = heartbeatService(db, { executesRuns: false });
+    const staleTick = scheduler.tickTimers(TICK_AT);
+    try {
+      await started;
+      // Model the persisted budget deferral from the concurrent review PATCH.
+      await db.update(issues).set({
+        monitorNextCheckAt: backoffAt,
+        monitorWakeRequestedAt: null,
+        executionState: sql`jsonb_set(${issues.executionState}, '{reviewCiBudgetDeferred}', 'true'::jsonb, true)`,
+      }).where(eq(issues.id, issueId));
+    } finally {
+      releaseLookup();
+    }
+    expect((await staleTick).enqueued).toBe(0);
+    const [deferred] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(deferred!.monitorNextCheckAt?.toISOString()).toBe(backoffAt.toISOString());
+    expect(deferred!.monitorWakeRequestedAt).toBeNull();
+    expect(deferred!.executionState).toMatchObject({ reviewCiBudgetDeferred: true });
+    expect(await activityOf(issueId, "issue.monitor_deferred")).toHaveLength(0);
+    expect((await scheduler.tickTimers(new Date(backoffAt.getTime() - 1))).enqueued).toBe(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+  });
+
   it("does not defer a replacement monitor when the stale claim hits the review wake quota", async () => {
     const { companyId, issueId } = await seed();
     const replacementAt = new Date(TICK_AT.getTime() + 3_600_000);
