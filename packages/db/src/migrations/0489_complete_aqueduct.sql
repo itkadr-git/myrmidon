@@ -273,4 +273,40 @@ $trg$ LANGUAGE plpgsql;--> statement-breakpoint
 CREATE TRIGGER "issue_acceptance_epochs_no_truncate_trg"
   BEFORE TRUNCATE ON "issue_acceptance_epochs"
   FOR EACH STATEMENT EXECUTE FUNCTION "trg_issue_acceptance_epochs_no_truncate"();--> statement-breakpoint
+-- Validate the final graph, not the intermediate state while the link trigger
+-- updates the document. This also rejects direct changes to the owner column.
+CREATE OR REPLACE FUNCTION "check_acceptance_document_binding"() RETURNS trigger AS $check$
+DECLARE
+  v_document_id uuid;
+  v_owner uuid;
+  v_count bigint;
+BEGIN
+  IF TG_TABLE_NAME = 'documents' THEN
+    v_document_id := COALESCE(NEW."id", OLD."id");
+  ELSE
+    v_document_id := COALESCE(NEW."document_id", OLD."document_id");
+  END IF;
+  SELECT "acceptance_issue_id" INTO v_owner FROM "documents" WHERE "id" = v_document_id;
+  IF NOT FOUND THEN
+    RETURN NULL;
+  END IF;
+  SELECT count(*) INTO v_count FROM "issue_documents"
+    WHERE "document_id" = v_document_id AND "key" = 'acceptance-scenarios';
+  IF (v_owner IS NULL AND v_count <> 0) OR
+     (v_owner IS NOT NULL AND (v_count <> 1 OR NOT EXISTS (
+       SELECT 1 FROM "issue_documents" l JOIN "documents" d ON d."id" = l."document_id"
+       WHERE l."document_id" = v_document_id AND l."key" = 'acceptance-scenarios'
+         AND l."issue_id" = v_owner AND l."company_id" = d."company_id"
+     ))) THEN
+    RAISE EXCEPTION 'invalid acceptance document binding for %', v_document_id;
+  END IF;
+  RETURN NULL;
+END;
+$check$ LANGUAGE plpgsql;--> statement-breakpoint
+CREATE CONSTRAINT TRIGGER "acceptance_document_binding_check"
+  AFTER INSERT OR UPDATE ON "documents" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION "check_acceptance_document_binding"();--> statement-breakpoint
+CREATE CONSTRAINT TRIGGER "acceptance_link_binding_check"
+  AFTER INSERT OR UPDATE OR DELETE ON "issue_documents" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION "check_acceptance_document_binding"();--> statement-breakpoint
 ALTER TABLE "issues" DROP COLUMN "acceptance_snapshot_version";
