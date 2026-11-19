@@ -202,6 +202,38 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
       "budget" in fields && JSON.stringify(fields.budget) === JSON.stringify({ used: 3, cap: 2000, windowMinutes: 60 }))).toBe(true);
     expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, success.body])).not.toContain(canary);
   });
+  it("defers a triggered review monitor after a budget-exhausted write without changing the review", async () => {
+    const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Review budget retry");
+    const author = randomUUID(), reviewer = randomUUID(), issueId = randomUUID(), runId = randomUUID(), stageId = randomUUID();
+    const base = { companyId, status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} };
+    await ctx.db.insert(agents).values([
+      { ...base, id: author, name: "Author", role: "engineer" },
+      { ...base, id: reviewer, name: "Reviewer", role: "reviewer" },
+    ]);
+    const lastTriggeredAt = new Date(Date.now() - 11 * 60_000);
+    await ctx.db.insert(issues).values({
+      id: issueId, companyId, title: "Exhausted review retry", status: "in_review", priority: "critical",
+      createdByAgentId: author, assigneeAgentId: author,
+      executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewer, userId: null }] }] },
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewer, userId: null }, returnAssignee: { type: "agent", agentId: author, userId: null }, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null, monitor: { status: "triggered", nextCheckAt: null, lastTriggeredAt: lastTriggeredAt.toISOString(), attemptCount: 1, notes: "Review CI wait", scheduledBy: "assignee", serviceName: "Review CI wait", externalRef: null, timeoutAt: null, maxAttempts: null, recoveryPolicy: null, clearedAt: null, clearReason: null } },
+      monitorLastTriggeredAt: lastTriggeredAt, monitorAttemptCount: 1,
+    });
+    await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewer, status: "succeeded", contextSnapshot: { issueId } });
+    await ctx.db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", title: "Synthetic PR", url: "https://github.com/acme/app/pull/7", status: "open", isPrimary: true, metadata: { repo: "acme/app", number: 7 } });
+    const [clock] = await ctx.db.execute(sql`select floor(extract(epoch from clock_timestamp()) / 60)::bigint as minute`);
+    const minute = Number(clock?.minute), start = new Date(minute * 60_000);
+    const [carrier] = await ctx.db.select({ id: companies.id }).from(companies).orderBy(companies.createdAt).limit(1);
+    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: carrier.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
+    const app = routeApp(ctx.db, { type: "agent", agentId: reviewer, companyId, source: "agent_key", runId } as never, issueRoutes);
+    const rejected = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: preserve this finding" });
+    expect(rejected.status, JSON.stringify(rejected.body)).toBe(422);
+    expect(transport).not.toHaveBeenCalled();
+    const [after] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+    expect(after.status).toBe("in_review");
+    expect(after.assigneeAgentId).toBe(author);
+    expect(after.monitorNextCheckAt?.getTime()).toBeGreaterThan(Date.now() + 10 * 60_000);
+  });
+
   it("rejects a verdict on stored wake evidence alone when the review budget is exhausted (OPE-15114)", async () => {
     const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Shared wake evidence");
     const author = randomUUID(), reviewer = randomUUID(), issueId = randomUUID(), runId = randomUUID(), stageId = randomUUID();
