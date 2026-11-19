@@ -288,9 +288,19 @@ process.stdout.write('token=' + (process.env.GH_TOKEN || '') + ' args=' + proces
 
   it("forwards positional repo view and clone targets instead of origin", async () => {
     const { bin, repo, requests, env } = await stagedRun({ originUrl: "https://github.com/owner-a/repo-a.git" });
-    for (const command of ["view", "clone"]) {
+    for (const args of [
+      ["repo", "view", "owner-b/repo-b"],
+      ["repo", "clone", "owner-b/repo-b"],
+      ["repo", "view", "--json", "name", "owner-b/repo-b"],
+      ["repo", "view", "--web", "owner-b/repo-b"],
+      ["repo", "clone", "--no-upstream", "owner-b/repo-b", "local/dir"],
+      ["repo", "view", "--template", "other/value", "owner-b/repo-b"],
+      ["repo", "clone", "--branch", "other/value", "owner-b/repo-b"],
+      ["repo", "clone", "https://github.com/owner-b/repo-b.git"],
+      ["repo", "clone", "git@github.com:owner-b/repo-b.git"],
+    ]) {
       requests.length = 0;
-      await exec(path.join(bin, "gh"), ["repo", command, "owner-b/repo-b"], { cwd: repo, env });
+      await exec(path.join(bin, "gh"), args, { cwd: repo, env });
       expect(requests.map((request) => JSON.parse(request.body))).toEqual([{ repository: "owner-b/repo-b" }]);
     }
   });

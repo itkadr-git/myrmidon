@@ -252,9 +252,19 @@ describe("docker/bot-runtime/github-broker/gh", () => {
 
   it("forwards positional repo view and clone targets instead of origin", async () => {
     reply = { status: 200, body: available };
-    for (const command of ["view", "clone"]) {
+    for (const args of [
+      ["repo", "view", "owner-b/repo-b"],
+      ["repo", "clone", "owner-b/repo-b"],
+      ["repo", "view", "--json", "name", "owner-b/repo-b"],
+      ["repo", "view", "--web", "owner-b/repo-b"],
+      ["repo", "clone", "--no-upstream", "owner-b/repo-b", "local/dir"],
+      ["repo", "view", "--template", "other/value", "owner-b/repo-b"],
+      ["repo", "clone", "--branch", "other/value", "owner-b/repo-b"],
+      ["repo", "clone", "https://github.com/owner-b/repo-b.git"],
+      ["repo", "clone", "git@github.com:owner-b/repo-b.git"],
+    ]) {
       requests = [];
-      const result = await run(GH_WRAPPER, ["repo", command, "owner-b/repo-b"], {
+      const result = await run(GH_WRAPPER, args, {
         env: { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` }, cwd: ROOT,
       });
       assert.equal(result.code, 0, result.stderr);
