@@ -90,6 +90,10 @@ test('capture returns a revision-pinned combined projection and rejects a stale 
   assert.equal(verified.etag, capture.etag);
   assert.deepEqual(JSON.parse(verified.body), JSON.parse(capture.body));
   for (const invalid of ['*', 'W/"rev-1"', '"rev-1", "rev-2"']) assert.equal((await request(invalid)).status, 412);
+  const issueStatus = await new Promise((resolve, reject) => get({ host: '127.0.0.1', port: server.address().port, path: '/api/issues/OPE-123', headers: { authorization: `Bearer ${token}`, 'if-match': '"stale"' } }, (res) => {
+    res.resume(); res.on('end', () => resolve(res.statusCode));
+  }).on('error', reject));
+  assert.equal(issueStatus, 412);
   revision = 'rev-2';
   const stale = await request(capture.etag);
   assert.ok(stale.status === 409 || stale.status === 412);
