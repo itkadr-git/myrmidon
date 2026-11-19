@@ -79,12 +79,12 @@ describe("myrmidon(OPE-12932) findRunScopedGatewayKeyRef", () => {
     ).toBeNull();
   });
 
-  it("returns null when the key env name is not configured", async () => {
-    getByNameMock.mockResolvedValue(null);
-    expect(
-      await findRunScopedGatewayKeyRef({} as never, COMPANY_ID, AGENT_ID, {}),
-    ).toBeNull();
-    expect(getByNameMock).not.toHaveBeenCalled();
+  it("uses the lifecycle default env name when no override is configured", async () => {
+    getByNameMock.mockResolvedValue({ id: SECRET_ID, status: "active", scope: "company" });
+    expect(await findRunScopedGatewayKeyRef({} as never, COMPANY_ID, RUN_ID, {})).toEqual({
+      envKey: "MYRMIDON_LLM_API_KEY",
+      secretRef: RUN_SCOPED_REF,
+    });
   });
 
   it("skips an inactive or user-scoped secret", async () => {
