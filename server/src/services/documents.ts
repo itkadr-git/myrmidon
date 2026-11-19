@@ -234,6 +234,7 @@ export function documentService(db: Db) {
             .select({
               id: documents.id,
               companyId: documents.companyId,
+              linkCompanyId: issueDocuments.companyId,
               issueId: issueDocuments.issueId,
               key: issueDocuments.key,
               title: documents.title,
@@ -258,6 +259,9 @@ export function documentService(db: Db) {
             .then((rows) => rows[0] ?? null);
 
           if (existing) {
+            if (existing.companyId !== issue.companyId || existing.linkCompanyId !== issue.companyId) {
+              throw conflict("Issue document company mismatch");
+            }
             if (existing.lockedAt) {
               if (input.lockedDocumentStrategy === "create_new_document") {
                 const issueDocumentKeys = await tx
