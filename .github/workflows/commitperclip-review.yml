@@ -5,11 +5,14 @@ on:
     types: [opened, synchronize, reopened, edited]
 
 # Always runs from base branch context — never executes PR code.
-# pull_request_target gives access to secrets for untrusted fork PRs.
+# The gates only read PR data and post/update a single issue comment, so the
+# built-in GITHUB_TOKEN with minimal permissions is sufficient. No App
+# private key (COMMITPERCLIP_KEY) reaches this public runner.
 
 permissions:
-  pull-requests: write
   contents: read
+  pull-requests: read
+  issues: write
 
 jobs:
   review:
@@ -34,22 +37,13 @@ jobs:
           node-version: '24'
           package-manager-cache: false
 
-      - name: Generate commitperclip token
-        id: token
-        run: |
-          TOKEN=$(node .github/scripts/get-bot-token.mjs)
-          echo "::add-mask::$TOKEN"
-          echo "value=$TOKEN" >> $GITHUB_OUTPUT
-        env:
-          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
-
       - name: Run quality gates
         id: quality
         if: github.event.pull_request.user.login != 'dependabot[bot]'
         run: node .github/scripts/run-quality-gates.mjs
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ steps.token.outputs.value }}
+          GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
