@@ -15,7 +15,8 @@ export function createAlertSink({ url, ca, cert, key, timeoutMs = 5000, lookup }
         res.on('error', reject);
         res.on('end', () => res.statusCode >= 200 && res.statusCode < 300 ? resolve() : reject(new Error('alert delivery failed')));
       });
-      req.setTimeout(timeoutMs, () => req.destroy(new Error('alert delivery timeout')));
+      const timer = setTimeout(() => req.destroy(new Error('alert delivery timeout')), timeoutMs);
+      req.on('close', () => clearTimeout(timer));
       req.on('error', reject);
       req.end(body);
     });
