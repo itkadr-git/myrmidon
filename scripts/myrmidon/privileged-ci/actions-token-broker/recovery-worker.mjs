@@ -7,8 +7,13 @@ export function createRecoveryWorker({ store, revoke, alert, anchoredPending = f
       if (active) throw new Error('recovery already running');
       active = true;
       try {
-        const result = await store.revokeRetained(revoke);
-        let pending = true, alertFailed = false;
+        let result, recoveryReadFailed = false;
+        try { result = await store.revokeRetained(revoke); } catch {
+          result = { revoked: 0, failed: 1 };
+          recoveryReadFailed = true;
+          try { await alert('credential_recovery_failed'); } catch { /* Independent monitoring is required. */ }
+        }
+        let pending = true, alertFailed = recoveryReadFailed;
         try { pending = anchoredPending || (await store.pendingIssuances()).length > 0; } catch {
           // Unknown reservation state remains fenced while known-token retries continue.
           alertFailed = true;

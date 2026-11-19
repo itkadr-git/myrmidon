@@ -87,7 +87,9 @@ secret management, least privilege and key rotation.
   outbox writes or reads fail, without starting issuance; it retries unqueued alerts in
   memory and attempts direct delivery. A reservation read failure in the recovery
   worker also remains fenced and retries known-token revocation; its direct failure
-  alert is best effort. A crash can still lose those in-memory
+  alert is best effort. A credential enumeration failure similarly alerts and keeps
+  the audit-failure recovery loop retrying rather than exiting after one attempt.
+  A crash can still lose those in-memory
   alerts, so external monitoring is required. Direct notification is best effort,
   not a durable replacement.
   An interrupted pass needs an external restart/supervisor to retry; an unknown
