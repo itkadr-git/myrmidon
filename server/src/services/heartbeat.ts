@@ -13148,12 +13148,17 @@ export function heartbeatService(
               ? REVIEW_CI_WAIT_INTERVAL_MS
               : Math.min(10 * 60_000, 30_000 * Math.pow(2, Math.min(nextAttemptCount - 1, 4)));
             const nextCheckAt = new Date(input.now.getTime() + backoffMs);
-            await db.update(issues).set({
+            const [deferred] = await db.update(issues).set({
               monitorNextCheckAt: nextCheckAt,
               monitorAttemptCount: nextAttemptCount,
               monitorWakeRequestedAt: null,
               updatedAt: input.now,
-            }).where(eq(issues.id, claimed.id));
+            }).where(and(
+              eq(issues.id, claimed.id),
+              eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+              eq(issues.monitorWakeRequestedAt, input.now),
+            )).returning({ id: issues.id });
+            if (!deferred) return { outcome: "skipped" as const, reason: "monitor_changed" };
             await logActivity(db, {
               companyId: claimed.companyId,
               actorType: input.actorType,
