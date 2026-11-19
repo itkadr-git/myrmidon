@@ -327,6 +327,7 @@ describeEmbeddedPostgres("issue monitor that waits for subtasks", () => {
       expect((await heartbeat.tickTimers(at("13:31"))).enqueued).toBe(1);
       expect((await heartbeat.tickTimers(at("13:31"))).enqueued).toBe(0);
       expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+      await db.delete(heartbeatRuns);
     } finally {
       await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_replace_idle_monitor ON issues; DROP FUNCTION IF EXISTS test_replace_idle_monitor();"));
     }
