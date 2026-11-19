@@ -2,7 +2,7 @@
 
 > Русская версия: [Installation.ru](Installation.ru)
 
-> The pinned command below stays on rc.13 until a newer release is promoted. Production runs the rc.20 candidate (health answers commit `2c9ebcf1`); the next candidate is proposed as the untagged `rel/1.6.6-fixes` merge `2b5dadeb` — not deployed, not a stable release. See the [operator notes](../myrmidon/releases/1.6.9.md).
+> The pinned command below stays on rc.13 until a newer release is promoted. Production runs the rc.21 candidate (tag `myr-v1.6.9-rc.21`, health answers commit `2b5dadeb`); it is a release candidate, not a stable release. See the [operator notes](../myrmidon/releases/1.6.9.md).
 
 One command brings a clean server to a working Myrmidon board. Copy it onto
 the server and run it — the installer does the rest itself:

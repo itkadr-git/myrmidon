@@ -2,7 +2,7 @@
 
 > English version: [Upgrading-and-rollback](Upgrading-and-rollback)
 
-> Команда ниже закреплена на rc.13 до promotion более нового выпуска. Production работает на кандидате rc.20 (health отвечает коммитом `2c9ebcf1`); следующий кандидат предложен как нетегированный релиз-мерж `rel/1.6.6-fixes` `2b5dadeb` — не выкачан, не stable. См. [заметки оператора](../myrmidon/releases/1.6.9.ru.md).
+> Команда ниже закреплена на rc.13 до promotion более нового выпуска. Production работает на кандидате rc.21 (тег `myr-v1.6.9-rc.21`, health отвечает коммитом `2b5dadeb`); это release candidate, не stable. См. [заметки оператора](../myrmidon/releases/1.6.9.ru.md).
 
 ## Обновление установщиком (обычный путь)
 
