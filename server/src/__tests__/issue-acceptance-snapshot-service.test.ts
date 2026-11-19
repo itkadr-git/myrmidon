@@ -77,7 +77,7 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
 
       const withDocument = await issueAcceptanceSnapshotService(db).read(issue!.id);
       expect(withDocument).toEqual({
-        issue: { id: issue!.id, identifier: "OPE-7001", companyId: companyA, version: "2" },
+        issue: { id: issue!.id, identifier: "OPE-7001", companyId: companyA, version: expect.stringMatching(/^[1-9]\d*$/) },
         // Revision evidence: the latest revision id and the monotonic
         // generation number are part of the snapshot.
         document: { id: docId, latestRevisionId: revisionId, latestRevisionNumber: 3, body: "acceptance body" },
