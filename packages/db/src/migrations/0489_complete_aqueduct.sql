@@ -112,6 +112,25 @@ $trg$ LANGUAGE plpgsql;--> statement-breakpoint
 CREATE TRIGGER "acceptance_link_issue_company_trg"
   BEFORE INSERT OR UPDATE ON "issue_documents"
   FOR EACH ROW EXECUTE FUNCTION "trg_acceptance_link_issue_company"();--> statement-breakpoint
+CREATE OR REPLACE FUNCTION "trg_acceptance_company_move_guard"() RETURNS trigger AS $trg$
+BEGIN
+  IF NEW."company_id" IS DISTINCT FROM OLD."company_id" AND EXISTS (
+    SELECT 1 FROM "issue_documents"
+    WHERE "key" = 'acceptance-scenarios'
+      AND ((TG_TABLE_NAME = 'issues' AND "issue_id" = OLD."id")
+        OR (TG_TABLE_NAME = 'documents' AND "document_id" = OLD."id"))
+  ) THEN
+    RAISE EXCEPTION 'cannot move a linked acceptance % to another company', TG_TABLE_NAME;
+  END IF;
+  RETURN NEW;
+END;
+$trg$ LANGUAGE plpgsql;--> statement-breakpoint
+CREATE TRIGGER "issue_acceptance_company_move_guard_trg"
+  BEFORE UPDATE OF "company_id" ON "issues"
+  FOR EACH ROW EXECUTE FUNCTION "trg_acceptance_company_move_guard"();--> statement-breakpoint
+CREATE TRIGGER "document_acceptance_company_move_guard_trg"
+  BEFORE UPDATE OF "company_id" ON "documents"
+  FOR EACH ROW EXECUTE FUNCTION "trg_acceptance_company_move_guard"();--> statement-breakpoint
 CREATE OR REPLACE FUNCTION "trg_issue_documents_acceptance_epoch"() RETURNS trigger AS $trg$
 BEGIN
   IF TG_OP = 'INSERT' THEN
