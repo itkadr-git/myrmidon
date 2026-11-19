@@ -506,11 +506,24 @@ title="Myrmidon $version$title_suffix"
 prerelease_args=()
 ((prerelease)) && prerelease_args+=(--prerelease)
 if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+  release_exists=1
+else
+  release_exists=0
+fi
+# Re-read the ref immediately before the first write; a moved or deleted tag
+# invalidates the gates and artifacts computed from the original checkout.
+current_ref="$(gh api "repos/$repo/git/ref/tags/$tag" 2>/dev/null)" \
+  || die "tag $tag changed or disappeared — NOT publishing"
+current_type="$(jq -r '.object.type // empty' <<<"$current_ref")"
+current_sha="$(jq -r '.object.sha // empty' <<<"$current_ref")"
+[[ "$current_type" == "$object_type" && "$current_sha" == "$object_sha" ]] \
+  || die "tag $tag changed since verification — NOT publishing"
+if ((release_exists)); then
   log "release $tag already exists — updating (idempotent re-run, never --latest)"
   gh release edit "$tag" --repo "$repo" --title "$title" "${prerelease_args[@]}" \
     --notes-file release-body.md
 else
-  gh release create "$tag" --repo "$repo" --title "$title" "${prerelease_args[@]}" \
+  gh release create "$tag" --verify-tag --repo "$repo" --title "$title" "${prerelease_args[@]}" \
     --notes-file release-body.md
 fi
 

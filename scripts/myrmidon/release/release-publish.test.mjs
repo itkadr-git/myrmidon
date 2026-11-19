@@ -89,7 +89,13 @@ case "$sub" in
     done
     body=""
     case "$url" in
-      *"/git/ref/tags/"*) body="$(cat "$SANDBOX/ref-tag.json")" ;;
+      *"/git/ref/tags/"*)
+        if [ -f "$SANDBOX/ref-read" ] && [ -f "$SANDBOX/ref-after.json" ]; then
+          body="$(cat "$SANDBOX/ref-after.json")"
+        else
+          body="$(cat "$SANDBOX/ref-tag.json")"
+          touch "$SANDBOX/ref-read"
+        fi ;;
       *"/git/tags/"*)     body="$(cat "$SANDBOX/tag-object.json")" ;;
       *"actions/runs?head_sha="*)
         # RELEASE-PUBLISH-WAIT: scripted progression — when $SANDBOX/runs-after.json
@@ -307,6 +313,15 @@ describe("publish-github-release.sh: checkout binding", () => {
     const result = runScript(sb, "myr-v1.6.0", { extraEnv: { CHECKOUT_SHA: TAG_OBJECT } });
     assert.notEqual(result.code, 0, result.out);
     assert.match(result.out, /checkout.*does not match.*tag commit/i);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("refuses all writes when the tag moves after initial resolution", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    fs.writeFileSync(path.join(sb.dir, "ref-after.json"), JSON.stringify({ object: { sha: TAG_OBJECT, type: "commit" } }));
+    const result = runScript(sb, "myr-v1.6.0");
+    assert.notEqual(result.code, 0, result.out);
+    assert.match(result.out, /tag.*changed/i);
     assert.equal(mutations(sb), "");
   });
 });
