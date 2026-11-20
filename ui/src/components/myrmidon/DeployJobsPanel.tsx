@@ -120,6 +120,19 @@ export function DeployJobsPanelView({
         {preview ? <PreviewCard preview={preview} /> : null}
       </div>
 
+      {state?.audit?.length ? (
+        <details className="text-sm" open>
+          <summary className="cursor-pointer text-muted-foreground">Release audit ({state.audit.length})</summary>
+          <ol className="mt-2 space-y-1 text-muted-foreground" data-testid="myrmidon-release-audit">
+            {state.audit.slice().reverse().map((event) => (
+              <li key={event.eventId}>
+                {new Date(event.at).toLocaleString(i18n.language)} — {event.event} — {event.status ?? "pending"}{event.detail ? ` — ${event.detail}` : ""}
+              </li>
+            ))}
+          </ol>
+        </details>
+      ) : null}
+
       {state?.history ? (
         <details className="text-sm">
           <summary className="cursor-pointer text-muted-foreground">{t("area.settings-bots-host-1.deploy-jobs-panel.previous", { count: state.history.length })}</summary>

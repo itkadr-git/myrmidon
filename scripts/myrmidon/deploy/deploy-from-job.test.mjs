@@ -103,6 +103,16 @@ function sandbox({ job = null, windowState = "on", health, predeployHealth } = {
   fs.writeFileSync(path.join(bin, "docker"), FAKE_DOCKER, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "git"), FAKE_GIT, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "curl"), FAKE_CURL, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "systemctl"), `#!/usr/bin/env bash
+case "$1" in
+  --version) echo systemd 255 ; exit 0 ;;
+  is-enabled|daemon-reload|enable|start) exit 0 ;;
+  *) exit 0 ;;
+esac
+`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "jq"), `#!/usr/bin/env bash
+exec /usr/bin/jq "$@"
+`, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   fs.writeFileSync(
     path.join(dir, "board-jobs.json"),
@@ -169,6 +179,10 @@ function sandbox({ job = null, windowState = "on", health, predeployHealth } = {
       "HEALTH_URL=http://127.0.0.1:3100/api/health",
       "HEALTH_TIMEOUT_SEC=2",
       "POLL_INTERVAL_SEC=1",
+      "DEPLOY_WAIT_SEC=1",
+      "MYRMIDON_DEPLOY_STEP_TIMEOUT_SEC=1",
+      "REPORT_DIR=" + path.join(dir, "state"),
+      `RELEASE_AUDIT_FILE=${path.join(dir, "state", "release-events.jsonl")}`,
       `STATE_DIR=${path.join(dir, "state")}`,
       `DUMP_DIR=${path.join(dir, "dumps")}`,
       `DUMP_COMMAND='head -c 2048 /dev/zero > "$DUMP_FILE"'`,
@@ -202,7 +216,7 @@ function run(sb, args) {
   const result = spawnSync(
     process.env.PATH.split(":").map((d) => path.join(d, "bash")).find((f) => fs.existsSync(f)),
     [path.join(HERE, "deploy-from-job.sh"), "--config", sb.config, ...args],
-    { env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir }, encoding: "utf8" },
+    { env: { ...process.env, BASH_ENV: "", ENV: "", PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir }, encoding: "utf8" },
   );
   return { code: result.status, out: `${result.stdout}${result.stderr}` };
 }
@@ -233,6 +247,12 @@ describe("deploy-from-job.sh", () => {
     assert.equal(r.phase, "health-ok");
     assert.equal(r.version, VERSION);
     assert.equal(r.commit, COMMIT);
+    const events = fs.readFileSync(path.join(sb.dir, "state", "release-events.jsonl"), "utf8")
+      .trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(events.map(({ event, status }) => [event, status]), [
+      ["deploy.intent", "planned"],
+      ["deploy.result", "succeeded"],
+    ]);
     // The image switch went through deploy.sh (pull + compose up).
     assert.match(calls(sb), new RegExp(`docker pull --quiet ${CI_IMAGE}@${NEW}`));
     assert.match(read(sb.override), new RegExp(`image: ${CI_IMAGE}@${NEW}`));
@@ -297,6 +317,14 @@ esac
     assert.match(r.detail, /rolled back to the previous image/);
     // The override points at the OLD image again — the board runs locally.
     assert.match(read(sb.override), new RegExp(`image: ${CI_IMAGE}@${OLD}`));
+    const events = fs.readFileSync(path.join(sb.dir, "state", "release-events.jsonl"), "utf8")
+      .trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(events.map(({ event, status }) => [event, status]), [
+      ["deploy.intent", "planned"],
+      ["deploy.result", "failed"],
+      ["rollback.intent", "planned"],
+      ["rollback.result", "succeeded"],
+    ]);
   });
 
   it("reports rollback-failed when the rollback itself fails (R5-C)", async () => {
@@ -313,6 +341,41 @@ esac
     assert.equal(r.phase, "rollback-failed");
     assert.match(r.detail, /rollback failed/);
     assert.match(r.detail, /maintenance stays on/);
+    const events = fs.readFileSync(path.join(sb.dir, "state", "release-events.jsonl"), "utf8")
+      .trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(events.map(({ event, status }) => [event, status]), [
+      ["deploy.intent", "planned"],
+      ["deploy.result", "failed"],
+      ["rollback.intent", "planned"],
+      ["rollback.result", "failed"],
+    ]);
+  });
+
+  it("does not replay a job whose intent was recorded before its report was written", () => {
+    const sb = sandbox({ job: { id: JOB_ID, status: "running", digest: NEW } });
+    const state = path.join(sb.dir, "state");
+    fs.mkdirSync(state, { recursive: true });
+    fs.writeFileSync(path.join(state, "release-events.jsonl"), `${JSON.stringify({ event: "deploy.intent", jobId: JOB_ID, digest: NEW, status: "planned" })}\n`);
+    const { out } = run(sb, ["--once"]);
+    assert.equal(report(sb).phase, "error", out);
+    assert.match(report(sb).detail, /reconcil/i);
+    assert.doesNotMatch(calls(sb), /docker pull/);
+    const events = read(path.join(state, "release-events.jsonl")).trim().split("\n");
+    assert.equal(events.length, 1);
+  });
+
+  it("does not replay an interrupted switch or rollback without reconciliation", () => {
+    for (const phase of ["switching", "rolling-back"]) {
+      const sb = sandbox({ job: { id: JOB_ID, status: "running", digest: NEW } });
+      const state = path.join(sb.dir, "state");
+      fs.mkdirSync(state, { recursive: true });
+      fs.writeFileSync(path.join(state, `job-${JOB_ID}.json`), JSON.stringify({ jobId: JOB_ID, phase }));
+      const { out } = run(sb, ["--once"]);
+      assert.equal(report(sb).phase, "error", out);
+      assert.match(report(sb).detail, /reconcil/i);
+      assert.doesNotMatch(calls(sb), /docker pull/);
+      assert.match(read(sb.override), new RegExp(`image: ${CI_IMAGE}@${OLD}`));
+    }
   });
 
   it("waits until the maintenance window is on before switching", () => {
@@ -411,8 +474,43 @@ esac
     const result = spawnSync(
       process.env.PATH.split(":").map((d) => path.join(d, "bash")).find((f) => fs.existsSync(f)),
       [path.join(HERE, "deploy-from-job.sh"), "--config", sb.config, "--once"],
-      { env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir }, encoding: "utf8" },
+      { env: { ...process.env, BASH_ENV: "", ENV: "", PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir }, encoding: "utf8" },
     );
     assert.ok(!(result.stdout || "").includes("deploy scripts at"), result.stdout);
+  });
+
+  it("does not publish success when the deploy result audit fails", () => {
+    const sb = sandbox({ job: { id: JOB_ID, status: "maintenance_on", digest: NEW } });
+    fs.writeFileSync(path.join(sb.bin, "jq"), `#!/usr/bin/env bash\ncase " $* " in *" deploy.result "*) exit 1 ;; esac\nexec /usr/bin/jq "$@"\n`, { mode: 0o755 });
+    const { out } = run(sb, ["--once"]);
+    assert.equal(report(sb).phase, "error", out);
+    assert.match(report(sb).detail, /audit|reconcil/i);
+    assert.match(read(sb.override), new RegExp(`image: ${CI_IMAGE}@${NEW}`));
+  });
+
+  it("does not roll back without a recorded rollback intent", () => {
+    const sb = sandbox({ job: { id: JOB_ID, status: "maintenance_on", digest: NEW }, health: { status: "ok", version: "0.0.0", commit: COMMIT } });
+    fs.writeFileSync(path.join(sb.bin, "jq"), `#!/usr/bin/env bash\ncase " $* " in *" rollback.intent "*) exit 1 ;; esac\nexec /usr/bin/jq "$@"\n`, { mode: 0o755 });
+    const { out } = run(sb, ["--once"]);
+    assert.equal(report(sb).phase, "error", out);
+    assert.match(report(sb).detail, /audit|reconcil/i);
+    assert.doesNotMatch(calls(sb), new RegExp(`docker pull --quiet ${CI_IMAGE}@${OLD}`));
+  });
+
+  it("reports error and halts before switching when recording deploy intent fails", () => {
+    const sb = sandbox({ job: { id: JOB_ID, status: "maintenance_on", digest: NEW } });
+    // Fail the intent write itself, after the replay guard has inspected the journal.
+    fs.writeFileSync(path.join(sb.bin, "jq"), `#!/usr/bin/env bash\ncase " $* " in *" deploy.intent "*) exit 1 ;; esac\nexec /usr/bin/jq "$@"\n`, { mode: 0o755 });
+    const { code, out } = run(sb, ["--once"]);
+    assert.equal(code, 0, out);
+    assert.match(out, /could not record deploy intent/);
+    const r = report(sb);
+    assert.equal(r.jobId, JOB_ID);
+    assert.equal(r.phase, "error");
+    assert.match(r.detail, /failed to record deploy intent/);
+    // Fail-closed verification: deploy.sh was never executed, no image pull or switch
+    assert.doesNotMatch(calls(sb), /docker pull/);
+    assert.doesNotMatch(calls(sb), /docker compose/);
+    assert.match(read(sb.override), new RegExp(`image: ${CI_IMAGE}@${OLD}`));
   });
 });
