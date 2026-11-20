@@ -14,6 +14,13 @@ const TARGET_FILES = [
 ];
 
 describe("lazy imports for jsdom and @chat-adapter/discord", () => {
+  it("does not eagerly import Discord when loading the chat runtime", () => {
+    const content = fs.readFileSync(path.join(HERE, "chat-sdk-runtime.ts"), "utf8");
+    expect(content).not.toMatch(
+      /^import\s+(?!type\b)[^;]*?from\s+["']@chat-adapter\/discord["']/m,
+    );
+  });
+
   it("has no top-level value imports of jsdom or @chat-adapter/discord in targeted files", () => {
     // Regex matches any top-level import from jsdom or @chat-adapter/discord that is NOT an 'import type'
     const topLevelValueImportRegex =
