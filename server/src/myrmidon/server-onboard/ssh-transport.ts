@@ -61,7 +61,7 @@ export class OnboardSshTransport implements SshExecutor {
         let stdout = ""; let stderr = "";
         stream.on("data", (data: Buffer) => { stdout += data.toString(); });
         stream.stderr.on("data", (data: Buffer) => { stderr += data.toString(); });
-        stream.once("error", (error) => { cleanup(); reject(error); });
+        stream.once("error", (error: Error) => { cleanup(); reject(error); });
         stream.once("close", (code: number | undefined, signal: string | undefined) => {
           cleanup();
           resolve({ stdout, stderr, exitCode: code ?? -1, signal: signal ?? null, durationMs: Date.now() - started });

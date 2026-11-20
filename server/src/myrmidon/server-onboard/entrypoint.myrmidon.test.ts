@@ -16,13 +16,16 @@ describe("onboarding production entrypoint", () => {
     const address = board.address();
     if (!address || typeof address === "string") throw new Error("missing board address");
     const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(new URL("./worker.ts", import.meta.url))], {
+      cwd: fileURLToPath(new URL("../../../", import.meta.url)),
       env: { ...process.env, MYRMIDON_FLEET_ONBOARD_BASE_URL: `http://127.0.0.1:${address.port}`, MYRMIDON_FLEET_ONBOARD_COMPANY_ID: "company", MYRMIDON_FLEET_ONBOARD_EXECUTOR_TOKEN: "test-token" },
-      stdio: "ignore",
+      stdio: ["ignore", "ignore", "pipe"],
     });
+    let stderr = "";
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
     try {
       await Promise.race([
         received,
-        new Promise<never>((_, reject) => child.once("exit", (code) => reject(new Error(`worker exited before claiming: ${code}`)))),
+        new Promise<never>((_, reject) => child.once("close", (code) => reject(new Error(`worker exited before claiming: ${code}\n${stderr}`)))),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error("worker did not claim")), 5000)),
       ]);
     } finally {
