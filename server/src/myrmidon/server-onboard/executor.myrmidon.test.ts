@@ -1478,7 +1478,8 @@ exit 97
 
   it("does not change the firewall policy when the rollback timer cannot start", async () => {
     const mockSsh = new MockSshExecutor();
-    mockSsh.mockResponse(/nohup sh -c 'sleep 300/, { exitCode: 1, stderr: "timer unavailable" });
+    mockSsh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    mockSsh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 1, stderr: "timer unavailable" });
     mockSsh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => mockSsh });
     const mockReporter = createMockReporter();
@@ -1489,6 +1490,8 @@ exit 97
     };
     const result = await executor.execute(claim, mockReporter.reporter);
     expect(result.status).toBe("failed");
+    expect(mockSsh.hasExecuted(/start-myrmidon-firewall-timer/)).toBe(true);
+    expect(result.error).toMatch(/timer.*(start|launch|unavailable)/i);
     expect(mockSsh.hasExecuted(/sudo ufw default deny incoming/)).toBe(false);
     expect(mockReporter.completion?.status).toBe("failed");
   });
