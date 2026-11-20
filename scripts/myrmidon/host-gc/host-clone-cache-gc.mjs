@@ -2300,7 +2300,8 @@ export async function pruneBoardProjectWorkspaces(items, journal, options = {}) 
       if (!lstatSafe(ancestor).st?.isDirectory()) throw new Error("unsafe ancestor");
       const current = await assessBoardProjectItem(item, Date.now(), options);
       if (!current || current.action !== "remove") { journalRecord(journal, { event: "board-project-kept", path: item.path, reason: current?.reason || "gone-or-unsafe" }); continue; }
-      atomicDrop(item.path, item.root);
+      if (item.kind === "scratch") fs.rmdirSync(item.path);
+      else atomicDrop(item.path, item.root);
       journalRecord(journal, { event: "board-project-removed", path: item.path, kind: item.kind, identifier: item.identifier });
     } catch (err) { journalRecord(journal, { event: "board-project-remove-failed", path: item.path, error: err.message }); }
   }
