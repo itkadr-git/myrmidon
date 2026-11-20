@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { TLSSocket } from "node:tls";
 import { Router } from "express";
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull } from "drizzle-orm";
 import { acceptanceServiceCredentials, nativeFinalizationGrants, nativeFinalizationOutbox, nativeFinalizationRequests, nativeRunFinalizations, type Db } from "@myrmidon/db";
 import { isUuidLike } from "@myrmidon/shared";
 import { acceptanceServiceCredentialsService } from "../services/acceptance-service-credentials.js";
@@ -84,6 +84,7 @@ export function acceptanceServiceRoutes(db: Db) {
         ? { status: 202, request: existing } : { status: 409, error: "Idempotency key conflict" };
       const [active] = await tx.select({ id: nativeFinalizationRequests.id }).from(nativeFinalizationRequests).where(and(
         eq(nativeFinalizationRequests.runId, runId),
+        inArray(nativeFinalizationRequests.state, ["accepted", "processing", "committed"]),
       ));
       if (active) return { status: 409, error: "Finalization request already exists" };
       const snapshot = await issueAcceptanceSnapshotService(tx as unknown as Db).read(grant.issueId, credential.companyId);
