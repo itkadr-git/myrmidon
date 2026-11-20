@@ -6,6 +6,7 @@ import { expect, it, vi } from "vitest";
 import { myrmidonFleetOnboardJobs, myrmidonFleetServers } from "@myrmidon/db";
 import { onboardRoutes } from "../myrmidon/server-onboard/routes.js";
 import { onboardService } from "../myrmidon/server-onboard/service.js";
+import { generateSshKeyPair } from "../myrmidon/server-onboard/ssh-key.js";
 import { fleetOnboardStore } from "../myrmidon/server-onboard/store.js";
 import {
   describeEmbeddedPostgres, routeApp, seedCompanyWithBoardAccess, useEmbeddedPostgres,
@@ -17,25 +18,35 @@ const container = (digit: string) => ({ kind: "role_container" as const, contain
 describeEmbeddedPostgres("fleet owned inventory HTTP and persistence contract", () => {
   const ctx = useEmbeddedPostgres("fleet-owned-inventory");
 
-  async function fixture() {
+  async function fixture(withCredentials = false) {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Owned inventory");
     const store = fleetOnboardStore(ctx.db);
+    const secrets = new Map<string, string>();
+    const keyPair = withCredentials ? generateSshKeyPair() : null;
+    if (keyPair) {
+      secrets.set("test/access-key", keyPair.privateKey);
+      secrets.set("test/bootstrap-password", "test-bootstrap");
+    }
     const server = await store.createServer(companyId, {
       slug: `owned-${randomUUID()}`, name: "Owned inventory", hostname: "192.0.2.1",
-      port: 22, username: "deploy", role: "generic", passwordSecretKey: null,
-      accessKeySecretKey: null, keepPassword: false,
+      port: 22, username: "deploy", role: "generic", passwordSecretKey: keyPair ? "test/bootstrap-password" : null,
+      accessKeySecretKey: keyPair ? "test/access-key" : null, keepPassword: false,
     });
     const job = await store.createJob({ companyId, serverId: server.id, kind: "onboard", createdBy: null });
     const service = onboardService(ctx.db, {
       store, settings: { enabled: true, executorToken: token, stepTimeoutMs: 3600000, tickMs: 60000, allowKeepPassword: false },
-      secrets: { putSecret: async () => { throw new Error("Unexpected secret write"); }, readSecret: async () => null, deleteSecret: async () => {} },
+      secrets: {
+        putSecret: async () => { throw new Error("Unexpected secret write"); },
+        readSecret: async (_companyId, name) => secrets.get(name) ?? null,
+        deleteSecret: async (_companyId, name) => { secrets.delete(name); },
+      },
       getServer: (company, id) => store.getServerById(company, id),
       logActivity: vi.fn().mockResolvedValue(undefined),
     });
     const app = routeApp(ctx.db, actor, () => onboardRoutes({ service }));
     const report = () => request(app).post(`/api/myrmidon/fleet/onboard-jobs/${job.id}/owned-resources`);
     const read = () => store.getServerById(companyId, server.id);
-    return { companyId, server, job, store, app, report, read };
+    return { companyId, server, job, store, app, report, read, secrets, publicKey: keyPair?.publicKey };
   }
 
   it("applies the migration without assigning ownership to preexisting rows", async () => {
@@ -88,8 +99,30 @@ describeEmbeddedPostgres("fleet owned inventory HTTP and persistence contract", 
     expect((await f.read())?.ownershipInventory).toEqual(first);
   });
 
+  it("rejects onboarding completion without stored-key verification and preserves persisted state", async () => {
+    const f = await fixture(true);
+    await f.store.updateJob(f.companyId, f.job.id, { status: "claimed" });
+    const hostKeyFingerprint = "SHA256:test-pin";
+    expect(await f.store.pinHostKey(f.companyId, f.server.id, f.job.id, hostKeyFingerprint)).toBe(true);
+    const report = (body: object) => request(f.app).post(`/api/myrmidon/fleet/onboard-jobs/${f.job.id}/report`)
+      .set("x-onboard-token", token).send({ companyId: f.companyId, ...body });
+    expect((await report({ step: "access", result: "ok" })).status).toBe(200);
+
+    const completion = { status: "succeeded", hostKeyFingerprint };
+    expect((await report(completion)).status).toBe(409);
+    expect((await f.store.getJob(f.companyId, f.job.id))?.status).toBe("claimed");
+    expect((await f.read())?.onboardState).toBe("onboarding");
+    expect(f.secrets.get("test/bootstrap-password")).toBe("test-bootstrap");
+
+    expect((await report({ ...completion, verifiedAccessPublicKey: f.publicKey })).status).toBe(200);
+    expect((await f.store.getJob(f.companyId, f.job.id))?.status).toBe("succeeded");
+    expect((await f.read())?.onboardState).toBe("ready");
+    expect(f.secrets.has("test/bootstrap-password")).toBe(false);
+    expect(f.secrets.has("test/access-key")).toBe(true);
+  });
+
   it("commits only scoped firewall ownership with successful hardening", async () => {
-    const f = await fixture();
+    const f = await fixture(true);
     await f.store.updateJob(f.companyId, f.job.id, { status: "claimed" });
     const report = (body: object) => request(f.app).post(`/api/myrmidon/fleet/onboard-jobs/${f.job.id}/report`)
       .set("x-onboard-token", token).send({ companyId: f.companyId, ...body });
@@ -100,7 +133,10 @@ describeEmbeddedPostgres("fleet owned inventory HTTP and persistence contract", 
     expect((await report({ status: "succeeded", ownedFirewallRule: { ...resource, marker: `myrmidon:${f.companyId}:${randomUUID()}:${randomUUID()}` } })).status).toBe(400);
     expect((await f.read())?.ownershipInventory).toBeNull();
     expect((await f.store.getJob(f.companyId, f.job.id))?.status).toBe("claimed");
-    expect((await report({ status: "succeeded", ownedFirewallRule: resource })).status).toBe(200);
+    const hostKeyFingerprint = "SHA256:test-pin";
+    expect(await f.store.pinHostKey(f.companyId, f.server.id, f.job.id, hostKeyFingerprint)).toBe(true);
+    expect((await report({ step: "access", result: "ok" })).status).toBe(200);
+    expect((await report({ status: "succeeded", hostKeyFingerprint, verifiedAccessPublicKey: f.publicKey, ownedFirewallRule: resource })).status).toBe(200);
     expect(await f.read()).toMatchObject({ onboardState: "ready", ownershipInventory: { resources: [{ jobId: f.job.id, resource }] } });
     expect((await f.store.getJob(f.companyId, f.job.id))?.status).toBe("succeeded");
   });
