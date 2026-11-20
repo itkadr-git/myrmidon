@@ -2,6 +2,8 @@
 
 > Русская версия: [Quick-start.ru](Quick-start.ru)
 
+> The pinned command below stays on rc.13 until a newer release is promoted. The rc.22 candidate (tag `myr-v1.6.9-rc.22`) is published and in validation; production still runs rc.21 (health answers commit `2b5dadeb`) and the rc.22 deploy is in progress. It is a release candidate, not a stable release. See the [operator notes](../myrmidon/releases/1.6.9.md).
+
 The shortest path to a running board. One command on a fresh server (see
 [System requirements](System-requirements)):
 
