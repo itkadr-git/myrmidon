@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createServer, request } from 'node:https';
@@ -39,10 +39,13 @@ test('gateway to separate mTLS upstream: production pin/verify path, tenant boun
   };
   let upstreamRequests = 0;
   const requestedPaths = [];
+  const serviceToken = `myrmidon_svc_${'a'.repeat(43)}`;
+  writeFileSync(file('service-token'), serviceToken, { mode: 0o600 });
   const findState = (url) => Object.values(state).find((entry) => url.includes(entry.issue.id) || url.includes(entry.issue.identifier));
   const upstream = createServer({ ...upstreamTls, ca: clientTls.cert, requestCert: true, rejectUnauthorized: true }, (req, res) => {
     upstreamRequests++;
     requestedPaths.push(req.url);
+    if (req.headers.authorization !== `Bearer ${serviceToken}`) { res.writeHead(401); res.end(); return; }
     if (req.url.includes('OPE-6')) { req.socket.destroy(); return; }
     if (req.url.includes('OPE-9')) {
       res.writeHead(500, { 'content-type': 'application/json' });
@@ -67,9 +70,8 @@ test('gateway to separate mTLS upstream: production pin/verify path, tenant boun
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
   t.after(() => upstream.close());
   const origin = `https://localhost:${upstream.address().port}`;
-  const adapter = createUpstream({ origin, ca: upstreamTls.cert, ...clientTls });
-  await assert.rejects(createUpstream({ origin, ca: wrongTls.cert, ...clientTls }).readSnapshot('OPE-1'));
-  await assert.rejects(createUpstream({ origin, ca: upstreamTls.cert, ...wrongTls }).readSnapshot('OPE-1'));
+  await assert.rejects(createUpstream({ origin, ca: wrongTls.cert, ...clientTls, token: serviceToken }).readSnapshot('OPE-1'));
+  await assert.rejects(createUpstream({ origin, ca: upstreamTls.cert, ...wrongTls, token: serviceToken }).readSnapshot('OPE-1'));
   const token = 'candidate-integration-token';
   const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'allowed', expiresAt: Date.now() + 60000, revoked: false }];
   const credentialDirectory = file('credentials');
@@ -80,7 +82,7 @@ test('gateway to separate mTLS upstream: production pin/verify path, tenant boun
   reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening');
   const port = reservation.address().port;
   await new Promise((resolve) => reservation.close(resolve));
-  const gateway = start({ host: '127.0.0.1', port, credentialDirectory, auditFile: file('audit.jsonl'), listener: { cert: file('gateway.crt'), key: file('gateway.key') }, upstream: { origin, ca: file('upstream.crt'), cert: file('client.crt'), key: file('client.key') } });
+  const gateway = start({ host: '127.0.0.1', port, credentialDirectory, auditFile: file('audit.jsonl'), listener: { cert: file('gateway.crt'), key: file('gateway.key') }, upstream: { origin, ca: file('upstream.crt'), cert: file('client.crt'), key: file('client.key'), tokenFile: file('service-token') } });
   await once(gateway, 'listening');
   t.after(() => gateway.close());
   const call = (path, { method = 'GET', body, headers = { authorization: `Bearer ${token}` } } = {}) => new Promise((resolve, reject) => {
@@ -102,7 +104,7 @@ test('gateway to separate mTLS upstream: production pin/verify path, tenant boun
     assert.deepEqual(JSON.parse((await call(`/api/issues/${ref}/acceptance-snapshot`)).body), projected(state['OPE-1']));
   }
   for (const requested of requestedPaths) {
-    assert.match(requested, /^\/api\/issues\/(?:OPE-1|11111111-1111-1111-1111-111111111111)\/acceptance-scenarios-snapshot$/);
+    assert.match(requested, /^\/api\/service\/issues\/(?:OPE-1|11111111-1111-1111-1111-111111111111)\/acceptance-scenarios$/);
   }
   // An issue whose snapshot carries no document still pins.
   assert.deepEqual(JSON.parse((await call('/api/issues/OPE-3/acceptance-snapshot')).body), projected(state['OPE-3']));
@@ -221,5 +223,5 @@ test('gateway to separate mTLS upstream: production pin/verify path, tenant boun
   assert.equal(upstreamRequests, before);
   const audit = readFileSync(file('audit.jsonl'), 'utf8');
   assert.ok(audit.length > 0);
-  for (const secret of [token, expired, 'private-relation', 'private-document', 'criteria', 'criteria-1']) assert.ok(!audit.includes(secret), secret);
+  for (const secret of [token, serviceToken, expired, 'private-relation', 'private-document', 'criteria', 'criteria-1']) assert.ok(!audit.includes(secret), secret);
 });
