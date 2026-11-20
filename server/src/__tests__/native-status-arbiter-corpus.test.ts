@@ -2026,7 +2026,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
     expect(issue!.status).toBe("in_progress");
     expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, seeded.runId))).toEqual([]);
-    expect(await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.runId, seeded.runId))).toEqual([]);
+    expect(await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.issueId, seeded.issueId))).toEqual([]);
   });
 
   async function seedPolicyReview(options: { genuine?: boolean; priorStatus?: "in_progress" | "blocked" | "in_review" } = {}) {
