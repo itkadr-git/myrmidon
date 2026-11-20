@@ -437,6 +437,33 @@ const callsWithoutVersionStamp = (sb) =>
 const maintenance = (sb) => read(path.join(sb.dir, "maintenance.log"));
 
 describe("deploy.sh", () => {
+  it("refuses an RC deploy before pull when the mandatory nightly PBS query fails", () => {
+    const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
+    fs.writeFileSync(path.join(sb.bin, "runuser"), '#!/bin/sh\nexit 42\n', { mode: 0o755 });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /PBS query failed: archives/);
+    assert.doesNotMatch(calls(sb), /docker pull|up -d --no-deps server/);
+    assert.equal(maintenance(sb), "");
+    assert.equal(fs.existsSync(path.join(sb.dir, "dumps")), false);
+  });
+
+  it("keeps RC deployment fail-closed even when nightly PBS succeeds", () => {
+    const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
+    const start = Math.floor(Date.now() / 1000) - 600;
+    const stamp = new Date(start * 1000).toISOString().replace('.000Z', 'Z');
+    const tasks = JSON.stringify([{ id: "100", node: "hk01", type: "vzdump", status: "OK", starttime: start, endtime: start + 10 }]);
+    fs.writeFileSync(path.join(sb.bin, "runuser"), '#!/bin/sh\ncase "$*" in *pvesm*) printf "%s\\n" "$ARCHIVE";; *) printf "%s\\n" "$TASKS";; esac\n', { mode: 0o755 });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW], undefined, {
+      ARCHIVE: `pbs-offsite:backup/vm/100/${stamp}`, TASKS: tasks,
+    });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /RC deploy guard incomplete/);
+    assert.doesNotMatch(calls(sb), /docker pull|up -d --no-deps server/);
+    assert.equal(maintenance(sb), "");
+    assert.equal(fs.existsSync(path.join(sb.dir, "dumps")), false);
+  });
+
   it("nightly PBS precheck never falls through to a real dump or deploy", () => {
     const sb = sandbox();
     const start = Math.floor(Date.now() / 1000) - 600;

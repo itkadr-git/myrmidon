@@ -598,6 +598,15 @@ preflight_all() {
 }
 preflight_all
 
+# RC deployments must not reach the legacy dump/DB-copy path. Until the
+# digest and rollback checks are complete, successful PBS evidence is not
+# sufficient to authorize a real RC deployment.
+if [[ "${CI_IMAGE_VERSION:-}" =~ -rc\.[0-9]+$ ]]; then
+  ((urgent == 0)) || die "RC deploy refuses --urgent; nothing was changed"
+  "$MYR_SCRIPT_DIR/nightly-backup-guard.sh" || die "nightly PBS guard failed; nothing was changed"
+  die "RC deploy guard incomplete: digest and rollback verification required; no dump, DB copy or deploy was performed"
+fi
+
 # This additional read-only precheck never substitutes for the database rehearsal.
 if ((nightly_pbs_precheck)); then
   "$MYR_SCRIPT_DIR/nightly-backup-guard.sh" || die "nightly PBS precheck failed; nothing was changed"
