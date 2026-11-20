@@ -235,6 +235,31 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-5) distiller pass over 
     }
   });
 
+  it("preserves classifier recommendations independently of auto-accept and isolates companies", async () => {
+    companyId = await seedCompany();
+    const otherCompanyId = await seedCompany();
+    await seedClosedTask({ identifier: "R-1", title: "recommendation evidence" });
+    const knowledge = createKnowledgeModule(db, companyId, { now: () => NOW });
+    const otherKnowledge = createKnowledgeModule(db, otherCompanyId, { now: () => NOW });
+    const model = modelReturning([
+      { class: "decision", body: "accept claim", recommendation: "accepted", rationale: "supported", section: "general", evidence: ["R-1"] },
+      { class: "decision", body: "reject claim", recommendation: "rejected", rationale: "contradicted", section: "glossary", evidence: ["R-1"] },
+      { class: "decision", body: "invalid verdict", recommendation: "maybe", rationale: "uncertain", section: "general", evidence: ["R-1"] },
+      { class: "decision", body: "missing reason", recommendation: "accepted", rationale: "  ", section: "general", evidence: ["R-1"] },
+    ]);
+    await runDistillPass({ db, knowledge, model, settings: settings(["glossary"]), now: () => NOW });
+    await knowledge.suggest({ actorType: "system", actorId: "legacy" }, { body: "legacy", rationale: "old reason" });
+
+    const rows = await knowledge.listSuggestions("all");
+    const byBody = (body: string) => rows.find((row) => row.body.includes(body))!;
+    expect(byBody("accept claim")).toMatchObject({ recommendation: "accepted", rationale: "supported", status: "pending" });
+    expect(byBody("reject claim")).toMatchObject({ recommendation: "rejected", rationale: "contradicted", status: "accepted" });
+    expect(byBody("invalid verdict")).toMatchObject({ recommendation: null, rationale: "uncertain" });
+    expect(byBody("missing reason")).toMatchObject({ recommendation: null, rationale: null });
+    expect(byBody("legacy")).toMatchObject({ recommendation: null, rationale: "old reason" });
+    expect(await otherKnowledge.listSuggestions("all")).toEqual([]);
+  });
+
   it("over-budget is a signal, not a crash", async () => {
     companyId = await seedCompany();
     await seedClosedTask({ identifier: "B-1", title: "big task", comments: ["x"] });
