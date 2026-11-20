@@ -427,11 +427,17 @@ index 0000000..360e518
 +        error_text = (proc.stderr or "").strip() or f"myr-ws open exited {proc.returncode}"
 +    return _fallback(proc.returncode, error_text[:300])
 diff --git a/gateway/platforms/api_server.py b/gateway/platforms/api_server.py
+index a418ee5..8955e36 100644
 --- a/gateway/platforms/api_server.py
 +++ b/gateway/platforms/api_server.py
-@@ -1587,7 +1587,32 @@ class APIServerAdapter(BasePlatformAdapter):
+@@ -1584,6 +1584,32 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
+                 _api_request_profile.reset(token)
+         return profile_prefix_middleware
+
 +    async def _handle_offline_workspace(self, request):
 +        # Only the gateway master key; run-scoped keys must not reserve paths.
++        if _api_request_profile.get() not in (None, "default") or not self._api_key:
++            return self._auth_failed_response()
 +        auth_err = self._check_auth(request)
 +        if auth_err is not None:
 +            return auth_err
@@ -457,8 +463,11 @@ diff --git a/gateway/platforms/api_server.py b/gateway/platforms/api_server.py
      def _http_route_table(self) -> List[tuple]:
          """(method, path, handler) rows registered by ``connect()`` (a method so multiplex tests
          can assert the /p/<profile>/ mirrors without a listener)."""
-         routes: List[tuple] = [
+@@ -1591,6 +1617,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
              ("GET", "/health", self._handle_health),
              ("GET", "/health/detailed", self._handle_health_detailed),
              ("GET", "/v1/health", self._handle_health),
 +            ("POST", "/v1/offline-workspace", self._handle_offline_workspace),
+             ("GET", "/v1/models", self._handle_models),
+             ("GET", "/api/model/options", self._handle_model_options),
+             ("GET", "/v1/capabilities", self._handle_capabilities),

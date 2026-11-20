@@ -45,6 +45,7 @@ import { heartbeatService } from "../services/heartbeat.ts";
 import { executionWorkspaceService } from "../services/execution-workspaces.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { setBotContainerWorkspaceAdapterTypesForTests } from "../services/bot-container-workspace.ts";
+import { registerOfflineBotWorkspace, resolveOfflineBotWorkspace } from "../services/offline-bot-workspace.ts";
 
 const execFileAsync = promisify(execFile);
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -202,6 +203,44 @@ describeEmbeddedPostgres("bot-container isolated workspace", () => {
     }
     return { companyId, projectId, agentId, issueIds, issuePrefix };
   }
+
+  it("serializes physical directory claims and revalidates the same offline workspace on swarm restore", async () => {
+    const { companyId, projectId, agentId, issueIds } = await seedTwoIssuesOfOneAgent();
+    const adapterConfig = { container: { enabled: true, image: "test", memoryMb: 1024, cpus: 1, pidsLimit: 512 } };
+    await db.update(agents).set({ adapterType: "hermes_gateway", adapterConfig }).where(eq(agents.id, agentId));
+    for (const issueId of issueIds) {
+      await db.update(issues).set({ assigneeAgentId: null, status: "todo" }).where(eq(issues.id, issueId));
+    }
+    const body = { action: "register", botId: agentId } as const;
+    const probe = async (_db: unknown, company: string, issue: string) => ({
+      cwd: `/data/hermes/offline-workspaces/${company}/${issue}`,
+      fingerprint: "a".repeat(64),
+      physicalId: "101:42",
+    });
+    const results = await Promise.allSettled(issueIds.map((issueId) =>
+      registerOfflineBotWorkspace(db, companyId, issueId, body, probe)));
+    expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+    const won = results.findIndex((r) => r.status === "fulfilled");
+    const winner = results[won];
+    const loser = results[1 - won];
+    if (winner.status !== "fulfilled" || loser.status !== "rejected") throw new Error("Unexpected registration outcomes");
+    expect(loser.reason).toMatchObject({ message: "Physical directory already belongs to another issue" });
+    const issueId = issueIds[won];
+    const { id, cwd } = winner.value;
+    const [otherIssue] = await db.select().from(issues).where(eq(issues.id, issueIds[1 - won]));
+    expect(otherIssue.executionWorkspaceId).toBeNull();
+    await expect(registerOfflineBotWorkspace(db, companyId, issueId, body, probe)).resolves.toMatchObject({ id, cwd });
+
+    const input = { companyId, issueId, requestedId: id, projectId, botId: agentId,
+      adapterType: "hermes_gateway", adapterConfig, mode: "isolated_workspace", wakeReason: "swarm_matched" };
+    await expect(resolveOfflineBotWorkspace(db, input, probe)).resolves.toMatchObject({ id, cwd });
+    await expect(resolveOfflineBotWorkspace(db, { ...input, wakeReason: "swarm_claim_queue" }, probe))
+      .resolves.toMatchObject({ id, cwd });
+    await expect(resolveOfflineBotWorkspace(db, { ...input, issueId: otherIssue.id }, probe)).rejects.toThrow("refusing fallback");
+    await expect(resolveOfflineBotWorkspace(db, { ...input, botId: randomUUID() }, probe)).rejects.toThrow("refusing fallback");
+    await expect(resolveOfflineBotWorkspace(db, input, async () => ({ cwd, fingerprint: "b".repeat(64), physicalId: "101:42" })))
+      .rejects.toThrow("refusing fallback");
+  });
 
   it("records one bot_container workspace per task and leaves no file on the board side", async () => {
     const fixture = await seedTwoIssuesOfOneAgent();

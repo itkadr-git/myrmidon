@@ -76,13 +76,15 @@ export async function registerOfflineBotWorkspace(db: Db, companyId: string, iss
         issue.assigneeAgentId || issue.assigneeUserId)) {
       throw conflict("Reserve/register before swarm assignment; existing bindings are not replaced");
     }
+    if (rows.length && request.action === "reserve") {
+      throw conflict("Issue already has an offline workspace binding");
+    }
     const measured = await probe(db, companyId, issueId, request.botId, bot.adapterConfig, request.action);
     const path = z.object({ cwd: z.string() }).safeParse(measured);
     if (!path.success || !allowedOfflineWorkspacePath(companyId, issueId, { ...path.data, botId: request.botId })) {
       throw conflict("Invalid offline workspace path");
     }
     if (request.action === "reserve") {
-      if (rows.length) throw conflict("Issue already has an offline workspace binding");
       return { id: null, cwd: path.data.cwd };
     }
     const identity = runtimeIdentity.safeParse(measured);
@@ -137,7 +139,7 @@ export async function resolveOfflineBotWorkspace(db: Db, input: {
   companyId: string; issueId: string; requestedId: string | null; projectId: string | null;
   botId: string; adapterType: string; adapterConfig: Record<string, unknown>;
   mode: string; wakeReason: string | null;
-}) {
+}, probe = probeRuntime) {
   const owned = await db.select().from(executionWorkspaces).where(and(
     eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.sourceIssueId, input.issueId),
     sql`${executionWorkspaces.metadata} ? ${offlineWorkspaceKey}`,
@@ -162,7 +164,7 @@ export async function resolveOfflineBotWorkspace(db: Db, input: {
       !allowedOfflineWorkspacePath(input.companyId, input.issueId, saved.data)) {
     throw conflict("Offline bot workspace binding or runtime is incompatible; refusing fallback");
   }
-  const measured = runtimeIdentity.safeParse(await probeRuntime(db, input.companyId, input.issueId, input.botId,
+  const measured = runtimeIdentity.safeParse(await probe(db, input.companyId, input.issueId, input.botId,
     input.adapterConfig, "register"));
   if (!measured.success || measured.data.cwd !== saved.data.cwd ||
       measured.data.fingerprint !== saved.data.fingerprint || measured.data.physicalId !== saved.data.physicalId) {

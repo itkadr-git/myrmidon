@@ -40,6 +40,11 @@ with TemporaryDirectory() as tmp:
         rejects({**field, "offlineIssueId": company})
         with patch.object(ws, "_offline_volume", return_value=(home, ["mount", "other-volume", []])):
             rejects(field)
+        with patch.object(ws, "_offline_volume", return_value=(home, ["mount", "fixture-volume", [str(cwd)]])):
+            rejects(field)
+        different_uid = os.geteuid() + 1
+        with patch.object(ws.os, "geteuid", return_value=different_uid):
+            rejects(field)
         cwd.chmod(0o755)
         rejects(field)
         cwd.chmod(0o700)
