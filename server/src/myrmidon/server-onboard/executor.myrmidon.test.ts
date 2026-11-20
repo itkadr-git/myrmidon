@@ -1506,8 +1506,12 @@ exit 97
 
   it("reports an unconfirmed firewall restoration when the deny policy and rollback both fail", async () => {
     const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    ssh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    ssh.mockResponse(/sudo ufw allow/, { exitCode: 0 });
     ssh.mockResponse(/sudo ufw default deny incoming/, { exitCode: 1, stderr: "policy failed" });
-    ssh.mockResponse("sudo ufw disable", { exitCode: 1, stderr: "rollback failed" });
+    ssh.mockResponse(/restore-myrmidon-firewall/, { exitCode: 1, stderr: "rollback failed" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
       job: { id: "job-policy-rollback-failed", companyId: "c1", serverId: "s1" },
@@ -1517,6 +1521,8 @@ exit 97
 
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
+    expect(ssh.hasExecuted(/sudo ufw default deny incoming/)).toBe(true);
+    expect(ssh.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
     expect(result.error).toMatch(/firewall rollback failed/i);
     expect(result.error).not.toContain("rolled back");
   });
