@@ -1037,6 +1037,30 @@ exit 97
     }
   });
 
+  it("tags the SSH allow rule with a unique onboarding owner before attempting it", async () => {
+    let allowCommand = "";
+    const ssh = new MockSshExecutor({ onCommand: (command) => {
+      if (command.includes("start-myrmidon-firewall-timer")) return { exitCode: 0, stdout: "timer-confirmed\n" };
+      if (command.includes("check-myrmidon-firewall-timer")) return { exitCode: 0, stdout: "timer-confirmed\n" };
+      if (command.includes("sudo ufw allow")) {
+        allowCommand = command;
+        return { exitCode: 1, stderr: "outcome unknown" };
+      }
+      return undefined;
+    } });
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-owned-rule", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(allowCommand).toMatch(/\bcomment\b.*myrmidon/i);
+  });
+
   it("does not delete an indistinguishable operator rule after an uncertain allow", async () => {
     const rules = ["operator-ssh"];
     let allowAttempted = false;
