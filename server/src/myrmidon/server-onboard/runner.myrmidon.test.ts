@@ -2,6 +2,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { Server } from "ssh2";
 import { describe, expect, it } from "vitest";
 import { runOnboardOnce } from "./runner.js";
+import { runOnboardFromEnvironment } from "./entrypoint.js";
 import { generateSshKeyPair } from "./ssh-key.js";
 
 it.each([false, true])("closes every SSH session after stored-key access (firewall enabled: %s)", async (harden) => {
@@ -177,7 +178,11 @@ it.each(["changed", "rejected"] as const)("runs real SSH and rejects a %s host i
     throw new Error(`unexpected request: ${path}`);
   };
   try {
-    expect(await runOnboardOnce({ baseUrl: "http://board", companyId: "company", token: "token", fetcher })).toBe(true);
+    expect(await runOnboardFromEnvironment({
+      MYRMIDON_FLEET_ONBOARD_BASE_URL: "http://board",
+      MYRMIDON_FLEET_ONBOARD_COMPANY_ID: "company",
+      MYRMIDON_FLEET_ONBOARD_EXECUTOR_TOKEN: "token",
+    }, fetcher)).toBe(true);
     expect(attempts).toBe(0);
     expect(reports.some((report) => report.status === "failed")).toBe(true);
     expect(JSON.stringify(reports)).not.toContain("test-password");
