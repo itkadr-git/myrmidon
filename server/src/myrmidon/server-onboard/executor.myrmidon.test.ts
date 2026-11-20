@@ -1246,6 +1246,9 @@ exit 97
 
   it("does not disarm another onboarding job's firewall rollback timer", async () => {
     const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    ssh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     ssh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
