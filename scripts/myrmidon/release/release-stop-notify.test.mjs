@@ -147,6 +147,10 @@ case "$sub" in
         # The create path is served by the primary: from here on, listing reads
         # observe the new issue (clears the listing-lag emulation).
         rm -f "$SANDBOX/lag-listing.json"
+        if [ -n "\${GH_CREATE_SAVED_FAIL:-}" ]; then
+          echo "connection lost after issue was saved" >&2
+          exit 1
+        fi
         printf 'https://github.com/x/y/issues/%s\\n' "$n" ;;
       close)
         num="$1"; shift
@@ -369,6 +373,30 @@ describe("release-stop-notify.sh (fake gh)", () => {
     const calls = fs.readFileSync(path.join(sb.dir, "calls.log"), "utf8");
     assert.equal((calls.match(/gh issue create/g) || []).length, 1);
     assert.doesNotMatch(calls, /gh label delete/);
+  });
+
+  it("recovers a saved issue after a lost create response, including stale listings", () => {
+    const sb = makeSandbox();
+    const first = runScript(sb, { GH_CREATE_SAVED_FAIL: "y" });
+    assert.equal(first.status, 1, first.stdout);
+    assert.match(first.stderr, /could not create the stop notification issue/);
+    const visible = runScript(sb);
+    assert.equal(visible.status, 0, visible.stderr);
+    assert.match(visible.stdout, /stop=deduplicated issue=100 event=111/);
+    fs.writeFileSync(path.join(sb.dir, "lag-listing.json"), "[]");
+    const stale = runScript(sb, { RELEASE_STOP_LOCK_TIMEOUT: "1", RELEASE_STOP_LOCK_POLL_DELAY: "0" });
+    assert.equal(stale.status, 1, stale.stdout);
+    assert.match(stale.stderr, /timed out waiting/);
+    fs.unlinkSync(path.join(sb.dir, "lag-listing.json"));
+    const recovered = runScript(sb);
+    assert.equal(recovered.status, 0, recovered.stderr);
+    assert.match(recovered.stdout, /stop=deduplicated issue=100 event=111/);
+    const issues = JSON.parse(fs.readFileSync(path.join(sb.dir, "issues.json"), "utf8"));
+    assert.deepEqual(issues, [{ number: 100, title: "release-stop: myr-v1.8.0 (111)", state: "open" }]);
+    const calls = fs.readFileSync(path.join(sb.dir, "calls.log"), "utf8");
+    assert.equal((calls.match(/gh issue create/g) || []).length, 1);
+    assert.doesNotMatch(calls, /gh label delete/);
+    assert.ok(fs.existsSync(path.join(sb.dir, "label-release-stop-lock-111.lock")));
   });
 
   it("deduplicates concurrent executions for the same stop event without duplicate issue creation (overlap)", async () => {
