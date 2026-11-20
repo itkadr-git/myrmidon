@@ -258,10 +258,22 @@ const support = await getEmbeddedPostgresTestSupport();
       await db.insert(nativeRunResults).values({ id: resultId, companyId, issueId, runId, completionContractId: contractId, serverFingerprint: "test", schemaStatus: "accepted", canonicalSha256: "result", resultJson: { result: { reportedWorkDisposition: "done", summary: "test", completionClaim: { contractRevision: "v1", objectiveSatisfied: true, criteria: [], remainingWork: [] }, verification: [] }, terminal: { runTerminalState: "succeeded" } } });
       await db.update(nativeRunFinalizations).set({ resultId, phase: "awaiting_result" }).where(eq(nativeRunFinalizations.runId, runId));
       await db.update(nativeFinalizationRequests).set({ leaseUntil: new Date(Date.now() - 1000) }).where(eq(nativeFinalizationRequests.id, recoveryRequestId));
+      await db.update(acceptanceServiceCredentials).set({ revokedAt: new Date() }).where(eq(acceptanceServiceCredentials.id, submit.id));
+      expect(await processNativeFinalizationRequest({ db, worker: "revocation-recovery", now: new Date(), leaseMs: 60_000 })).toBe("processed");
+      const [revokedRequest] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, recoveryRequestId));
+      const [revokedOutbox] = await db.select().from(nativeFinalizationOutbox).where(eq(nativeFinalizationOutbox.requestId, recoveryRequestId));
+      expect(revokedRequest).toMatchObject({ state: "rejected", errorCode: "native_service_authorization_expired_or_revoked" });
+      expect(revokedOutbox.dispatchedAt).not.toBeNull();
+      // Restore the fixture credential to exercise a separate snapshot race on the same run.
+      await db.update(acceptanceServiceCredentials).set({ revokedAt: null }).where(eq(acceptanceServiceCredentials.id, submit.id));
+      const beforeSnapshotRace = await admit("snapshot-race");
+      expect(beforeSnapshotRace.status).toBe(202);
+      const snapshotRequestId = JSON.parse(beforeSnapshotRace.body).requestId;
+      await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 1000) }).where(eq(nativeRunFinalizations.runId, runId));
       await db.update(issues).set({ title: "Changed acceptance context" }).where(eq(issues.id, issueId));
       expect(await processNativeFinalizationRequest({ db, worker: "snapshot-recovery", now: new Date(), leaseMs: 60_000 })).toBe("processed");
-      const [rejectedRequest] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, recoveryRequestId));
-      const [rejectedOutbox] = await db.select().from(nativeFinalizationOutbox).where(eq(nativeFinalizationOutbox.requestId, recoveryRequestId));
+      const [rejectedRequest] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, snapshotRequestId));
+      const [rejectedOutbox] = await db.select().from(nativeFinalizationOutbox).where(eq(nativeFinalizationOutbox.requestId, snapshotRequestId));
       expect(rejectedRequest).toMatchObject({ state: "rejected", errorCode: "native_service_snapshot_changed" });
       expect(rejectedOutbox.dispatchedAt).not.toBeNull();
       const fresh = await call(issued.token);
@@ -269,6 +281,8 @@ const support = await getEmbeddedPostgresTestSupport();
       const freshSubmission = await admit("fresh-snapshot", { ...payload, expectedIssueEpoch: freshSnapshot.issue.version }, fresh.etag);
       expect(freshSubmission.status).toBe(202);
       const freshRequestId = JSON.parse(freshSubmission.body).requestId;
+      // The failed finalizer's coordinator lease is independently reclaimed after expiry.
+      await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 1000) }).where(eq(nativeRunFinalizations.runId, runId));
       const resumed = await Promise.all([
         processNativeFinalizationRequest({ db, worker: "restart-a", now: new Date(), leaseMs: 60_000 }),
         processNativeFinalizationRequest({ db, worker: "restart-b", now: new Date(), leaseMs: 60_000 }),

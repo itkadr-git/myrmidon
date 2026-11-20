@@ -1591,7 +1591,7 @@ export async function commitNativeStatusDecision(input: {
           grant.revokedAt || grant.notAfter <= now || !credential || credential.companyId !== input.companyId ||
           credential.audience !== "native-finalization-submit" || credential.certificateSha256 !== request.verifiedPeerSha256 ||
           credential.revokedAt || credential.expiresAt <= now) {
-        throw new Error("native_service_authorization_required");
+        throw new Error("native_service_authorization_expired_or_revoked");
       }
       serviceRequest = request;
       serviceAuthorizationExpiresAt = Math.min(grant.notAfter.getTime(), credential.expiresAt.getTime());
@@ -2152,9 +2152,11 @@ export async function commitNativeStatusDecision(input: {
     if (serviceRequest) {
       const now = new Date();
       if (!serviceRequest.leaseUntil || serviceRequest.leaseUntil <= now ||
-          (input.serviceCoordinatorLeaseOwner && (!coordinator.leaseExpiresAt || coordinator.leaseExpiresAt <= now)) ||
-          serviceAuthorizationExpiresAt === null || serviceAuthorizationExpiresAt <= now.getTime()) {
+          (input.serviceCoordinatorLeaseOwner && (!coordinator.leaseExpiresAt || coordinator.leaseExpiresAt <= now))) {
         throw new Error("native_service_authorization_required");
+      }
+      if (serviceAuthorizationExpiresAt === null || serviceAuthorizationExpiresAt <= now.getTime()) {
+        throw new Error("native_service_authorization_expired_or_revoked");
       }
       await tx.update(nativeFinalizationRequests).set({
         state: "committed", resultDecisionId: decisionRow.id, errorCode: null,

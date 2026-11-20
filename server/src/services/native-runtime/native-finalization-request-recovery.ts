@@ -56,11 +56,17 @@ export async function processNativeFinalizationRequest(input: {
   if (workspace?.status !== "succeeded") return "waiting_workspace";
   if (!request.leaseOwner || !request.leaseUntil) throw new Error("native_finalization_invalid_lease");
   const execute = input.execute ?? ((request: ServiceFinalizationInput) => finalizeNativeRun({ db: input.db, ...request, projectRunStatus: true }));
-  await execute({
-    runId: request.runId,
-    workspaceFinalizeStatus: "succeeded",
-    serviceRequest: { requestId: request.id, leaseOwner: request.leaseOwner, leaseUntil: request.leaseUntil },
-  });
+  try {
+    await execute({
+      runId: request.runId,
+      workspaceFinalizeStatus: "succeeded",
+      serviceRequest: { requestId: request.id, leaseOwner: request.leaseOwner, leaseUntil: request.leaseUntil },
+    });
+  } catch (error) {
+    if (!(error instanceof Error) || !["native_service_snapshot_changed", "native_service_authorization_expired_or_revoked"].includes(error.message)) throw error;
+    const settled = await settleNativeFinalizationRequest(input.db, request.id, request.leaseOwner, new Date(), { errorCode: error.message }, request.leaseUntil);
+    if (!settled) throw error;
+  }
   return "processed";
 }
 
