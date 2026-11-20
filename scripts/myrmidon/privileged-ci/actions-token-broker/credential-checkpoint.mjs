@@ -53,5 +53,9 @@ export function checkpointCredentialStore(store, checkpoint) {
     if (typeof store[name] !== 'function') throw new Error('invalid credential store');
     wrapped[name] = (...args) => checkpoint.mutate(() => store[name](...args));
   }
+  wrapped.withOwned = async (handle, owner, action) => {
+    if (!store.hasOwner(handle, owner)) throw new Error('credential not found');
+    return checkpoint.mutate(() => store.withOwned(handle, owner, action));
+  };
   return wrapped;
 }

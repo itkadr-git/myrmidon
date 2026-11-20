@@ -63,6 +63,10 @@ export function createCredentialStore(path, key) {
       if (active) throw new Error('store busy');
       removeHandle.run(handle);
     },
+    hasOwner(handle, owner) {
+      if (active) throw new Error('store busy');
+      return Boolean(select.get(handle, owner));
+    },
     async withOwned(handle, owner, action) {
       if (active) throw new Error('store busy');
       active = true;
