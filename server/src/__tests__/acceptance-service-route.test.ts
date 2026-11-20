@@ -196,6 +196,13 @@ const support = await getEmbeddedPostgresTestSupport();
       const [afterFailedSettlement] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, requests[0].id));
       expect(afterFailedSettlement).toMatchObject({ state: "processing", leaseOwner: "worker-c", errorCode: null, completedAt: null });
       await db.insert(nativeFinalizationOutbox).values({ requestId: requests[0].id });
+      // Reject malformed terminal receipts without consuming the durable outbox.
+      await expect(settleNativeFinalizationRequest(db, requests[0].id, "worker-c", reclaimedAt, { errorCode: " " }, secondLease!.leaseUntil!))
+        .rejects.toThrow("native_finalization_invalid_settlement");
+      const [afterInvalidSettlement] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, requests[0].id));
+      expect(afterInvalidSettlement).toMatchObject({ state: "processing", leaseOwner: "worker-c", errorCode: null });
+      const [pendingOutbox] = await db.select().from(nativeFinalizationOutbox).where(eq(nativeFinalizationOutbox.requestId, requests[0].id));
+      expect(pendingOutbox.dispatchedAt).toBeNull();
       expect(await settleNativeFinalizationRequest(db, requests[0].id, "worker-c", reclaimedAt, { errorCode: "denied" }, secondLease!.leaseUntil!)).toBe(true);
       expect(await settleNativeFinalizationRequest(db, requests[0].id, "worker-c", reclaimedAt, { errorCode: "denied" }, secondLease!.leaseUntil!)).toBe(false);
       expect(await claimNativeFinalizationRequest(db, "worker-d", new Date(now.getTime() + 4000), 1000)).toBeNull();
