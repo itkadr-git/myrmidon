@@ -229,8 +229,13 @@ const support = await getEmbeddedPostgresTestSupport();
       const workerTime = new Date();
       expect(await processNativeFinalizationRequest({ db, worker: "recovery-a", now: workerTime, leaseMs: 1000, execute })).toBe("waiting_workspace");
       expect(calls).toHaveLength(0);
-      await db.insert(workspaceOperations).values({ companyId, issueId, heartbeatRunId: runId, phase: "workspace_finalize", status: "succeeded" });
-      const restartTime = new Date(workerTime.getTime() + 1001);
+      await db.insert(workspaceOperations).values({ companyId, issueId, heartbeatRunId: runId, phase: "workspace_finalize", status: "succeeded", createdAt: new Date(workerTime.getTime() - 2000) });
+      await db.insert(workspaceOperations).values({ companyId, issueId, heartbeatRunId: runId, phase: "workspace_finalize", status: "failed", createdAt: new Date(workerTime.getTime() - 1000) });
+      const staleCheckTime = new Date(workerTime.getTime() + 1001);
+      expect(await processNativeFinalizationRequest({ db, worker: "recovery-stale", now: staleCheckTime, leaseMs: 1000, execute })).toBe("waiting_workspace");
+      expect(calls).toHaveLength(0);
+      await db.insert(workspaceOperations).values({ companyId, issueId, heartbeatRunId: runId, phase: "workspace_finalize", status: "succeeded", createdAt: new Date(workerTime.getTime()) });
+      const restartTime = new Date(staleCheckTime.getTime() + 1001);
       await expect(processNativeFinalizationRequest({ db, worker: "recovery-b", now: restartTime, leaseMs: 1000, execute: async () => { throw new Error("crash"); } })).rejects.toThrow("crash");
       const finalTime = new Date(restartTime.getTime() + 1001);
       const results = await Promise.all([
