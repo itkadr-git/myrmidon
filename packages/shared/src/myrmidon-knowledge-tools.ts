@@ -69,6 +69,8 @@ export type KnowledgeCreateItemInput = z.infer<typeof knowledgeCreateItemSchema>
 
 export const knowledgeDraftSchema = z.object({
   content: z.string().min(1).max(500_000),
+  lang: z.enum(["en", "ru"]).optional(),
+  translationOf: z.string().uuid().nullish(),
   changeSummary: z.string().max(1000).optional(),
   title: z.string().min(1).max(300).optional(),
   summary: z.string().max(1000).nullish(),
