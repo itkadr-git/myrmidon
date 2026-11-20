@@ -1171,6 +1171,29 @@ exit 97
     }
   });
 
+  it("succeeds without rewriting an already-deny incoming policy", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n" });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
+    ssh.mockResponse(/check-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
+    ssh.mockResponse(/sudo ufw allow/, { exitCode: 0, stdout: "Rule added\n" });
+    ssh.mockResponse('echo "ufw-connectivity-ok"', { exitCode: 0, stdout: "ufw-connectivity-ok\n" });
+    ssh.mockResponse(/stop-myrmidon-firewall-timer/, { exitCode: 0, stdout: "" });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-existing-deny", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("succeeded");
+    expect(ssh.hasExecuted(/sudo ufw allow/)).toBe(true);
+    expect(ssh.hasExecuted('echo "ufw-connectivity-ok"')).toBe(true);
+    expect(ssh.hasExecuted(/sudo ufw default/)).toBe(false);
+  });
+
   it("tags the SSH allow rule with a unique onboarding owner before attempting it", async () => {
     let allowCommand = "";
     const ssh = new MockSshExecutor({ onCommand: (command) => {
