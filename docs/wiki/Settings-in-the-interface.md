@@ -328,7 +328,7 @@ The **Fleet guardrails** panel on the Company Settings page (`CompanySettings.ts
 - **Bot container reconciliation** (`bot_containers` / `MYRMIDON_BOT_CONTAINERS`): toggles container runner mode and reconciliation loops.
 - **Reconciliation interval** (`bot_reconcile_interval_sec` / `MYRMIDON_BOT_RECONCILE_INTERVAL_SEC`): background reconciliation check frequency in seconds.
 - **Container image allowlist** (`bot_image_allowlist` / `MYRMIDON_BOT_IMAGE_ALLOWLIST`): list of permitted Docker container image patterns.
-- **Mount sources allowlist** (`bot_mount_sources` / `MYRMIDON_BOT_MOUNT_SOURCES`): list of permitted host filesystem directories that can be mounted into containers.
+- **Mount sources allowlist** (`bot_mount_sources` / `MYRMIDON_BOT_MOUNT_SOURCES`): list of permitted host filesystem directories that can be mounted into containers. The saved list replaces, rather than combines with, the environment value; an empty saved list permits no extra mounts.
 - **Container GitHub environment allowlist** (`bot_container_github_env_allowlist`): permitted GitHub-related environment variables for bot containers.
 - **YOLO mode** (`bot_yolo` / `MYRMIDON_BOT_YOLO`): toggles autonomous execution without interactive confirmation prompts (`HERMES_YOLO_MODE`).
 - **Hindsight memory banks** (`bot_hindsight_allowed_banks`): allowed long-term memory banks for bot profiles.
