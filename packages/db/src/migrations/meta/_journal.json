@@ -2858,6 +2858,13 @@
       "when": 1795147763600,
       "tag": "0493_wonderful_nehzno",
       "breakpoints": true
+    },
+    {
+      "idx": 494,
+      "version": "7",
+      "when": 1795154729375,
+      "tag": "0494_overrated_doomsday",
+      "breakpoints": true
     }
   ]
 }

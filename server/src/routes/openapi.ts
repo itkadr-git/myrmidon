@@ -8229,6 +8229,57 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/companies/{companyId}/native-finalization-service-credentials",
+  tags: ["companies"],
+  summary: "Issue a certificate-bound finalization service credential",
+  description: "Board-only. The bearer token is returned once and is bound to the supplied client certificate.",
+  request: { params: z.object({ companyId: z.string() }), body: jsonBody(z.object({ certificateSha256: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.string().datetime({ offset: true }) }).strict()) },
+  responses: { 201: { description: "Credential ID and one-time bearer token" }, 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/native-finalization-service-credentials/{id}",
+  tags: ["companies"],
+  summary: "Revoke a finalization service credential",
+  description: "Board-only; revokes a credential within the specified company.",
+  request: { params: z.object({ companyId: z.string(), id: z.string().uuid() }) },
+  responses: { 204: { description: "Credential revoked" }, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/native-finalization-grants",
+  tags: ["companies"],
+  summary: "Grant a principal permission to finalize a native run",
+  description: "Board-only; binds the grant to a run, principal and finalization credential.",
+  request: { params: z.object({ companyId: z.string() }), body: jsonBody(z.object({ issueId: z.string().uuid(), runId: z.string().uuid(), principalId: z.string().uuid(), credentialId: z.string().uuid(), notAfter: z.string().datetime({ offset: true }) }).strict()) },
+  responses: { 201: { description: "Finalization grant issued" }, 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: { description: "Grant conflicts with the current run state" } },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/service/native-runs/{runId}/finalization-requests",
+  tags: ["issues"],
+  summary: "Submit a durable native finalization request over mutual TLS",
+  description: "Requires a certificate-bound finalization credential and a matching active grant. Reusing an idempotency key with a different payload returns a conflict.",
+  request: { params: z.object({ runId: z.string().uuid() }), body: jsonBody(z.object({ documentId: z.string().uuid(), expectedRevisionId: z.string().uuid(), expectedIssueEpoch: z.string().regex(/^(0|[1-9][0-9]*)$/) }).strict()) },
+  parameters: [{ name: "If-Match", in: "header", required: true, schema: { type: "string" } }, { name: "Idempotency-Key", in: "header", required: true, schema: { type: "string", minLength: 1, maxLength: 128 } }],
+  responses: { 202: { description: "Durable request accepted or previously accepted" }, 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: { description: "Request or idempotency conflict" }, 412: { description: "Snapshot changed" }, 428: { description: "If-Match required" } },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/service/native-runs/{runId}/finalization-requests/{requestId}",
+  tags: ["issues"],
+  summary: "Read a native finalization request over mutual TLS",
+  description: "Requires the certificate-bound finalization credential that submitted the request.",
+  request: { params: z.object({ runId: z.string().uuid(), requestId: z.string().uuid() }) },
+  responses: { 200: { description: "Finalization request state and optional decision or error code" }, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/companies/{companyId}/servers/ssh-dry-run",
   tags: ["companies"],
   summary: "Dry-run SSH credential validation for server onboarding (no persistence)",
