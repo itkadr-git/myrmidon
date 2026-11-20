@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { runOnboardFromEnvironment, runOnboardWorker } from "./entrypoint.js";
 
 describe("onboarding production entrypoint", () => {
-  it("starts the compiled worker process and claims from the configured board", async () => {
+  it("starts the worker process and claims from the configured board", async () => {
     let claimed!: () => void;
     const received = new Promise<void>((resolve) => { claimed = resolve; });
     const board = createServer((req, res) => {
