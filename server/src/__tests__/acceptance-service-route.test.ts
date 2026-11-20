@@ -47,6 +47,16 @@ const support = await getEmbeddedPostgresTestSupport();
         });
         req.on("error", reject); req.end();
       });
+      const submitWithoutPin = await new Promise<number>((resolve, reject) => {
+        const req = httpsRequest({
+          host: "127.0.0.1", port: address.port,
+          path: `/api/service/native-runs/${randomUUID()}/finalization-requests`,
+          method: "POST", ...client, rejectUnauthorized: false,
+          headers: { authorization: `Bearer ${submit.token}`, "idempotency-key": "test-request" },
+        }, (res) => { res.resume(); res.on("end", () => resolve(res.statusCode ?? 0)); });
+        req.on("error", reject); req.end();
+      });
+      expect(submitWithoutPin).toBe(428);
       const first = await call(issued.token);
       expect(first.status).toBe(200);
       expect(first.etag).toMatch(/^"[a-f0-9]{64}"$/);
