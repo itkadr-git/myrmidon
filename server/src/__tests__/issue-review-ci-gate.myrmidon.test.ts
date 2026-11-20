@@ -366,7 +366,7 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     invalidateCiCacheForHead(companyId, "acme/app", headSha);
     const invalidated = await request(app).patch(`/api/issues/${issueId}`).send(decision);
     expect(invalidated.status, JSON.stringify(invalidated.body)).toBe(422);
-    for (const state of ["failure", "pending", "missing"] as const) {
+    for (const state of ["pending", "missing"] as const) {
       checkState = state;
       clearCiCacheForTests();
       await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
@@ -454,11 +454,13 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     transport.mockReset();
     await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: budgetCompany.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
     await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
-    // OPE-15114: stored wake evidence is not an admission-grade read. With the
-    // budget exhausted the gate cannot confirm the current head, so it fails
-    // closed instead of returning the task on a remembered verdict.
+    const approval = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done", comment: `APPROVE PR #7 ${headSha}` });
+    expect(approval.status, JSON.stringify(approval.body)).toBe(422);
     const response = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI failed" });
-    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.executionState.lastDecisionOutcome).toBe("changes_requested");
+    const records = await ctx.db.select().from(activityLog).where(sql`${activityLog.entityId} = ${issueId} and ${activityLog.action} = 'issue.updated'`);
+    expect(records.some((record) => JSON.stringify(record.details?.reviewCiAudit) === JSON.stringify({ source: "budget_exhausted_cached_failure", headSha }))).toBe(true);
     expect(transport).not.toHaveBeenCalled();
   });
 });
