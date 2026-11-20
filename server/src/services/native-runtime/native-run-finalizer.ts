@@ -201,6 +201,11 @@ async function claimCoordinator(input: {
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!coordinator?.resultId) throw new Error("native_finalization_missing");
+    // The internal finalizer must not claim or mutate an opted-in run before
+    // the service authorization fence has been implemented and validated.
+    if (coordinator.authorizationMode !== "internal") {
+      throw new Error("native_service_authorization_required");
+    }
     if (coordinator.phase === "committed") {
       if (!coordinator.decisionId) {
         const run = await tx
