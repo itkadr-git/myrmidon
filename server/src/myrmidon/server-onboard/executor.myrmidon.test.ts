@@ -1551,6 +1551,9 @@ exit 97
   it("closes the fresh firewall verification connection when connectivity fails", async () => {
     const initial = new MockSshExecutor();
     const fresh = new MockSshExecutor();
+    initial.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    initial.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    initial.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     fresh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "incorrect", exitCode: 0 });
     const connections = [initial, fresh];
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => {
@@ -1566,6 +1569,7 @@ exit 97
 
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
+    expect(fresh.hasExecuted('echo "ufw-connectivity-ok"')).toBe(true);
     expect(fresh.isConnected()).toBe(false);
   });
 
