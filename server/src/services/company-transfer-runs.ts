@@ -301,6 +301,9 @@ export const companyTransferRunService = {
         eq(companyTransferRuns.direction, "import"),
         eq(companyTransferRuns.status, "rolling_back"),
         sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
+        // Cleanup must remove the owned company and every reserved object first.
+        sql`${companyTransferRuns.companyId} is null`,
+        sql`jsonb_array_length(${companyTransferRuns.completedParts}) = 0`,
       ))
       .returning({ id: companyTransferRuns.id });
     return finished.length === 1;

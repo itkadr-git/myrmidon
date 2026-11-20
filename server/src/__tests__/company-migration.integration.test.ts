@@ -847,13 +847,17 @@ describe("company migration dry run", () => {
     await companyTransferRunService.releaseApplyClaim(db, run.id, "interrupted");
     expect(await companyTransferRunService.finishMigrationRollback(db, run.id)).toBe(false);
     expect(await companyTransferRunService.claimMigrationRollback(db, run.id, "rollback-complete-source")).toBe(true);
+    await db.delete(companies).where(eq(companies.id, destination.id));
+    await db.update(companyTransferRuns).set({ completedParts: ["reserved-object"] }).where(eq(companyTransferRuns.id, run.id));
+    expect(await companyTransferRunService.finishMigrationRollback(db, run.id)).toBe(false);
+    await db.update(companyTransferRuns).set({ completedParts: [] }).where(eq(companyTransferRuns.id, run.id));
     expect(await companyTransferRunService.finishMigrationRollback(db, run.id)).toBe(true);
     expect(await companyTransferRunService.finishMigrationRollback(db, run.id)).toBe(false);
     await companyTransferRunService.fail(db, run.id, "late error");
     const retry = await companyTransferRunService.resumeOrCreateMigration(db, "rollback-complete-source", "rollback-complete-key");
     expect(retry.run.id).toBe(run.id);
     expect(retry.run.status).toBe("rolled_back");
-    expect(retry.run.companyId).toBe(destination.id);
+    expect(retry.run.companyId).toBeNull();
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(false);
     expect(await companyTransferRunService.claimMigrationRollback(db, run.id, "rollback-complete-source")).toBe(false);
   });
