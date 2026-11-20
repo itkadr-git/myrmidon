@@ -1474,7 +1474,8 @@ exit 97
       writeFileSync(join(dir, "ufw"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\nif [ "$*" = "status verbose" ]; then printf "Status: inactive\\nDefault: deny (incoming), allow (outgoing), disabled (routed)\\n"; fi\n');
       chmodSync(join(dir, "ufw"), 0o700);
       const localScript = script.replace(/\/var\/tmp\/myrmidon-firewall-[a-f0-9-]+/g, dir);
-      spawnSync("sh", ["-c", localScript], { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: calls } });
+      const restored = spawnSync("sh", ["-c", localScript], { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: calls } });
+      expect(restored.status).not.toBe(0);
       expect(readFileSync(calls, "utf8")).not.toMatch(/default allow incoming/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
