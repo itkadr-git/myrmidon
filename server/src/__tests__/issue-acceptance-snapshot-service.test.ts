@@ -57,6 +57,39 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     expect(after?.document).toEqual(before?.document);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
+  it("cleans up agents and companies after deleting linked issues", async () => {
+    const dbh = await startEmbeddedPostgresTestDatabase("acceptance-cascade-delete-");
+    cleanups.push(() => dbh.cleanup());
+    const db = createDb(dbh.connectionString);
+    cleanups.push(async () => { await db.$client.end(); });
+    const seed = async (companyId: string) => {
+      const agentId = randomUUID();
+      const issueId = randomUUID();
+      const docId = randomUUID();
+      const revisionId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Cascade" });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Author", role: "engineer" });
+      await db.insert(issues).values({ id: issueId, companyId, title: "Task" });
+      await db.insert(documents).values({ id: docId, companyId, latestBody: "criteria", latestRevisionId: revisionId, createdByAgentId: agentId, updatedByAgentId: agentId });
+      await db.insert(documentRevisions).values({ id: revisionId, documentId: docId, companyId, revisionNumber: 1, body: "criteria", createdByAgentId: agentId });
+      await db.insert(issueDocuments).values({ companyId, issueId, documentId: docId, key: "acceptance-scenarios" });
+      return { agentId, issueId, docId, revisionId };
+    };
+    const first = await seed(companyA);
+    await db.delete(issues).where(eq(issues.id, first.issueId));
+    const otherAgent = randomUUID();
+    await db.insert(agents).values({ id: otherAgent, companyId: companyA, name: "Other", role: "engineer" });
+    await db.update(documentRevisions).set({ createdByAgentId: otherAgent }).where(eq(documentRevisions.id, first.revisionId));
+    await db.delete(agents).where(eq(agents.companyId, companyA));
+    expect((await db.select().from(documents).where(eq(documents.id, first.docId)))[0]?.createdByAgentId).toBeNull();
+    expect((await db.select().from(documentRevisions).where(eq(documentRevisions.id, first.revisionId)))[0]?.createdByAgentId).toBeNull();
+    await db.delete(companies).where(eq(companies.id, companyA));
+    const second = await seed(companyB);
+    await db.delete(issues).where(eq(issues.id, second.issueId));
+    await db.delete(agents).where(eq(agents.id, second.agentId));
+    await db.delete(companies).where(eq(companies.id, companyB));
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it(
     "reads issue identity and document revision as one minimal snapshot",
     async () => {
