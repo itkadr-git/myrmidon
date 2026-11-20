@@ -133,6 +133,19 @@ const support = await getEmbeddedPostgresTestSupport();
       const requests = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.runId, runId));
       expect(requests).toHaveLength(1);
       expect(requests[0]).toMatchObject({ companyId, runId, issueId, credentialId: submit.id, principalId, verifiedPeerSha256: fingerprint, documentId, expectedRevisionId: revisionId });
+      const result = (token: string, requestId = requests[0].id, cert = client) => new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const req = httpsRequest({ host: "127.0.0.1", port: address.port, path: `/api/service/native-runs/${runId}/finalization-requests/${requestId}`, method: "GET", ...cert, rejectUnauthorized: false,
+          headers: { authorization: `Bearer ${token}` } }, (res) => {
+          let body = ""; res.setEncoding("utf8"); res.on("data", (chunk) => { body += chunk; }); res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+        });
+        req.on("error", reject); req.end();
+      });
+      const pendingResult = await result(submit.token);
+      expect(pendingResult.status).toBe(200);
+      expect(JSON.parse(pendingResult.body)).toEqual({ requestId: requests[0].id, runId, state: "accepted" });
+      expect((await result(issued.token)).status).toBe(401);
+      expect((await result(submit.token, randomUUID())).status).toBe(404);
+      expect((await result(submit.token, requests[0].id, other)).status).toBe(401);
       expect(await db.select().from(nativeFinalizationOutbox).where(eq(nativeFinalizationOutbox.requestId, requests[0].id))).toHaveLength(1);
       const now = new Date();
       const claims = await Promise.all([
