@@ -32,6 +32,7 @@ export async function claimNativeFinalizationRequest(db: Db, worker: string, now
 export async function settleNativeFinalizationRequest(
   db: Db, requestId: string, worker: string, now: Date,
   result: { decisionId: string } | { errorCode: string },
+  leaseUntil: Date,
 ): Promise<boolean> {
   return db.transaction(async (tx) => {
     const [settled] = await tx.update(nativeFinalizationRequests).set({
@@ -43,6 +44,7 @@ export async function settleNativeFinalizationRequest(
       eq(nativeFinalizationRequests.id, requestId),
       eq(nativeFinalizationRequests.state, "processing"),
       eq(nativeFinalizationRequests.leaseOwner, worker),
+      eq(nativeFinalizationRequests.leaseUntil, leaseUntil),
       gt(nativeFinalizationRequests.leaseUntil, now),
     )).returning({ id: nativeFinalizationRequests.id });
     if (!settled) return false;
