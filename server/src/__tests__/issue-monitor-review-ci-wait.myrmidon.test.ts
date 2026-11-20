@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import request from "supertest";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -26,6 +27,9 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { issueRoutes } from "../routes/issues.js";
+import { routeApp } from "./helpers/route-test-harness.js";
+import { reviewWakesQuotaForCompany } from "../myrmidon/review-stage-recovery/review-wakes-quota.ts";
 import {
   REVIEW_CI_WAIT_INTERVAL_MS,
   REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
@@ -329,6 +333,222 @@ describeEmbeddedPostgres("issue monitor that waits for the CI of a review (Revie
     const deferred = await activityOf(issueId, "issue.monitor_deferred");
     expect(deferred).toHaveLength(1);
     expect(deferred[0]?.details).toMatchObject({ reason: "review_head_red" });
+  });
+
+  it("does not defer a replacement monitor using stale CI evidence", async () => {
+    const { issueId } = await seed();
+    const replacementAt = new Date(TICK_AT.getTime() + 3_600_000);
+    mockReviewCi.resolveCi.mockImplementation(async () => {
+      await db.update(issues).set({
+        monitorNextCheckAt: replacementAt,
+        monitorWakeRequestedAt: null,
+        monitorNotes: "new evidence",
+      }).where(eq(issues.id, issueId));
+      return { state: "pending", pullRequestUrl: PR_URL, headSha: HEAD };
+    });
+
+    const result = await heartbeatService(db, { executesRuns: false }).tickTimers(TICK_AT);
+
+    expect(result.enqueued).toBe(0);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.monitorNextCheckAt?.toISOString()).toBe(replacementAt.toISOString());
+    expect(issue.monitorNotes).toBe("new evidence");
+    expect(issue.monitorAttemptCount).toBe(0);
+    expect(await activityOf(issueId, "issue.monitor_deferred")).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+  });
+
+  it("dispatches replacement evidence once when an old CI lookup finishes after a concurrent update", async () => {
+    const { issueId } = await seed();
+    let releaseLookup!: () => void;
+    let lookupStarted!: () => void;
+    const started = new Promise<void>((resolve) => { lookupStarted = resolve; });
+    const release = new Promise<void>((resolve) => { releaseLookup = resolve; });
+    mockReviewCi.resolveCi.mockImplementationOnce(async () => {
+      lookupStarted();
+      await release;
+      return { state: "pending", pullRequestUrl: PR_URL, headSha: HEAD };
+    });
+    const scheduler = heartbeatService(db, { executesRuns: false });
+    const staleTick = scheduler.tickTimers(TICK_AT);
+    try {
+      await started;
+      await db.update(issues).set({
+        monitorWakeRequestedAt: null,
+        monitorNotes: "replacement evidence",
+      }).where(eq(issues.id, issueId));
+    } finally {
+      releaseLookup();
+    }
+    expect((await staleTick).enqueued).toBe(0);
+    expect(await activityOf(issueId, "issue.monitor_deferred")).toHaveLength(0);
+
+    headCi({ finalCheckConclusion: "success" });
+    expect((await scheduler.tickTimers(new Date(TICK_AT.getTime() + 60_000))).enqueued).toBe(1);
+    expect((await scheduler.tickTimers(new Date(TICK_AT.getTime() + 120_000))).enqueued).toBe(0);
+    const wakes = await db.select().from(agentWakeupRequests);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]?.payload).toMatchObject({ issueId, monitorNotes: "replacement evidence" });
+    await db.delete(heartbeatRuns);
+  });
+
+  it("preserves a concurrent review budget backoff after a claimed CI lookup finishes", async () => {
+    const { issueId } = await seed();
+    const backoffAt = new Date(TICK_AT.getTime() + 61 * 60_000);
+    let releaseLookup!: () => void;
+    let lookupStarted!: () => void;
+    const started = new Promise<void>((resolve) => { lookupStarted = resolve; });
+    const release = new Promise<void>((resolve) => { releaseLookup = resolve; });
+    mockReviewCi.resolveCi.mockImplementationOnce(async () => {
+      lookupStarted();
+      await release;
+      return { state: "pending", pullRequestUrl: PR_URL, headSha: HEAD };
+    });
+    const scheduler = heartbeatService(db, { executesRuns: false });
+    const staleTick = scheduler.tickTimers(TICK_AT);
+    try {
+      await started;
+      // Model the persisted budget deferral from the concurrent review PATCH.
+      await db.update(issues).set({
+        monitorNextCheckAt: backoffAt,
+        monitorWakeRequestedAt: null,
+        executionState: sql`jsonb_set(${issues.executionState}, '{reviewCiBudgetDeferred}', 'true'::jsonb, true)`,
+      }).where(eq(issues.id, issueId));
+    } finally {
+      releaseLookup();
+    }
+    expect((await staleTick).enqueued).toBe(0);
+    const [deferred] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(deferred!.monitorNextCheckAt?.toISOString()).toBe(backoffAt.toISOString());
+    expect(deferred!.monitorWakeRequestedAt).toBeNull();
+    expect(deferred!.executionState).toMatchObject({ reviewCiBudgetDeferred: true });
+    expect(await activityOf(issueId, "issue.monitor_deferred")).toHaveLength(0);
+    expect((await scheduler.tickTimers(new Date(backoffAt.getTime() - 1))).enqueued).toBe(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+  });
+
+  it("keeps the budget deferral when a real review PATCH overlaps a claimed monitor", async () => {
+    const { companyId, reviewerId, issueId } = await seed();
+    const runId = randomUUID();
+    const now = new Date();
+    const due = new Date(now.getTime() - 60_000);
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewerId, status: "succeeded", contextSnapshot: { issueId } });
+    await db.update(issues).set({
+      monitorNextCheckAt: due,
+      executionState: sql`jsonb_set(${issues.executionState}, '{monitor,status}', '"triggered"'::jsonb)`,
+    }).where(eq(issues.id, issueId));
+    let releaseLookup!: () => void;
+    let lookupStarted!: () => void;
+    const started = new Promise<void>((resolve) => { lookupStarted = resolve; });
+    const release = new Promise<void>((resolve) => { releaseLookup = resolve; });
+    mockReviewCi.resolveCi.mockResolvedValue({ state: "complete", finalCheckConclusion: "success", pullRequestUrl: PR_URL, headSha: HEAD });
+    mockReviewCi.resolveCi.mockImplementationOnce(async () => {
+      lookupStarted();
+      await release;
+      return { state: "complete", finalCheckConclusion: "success", pullRequestUrl: PR_URL, headSha: HEAD };
+    });
+    const scheduler = heartbeatService(db, { executesRuns: false });
+    const staleTick = scheduler.tickTimers(now);
+    try {
+      await started;
+      const app = routeApp(db, { type: "agent", agentId: reviewerId, companyId, source: "agent_key", runId } as never,
+        (routeDb, storage) => issueRoutes(routeDb, storage, {
+          resolveReviewPullRequestCi: async () => ({ state: "unknown", reason: "budget_exhausted", pullRequestUrl: PR_URL, headSha: HEAD }),
+        }));
+      const response = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI unavailable" });
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      const [deferred] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(deferred!.monitorWakeRequestedAt).toBeNull();
+      expect(deferred!.monitorNextCheckAt!.getTime()).toBeGreaterThan(Date.now() + 60 * 60_000);
+      expect(deferred!.executionState).toMatchObject({ reviewCiBudgetDeferred: true });
+    } finally {
+      releaseLookup();
+    }
+    expect((await staleTick).enqueued).toBe(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+    await db.update(issues).set({
+      monitorNextCheckAt: now,
+      monitorWakeRequestedAt: null,
+      monitorNotes: "replacement evidence",
+      executionState: sql`jsonb_set(${issues.executionState}, '{monitor,status}', '"scheduled"'::jsonb)`,
+    }).where(eq(issues.id, issueId));
+    expect((await scheduler.tickTimers(new Date(now.getTime() + 1_000))).enqueued).toBe(1);
+    expect((await scheduler.tickTimers(new Date(now.getTime() + 2_000))).enqueued).toBe(0);
+    const wakes = await db.select().from(agentWakeupRequests);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]?.payload).toMatchObject({ issueId, monitorNotes: "replacement evidence" });
+    await db.delete(heartbeatRuns);
+  });
+
+  it("does not defer a replacement monitor when the stale claim hits the review wake quota", async () => {
+    const { companyId, issueId } = await seed();
+    const replacementAt = new Date(TICK_AT.getTime() + 3_600_000);
+    mockReviewCi.resolveCi.mockImplementation(async () => {
+      reviewWakesQuotaForCompany(companyId).remaining = 0;
+      await db.update(issues).set({
+        monitorNextCheckAt: replacementAt,
+        monitorWakeRequestedAt: null,
+        monitorNotes: "new evidence",
+      }).where(eq(issues.id, issueId));
+      return { state: "complete", finalCheckConclusion: "success", pullRequestUrl: PR_URL, headSha: HEAD };
+    });
+
+    expect((await heartbeatService(db, { executesRuns: false }).tickTimers(TICK_AT)).enqueued).toBe(0);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.monitorNextCheckAt?.toISOString()).toBe(replacementAt.toISOString());
+    expect(issue.monitorNotes).toBe("new evidence");
+    expect(await activityOf(issueId, "issue.monitor_deferred")).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+  });
+
+  it("does not defer a replacement monitor on stale CI access failure", async () => {
+    const { issueId } = await seed();
+    const replacementAt = new Date(TICK_AT.getTime() + 3_600_000);
+    mockReviewCi.resolveCi.mockImplementation(async () => {
+      await db.update(issues).set({
+        monitorNextCheckAt: replacementAt,
+        monitorWakeRequestedAt: null,
+        monitorNotes: "new evidence",
+      }).where(eq(issues.id, issueId));
+      return { state: "unknown", reason: "pull:http_404", pullRequestUrl: PR_URL, headSha: HEAD };
+    });
+
+    const result = await heartbeatService(db, { executesRuns: false }).tickTimers(TICK_AT);
+
+    expect(result.enqueued).toBe(0);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.monitorNextCheckAt?.toISOString()).toBe(replacementAt.toISOString());
+    expect(issue.monitorNotes).toBe("new evidence");
+    expect(issue.monitorAttemptCount).toBe(0);
+    expect(await activityOf(issueId, "issue.monitor_deferred")).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+  });
+
+  it("does not clear a replacement monitor after the old CI access streak expires", async () => {
+    const { companyId, issueId } = await seed();
+    for (const minutes of [20, 10]) {
+      const at = new Date(TICK_AT.getTime() - minutes * 60_000);
+      await db.insert(activityLog).values({
+        companyId, actorType: "system", actorId: "heartbeat", action: "issue.monitor_deferred",
+        entityType: "issue", entityId: issueId, createdAt: at,
+        details: { reason: "review_ci_no_access", at: at.toISOString() },
+      });
+    }
+    const replacementAt = new Date(TICK_AT.getTime() + 3_600_000);
+    mockReviewCi.resolveCi.mockImplementation(async () => {
+      await db.update(issues).set({
+        monitorNextCheckAt: replacementAt, monitorWakeRequestedAt: null, monitorNotes: "new evidence",
+      }).where(eq(issues.id, issueId));
+      return { state: "unknown", reason: "pull:http_404", pullRequestUrl: PR_URL, headSha: HEAD };
+    });
+
+    await heartbeatService(db, { executesRuns: false }).tickTimers(TICK_AT);
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.monitorNextCheckAt?.toISOString()).toBe(replacementAt.toISOString());
+    expect(issue.monitorNotes).toBe("new evidence");
+    expect(await activityOf(issueId, "issue.monitor_cleared")).toHaveLength(0);
+    expect(await db.select().from(issueComments)).toHaveLength(0);
   });
 
   it("keeps waiting while CI runs, exactly as before", async () => {

@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   agents,
   agentWakeupRequests,
@@ -2006,6 +2006,28 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     await expect(reconcileNativeFinalizations(db, [seeded.runId]))
       .rejects.toThrow("native_pending_effect_target_missing:enqueue_continuation");
   }, 30_000);
+
+  it("rejects a service-required decision without an authorized request", async () => {
+    const template = corpus.fixtures.find((candidate) => candidate.mode === "native")!;
+    const seeded = await seedFixture({
+      ...template, id: `service-gate-${randomUUID()}`,
+      given: { ...template.given, priorIssueStatus: "in_progress", completionState: "policy_review_cleanup" },
+    });
+    await db.execute(sql`update native_run_finalizations set authorization_mode = 'service_required' where run_id = ${seeded.runId}`);
+    await expect(commitNativeStatusDecision({
+      db, companyId, issueId: seeded.issueId, runId: seeded.runId,
+      assessmentId: seeded.assessmentId, priorStatus: "in_progress", priorStatusVersion: 0, priorDecisionId: null,
+      decision: {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "in_review", toStatus: "in_review", reasonCode: "completion_review_required",
+        unblockDescriptor: null, effects: [],
+      },
+    })).rejects.toThrow("native_service_authorization_required");
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue!.status).toBe("in_progress");
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, seeded.runId))).toEqual([]);
+    expect(await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.issueId, seeded.issueId))).toEqual([]);
+  });
 
   async function seedPolicyReview(options: { genuine?: boolean; priorStatus?: "in_progress" | "blocked" | "in_review" } = {}) {
     const template = corpus.fixtures.find((candidate) => candidate.mode === "native")!;

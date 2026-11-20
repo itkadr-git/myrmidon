@@ -77,9 +77,6 @@ describe("myrmidon(OPE-8656): notifyOwnerAboutUpdate lifecycle & settings", () =
       async readSettings(_companyId) {
         return defaultTelegramNotifySettings();
       },
-      async findOwnerDeliveryRecipient(_companyId) {
-        return null;
-      },
       async resolveDirectConversation(_companyId, _chatId, _topicId) {
         return null;
       },
@@ -112,37 +109,7 @@ describe("myrmidon(OPE-8656): notifyOwnerAboutUpdate lifecycle & settings", () =
     expect(publications).toHaveLength(0);
   });
 
-  it("delivers through owner-delivery when active channel exists", async () => {
-    const { ports, publications } = makeMockPorts({
-      async readSettings() {
-        const s = defaultTelegramNotifySettings();
-        s.updates.enabled = true;
-        s.updates.chatId = "direct-chat-id";
-        return s;
-      },
-      async findOwnerDeliveryRecipient() {
-        return {
-          conversationId: "conv-owner-1",
-          endpointId: "endp-owner-1",
-          issueId: "issue-owner-1",
-        };
-      },
-    });
-
-    const res = await notifyOwnerAboutUpdate(ports, {
-      companyId: "c1",
-      eventType: "rollout_succeeded",
-      version: "v1.7.0",
-    });
-
-    expect(res).toEqual({ sent: true, channel: "owner_delivery" });
-    expect(publications).toHaveLength(1);
-    expect(publications[0].conversationId).toBe("conv-owner-1");
-    expect(publications[0].endpointId).toBe("endp-owner-1");
-    expect(publications[0].text).toContain("✅ Успешный выкат обновления: v1.7.0");
-  });
-
-  it("falls back to telegram_direct when no owner-delivery exists", async () => {
+  it("delivers to the configured updates chat/topic", async () => {
     const { ports, publications } = makeMockPorts({
       async readSettings() {
         const s = defaultTelegramNotifySettings();
@@ -150,9 +117,6 @@ describe("myrmidon(OPE-8656): notifyOwnerAboutUpdate lifecycle & settings", () =
         s.updates.chatId = "tg-direct-chat";
         s.updates.topicId = "123";
         return s;
-      },
-      async findOwnerDeliveryRecipient() {
-        return null;
       },
       async resolveDirectConversation(_companyId, chatId, topicId) {
         expect(chatId).toBe("tg-direct-chat");
@@ -176,6 +140,33 @@ describe("myrmidon(OPE-8656): notifyOwnerAboutUpdate lifecycle & settings", () =
     expect(publications).toHaveLength(1);
     expect(publications[0].conversationId).toBe("conv-direct-1");
     expect(publications[0].text).toContain("🚨 Автооткат завершён на версию v1.6.6. Причина: health check failed");
+  });
+
+  it("two active direct conversations of different bots and no updates.chatId: nothing is sent", async () => {
+    const resolve = vi.fn(async () => ({
+      conversationId: "conv-bbq-bot-dm",
+      endpointId: "endp-bbq-bot",
+      issueId: "issue-bbq-bot",
+    }));
+    const { ports, publications } = makeMockPorts({
+      async readSettings() {
+        const s = defaultTelegramNotifySettings();
+        s.updates.enabled = true;
+        s.updates.chatId = null;
+        return s;
+      },
+      resolveDirectConversation: resolve,
+    });
+
+    const res = await notifyOwnerAboutUpdate(ports, {
+      companyId: "c1",
+      eventType: "rollout_succeeded",
+      version: "v1.7.0",
+    });
+
+    expect(res).toEqual({ sent: false, reason: "no_destination_channel" });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(publications).toHaveLength(0);
   });
 
   it("returns no_destination_channel when enabled but no channel exists", async () => {

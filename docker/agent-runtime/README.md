@@ -246,6 +246,29 @@ produce a folder the host GC (`scripts/myrmidon/host-gc/host-clone-cache-gc.mjs`
 does not recognize. When the caller-provided workspace path disagrees with the
 derived name, the adapter logs the derived folder it created.
 
+### devbuild on the build VPS (OMP-RUNNER-DEVBUILD)
+
+The image carries `rsync` and the same `devbuild` client as the hermes bots
+(`/usr/local/bin/devbuild`, from `docker/bot-runtime/devbuild/devbuild`), so an
+engineer can run tests and builds on the build VPS instead of in the runner. It
+is off until the operator enables it; with none of the variables below set the
+runner behaves as before. Steps, per runner:
+
+1. Take the key and the connection the hermes bots use: the host key file
+   (`/srv/devbuild-ssh/id_ed25519`, mode 0640 root:10001 is fine, the container
+   process is root), `DEVBUILD_HOST`, `DEVBUILD_USER` (and `DEVBUILD_BASE`, default
+   `/srv/devbuild`).
+2. In the runner's env file set `OMP_RUNNER_DEVBUILD_KEY=/srv/devbuild-ssh/id_ed25519`,
+   `DEVBUILD_HOST=...`, `DEVBUILD_USER=...`. The compose file mounts the key
+   read-only at `/opt/devbuild-ssh/id_ed25519` and passes the three variables.
+3. Recreate the container while its agent has no run
+   (`docker compose up -d --force-recreate`). The entrypoint writes
+   `/etc/profile.d/omp-runner-devbuild.sh` (sshd does not pass container
+   environment to the board's SSH sessions) and logs
+   `omp-runner: devbuild enabled for <user>@<host>`; with the host and user set but
+   no key it logs a WARNING and leaves devbuild off.
+4. Check from the board's SSH path: `ssh ... 'devbuild "echo ok"'` in a git workspace.
+
 ### Updating a runner that already runs (shared cache rollout)
 
 A runner started before the shared cache has no cache mounts and none of its

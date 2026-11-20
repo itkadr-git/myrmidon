@@ -25,8 +25,9 @@
 //     whose `name` equals the specifier's package, resolved through its own
 //     `exports` map. Read that map, pick the target by
 //     `import`/`node`/`default` conditions (string targets and `./*`
-//     patterns included), then verify the target file exists and is
-//     compiled JS (not `.ts`, not under `/src/`). Reached package files are
+//     patterns included); without an exports map, resolve subpaths relative
+//     to the package root. Verify the target file exists and is compiled JS
+//     (not `.ts`, not under `/src/`). Reached package files are
 //     then walked recursively for their own imports;
 //   - compiled test artifacts (`*.test.js`, `*.myrmidon.test.js`) are never
 //     loaded by the production runtime and are skipped;
@@ -67,7 +68,7 @@ const TEST_ARTIFACT_EXT = /(?:^|\.)test\.js$|\.myrmidon\.test\.js$/;
  * Returns spans { start, end, value } so callers can inspect the code text
  * immediately around each literal.
  */
-export function scanCodeStringLiterals(text) {
+export function scanCodeStringLiterals(text, code = null) {
   const spans = [];
   const n = text.length;
   let i = 0;
@@ -76,25 +77,30 @@ export function scanCodeStringLiterals(text) {
   while (i < n) {
     const c = text[i];
     if (inLineComment) {
-      if (c === "\n") inLineComment = false;
+      if (c === "\n" || c === "\r") inLineComment = false;
+      else if (code) code[i] = " ";
       i += 1;
       continue;
     }
     if (inBlockComment) {
       if (c === "*" && text[i + 1] === "/") {
+        if (code) code[i] = code[i + 1] = " ";
         inBlockComment = false;
         i += 2;
         continue;
       }
+      if (code && c !== "\n" && c !== "\r") code[i] = " ";
       i += 1;
       continue;
     }
     if (c === "/" && text[i + 1] === "/") {
+      if (code) code[i] = code[i + 1] = " ";
       inLineComment = true;
       i += 2;
       continue;
     }
     if (c === "/" && text[i + 1] === "*") {
+      if (code) code[i] = code[i + 1] = " ";
       inBlockComment = true;
       i += 2;
       continue;
@@ -225,7 +231,9 @@ function lineAt(text, lineStarts, pos) {
  * with a string literal), "url" (new URL("...", import.meta.url)).
  */
 export function scanImports(text) {
-  const spans = scanCodeStringLiterals(text);
+  const code = text.split("");
+  const spans = scanCodeStringLiterals(text, code);
+  const context = code.join("");
   const lineStarts = [];
   for (let i = 0; i < text.length; i += 1) {
     if (text[i] === "\n") lineStarts.push(i + 1);
@@ -234,8 +242,8 @@ export function scanImports(text) {
   const seen = new Set();
   for (const span of spans) {
     if (span.value === "") continue;
-    const before = text.slice(Math.max(0, span.start - 80), span.start).replace(/\s+$/, "");
-    const after = text.slice(span.end, span.end + 60);
+    const before = context.slice(Math.max(0, span.start - 80), span.start).replace(/\s+$/, "");
+    const after = context.slice(span.end, span.end + 60);
     let kind = null;
     if (/import\s*\($/.test(before) && /^\s*[),]/.test(after)) {
       kind = "import"; // dynamic import("...")
@@ -353,7 +361,7 @@ export function matchExportsTarget(exportsField, main, subpath) {
       if (!/\.(?:js|mjs|cjs|ts|d\.ts)$/.test(entry)) entry += ".js";
       return entry;
     }
-    return subpath.slice(1); // "./lib/x.js" -> "lib/x.js"
+    return subpath.slice(2); // "./lib/x.js" -> "lib/x.js"
   }
   if (typeof exportsField === "string") {
     return subpath === "." ? exportsField : undefined;
@@ -574,7 +582,7 @@ function pluralRu(n, one, few, many) {
 
 function displayPath(file, cwd) {
   const rel = relative(cwd, file);
-  return rel.startsWith("..") ? file : rel;
+  return rel === ".." || rel.startsWith(`..${sep}`) ? file : rel;
 }
 
 export function formatFailures(failures, cwd = process.cwd()) {

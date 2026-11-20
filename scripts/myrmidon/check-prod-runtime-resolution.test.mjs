@@ -78,6 +78,12 @@ describe("parseArgs", () => {
 });
 
 describe("scanImports", () => {
+  it("ignores a string after a line comment ending in from", () => {
+    for (const newline of ["\n", "\r\n"]) {
+      assert.deepEqual(scanImports(`// from${newline}"./also-not.js";`), []);
+    }
+  });
+
   it("finds static, export-from, side-effect, dynamic and new URL imports with line numbers", () => {
     const text = [
       'import { a } from "@myrmidon/a";',
@@ -154,6 +160,22 @@ describe("main on fixtures", () => {
       const dist = writeServerDist(dir, 'import { u } from "@myrmidon/pat/pat-util";\nexport { u };\n');
       const { code, output } = runMain(dir, ["--dist", path.relative(dir, dist)]);
       assert.equal(code, 0, output);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves and scans an existing legacy package subpath", () => {
+    const dir = mkdtemp();
+    try {
+      writePkg(dir, "legacy", {
+        distFiles: { "feature.js": 'import "./missing.ts";\n' },
+      });
+      const dist = writeServerDist(dir, 'import "@myrmidon/legacy/dist/feature.js";\n');
+      const { code, output } = runMain(dir, ["--dist", path.relative(dir, dist)]);
+      assert.equal(code, 1);
+      assert.match(output, /legacy\/dist\/feature\.js:1 \.\/missing\.ts → относительный импорт \.ts/);
+      assert.doesNotMatch(output, /файл не собран/);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

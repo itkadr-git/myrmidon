@@ -35,6 +35,22 @@ without any git inspection. There is nothing on the board to delete. The task
 directory on the bot disk follows the bot-disk policy (`general.botDisk`:
 thresholds, scratch TTL, idle TTL).
 
+## Bare bases with extensions.worktreeConfig
+
+A task copy is a linked worktree of the shared bare repository base. When the
+base has `extensions.worktreeConfig=true`, a new worktree can inherit
+`core.bare=true` and Git rejects `git status` as outside a work tree.
+
+- After creating a worktree, `myr-ws open` writes `core.bare=false` to the
+  copy's own `config.worktree`. It does not change the shared base config;
+  the base remains bare.
+- On reuse, `open` and the botd `myr-ws repair` command fix previously
+  half-created copies and materialize the missing checkout. HEAD, branch,
+  index, and untracked files are preserved; nothing is reset or deleted.
+- `repair` skips a copy with a live process inside it. A repaired review copy
+  gets a normal sparse task checkout; `open --review` warns when it reuses an
+  existing copy rather than recreating it.
+
 ## Adapters that run on the board host
 
 A local adapter keeps the git worktree under `.paperclip/worktrees` of the

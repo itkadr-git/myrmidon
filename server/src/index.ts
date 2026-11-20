@@ -19,6 +19,10 @@ import { createPullRequestMergeDetailsResolver } from "./services/github-pull-re
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server as HttpServer } from "node:http";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
+import express from "express";
+import { acceptanceServiceRoutes } from "./routes/acceptance-service.js";
+import { errorHandler } from "./middleware/index.js";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -244,6 +248,7 @@ import {
   createPendingInteractionWakeSweep,
   readPendingInteractionWakeContextSnapshot,
 } from "./myrmidon/pending-interaction-wake-sweep.js"; // myrmidon(P12)
+import { createStaleInteractionRewakeSweep } from "./myrmidon/stale-interaction-rewake-sweep.js"; // myrmidon(INTERACTION-WAKES-DAILY-LIMIT)
 import { createInteractionEscalationSweep } from "./myrmidon/interaction-escalation/index.js"; // myrmidon(P1.8)
 // myrmidon(P11): database backup catch-up
 import { BACKUP_CATCHUP_WINDOW_ENV, readBackupCatchUpSettings, startBackupCatchUp } from "./myrmidon/backup-catch-up.js";
@@ -1341,7 +1346,31 @@ async function startServerWithDatabaseTeardown(
   writeProductEnv(process.env, "API_URL", configuredApiUrl); // myrmidon(REBRAND-C)
 
   let startupListenerBound = false;
+  let acceptanceListener: HttpsServer | null = null;
   try {
+  // A separate listener never trusts proxy-supplied certificate identities.
+  const acceptancePort = readProductEnv("ACCEPTANCE_SERVICE_PORT");
+  const acceptanceKey = readProductEnv("ACCEPTANCE_SERVICE_TLS_KEY_FILE");
+  const acceptanceCert = readProductEnv("ACCEPTANCE_SERVICE_TLS_CERT_FILE");
+  const acceptanceCa = readProductEnv("ACCEPTANCE_SERVICE_TLS_CA_FILE");
+  if (processRoleProfile.role !== "api" && [acceptancePort, acceptanceKey, acceptanceCert, acceptanceCa].some(Boolean)) {
+    const port = Number(acceptancePort);
+    if (!acceptancePort || !acceptanceKey || !acceptanceCert || !acceptanceCa || !Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error("Incomplete or invalid acceptance service TLS configuration");
+    }
+    const serviceApp = express();
+    serviceApp.use("/api", acceptanceServiceRoutes(db));
+    serviceApp.use(errorHandler);
+    acceptanceListener = createHttpsServer({ key: readFileSync(acceptanceKey), cert: readFileSync(acceptanceCert), ca: readFileSync(acceptanceCa), requestCert: true, rejectUnauthorized: true }, serviceApp);
+    const listener = acceptanceListener;
+    await new Promise<void>((resolveListen, rejectListen) => {
+      listener.once("error", rejectListen);
+      listener.listen(port, readProductEnv("ACCEPTANCE_SERVICE_HOST") || "127.0.0.1", () => {
+        listener.off("error", rejectListen);
+        resolveListen();
+      });
+    });
+  }
   // myrmidon(OPE-11755): runnerd is local; bind its URL to the actual listening socket.
   // myrmidon(OPE-12274): `executesRuns` roles own runnerd registrations (worker in
   // single mode serves the public port itself), so the PRP upgrade handler must
@@ -1933,8 +1962,33 @@ async function startServerWithDatabaseTeardown(
       });
     },
   });
+  // myrmidon(INTERACTION-WAKES-DAILY-LIMIT): a card still pending for its addressee
+  // after 30 minutes, with no live run and no recent wake, wakes the addressee
+  // again (at most once per card per 30 minutes).
+  const staleInteractionRewakeSweep = createStaleInteractionRewakeSweep({
+    db: db as any,
+    rewake: async (wake) => {
+      await backgroundHeartbeat.wakeup(wake.agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "interaction_pending",
+        payload: wake.payload,
+        contextSnapshot: wake.contextSnapshot,
+        idempotencyKey: wake.idempotencyKey,
+        requestedByActorType: "system",
+        requestedByActorId: "stale-interaction-rewake",
+      });
+    },
+  });
   const schedulePendingInteractionWakeSweep = () => {
     if (heartbeatSchedulerStopped) return;
+    trackHeartbeatSchedulerWork(staleInteractionRewakeSweep().then((result) => {
+      if (result.rewoken > 0) {
+        logger.info(result, "stale interaction re-wake sweep woke addressees of unanswered cards");
+      }
+    }).catch((err) => {
+      logger.error({ err }, "stale interaction re-wake sweep failed");
+    }));
     trackHeartbeatSchedulerWork(pendingInteractionWakeSweep().then((result) => {
       if (result.reAdmitted > 0 || result.cancelled > 0) {
         logger.info(result, "pending interaction wake sweep settled parked addressee wakes");
@@ -3337,6 +3391,7 @@ async function startServerWithDatabaseTeardown(
     // myrmidon(PROCS-1.1): the worker's internal listener is a second server,
     // so it needs its own close.
     workerLoopbackServer?.close();
+    if (acceptanceListener) await closeHttpListenerForShutdown({ server: acceptanceListener, signal, log: logger });
     stopBotContainers(); // myrmidon(W2a)
     shutdownIdleStopService(); // myrmidon(IDLE-STOP)
     stopLitellmCostSweep(); // myrmidon(M2-A)
@@ -3496,6 +3551,7 @@ async function startServerWithDatabaseTeardown(
     shutdown: (signal = "SIGTERM") => shutdown(signal, false),
   };
   } catch (error) {
+    if (acceptanceListener?.listening) await new Promise<void>((resolveClose) => acceptanceListener?.close(() => resolveClose()));
     if (startupListenerBound) {
       await new Promise<void>((resolveClose) => {
         try {

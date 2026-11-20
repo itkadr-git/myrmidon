@@ -427,12 +427,17 @@ describe("codex auth cache store", () => {
         releaseCompanyA = resolve;
       });
 
+      let signalCompanyAEntered!: () => void;
+      const companyAEntered = new Promise<void>((resolve) => {
+        signalCompanyAEntered = resolve;
+      });
       const companyACall = withCodexAccountHomePromotionLock(env, "company-a", async () => {
         events.push("a-enter");
+        signalCompanyAEntered();
         await companyAGate;
         events.push("a-exit");
       });
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await companyAEntered;
       const companyBCall = withCodexAccountHomePromotionLock(env, "company-b", async () => {
         events.push("b-enter");
         events.push("b-exit");
@@ -497,12 +502,17 @@ describe("codex auth cache store", () => {
         releaseCompanyA = resolve;
       });
 
+      let signalCompanyAEntered!: () => void;
+      const companyAEntered = new Promise<void>((resolve) => {
+        signalCompanyAEntered = resolve;
+      });
       const companyACall = withAccountHomeSecretMutationLock(env, "company-a", async () => {
         events.push("a-enter");
+        signalCompanyAEntered();
         await companyAGate;
         events.push("a-exit");
       });
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await companyAEntered;
       const companyBCall = withAccountHomeSecretMutationLock(env, "company-b", async () => {
         events.push("b-enter");
         events.push("b-exit");

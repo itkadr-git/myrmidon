@@ -10,7 +10,7 @@
 // the scheduler, the merge switched off — an announcement is a no-op, and the
 // periodic sweep stays the safety net that finds the same PR on its own.
 
-export type BoardMergeTriggerSource = "review_approved" | "ci_completed";
+export type BoardMergeTriggerSource = "review_approved" | "ci_completed" | "check_completed";
 
 export interface BoardMergeTriggerEvent {
   companyId: string;

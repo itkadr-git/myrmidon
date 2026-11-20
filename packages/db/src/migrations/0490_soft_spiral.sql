@@ -1,0 +1,1 @@
+-- Schema snapshot synchronization: these changes are already applied in 0489.

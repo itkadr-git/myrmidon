@@ -420,34 +420,13 @@ function cloneRecord(value: unknown): Record<string, unknown> | null {
   return { ...value };
 }
 
-function assigneeMatchesExecutionPrincipal(input: {
-  assigneeAgentId: string | null;
-  assigneeUserId: string | null;
-}, principal: { type: string; agentId?: string | null; userId?: string | null } | null): boolean {
-  if (!principal) return false;
-  if (principal.type === "agent") {
-    return input.assigneeAgentId === principal.agentId && input.assigneeUserId === null;
-  }
-  if (principal.type === "user") {
-    return input.assigneeAgentId === null && input.assigneeUserId === principal.userId;
-  }
-  return false;
-}
-
 function quarantineRestoreRequestedSourceStatus(input: {
-  status: string;
-  assigneeAgentId: string | null;
-  assigneeUserId: string | null;
   executionState: unknown;
 }): "todo" | undefined {
   const state = parseIssueExecutionState(input.executionState);
-  if (
-    state?.status === "pending" &&
-    input.status === "in_review" &&
-    assigneeMatchesExecutionPrincipal(input, state.currentParticipant)
-  ) {
-    return undefined;
-  }
+  // A pending stage must be repaired, not advanced to todo. The policy
+  // transition restores its participant even when the blocked issue drifted.
+  if (state?.status === "pending") return undefined;
   return "todo";
 }
 
