@@ -1452,6 +1452,37 @@ exit 97
     }
   });
 
+  it("fails rollback when its policy probe has an unrecognized default", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 1 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-malformed-restore-policy", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+    await executor.execute(claim, createMockReporter().reporter);
+    const command = ssh.executedCommands.find(({ command }) => command.includes("prepare-myrmidon-firewall-restore"))?.command ?? "";
+    const script = /printf '%s' '([^']+)'/.exec(command)?.[1] ?? "";
+    expect(script).not.toBe("");
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-malformed-restore-"));
+    try {
+      const calls = join(dir, "calls");
+      writeFileSync(calls, "");
+      writeFileSync(join(dir, "policy-changed"), "");
+      writeFileSync(join(dir, "ufw"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\nif [ "$*" = "status verbose" ]; then printf "Status: active\\nDefault: unknown\\n"; fi\n');
+      chmodSync(join(dir, "ufw"), 0o700);
+      const localScript = script.replace(/\/var\/tmp\/myrmidon-firewall-[a-f0-9-]+/g, dir);
+      const restored = spawnSync("sh", ["-c", localScript], { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: calls } });
+      expect(restored.status).not.toBe(0);
+      expect(readFileSync(calls, "utf8")).not.toMatch(/default allow incoming/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("does not restore a policy when the rollback probe reports an inactive firewall", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
