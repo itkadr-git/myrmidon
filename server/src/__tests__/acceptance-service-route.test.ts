@@ -54,6 +54,8 @@ const support = await getEmbeddedPostgresTestSupport();
       expect((await call(issued.token, client, `W/${first.etag}`)).status).toBe(412);
       expect((await call(issued.token, other)).status).toBe(401);
       expect((await call(foreign.token)).status).toBe(404);
+      const concurrent = await Promise.all(Array.from({ length: 8 }, () => call(issued.token, client, first.etag)));
+      expect(concurrent.every((response) => response.status === 200 && response.etag === first.etag)).toBe(true);
       await db.update(issues).set({ identifier: "AAA-2" }).where(eq(issues.id, issueId));
       expect((await call(issued.token, client, first.etag, issueId)).status).toBe(412);
       await service.revoke(companyId, issued.id);

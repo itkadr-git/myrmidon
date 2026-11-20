@@ -10,6 +10,10 @@ export function acceptanceServiceRoutes(db: Db) {
   const credentials = acceptanceServiceCredentialsService(db);
   const snapshots = issueAcceptanceSnapshotService(db);
   router.get("/service/issues/:id/acceptance-scenarios", async (req, res) => {
+    if (req.method !== "GET") {
+      res.sendStatus(404);
+      return;
+    }
     res.setHeader("Cache-Control", "no-store");
     const socket = req.socket;
     const authorization = req.headers.authorization;
