@@ -1162,6 +1162,20 @@ describe("company migration dry run", () => {
     expect((await companyTransferRunService.getRun(db, run.id))?.completedParts).toEqual([key]);
   });
 
+  it("rejects recovery operations when the migration source provenance is empty", async () => {
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "valid-source", "empty-source-recovery");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Empty source recovery destination" }, { transferRunId: run.id });
+    await db.update(companyTransferRuns).set({
+      containerRef: { kind: "company_migration", sourceCompanyId: "", destinationClaimed: true, destinationCompanyId: destination.id },
+    }).where(eq(companyTransferRuns.id, run.id));
+    const key = `${destination.id}/assets/general/2026/11/16/550e8400-e29b-41d4-a716-446655440000-file`;
+    await expect(companyTransferRunService.reserveMigrationObject(db, run.id, destination.id, key)).rejects.toThrow();
+    await companyTransferRunService.releaseApplyClaim(db, run.id, "interrupted");
+    expect(await companyTransferRunService.claimMigrationRollback(db, run.id, "")).toBe(false);
+    expect((await companyTransferRunService.getRun(db, run.id))?.completedParts).toEqual([]);
+  });
+
   it("rejects storage reservations when durable destination provenance disagrees", async () => {
     const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "reservation-provenance-source", "reservation-provenance");
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
