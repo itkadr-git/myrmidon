@@ -1427,6 +1427,7 @@ describe("company migration dry run", () => {
         dryRun: false, apply: true, confirm: "approved pilot",
       });
       expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(insert).toHaveBeenCalledWith(projects);
     } finally {
       insert.mockRestore();
     }
