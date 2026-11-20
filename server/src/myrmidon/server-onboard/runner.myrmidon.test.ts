@@ -58,7 +58,7 @@ it.each([false, true])("closes every SSH session after stored-key access (firewa
   }
 });
 
-it("reports failure when the password hardening configuration cannot be written", async () => {
+it.each(["write", "reload"] as const)("reports failure when password hardening %s fails", async (failure) => {
   const hostKey = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs1", format: "pem" });
   const pair = generateSshKeyPair();
   const commands: string[] = [];
@@ -70,7 +70,8 @@ it("reports failure when the password hardening configuration cannot be written"
         commands.push(info.command);
         const stream = acceptExec();
         if (info.command.includes("myrmidon-key-verify")) stream.write("myrmidon-key-verify\n");
-        stream.exit(info.command.includes("sudo tee /etc/ssh/sshd_config.d/") ? 1 : 0);
+        const fails = failure === "write" ? info.command.includes("sudo tee /etc/ssh/sshd_config.d/") : info.command.includes("systemctl reload");
+        stream.exit(fails ? 1 : 0);
         stream.end();
       });
     }));
@@ -94,7 +95,7 @@ it("reports failure when the password hardening configuration cannot be written"
     await runOnboardOnce({ baseUrl: "http://board", companyId: "company", token: "token", fetcher });
     expect(reports.some((report) => report.status === "failed")).toBe(true);
     expect(reports.some((report) => report.status === "succeeded")).toBe(false);
-    expect(commands.some((command) => command.includes("systemctl reload"))).toBe(false);
+    expect(commands.some((command) => command.includes("systemctl reload"))).toBe(failure === "reload");
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
