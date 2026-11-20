@@ -110,7 +110,10 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     const second = await seed(companyB);
     await db.delete(issues).where(eq(issues.id, second.issueId));
     await db.delete(agents).where(eq(agents.id, second.agentId));
+    await db.insert(documentRevisions).values({ documentId: second.docId, companyId: companyB, revisionNumber: 2, body: "second" });
     await db.delete(companies).where(eq(companies.id, companyB));
+    expect(await db.select().from(documents).where(eq(documents.id, second.docId))).toHaveLength(0);
+    expect(await db.select().from(documentRevisions).where(eq(documentRevisions.documentId, second.docId))).toHaveLength(0);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   it(

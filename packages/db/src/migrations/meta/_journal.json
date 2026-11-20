@@ -2837,6 +2837,13 @@
       "when": 1795127313609,
       "tag": "0490_soft_spiral",
       "breakpoints": true
+    },
+    {
+      "idx": 491,
+      "version": "7",
+      "when": 1795127313610,
+      "tag": "0491_agent_document_delete_fence",
+      "breakpoints": true
     }
   ]
 }
