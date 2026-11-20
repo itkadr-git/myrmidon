@@ -57,6 +57,24 @@ for (const [specifier, child] of [
   }));
 }
 
+test("reached package follows a two-hop relative chain and stops when its middle edge is removed", () => fixture(({ root, dist, write }) => {
+  write(`${pkg}/index.js`, 'import "./nested/child.js";\n');
+  const child = `${pkg}/nested/child.js`;
+  const edge = 'import "./grandchild.mjs";\n';
+  write(child, edge);
+  write(`${pkg}/nested/grandchild.mjs`, missing);
+  const expected = [{
+    file: path.join(root, pkg, "nested/grandchild.mjs"), line: 1,
+    specifier: "@myrmidon/missing", reason: "пакет не найден в node_modules",
+    packageName: "@myrmidon/missing",
+  }];
+  assert.deepEqual(collectFailures(dist), expected);
+  write(child, "export {};\n");
+  assert.deepEqual(collectFailures(dist), []);
+  write(child, edge);
+  assert.deepEqual(collectFailures(dist), expected);
+}));
+
 test("dist relative imports do not extend the scan outside dist, unlike reached packages", () => fixture(({ root, dist, write }) => {
   write("server/dist/index.js", 'import "../outside.js";\nimport "@myrmidon/fixture";\n');
   write("server/outside.js", missing);
