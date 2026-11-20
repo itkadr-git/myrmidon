@@ -63,7 +63,7 @@ import {
   resolveAutonomy,
 } from "@myrmidon/shared";
 import type { AutonomyMatrix } from "@myrmidon/shared";
-import { HttpError, forbidden, notFound, unprocessable } from "../../errors.js";
+import { HttpError, badRequest, forbidden, notFound, unprocessable } from "../../errors.js";
 import { assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import { validate } from "../../middleware/validate.js";
 import { approverKindFromRequest } from "../approver-kind.js";
@@ -481,7 +481,9 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     const mod = deps.moduleFor(companyId);
     try {
       const idOrSlug = itemIdOrSlug(req);
-      const item = await mod.get(idOrSlug);
+      const lang = req.query.lang;
+      if (lang !== undefined && lang !== "en" && lang !== "ru") throw badRequest("lang must be en or ru.");
+      const item = await mod.get(idOrSlug, lang);
       if (!item) throw notFound(`No knowledge item ${JSON.stringify(idOrSlug)} in this company.`);
       // Return the complete published read model in one request. The UI can
       // render immediately without separately loading revisions and backlinks.
@@ -581,6 +583,8 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
           itemIdOrSlug(req),
           {
             content: req.body.content,
+            lang: req.body.lang,
+            translationOf: req.body.translationOf,
             changeSummary: req.body.changeSummary ?? null,
             title: req.body.title,
             summary: req.body.summary,

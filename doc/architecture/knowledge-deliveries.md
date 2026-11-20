@@ -23,6 +23,10 @@ Revisions maintain a durable audit trail of all changes made to a knowledge item
   - `note`: an optional explanatory note detailing the citation.
 - **UI representation:** The revisions panel (`RevisionsPanel` in `Ui2Knowledge`) displays the revision log with author, timestamp, change summary (`.ui2-knowledge-revision-note`), and actionable links for cited sources (`.ui2-knowledge-revision-sources`) that navigate to issues, pull requests, runs, wiki documents, or external resources.
 
+## Publishing a translation
+
+For an existing item, POST `/api/myrmidon/companies/{companyId}/knowledge/items/{slug}/draft` with `content`, `lang` (`en` or `ru`), and `translationOf` (the UUID of a canonical revision of the same item). List revisions to obtain the new revision ID, then POST it as `revisionId` to the item's `/publish` endpoint. The canonical revision must be approved before publishing its translation; ordinary publication and approval gates still apply. Existing revisions remain unchanged. `knowledge_write_draft` accepts the same language fields for an existing item. Read the delivered translation with `GET .../items/{slug}?lang=ru`; `lang=en` reads the canonical English revision, and a missing translation falls back to canonical content.
+
 ## KNOWLEDGE_INDEX contract
 
 The canonical tree export is the interchange form for the knowledge index. It has fixed key order and length-prefixed content, so export -> import -> export is byte-for-byte stable. Import is scoped to the selected company/nest and preserves the revision and delivery semantics instead of silently publishing drafts.
