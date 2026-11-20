@@ -301,6 +301,9 @@ export class FleetOnboardExecutor {
             if (!Number.isInteger(claim.server.port) || claim.server.port < 1 || claim.server.port > 65535) {
               throw new Error("Firewall hardening requires a valid SSH port");
             }
+            if (!connOptions.privateKey) {
+              throw new Error("Firewall hardening requires SSH key credentials for connectivity verification");
+            }
             if (!activeSsh) {
               activeSsh = await this.getSsh(connOptions);
               await activeSsh.connect(connOptions);
