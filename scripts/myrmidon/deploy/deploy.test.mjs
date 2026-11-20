@@ -496,6 +496,22 @@ describe("deploy.sh", () => {
     assert.equal(maintenance(sb), "");
   });
 
+  it("refuses an RC rollback target with ambiguous running image RepoDigests", () => {
+    const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
+    fs.writeFileSync(path.join(sb.dir, "repo-digests"), JSON.stringify([`${CI_IMAGE}@${OLD}`, `${CI_IMAGE}@${NEW}`]));
+    const start = Math.floor(Date.now() / 1000) - 600;
+    const stamp = new Date(start * 1000).toISOString().replace('.000Z', 'Z');
+    const tasks = JSON.stringify([{ id: "100", node: "hk01", type: "vzdump", status: "OK", starttime: start, endtime: start + 10 }]);
+    fs.writeFileSync(path.join(sb.bin, "runuser"), '#!/bin/sh\ncase "$*" in *pvesm*) printf "%s\\n" "$ARCHIVE";; *) printf "%s\\n" "$TASKS";; esac\n', { mode: 0o755 });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW], undefined, {
+      ARCHIVE: `pbs-offsite:backup/vm/100/${stamp}`, TASKS: tasks,
+    });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /missing or ambiguous RepoDigest/);
+    assert.doesNotMatch(calls(sb), /docker pull|up -d --no-deps server/);
+    assert.equal(maintenance(sb), "");
+  });
+
   it("keeps RC deployment fail-closed even when nightly PBS succeeds", () => {
     const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
     fs.writeFileSync(path.join(sb.dir, "repo-digests"), JSON.stringify([`${CI_IMAGE}@${OLD}`]));
