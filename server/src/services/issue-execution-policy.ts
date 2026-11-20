@@ -1644,7 +1644,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       return { patch };
     }
 
-    if (attemptedStageAdvance && !stageStateDrifted) {
+    if (attemptedStageAdvance) {
       throw unprocessable("Only the active reviewer or approver can advance the current execution stage");
     }
 
