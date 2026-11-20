@@ -1042,7 +1042,7 @@ exit 1
       if (command.includes("start-myrmidon-firewall-timer")) {
         return { exitCode: 1, stderr: "timer unavailable" };
       }
-      if (/ufw (allow|default|delete|disable|--force enable)/.test(command)) {
+      if (/^sudo ufw (allow|default|delete|disable|--force enable)/.test(command)) {
         rules.delete("operator-concurrent");
       }
       return undefined;
