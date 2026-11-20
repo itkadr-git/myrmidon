@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { TLSSocket } from "node:tls";
 import { Router } from "express";
-import { and, eq } from "drizzle-orm";
-import { nativeRunFinalizations, type Db } from "@myrmidon/db";
+import { and, eq, gt, isNull } from "drizzle-orm";
+import { nativeFinalizationGrants, nativeRunFinalizations, type Db } from "@myrmidon/db";
 import { isUuidLike } from "@myrmidon/shared";
 import { acceptanceServiceCredentialsService } from "../services/acceptance-service-credentials.js";
 import { issueAcceptanceSnapshotService } from "../services/issue-acceptance-snapshot.js";
@@ -49,6 +49,18 @@ export function acceptanceServiceRoutes(db: Db) {
     )).limit(1);
     if (!run) {
       res.status(404).json({ error: "Run not found" });
+      return;
+    }
+    const [grant] = await db.select({ id: nativeFinalizationGrants.id }).from(nativeFinalizationGrants).where(and(
+      eq(nativeFinalizationGrants.companyId, credential.companyId),
+      eq(nativeFinalizationGrants.runId, runId),
+      eq(nativeFinalizationGrants.credentialId, credential.credentialId),
+      eq(nativeFinalizationGrants.certificateSha256, fingerprint),
+      isNull(nativeFinalizationGrants.revokedAt),
+      gt(nativeFinalizationGrants.notAfter, new Date()),
+    )).limit(1);
+    if (!grant) {
+      res.status(403).json({ error: "Forbidden" });
       return;
     }
     // Fail closed until admission and its durable worker are implemented.

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import express from "express";
 import { describe, expect, it } from "vitest";
-import { companies, createDb, issues } from "@myrmidon/db";
+import { agents, companies, createDb, heartbeatRuns, issues, nativeRunFinalizations } from "@myrmidon/db";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "@myrmidon/db/test-embedded-postgres";
 import { acceptanceServiceCredentialsService } from "../services/acceptance-service-credentials.js";
 import { acceptanceServiceRoutes } from "../routes/acceptance-service.js";
@@ -70,6 +70,19 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(await post(submit.token, other)).toBe(401);
       expect(await post(submit.token, client, 'W/"weak"')).toBe(400);
       expect(await post(submit.token, client, `"${"a".repeat(64)}"`)).toBe(404);
+      const agentId = randomUUID(), runId = randomUUID();
+      await db.insert(agents).values({ id: agentId, companyId, name: "Agent", role: "engineer" });
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issueId });
+      await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "awaiting_result" });
+      const ungranted = await new Promise<number>((resolve, reject) => {
+        const req = httpsRequest({ host: "127.0.0.1", port: address.port,
+          path: `/api/service/native-runs/${runId}/finalization-requests`, method: "POST",
+          ...client, rejectUnauthorized: false,
+          headers: { authorization: `Bearer ${submit.token}`, "if-match": `"${"a".repeat(64)}"`, "idempotency-key": "request-1" },
+        }, (res) => { res.resume(); res.on("end", () => resolve(res.statusCode ?? 0)); });
+        req.on("error", reject); req.end();
+      });
+      expect(ungranted).toBe(403);
       const first = await call(issued.token);
       expect(first.status).toBe(200);
       expect(first.etag).toMatch(/^"[a-f0-9]{64}"$/);
