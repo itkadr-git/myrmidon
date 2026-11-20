@@ -247,7 +247,11 @@ export class FleetOnboardExecutor {
                 await activeSsh.execute("sudo rm -f /etc/ssh/sshd_config.d/50-myrmidon-hardening.conf");
                 throw new Error("sshd configuration test failed; reverted password disable");
               }
-              await activeSsh.execute("sudo systemctl reload ssh || sudo systemctl reload sshd");
+              const reload = await activeSsh.execute("sudo systemctl reload ssh || sudo systemctl reload sshd");
+              if (reload.exitCode !== 0) {
+                await activeSsh.execute("sudo rm -f /etc/ssh/sshd_config.d/50-myrmidon-hardening.conf").catch(() => {});
+                throw new Error("Unable to reload SSH service after password hardening");
+              }
             }
 
             await reporter.reportStep(
