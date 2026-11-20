@@ -46,16 +46,35 @@ test("stale, future, incomplete and ambiguous backup evidence is rejected", () =
   assert.notEqual(runFixture(archive(task.starttime), [{ ...task, id: "101" }]).status, 0);
 });
 
-test("a failed operator backup query stops the guard", () => {
+test("either operator backup query failing stops the guard", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "nightly-guard-"));
   try {
-    writeFileSync(path.join(dir, "runuser"), "#!/bin/sh\nexit 42\n", { mode: 0o755 });
+    for (const failedQuery of ["pvesm", "pvesh"]) {
+      writeFileSync(path.join(dir, "runuser"), '#!/bin/sh\ncase "$*" in *"$FAIL_QUERY"*) exit 42;; *) printf "%s\\n" "$ARCHIVE";; esac\n', { mode: 0o755 });
+      const result = spawnSync("bash", [guard], {
+        env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, FAIL_QUERY: failedQuery, ARCHIVE: "archive" },
+        encoding: "utf8",
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, new RegExp(`PBS query failed: ${failedQuery === "pvesm" ? "archives" : "tasks"}`));
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("malformed task evidence cannot authorize deploy", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "nightly-guard-"));
+  try {
+    const start = Math.floor(Date.now() / 1000) - 600;
+    const stamp = new Date(start * 1000).toISOString().replace('.000Z', 'Z');
+    writeFileSync(path.join(dir, "runuser"), '#!/bin/sh\ncase "$*" in *pvesm*) printf "%s\\n" "$ARCHIVE";; *) printf "not-json\\n";; esac\n', { mode: 0o755 });
     const result = spawnSync("bash", [guard], {
-      env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, ARCHIVE: `pbs-offsite:backup/vm/100/${stamp}` },
       encoding: "utf8",
     });
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /PBS query failed/);
+    assert.match(result.stderr, /PBS guard NO-GO/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
