@@ -837,6 +837,18 @@ describe("company migration dry run", () => {
     expect(saved?.companyId).toBe(destination.id);
   });
 
+  it("refuses a rollback claim if its live destination lost the ledger foreign key", async () => {
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "lost-fk-source", "lost-fk-key");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Lost foreign key destination" }, { transferRunId: run.id });
+    await companyTransferRunService.releaseApplyClaim(db, run.id, "interrupted");
+    await db.update(companyTransferRuns).set({ companyId: null }).where(eq(companyTransferRuns.id, run.id));
+
+    expect(await companyTransferRunService.claimMigrationRollback(db, run.id, "lost-fk-source")).toBe(false);
+    expect((await companyTransferRunService.getRun(db, run.id))?.status).toBe("failed");
+    expect((await db.select().from(companies)).some((company) => company.id === destination.id)).toBe(true);
+  });
+
   it("releases a failed rollback claim without losing provenance or exposing errors", async () => {
     const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "rollback-error-source", "rollback-error-key");
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
