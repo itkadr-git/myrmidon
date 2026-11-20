@@ -344,6 +344,12 @@ export class FleetOnboardExecutor {
               throw new Error("Firewall default policy unconfirmed; refusing unsafe firewall changes");
             }
 
+            // Require a usable timer manager before attempting any firewall mutation.
+            const prerequisites = await activeSsh.execute(": check-myrmidon-firewall-prerequisites; command -v systemd-run >/dev/null && command -v systemctl >/dev/null && sudo systemctl show --property=Version --value >/dev/null");
+            if (prerequisites.exitCode !== 0) {
+              throw new Error("Firewall rollback timer prerequisites unavailable; refusing unsafe firewall changes");
+            }
+
             // Snapshot restoration overwrites concurrent changes; the existing timer
             // cannot provide scoped rollback. Refuse mutation until both are safe.
             throw new Error("Scoped firewall rollback unavailable; refusing unsafe firewall changes");
