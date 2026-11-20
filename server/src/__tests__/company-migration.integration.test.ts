@@ -792,7 +792,9 @@ describe("company migration dry run", () => {
     await companyTransferRunService.releaseApplyClaim(db, run.id, "interrupted");
     await db.delete(companies).where(eq(companies.id, destination!.id));
 
-    expect((await companyTransferRunService.getRun(db, run.id))?.companyId).toBeNull();
+    const afterDeletion = await companyTransferRunService.getRun(db, run.id);
+    expect(afterDeletion?.companyId).toBeNull();
+    expect(afterDeletion?.containerRef).toMatchObject({ destinationClaimed: true, destinationCompanyId: destination.id });
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(false);
     await companyTransferRunService.cancel(db, run.id);
     const retry = await companyTransferRunService.resumeOrCreateMigration(db, "deleted-destination-source", "deleted-destination-key");

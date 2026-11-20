@@ -290,7 +290,7 @@ export function companyService(db: Db) {
           const attached = await tx.update(companyTransferRuns)
             .set({
               companyId: created!.id,
-              containerRef: sql`case when ${companyTransferRuns.containerRef}->>'kind' = 'company_migration' then jsonb_set(${companyTransferRuns.containerRef}, '{destinationClaimed}', 'true'::jsonb) else ${companyTransferRuns.containerRef} end`,
+              containerRef: sql`case when ${companyTransferRuns.containerRef}->>'kind' = 'company_migration' then jsonb_set(jsonb_set(${companyTransferRuns.containerRef}, '{destinationClaimed}', 'true'::jsonb), '{destinationCompanyId}', to_jsonb(${created!.id}::text)) else ${companyTransferRuns.containerRef} end`,
               updatedAt: new Date(),
             })
             .where(and(
