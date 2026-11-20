@@ -1147,6 +1147,21 @@ describe("company migration dry run", () => {
     expect((await companyTransferRunService.getRun(db, run.id))?.completedParts).toEqual([key]);
   });
 
+  it("does not acknowledge object deletion when a live destination is detached from its run", async () => {
+    const [source] = await db.insert(companies).values({ name: "Detached acknowledgement source", issuePrefix: "MDA" }).returning();
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, source!.id, "detached-acknowledgement");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Detached acknowledgement destination" }, { transferRunId: run.id });
+    const key = `${destination.id}/assets/general/2026/11/16/550e8400-e29b-41d4-a716-446655440000-file`;
+    await companyTransferRunService.reserveMigrationObject(db, run.id, destination.id, key);
+    await companyTransferRunService.releaseApplyClaim(db, run.id, "interrupted");
+    expect(await companyTransferRunService.claimMigrationRollback(db, run.id, source!.id)).toBe(true);
+    await db.update(companyTransferRuns).set({ companyId: null }).where(eq(companyTransferRuns.id, run.id));
+
+    expect(await companyTransferRunService.acknowledgeMigrationObjectDeletion(db, run.id, destination.id, key)).toBe(false);
+    expect((await companyTransferRunService.getRun(db, run.id))?.completedParts).toEqual([key]);
+  });
+
   it("rejects storage reservations when durable destination provenance disagrees", async () => {
     const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "reservation-provenance-source", "reservation-provenance");
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
