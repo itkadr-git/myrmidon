@@ -275,9 +275,13 @@ export class FleetOnboardExecutor {
             // 4. Verify connectivity using fresh connection
             try {
               const testSsh = await connectVerified(connOptions);
-              const testPing = await testSsh.execute('echo "ufw-connectivity-ok"');
-              if (testPing.exitCode !== 0 || !testPing.stdout.includes("ufw-connectivity-ok")) {
-                throw new Error("Connectivity test failed after firewall enablement");
+              try {
+                const testPing = await testSsh.execute('echo "ufw-connectivity-ok"');
+                if (testPing.exitCode !== 0 || !testPing.stdout.includes("ufw-connectivity-ok")) {
+                  throw new Error("Connectivity test failed after firewall enablement");
+                }
+              } finally {
+                await testSsh.disconnect().catch(() => {});
               }
               // Disarm rollback timer
               await activeSsh.execute("sudo pkill -f 'sleep 300 && sudo ufw disable' || true");
