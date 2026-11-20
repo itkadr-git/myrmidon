@@ -4,6 +4,25 @@ import { describe, expect, it } from "vitest";
 import { lazyAiConnectionRoutes } from "./lazy-ai-connections.js";
 
 describe("lazy AI connection routes", () => {
+  it("retries a failed load without loading for unrelated requests", async () => {
+    const app = express();
+    const router = express.Router();
+    router.get("/companies/:id/ai-connections", (_req, res) => res.sendStatus(204));
+    let loads = 0;
+    app.use("/api", lazyAiConnectionRoutes(async () => {
+      loads += 1;
+      if (loads === 1) throw new Error("temporary load failure");
+      return router;
+    }));
+    app.use((_error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => res.sendStatus(503));
+
+    expect((await request(app).get("/api/health")).status).toBe(404);
+    expect(loads).toBe(0);
+    expect((await request(app).get("/api/companies/a/ai-connections")).status).toBe(503);
+    expect((await request(app).get("/api/companies/a/ai-connections")).status).toBe(204);
+    expect(loads).toBe(2);
+  });
+
   it("initializes the router only once for concurrent first requests", async () => {
     const app = express();
     const router = express.Router();
