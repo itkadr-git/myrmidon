@@ -303,6 +303,10 @@ export const companyTransferRunService = {
         eq(companyTransferRuns.direction, "import"),
         eq(companyTransferRuns.status, "rolling_back"),
         sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
+        // Revalidate ownership at settlement; the earlier claim is not enough.
+        sql`${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true'`,
+        sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' is not null`,
+        sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' <> ${companyTransferRuns.containerRef}->>'sourceCompanyId'`,
         // Cleanup must remove the owned company and every reserved object first.
         sql`${companyTransferRuns.companyId} is null`,
         sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' is not null`,
