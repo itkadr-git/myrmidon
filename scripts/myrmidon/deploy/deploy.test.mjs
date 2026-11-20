@@ -470,6 +470,14 @@ describe("deploy.sh", () => {
     assert.equal(maintenance(sb), "");
   });
 
+  it("refuses an RC deploy with --urgent before changing anything", () => {
+    const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--urgent", "critical fix"]);
+    assert.notEqual(code, 0);
+    assert.match(out, /RC deploy refuses --urgent/);
+    assert.doesNotMatch(calls(sb), /docker pull|myr-predeploy-/);
+  });
+
   it("refuses an RC deploy before pull when the mandatory nightly PBS query fails", () => {
     const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
     fs.writeFileSync(path.join(sb.bin, "runuser"), '#!/bin/sh\nexit 42\n', { mode: 0o755 });
@@ -513,7 +521,7 @@ describe("deploy.sh", () => {
   });
 
   it("deploys an RC with nightly PBS and records the actual rollback digest without a database copy", () => {
-    const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
+    const sb = sandbox({ labelVersion: "1.6.9-rc.22", health: { status: "ok", version: "1.6.9-rc.22", commit: COMMIT } });
     fs.writeFileSync(path.join(sb.dir, "repo-digests"), JSON.stringify([`${CI_IMAGE}@${OLD}`]));
     const start = Math.floor(Date.now() / 1000) - 600;
     const stamp = new Date(start * 1000).toISOString().replace('.000Z', 'Z');
@@ -528,6 +536,11 @@ describe("deploy.sh", () => {
     assert.equal(maintenance(sb), "enter\nexit\n");
     assert.doesNotMatch(calls(sb), /myr-predeploy-/);
     assert.equal(fs.existsSync(path.join(sb.dir, "dumps")), false);
+    const rollback = run(sb, "rollback.sh", []);
+    assert.equal(rollback.code, 0, rollback.out);
+    assert.match(read(sb.override), new RegExp(`@${OLD}`));
+    assert.match(rollback.out, /database not restored/);
+    assert.doesNotMatch(calls(sb), /myr-predeploy-/);
   });
 
   it("nightly PBS precheck never falls through to a real dump or deploy", () => {

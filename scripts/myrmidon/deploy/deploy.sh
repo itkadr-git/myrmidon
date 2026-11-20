@@ -415,6 +415,24 @@ log "boot unit ok: $(boot_unit_path) starts $COMPOSE_SERVICE from COMPOSE_DIR ($
 previous_image="$(previous_board_image)"
 previous="$(ref_digest "$previous_image")"
 
+# RC deployments require fresh PBS evidence and the running image's immutable
+# rollback digest; they must not reach the legacy dump/DB-copy path.
+if [[ "${CI_IMAGE_VERSION:-}" =~ -rc\.[0-9]+$ ]]; then
+  ((urgent == 0)) || die "RC deploy refuses --urgent; nothing was changed"
+  "$MYR_SCRIPT_DIR/nightly-backup-guard.sh" || die "nightly PBS guard failed; nothing was changed"
+  # Resolve from the container's immutable image ID, never the mutable tag or
+  # the compose override. Require exactly one digest for the board repository.
+  board_id="$(docker ps -q --filter "label=com.docker.compose.service=$COMPOSE_SERVICE" --filter "label=com.docker.compose.project.working_dir=$COMPOSE_DIR")"
+  [[ -n "$board_id" && "$board_id" != *$'\n'* ]] || die "actual running board image digest unavailable: expected one running container"
+  board_image_id="$(docker inspect --format '{{.Image}}' "$board_id")" || die "actual running board image digest unavailable: container inspect failed"
+  board_digests="$(docker image inspect --format '{{json .RepoDigests}}' "$board_image_id")" || die "actual running board image digest unavailable: image inspect failed"
+  actual_previous="$(jq -er --arg repo "$MYRMIDON_IMAGE" '[.[] | select(startswith($repo + "@sha256:")) | select(test("@sha256:[0-9a-f]{64}$"))] | unique | if length == 1 then .[0] else error("ambiguous RepoDigests") end' <<<"$board_digests")" || die "actual running board image digest unavailable: missing or ambiguous RepoDigest"
+  log "verified running board image for rollback: $actual_previous"
+  previous_image="$actual_previous"
+  previous="${actual_previous#*@}"
+  log "nightly PBS guard authorizes deploy only; migration rehearsal and database rollback are not verified"
+fi
+
 # ONE-DEPLOY: what changes. The board, each release component whose running
 # image differs from the release's, and the bot images (dockergate images[]).
 board_changed=1
@@ -613,23 +631,6 @@ preflight_all() {
 }
 preflight_all
 
-# RC deployments must not reach the legacy dump/DB-copy path. Until the
-# digest and rollback checks are complete, successful PBS evidence is not
-# sufficient to authorize a real RC deployment.
-if [[ "${CI_IMAGE_VERSION:-}" =~ -rc\.[0-9]+$ ]]; then
-  ((urgent == 0)) || die "RC deploy refuses --urgent; nothing was changed"
-  "$MYR_SCRIPT_DIR/nightly-backup-guard.sh" || die "nightly PBS guard failed; nothing was changed"
-  # Resolve from the container's immutable image ID, never the mutable tag or
-  # the compose override. Require exactly one digest for the board repository.
-  board_id="$(docker ps -q --filter "label=com.docker.compose.service=$COMPOSE_SERVICE" --filter "label=com.docker.compose.project.working_dir=$COMPOSE_DIR")"
-  [[ -n "$board_id" && "$board_id" != *$'\n'* ]] || die "actual running board image digest unavailable: expected one running container"
-  board_image_id="$(docker inspect --format '{{.Image}}' "$board_id")" || die "actual running board image digest unavailable: container inspect failed"
-  board_digests="$(docker image inspect --format '{{json .RepoDigests}}' "$board_image_id")" || die "actual running board image digest unavailable: image inspect failed"
-  actual_previous="$(jq -er --arg repo "$MYRMIDON_IMAGE" '[.[] | select(startswith($repo + "@sha256:")) | select(test("@sha256:[0-9a-f]{64}$"))] | unique | if length == 1 then .[0] else error("ambiguous RepoDigests") end' <<<"$board_digests")" || die "actual running board image digest unavailable: missing or ambiguous RepoDigest"
-  log "verified running board image for rollback: $actual_previous"
-  die "RC deploy guard incomplete: digest and rollback verification required; no dump, DB copy or deploy was performed"
-fi
-
 # This additional read-only precheck never substitutes for the database rehearsal.
 if ((nightly_pbs_precheck)); then
   "$MYR_SCRIPT_DIR/nightly-backup-guard.sh" || die "nightly PBS precheck failed; nothing was changed"
@@ -704,7 +705,9 @@ if [[ "$DRY_RUN" == "1" ]]; then
   if ((need_window)); then
     plan "1. docker pull $ref"
     plan "2. remember previous image: ${previous_image:-<none>} -> $PREVIOUS_IMAGE_FILE"
-    if ((urgent)); then
+    if [[ "${CI_IMAGE_VERSION:-}" =~ -rc\.[0-9]+$ ]]; then
+      plan "3. nightly PBS guard passed; no database dump or copy; migration rehearsal and database rollback are not verified"
+    elif ((urgent)); then
       plan "urgent: steps 3 and 3b skipped; no database dump or PREDEPLOY-DB-CHECK; rollback relies on the VM's nightly backup (reason: $urgent_reason)"
     else
       plan "3. dump database with DUMP_COMMAND into $DUMP_DIR (refuse if smaller than $DUMP_MIN_BYTES bytes); keep newest $DUMP_KEEP validated dumps by modification time"
@@ -879,7 +882,10 @@ if [[ -n "$previous_image" && "$previous_image" != "$ref" ]]; then
   printf '%s\n' "$previous_image" >"$PREVIOUS_IMAGE_FILE"
 fi
 
-if ((urgent)); then
+if [[ "${CI_IMAGE_VERSION:-}" =~ -rc\.[0-9]+$ ]]; then
+  LAST_DUMP_FILE=""
+  log "3/8 nightly PBS guard passed; no database dump or migration rehearsal"
+elif ((urgent)); then
   LAST_DUMP_FILE=""
   log "3/8 database dump: SKIPPED (--urgent); rollback relies on the VM's nightly backup"
 else
@@ -898,7 +904,7 @@ fi
 # uuid). The check is read-only against production: the dump was already taken.
 # Urgent deploys deliberately skip this check; they have no dump to restore and
 # rely on the VM's nightly backup for rollback.
-if ((board_changed)) && ((urgent == 0)); then
+if ((board_changed)) && ((urgent == 0)) && [[ ! "${CI_IMAGE_VERSION:-}" =~ -rc\.[0-9]+$ ]]; then
   dockergate_digest="$(sed -n 's/^dockergate=//p' <<<"$component_digests" | head -n1)"
   check_args=(--config "$config" --digest "$digest" --dump "$LAST_DUMP_FILE")
   [[ -n "$dockergate_digest" ]] && check_args+=(--dockergate-digest "$dockergate_digest")
