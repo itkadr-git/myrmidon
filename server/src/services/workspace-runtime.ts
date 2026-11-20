@@ -258,6 +258,10 @@ type StoppedRuntimeServiceReuseCandidate = {
 };
 
 const runtimeServicesById = new Map<string, RuntimeServiceRecord>();
+let exitCleanupHookForTests: (() => Promise<void>) | null = null;
+export function setWorkspaceRuntimeExitCleanupHookForTests(hook: (() => Promise<void>) | null) {
+  exitCleanupHookForTests = hook;
+}
 const runtimeServicesByReuseKey = new Map<string, string>();
 const runtimeServiceLeasesByRun = new Map<string, string[]>();
 const runtimeProvisionByWorkspace = new Map<string, Promise<void>>();
@@ -7210,6 +7214,7 @@ function registerRuntimeService(db: Db | undefined, record: RuntimeServiceRecord
       // or the detached persist becomes an unhandled rejection and crashes the
       // host. This path runs off the child `exit` event, so no caller awaits it.
       try {
+        await exitCleanupHookForTests?.();
         await cleanupRecordExposure(current);
         await removeLocalServiceRegistryRecord(current.serviceKey);
         await persistRuntimeServiceRecord(db, current);
