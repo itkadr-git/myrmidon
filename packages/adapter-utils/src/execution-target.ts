@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { GITHUB_LAUNCHER_PROFILE_FILE_NAMES, githubLauncherProgramFiles } from "./github-launcher.js";
 import { GITHUB_CREDENTIAL_HELPER_PROGRAM } from "./github-credential-helper.js";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
@@ -2304,7 +2304,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
           nextSocket.destroy();
           return;
         }
-        if (message.token !== token) {
+        if (!constantTimeSecretEqual(message.token ?? "", token)) {
           nextSocket.destroy();
           return;
         }
@@ -2688,6 +2688,14 @@ socket.on("close", () => {
   if (!exiting) process.exit(1);
 });
 `;
+}
+
+function constantTimeSecretEqual(left: string, right: string): boolean {
+  // Hash both sides to a fixed-length digest so timingSafeEqual never sees
+  // length-mismatched buffers (which would throw or early-exit on length).
+  const leftDigest = createHash("sha256").update(left, "utf8").digest();
+  const rightDigest = createHash("sha256").update(right, "utf8").digest();
+  return timingSafeEqual(leftDigest, rightDigest);
 }
 
 export function getProcessSessionRemoteSource(input?: { outputToStdout?: boolean }): string {
