@@ -412,6 +412,22 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(ssh.connectionHistory.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("fails closed before arming the rollback timer when prerequisites are unavailable", async () => {
+    const ssh = new VerifiedMockSsh();
+    ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
+    ssh.mockResponse(/check-myrmidon-firewall-prerequisites/, { exitCode: 1 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const result = await executor.execute({
+      job: { id: "job-firewall-no-prerequisites", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    } as OnboardJobClaim & { secretValues: Record<string, string> }, createMockReporter().reporter);
+
+    expect(result.error).toContain("rollback timer prerequisites unavailable");
+    expect(ssh.hasExecuted(/prepare-myrmidon-firewall-restore|start-myrmidon-firewall-timer|apply-myrmidon-firewall-(allow|deny)/)).toBe(false);
+  });
+
   it("refuses firewall mutation when timer startup exits successfully without confirmation", async () => {
     let timerStartAttempted = false;
     const ssh = new VerifiedMockSsh({ onCommand: (command) => {
@@ -460,7 +476,7 @@ case "$1" in
         if [ "$2" = verbose ]; then printf 'Default: %s (incoming), allow (outgoing), disabled (routed)\\n' "$(tr -d '\\n' < "$POLICY")"; fi
         if [ "$2" = numbered ] && [ -s "$RULES.owner" ]; then
           if [ "$FAILURE" = ambiguous ]; then printf '[ 1] 22/tcp ALLOW IN Anywhere # operator\\n'; fi
-          printf '[ 1] 22/tcp ALLOW IN Anywhere # %s\\n' "$(tr -d '\\n' < "$RULES.owner")"
+          printf '[ 2] 22/tcp ALLOW IN Anywhere # %s\\n' "$(tr -d '\\n' < "$RULES.owner")"
         fi ;;
       prepend)
         printf '%s\\n' "$5" > "$RULES.owner"

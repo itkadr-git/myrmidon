@@ -410,7 +410,7 @@ touch ${backup}/restored`;
             const runLocked = (marker: string, action: string) =>
               ssh.execute(`: ${marker}; sudo flock -w 30 ${rollbackDir}/lock /bin/sh -c 'set -eu; test ! -e ${rollbackDir}/expired; systemctl is-active --quiet ${timer}.timer; ${action}'`);
             try {
-              // Restore by exact rule (including the comment), never by a mutable rule number.
+              // UFW matches deletes by rule tuple, not comment. Refuse ambiguous tuples.
               const restoreScript = `#!/bin/sh
 set -eu
 export LC_ALL=C
@@ -440,6 +440,8 @@ if [ -f ${rollbackDir}/rule-changed ]; then
     [ "$(printf "%s\\n" "$matches" | grep -c .)" -le 2 ] || exit 1
     [ "$(printf "%s\\n" "$matches" | grep -c "(v6)" || true)" -le 1 ] || exit 1
     [ "$(printf "%s\\n" "$matches" | grep -vc "(v6)" || true)" -le 1 ] || exit 1
+    candidates=$(printf "%s\\n" "$rules" | grep -E "^\\[[[:space:]]*[0-9]+\\][[:space:]]+${port}/tcp( \\(v6\\))?[[:space:]]+ALLOW IN[[:space:]]+Anywhere( \\(v6\\))?([[:space:]]+#.*)?[[:space:]]*$" || true)
+    [ "$candidates" = "$matches" ] || exit 1
     ufw --force delete allow ${port}/tcp comment ${timer}
     rules=$(ufw status numbered)
     [ "$(printf "%s\\n" "$rules" | grep -iE "^[[:space:]]*Status:" || true)" = "Status: active" ] || exit 1
