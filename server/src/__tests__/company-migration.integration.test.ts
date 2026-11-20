@@ -758,6 +758,30 @@ describe("company migration dry run", () => {
     expect(JSON.stringify(saved)).not.toContain("idle-secret-canary");
   });
 
+  it("serializes rollback claims and preserves the run across restart recovery", async () => {
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "rollback-claim-source", "rollback-claim-key");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Rollback claim destination" }, { transferRunId: run.id });
+    await companyTransferRunService.releaseApplyClaim(db, run.id, "interrupted");
+
+    const claims = await Promise.all([
+      companyTransferRunService.claimMigrationRollback(db, run.id, "rollback-claim-source"),
+      companyTransferRunService.claimMigrationRollback(db, run.id, "rollback-claim-source"),
+    ]);
+    expect(claims.sort()).toEqual([false, true]);
+    const during = await companyTransferRunService.resumeOrCreateMigration(db, "rollback-claim-source", "rollback-claim-key");
+    expect(during.run.id).toBe(run.id);
+    expect(during.run.status).toBe("rolling_back");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(false);
+
+    expect(await companyTransferRunService.recoverStrandedApplyingRuns(db)).toContain(run.id);
+    const recovered = await companyTransferRunService.getRun(db, run.id);
+    expect(recovered?.status).toBe("failed");
+    expect(recovered?.companyId).toBe(destination.id);
+    expect(await companyTransferRunService.claimMigrationRollback(db, run.id, "other-source")).toBe(false);
+    expect(await companyTransferRunService.claimMigrationRollback(db, run.id, "rollback-claim-source")).toBe(true);
+  });
+
   it("preserves destination and storage provenance when startup recovers an interrupted apply", async () => {
     const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "crash-source", "crash-reservation");
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
