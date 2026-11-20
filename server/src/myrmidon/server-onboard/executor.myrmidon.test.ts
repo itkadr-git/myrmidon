@@ -1212,14 +1212,20 @@ exit 97
 
   it("succeeds without rewriting an already-deny incoming policy", async () => {
     const ssh = new MockSshExecutor();
+    const fresh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
     ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n" });
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
     ssh.mockResponse(/check-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
     ssh.mockResponse(/sudo ufw allow/, { exitCode: 0, stdout: "Rule added\n" });
-    ssh.mockResponse('echo "ufw-connectivity-ok"', { exitCode: 0, stdout: "ufw-connectivity-ok\n" });
+    fresh.mockResponse('echo "ufw-connectivity-ok"', { exitCode: 0, stdout: "ufw-connectivity-ok\n" });
     ssh.mockResponse(/stop-myrmidon-firewall-timer/, { exitCode: 0, stdout: "" });
-    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const connections = [ssh, fresh];
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => {
+      const connection = connections.shift();
+      if (!connection) throw new Error("Unexpected SSH connection");
+      return connection;
+    } });
     const claim: any = {
       job: { id: "job-existing-deny", companyId: "c1", serverId: "s1" },
       server: { hostname: "1.2.3.4", port: 22, username: "root" },
@@ -1232,7 +1238,8 @@ exit 97
     expect(ssh.hasExecuted(/check-myrmidon-firewall-timer/)).toBe(true);
     expect(result.status).toBe("succeeded");
     expect(ssh.hasExecuted(/sudo ufw allow/)).toBe(true);
-    expect(ssh.hasExecuted('echo "ufw-connectivity-ok"')).toBe(true);
+    expect(fresh.hasExecuted('echo "ufw-connectivity-ok"')).toBe(true);
+    expect(fresh.isConnected()).toBe(false);
     expect(ssh.hasExecuted(/sudo ufw default/)).toBe(false);
   });
 
