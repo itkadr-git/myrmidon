@@ -1212,6 +1212,9 @@ exit 97
 
   it("does not overwrite concurrent UFW configuration changes when an allow command fails", async () => {
     const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    ssh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     ssh.mockResponse(/sudo ufw allow/, { exitCode: 1, stderr: "rule partially applied" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
@@ -1222,6 +1225,8 @@ exit 97
 
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
+    expect(ssh.hasExecuted(/sudo ufw allow/)).toBe(true);
+    expect(ssh.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
     expect(ssh.hasExecuted(/cp -a .*\/ufw\/\. \/etc\/ufw\//)).toBe(false);
     expect(ssh.hasExecuted(/cp -a .*\/ufw-default \/etc\/default\/ufw/)).toBe(false);
   });
