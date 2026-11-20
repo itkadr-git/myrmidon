@@ -146,6 +146,27 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockSsh.hasExecuted(/pkill/)).toBe(false);
   });
 
+  it("refuses to claim a pre-existing SSH allow rule as its own", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
+    ssh.mockResponse(/check-myrmidon-firewall-prerequisites/, { stdout: "", exitCode: 0 });
+    ssh.mockResponse(/prepare-myrmidon-firewall-restore/, { stdout: "", exitCode: 0 });
+    ssh.mockResponse(/start-myrmidon-firewall-timer|check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    ssh.mockResponse(/sudo ufw allow/, { stdout: "Skipping adding existing rule\n", exitCode: 0 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-existing-ssh-rule", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(ssh.hasExecuted(/sudo ufw allow/)).toBe(true);
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatch(/existing.*rule|rule.*ownership/i);
+    expect(ssh.hasExecuted(/sudo ufw default deny incoming|sudo ufw delete/)).toBe(false);
+  });
+
   it("allows SSH before denying incoming traffic and verifies a fresh connection", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
