@@ -27937,7 +27937,10 @@ export function heartbeatService(
       }
       const hermesRunKeySettings = readGatewayKeySettings(process.env);
       let hermesMintExpiresAt: number | null = null;
-      if (agent.adapterType === "hermes_gateway" && hermesRunKeySettings.canManageKeys) {
+      if (agent.adapterType === "hermes_gateway") {
+        if (!hermesRunKeySettings.canManageKeys) {
+          throw new Error("Run gateway credential management is unavailable");
+        }
         const minted = await mintRunGatewayKey(defaultAgentGatewayKeyDeps(db), {
           companyId: agent.companyId,
           runId: run.id,
