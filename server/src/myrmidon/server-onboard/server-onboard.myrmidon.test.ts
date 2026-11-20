@@ -190,6 +190,22 @@ function createMocks() {
 }
 
 describe("SERVER-ONBOARD logic", () => {
+  it("marks a job as needing attention if its durable key cannot be retrieved during claim", async () => {
+    const { mockStore, mockSecrets, mockGetServer, store, secretsStore } = createMocks();
+    const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
+    await service.addServer({ companyId: "company-1", slug: "interrupted-claim", name: "Server", hostname: "192.0.2.7", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password", password: "bootstrap" }, createdBy: null });
+    const readSecret = mockSecrets.readSecret;
+    mockSecrets.readSecret = async (companyId, name) => {
+      if (name.endsWith("/access-key")) throw new Error("secret store unavailable");
+      return readSecret(companyId, name);
+    };
+
+    await expect(service.claim("company-1", "valid-executor-token")).rejects.toThrow();
+    expect(store.jobs[0].status).toBe("failed");
+    expect(store.servers[0].onboardState).toBe("needs_attention");
+    expect(secretsStore["fleet/interrupted-claim/bootstrap-password"]).toBe("bootstrap");
+  });
+
   it("does not claim an already claimed job while its executor is active", async () => {
     const { mockStore, mockSecrets, mockGetServer } = createMocks();
     const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
