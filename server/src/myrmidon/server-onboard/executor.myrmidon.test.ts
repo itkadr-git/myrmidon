@@ -1099,7 +1099,7 @@ exit 1
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
     ssh.mockResponse(/snapshot-myrmidon-firewall/, {
       exitCode: 0,
-      stdout: "Status: active\nDefault: allow (incoming), allow (outgoing)\nDefault: deny (incoming), allow (outgoing)\n",
+      stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n",
     });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
