@@ -298,6 +298,8 @@ export function companyService(db: Db) {
               eq(companyTransferRuns.direction, "import"),
               eq(companyTransferRuns.status, "applying"),
               isNull(companyTransferRuns.companyId),
+              // A migration without a source cannot authorize later recovery.
+              sql`(coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration' or nullif(${companyTransferRuns.containerRef}->>'sourceCompanyId', '') is not null)`,
               // A deleted destination clears the foreign key, not its ownership history.
               sql`not (coalesce(${companyTransferRuns.containerRef}->>'kind' = 'company_migration', false) and coalesce(${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true', false))`,
             ))
