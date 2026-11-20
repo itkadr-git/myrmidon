@@ -24,6 +24,10 @@ it.each([false, true])("closes every SSH session after stored-key access (firewa
         if (info.command.includes("myrmidon-key-verify")) stream.write("myrmidon-key-verify\n");
         if (info.command.includes("onboard-verified")) stream.write("onboard-verified\n");
         if (info.command.includes("ufw-connectivity-ok")) stream.write("ufw-connectivity-ok\n");
+        if (info.command === "sudo ufw status") stream.write("Status: active\n");
+        if (info.command.startsWith(": snapshot-myrmidon-firewall;")) stream.write("Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n");
+        if (/^: (start|check)-myrmidon-firewall-timer;/.test(info.command)) stream.write("timer-confirmed\n");
+        if (info.command.startsWith(": apply-myrmidon-firewall-allow;")) stream.write("Rule inserted\n");
         stream.exit(0);
         stream.end();
       });
@@ -71,7 +75,9 @@ it.each(["write", "reload"] as const)("reports failure when password hardening %
         commands.push(info.command);
         const stream = acceptExec();
         if (info.command.includes("myrmidon-key-verify")) stream.write("myrmidon-key-verify\n");
-        const fails = failure === "write" ? info.command.includes("sudo tee /etc/ssh/sshd_config.d/") : info.command.includes("systemctl reload");
+        if (info.command.startsWith(": start-myrmidon-password-timer;")) stream.write("timer-confirmed\n");
+        if (info.command.startsWith("sudo sshd -T")) stream.write("passwordauthentication no\nkbdinteractiveauthentication no\n");
+        const fails = failure === "write" ? info.command.includes("PasswordAuthentication no") : info.command === "sudo systemctl reload ssh || sudo systemctl reload sshd";
         stream.exit(fails ? 1 : 0);
         stream.end();
       });
@@ -96,7 +102,8 @@ it.each(["write", "reload"] as const)("reports failure when password hardening %
     await runOnboardOnce({ baseUrl: "http://board", companyId: "company", token: "token", fetcher });
     expect(reports.some((report) => report.status === "failed")).toBe(true);
     expect(reports.some((report) => report.status === "succeeded")).toBe(false);
-    expect(commands.some((command) => command.includes("systemctl reload"))).toBe(failure === "reload");
+    expect(commands.some((command) => command === "sudo systemctl reload ssh || sudo systemctl reload sshd")).toBe(failure === "reload");
+    expect(commands.some((command) => command.startsWith(": restore-myrmidon-password-config;"))).toBe(true);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }

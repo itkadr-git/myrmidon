@@ -78,6 +78,7 @@ export class FleetOnboardExecutor {
     let commitFirewall: (() => Promise<void>) | null = null;
     let discardFirewallBackup: (() => Promise<void>) | null = null;
     let pendingPasswordRollback: (() => Promise<void>) | null = null;
+    let commitPassword: (() => Promise<void>) | null = null;
     let discardPasswordBackup: (() => Promise<void>) | null = null;
 
 
@@ -245,29 +246,61 @@ export class FleetOnboardExecutor {
 
             // Optional password disable (only after key login verified)
             if (!claim.options.keepPassword) {
-              const backup = `/var/tmp/myrmidon-sshd-${randomUUID()}`;
+              const unit = `myrmidon-sshd-${randomUUID()}`;
+              const backup = `/var/tmp/${unit}`;
               const file = "/etc/ssh/sshd_config.d/50-myrmidon-hardening.conf";
-              const snapshot = await activeSsh.execute(`sudo mkdir -m 700 ${backup} && if sudo test -e ${file}; then sudo cp -p ${file} ${backup}/original; else sudo touch ${backup}/absent; fi`);
+              const prerequisites = await activeSsh.execute(": check-myrmidon-password-prerequisites; command -v flock >/dev/null && command -v systemd-run >/dev/null && sudo systemctl show --property=Version --value >/dev/null");
+              if (prerequisites.exitCode !== 0) throw new Error("Password rollback timer prerequisites unavailable; refusing to modify sshd");
+              const restoreScript = `set -eu
+exec 9>${backup}/lock
+flock -x 9
+test "$#" -gt 0 || test ! -e ${backup}/committed || exit 0
+test ! -e ${backup}/restored || exit 0
+touch ${backup}/expired
+if test -f ${backup}/write-started; then
+  if test -f ${backup}/absent; then rm -f ${file}; else cp -p ${backup}/original ${file}; fi
+  sshd -t
+  systemctl reload ssh || systemctl reload sshd
+fi
+touch ${backup}/restored`;
+              const snapshot = await activeSsh.execute(`: snapshot-myrmidon-password-config; sudo mkdir -m 700 ${backup} && (if sudo test -e ${file}; then sudo cp -p ${file} ${backup}/original; else sudo touch ${backup}/absent; fi) && printf '%s' '${restoreScript}' | sudo tee ${backup}/restore.sh >/dev/null && sudo sh -n ${backup}/restore.sh`);
               if (snapshot.exitCode !== 0) throw new Error("Cannot snapshot password hardening configuration");
               const passwordSsh = activeSsh;
-              const restorePassword = async () => {
-                const restore = await passwordSsh.execute(`: restore-myrmidon-password-config; if sudo test -f ${backup}/absent; then sudo rm -f ${file}; else sudo cp -p ${backup}/original ${file}; fi && sudo sshd -t && (sudo systemctl reload ssh || sudo systemctl reload sshd)`);
-                if (restore.exitCode !== 0) throw new Error("configuration restoration failed");
+              const lockedPassword = (action: string) => passwordSsh.execute(`sudo flock -w 30 ${backup}/lock /bin/sh -c 'set -eu; test ! -e ${backup}/expired; systemctl is-active --quiet ${unit}.timer; ${action}'`);
+              const verifyPasswordSsh = async () => {
                 const checkSsh = await connectVerified(keyConnOptions);
                 try {
                   const check = await checkSsh.execute('echo "myrmidon-key-verify"');
                   if (check.exitCode !== 0 || check.stdout.trim() !== "myrmidon-key-verify") throw new Error("unexpected SSH verification response");
-                } catch (error) {
-                  const detail = error instanceof Error ? error.message : String(error);
-                  throw new Error(`restoration SSH verification failed: ${detail}`);
                 } finally {
                   await checkSsh.disconnect().catch(() => {});
                 }
               };
-              try {
-                const write = await activeSsh.execute(
-                  `sudo mkdir -p /etc/ssh/sshd_config.d && printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' | sudo tee ${file}`,
-                );
+              const armed = await passwordSsh.execute(`: start-myrmidon-password-timer; sudo systemd-run --unit=${unit} --on-active=5m /bin/sh ${backup}/restore.sh >/dev/null && sudo systemctl is-active --quiet ${unit}.timer && echo timer-confirmed`);
+              if (armed.exitCode !== 0 || armed.stdout.trim() !== "timer-confirmed") throw new Error("Password rollback timer start or confirmation failed; refusing to modify sshd");
+              pendingPasswordRollback = async () => {
+                const restore = async (ssh: SshExecutor) => {
+                  const result = await ssh.execute(`: restore-myrmidon-password-config; sudo /bin/sh ${backup}/restore.sh immediate && sudo test -f ${backup}/restored && sudo systemctl stop ${unit}.timer`);
+                  if (result.exitCode !== 0) throw new Error("configuration restoration failed");
+                };
+                try {
+                  await restore(passwordSsh);
+                } catch {
+                  // The command may have succeeded before its SSH acknowledgement was lost.
+                  // If neither transport is available, leave the host timer armed.
+                  const recovery = await connectVerified({ ...keyConnOptions, timeoutMs: 5000 });
+                  try { await restore(recovery); }
+                  finally { await recovery.disconnect().catch(() => {}); }
+                }
+                await verifyPasswordSsh();
+              };
+              commitPassword = async () => {
+                const committed = await lockedPassword(`systemctl stop ${unit}.timer; touch ${backup}/committed`);
+                if (committed.exitCode !== 0) throw new Error("Password rollback timer disarm failed or rollback already started");
+              };
+              discardPasswordBackup = async () => { await passwordSsh.execute(`sudo rm -rf ${backup}`); };
+              {
+                const write = await lockedPassword(`mkdir -p /etc/ssh/sshd_config.d; touch ${backup}/write-started; printf "PasswordAuthentication no\\nKbdInteractiveAuthentication no\\n" > ${file}`);
                 if (write.exitCode !== 0) throw new Error("Password hardening write failed");
                 const sshdTest = await activeSsh.execute("sudo sshd -t");
                 if (sshdTest.exitCode !== 0) throw new Error("sshd configuration test failed");
@@ -284,26 +317,8 @@ export class FleetOnboardExecutor {
                 }
                 const reload = await activeSsh.execute("sudo systemctl reload ssh || sudo systemctl reload sshd");
                 if (reload.exitCode !== 0) throw new Error("sshd reload failed");
-                const fresh = await connectVerified(keyConnOptions);
-                try {
-                  const check = await fresh.execute('echo "myrmidon-key-verify"');
-                  if (check.exitCode !== 0 || check.stdout.trim() !== "myrmidon-key-verify") throw new Error("SSH verification after password hardening failed");
-                } finally {
-                  await fresh.disconnect().catch(() => {});
-                }
-              } catch (error) {
-                try {
-                  await restorePassword();
-                } catch (restoreError) {
-                  const cause = error instanceof Error ? error.message : String(error);
-                  const detail = restoreError instanceof Error ? restoreError.message : String(restoreError);
-                  throw new Error(`Password hardening failed: ${cause}; ${detail.includes("restoration SSH") ? detail : `configuration restoration failed: ${detail}`}`);
-                }
-                await passwordSsh.execute(`sudo rm -rf ${backup}`).catch(() => {});
-                throw error;
+                await verifyPasswordSsh();
               }
-              pendingPasswordRollback = restorePassword;
-              discardPasswordBackup = async () => { await passwordSsh.execute(`sudo rm -rf ${backup}`); };
             }
 
             await reporter.reportStep(
@@ -545,6 +560,7 @@ fi
       }
 
       if (commitFirewall) await commitFirewall();
+      if (commitPassword) await commitPassword();
       await reporter.reportCompletion("succeeded", null, discoveredFingerprint);
       pendingFirewallRollback = null;
       if (discardFirewallBackup) await discardFirewallBackup().catch(() => {});
@@ -570,7 +586,7 @@ fi
       if (pendingPasswordRollback) {
         try {
           await pendingPasswordRollback();
-          if (discardPasswordBackup) await discardPasswordBackup();
+          if (discardPasswordBackup) await discardPasswordBackup().catch(() => {});
         } catch (rollbackError) {
           const detail = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
           message += `; password configuration rollback unconfirmed: ${detail}`;

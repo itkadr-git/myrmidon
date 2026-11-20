@@ -17,7 +17,10 @@ export class OnboardSshTransport implements SshExecutor {
     await new Promise<void>((resolve, reject) => {
       client.once("ready", () => { this.connected = true; resolve(); });
       client.once("error", reject);
-      client.once("close", () => { this.connected = false; });
+      client.once("close", () => {
+        this.connected = false;
+        reject(new Error("SSH transport closed before authentication completed"));
+      });
       client.connect({
         host: options.host, port: options.port ?? 22, username: options.username,
         password: options.password, privateKey: options.privateKey ? sshTransportPrivateKey(options.privateKey) : undefined, passphrase: options.passphrase,
@@ -49,13 +52,18 @@ export class OnboardSshTransport implements SshExecutor {
     if (options?.cwd || options?.sudo || options?.timeoutMs) throw new Error("Unsupported SSH command option");
     const started = Date.now();
     return new Promise((resolve, reject) => {
-      this.client!.exec(command, { env: options?.env }, (error, stream) => {
-        if (error) { reject(error); return; }
+      const client = this.client!;
+      const onClose = () => reject(new Error("SSH transport closed during command execution"));
+      client.once("close", onClose);
+      const cleanup = () => client.off("close", onClose);
+      client.exec(command, { env: options?.env }, (error, stream) => {
+        if (error) { cleanup(); reject(error); return; }
         let stdout = ""; let stderr = "";
         stream.on("data", (data: Buffer) => { stdout += data.toString(); });
         stream.stderr.on("data", (data: Buffer) => { stderr += data.toString(); });
-        stream.once("error", reject);
+        stream.once("error", (error) => { cleanup(); reject(error); });
         stream.once("close", (code: number | undefined, signal: string | undefined) => {
+          cleanup();
           resolve({ stdout, stderr, exitCode: code ?? -1, signal: signal ?? null, durationMs: Date.now() - started });
         });
         if (options?.stdin !== undefined) stream.end(options.stdin);

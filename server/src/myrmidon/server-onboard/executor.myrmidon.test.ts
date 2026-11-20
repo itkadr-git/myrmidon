@@ -143,6 +143,8 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     mockSsh.mockResponse(/mkdir -p ~\/\.ssh/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
     mockSsh.mockResponse(/50-myrmidon-hardening\.conf/, { stdout: "", exitCode: 0 });
+    mockSsh.mockResponse(/start-myrmidon-password-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    mockSsh.mockResponse(/check-myrmidon-firewall-prerequisites/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse("sudo sshd -t", { stdout: "", exitCode: 0 });
     mockSsh.mockResponse(/sudo systemctl reload/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse(/sshd -T/, { stdout: "passwordauthentication no\nkbdinteractiveauthentication no\n", exitCode: 0 });
@@ -526,9 +528,10 @@ esac
 
   it("fails and restores password configuration when sshd reload fails", async () => {
     const mockSsh = new VerifiedMockSsh();
+    mockSsh.mockResponse(/start-myrmidon-password-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     mockSsh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
     mockSsh.mockResponse(/sshd -T/, { stdout: "passwordauthentication no\nkbdinteractiveauthentication no\n", exitCode: 0 });
-    mockSsh.mockResponse(/sudo systemctl reload ssh \|\| sudo systemctl reload sshd/, { exitCode: 1, stderr: "reload failed" });
+    mockSsh.mockResponse("sudo systemctl reload ssh || sudo systemctl reload sshd", { exitCode: 1, stderr: "reload failed" });
     const executor = new FleetOnboardExecutor({
       createSshExecutor: () => mockSsh,
     });
@@ -548,6 +551,7 @@ esac
 
   it("restores password configuration if subsequent firewall hardening fails", async () => {
     const ssh = new VerifiedMockSsh();
+    ssh.mockResponse(/start-myrmidon-password-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     ssh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
     ssh.mockResponse(/sshd -T/, { stdout: "passwordauthentication no\nkbdinteractiveauthentication no\n", exitCode: 0 });
     ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
