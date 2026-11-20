@@ -28,6 +28,22 @@ What the merged 1.6.6 code actually does:
 - Both surfaces pass the same gates, in the same order, over the same module
   (`createKnowledgeModule`), so rights do not depend on the entry point.
 
+## Publishing a translation (proposed, not deployed)
+
+PR #4621 proposes this contract; it is not deployed yet. After deployment, for
+an existing item, `POST /api/myrmidon/companies/{companyId}/knowledge/items/{slug}/draft`
+with `{"content":"Translated text","lang":"ru","translationOf":"<canonical-revision-uuid>"}`.
+`lang` is `en` or `ru`; the UUID must identify a canonical revision of the same
+item, not a translation. Save `revision.id` from the response or list revisions
+with `GET .../items/{slug}/revisions`. Once the canonical revision is approved,
+`POST .../items/{slug}/publish` with `{"revisionId":"<translation-revision-uuid>"}`.
+Normal access, publication and approval gates apply.
+
+Read `GET .../items/{slug}?lang=ru` or `?lang=en`; a missing approved
+translation falls back to canonical content. Publication preserves the canonical
+revision but moves the delivery pointer to the translation. MCP `knowledge_write_draft` accepts the same
+language fields for an existing `idOrSlug`.
+
 ## Gates (the same five on both surfaces)
 
 1. **Company access.** `assertCompanyAccess` — a caller outside the company

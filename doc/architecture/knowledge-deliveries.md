@@ -25,6 +25,8 @@ Revisions maintain a durable audit trail of all changes made to a knowledge item
 
 ## Publishing a translation
 
+**Proposed in PR #4621; not deployed.** The following contract applies after deployment.
+
 For an existing item, POST `/api/myrmidon/companies/{companyId}/knowledge/items/{slug}/draft` with `content`, `lang` (`en` or `ru`), and `translationOf` (the UUID of a canonical revision of the same item). List revisions to obtain the new revision ID, then POST it as `revisionId` to the item's `/publish` endpoint. The canonical revision must be approved before publishing its translation; ordinary publication and approval gates still apply. Existing revisions remain unchanged. `knowledge_write_draft` accepts the same language fields for an existing item. Read the delivered translation with `GET .../items/{slug}?lang=ru`; `lang=en` reads the canonical English revision, and a missing translation falls back to canonical content.
 
 ## KNOWLEDGE_INDEX contract
