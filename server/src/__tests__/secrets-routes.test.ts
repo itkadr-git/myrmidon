@@ -125,6 +125,14 @@ describe("secret routes", () => {
     expect(mockSecretService.probeBinding).not.toHaveBeenCalled();
   });
 
+  it("does not expose diagnostic backend error details", async () => {
+    mockSecretService.probeBinding.mockRejectedValue(new HttpError(500, "sentinel-secret"));
+    const response = await request(createApp()).get("/api/companies/company-1/preflight/secrets/11111111-1111-4111-8111-111111111111/probe");
+    expect(response.status).toBe(500);
+    expect(JSON.stringify(response.body)).not.toContain("sentinel-secret");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("returns an opaque secretRef in agent secret metadata without internal binding details", async () => {
     const secretId = "11111111-1111-4111-8111-111111111111";
     mockSecretService.listAgentSecretAccess.mockResolvedValue([{
