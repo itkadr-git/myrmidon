@@ -274,6 +274,21 @@ export const companyTransferRunService = {
     return claimed.length === 1;
   },
 
+  // A failed cleanup remains discoverable and can be retried after the cause
+  // is resolved. Never persist the storage provider's potentially sensitive error.
+  async releaseMigrationRollbackClaim(db: Db, runId: string, _error: string): Promise<boolean> {
+    const released = await db.update(companyTransferRuns)
+      .set({ status: "failed", error: "migration rollback failed; retry recovery", finishedAt: new Date(), updatedAt: new Date() })
+      .where(and(
+        eq(companyTransferRuns.id, runId),
+        eq(companyTransferRuns.direction, "import"),
+        eq(companyTransferRuns.status, "rolling_back"),
+        sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
+      ))
+      .returning({ id: companyTransferRuns.id });
+    return released.length === 1;
+  },
+
   async start(db: Db, runId: string): Promise<void> {
     await db
       .update(companyTransferRuns)
