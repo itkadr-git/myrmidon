@@ -72,15 +72,16 @@ async function jobBlock(name) {
 
 test('main workflow does not list `labeled` among its pull_request types and has no label-noop machinery', async () => {
   const content = await readFile(WORKFLOW, 'utf8');
-  assert.match(content, /^    types: \[opened, synchronize, reopened\]$/m);
+  assert.match(content, /^    types: \[opened, synchronize, reopened, ready_for_review\]$/m);
   assert.doesNotMatch(content, /'-label-noop'|github\.event\.label\.name/);
 });
 
-test('ci-result keeps the static required name and the !cancelled() gate (no needs.plan.result re-gate)', async () => {
+test('ci-result preserves the required name for ready runs and never gates on plan success', async () => {
   const block = await jobBlock('ci-result');
-  assert.ok(block.some((line) => line === '    name: CI result'), 'static required name');
+  assert.ok(block.some((line) => line.includes("'draft CI omitted' || 'CI result'")), 'required name for non-draft runs');
   const ifLine = block.find((line) => /^    if: /.test(line));
-  assert.equal(ifLine, '    if: ${{ !cancelled() }}');
+  assert.match(ifLine, /!cancelled\(\)/);
+  assert.match(ifLine, /github\.event\.pull_request\.draft == false/);
   assert.doesNotMatch(ifLine, /needs\.plan\.result/, 'a red plan must still fail the summary, not skip');
 });
 

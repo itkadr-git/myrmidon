@@ -186,8 +186,9 @@ def main(argv=None):
     main_doc, full_doc = load(main_path), load(full_path)
     jobs = main_doc.get("jobs") or {}
     ci = jobs.get("ci-result")
-    if ci is None or str(ci.get("name", "")).strip() != REQUIRED_NAME:
-        print("FAIL: ci-result must keep the static name `CI result`", file=sys.stderr)
+    expected = "${{ github.event_name == 'pull_request' && github.event.pull_request.draft && 'draft CI omitted' || 'CI result' }}"
+    if ci is None or str(ci.get("name", "")).strip() != expected:
+        print("FAIL: ci-result must retain the required name for non-draft runs", file=sys.stderr)
         return 2
     failures = run_scenarios(main_doc, full_doc)
     if run_teeth(main_doc, full_doc) != 0:

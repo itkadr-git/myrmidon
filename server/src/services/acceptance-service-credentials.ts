@@ -4,7 +4,6 @@ import { acceptanceServiceCredentials, nativeFinalizationGrants, nativeRunFinali
 
 export const ACCEPTANCE_SERVICE_AUDIENCE = "acceptance-scenarios";
 export const NATIVE_FINALIZATION_AUDIENCE = "native-finalization-submit";
-
 type ServiceAudience = typeof ACCEPTANCE_SERVICE_AUDIENCE | typeof NATIVE_FINALIZATION_AUDIENCE;
 
 function digest(value: string): string {
@@ -69,14 +68,14 @@ export function acceptanceServiceCredentialsService(db: Db) {
 
   return {
     grantFinalization,
+    issueFinalization: (companyId: string, fingerprint: string, expiresAt: Date) => issue(companyId, fingerprint, expiresAt, NATIVE_FINALIZATION_AUDIENCE),
+    revokeFinalization: (companyId: string, id: string) => revoke(companyId, id, NATIVE_FINALIZATION_AUDIENCE),
+    authenticateFinalization: (token: string, fingerprint: string) => authenticate(token, fingerprint, NATIVE_FINALIZATION_AUDIENCE),
     issue: (companyId: string, fingerprint: string, expiresAt: Date) => issue(companyId, fingerprint, expiresAt, ACCEPTANCE_SERVICE_AUDIENCE),
     revoke: (companyId: string, id: string) => revoke(companyId, id, ACCEPTANCE_SERVICE_AUDIENCE),
     async authenticate(token: string, fingerprint: string) {
       const credential = await authenticate(token, fingerprint, ACCEPTANCE_SERVICE_AUDIENCE);
       return credential ? { companyId: credential.companyId } : null;
     },
-    issueFinalization: (companyId: string, fingerprint: string, expiresAt: Date) => issue(companyId, fingerprint, expiresAt, NATIVE_FINALIZATION_AUDIENCE),
-    revokeFinalization: (companyId: string, id: string) => revoke(companyId, id, NATIVE_FINALIZATION_AUDIENCE),
-    authenticateFinalization: (token: string, fingerprint: string) => authenticate(token, fingerprint, NATIVE_FINALIZATION_AUDIENCE),
   };
 }

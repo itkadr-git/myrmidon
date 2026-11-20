@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createServer, request } from 'node:https';
@@ -12,7 +12,7 @@ import { createPersistentCredentialStore } from './persistent-credentials.mjs';
 import { mkdirSync } from 'node:fs';
 import { createServer as createNetServer } from 'node:net';
 
-test('gateway to separate mTLS upstream: production pin/verify path, tenant boundaries and TLS authentication', async (t) => {
+test('gateway to separate mTLS upstream: conditional GET path, tenant boundaries and TLS authentication', async (t) => {
   const dir = mkdtempSync(join(process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || process.env.HOME, 'reader-integration-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const file = (name) => join(dir, name);
@@ -39,10 +39,13 @@ test('gateway to separate mTLS upstream: production pin/verify path, tenant boun
   };
   let upstreamRequests = 0;
   const requestedPaths = [];
+  const serviceToken = `myrmidon_svc_${'a'.repeat(43)}`;
+  writeFileSync(file('service-token'), serviceToken, { mode: 0o600 });
   const findState = (url) => Object.values(state).find((entry) => url.includes(entry.issue.id) || url.includes(entry.issue.identifier));
   const upstream = createServer({ ...upstreamTls, ca: clientTls.cert, requestCert: true, rejectUnauthorized: true }, (req, res) => {
     upstreamRequests++;
     requestedPaths.push(req.url);
+    if (req.headers.authorization !== `Bearer ${serviceToken}`) { res.writeHead(401); res.end(); return; }
     if (req.url.includes('OPE-6')) { req.socket.destroy(); return; }
     if (req.url.includes('OPE-9')) {
       res.writeHead(500, { 'content-type': 'application/json' });
@@ -55,21 +58,22 @@ test('gateway to separate mTLS upstream: production pin/verify path, tenant boun
       return;
     }
     const entry = findState(req.url);
-    if (!entry) {
+    if (!entry || entry.issue.companyId !== 'allowed') {
       // Foreign AND unknown issues are the identical upstream 404.
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'Issue not found' }));
       return;
     }
-    res.writeHead(200, { 'content-type': 'application/json' });
+    const etag = `"${createHash('sha256').update(JSON.stringify([entry.issue.id, entry.issue.version, entry.document?.latestRevisionId ?? null])).digest('hex')}"`;
+    if (req.headers['if-match'] && req.headers['if-match'] !== etag) { res.writeHead(412); res.end(); return; }
+    res.writeHead(200, { 'content-type': 'application/json', etag });
     res.end(JSON.stringify({ issue: { ...entry.issue, secret: 'private-relation' }, document: entry.document }));
   });
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
   t.after(() => upstream.close());
   const origin = `https://localhost:${upstream.address().port}`;
-  const adapter = createUpstream({ origin, ca: upstreamTls.cert, ...clientTls });
-  await assert.rejects(createUpstream({ origin, ca: wrongTls.cert, ...clientTls }).readSnapshot('OPE-1'));
-  await assert.rejects(createUpstream({ origin, ca: upstreamTls.cert, ...wrongTls }).readSnapshot('OPE-1'));
+  await assert.rejects(createUpstream({ origin, ca: wrongTls.cert, ...clientTls, token: serviceToken }).readSnapshot('OPE-1'));
+  await assert.rejects(createUpstream({ origin, ca: upstreamTls.cert, ...wrongTls, token: serviceToken }).readSnapshot('OPE-1'));
   const token = 'candidate-integration-token';
   const records = [{ tokenHash: createHash('sha256').update(token).digest('hex'), companyId: 'allowed', expiresAt: Date.now() + 60000, revoked: false }];
   const credentialDirectory = file('credentials');
@@ -80,13 +84,13 @@ test('gateway to separate mTLS upstream: production pin/verify path, tenant boun
   reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening');
   const port = reservation.address().port;
   await new Promise((resolve) => reservation.close(resolve));
-  const gateway = start({ host: '127.0.0.1', port, credentialDirectory, auditFile: file('audit.jsonl'), listener: { cert: file('gateway.crt'), key: file('gateway.key') }, upstream: { origin, ca: file('upstream.crt'), cert: file('client.crt'), key: file('client.key') } });
+  const gateway = start({ host: '127.0.0.1', port, credentialDirectory, auditFile: file('audit.jsonl'), listener: { cert: file('gateway.crt'), key: file('gateway.key') }, upstream: { origin, ca: file('upstream.crt'), cert: file('client.crt'), key: file('client.key'), tokenFile: file('service-token') } });
   await once(gateway, 'listening');
   t.after(() => gateway.close());
   const call = (path, { method = 'GET', body, headers = { authorization: `Bearer ${token}` } } = {}) => new Promise((resolve, reject) => {
     const payload = body === undefined ? null : JSON.stringify(body);
     const req = request({ host: '127.0.0.1', servername: 'localhost', port: gateway.address().port, ca: gatewayTls.cert, path, method, headers: { ...headers, ...(payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {}) } }, (res) => {
-      let data = ''; res.on('data', (chunk) => { data += chunk; }); res.on('end', () => resolve({ status: res.statusCode, body: data }));
+      let data = ''; res.on('data', (chunk) => { data += chunk; }); res.on('end', () => resolve({ status: res.statusCode, body: data, headers: res.headers }));
     });
     req.on('error', reject);
     if (payload) req.write(payload);
@@ -95,101 +99,32 @@ test('gateway to separate mTLS upstream: production pin/verify path, tenant boun
 
   // Every allowed request is exactly one upstream read of the snapshot path.
   const projected = (entry) => ({
-    issue: entry.issue,
-    document: entry.document == null ? null : { id: entry.document.id, latestRevisionId: entry.document.latestRevisionId, latestRevisionNumber: entry.document.latestRevisionNumber, body: entry.document.body },
+    issue: { identifier: entry.issue.identifier, companyId: entry.issue.companyId },
+    document: entry.document == null ? null : { id: entry.document.id, latestRevisionId: entry.document.latestRevisionId, body: entry.document.body },
   });
   for (const ref of ['OPE-1', id]) {
     assert.deepEqual(JSON.parse((await call(`/api/issues/${ref}/acceptance-snapshot`)).body), projected(state['OPE-1']));
   }
   for (const requested of requestedPaths) {
-    assert.match(requested, /^\/api\/issues\/(?:OPE-1|11111111-1111-1111-1111-111111111111)\/acceptance-scenarios-snapshot$/);
+    assert.match(requested, /^\/api\/service\/issues\/(?:OPE-1|11111111-1111-1111-1111-111111111111)\/acceptance-scenarios$/);
   }
   // An issue whose snapshot carries no document still pins.
   assert.deepEqual(JSON.parse((await call('/api/issues/OPE-3/acceptance-snapshot')).body), projected(state['OPE-3']));
 
-  // Production path on the mutable issue: pin -> verify -> mutate -> verify
-  // rejects -> re-pin -> verify ok -> mutate AFTER verify -> next verify
-  // rejects.
-  const pin = async (ref = 'OPE-5') => {
-    const result = await call(`/api/issues/${ref}/acceptance-snapshot`);
-    assert.equal(result.status, 200);
-    return JSON.parse(result.body);
-  };
-  const verify = (pinned, ref = 'OPE-5') => call(`/api/issues/${ref}/acceptance-snapshot/verify`, { method: 'POST', body: pinned });
-  const bump = () => { state['OPE-5'].issue.version = String(Number(state['OPE-5'].issue.version) + 1); };
-
-  const pinned0 = await pin();
-  assert.deepEqual(JSON.parse((await verify(pinned0)).body), { ok: true });
-
-  // Content mutation (r1 -> r2) invalidates the pin.
-  state['OPE-5'].document = { id: 'aba-doc', latestRevisionId: 'p2', latestRevisionNumber: 2, body: 'criteria-2', secret: 'private-document' };
-  bump();
-  assert.equal((await verify(pinned0)).status, 409);
-
-  // Content revert (r2 -> r1, ABA on the body) still mints a new generation
-  // and a new issue version: rejected.
-  state['OPE-5'].document = { id: 'aba-doc', latestRevisionId: 'p3', latestRevisionNumber: 3, body: 'criteria-1', secret: 'private-document' };
-  bump();
-  assert.equal((await verify(pinned0)).status, 409);
-  const pinned1 = await pin();
-  assert.deepEqual(JSON.parse((await verify(pinned1)).body), { ok: true });
-
-  // Link ABA between pin and verify: the link row is removed and recreated;
-  // every step moves the version, the stale pin never silently matches.
-  const pinLink = await pin();
-  bump();
-  assert.equal((await verify(pinLink)).status, 409);
-  bump();
-  const pinnedLink = await pin();
-  assert.deepEqual(JSON.parse((await verify(pinnedLink)).body), { ok: true });
-
-  // Company ABA: the fresh read now names another tenant. Every request —
-  // pin or verify — fails closed with the identical 404, never a 409 that
-  // would disclose the move.
-  state['OPE-5'].issue = { ...state['OPE-5'].issue, companyId: 'other' };
-  bump();
-  assert.equal((await verify(pinnedLink)).status, 404);
-  assert.equal((await call('/api/issues/OPE-5/acceptance-snapshot')).status, 404);
-
-  // Identifier ABA inside the tenant moves the version as well (addressed by
-  // UUID so the path stays bound to the row while the identifier changes).
-  state['OPE-5'].issue = { id: id5, identifier: 'OPE-5-TMP', companyId: 'allowed', version: state['OPE-5'].issue.version };
-  const pinnedName = await pin(id5);
-  bump();
-  assert.equal((await verify(pinnedName, id5)).status, 409);
-
-  // Restore the issue; the verified pin passes again.
-  state['OPE-5'].issue = { id: id5, identifier: 'OPE-5', companyId: 'allowed', version: state['OPE-5'].issue.version };
-  const pinned4 = await pin(id5);
-  assert.deepEqual(JSON.parse((await verify(pinned4, id5)).body), { ok: true });
-  // Mutation after the verify: the NEXT verify is what detects it — the
-  // contract requires use to follow verify immediately and re-verify later.
-  state['OPE-5'].document = { id: 'aba-doc', latestRevisionId: 'p4', latestRevisionNumber: 4, body: 'criteria-4', secret: 'private-document' };
-  bump();
-  assert.equal((await verify(pinned4)).status, 409);
-
-  // Controlled race: the verify request header arrives first, the body is
-  // delayed, and the upstream mutates in between. The gateway must read and
-  // validate the bounded body BEFORE the fresh snapshot, so the comparison
-  // sees the mutation: 409, never a stale 200.
-  const racePin = await pin();
-  assert.deepEqual(JSON.parse((await verify(racePin)).body), { ok: true });
-  const raced = await new Promise((resolve, reject) => {
-    const payload = JSON.stringify(racePin);
-    const req = request({ host: '127.0.0.1', servername: 'localhost', port: gateway.address().port, ca: gatewayTls.cert, path: '/api/issues/OPE-5/acceptance-snapshot/verify', method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' } }, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk; });
-      res.on('end', () => resolve({ status: res.statusCode, body: data }));
-    });
-    req.on('error', reject);
-    req.write(payload.slice(0, 20));
-    setTimeout(() => {
-      state['OPE-5'].document = { id: 'aba-doc', latestRevisionId: 'p5', latestRevisionNumber: 5, body: 'criteria-5', secret: 'private-document' };
-      bump();
-      req.end(payload.slice(20));
-    }, 150);
-  });
-  assert.equal(raced.status, 409, raced.body);
+  // Conditional GET passes the strong snapshot ETag upstream and fails closed
+  // when content or issue epoch changes, including an ABA content revert.
+  const path = '/api/issues/OPE-5/acceptance-snapshot';
+  const first = await call(path);
+  const conditional = { authorization: `Bearer ${token}`, 'if-match': first.headers.etag };
+  assert.equal((await call(path, { headers: conditional })).status, 200);
+  state['OPE-5'].document = { id: 'aba-doc', latestRevisionId: 'p2', latestRevisionNumber: 2, body: 'criteria-2' };
+  state['OPE-5'].issue.version = '2';
+  assert.equal((await call(path, { headers: conditional })).status, 412);
+  state['OPE-5'].document = { id: 'aba-doc', latestRevisionId: 'p3', latestRevisionNumber: 3, body: 'criteria-1' };
+  state['OPE-5'].issue.version = '3';
+  assert.equal((await call(path, { headers: conditional })).status, 412);
+  state['OPE-5'].issue.companyId = 'other';
+  assert.equal((await call(path, { headers: conditional })).status, 404);
 
   // Foreign and unknown issues are the identical 404.
   const foreign404 = await call(`/api/issues/${foreign}/acceptance-snapshot`);
@@ -206,13 +141,15 @@ test('gateway to separate mTLS upstream: production pin/verify path, tenant boun
     assert.deepEqual(JSON.parse(failed.body), {}, ref);
   }
 
+  const beforeState = JSON.stringify(state);
   const before = upstreamRequests;
   for (const path of ['/api/issues', '/api/issues?search=OPE', '/api/issues/OPE-1/documents/acceptance-scenarios', '/api/issues/OPE-1/acceptance-scenarios-snapshot', '/api/secrets', '/api/agents', '/api/plugins', '/api/issues/%4fPE-1/acceptance-snapshot', '/api/issues/%254fPE-1/acceptance-snapshot', '/api/issues/OPE-1%2facceptance-snapshot', '/api/issues/../OPE-1/acceptance-snapshot', '/api/issues/OPE-1/acceptance-snapshot?x=1']) assert.equal((await call(path)).status, 404, path);
-  for (const method of ['PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']) assert.equal((await call('/api/issues/OPE-1/acceptance-snapshot', { method })).status, 404, method);
-  assert.equal((await call('/api/issues/OPE-1/acceptance-snapshot/verify', { method: 'GET' })).status, 404);
+  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']) assert.equal((await call('/api/issues/OPE-1/acceptance-snapshot', { method })).status, 404, method);
+  for (const method of ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']) assert.equal((await call('/api/issues/OPE-1/acceptance-snapshot/verify', { method })).status, 404);
   for (const header of ['x-http-method-override', 'x-method-override', 'x-http-method']) assert.equal((await call('/api/issues/OPE-1/acceptance-snapshot', { headers: { authorization: `Bearer ${token}`, [header]: 'POST' } })).status, 404, header);
   for (const authorization of [undefined, 'Bearer invalid', 'Basic candidate']) assert.equal((await call('/api/issues/OPE-1/acceptance-snapshot', { headers: authorization ? { authorization } : {} })).status, 401);
   assert.equal(upstreamRequests, before);
+  assert.equal(JSON.stringify(state), beforeState);
   const expired = 'candidate-expired-token';
   store.issue({ tokenHash: createHash('sha256').update(expired).digest('hex'), companyId: 'allowed', expiresAt: Date.now() - 1 });
   assert.equal((await call('/api/issues/OPE-1/acceptance-snapshot', { headers: { authorization: `Bearer ${expired}` } })).status, 401);
@@ -221,5 +158,5 @@ test('gateway to separate mTLS upstream: production pin/verify path, tenant boun
   assert.equal(upstreamRequests, before);
   const audit = readFileSync(file('audit.jsonl'), 'utf8');
   assert.ok(audit.length > 0);
-  for (const secret of [token, expired, 'private-relation', 'private-document', 'criteria', 'criteria-1']) assert.ok(!audit.includes(secret), secret);
+  for (const secret of [token, serviceToken, expired, 'private-relation', 'private-document', 'criteria', 'criteria-1']) assert.ok(!audit.includes(secret), secret);
 });

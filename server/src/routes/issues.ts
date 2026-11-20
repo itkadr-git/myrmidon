@@ -124,6 +124,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
+import { executionParticipantsSchema } from "./execution-participants-schema.js";
 import {
   and,
   asc,
@@ -15007,7 +15008,12 @@ export function issueRoutes(
       assertBoard(req);
       const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
       if (!issue) return;
-      const body = req.body as { returnAssignee?: { type?: string; agentId?: string | null } | null; currentParticipant?: { type?: string; agentId?: string | null } | null };
+      const parsedBody = executionParticipantsSchema.safeParse(req.body);
+      if (!parsedBody.success) {
+        res.status(400).json({ error: "Invalid execution participant repair payload" });
+        return;
+      }
+      const body = parsedBody.data;
       const currentState = parseIssueExecutionState(issue.executionState);
       if (!currentState) {
         res.status(409).json({ error: "Issue has no valid execution state" });
@@ -15016,7 +15022,9 @@ export function issueRoutes(
       const nextState = { ...currentState };
       for (const key of ["returnAssignee", "currentParticipant"] as const) {
         if (!(key in body)) continue;
-        const value = body[key];
+        const value = key === "returnAssignee"
+          ? ("returnAssignee" in body ? body.returnAssignee : undefined)
+          : ("currentParticipant" in body ? body.currentParticipant : undefined);
         if (value !== null && (value?.type !== "agent" || !value.agentId)) {
           res.status(400).json({ error: `${key} must be an agent participant or null` });
           return;
@@ -15715,6 +15723,7 @@ export function issueRoutes(
         const routingStore = createPgReviewRoutingStore(db);
         candidateLoads = await routingStore.loadByAgent(existing.companyId);
       }
+      const requestedExecutionStatus = typeof updateFields.status === "string" ? updateFields.status : undefined;
       const transition = applyIssueExecutionPolicyTransition({
         // myrmidon(OPE-9031): senior escalation chain for the round limit.
         issue: transitionIssue,
@@ -17060,7 +17069,7 @@ export function issueRoutes(
                 )
               : [];
             const lockedTransitionIssue: typeof transitionIssue = {
-              ...existing,
+              ...transitionIssue,
               ...lockedExisting,
               assigneeAgentRole: undefined,
               executionReviewParticipantAgentIds: lockedReviewParticipants,
@@ -17079,7 +17088,8 @@ export function issueRoutes(
               previousPolicy: previousExecutionPolicy,
               // myrmidon(OPE-10045): re-check a pre-merge approval as the
               // approval it is, so a stage that changed under the lock refuses it.
-              requestedStatus: reviewApprovalPendingMerge ? "done" : updateFields.status,
+              // Recompute from the request, not the preliminary transition's status.
+              requestedStatus: reviewApprovalPendingMerge ? "done" : requestedExecutionStatus,
               requestedAssigneePatch: explicitAssigneePatch,
               actor: {
                 agentId: actor.agentId ?? null,

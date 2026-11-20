@@ -11,15 +11,10 @@ export function authenticate(header, records, now = Date.now()) {
 
 const ISSUE = '(?:[A-Z][A-Z0-9]*-[1-9][0-9]*|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const PIN_PATH = new RegExp(`^/api/issues/(${ISSUE})/acceptance-snapshot$`);
-const VERIFY_PATH = new RegExp(`^/api/issues/(${ISSUE})/acceptance-snapshot/verify$`);
-const VERIFY_BODY_LIMIT = 64 * 1024;
 
 export function parsePath(path) {
-  let match = PIN_PATH.exec(path);
-  if (match) return { issue: match[1], verify: false };
-  match = VERIFY_PATH.exec(path);
-  if (match) return { issue: match[1], verify: true };
-  return null;
+  const match = PIN_PATH.exec(path);
+  return match ? { issue: match[1] } : null;
 }
 
 export function isIssueIdentity(value) {
@@ -52,23 +47,10 @@ function validSnapshot(snapshot) {
     validDocument(snapshot.document);
 }
 
-// The pin tuple is the entire single-snapshot response: the issue identity
-// (including the trigger-bumped mutation version), and, when present, the
-// document identity, monotonic generation and body. Two responses with equal
-// canonical pins were read from moments between which no relevant mutation
-// committed — that equality is what POST /verify asserts server-side.
-function canonicalPin(snapshot) {
-  // BigInt-normalize the version: leading zeros cannot create distinct
-  // pins for the same generation.
-  return JSON.stringify({
-    i: [snapshot.issue.id, snapshot.issue.identifier, snapshot.issue.companyId, BigInt(snapshot.issue.version).toString()],
-    d: snapshot.document == null ? null : [
-      snapshot.document.id,
-      snapshot.document.latestRevisionId,
-      snapshot.document.latestRevisionNumber,
-      snapshot.document.body,
-    ],
-  });
+function snapshotEtag(snapshot) {
+  return `"${createHash('sha256').update(JSON.stringify([
+    snapshot.issue.id, snapshot.issue.version, snapshot.document?.latestRevisionId ?? null,
+  ])).digest('hex')}"`;
 }
 
 // The minimal runner-facing projection of a valid snapshot: exactly the pin
@@ -76,52 +58,23 @@ function canonicalPin(snapshot) {
 function project(snapshot) {
   return {
     issue: {
-      id: snapshot.issue.id,
       identifier: snapshot.issue.identifier,
       companyId: snapshot.issue.companyId,
-      version: snapshot.issue.version,
     },
     document: snapshot.document == null ? null : {
       id: snapshot.document.id,
       latestRevisionId: snapshot.document.latestRevisionId,
-      latestRevisionNumber: snapshot.document.latestRevisionNumber,
       body: snapshot.document.body,
     },
   };
 }
 
-function readBody(req, limit = VERIFY_BODY_LIMIT) {
-  return new Promise((resolve, reject) => {
-    let size = 0;
-    const chunks = [];
-    req.on('data', (chunk) => {
-      size += chunk.length;
-      if (size > limit) {
-        reject(new Error('request body too large'));
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
-  });
-}
-
-// The gateway answers from ONE upstream read per request: the atomic
-// acceptance snapshot (a single SQL statement upstream). GET returns the
-// full pin projection; POST /verify is the server-side conditional
-// assertion — the gateway reads a fresh snapshot and compares the caller's
-// pinned snapshot on its own side. The stored credential's company is
-// checked before anything is returned, and credential revocation is
-// re-checked immediately before the response, so revocation or expiry
-// during the upstream read fails closed.
 export function createHandler({ records, credentialStore, readSnapshot, audit = async () => {} }) {
   const checkCredential = (header) => credentialStore ? credentialStore.authenticate(header) : authenticate(header, records);
   return async (req, res) => {
     const authorizations = req.rawHeaders.filter((_, index) => index % 2 === 0 && req.rawHeaders[index].toLowerCase() === 'authorization').length;
     const companyId = authorizations === 1 ? checkCredential(req.headers.authorization) : null;
-    const respond = async (status, body = {}) => {
+    const respond = async (status, body = {}, etag) => {
       if (status === 200 && checkCredential(req.headers.authorization) !== companyId) {
         status = 401;
         body = {};
@@ -136,27 +89,22 @@ export function createHandler({ records, credentialStore, readSnapshot, audit = 
         status = 401;
         body = {};
       }
-      res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...(status === 200 && etag ? { etag } : {}) });
       res.end(JSON.stringify(body));
     };
     if (!companyId) return respond(401);
     const path = parsePath(req.url);
-    if ((req.method !== 'GET' && req.method !== 'POST') || !path || Object.keys(req.headers).some((name) => name.includes('method-override') || name === 'x-http-method')) return respond(404);
-    if (path.verify !== (req.method === 'POST')) return respond(404);
+    if (req.method !== 'GET' || !path || Object.keys(req.headers).some((name) => name.includes('method-override') || name === 'x-http-method')) return respond(404);
+    const etag = req.headers['if-match'];
+    if (etag !== undefined && !/^"[a-f0-9]{64}"$/.test(etag)) return respond(400);
     try {
-      // For verify, take and validate the bounded request body BEFORE the
-      // fresh upstream read, so a slow client cannot pin the comparison to
-      // a moment older than its own evidence.
-      let pinned;
-      if (path.verify) {
-        try {
-          pinned = JSON.parse(await readBody(req));
-        } catch {
-          return respond(400);
-        }
-        if (!validSnapshot(pinned)) return respond(400);
+      let snapshot;
+      try {
+        snapshot = await readSnapshot(path.issue, etag);
+      } catch (error) {
+        if (error?.status === 412 && etag) return respond(412);
+        throw error;
       }
-      const snapshot = await readSnapshot(path.issue);
       // Upstream not-found: the identical 404 for foreign and unknown issues.
       if (snapshot === null || snapshot === undefined) return respond(404);
       // A 200 payload that does not match the snapshot contract is an
@@ -166,16 +114,10 @@ export function createHandler({ records, credentialStore, readSnapshot, audit = 
       // Fail closed on anything that does not match the credential's company
       // and the requested identity; unknown and foreign are the same 404.
       if (snapshot.issue.companyId !== companyId || (path.issue !== snapshot.issue.id && path.issue !== snapshot.issue.identifier)) return respond(404);
-      if (!path.verify) return respond(200, project(snapshot));
-
-      // Server-side conditional assertion: the caller's pinned snapshot was
-      // validated before the fresh read; compare now. Match means "no
-      // relevant mutation committed between the pin and this verify" — the
-      // freshest statement this read-only gateway can make. The caller must
-      // use the result immediately and re-verify before any later use.
-      if (pinned.issue.companyId !== companyId || (path.issue !== pinned.issue.id && path.issue !== pinned.issue.identifier)) return respond(404);
-      if (canonicalPin(pinned) !== canonicalPin(snapshot)) return respond(409);
-      return respond(200, { ok: true });
+      // Defend against an upstream that ignores the conditional header.
+      const currentEtag = snapshotEtag(snapshot);
+      if (etag && etag !== currentEtag) return respond(412);
+      return respond(200, project(snapshot), currentEtag);
     } catch {
       // A failed upstream read never yields a partial or mixed snapshot.
       return respond(502);
