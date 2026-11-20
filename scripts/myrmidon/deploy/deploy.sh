@@ -146,7 +146,7 @@ set -euo pipefail
 # shellcheck source=lib.sh source-path=SCRIPTDIR
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
-config="" digest="" expect_version="" expect_commit="" force=0 release_tag="" urgent=0 urgent_reason=""
+config="" digest="" expect_version="" expect_commit="" force=0 release_tag="" urgent=0 urgent_reason="" nightly_pbs_precheck=0
 DRY_RUN=0
 while (($#)); do
   case "$1" in
@@ -159,6 +159,7 @@ while (($#)); do
       [[ $# -ge 2 ]] || die "--urgent needs a reason: --urgent \"<why this deploy cannot wait>\""
       urgent=1; urgent_reason="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --nightly-pbs-precheck) nightly_pbs_precheck=1; shift ;;
     --force) force=1; shift ;;
     -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -596,6 +597,12 @@ preflight_all() {
   log "preflight ok: compose project, shared package cache, components, dockergate config"
 }
 preflight_all
+
+# This additional read-only precheck never substitutes for the database rehearsal.
+if ((nightly_pbs_precheck)); then
+  "$MYR_SCRIPT_DIR/nightly-backup-guard.sh" || die "nightly PBS precheck failed; nothing was changed"
+  log "nightly PBS evidence does not prove migration rehearsal or database rollback"
+fi
 
 # DEPLOY-HYGIENE: estimate all target image layers (board, changed release
 # components and bot digests) plus the DB-dump reserve before any pull/dump.

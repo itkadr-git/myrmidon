@@ -437,6 +437,32 @@ const callsWithoutVersionStamp = (sb) =>
 const maintenance = (sb) => read(path.join(sb.dir, "maintenance.log"));
 
 describe("deploy.sh", () => {
+  it("nightly PBS precheck refuses a deploy when the operator query fails", () => {
+    const sb = sandbox();
+    fs.writeFileSync(path.join(sb.bin, "runuser"), '#!/bin/sh\nexit 42\n', { mode: 0o755 });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--nightly-pbs-precheck", "--dry-run"]);
+    assert.notEqual(code, 0);
+    assert.match(out, /PBS query failed: archives/);
+    assert.doesNotMatch(calls(sb), /docker pull|up -d --no-deps server/);
+    assert.equal(maintenance(sb), "");
+  });
+
+  it("nightly PBS precheck does not replace the existing database rehearsal", () => {
+    const sb = sandbox();
+    const start = Math.floor(Date.now() / 1000) - 600;
+    const stamp = new Date(start * 1000).toISOString().replace('.000Z', 'Z');
+    const tasks = JSON.stringify([{ id: "100", node: "hk01", type: "vzdump", status: "OK", starttime: start, endtime: start + 10 }]);
+    fs.writeFileSync(path.join(sb.bin, "runuser"), '#!/bin/sh\ncase "$*" in *pvesm*) printf "%s\\n" "$ARCHIVE";; *) printf "%s\\n" "$TASKS";; esac\n', { mode: 0o755 });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--nightly-pbs-precheck", "--dry-run"], undefined, {
+      ARCHIVE: `pbs-offsite:backup/vm/100/${stamp}`, TASKS: tasks,
+    });
+    assert.equal(code, 0, out);
+    assert.match(out, /PBS verified/);
+    assert.match(out, /does not prove migration rehearsal or database rollback/);
+    assert.match(out, /dump database with DUMP_COMMAND/);
+    assert.match(out, /PREDEPLOY-DB-CHECK/);
+  });
+
   it("deploys by digest: dump, maintenance, image switch, health, exit", () => {
     const sb = sandbox();
     const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
