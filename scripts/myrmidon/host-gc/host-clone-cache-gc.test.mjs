@@ -207,6 +207,26 @@ describe("board project workspace GC", () => {
     assert.equal(byName["pnpm-store"], undefined);
   });
 
+  it("preserves scratch data created during the final issue check", async () => {
+    const home = path.join(tmpDir, "home");
+    const scratch = path.join(home, "instances/default/projects/c/p/repo/.scratch/ope900");
+    fs.mkdirSync(scratch, { recursive: true });
+    const old = new Date(Date.now() - 30 * 3600000);
+    fs.utimesSync(scratch, old, old);
+    const options = { fetchState: async () => ({ ok: true, status: "done", closedAt: old.toISOString() }) };
+    const plan = await scanBoardProjectWorkspaces(home, Date.now(), options);
+    const original = fs.readdirSync;
+    let reads = 0;
+    fs.readdirSync = function (dir, ...args) {
+      const entries = original.call(this, dir, ...args);
+      if (dir === scratch && args.length === 0 && ++reads === 2) fs.writeFileSync(path.join(scratch, "new-work"), "preserve");
+      return entries;
+    };
+    try { await pruneBoardProjectWorkspaces(plan, path.join(tmpDir, "race.jsonl"), options); }
+    finally { fs.readdirSync = original; }
+    assert.equal(fs.readFileSync(path.join(scratch, "new-work"), "utf8"), "preserve");
+  });
+
   it("rechecks issue status and git activity before deleting planned entries", async () => {
     const home = path.join(tmpDir, "home");
     const repo = path.join(home, "instances/default/projects/company/project/myrmidon");
