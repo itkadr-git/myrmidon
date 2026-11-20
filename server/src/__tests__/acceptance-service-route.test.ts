@@ -6,10 +6,10 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import express from "express";
 import { describe, expect, it } from "vitest";
-import { agents, companies, createDb, documentRevisions, documents, heartbeatRuns, issueDocuments, issues, nativeFinalizationGrants, nativeFinalizationOutbox, nativeFinalizationRequests, nativeRunFinalizations } from "@myrmidon/db";
+import { agents, companies, createDb, documentRevisions, documents, heartbeatRuns, issueDocuments, issues, nativeFinalizationGrants, nativeFinalizationOutbox, nativeFinalizationRequests, nativeRunFinalizations, workspaceOperations } from "@myrmidon/db";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "@myrmidon/db/test-embedded-postgres";
 import { acceptanceServiceCredentialsService } from "../services/acceptance-service-credentials.js";
-import { claimNativeFinalizationRequest, settleNativeFinalizationRequest } from "../services/native-runtime/native-finalization-request-recovery.js";
+import { claimNativeFinalizationRequest, processNativeFinalizationRequest, settleNativeFinalizationRequest } from "../services/native-runtime/native-finalization-request-recovery.js";
 import { acceptanceServiceRoutes } from "../routes/acceptance-service.js";
 import { errorHandler } from "../middleware/index.js";
 
@@ -222,7 +222,26 @@ const support = await getEmbeddedPostgresTestSupport();
       // A terminal rejection must not prevent a fresh request with a new key.
       const resubmission = await admit("request-after-rejection");
       expect(resubmission.status).toBe(202);
-      expect(JSON.parse(resubmission.body).requestId).not.toBe(requests[0].id);
+      const recoveryRequestId = JSON.parse(resubmission.body).requestId;
+      expect(recoveryRequestId).not.toBe(requests[0].id);
+      const calls: Array<{ runId: string; workspaceFinalizeStatus: "succeeded"; serviceRequest: { requestId: string; leaseOwner: string; leaseUntil: Date } }> = [];
+      const execute = async (input: typeof calls[number]) => { calls.push(input); };
+      const workerTime = new Date();
+      expect(await processNativeFinalizationRequest({ db, worker: "recovery-a", now: workerTime, leaseMs: 1000, execute })).toBe("waiting_workspace");
+      expect(calls).toHaveLength(0);
+      await db.insert(workspaceOperations).values({ companyId, issueId, heartbeatRunId: runId, phase: "workspace_finalize", status: "succeeded" });
+      const restartTime = new Date(workerTime.getTime() + 1001);
+      await expect(processNativeFinalizationRequest({ db, worker: "recovery-b", now: restartTime, leaseMs: 1000, execute: async () => { throw new Error("crash"); } })).rejects.toThrow("crash");
+      const finalTime = new Date(restartTime.getTime() + 1001);
+      const results = await Promise.all([
+        processNativeFinalizationRequest({ db, worker: "recovery-c", now: finalTime, leaseMs: 1000, execute }),
+        processNativeFinalizationRequest({ db, worker: "recovery-d", now: finalTime, leaseMs: 1000, execute }),
+      ]);
+      expect(results.sort()).toEqual(["idle", "processed"]);
+      expect(calls).toEqual([{ runId, workspaceFinalizeStatus: "succeeded", serviceRequest: { requestId: recoveryRequestId, leaseOwner: expect.stringMatching(/^recovery-[cd]$/), leaseUntil: new Date(finalTime.getTime() + 1000) } }]);
+      const [stillProcessing] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, recoveryRequestId));
+      expect(stillProcessing.state).toBe("processing");
+      expect(stillProcessing.resultDecisionId).toBeNull();
       const first = await call(issued.token);
       expect(first.status).toBe(200);
       expect(first.etag).toMatch(/^"[a-f0-9]{64}"$/);
