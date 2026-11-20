@@ -65,8 +65,9 @@ test("overlapping scans serialize refresh and preserve accumulated additions and
   const first = r.api.scanForBackendChanges();
   assert.equal(r.requests.length, 1);
   r.files.delete("server/a.ts");
-  await r.api.scanForBackendChanges();
+  const overlap = r.api.scanForBackendChanges();
   assert.equal(r.scans(), initial + 1);
+  await overlap;
   r.requests.shift().resolve(); await first;
   r.clock(2000);
   const second = r.api.scanForBackendChanges();
