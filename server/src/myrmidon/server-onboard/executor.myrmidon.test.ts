@@ -1107,6 +1107,33 @@ exit 97
     expect(allowCommand).toMatch(/\bcomment\b.*myrmidon/i);
   });
 
+  it("uses a different rule owner for each attempt of the same job", async () => {
+    const owners: string[] = [];
+    const ssh = new MockSshExecutor({ onCommand: (command) => {
+      if (command.includes("start-myrmidon-firewall-timer") || command.includes("check-myrmidon-firewall-timer")) {
+        return { exitCode: 0, stdout: "timer-confirmed\n" };
+      }
+      if (command.includes("sudo ufw allow")) {
+        const owner = command.match(/comment\s+['"]?(myrmidon-[a-z0-9-]+)/i)?.[1];
+        if (owner) owners.push(owner);
+        return { exitCode: 1, stderr: "outcome unknown" };
+      }
+      return undefined;
+    } });
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-retried-owner", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    await executor.execute(claim, createMockReporter().reporter);
+    await executor.execute(claim, createMockReporter().reporter);
+    expect(owners).toHaveLength(2);
+    expect(new Set(owners).size).toBe(2);
+  });
+
   it("preserves a pre-existing SSH rule when UFW skips a duplicate allow", async () => {
     const rules = ["operator-ssh"];
     let allowAttempted = false;
