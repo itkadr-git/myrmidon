@@ -122,9 +122,9 @@ const support = await getEmbeddedPostgresTestSupport();
       const pinned = await call(issued.token);
       const snapshot = JSON.parse(pinned.body);
       const payload = { documentId, expectedRevisionId: revisionId, expectedIssueEpoch: snapshot.issue.version };
-      const admit = (key = "request-1", requestBody: object = payload) => new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const admit = (key = "request-1", requestBody: object = payload, etag = pinned.etag) => new Promise<{ status: number; body: string }>((resolve, reject) => {
         const req = httpsRequest({ host: "127.0.0.1", port: address.port, path: `/api/service/native-runs/${runId}/finalization-requests`, method: "POST", ...client, rejectUnauthorized: false,
-          headers: { authorization: `Bearer ${submit.token}`, "content-type": "application/json", "if-match": pinned.etag, "idempotency-key": key } }, (res) => {
+          headers: { authorization: `Bearer ${submit.token}`, "content-type": "application/json", "if-match": etag, "idempotency-key": key } }, (res) => {
           let body = ""; res.setEncoding("utf8"); res.on("data", (chunk) => { body += chunk; }); res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
         });
         req.on("error", reject); req.end(JSON.stringify(requestBody));
@@ -258,18 +258,29 @@ const support = await getEmbeddedPostgresTestSupport();
       await db.insert(nativeRunResults).values({ id: resultId, companyId, issueId, runId, completionContractId: contractId, serverFingerprint: "test", schemaStatus: "accepted", canonicalSha256: "result", resultJson: { result: { reportedWorkDisposition: "done", summary: "test", completionClaim: { contractRevision: "v1", objectiveSatisfied: true, criteria: [], remainingWork: [] }, verification: [] }, terminal: { runTerminalState: "succeeded" } } });
       await db.update(nativeRunFinalizations).set({ resultId, phase: "awaiting_result" }).where(eq(nativeRunFinalizations.runId, runId));
       await db.update(nativeFinalizationRequests).set({ leaseUntil: new Date(Date.now() - 1000) }).where(eq(nativeFinalizationRequests.id, recoveryRequestId));
+      await db.update(issues).set({ title: "Changed acceptance context" }).where(eq(issues.id, issueId));
+      expect(await processNativeFinalizationRequest({ db, worker: "snapshot-recovery", now: new Date(), leaseMs: 60_000 })).toBe("processed");
+      const [rejectedRequest] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, recoveryRequestId));
+      const [rejectedOutbox] = await db.select().from(nativeFinalizationOutbox).where(eq(nativeFinalizationOutbox.requestId, recoveryRequestId));
+      expect(rejectedRequest).toMatchObject({ state: "rejected", errorCode: "native_service_snapshot_changed" });
+      expect(rejectedOutbox.dispatchedAt).not.toBeNull();
+      const fresh = await call(issued.token);
+      const freshSnapshot = JSON.parse(fresh.body);
+      const freshSubmission = await admit("fresh-snapshot", { ...payload, expectedIssueEpoch: freshSnapshot.issue.version }, fresh.etag);
+      expect(freshSubmission.status).toBe(202);
+      const freshRequestId = JSON.parse(freshSubmission.body).requestId;
       const resumed = await Promise.all([
         processNativeFinalizationRequest({ db, worker: "restart-a", now: new Date(), leaseMs: 60_000 }),
         processNativeFinalizationRequest({ db, worker: "restart-b", now: new Date(), leaseMs: 60_000 }),
       ]);
       expect(resumed.sort()).toEqual(["idle", "processed"]);
-      const [committed] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, recoveryRequestId));
-      const [outboxAfterCommit] = await db.select().from(nativeFinalizationOutbox).where(eq(nativeFinalizationOutbox.requestId, recoveryRequestId));
+      const [committed] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, freshRequestId));
+      const [outboxAfterCommit] = await db.select().from(nativeFinalizationOutbox).where(eq(nativeFinalizationOutbox.requestId, freshRequestId));
       expect(committed.state).toBe("committed");
       expect(committed.resultDecisionId).toBeTruthy();
       expect(outboxAfterCommit.dispatchedAt).not.toBeNull();
       expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId))).toHaveLength(1);
-      expect(JSON.parse((await result(submit.token, recoveryRequestId)).body)).toMatchObject({ state: "committed", decisionId: committed.resultDecisionId });
+      expect(JSON.parse((await result(submit.token, freshRequestId)).body)).toMatchObject({ state: "committed", decisionId: committed.resultDecisionId });
       expect(await processNativeFinalizationRequest({ db, worker: "restart-c", now: new Date(), leaseMs: 60_000 })).toBe("idle");
       const first = await call(issued.token);
       expect(first.status).toBe(200);
