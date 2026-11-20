@@ -61,6 +61,10 @@ When changing the workflow path or branch, authorize the new reference before
 updating the caller. Retain older authorized SHA references while queued runs or
 supported reruns still use them.
 
+## Acceptance Service Credentials
+
+Company board operators can issue a certificate-bound acceptance service credential with `POST /api/companies/:companyId/acceptance-service-credentials`, supplying a lowercase SHA-256 certificate fingerprint in `certificateSha256` and a future ISO timestamp in `expiresAt`. The response returns the bearer token once; store it securely. Revoke it with `DELETE /api/companies/:companyId/acceptance-service-credentials/:id`. Both operations are audited. Issuing a credential does not enable privileged acceptance or expose a service listener.
+
 ## Privileged PR Gates
 
 Untrusted PR CI runs without internal secrets. Privileged `pull_request_target`
