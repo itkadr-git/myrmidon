@@ -73,8 +73,8 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     mockSsh.mockResponse(/prepare-myrmidon-firewall-restore/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     mockSsh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
-    mockSsh.mockResponse(/sudo ufw allow/, { stdout: "", exitCode: 0 });
-    mockSsh.mockResponse(/sudo ufw default deny incoming/, { stdout: "", exitCode: 0 });
+    mockSsh.mockResponse(/ufw prepend allow/, { stdout: "Rule inserted\n", exitCode: 0 });
+    mockSsh.mockResponse(/ufw default deny incoming/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
     mockSsh.mockResponse(/stop-myrmidon-firewall-timer/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse('echo "onboard-verified"', { stdout: "onboard-verified\n", exitCode: 0 });
@@ -153,7 +153,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     ssh.mockResponse(/check-myrmidon-firewall-prerequisites/, { stdout: "", exitCode: 0 });
     ssh.mockResponse(/prepare-myrmidon-firewall-restore/, { stdout: "", exitCode: 0 });
     ssh.mockResponse(/start-myrmidon-firewall-timer|check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
-    ssh.mockResponse(/sudo ufw allow/, { stdout: "Skipping adding existing rule\n", exitCode: 0 });
+    ssh.mockResponse(/ufw prepend allow/, { stdout: "Skipping inserting existing rule\n", exitCode: 0 });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
       job: { id: "job-existing-ssh-rule", companyId: "c1", serverId: "s1" },
@@ -161,10 +161,10 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
       steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
     };
     const result = await executor.execute(claim, createMockReporter().reporter);
-    expect(ssh.hasExecuted(/sudo ufw allow/)).toBe(true);
+    expect(ssh.hasExecuted(/ufw prepend allow/)).toBe(true);
     expect(result.status).toBe("failed");
     expect(result.error).toMatch(/existing.*rule|rule.*ownership/i);
-    expect(ssh.hasExecuted(/sudo ufw default deny incoming|sudo ufw delete/)).toBe(false);
+    expect(ssh.hasExecuted(/ufw default deny incoming|sudo ufw delete/)).toBe(false);
   });
 
   it("allows SSH before denying incoming traffic and verifies a fresh connection", async () => {
@@ -174,8 +174,8 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     ssh.mockResponse(/check-myrmidon-firewall-prerequisites/, { stdout: "", exitCode: 0 });
     ssh.mockResponse(/prepare-myrmidon-firewall-restore/, { stdout: "", exitCode: 0 });
     ssh.mockResponse(/start-myrmidon-firewall-timer|check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
-    ssh.mockResponse(/sudo ufw allow/, { stdout: "Rule added\n", exitCode: 0 });
-    ssh.mockResponse(/sudo ufw default deny incoming/, { stdout: "", exitCode: 0 });
+    ssh.mockResponse(/ufw prepend allow/, { stdout: "Rule added\n", exitCode: 0 });
+    ssh.mockResponse(/ufw default deny incoming/, { stdout: "", exitCode: 0 });
     ssh.mockResponse(/stop-myrmidon-firewall-timer/, { stdout: "", exitCode: 0 });
     ssh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
@@ -189,9 +189,9 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(result.status).toBe("succeeded");
     const commands = ssh.executedCommands.map(({ command }) => command);
     const timer = commands.findIndex((command) => command.includes("check-myrmidon-firewall-timer"));
-    const allow = commands.findIndex((command) => command.includes("sudo ufw allow"));
-    const deny = commands.findIndex((command) => command.includes("sudo ufw default deny incoming"));
-    const verify = commands.findIndex((command) => command.includes('echo "ufw-connectivity-ok"'));
+    const allow = commands.findIndex((command) => command.includes("ufw prepend allow"));
+    const deny = commands.findIndex((command) => command.includes("ufw default deny incoming"));
+    const verify = commands.findLastIndex((command) => command.includes('echo "ufw-connectivity-ok"'));
     expect(timer).toBeGreaterThanOrEqual(0);
     expect(allow).toBeGreaterThan(timer);
     expect(deny).toBeGreaterThan(allow);
@@ -715,7 +715,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
         timerConfirmed = true;
         return { exitCode: 0, stdout: "timer-confirmed\n" };
       }
-      if (command.includes("sudo ufw allow")) {
+      if (command.includes("ufw prepend allow")) {
         allowAttempted = true;
         expect(timerConfirmed).toBe(true);
         return { exitCode: 1, stderr: "allow failed" };
@@ -805,7 +805,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
         livenessChecked = true;
         return { exitCode: 1, stderr: "timer exited" };
       }
-      if (command.includes("sudo ufw allow")) allowAttempted = true;
+      if (command.includes("ufw prepend allow")) allowAttempted = true;
       return undefined;
     } });
     ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
@@ -1254,7 +1254,7 @@ exit 1
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
     expect(ssh.hasExecuted(/snapshot-myrmidon-firewall/)).toBe(true);
-    expect(ssh.hasExecuted(/sudo ufw allow|sudo ufw default/)).toBe(false);
+    expect(ssh.hasExecuted(/ufw prepend allow|sudo ufw default/)).toBe(false);
   });
 
   it("restores the saved firewall state when adding the SSH rule partially fails", async () => {
@@ -1263,7 +1263,7 @@ exit 1
     ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
     ssh.mockResponse(/check-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
-    ssh.mockResponse(/sudo ufw allow/, { exitCode: 1, stderr: "rule partially applied" });
+    ssh.mockResponse(/ufw prepend allow/, { exitCode: 1, stderr: "rule partially applied" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
       job: { id: "job-firewall-allow-partial", companyId: "c1", serverId: "s1" },
@@ -1273,7 +1273,7 @@ exit 1
 
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
-    expect(ssh.hasExecuted(/sudo ufw allow/)).toBe(true);
+    expect(ssh.hasExecuted(/ufw prepend allow/)).toBe(true);
     expect(ssh.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
     expect(ssh.hasExecuted("sudo ufw disable")).toBe(false);
   });
@@ -1286,22 +1286,34 @@ exit 1
     writeFileSync(join(dir, "sudo"), `#!/bin/sh
 printf '%s\\n' "$*" >> "$CALLS"
 case "$1" in
-  ufw)
-    shift
-    case "$1" in
-      status) printf 'Status: active\\n'; if [ "$2" = verbose ]; then printf 'Default: allow (incoming), allow (outgoing), disabled (routed)\\n'; fi; exit 0 ;;
-      allow) printf 'onboarding-ssh\\noperator-concurrent\\n' >> "$RULES"; exit 1 ;;
-      delete) python3 -c 'import os; p=os.environ["RULES"]; s=open(p).readlines(); open(p,"w").writelines(x for x in s if x != "onboarding-ssh\\n")'; exit 0 ;;
-    esac ;;
-  systemd-run) exit 0 ;;
-  systemctl) printf 'active\\n'; exit 0 ;;
+  ufw|systemctl|systemd-run|flock|mkdir|tee|chmod|sh|/bin/sh|rm) exec "$@" ;;
 esac
 exit 97
 `);
+    writeFileSync(join(dir, "ufw"), `#!/bin/sh
+printf 'ufw %s\\n' "$*" >> "$CALLS"
+case "$1" in
+      status)
+        printf 'Status: active\\n'
+        if [ "$2" = verbose ]; then printf 'Default: allow (incoming), allow (outgoing), disabled (routed)\\n'; fi
+        if [ "$2" = numbered ] && [ -s "$RULES.owner" ]; then
+          printf '[ 1] 22/tcp ALLOW IN Anywhere # %s\\n' "$(tr -d '\\n' < "$RULES.owner")"
+        fi ;;
+      prepend) printf '%s\\n' "$5" > "$RULES.owner"; printf 'onboarding-ssh\\noperator-concurrent\\n' >> "$RULES"; exit 1 ;;
+      --force)
+        [ "$2 $3 $4 $5 $6" = "delete allow 22/tcp comment $(tr -d '\\n' < "$RULES.owner")" ] || exit 1
+        grep -vx onboarding-ssh "$RULES" > "$RULES.new" && mv "$RULES.new" "$RULES" && rm "$RULES.owner" ;;
+      *) exit 97 ;;
+esac
+`);
+    for (const name of ["systemctl", "systemd-run"]) {
+      writeFileSync(join(dir, name), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    }
+    chmodSync(join(dir, "ufw"), 0o700);
     chmodSync(join(dir, "sudo"), 0o700);
     try {
       const ssh = new MockSshExecutor({ onCommand: (command) => {
-        const result = spawnSync("sh", ["-c", command], {
+        const result = spawnSync("sh", ["-c", command.replaceAll("/var/tmp/myrmidon-firewall-", `${dir}/myrmidon-firewall-`)], {
           encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: calls, RULES: rules }, timeout: 5000,
         });
         return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", exitCode: result.status ?? 1 };
@@ -1314,7 +1326,7 @@ exit 97
       };
       const result = await executor.execute(claim, createMockReporter().reporter);
       expect(result.status).toBe("failed");
-      expect(readFileSync(calls, "utf8")).toMatch(/ufw allow/);
+      expect(readFileSync(calls, "utf8")).toMatch(/ufw prepend allow/);
       expect(readFileSync(rules, "utf8").split("\n").filter(Boolean).sort()).toEqual(["operator-concurrent", "operator-original"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -1329,11 +1341,11 @@ exit 97
       if (command.includes("start-myrmidon-firewall-timer") || command.includes("check-myrmidon-firewall-timer")) {
         return { exitCode: 0, stdout: "timer-confirmed\n" };
       }
-      if (command.includes("sudo ufw allow")) {
+      if (command.includes("ufw prepend allow")) {
         allowApplied = true;
         return { exitCode: 0, stdout: "Rule added\n" };
       }
-      if (command.includes("sudo ufw default deny incoming")) {
+      if (command.includes("ufw default deny incoming")) {
         denyAttempted = true;
         if (!freshLoginVerified) throw new Error("deny attempted before fresh SSH verification");
         return { exitCode: 1, stderr: "deny failed" };
@@ -1364,7 +1376,7 @@ exit 97
     expect(allowApplied).toBe(true);
     expect(freshLoginVerified).toBe(true);
     expect(denyAttempted).toBe(true);
-    expect(result.error).toContain("deny failed");
+    expect(result.error).toContain("deny policy failed");
   });
 
   it("checks a fresh SSH login after changing the incoming policy before reporting success", async () => {
@@ -1374,11 +1386,12 @@ exit 97
       if (command.includes("start-myrmidon-firewall-timer") || command.includes("check-myrmidon-firewall-timer")) {
         return { exitCode: 0, stdout: "timer-confirmed\n" };
       }
-      if (command.includes("sudo ufw default deny incoming")) policyChanged = true;
+      if (command.includes("ufw default deny incoming")) policyChanged = true;
       return undefined;
     } });
     primary.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
     primary.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
+    primary.mockResponse(/ufw prepend allow/, { stdout: "Rule inserted\n", exitCode: 0 });
     primary.mockResponse(/check-myrmidon-firewall-prerequisites/, { exitCode: 0, stdout: "" });
     primary.mockResponse(/prepare-myrmidon-firewall-restore/, { exitCode: 0, stdout: "" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => {
@@ -1617,7 +1630,7 @@ exit 97
       const rules = join(dir, "rules");
       writeFileSync(rules, `operator-ssh\n${owner}\n`);
       writeFileSync(join(dir, "rule-changed"), "");
-      writeFileSync(join(dir, "ufw"), `#!/bin/sh\ncase "$*" in\n  "status numbered") printf 'Status: active\\n[ 1] 22/tcp ALLOW IN Anywhere # operator-ssh\\n'; if grep -q '${owner}' "$RULES"; then printf '[ 2] 22/tcp ALLOW IN Anywhere # ${owner}\\n'; fi ;;\n  "--force delete 2") printf 'operator-ssh\\n' > "$RULES" ;;\n  *) exit 1 ;;\nesac\n`);
+      writeFileSync(join(dir, "ufw"), `#!/bin/sh\ncase "$*" in\n  "status numbered") printf 'Status: active\\n[ 1] 22/tcp ALLOW IN Anywhere # operator-ssh\\n'; if grep -q '${owner}' "$RULES"; then printf '[ 2] 22/tcp ALLOW IN Anywhere # ${owner}\\n'; fi ;;\n  "--force delete allow 22/tcp comment ${owner}") printf 'operator-ssh\\n' > "$RULES" ;;\n  *) exit 1 ;;\nesac\n`);
       chmodSync(join(dir, "ufw"), 0o700);
       const localScript = script.replace(/\/var\/tmp\/myrmidon-firewall-[a-f0-9-]+/g, dir);
       const restored = spawnSync("sh", ["-c", localScript], { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, RULES: rules } });
@@ -1652,7 +1665,7 @@ exit 97
       writeFileSync(calls, "");
       writeFileSync(rules, "v4\nv6\noperator\n");
       writeFileSync(join(dir, "rule-changed"), "");
-      writeFileSync(join(dir, "ufw"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "$CALLS"\ncase "$*" in\n  'status numbered') printf 'Status: active\\n'; grep -q '^v4$' "$RULES" && printf '[ 1] 22/tcp ALLOW IN Anywhere # ${owner}\\n'; grep -q '^v6$' "$RULES" && printf '[ 2] 22/tcp (v6) ALLOW IN Anywhere (v6) # ${owner}\\n'; exit 0 ;;\n  '--force delete 1') python3 -c 'import os; p=os.environ["RULES"]; s=open(p).readlines(); open(p,"w").writelines(x for x in s if x != "v4\\n")' ;;\n  '--force delete 2') python3 -c 'import os; p=os.environ["RULES"]; s=open(p).readlines(); open(p,"w").writelines(x for x in s if x != "v6\\n")' ;;\n  *) exit 1 ;;\nesac\n`);
+      writeFileSync(join(dir, "ufw"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "$CALLS"\ncase "$*" in\n  'status numbered') printf 'Status: active\\n'; grep -q '^v4$' "$RULES" && printf '[ 1] 22/tcp ALLOW IN Anywhere # ${owner}\\n'; grep -q '^v6$' "$RULES" && printf '[ 2] 22/tcp (v6) ALLOW IN Anywhere (v6) # ${owner}\\n'; exit 0 ;;\n  '--force delete allow 22/tcp comment ${owner}') printf 'operator\\n' > \"$RULES\" ;;\n  *) exit 1 ;;\nesac\n`);
       chmodSync(join(dir, "ufw"), 0o700);
       const localScript = script.replace(/\/var\/tmp\/myrmidon-firewall-[a-f0-9-]+/g, dir);
       const result = spawnSync("sh", ["-c", localScript], { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: calls, RULES: rules } });
@@ -1789,7 +1802,7 @@ exit 97
     ssh.mockResponse(/prepare-myrmidon-firewall-restore/, { exitCode: 0 });
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
     ssh.mockResponse(/check-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
-    ssh.mockResponse(/sudo ufw allow/, { exitCode: 1, stderr: "allow outcome unknown" });
+    ssh.mockResponse(/ufw prepend allow/, { exitCode: 1, stderr: "allow outcome unknown" });
     ssh.mockResponse(/restore-myrmidon-firewall/, { exitCode: 1, stderr: "restore failed" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
@@ -1799,7 +1812,7 @@ exit 97
     };
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
-    expect(ssh.hasExecuted(/sudo ufw allow/)).toBe(true);
+    expect(ssh.hasExecuted(/ufw prepend allow/)).toBe(true);
     expect(ssh.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
     expect(ssh.hasExecuted(/stop-myrmidon-firewall-timer/)).toBe(false);
     expect(ssh.hasExecuted(/sudo rm -rf \/var\/tmp\/myrmidon-firewall-/)).toBe(false);
@@ -1851,7 +1864,7 @@ exit 97
     ssh.mockResponse(/check-myrmidon-firewall-prerequisites/, { exitCode: 0, stdout: "" });
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
     ssh.mockResponse(/check-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
-    ssh.mockResponse(/sudo ufw allow/, { exitCode: 1, stderr: "allow failed" });
+    ssh.mockResponse(/ufw prepend allow/, { exitCode: 1, stderr: "allow failed" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
       job: { id: "job-timer-restore-script", companyId: "c1", serverId: "s1" },
@@ -1877,7 +1890,7 @@ exit 97
     ssh.mockResponse(/prepare-myrmidon-firewall-restore/, { exitCode: 0, stdout: "" });
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
     ssh.mockResponse(/check-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
-    ssh.mockResponse(/sudo ufw allow/, { exitCode: 0, stdout: "Rule added\n" });
+    ssh.mockResponse(/ufw prepend allow/, { exitCode: 0, stdout: "Rule added\n" });
     fresh.mockResponse('echo "ufw-connectivity-ok"', { exitCode: 0, stdout: "ufw-connectivity-ok\n" });
     ssh.mockResponse(/stop-myrmidon-firewall-timer/, { exitCode: 0, stdout: "" });
     const connections = [ssh, fresh];
@@ -1897,7 +1910,7 @@ exit 97
     expect(ssh.hasExecuted(/start-myrmidon-firewall-timer/)).toBe(true);
     expect(ssh.hasExecuted(/check-myrmidon-firewall-timer/)).toBe(true);
     expect(result.status).toBe("succeeded");
-    expect(ssh.hasExecuted(/sudo ufw allow/)).toBe(true);
+    expect(ssh.hasExecuted(/ufw prepend allow/)).toBe(true);
     expect(fresh.hasExecuted('echo "ufw-connectivity-ok"')).toBe(true);
     expect(fresh.isConnected()).toBe(false);
     expect(ssh.hasExecuted(/sudo ufw default/)).toBe(false);
@@ -1908,7 +1921,7 @@ exit 97
     const ssh = new MockSshExecutor({ onCommand: (command) => {
       if (command.includes("start-myrmidon-firewall-timer")) return { exitCode: 0, stdout: "timer-confirmed\n" };
       if (command.includes("check-myrmidon-firewall-timer")) return { exitCode: 0, stdout: "timer-confirmed\n" };
-      if (command.includes("sudo ufw allow")) {
+      if (command.includes("ufw prepend allow")) {
         allowCommand = command;
         return { exitCode: 1, stderr: "outcome unknown" };
       }
@@ -1935,7 +1948,7 @@ exit 97
       if (command.includes("start-myrmidon-firewall-timer") || command.includes("check-myrmidon-firewall-timer")) {
         return { exitCode: 0, stdout: "timer-confirmed\n" };
       }
-      if (command.includes("sudo ufw allow")) {
+      if (command.includes("ufw prepend allow")) {
         const owner = command.match(/comment\s+['"]?(myrmidon-[a-z0-9-]+)/i)?.[1];
         if (owner) owners.push(owner);
         return { exitCode: 1, stderr: "outcome unknown" };
@@ -1965,11 +1978,11 @@ exit 97
       if (command.includes("start-myrmidon-firewall-timer") || command.includes("check-myrmidon-firewall-timer")) {
         return { exitCode: 0, stdout: "timer-confirmed\n" };
       }
-      if (command.includes("sudo ufw allow")) {
+      if (command.includes("ufw prepend allow")) {
         allowAttempted = true;
-        return { exitCode: 0, stdout: "Skipping adding existing rule\n" };
+        return { exitCode: 0, stdout: "Skipping inserting existing rule\n" };
       }
-      if (/ufw\s+(?:--force\s+)?delete/.test(command)) rules.pop();
+      if (/^sudo ufw\s+(?:--force\s+)?delete/.test(command)) rules.pop();
       return undefined;
     } });
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
@@ -1993,12 +2006,12 @@ exit 97
     const ssh = new MockSshExecutor({ onCommand: (command) => {
       if (command.includes("start-myrmidon-firewall-timer")) return { exitCode: 0, stdout: "timer-confirmed\n" };
       if (command.includes("check-myrmidon-firewall-timer")) return { exitCode: 0, stdout: "timer-confirmed\n" };
-      if (command.includes("sudo ufw allow")) {
+      if (command.includes("ufw prepend allow")) {
         allowAttempted = true;
         // An operator installs the same rule while the allow outcome is unknown.
         return { exitCode: 1, stderr: "allow outcome unknown" };
       }
-      if (/ufw\s+(?:--force\s+)?delete/.test(command)) rules.pop();
+      if (/^sudo ufw\s+(?:--force\s+)?delete/.test(command)) rules.pop();
       return undefined;
     } });
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
@@ -2025,21 +2038,27 @@ exit 97
     writeFileSync(join(dir, "sudo"), `#!/bin/sh
 printf '%s\\n' "$*" >> "$CALLS"
 case "$1" in
-  ufw)
-    shift
-    case "$1" in
-      status) printf 'Status: active\\n'; if [ "$2" = verbose ]; then printf 'Default: %s (incoming), allow (outgoing), disabled (routed)\\n' "$(tr -d '\\n' < "$POLICY")"; fi; exit 0 ;;
-      allow) printf 'reject\\n' > "$POLICY"; exit 0 ;;
-      default) printf '%s\\n' "$2" > "$POLICY"; exit 0 ;;
-    esac ;;
-  systemd-run|systemctl) printf 'active\\n'; exit 0 ;;
+  ufw|systemctl|systemd-run|flock|mkdir|tee|chmod|sh|/bin/sh|rm) exec "$@" ;;
 esac
 exit 97
 `);
+    writeFileSync(join(dir, "ufw"), `#!/bin/sh
+printf 'ufw %s\\n' "$*" >> "$CALLS"
+case "$1" in
+      status) printf 'Status: active\\n'; if [ "$2" = verbose ]; then printf 'Default: %s (incoming), allow (outgoing), disabled (routed)\\n' "$(tr -d '\\n' < "$POLICY")"; fi; exit 0 ;;
+      prepend) printf 'reject\\n' > "$POLICY"; printf 'Rule inserted\\n'; exit 0 ;;
+      default) printf '%s\\n' "$2" > "$POLICY"; exit 0 ;;
+      *) exit 97 ;;
+esac
+`);
+    for (const name of ["systemctl", "systemd-run"]) {
+      writeFileSync(join(dir, name), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    }
+    chmodSync(join(dir, "ufw"), 0o700);
     chmodSync(join(dir, "sudo"), 0o700);
     try {
       const ssh = new MockSshExecutor({ onCommand: (command) => {
-        const result = spawnSync("sh", ["-c", command], {
+        const result = spawnSync("sh", ["-c", command.replaceAll("/var/tmp/myrmidon-firewall-", `${dir}/myrmidon-firewall-`)], {
           encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: calls, POLICY: policy }, timeout: 5000,
         });
         return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", exitCode: result.status ?? 1 };
@@ -2051,9 +2070,9 @@ exit 97
         steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
       };
       const result = await executor.execute(claim, createMockReporter().reporter);
-      expect(readFileSync(calls, "utf8")).toMatch(/ufw allow/);
+      expect(readFileSync(calls, "utf8")).toMatch(/ufw prepend allow/);
       expect(result.status).toBe("failed");
-      expect(result.error).toMatch(/concurrent|ambiguous|unsafe|unconfirmed/i);
+      expect(result.error).toMatch(/original policy changed|concurrent|ambiguous|unsafe|unconfirmed/i);
       expect(readFileSync(policy, "utf8")).toBe("reject\n");
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -2068,21 +2087,27 @@ exit 97
     writeFileSync(join(dir, "sudo"), `#!/bin/sh
 printf '%s\\n' "$*" >> "$CALLS"
 case "$1" in
-  ufw)
-    shift
-    case "$1" in
-      status) printf 'Status: active\\n'; if [ "$2" = verbose ]; then printf 'Default: allow (incoming), allow (outgoing), disabled (routed)\\n'; fi; exit 0 ;;
-      allow) printf '22/tcp\\n' >> "$RULES"; exit 1 ;;
-      delete|--force) : > "$RULES"; exit 0 ;;
-    esac ;;
-  systemd-run|systemctl) printf 'active\\n'; exit 0 ;;
+  ufw|systemctl|systemd-run|flock|mkdir|tee|chmod|sh|/bin/sh|rm) exec "$@" ;;
 esac
 exit 97
 `);
+    writeFileSync(join(dir, "ufw"), `#!/bin/sh
+printf 'ufw %s\\n' "$*" >> "$CALLS"
+case "$1" in
+      status) printf 'Status: active\\n'; if [ "$2" = verbose ]; then printf 'Default: allow (incoming), allow (outgoing), disabled (routed)\\n'; fi; exit 0 ;;
+      prepend) printf '22/tcp\\n' >> "$RULES"; exit 1 ;;
+      delete|--force) : > "$RULES"; exit 0 ;;
+      *) exit 97 ;;
+esac
+`);
+    for (const name of ["systemctl", "systemd-run"]) {
+      writeFileSync(join(dir, name), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    }
+    chmodSync(join(dir, "ufw"), 0o700);
     chmodSync(join(dir, "sudo"), 0o700);
     try {
       const ssh = new MockSshExecutor({ onCommand: (command) => {
-        const result = spawnSync("sh", ["-c", command], {
+        const result = spawnSync("sh", ["-c", command.replaceAll("/var/tmp/myrmidon-firewall-", `${dir}/myrmidon-firewall-`)], {
           encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: calls, RULES: rules }, timeout: 5000,
         });
         return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", exitCode: result.status ?? 1 };
@@ -2095,7 +2120,7 @@ exit 97
       };
       const result = await executor.execute(claim, createMockReporter().reporter);
       expect(result.status).toBe("failed");
-      expect(readFileSync(calls, "utf8")).toMatch(/ufw allow/);
+      expect(readFileSync(calls, "utf8")).toMatch(/ufw prepend allow/);
       expect(result.error).toMatch(/ambiguous|unconfirmed|unsafe|unknown/i);
       expect(readFileSync(rules, "utf8")).toBe("22/tcp\n");
     } finally {
@@ -2106,14 +2131,14 @@ exit 97
   it("preserves an operator's concurrent rule when a partially applied SSH allow is rolled back", async () => {
     const rules = new Set(["operator-original"]);
     const ssh = new MockSshExecutor({ onCommand: (command) => {
-      if (command.includes("sudo ufw allow")) {
+      if (command.includes("ufw prepend allow")) {
         rules.add("onboarding-ssh");
         rules.add("operator-concurrent");
         return { exitCode: 1, stderr: "rule partially applied" };
       }
       if (command.includes("restore-myrmidon-firewall")) {
         if (/cp .*\/etc\/ufw/.test(command)) rules.delete("operator-concurrent");
-        if (/ufw .*delete|ufw delete/.test(command)) rules.delete("onboarding-ssh");
+        rules.delete("onboarding-ssh");
       }
       return undefined;
     } });
@@ -2130,7 +2155,7 @@ exit 97
 
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
-    expect(ssh.hasExecuted(/sudo ufw allow/)).toBe(true);
+    expect(ssh.hasExecuted(/ufw prepend allow/)).toBe(true);
     expect(ssh.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
     expect([...rules].sort()).toEqual(["operator-concurrent", "operator-original"]);
   });
@@ -2141,7 +2166,7 @@ exit 97
     ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     ssh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
-    ssh.mockResponse(/sudo ufw allow/, { exitCode: 1, stderr: "rule partially applied" });
+    ssh.mockResponse(/ufw prepend allow/, { exitCode: 1, stderr: "rule partially applied" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
       job: { id: "job-firewall-concurrent-change", companyId: "c1", serverId: "s1" },
@@ -2151,14 +2176,14 @@ exit 97
 
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
-    expect(ssh.hasExecuted(/sudo ufw allow/)).toBe(true);
+    expect(ssh.hasExecuted(/ufw prepend allow/)).toBe(true);
     expect(ssh.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
     expect(ssh.hasExecuted(/cp -a .*\/ufw\/\. \/etc\/ufw\//)).toBe(false);
     expect(ssh.hasExecuted(/cp -a .*\/ufw-default \/etc\/default\/ufw/)).toBe(false);
   });
 
   it("attempts firewall restoration when the SSH allow command loses its connection", async () => {
-    const ssh = new MockSshExecutor({ timeoutCommands: [/sudo ufw allow/] });
+    const ssh = new MockSshExecutor({ timeoutCommands: [/ufw prepend allow/] });
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
     ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
@@ -2173,13 +2198,14 @@ exit 97
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
     expect(ssh.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
-    expect(ssh.hasExecuted(/sudo ufw default deny/)).toBe(false);
+    expect(ssh.hasExecuted(/ufw default deny/)).toBe(false);
   });
 
   it("does not disarm another onboarding job's firewall rollback timer", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
     ssh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
+    ssh.mockResponse(/ufw prepend allow/, { stdout: "Rule inserted\n", exitCode: 0 });
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     ssh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     ssh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
@@ -2199,6 +2225,7 @@ exit 97
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
     ssh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
+    ssh.mockResponse(/ufw prepend allow/, { stdout: "Rule inserted\n", exitCode: 0 });
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     ssh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     ssh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
@@ -2224,8 +2251,9 @@ exit 97
   it("does not disable an existing firewall when connectivity verification fails", async () => {
     const initial = new MockSshExecutor();
     const fresh = new MockSshExecutor();
-    initial.mockResponse(/ufw status/, { stdout: "Status: active\n", exitCode: 0 });
+    initial.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
     initial.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
+    initial.mockResponse(/ufw prepend allow/, { stdout: "Rule inserted\n", exitCode: 0 });
     initial.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     initial.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     fresh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "incorrect", exitCode: 0 });
@@ -2259,8 +2287,8 @@ exit 97
     primary.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
     primary.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     primary.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
-    primary.mockResponse(/sudo ufw allow/, { exitCode: 0 });
-    primary.mockResponse(/sudo ufw default deny incoming/, { exitCode: 1, stderr: "policy failed" });
+    primary.mockResponse(/ufw prepend allow/, { stdout: "Rule inserted\n", exitCode: 0 });
+    primary.mockResponse(/ufw default deny incoming/, { exitCode: 1, stderr: "policy failed" });
     beforeDeny.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
     restored.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
     const connections = [primary, beforeDeny, restored];
@@ -2276,7 +2304,7 @@ exit 97
     };
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
-    expect(primary.hasExecuted(/sudo ufw default deny incoming/)).toBe(true);
+    expect(primary.hasExecuted(/ufw default deny incoming/)).toBe(true);
     expect(beforeDeny.hasExecuted('echo "ufw-connectivity-ok"')).toBe(true);
     expect(beforeDeny.isConnected()).toBe(false);
     expect(primary.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
@@ -2286,12 +2314,13 @@ exit 97
 
   it("does not disable an existing firewall when applying the deny policy fails", async () => {
     const ssh = new MockSshExecutor();
-    ssh.mockResponse(/ufw status/, { stdout: "Status: active\n", exitCode: 0 });
+    ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
     ssh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     ssh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
-    ssh.mockResponse(/sudo ufw allow/, { stdout: "", exitCode: 0 });
-    ssh.mockResponse(/sudo ufw default deny incoming/, { exitCode: 1, stderr: "policy failed" });
+    ssh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
+    ssh.mockResponse(/ufw prepend allow/, { stdout: "Rule inserted\n", exitCode: 0 });
+    ssh.mockResponse(/ufw default deny incoming/, { exitCode: 1, stderr: "policy failed" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
       job: { id: "job-existing-firewall-policy-failure", companyId: "c1", serverId: "s1" },
@@ -2301,7 +2330,7 @@ exit 97
 
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
-    expect(ssh.hasExecuted(/sudo ufw default deny incoming/)).toBe(true);
+    expect(ssh.hasExecuted(/ufw default deny incoming/)).toBe(true);
     expect(ssh.hasExecuted("sudo ufw disable")).toBe(false);
   });
 
@@ -2311,7 +2340,7 @@ exit 97
     mockSsh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
     mockSsh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     mockSsh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
-    mockSsh.mockResponse(/sudo ufw allow/, { stdout: "", stderr: "rule rejected", exitCode: 1 });
+    mockSsh.mockResponse(/ufw prepend allow/, { stdout: "", stderr: "rule rejected", exitCode: 1 });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => mockSsh });
     const mockReporter = createMockReporter();
     const claim: any = {
@@ -2324,8 +2353,8 @@ exit 97
 
     const result = await executor.execute(claim, mockReporter.reporter);
     expect(result.status).toBe("failed");
-    expect(mockSsh.hasExecuted(/sudo ufw allow/)).toBe(true);
-    expect(mockSsh.hasExecuted(/sudo ufw default deny incoming/)).toBe(false);
+    expect(mockSsh.hasExecuted(/ufw prepend allow/)).toBe(true);
+    expect(mockSsh.hasExecuted(/ufw default deny incoming/)).toBe(false);
     expect(mockReporter.completion?.status).toBe("failed");
   });
 
@@ -2345,7 +2374,7 @@ exit 97
     expect(result.status).toBe("failed");
     expect(ssh.hasExecuted(/start-myrmidon-firewall-timer/)).toBe(true);
     expect(result.error).toMatch(/timer.*(confirm|unconfirmed)/i);
-    expect(ssh.hasExecuted(/sudo ufw allow|sudo ufw default/)).toBe(false);
+    expect(ssh.hasExecuted(/ufw prepend allow|sudo ufw default/)).toBe(false);
   });
 
   it("rejects a forged timer confirmation before any firewall mutation", async () => {
@@ -2422,7 +2451,7 @@ exit 97
     expect(result.status).toBe("failed");
     expect(ssh.hasExecuted(/start-myrmidon-firewall-timer/)).toBe(true);
     expect(result.error).toMatch(/timer.*(start|confirm)/i);
-    expect(ssh.hasExecuted(/sudo ufw allow/)).toBe(false);
+    expect(ssh.hasExecuted(/ufw prepend allow/)).toBe(false);
   });
 
   it("does not change the firewall policy when the rollback timer cannot start", async () => {
@@ -2442,7 +2471,7 @@ exit 97
     expect(result.status).toBe("failed");
     expect(mockSsh.hasExecuted(/start-myrmidon-firewall-timer/)).toBe(true);
     expect(result.error).toMatch(/timer.*(start|launch|unavailable)/i);
-    expect(mockSsh.hasExecuted(/sudo ufw default deny incoming/)).toBe(false);
+    expect(mockSsh.hasExecuted(/ufw default deny incoming/)).toBe(false);
     expect(mockReporter.completion?.status).toBe("failed");
   });
 
@@ -2452,8 +2481,8 @@ exit 97
     mockSsh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
     mockSsh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     mockSsh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
-    mockSsh.mockResponse(/sudo ufw allow/, { exitCode: 0 });
-    mockSsh.mockResponse(/sudo ufw default deny incoming/, { exitCode: 1, stderr: "ufw failed" });
+    mockSsh.mockResponse(/ufw prepend allow/, { stdout: "Rule inserted\n", exitCode: 0 });
+    mockSsh.mockResponse(/ufw default deny incoming/, { exitCode: 1, stderr: "ufw failed" });
     mockSsh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => mockSsh });
     const mockReporter = createMockReporter();
@@ -2464,7 +2493,7 @@ exit 97
     };
     const result = await executor.execute(claim, mockReporter.reporter);
     expect(result.status).toBe("failed");
-    expect(mockSsh.hasExecuted(/sudo ufw default deny incoming/)).toBe(true);
+    expect(mockSsh.hasExecuted(/ufw default deny incoming/)).toBe(true);
     expect(mockReporter.completion?.status).toBe("failed");
   });
 
@@ -2474,8 +2503,9 @@ exit 97
     ssh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     ssh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
-    ssh.mockResponse(/sudo ufw allow/, { exitCode: 0 });
-    ssh.mockResponse(/sudo ufw default deny incoming/, { exitCode: 1, stderr: "policy failed" });
+    ssh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
+    ssh.mockResponse(/ufw prepend allow/, { stdout: "Rule inserted\n", exitCode: 0 });
+    ssh.mockResponse(/ufw default deny incoming/, { exitCode: 1, stderr: "policy failed" });
     ssh.mockResponse(/restore-myrmidon-firewall/, { exitCode: 1, stderr: "rollback failed" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
@@ -2486,7 +2516,7 @@ exit 97
 
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
-    expect(ssh.hasExecuted(/sudo ufw default deny incoming/)).toBe(true);
+    expect(ssh.hasExecuted(/ufw default deny incoming/)).toBe(true);
     expect(ssh.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
     expect(result.error).toMatch(/firewall rollback failed/i);
     expect(result.error).not.toContain("rolled back");
@@ -2496,6 +2526,7 @@ exit 97
     const mockSsh = new MockSshExecutor();
     mockSsh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
     mockSsh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
+    mockSsh.mockResponse(/ufw prepend allow/, { stdout: "Rule inserted\n", exitCode: 0 });
     mockSsh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     mockSsh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     mockSsh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
@@ -2511,7 +2542,7 @@ exit 97
     expect(result.status).toBe("failed");
     expect(mockSsh.hasExecuted(/stop-myrmidon-firewall-timer/)).toBe(true);
     expect(result.error).toMatch(/timer.*(disarm|stop)/i);
-    expect(result.stepsCompleted).not.toContain("harden");
+    expect(mockSsh.hasExecuted(/^: restore-myrmidon-firewall;/)).toBe(true);
   });
 
   it("closes the fresh firewall verification connection when connectivity fails", async () => {
@@ -2519,6 +2550,7 @@ exit 97
     const fresh = new MockSshExecutor();
     initial.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
     initial.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
+    initial.mockResponse(/ufw prepend allow/, { stdout: "Rule inserted\n", exitCode: 0 });
     initial.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     initial.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     fresh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "incorrect", exitCode: 0 });
@@ -2547,10 +2579,10 @@ exit 97
     initial.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
     initial.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     initial.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
-    initial.mockResponse(/sudo ufw allow/, { exitCode: 0 });
-    initial.mockResponse(/sudo ufw default deny incoming/, { exitCode: 1, stderr: "policy failed" });
+    initial.mockResponse(/ufw prepend allow/, { stdout: "Rule inserted\n", exitCode: 0 });
+    initial.mockResponse(/ufw default deny incoming/, { exitCode: 1, stderr: "policy failed" });
     initial.mockResponse(/restore-myrmidon-firewall/, { exitCode: 1, stderr: "permission denied" });
-    fresh.mockResponse('echo "ufw-connectivity-ok"', { exitCode: 1 });
+    fresh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
     const connections = [initial, fresh];
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => {
       const connection = connections.shift();
@@ -2565,7 +2597,7 @@ exit 97
 
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
-    expect(initial.hasExecuted(/sudo ufw default deny incoming/)).toBe(true);
+    expect(initial.hasExecuted(/ufw default deny incoming/)).toBe(true);
     expect(initial.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
     expect(result.error).toContain("firewall rollback failed");
     expect(result.error).not.toContain("rolled back");
@@ -2575,6 +2607,7 @@ exit 97
     const mockSsh = new MockSshExecutor();
     mockSsh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
     mockSsh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
+    mockSsh.mockResponse(/ufw prepend allow/, { stdout: "Rule inserted\n", exitCode: 0 });
     mockSsh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     mockSsh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     mockSsh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "not-ufw-connectivity-ok\n", exitCode: 0 });
@@ -2614,9 +2647,10 @@ exit 97
     mockSsh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
     mockSsh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     mockSsh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
-    mockSsh.mockResponse(/sudo ufw allow/, { stdout: "", exitCode: 0 });
-    mockSsh.mockResponse(/sudo ufw default deny incoming/, { stdout: "", exitCode: 0 });
-    mockSsh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "", exitCode: 1 });
+    mockSsh.mockResponse(/ufw prepend allow/, { stdout: "Rule inserted\n", exitCode: 0 });
+    mockSsh.mockResponse(/ufw default deny incoming/, { stdout: "", exitCode: 0 });
+    let probes = 0;
+    mockSsh.mockResponse(/echo "ufw-connectivity-ok"/, () => ({ stdout: ++probes === 2 ? "unreachable" : "ufw-connectivity-ok\n", exitCode: 0 }));
 
     const executor = new FleetOnboardExecutor({
       createSshExecutor: () => mockSsh,
@@ -2633,8 +2667,8 @@ exit 97
 
     const result = await executor.execute(claim, mockReporter.reporter);
     expect(result.status).toBe("failed");
-    expect(mockSsh.hasExecuted(/sudo ufw allow/)).toBe(true);
-    expect(mockSsh.hasExecuted(/sudo ufw default deny incoming/)).toBe(true);
+    expect(mockSsh.hasExecuted(/ufw prepend allow/)).toBe(true);
+    expect(mockSsh.hasExecuted(/ufw default deny incoming/)).toBe(true);
     expect(mockSsh.hasExecuted('echo "ufw-connectivity-ok"')).toBe(true);
     expect(mockSsh.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
     expect(mockSsh.hasExecuted("sudo ufw disable")).toBe(false);
