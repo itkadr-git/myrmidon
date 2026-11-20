@@ -503,6 +503,21 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(ssh.hasExecuted(/restore-myrmidon-password-config/)).toBe(true);
   });
 
+  it("refuses firewall hardening without key credentials for a fresh SSH verification", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-firewall-without-key", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { bootstrapPassword: "pass" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatch(/firewall.*requires.*SSH key/i);
+    expect(ssh.hasExecuted(/start-myrmidon-firewall-timer|sudo ufw (allow|default|delete)/)).toBe(false);
+  });
+
   it("refuses active firewall changes when the scoped rollback timer cannot start", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
