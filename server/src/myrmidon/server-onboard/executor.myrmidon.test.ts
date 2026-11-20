@@ -1033,6 +1033,7 @@ exit 1
 
   it("refuses firewall mutation when the original state cannot be snapshotted", async () => {
     const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
     ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 1, stderr: "snapshot failed" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
@@ -1043,6 +1044,7 @@ exit 1
 
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
+    expect(ssh.hasExecuted(/snapshot-myrmidon-firewall/)).toBe(true);
     expect(ssh.hasExecuted(/sudo ufw allow|sudo ufw default/)).toBe(false);
   });
 
