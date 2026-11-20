@@ -1208,6 +1208,9 @@ exit 97
     };
 
     const result = await executor.execute(claim, createMockReporter().reporter);
+    // This success path has a confirmed timer; it must not fail closed before launch.
+    expect(ssh.hasExecuted(/start-myrmidon-firewall-timer/)).toBe(true);
+    expect(ssh.hasExecuted(/check-myrmidon-firewall-timer/)).toBe(true);
     expect(result.status).toBe("succeeded");
     expect(ssh.hasExecuted(/sudo ufw allow/)).toBe(true);
     expect(ssh.hasExecuted('echo "ufw-connectivity-ok"')).toBe(true);
