@@ -27,13 +27,15 @@ def main():
     tasks = json.loads(sys.argv[1])
     if not isinstance(tasks, list):
         raise ValueError("invalid task list")
-    eligible = [t for t in tasks if isinstance(t, dict) and str(t.get("id")) == "100" and t.get("node") == "hk01" and t.get("type") == "vzdump" and t.get("status") == "OK" and type(t.get("starttime")) is int and type(t.get("endtime")) is int]
-    if not eligible:
-        raise ValueError("no completed VM backup task")
+    eligible = [t for t in tasks if isinstance(t, dict) and str(t.get("id")) == "100" and t.get("node") == "hk01" and t.get("type") == "vzdump"]
+    if not eligible or any(type(t.get("starttime")) is not int for t in eligible):
+        raise ValueError("missing VM backup task or invalid starttime")
     latest = max(t["starttime"] for t in eligible)
     matches = [t for t in eligible if t["starttime"] == latest]
-    if latest != start or len(matches) != 1 or not start <= matches[0]["endtime"] <= now:
-        raise ValueError("archive and task mismatch or invalid endtime")
+    if (latest != start or len(matches) != 1 or matches[0].get("status") != "OK"
+            or type(matches[0].get("endtime")) is not int
+            or not start <= matches[0]["endtime"] <= now):
+        raise ValueError("latest task failed, archive mismatch or invalid endtime")
     print(f"PBS verified: {volid}; completed={matches[0]['endtime']}; age={now-start}s")
 
 

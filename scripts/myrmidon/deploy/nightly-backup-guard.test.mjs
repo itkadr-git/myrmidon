@@ -24,6 +24,14 @@ test("fresh archive matches a completed VM 100 task by start time", () => {
   assert.notEqual(runFixture(`pbs-offsite:backup/vm/100/${stamp} backup 100 10`, [{ ...task, starttime: start - 1 }]).status, 0);
 });
 
+test("a newer failed VM backup cannot be hidden by an older successful archive", () => {
+  const start = Math.floor(Date.now() / 1000) - 600;
+  const stamp = new Date(start * 1000).toISOString().replace('.000Z', 'Z');
+  const task = { id: "100", node: "hk01", type: "vzdump", status: "OK", starttime: start, endtime: start + 10 };
+  const failed = { ...task, status: "ERROR", starttime: start + 30, endtime: start + 40 };
+  assert.notEqual(runFixture(`pbs-offsite:backup/vm/100/${stamp} backup 100 10`, [task, failed]).status, 0);
+});
+
 test("a failed operator backup query stops the guard", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "nightly-guard-"));
   try {
