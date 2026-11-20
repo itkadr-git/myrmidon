@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, isNull, lte, or } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, lte, or } from "drizzle-orm";
 import { nativeFinalizationOutbox, nativeFinalizationRequests, workspaceOperations, type Db } from "@myrmidon/db";
 
 /** Claim pending work or reclaim a lease abandoned by a crashed worker. */
@@ -46,14 +46,13 @@ export async function processNativeFinalizationRequest(input: {
 }): Promise<"idle" | "waiting_workspace" | "processed"> {
   const request = await claimNativeFinalizationRequest(input.db, input.worker, input.now, input.leaseMs);
   if (!request) return "idle";
-  const [workspace] = await input.db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+  const [workspace] = await input.db.select({ status: workspaceOperations.status }).from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, request.companyId),
     eq(workspaceOperations.issueId, request.issueId),
     eq(workspaceOperations.heartbeatRunId, request.runId),
     eq(workspaceOperations.phase, "workspace_finalize"),
-    eq(workspaceOperations.status, "succeeded"),
-  )).limit(1);
-  if (!workspace) return "waiting_workspace";
+  )).orderBy(desc(workspaceOperations.createdAt), desc(workspaceOperations.id)).limit(1);
+  if (workspace?.status !== "succeeded") return "waiting_workspace";
   if (!request.leaseOwner || !request.leaseUntil) throw new Error("native_finalization_invalid_lease");
   await input.execute({
     runId: request.runId,
