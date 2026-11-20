@@ -67,7 +67,8 @@ it.each([["Reject", "decline"], ["Accept", "accept"]])("keeps both rows after re
   await settle();
   expect(host.textContent).toContain("First suggestion");
   expect(host.textContent).toContain("Second suggestion");
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Decision failed");
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Could not complete the action");
+  expect(host.textContent).not.toContain("Decision failed");
   expect(invalidate).not.toHaveBeenCalled();
   expect(mocks.get).toHaveBeenCalledTimes(1);
   expect(mocks.post).toHaveBeenCalledTimes(1);

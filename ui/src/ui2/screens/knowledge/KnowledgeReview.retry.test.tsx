@@ -64,7 +64,8 @@ it("keeps edited content and never accepts when the draft write fails", async ()
   expect(http.post).toHaveBeenCalledTimes(1);
   expect(http.get).toHaveBeenCalledWith("/myrmidon/companies/c1/knowledge/suggestions?status=pending");
   expect(host.textContent).toContain("Proposed text");
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Draft failed");
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Could not complete the action");
+  expect(host.textContent).not.toContain("Draft failed");
   expect(editor.value).toBe("Edited text");
   expect(editor.disabled).toBe(false);
 });
@@ -82,7 +83,8 @@ it("retries only the decision after a saved draft and removes the suggestion on 
   expect(http.post.mock.calls).toEqual([[draftUrl, { content: "Edited text" }], [acceptUrl, {}]]);
   await act(async () => firstAccept.reject(new Error("Accept failed")));
   await settle();
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Accept failed");
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Could not complete the action");
+  expect(host.textContent).not.toContain("Accept failed");
   expect(host.textContent).toContain("Proposed text");
   expect(editor.value).toBe("Edited text");
   expect(editor.disabled).toBe(true);

@@ -67,7 +67,8 @@ it("keeps the suggestion and shows an error when a decision fails", async () => 
   await render();
   await click("Accept");
   expect(host.textContent).toContain("Proposed text");
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Forbidden");
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Could not complete the action");
+  expect(host.textContent).not.toContain("Forbidden");
 });
 it("does not accept if saving the draft fails", async () => {
   http.post.mockRejectedValue(new Error("Draft failed"));
@@ -76,7 +77,8 @@ it("does not accept if saving the draft fails", async () => {
   await click("Save and accept");
   expect(http.post).toHaveBeenCalledTimes(1);
   expect(host.querySelector("textarea")).not.toBeNull();
-  expect(host.textContent).toContain("Draft failed");
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Could not complete the action");
+  expect(host.textContent).not.toContain("Draft failed");
 });
 it("cancels editing without a write", async () => {
   await render();

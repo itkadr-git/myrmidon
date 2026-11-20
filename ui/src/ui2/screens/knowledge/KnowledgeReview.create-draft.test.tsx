@@ -126,7 +126,8 @@ it("keeps all entered fields and does not accept when creation fails", async () 
   await act(async () => create.reject(new Error("Create failed")));
   await settle();
   expect(http.post).toHaveBeenCalledTimes(1);
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Create failed");
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Could not complete the action");
+  expect(host.textContent).not.toContain("Create failed");
   expect(host.textContent).toContain("Proposed text");
   expect(field("Title").value).toBe("  New page  ");
   expect(field("Page slug").value).toBe("  new-page  ");
@@ -143,7 +144,8 @@ it("retries a failed accept without creating a second draft", async () => {
   await change("Title", "Page");
   await change("Page slug", "page");
   await click("Save and accept");
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Accept failed");
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Could not complete the action");
+  expect(host.textContent).not.toContain("Accept failed");
   expect(host.textContent).toContain("Draft saved");
   expect(field("Title").disabled).toBe(true);
   http.post.mockImplementation(async () => { pending = []; return {}; });
