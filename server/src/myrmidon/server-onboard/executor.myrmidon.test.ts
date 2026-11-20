@@ -500,9 +500,10 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(ssh.hasExecuted(/restore-myrmidon-password-config/)).toBe(true);
   });
 
-  it("refuses active firewall changes when scoped rollback is unavailable", async () => {
+  it("refuses active firewall changes when the scoped rollback timer cannot start", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 1, stderr: "timer unavailable" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
       job: { id: "job-firewall-unsafe-rollback", companyId: "c1", serverId: "s1" },
@@ -511,7 +512,8 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     };
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
-    expect(result.error).toMatch(/scoped.*rollback.*unavailable/i);
+    expect(ssh.hasExecuted(/start-myrmidon-firewall-timer/)).toBe(true);
+    expect(result.error).toMatch(/timer.*(start|confirm)/i);
     expect(ssh.hasExecuted(/sudo ufw (allow|default|--force enable|disable)/)).toBe(false);
     expect(ssh.hasExecuted(/pkill|restore-myrmidon-firewall/)).toBe(false);
   });
