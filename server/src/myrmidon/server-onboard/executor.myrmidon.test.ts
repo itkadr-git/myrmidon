@@ -438,11 +438,13 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(ssh.hasExecuted(/apply-myrmidon-firewall-(allow|deny)/)).toBe(false);
   });
 
-  it("preserves an operator rule added during an executed partial SSH allow failure", async () => {
+  it.each(["allow", "deny", "ambiguous"])("handles a scoped rollback after an executed %s failure", async (failure) => {
     const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-ufw-partial-"));
     const rules = join(dir, "rules");
     const calls = join(dir, "calls");
+    const policy = join(dir, "policy");
     writeFileSync(rules, "operator-original\n");
+    writeFileSync(policy, "allow\n");
     writeFileSync(join(dir, "sudo"), `#!/bin/sh
 printf '%s\\n' "$*" >> "$CALLS"
 case "$1" in
@@ -455,11 +457,19 @@ printf 'ufw %s\\n' "$*" >> "$CALLS"
 case "$1" in
       status)
         printf 'Status: active\\n'
-        if [ "$2" = verbose ]; then printf 'Default: allow (incoming), allow (outgoing), disabled (routed)\\n'; fi
+        if [ "$2" = verbose ]; then printf 'Default: %s (incoming), allow (outgoing), disabled (routed)\\n' "$(tr -d '\\n' < "$POLICY")"; fi
         if [ "$2" = numbered ] && [ -s "$RULES.owner" ]; then
+          if [ "$FAILURE" = ambiguous ]; then printf '[ 1] 22/tcp ALLOW IN Anywhere # operator\\n'; fi
           printf '[ 1] 22/tcp ALLOW IN Anywhere # %s\\n' "$(tr -d '\\n' < "$RULES.owner")"
         fi ;;
-      prepend) printf '%s\\n' "$5" > "$RULES.owner"; printf 'onboarding-ssh\\noperator-concurrent\\n' >> "$RULES"; exit 1 ;;
+      prepend)
+        printf '%s\\n' "$5" > "$RULES.owner"
+        printf 'onboarding-ssh\\noperator-concurrent\\n' >> "$RULES"
+        if [ "$FAILURE" != deny ]; then exit 1; fi
+        printf 'Rule inserted\\n' ;;
+      default)
+        printf '%s\\n' "$2" > "$POLICY"
+        if [ "$2" = deny ]; then exit 1; fi ;;
       --force)
         [ "$2 $3 $4 $5 $6" = "delete allow 22/tcp comment $(tr -d '\\n' < "$RULES.owner")" ] || exit 1
         grep -vx onboarding-ssh "$RULES" > "$RULES.new" && mv "$RULES.new" "$RULES" && rm "$RULES.owner" ;;
@@ -473,8 +483,9 @@ esac
     chmodSync(join(dir, "sudo"), 0o700);
     try {
       const ssh = new VerifiedMockSsh({ onCommand: (command) => {
+        if (command === 'echo "ufw-connectivity-ok"') return { stdout: "ufw-connectivity-ok\n", exitCode: 0 };
         const result = spawnSync("sh", ["-c", command.replaceAll("/var/tmp/myrmidon-firewall-", `${dir}/myrmidon-firewall-`)], {
-          encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: calls, RULES: rules }, timeout: 5000,
+          encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: calls, RULES: rules, POLICY: policy, FAILURE: failure }, timeout: 5000,
         });
         return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", exitCode: result.status ?? 1 };
       } });
@@ -486,7 +497,15 @@ esac
       };
       const result = await executor.execute(claim, createMockReporter().reporter);
       expect(result.status).toBe("failed");
+      if (failure === "ambiguous") {
+        expect(result.error).toMatch(/rollback failed or unconfirmed/);
+        expect(readFileSync(calls, "utf8")).not.toContain("ufw --force delete");
+        return;
+      }
+      expect(result.error).not.toMatch(/rollback failed or unconfirmed/);
       expect(readFileSync(calls, "utf8")).toMatch(/ufw prepend allow/);
+      expect(readFileSync(calls, "utf8").includes("ufw default deny incoming")).toBe(failure === "deny");
+      expect(readFileSync(policy, "utf8")).toBe("allow\n");
       expect(readFileSync(rules, "utf8").split("\n").filter(Boolean).sort()).toEqual(["operator-concurrent", "operator-original"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
