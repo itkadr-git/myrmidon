@@ -1565,9 +1565,17 @@ describeEmbeddedPostgres("secretService", () => {
     expect(await db.select().from(secretAccessEvents)).toEqual(beforeEvents);
     expect(await db.select().from(activityLog)).toEqual(beforeActivity);
     await expect(svc.probeBinding(otherCompany, binding.id)).rejects.toMatchObject({ status: 404 });
+    await db.update(companySecretBindings).set({ targetType: "project" }).where(eq(companySecretBindings.id, binding.id));
+    await expect(svc.probeBinding(companyId, binding.id)).rejects.toMatchObject({ status: 404 });
+    await db.update(companySecretBindings).set({ targetType: "agent", targetId: "invalid" }).where(eq(companySecretBindings.id, binding.id));
+    await expect(svc.probeBinding(companyId, binding.id)).rejects.toMatchObject({ status: 404 });
+    await db.update(companySecretBindings).set({ targetId: agentId }).where(eq(companySecretBindings.id, binding.id));
     await db.update(agents).set({ companyId: otherCompany }).where(eq(agents.id, agentId));
     await expect(svc.probeBinding(companyId, binding.id)).rejects.toMatchObject({ status: 404 });
     expect(resolve).not.toHaveBeenCalled();
+    expect(awsResolve).not.toHaveBeenCalled();
+    expect(await db.select().from(secretAccessEvents)).toEqual(beforeEvents);
+    expect(await db.select().from(activityLog)).toEqual(beforeActivity);
   });
 
   it("collects declared secret refs that have no binding without resolving values", async () => {
