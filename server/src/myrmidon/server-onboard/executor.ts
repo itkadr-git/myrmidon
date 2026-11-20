@@ -83,6 +83,8 @@ export class FleetOnboardExecutor {
     let currentStep: string | null = null;
     let activeSsh: SshExecutor | null = null;
     let activePrivateKey: string | null = claim.secretValues.accessKey ?? null;
+    let pendingPasswordRollback: (() => Promise<void>) | null = null;
+    let discardPasswordBackup: (() => Promise<void>) | null = null;
 
     try {
       const steps = claim.steps && claim.steps.length > 0 ? claim.steps : ["connect", "preflight", "access", "verify"];
@@ -228,6 +230,22 @@ export class FleetOnboardExecutor {
               const file = "/etc/ssh/sshd_config.d/50-myrmidon-hardening.conf";
               const snapshot = await activeSsh.execute(`sudo mkdir -m 700 ${backup} && if sudo test -e ${file}; then sudo cp -p ${file} ${backup}/original; else sudo touch ${backup}/absent; fi`);
               if (snapshot.exitCode !== 0) throw new Error("Cannot snapshot password hardening configuration");
+              const passwordSsh = activeSsh;
+              const restorePassword = async () => {
+                const restore = await passwordSsh.execute(`: restore-myrmidon-password-config; if sudo test -f ${backup}/absent; then sudo rm -f ${file}; else sudo cp -p ${backup}/original ${file}; fi && sudo sshd -t && (sudo systemctl reload ssh || sudo systemctl reload sshd)`);
+                if (restore.exitCode !== 0) throw new Error("configuration restoration failed");
+                const checkSsh = await this.getSsh(keyConnOptions);
+                try {
+                  await checkSsh.connect(keyConnOptions);
+                  const check = await checkSsh.execute('echo "myrmidon-key-verify"');
+                  if (check.exitCode !== 0 || check.stdout.trim() !== "myrmidon-key-verify") throw new Error("unexpected SSH verification response");
+                } catch (error) {
+                  const detail = error instanceof Error ? error.message : String(error);
+                  throw new Error(`restoration SSH verification failed: ${detail}`);
+                } finally {
+                  await checkSsh.disconnect().catch(() => {});
+                }
+              };
               try {
                 const write = await activeSsh.execute(
                   `sudo mkdir -p /etc/ssh/sshd_config.d && printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' | sudo tee ${file}`,
@@ -257,36 +275,17 @@ export class FleetOnboardExecutor {
                   await fresh.disconnect().catch(() => {});
                 }
               } catch (error) {
-                let restored = false;
                 try {
-                  const restore = await activeSsh.execute(`: restore-myrmidon-password-config; if sudo test -f ${backup}/absent; then sudo rm -f ${file}; else sudo cp -p ${backup}/original ${file}; fi && sudo sshd -t && (sudo systemctl reload ssh || sudo systemctl reload sshd)`);
-                  restored = restore.exitCode === 0;
-                } catch {
-                  // A lost SSH session leaves restoration unconfirmed.
-                }
-                if (!restored) {
+                  await restorePassword();
+                } catch (restoreError) {
                   const cause = error instanceof Error ? error.message : String(error);
-                  throw new Error(`Password hardening failed: ${cause}; configuration restoration failed`);
-                }
-                try {
-                  const checkSsh = await this.getSsh(keyConnOptions);
-                  try {
-                    await checkSsh.connect(keyConnOptions);
-                    const check = await checkSsh.execute('echo "myrmidon-key-verify"');
-                    if (check.exitCode !== 0 || check.stdout.trim() !== "myrmidon-key-verify") {
-                      throw new Error("unexpected SSH verification response");
-                    }
-                  } finally {
-                    await checkSsh.disconnect().catch(() => {});
-                  }
-                } catch (verifyError) {
-                  const cause = error instanceof Error ? error.message : String(error);
-                  const detail = verifyError instanceof Error ? verifyError.message : String(verifyError);
-                  throw new Error(`Password hardening failed: ${cause}; restoration SSH verification failed: ${detail}`);
+                  const detail = restoreError instanceof Error ? restoreError.message : String(restoreError);
+                  throw new Error(`Password hardening failed: ${cause}; ${detail.includes("restoration SSH") ? detail : `configuration restoration failed: ${detail}`}`);
                 }
                 throw error;
               }
-              await activeSsh.execute(`sudo rm -rf ${backup}`);
+              pendingPasswordRollback = restorePassword;
+              discardPasswordBackup = async () => { await passwordSsh.execute(`sudo rm -rf ${backup}`); };
             }
 
             await reporter.reportStep(
@@ -399,6 +398,8 @@ export class FleetOnboardExecutor {
         }
       }
 
+      if (discardPasswordBackup) await discardPasswordBackup();
+      pendingPasswordRollback = null;
       await reporter.reportCompletion("succeeded", null, discoveredFingerprint);
       return {
         status: "succeeded",
@@ -407,6 +408,16 @@ export class FleetOnboardExecutor {
       };
     } catch (error) {
       let message = error instanceof Error ? error.message : String(error);
+
+      if (pendingPasswordRollback) {
+        try {
+          await pendingPasswordRollback();
+          if (discardPasswordBackup) await discardPasswordBackup();
+        } catch (rollbackError) {
+          const detail = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+          message += `; password configuration rollback unconfirmed: ${detail}`;
+        }
+      }
 
       if (currentStep) {
         await reporter.reportStep(currentStep, "failed", message).catch(() => {});
