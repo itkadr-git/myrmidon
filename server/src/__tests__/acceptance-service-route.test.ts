@@ -56,10 +56,24 @@ const support = await getEmbeddedPostgresTestSupport();
       expect((await call(foreign.token)).status).toBe(404);
       const concurrent = await Promise.all(Array.from({ length: 8 }, () => call(issued.token, client, first.etag)));
       expect(concurrent.every((response) => response.status === 200 && response.etag === first.etag)).toBe(true);
-      await db.update(issues).set({ identifier: "AAA-2" }).where(eq(issues.id, issueId));
+      const [racingReads] = await Promise.all([
+        Promise.all(Array.from({ length: 8 }, () => call(issued.token, client, first.etag, issueId))),
+        db.update(issues).set({ identifier: "AAA-2" }).where(eq(issues.id, issueId)),
+      ]);
+      for (const response of racingReads) {
+        expect([200, 412]).toContain(response.status);
+        if (response.status === 200) {
+          expect(response.etag).toBe(first.etag);
+          expect(JSON.parse(response.body).issue.identifier).toBe("AAA-1");
+        }
+      }
       expect((await call(issued.token, client, first.etag, issueId)).status).toBe(412);
-      await service.revoke(companyId, issued.id);
-      expect((await call(issued.token)).status).toBe(401);
+      const [revocationReads] = await Promise.all([
+        Promise.all(Array.from({ length: 8 }, () => call(issued.token, client, undefined, issueId))),
+        service.revoke(companyId, issued.id),
+      ]);
+      expect(revocationReads.every((response) => response.status === 200 || response.status === 401)).toBe(true);
+      expect((await call(issued.token, client, undefined, issueId)).status).toBe(401);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await db.$client.end(); await fixture.cleanup(); rmSync(dir, { recursive: true, force: true });
