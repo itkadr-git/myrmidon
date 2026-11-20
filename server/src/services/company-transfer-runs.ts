@@ -40,6 +40,7 @@ export type CompanyTransferRunStatus =
   | "running"
   | "applying"
   | "rolling_back"
+  | "rolled_back"
   | "completed"
   | "failed"
   | "cancelled";
@@ -176,7 +177,7 @@ export const companyTransferRunService = {
             eq(companyTransferRuns.idempotencyKey, input.idempotencyKey),
             eq(companyTransferRuns.direction, input.direction),
             eq(companyTransferRuns.actorKey, input.actorKey),
-            inArray(companyTransferRuns.status, [...RESUMABLE_STATUSES, "applying", "rolling_back", "completed"]),
+            inArray(companyTransferRuns.status, [...RESUMABLE_STATUSES, "applying", "rolling_back", "rolled_back", "completed"]),
           ),
         )
         .orderBy(desc(companyTransferRuns.createdAt))
@@ -287,6 +288,19 @@ export const companyTransferRunService = {
       ))
       .returning({ id: companyTransferRuns.id });
     return released.length === 1;
+  },
+
+  async finishMigrationRollback(db: Db, runId: string): Promise<boolean> {
+    const finished = await db.update(companyTransferRuns)
+      .set({ status: "rolled_back", error: null, finishedAt: new Date(), updatedAt: new Date() })
+      .where(and(
+        eq(companyTransferRuns.id, runId),
+        eq(companyTransferRuns.direction, "import"),
+        eq(companyTransferRuns.status, "rolling_back"),
+        sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
+      ))
+      .returning({ id: companyTransferRuns.id });
+    return finished.length === 1;
   },
 
   async start(db: Db, runId: string): Promise<void> {
@@ -498,7 +512,7 @@ export const companyTransferRunService = {
         eq(companyTransferRuns.id, runId),
         // Only the guarded releaseApplyClaim may settle an active migration.
         // A stale failure must not reopen a completed or cancelled migration.
-        sql`(coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration' or ${companyTransferRuns.status} not in ('applying', 'rolling_back', 'completed', 'cancelled'))`,
+        sql`(coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration' or ${companyTransferRuns.status} not in ('applying', 'rolling_back', 'rolled_back', 'completed', 'cancelled'))`,
       ));
   },
 
