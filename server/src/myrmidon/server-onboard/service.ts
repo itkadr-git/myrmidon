@@ -337,10 +337,17 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
         [claim.server.passwordSecretKey, "bootstrapPassword"],
         [claim.server.accessKeySecretKey, "accessKey"],
       ];
-      for (const [name, slot] of wanted) {
-        if (!name) continue;
-        const value = await deps.secrets.readSecret(claim.job.companyId, name);
-        if (value) secretValues[slot] = value;
+      try {
+        for (const [name, slot] of wanted) {
+          if (!name) continue;
+          const value = await deps.secrets.readSecret(claim.job.companyId, name);
+          if (value) secretValues[slot] = value;
+        }
+      } catch {
+        // Do not expose secret-provider errors or leave a consumed claim running.
+        await deps.store.updateJob(companyId, claim.job.id, { status: "failed", error: "Unable to retrieve onboarding credentials" });
+        await deps.store.updateServerOnboard(companyId, claim.job.serverId, { onboardState: "needs_attention" });
+        throw new OnboardServiceError(503, "Unable to retrieve onboarding credentials");
       }
       await writeAudit(claim.job.companyId, "job_claimed", claim.job.serverId, { jobId: claim.job.id, kind: claim.job.kind });
       return { ...claim, secretValues };
