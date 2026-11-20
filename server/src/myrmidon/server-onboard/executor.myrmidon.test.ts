@@ -456,6 +456,31 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockReporter.completion?.status).toBe("failed");
   });
 
+  it("checks a fresh SSH connection after restoring password hardening", async () => {
+    const initial = new MockSshExecutor();
+    const verified = new MockSshExecutor();
+    const afterRestore = new MockSshExecutor();
+    verified.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
+    verified.mockResponse("sudo sshd -t", { exitCode: 1, stderr: "invalid configuration" });
+    afterRestore.mockResponse('echo "myrmidon-key-verify"', { stdout: "wrong\n", exitCode: 0 });
+    const connections = [initial, verified, afterRestore];
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => {
+      const connection = connections.shift();
+      if (!connection) throw new Error("Unexpected SSH connection");
+      return connection;
+    } });
+    const claim: any = {
+      job: { id: "job-restore-ssh-check", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["access"], options: { keepPassword: false }, secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatch(/restor.*SSH.*(failed|unconfirmed)/i);
+    expect(afterRestore.hasExecuted('echo "myrmidon-key-verify"')).toBe(true);
+    expect(afterRestore.isConnected()).toBe(false);
+  });
+
   it("refuses active firewall changes when scoped rollback is unavailable", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
