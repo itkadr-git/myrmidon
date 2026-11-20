@@ -593,6 +593,21 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(ssh.hasExecuted(/pkill|restore-myrmidon-firewall/)).toBe(false);
   });
 
+  it("reports an unconfirmed default policy if the policy probe times out", async () => {
+    const ssh = new MockSshExecutor({ timeoutCommands: [/snapshot-myrmidon-firewall/] });
+    ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-firewall-policy-timeout", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatch(/firewall default policy unconfirmed/i);
+    expect(ssh.hasExecuted(/start-myrmidon-firewall-timer|sudo ufw (allow|default|delete)/)).toBe(false);
+  });
+
   it("confirms a running rollback timer before attempting the SSH allow rule", async () => {
     let timerConfirmed = false;
     let allowAttempted = false;
