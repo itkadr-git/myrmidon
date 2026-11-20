@@ -53,7 +53,7 @@ test("merges embedded optional dependencies after runtime verification and remov
   assert.equal(readFileSync(join(destination, "payload.txt"), "utf8"), "source payload\n");
 }));
 
-for (const [name, runtime] of [["locale only", locale], ["process only", processMarker]]) {
+for (const [name, runtime] of [["neither marker", "unpatched"], ["locale only", locale], ["process only", processMarker]]) {
   test(`rejects ${name} before merge and native cleanup`, () => fixture({ runtime }, ({ result, destination }) => {
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /staged embedded-postgres runtime is missing the repository patch/);
