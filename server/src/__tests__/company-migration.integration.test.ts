@@ -797,6 +797,19 @@ describe("company migration dry run", () => {
     expect(await companyTransferRunService.claimMigrationRollback(db, run.id, "rollback-claim-source")).toBe(true);
   });
 
+  it("refuses to claim rollback when provenance identifies the source as the destination", async () => {
+    const [source] = await db.insert(companies).values({ name: "Rollback source guard", issuePrefix: "RSG" }).returning();
+    const [run] = await db.insert(companyTransferRuns).values({
+      direction: "import", status: "failed", actorKey: `company_migration:${source!.id}`,
+      idempotencyKey: "rollback-source-guard", companyId: source!.id,
+      containerRef: { kind: "company_migration", sourceCompanyId: source!.id, destinationClaimed: true, destinationCompanyId: source!.id },
+    }).returning();
+
+    expect(await companyTransferRunService.claimMigrationRollback(db, run!.id, source!.id)).toBe(false);
+    expect((await companyTransferRunService.getRun(db, run!.id))?.status).toBe("failed");
+    expect((await db.select().from(companies)).some((company) => company.id === source!.id)).toBe(true);
+  });
+
   it("refuses rollback claims when destination provenance disagrees with the company foreign key", async () => {
     const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "rollback-mismatch-source", "rollback-mismatch-key");
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
