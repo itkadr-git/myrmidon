@@ -782,6 +782,21 @@ describe("company migration dry run", () => {
     expect(await companyTransferRunService.claimMigrationRollback(db, run.id, "rollback-claim-source")).toBe(true);
   });
 
+  it("refuses rollback claims when destination provenance disagrees with the company foreign key", async () => {
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "rollback-mismatch-source", "rollback-mismatch-key");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Rollback mismatch destination" }, { transferRunId: run.id });
+    await companyTransferRunService.releaseApplyClaim(db, run.id, "interrupted");
+    await db.update(companyTransferRuns).set({
+      containerRef: { kind: "company_migration", sourceCompanyId: "rollback-mismatch-source", destinationClaimed: true, destinationCompanyId: "different-destination" },
+    }).where(eq(companyTransferRuns.id, run.id));
+
+    expect(await companyTransferRunService.claimMigrationRollback(db, run.id, "rollback-mismatch-source")).toBe(false);
+    const saved = await companyTransferRunService.getRun(db, run.id);
+    expect(saved?.status).toBe("failed");
+    expect(saved?.companyId).toBe(destination.id);
+  });
+
   it("releases a failed rollback claim without losing provenance or exposing errors", async () => {
     const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "rollback-error-source", "rollback-error-key");
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
