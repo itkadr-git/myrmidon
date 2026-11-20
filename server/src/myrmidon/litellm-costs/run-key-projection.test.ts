@@ -60,6 +60,7 @@ describe("myrmidon(OPE-12932) findRunScopedGatewayKeyRef", () => {
       id: SECRET_ID,
       status: "active",
       scope: "company",
+      expiresAt: new Date(Date.now() + 60_000),
       latestVersion: 2,
     });
 
@@ -79,8 +80,13 @@ describe("myrmidon(OPE-12932) findRunScopedGatewayKeyRef", () => {
     ).toBeNull();
   });
 
+  it.each([null, new Date(0)])("rejects a binding without a future expiry", async (expiresAt) => {
+    getByNameMock.mockResolvedValue({ id: SECRET_ID, status: "active", scope: "company", expiresAt });
+    expect(await findRunScopedGatewayKeyRef({} as never, COMPANY_ID, RUN_ID, ENV_WITH_KEY_ENV)).toBeNull();
+  });
+
   it("uses the lifecycle default env name when no override is configured", async () => {
-    getByNameMock.mockResolvedValue({ id: SECRET_ID, status: "active", scope: "company" });
+    getByNameMock.mockResolvedValue({ id: SECRET_ID, status: "active", scope: "company", expiresAt: new Date(Date.now() + 60_000) });
     expect(await findRunScopedGatewayKeyRef({} as never, COMPANY_ID, RUN_ID, {})).toEqual({
       envKey: "MYRMIDON_LLM_API_KEY",
       secretRef: RUN_SCOPED_REF,
@@ -104,9 +110,9 @@ describe("myrmidon(OPE-12932) run ownership", () => {
     const otherRunId = "55555555-5555-4555-8555-555555555555";
     const nextRunId = "66666666-6666-4666-8666-666666666666";
     const secrets = new Map([
-      [`llm-gateway-run-${RUN_ID}`, { id: SECRET_ID, status: "active", scope: "company" }],
-      [`llm-gateway-run-${otherRunId}`, { id: "other-secret", status: "active", scope: "company" }],
-      [`llm-gateway-run-${nextRunId}`, { id: "next-secret", status: "active", scope: "company" }],
+      [`llm-gateway-run-${RUN_ID}`, { id: SECRET_ID, status: "active", scope: "company", expiresAt: new Date(Date.now() + 60_000) }],
+      [`llm-gateway-run-${otherRunId}`, { id: "other-secret", status: "active", scope: "company", expiresAt: new Date(Date.now() + 60_000) }],
+      [`llm-gateway-run-${nextRunId}`, { id: "next-secret", status: "active", scope: "company", expiresAt: new Date(Date.now() + 60_000) }],
     ]);
     getByNameMock.mockImplementation(async (_companyId: string, name: string) => secrets.get(name) ?? null);
     removeMock.mockImplementation(async (id: string) => {
@@ -131,7 +137,7 @@ describe("myrmidon(OPE-12932) run ownership", () => {
   });
 
   it("looks up and removes only the current run's secret", async () => {
-    getByNameMock.mockResolvedValue({ id: SECRET_ID, status: "active", scope: "company" });
+    getByNameMock.mockResolvedValue({ id: SECRET_ID, status: "active", scope: "company", expiresAt: new Date(Date.now() + 60_000) });
     removeMock.mockResolvedValue({ id: SECRET_ID });
     const ref = await findRunScopedGatewayKeyRef({} as never, COMPANY_ID, RUN_ID, ENV_WITH_KEY_ENV);
     expect(ref?.secretRef.secretId).toBe(SECRET_ID);
@@ -144,7 +150,7 @@ describe("myrmidon(OPE-12932) run ownership", () => {
 
 describe("myrmidon(OPE-12932) removeRunScopedGatewayKeyRef", () => {
   it("deletes the managed key secret and reports the removal", async () => {
-    getByNameMock.mockResolvedValue({ id: SECRET_ID, status: "active", scope: "company" });
+    getByNameMock.mockResolvedValue({ id: SECRET_ID, status: "active", scope: "company", expiresAt: new Date(Date.now() + 60_000) });
     removeMock.mockResolvedValue({ id: SECRET_ID });
 
     expect(
@@ -164,7 +170,7 @@ describe("myrmidon(OPE-12932) removeRunScopedGatewayKeyRef", () => {
   it("does not delete the persistent agent key when cleaning up a run", async () => {
     getByNameMock.mockImplementation(async (_companyId: string, name: string) =>
       name === `llm-gateway-key-${AGENT_ID}`
-        ? { id: SECRET_ID, status: "active", scope: "company" }
+        ? { id: SECRET_ID, status: "active", scope: "company", expiresAt: new Date(Date.now() + 60_000) }
         : null,
     );
     await removeRunScopedGatewayKeyRef({} as never, COMPANY_ID, AGENT_ID, ENV_WITH_KEY_ENV);

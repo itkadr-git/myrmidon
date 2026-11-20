@@ -27935,10 +27935,29 @@ export function heartbeatService(
           availableModels: availableModels.map((model) => model.id),
         });
       }
+      const hermesRunKeySettings = readGatewayKeySettings(process.env);
+      let hermesMintExpiresAt: number | null = null;
+      if (agent.adapterType === "hermes_gateway" && hermesRunKeySettings.canManageKeys) {
+        const minted = await mintRunGatewayKey(defaultAgentGatewayKeyDeps(db), {
+          companyId: agent.companyId,
+          runId: run.id,
+        });
+        issuedRunGatewayKey = minted.value;
+        hermesMintExpiresAt = Date.parse(minted.expiresAt);
+        if (!issuedRunGatewayKey || !Number.isFinite(hermesMintExpiresAt) || hermesMintExpiresAt <= Date.now()) {
+          throw new Error("Run gateway credential is missing or expired");
+        }
+        await createRunSecretRedactionRegistry(db).register(agent.companyId, run.id, issuedRunGatewayKey);
+        const registeredRun = await getRun(run.id);
+        context.paperclipSecretRedactions = parseObject(registeredRun?.contextSnapshot).paperclipSecretRedactions;
+      }
       const runScopedGatewayKeyRef =
-        agent.adapterType === "hermes_gateway"
-          ? await findRunScopedGatewayKeyRef(db, agent.companyId, run.id).catch(() => null)
+        agent.adapterType === "hermes_gateway" && hermesRunKeySettings.canManageKeys
+          ? await findRunScopedGatewayKeyRef(db, agent.companyId, run.id)
           : null;
+      if (hermesMintExpiresAt !== null && !runScopedGatewayKeyRef) {
+        throw new Error("Run gateway credential binding is unavailable");
+      }
       const runScopedSecretEnv = runScopedGatewayKeyRef
         ? { [runScopedGatewayKeyRef.envKey]: runScopedGatewayKeyRef.secretRef }
         : undefined;
@@ -27964,6 +27983,12 @@ export function heartbeatService(
           secretsSvc,
           trustPreset,
         });
+      if (runScopedGatewayKeyRef && (
+        parseObject(resolvedConfig.env)[runScopedGatewayKeyRef.envKey] !== issuedRunGatewayKey ||
+        hermesMintExpiresAt === null || hermesMintExpiresAt <= Date.now()
+      )) {
+        throw new Error("Run gateway credential does not match its valid binding");
+      }
       if (runScopedAiBinding) {
         try {
           managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: runScopedAiBinding, config: { ...resolvedConfig, ...(typeof externalSession.model === "string" ? { model: externalSession.model } : {}) } });

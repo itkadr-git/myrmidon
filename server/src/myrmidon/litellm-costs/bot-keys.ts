@@ -202,7 +202,8 @@ export async function findRunScopedGatewayKeyRef(
 ): Promise<RunScopedGatewayKeyRef | null> {
   const keyEnv = readGatewayBotKeySettings(env).keyEnv ?? DEFAULT_RUN_KEY_ENV_NAME;
   const secret = await secretService(db).getByName(companyId, runKeySecretName(runId));
-  if (!secret || secret.status !== "active" || secret.scope !== "company") return null;
+  if (!secret || secret.status !== "active" || secret.scope !== "company" ||
+      !secret.expiresAt || secret.expiresAt.getTime() <= Date.now()) return null;
   return {
     envKey: keyEnv,
     secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
