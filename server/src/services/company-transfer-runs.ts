@@ -443,15 +443,16 @@ export const companyTransferRunService = {
     return remaining;
   },
 
-  async complete(db: Db, runId: string): Promise<void> {
-    await db
+  async complete(db: Db, runId: string): Promise<boolean> {
+    const completed = await db
       .update(companyTransferRuns)
       .set({ status: "completed", error: null, finishedAt: new Date(), updatedAt: new Date() })
       .where(and(
         eq(companyTransferRuns.id, runId),
         // A completed migration must retain the same atomically claimed destination.
         sql`(coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration' or (${companyTransferRuns.status} = 'applying' and ${companyTransferRuns.companyId} is not null and ${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true' and ${companyTransferRuns.companyId}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId' and ${companyTransferRuns.containerRef}->>'sourceCompanyId' is not null and ${companyTransferRuns.containerRef}->>'sourceCompanyId' <> ${companyTransferRuns.containerRef}->>'destinationCompanyId'))`,
-      ));
+      )).returning({ id: companyTransferRuns.id });
+    return completed.length === 1;
   },
 
   /**
