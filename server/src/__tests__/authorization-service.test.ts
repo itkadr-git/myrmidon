@@ -1356,6 +1356,23 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
   });
 
+  it("allows normal assignment to a target with a standard-only trust preset", async () => {
+    const company = await createCompany(db, "StandardPresetAssignment");
+    const project = await createProject(db, company.id, "Read-only PBS WAL");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const targetAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      permissions: { authorizationPolicy: { trustPreset: "standard" } },
+    });
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, projectId: project.id, assigneeAgentId: targetAgent.id },
+      scope: { projectId: project.id, assigneeAgentId: targetAgent.id },
+    });
+    expect(decision).toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+  });
+
   it("hard-blocks assignment when the target agent blocks protected assignment", async () => {
     const company = await createCompany(db, "ProtectedAssignment");
     const actorAgent = await createAgent(db, company.id, { role: "engineer" });
