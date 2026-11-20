@@ -270,6 +270,9 @@ export const companyTransferRunService = {
         sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' = ${sourceCompanyId}`,
         sql`${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true'`,
         sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' is not null`,
+        // Deletion clears the foreign key, but a live destination must agree
+        // with the immutable ownership record before cleanup can be claimed.
+        sql`(${companyTransferRuns.companyId} is null or ${companyTransferRuns.companyId}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId')`,
       ))
       .returning({ id: companyTransferRuns.id });
     return claimed.length === 1;
