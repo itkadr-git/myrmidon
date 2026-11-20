@@ -1635,6 +1635,7 @@ exit 97
 
   it("verifies a fresh SSH connection after a failed deny policy is restored", async () => {
     const primary = new MockSshExecutor();
+    const beforeDeny = new MockSshExecutor();
     const restored = new MockSshExecutor();
     primary.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
     primary.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
@@ -1642,8 +1643,9 @@ exit 97
     primary.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     primary.mockResponse(/sudo ufw allow/, { exitCode: 0 });
     primary.mockResponse(/sudo ufw default deny incoming/, { exitCode: 1, stderr: "policy failed" });
+    beforeDeny.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
     restored.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
-    const connections = [primary, restored];
+    const connections = [primary, beforeDeny, restored];
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => {
       const connection = connections.shift();
       if (!connection) throw new Error("Unexpected SSH connection");
@@ -1657,6 +1659,8 @@ exit 97
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
     expect(primary.hasExecuted(/sudo ufw default deny incoming/)).toBe(true);
+    expect(beforeDeny.hasExecuted('echo "ufw-connectivity-ok"')).toBe(true);
+    expect(beforeDeny.isConnected()).toBe(false);
     expect(primary.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
     expect(restored.hasExecuted('echo "ufw-connectivity-ok"')).toBe(true);
     expect(restored.isConnected()).toBe(false);
