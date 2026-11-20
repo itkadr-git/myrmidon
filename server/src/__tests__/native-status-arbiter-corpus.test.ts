@@ -2139,13 +2139,22 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       serviceRequest: { requestId, leaseOwner: "worker", leaseUntil: new Date(leaseUntil.getTime() + 1) },
     })).rejects.toThrow("native_service_authorization_required");
     expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, seeded.runId))).toEqual([]);
-    const finalized = await finalizeNativeRun({ db, runId: seeded.runId, workspaceFinalizeStatus: "succeeded",
-      serviceRequest: { requestId, leaseOwner: "worker", leaseUntil },
+    await db.update(nativeFinalizationRequests).set({ state: "accepted", leaseOwner: null, leaseUntil: null }).where(eq(nativeFinalizationRequests.id, requestId));
+    const { processNativeFinalizationRequest } = await import("../services/native-runtime/native-finalization-request-worker.js");
+    // A request must remain recoverable until the durable workspace barrier exists.
+    await expect(processNativeFinalizationRequest(db, "worker", new Date(), 1000)).rejects.toThrow("native_finalization_workspace_not_ready");
+    const [pending] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, requestId));
+    expect(pending!.state).toBe("processing");
+    await db.insert(workspaceOperations).values({
+      companyId, heartbeatRunId: seeded.runId, issueId: seeded.issueId,
+      phase: "workspace_finalize", status: "succeeded", exitCode: 0, cwd: process.cwd(), finishedAt: new Date(),
     });
+    const finalized = await processNativeFinalizationRequest(db, "worker-2", new Date(Date.now() + 1100), 60_000);
     const [request] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, requestId));
     const [outbox] = await db.select().from(nativeFinalizationOutbox).where(eq(nativeFinalizationOutbox.requestId, requestId));
-    expect(request).toMatchObject({ state: "committed", resultDecisionId: finalized.decisionId, leaseOwner: null, leaseUntil: null });
+    expect(request).toMatchObject({ state: "committed", resultDecisionId: finalized!.decisionId, leaseOwner: null, leaseUntil: null });
     expect(outbox!.dispatchedAt).not.toBeNull();
+    expect(await processNativeFinalizationRequest(db, "worker-3", new Date(Date.now() + 1200), 60_000)).toBeNull();
   }, 30_000);
 
   it("rejects a service-required decision without an authorized request", async () => {
