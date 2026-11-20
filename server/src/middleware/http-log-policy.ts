@@ -40,6 +40,7 @@ function normalizePath(url: string): string {
 const ALL_METHOD_SECRET_SENSITIVE_PATHS = [
   // myrmidon(OPE-11891): invite routes carrying tokens in path (/api/invites/:token, /invites/:token, etc.)
   /^\/(?:api\/)?invites?(?:\/|$)/,
+  /^\/api\/companies\/[^/]+\/preflight\/(?:secrets\/[^/]+|agents\/[^/]+\/memory)\/probe(?:\/|$)/,
 ];
 
 const SECRET_SENSITIVE_HTTP_PATHS = [
