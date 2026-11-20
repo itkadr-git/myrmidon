@@ -12,6 +12,11 @@ const issueSchema = z.object({
   expiresAt: z.string().datetime({ offset: true }),
 }).strict();
 
+const grantSchema = z.object({
+  issueId: z.string().uuid(), runId: z.string().uuid(), principalId: z.string().uuid(),
+  credentialId: z.string().uuid(), notAfter: z.string().datetime({ offset: true }),
+}).strict();
+
 export function acceptanceServiceCredentialRoutes(db: Db) {
   const router = Router();
   router.post("/companies/:companyId/acceptance-service-credentials", async (req, res) => {
@@ -85,6 +90,26 @@ export function acceptanceServiceCredentialRoutes(db: Db) {
     });
     publications.forEach(publishActivity);
     res.status(204).end();
+  });
+  router.post("/companies/:companyId/native-finalization-grants", async (req, res) => {
+    assertAuthenticated(req);
+    assertBoard(req);
+    const companyId = String(req.params.companyId);
+    assertCompanyAccess(req, companyId);
+    const parsed = grantSchema.safeParse(req.body);
+    if (!parsed.success) throw badRequest("Invalid finalization grant");
+    const actor = getActorInfo(req);
+    const publications: ActivityPublication[] = [];
+    const grant = await db.transaction(async (tx) => {
+      const transactionDb = tx as unknown as Db;
+      const result = await acceptanceServiceCredentialsService(transactionDb).grantFinalization({
+        ...parsed.data, companyId, notAfter: new Date(parsed.data.notAfter), createdByOperatorId: actor.actorId,
+      });
+      await logActivity(transactionDb, { companyId, actorType: actor.actorType, actorId: actor.actorId, action: "native_finalization_grant.issued", entityType: "native_finalization_grant", entityId: result.id }, publications);
+      return result;
+    });
+    publications.forEach(publishActivity);
+    res.set("Cache-Control", "no-store").status(201).json(grant);
   });
   return router;
 }

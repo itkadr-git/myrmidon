@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, eq, gt, isNull } from "drizzle-orm";
-import { acceptanceServiceCredentials, type Db } from "@myrmidon/db";
+import { acceptanceServiceCredentials, nativeFinalizationGrants, nativeRunFinalizations, type Db } from "@myrmidon/db";
 
 export const ACCEPTANCE_SERVICE_AUDIENCE = "acceptance-scenarios";
 export const NATIVE_FINALIZATION_AUDIENCE = "native-finalization-submit";
@@ -43,7 +43,31 @@ export function acceptanceServiceCredentialsService(db: Db) {
     return credential ?? null;
   }
 
+  async function grantFinalization(input: { companyId: string; issueId: string; runId: string; principalId: string; credentialId: string; notAfter: Date; createdByOperatorId: string }) {
+    return db.transaction(async (tx) => {
+      const [coordinator] = await tx.select().from(nativeRunFinalizations).where(and(
+        eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.issueId), eq(nativeRunFinalizations.runId, input.runId),
+      )).for("update");
+      if (!coordinator || coordinator.authorizationMode !== "internal" || coordinator.decisionId || coordinator.phase === "committed" ||
+          (coordinator.leaseOwner && coordinator.leaseExpiresAt && coordinator.leaseExpiresAt > new Date())) {
+        throw new Error("native_finalization_grant_not_available");
+      }
+      const [credential] = await tx.select().from(acceptanceServiceCredentials).where(and(
+        eq(acceptanceServiceCredentials.id, input.credentialId), eq(acceptanceServiceCredentials.companyId, input.companyId),
+        eq(acceptanceServiceCredentials.audience, NATIVE_FINALIZATION_AUDIENCE), isNull(acceptanceServiceCredentials.revokedAt),
+        gt(acceptanceServiceCredentials.expiresAt, new Date()),
+      )).for("update");
+      if (!credential || !Number.isFinite(input.notAfter.getTime()) || input.notAfter <= new Date() || input.notAfter > credential.expiresAt) {
+        throw new Error("native_finalization_grant_invalid_credential");
+      }
+      const [grant] = await tx.insert(nativeFinalizationGrants).values({ ...input, certificateSha256: credential.certificateSha256 }).returning();
+      await tx.update(nativeRunFinalizations).set({ authorizationMode: "service_required", updatedAt: new Date() }).where(eq(nativeRunFinalizations.runId, input.runId));
+      return grant;
+    });
+  }
+
   return {
+    grantFinalization,
     issue: (companyId: string, fingerprint: string, expiresAt: Date) => issue(companyId, fingerprint, expiresAt, ACCEPTANCE_SERVICE_AUDIENCE),
     revoke: (companyId: string, id: string) => revoke(companyId, id, ACCEPTANCE_SERVICE_AUDIENCE),
     async authenticate(token: string, fingerprint: string) {
