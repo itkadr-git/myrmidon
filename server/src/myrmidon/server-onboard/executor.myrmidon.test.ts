@@ -1309,6 +1309,25 @@ exit 97
     expect(result.status).toBe("succeeded");
   });
 
+  it("arms a timer with a real firewall restore rather than a no-op", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
+    ssh.mockResponse(/check-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-real-firewall-timer", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    await executor.execute(claim, createMockReporter().reporter);
+    const launch = ssh.executedCommands.find(({ command }) => command.includes("start-myrmidon-firewall-timer"))?.command;
+    expect(launch).toBeDefined();
+    expect(launch).not.toMatch(/systemd-run[^\n]*\/bin\/true/);
+  });
+
   it("succeeds without rewriting an already-deny incoming policy", async () => {
     const ssh = new MockSshExecutor();
     const fresh = new MockSshExecutor();
