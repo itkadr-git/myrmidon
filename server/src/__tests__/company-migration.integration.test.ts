@@ -1188,7 +1188,7 @@ describe("company migration dry run", () => {
   });
 
   it("requires confirmation for rollback and removes only the migrated company", async () => {
-    const [source] = await db.insert(companies).values({ name: "Rollback fixture", issuePrefix: "MRF" }).returning();
+    const [source] = await db.insert(companies).values({ name: "Rollback fixture", issuePrefix: "RBF" }).returning();
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -1224,7 +1224,7 @@ describe("company migration dry run", () => {
   });
 
   it("refuses rollback when destination company settings changed after migration", async () => {
-    const [source] = await db.insert(companies).values({ name: "Rollback company change source", issuePrefix: "MCS" }).returning();
+    const [source] = await db.insert(companies).values({ name: "Rollback company change source", issuePrefix: "RCC" }).returning();
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -1284,7 +1284,7 @@ describe("company migration dry run", () => {
   });
 
   it("refuses rollback when an independent membership and grant were added to the destination", async () => {
-    const [source] = await db.insert(companies).values({ name: "Rollback ACL ownership source", issuePrefix: "MAC" }).returning();
+    const [source] = await db.insert(companies).values({ name: "Rollback ACL ownership source", issuePrefix: "RAO" }).returning();
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -1525,7 +1525,7 @@ describe("company migration dry run", () => {
   });
 
   it("rejects rollback of a migration through a different source company", async () => {
-    const [source] = await db.insert(companies).values({ name: "Rollback source", issuePrefix: "MRS" }).returning();
+    const [source] = await db.insert(companies).values({ name: "Rollback source", issuePrefix: "RBS" }).returning();
     const [other] = await db.insert(companies).values({ name: "Other source", issuePrefix: "MRO" }).returning();
     const app = express();
     app.use(express.json());
@@ -1572,8 +1572,8 @@ describe("company migration dry run", () => {
   });
 
   it("returns migration status only through its source company", async () => {
-    const [source] = await db.insert(companies).values({ name: "Status source", issuePrefix: "MST" }).returning();
-    const [other] = await db.insert(companies).values({ name: "Status other", issuePrefix: "MSO" }).returning();
+    const [source] = await db.insert(companies).values({ name: "Status source", issuePrefix: "RSE" }).returning();
+    const [other] = await db.insert(companies).values({ name: "Status other", issuePrefix: "RSO" }).returning();
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
