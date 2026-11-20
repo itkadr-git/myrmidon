@@ -112,5 +112,5 @@ HTTP 422 Unprocessable Entity: Cannot mark release task done without a verify ex
 ## Связанные разделы
 
 - [Руководство по Execution Policy](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/../guides/execution-policy.ru.md)
-- [Задачи и доска](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/wiki/Tasks-and-the-board.ru.md)
+- [Задачи и доска](Tasks-and-the-board.ru)
 - [Синхронизация задач и PR](Task-pr-sync.ru)
