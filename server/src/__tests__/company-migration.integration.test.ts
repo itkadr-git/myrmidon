@@ -827,6 +827,19 @@ describe("company migration dry run", () => {
     expect(await companyTransferRunService.claimMigrationRollback(db, run.id, "rollback-error-source")).toBe(true);
   });
 
+  it("does not settle rollback while its destination still exists and is active", async () => {
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "live-rollback-source", "live-rollback-key");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Live rollback destination" }, { transferRunId: run.id });
+    await companyTransferRunService.releaseApplyClaim(db, run.id, "interrupted");
+    expect(await companyTransferRunService.claimMigrationRollback(db, run.id, "live-rollback-source")).toBe(true);
+
+    expect(await companyTransferRunService.finishMigrationRollback(db, run.id)).toBe(false);
+    const saved = await companyTransferRunService.getRun(db, run.id);
+    expect(saved?.status).toBe("rolling_back");
+    expect(saved?.companyId).toBe(destination.id);
+  });
+
   it("settles rollback once and retains the migration identity after cleanup", async () => {
     const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "rollback-complete-source", "rollback-complete-key");
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
