@@ -1281,6 +1281,8 @@ exit 97
     } });
     primary.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
     primary.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
+    primary.mockResponse(/check-myrmidon-firewall-prerequisites/, { exitCode: 0, stdout: "" });
+    primary.mockResponse(/prepare-myrmidon-firewall-restore/, { exitCode: 0, stdout: "" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => {
       if (!allowApplied) return primary;
       return new MockSshExecutor({ onCommand: (command) => {
@@ -1316,6 +1318,8 @@ exit 97
     } });
     primary.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
     primary.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
+    primary.mockResponse(/check-myrmidon-firewall-prerequisites/, { exitCode: 0, stdout: "" });
+    primary.mockResponse(/prepare-myrmidon-firewall-restore/, { exitCode: 0, stdout: "" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => {
       if (!primary.isConnected()) return primary;
       return new MockSshExecutor({ onCommand: (command) => {
