@@ -400,6 +400,25 @@ export const companyTransferRunService = {
     if (updated.length !== 1) throw new Error("Migration object reservation rejected");
   },
 
+  // Call only after the storage provider confirms deletion; a crash before this
+  // acknowledgement leaves the reservation available for an idempotent retry.
+  async acknowledgeMigrationObjectDeletion(db: Db, runId: string, companyId: string, objectKey: string): Promise<boolean> {
+    const updated = await db.update(companyTransferRuns).set({
+      completedParts: sql`${companyTransferRuns.completedParts} - ${objectKey}`,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(companyTransferRuns.id, runId),
+      eq(companyTransferRuns.direction, "import"),
+      eq(companyTransferRuns.status, "rolling_back"),
+      sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
+      sql`${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true'`,
+      sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' = ${companyId}`,
+      sql`(${companyTransferRuns.companyId} is null or ${companyTransferRuns.companyId}::text = ${companyId})`,
+      sql`${companyTransferRuns.completedParts} @> ${JSON.stringify([objectKey])}::jsonb`,
+    )).returning({ id: companyTransferRuns.id });
+    return updated.length === 1;
+  },
+
   /** Container part names the run still has to process, in manifest order. */
   remainingParts(run: CompanyTransferRunRow, manifest: CompanyTransferPartsIndex): string[] {
     const completed = new Set(run.completedParts);

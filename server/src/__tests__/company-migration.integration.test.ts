@@ -862,6 +862,31 @@ describe("company migration dry run", () => {
     expect(await companyTransferRunService.claimMigrationRollback(db, run.id, "rollback-complete-source")).toBe(false);
   });
 
+  it("acknowledges only reserved objects during the owning rollback", async () => {
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "cleanup-source", "cleanup-key");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Cleanup destination" }, { transferRunId: run.id });
+    const storage = createStorageService(createLocalDiskStorageProvider(root));
+    let key = "";
+    await storage.putFile({
+      companyId: destination.id, namespace: "assets/general", originalFilename: "fixture.png",
+      contentType: "image/png", body: Buffer.from("fixture"),
+      beforeWrite: async (objectKey) => {
+        key = objectKey;
+        await companyTransferRunService.reserveMigrationObject(db, run.id, destination.id, objectKey);
+      },
+    });
+    expect(await companyTransferRunService.acknowledgeMigrationObjectDeletion(db, run.id, destination.id, key)).toBe(false);
+    await companyTransferRunService.releaseApplyClaim(db, run.id, "interrupted");
+    expect(await companyTransferRunService.claimMigrationRollback(db, run.id, "cleanup-source")).toBe(true);
+    expect(await companyTransferRunService.acknowledgeMigrationObjectDeletion(db, run.id, "other-company", key)).toBe(false);
+    expect(await companyTransferRunService.acknowledgeMigrationObjectDeletion(db, run.id, destination.id, "unknown")).toBe(false);
+    await storage.deleteObject(destination.id, key);
+    expect(await companyTransferRunService.acknowledgeMigrationObjectDeletion(db, run.id, destination.id, key)).toBe(true);
+    expect(await companyTransferRunService.acknowledgeMigrationObjectDeletion(db, run.id, destination.id, key)).toBe(false);
+    expect((await companyTransferRunService.getRun(db, run.id))?.completedParts).toEqual([]);
+  });
+
   it("preserves destination and storage provenance when startup recovers an interrupted apply", async () => {
     const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "crash-source", "crash-reservation");
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
