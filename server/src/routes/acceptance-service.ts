@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { TLSSocket } from "node:tls";
 import { Router } from "express";
 import { and, eq, gt, isNull } from "drizzle-orm";
-import { nativeFinalizationGrants, nativeRunFinalizations, type Db } from "@myrmidon/db";
+import { acceptanceServiceCredentials, nativeFinalizationGrants, nativeFinalizationOutbox, nativeFinalizationRequests, nativeRunFinalizations, type Db } from "@myrmidon/db";
 import { isUuidLike } from "@myrmidon/shared";
 import { acceptanceServiceCredentialsService } from "../services/acceptance-service-credentials.js";
 import { issueAcceptanceSnapshotService } from "../services/issue-acceptance-snapshot.js";
@@ -51,20 +51,55 @@ export function acceptanceServiceRoutes(db: Db) {
       res.status(404).json({ error: "Run not found" });
       return;
     }
-    const [grant] = await db.select({ id: nativeFinalizationGrants.id }).from(nativeFinalizationGrants).where(and(
-      eq(nativeFinalizationGrants.companyId, credential.companyId),
-      eq(nativeFinalizationGrants.runId, runId),
-      eq(nativeFinalizationGrants.credentialId, credential.credentialId),
-      eq(nativeFinalizationGrants.certificateSha256, fingerprint),
-      isNull(nativeFinalizationGrants.revokedAt),
-      gt(nativeFinalizationGrants.notAfter, new Date()),
-    )).limit(1);
-    if (!grant) {
-      res.status(403).json({ error: "Forbidden" });
+    const body = req.body;
+    const key = req.headers["idempotency-key"];
+    if (!body || typeof body !== "object" || typeof body.documentId !== "string" || !isUuidLike(body.documentId) ||
+        typeof body.expectedRevisionId !== "string" || !isUuidLike(body.expectedRevisionId) || typeof body.expectedIssueEpoch !== "string" ||
+        !/^(0|[1-9][0-9]*)$/.test(body.expectedIssueEpoch) || typeof key !== "string" ||
+        !/^[\x21-\x7e]{1,128}$/.test(key)) {
+      res.status(400).json({ error: "Invalid finalization request" });
       return;
     }
-    // Fail closed until admission and its durable worker are implemented.
-    res.status(503).json({ error: "Finalization admission unavailable" });
+    const payloadHash = createHash("sha256").update(JSON.stringify([match, body.documentId, body.expectedRevisionId, body.expectedIssueEpoch])).digest("hex");
+    const outcome = await db.transaction(async (tx) => {
+      // Serialize admissions and grant revocation on the grant row.
+      const [grant] = await tx.select().from(nativeFinalizationGrants).where(and(
+        eq(nativeFinalizationGrants.companyId, credential.companyId), eq(nativeFinalizationGrants.runId, runId),
+        eq(nativeFinalizationGrants.credentialId, credential.credentialId), eq(nativeFinalizationGrants.certificateSha256, fingerprint),
+        isNull(nativeFinalizationGrants.revokedAt), gt(nativeFinalizationGrants.notAfter, new Date()),
+      )).for("update");
+      if (!grant) return { status: 403, error: "Forbidden" };
+      const [validCredential] = await tx.select({ id: acceptanceServiceCredentials.id }).from(acceptanceServiceCredentials).where(and(
+        eq(acceptanceServiceCredentials.id, credential.credentialId), eq(acceptanceServiceCredentials.companyId, credential.companyId),
+        isNull(acceptanceServiceCredentials.revokedAt), gt(acceptanceServiceCredentials.expiresAt, new Date()),
+      )).for("update");
+      if (!validCredential) return { status: 401, error: "Unauthorized" };
+      const [existing] = await tx.select().from(nativeFinalizationRequests).where(and(
+        eq(nativeFinalizationRequests.credentialId, credential.credentialId), eq(nativeFinalizationRequests.runId, runId),
+        eq(nativeFinalizationRequests.idempotencyKey, key),
+      ));
+      if (existing) return existing.canonicalPayloadHash === payloadHash
+        ? { status: 202, id: existing.id } : { status: 409, error: "Idempotency key conflict" };
+      const [active] = await tx.select({ id: nativeFinalizationRequests.id }).from(nativeFinalizationRequests).where(and(
+        eq(nativeFinalizationRequests.runId, runId),
+      ));
+      if (active) return { status: 409, error: "Finalization request already exists" };
+      const snapshot = await issueAcceptanceSnapshotService(tx as unknown as Db).read(grant.issueId, credential.companyId);
+      const etag = snapshot && `"${createHash("sha256").update(JSON.stringify([snapshot.issue.id, snapshot.issue.version, snapshot.document?.latestRevisionId ?? null])).digest("hex")}"`;
+      if (!snapshot?.document || match !== etag || snapshot.document.id !== body.documentId ||
+          snapshot.document.latestRevisionId !== body.expectedRevisionId || snapshot.issue.version !== body.expectedIssueEpoch) {
+        return { status: 412, error: "Snapshot changed" };
+      }
+      const [request] = await tx.insert(nativeFinalizationRequests).values({
+        companyId: credential.companyId, issueId: grant.issueId, runId, grantId: grant.id, grantGeneration: grant.generation,
+        principalId: grant.principalId, credentialId: credential.credentialId, verifiedPeerSha256: fingerprint,
+        authenticatedAt: new Date(), documentId: body.documentId, expectedRevisionId: body.expectedRevisionId,
+        expectedIssueEpoch: body.expectedIssueEpoch, strongEtag: match, canonicalPayloadHash: payloadHash, idempotencyKey: key,
+      }).returning({ id: nativeFinalizationRequests.id });
+      await tx.insert(nativeFinalizationOutbox).values({ requestId: request.id });
+      return { status: 202, id: request.id };
+    });
+    res.status(outcome.status).json(outcome.id ? { id: outcome.id } : { error: outcome.error });
   });
   router.get("/service/issues/:id/acceptance-scenarios", async (req, res) => {
     if (req.method !== "GET") {

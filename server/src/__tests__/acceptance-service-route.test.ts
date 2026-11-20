@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import express from "express";
 import { describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issues, nativeRunFinalizations } from "@myrmidon/db";
+import { agents, companies, createDb, documentRevisions, documents, heartbeatRuns, issueDocuments, issues, nativeFinalizationGrants, nativeFinalizationOutbox, nativeFinalizationRequests, nativeRunFinalizations } from "@myrmidon/db";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "@myrmidon/db/test-embedded-postgres";
 import { acceptanceServiceCredentialsService } from "../services/acceptance-service-credentials.js";
 import { acceptanceServiceRoutes } from "../routes/acceptance-service.js";
@@ -78,11 +78,35 @@ const support = await getEmbeddedPostgresTestSupport();
         const req = httpsRequest({ host: "127.0.0.1", port: address.port,
           path: `/api/service/native-runs/${runId}/finalization-requests`, method: "POST",
           ...client, rejectUnauthorized: false,
-          headers: { authorization: `Bearer ${submit.token}`, "if-match": `"${"a".repeat(64)}"`, "idempotency-key": "request-1" },
+          headers: { authorization: `Bearer ${submit.token}`, "content-type": "application/json", "if-match": `"${"a".repeat(64)}"`, "idempotency-key": "request-1" },
         }, (res) => { res.resume(); res.on("end", () => resolve(res.statusCode ?? 0)); });
-        req.on("error", reject); req.end();
+        req.on("error", reject); req.end(JSON.stringify({ documentId: randomUUID(), expectedRevisionId: randomUUID(), expectedIssueEpoch: "1" }));
       });
       expect(ungranted).toBe(403);
+      const documentId = randomUUID(), revisionId = randomUUID(), principalId = randomUUID();
+      await db.insert(documents).values({ id: documentId, companyId, latestBody: "criteria", latestRevisionId: revisionId, latestRevisionNumber: 1 });
+      await db.insert(documentRevisions).values({ id: revisionId, documentId, companyId, revisionNumber: 1, body: "criteria" });
+      await db.insert(issueDocuments).values({ companyId, issueId, documentId, key: "acceptance-scenarios" });
+      await db.insert(nativeFinalizationGrants).values({ companyId, issueId, runId, principalId, credentialId: submit.id, certificateSha256: fingerprint, notAfter: new Date(Date.now() + 60_000), createdByOperatorId: "test" });
+      const pinned = await call(issued.token);
+      const snapshot = JSON.parse(pinned.body);
+      const payload = { documentId, expectedRevisionId: revisionId, expectedIssueEpoch: snapshot.issue.version };
+      const admit = () => new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const req = httpsRequest({ host: "127.0.0.1", port: address.port, path: `/api/service/native-runs/${runId}/finalization-requests`, method: "POST", ...client, rejectUnauthorized: false,
+          headers: { authorization: `Bearer ${submit.token}`, "content-type": "application/json", "if-match": pinned.etag, "idempotency-key": "request-1" } }, (res) => {
+          let body = ""; res.setEncoding("utf8"); res.on("data", (chunk) => { body += chunk; }); res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+        });
+        req.on("error", reject); req.end(JSON.stringify(payload));
+      });
+      const admitted = await admit();
+      expect(admitted.status).toBe(202);
+      const replay = await admit();
+      expect(replay.status).toBe(202);
+      expect(JSON.parse(replay.body).id).toBe(JSON.parse(admitted.body).id);
+      const requests = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.runId, runId));
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({ companyId, runId, issueId, credentialId: submit.id, principalId, verifiedPeerSha256: fingerprint, documentId, expectedRevisionId: revisionId });
+      expect(await db.select().from(nativeFinalizationOutbox).where(eq(nativeFinalizationOutbox.requestId, requests[0].id))).toHaveLength(1);
       const first = await call(issued.token);
       expect(first.status).toBe(200);
       expect(first.etag).toMatch(/^"[a-f0-9]{64}"$/);
