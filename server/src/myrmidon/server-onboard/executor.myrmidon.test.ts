@@ -1087,7 +1087,7 @@ case "$1" in
   ufw)
     shift
     case "$1" in
-      status) printf 'Status: active\\n'; exit 0 ;;
+      status) printf 'Status: active\\n'; if [ "$2" = verbose ]; then printf 'Default: allow (incoming), allow (outgoing), disabled (routed)\\n'; fi; exit 0 ;;
       allow) printf 'onboarding-ssh\\noperator-concurrent\\n' >> "$RULES"; exit 1 ;;
       delete) python3 -c 'import os; p=os.environ["RULES"]; s=open(p).readlines(); open(p,"w").writelines(x for x in s if x != "onboarding-ssh\\n")'; exit 0 ;;
     esac ;;
@@ -1242,7 +1242,7 @@ case "$1" in
   ufw)
     shift
     case "$1" in
-      status) printf 'Status: active\\n'; exit 0 ;;
+      status) printf 'Status: active\\n'; if [ "$2" = verbose ]; then printf 'Default: %s (incoming), allow (outgoing), disabled (routed)\\n' "$(tr -d '\\n' < "$POLICY")"; fi; exit 0 ;;
       allow) printf 'reject\\n' > "$POLICY"; exit 0 ;;
       default) printf '%s\\n' "$2" > "$POLICY"; exit 0 ;;
     esac ;;
