@@ -21474,7 +21474,7 @@ export function heartbeatService(
         : "empty"
       : "unknown";
     const livenessState =
-      adapterOutcome === "empty" && classification.livenessState !== "plan_only"
+      run.invocationSource === "timer" && adapterOutcome === "empty" && classification.livenessState === "needs_followup"
         ? "empty_response"
         : classification.livenessState;
     const livenessReason =
