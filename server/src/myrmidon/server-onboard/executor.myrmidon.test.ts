@@ -1309,6 +1309,34 @@ exit 97
     expect(initial.hasExecuted(/ufw disable/)).toBe(false);
   });
 
+  it("verifies a fresh SSH connection after a failed deny policy is restored", async () => {
+    const primary = new MockSshExecutor();
+    const restored = new MockSshExecutor();
+    primary.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    primary.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    primary.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    primary.mockResponse(/sudo ufw allow/, { exitCode: 0 });
+    primary.mockResponse(/sudo ufw default deny incoming/, { exitCode: 1, stderr: "policy failed" });
+    restored.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
+    const connections = [primary, restored];
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => {
+      const connection = connections.shift();
+      if (!connection) throw new Error("Unexpected SSH connection");
+      return connection;
+    } });
+    const claim: any = {
+      job: { id: "job-deny-restore-ssh", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(primary.hasExecuted(/sudo ufw default deny incoming/)).toBe(true);
+    expect(primary.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
+    expect(restored.hasExecuted('echo "ufw-connectivity-ok"')).toBe(true);
+    expect(restored.isConnected()).toBe(false);
+  });
+
   it("does not disable an existing firewall when applying the deny policy fails", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse(/ufw status/, { stdout: "Status: active\n", exitCode: 0 });
