@@ -679,6 +679,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(result.status).toBe("failed");
     expect(timerConfirmed).toBe(true);
     expect(allowAttempted).toBe(true);
+    expect(result.error).toMatch(/allow failed/i);
   });
 
   it("fails closed without mutating UFW when rollback timer startup fails", async () => {
