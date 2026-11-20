@@ -11,6 +11,20 @@ import { heartbeatService } from "../services/heartbeat.js";
 import { findRunScopedGatewayKeyRef, removeRunScopedGatewayKeyRef } from "../myrmidon/litellm-costs/bot-keys.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
+const lookupFault = vi.hoisted(() => ({ mode: "none" as "none" | "error" | "missing", calls: 0 }));
+vi.mock("../myrmidon/litellm-costs/bot-keys.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../myrmidon/litellm-costs/bot-keys.js")>();
+  return {
+    ...actual,
+    findRunScopedGatewayKeyRef: async (...args: Parameters<typeof actual.findRunScopedGatewayKeyRef>) => {
+      lookupFault.calls++;
+      if (lookupFault.mode === "error") throw new Error("test lookup failure");
+      if (lookupFault.mode === "missing") return null;
+      return actual.findRunScopedGatewayKeyRef(...args);
+    },
+  };
+});
+
 const support = await getEmbeddedPostgresTestSupport();
 const describeDb = support.supported ? describe : describe.skip;
 
@@ -123,6 +137,48 @@ describeDb("run key with the real secret service", () => {
       vi.unstubAllGlobals();
       if (oldBase === undefined) delete process.env.MYRMIDON_LITELLM_BASE_URL; else process.env.MYRMIDON_LITELLM_BASE_URL = oldBase;
       if (oldAdmin === undefined) delete process.env.MYRMIDON_LITELLM_ADMIN_KEY_SECRET; else process.env.MYRMIDON_LITELLM_ADMIN_KEY_SECRET = oldAdmin;
+    }
+  }, 90_000);
+
+  it.each([
+    { scenario: "lookup throws", mode: "error" as const, mismatchedBinding: false },
+    { scenario: "binding is missing", mode: "missing" as const, mismatchedBinding: false },
+    { scenario: "binding resolves to a different credential", mode: "none" as const, mismatchedBinding: true },
+  ])("does not dispatch when $scenario", async ({ mode, mismatchedBinding }) => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Hermes failure", issuePrefix: `F${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`, requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "test" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Hermes", role: "engineer", status: "idle", adapterType: "hermes_gateway", adapterConfig: { apiBaseUrl: "http://127.0.0.1:8642", apiKey: "test-auth", timeoutSec: 5, ...(mismatchedBinding ? { env: { MYRMIDON_LLM_API_KEY: "different-credential" } } : {}) }, runtimeConfig: {}, permissions: {} });
+    await secretService(db).create(companyId, { name: "gateway-admin", provider: "local_encrypted", value: "test-admin" });
+    const oldBase = process.env.MYRMIDON_LITELLM_BASE_URL;
+    const oldAdmin = process.env.MYRMIDON_LITELLM_ADMIN_KEY_SECRET;
+    const oldKeyEnv = process.env.MYRMIDON_BOT_LLM_API_KEY_ENV;
+    process.env.MYRMIDON_LITELLM_BASE_URL = "http://gateway.test";
+    process.env.MYRMIDON_LITELLM_ADMIN_KEY_SECRET = "gateway-admin";
+    delete process.env.MYRMIDON_BOT_LLM_API_KEY_ENV;
+    lookupFault.mode = mode;
+    lookupFault.calls = 0;
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request) => {
+      requests.push(String(url));
+      return new Response(JSON.stringify({}), { status: 200 });
+    }));
+    const heartbeat = heartbeatService(db);
+    try {
+      const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+      expect(run).not.toBeNull();
+      await heartbeat.drainActiveRunExecutions();
+      expect(requests.some((url) => url.endsWith("/key/generate"))).toBe(true);
+      expect(lookupFault.calls).toBeGreaterThan(0);
+      expect((await heartbeat.getRun(run!.id))?.status).toBe("failed");
+      expect(requests.some((url) => url.endsWith("/v1/runs"))).toBe(false);
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+      lookupFault.mode = "none";
+      vi.unstubAllGlobals();
+      if (oldBase === undefined) delete process.env.MYRMIDON_LITELLM_BASE_URL; else process.env.MYRMIDON_LITELLM_BASE_URL = oldBase;
+      if (oldAdmin === undefined) delete process.env.MYRMIDON_LITELLM_ADMIN_KEY_SECRET; else process.env.MYRMIDON_LITELLM_ADMIN_KEY_SECRET = oldAdmin;
+      if (oldKeyEnv === undefined) delete process.env.MYRMIDON_BOT_LLM_API_KEY_ENV; else process.env.MYRMIDON_BOT_LLM_API_KEY_ENV = oldKeyEnv;
     }
   }, 90_000);
 });
