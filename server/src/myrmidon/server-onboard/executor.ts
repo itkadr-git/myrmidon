@@ -377,8 +377,10 @@ export class FleetOnboardExecutor {
                 throw new Error("Firewall rollback timer liveness confirmation failed; refusing unsafe firewall changes");
               }
             } finally {
-              await activeSsh.execute(`: stop-myrmidon-firewall-timer; sudo systemctl stop ${timer}.timer`).catch(() => {});
-              await activeSsh.execute(`sudo rm -rf ${rollbackDir}`).catch(() => {});
+              const stopped = await activeSsh.execute(`: stop-myrmidon-firewall-timer; sudo systemctl stop ${timer}.timer`).catch(() => null);
+              if (stopped?.exitCode === 0) {
+                await activeSsh.execute(`sudo rm -rf ${rollbackDir}`).catch(() => {});
+              }
             }
             throw new Error("Scoped firewall rollback unavailable; refusing unsafe firewall changes");
           }
