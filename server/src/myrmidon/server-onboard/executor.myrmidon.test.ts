@@ -484,6 +484,34 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(afterRestore.isConnected()).toBe(false);
   });
 
+  it("confirms a fresh key login after restoring password configuration", async () => {
+    const initial = new MockSshExecutor();
+    const verified = new MockSshExecutor();
+    const restored = new MockSshExecutor();
+    verified.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
+    verified.mockResponse("sudo sshd -t", { exitCode: 1, stderr: "invalid configuration" });
+    restored.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
+    const connections = [initial, verified, restored];
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => {
+      const connection = connections.shift();
+      if (!connection) throw new Error("Unexpected SSH connection");
+      return connection;
+    } });
+    const claim: any = {
+      job: { id: "job-restore-ssh-success", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["access"], options: { keepPassword: false }, secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("sshd configuration test failed");
+    expect(result.error).not.toMatch(/restoration.*failed/i);
+    expect(verified.hasExecuted(/restore-myrmidon-password-config/)).toBe(true);
+    expect(restored.hasExecuted('echo "myrmidon-key-verify"')).toBe(true);
+    expect(restored.isConnected()).toBe(false);
+    expect(connections).toHaveLength(0);
+  });
+
   it("restores password configuration if subsequent firewall hardening fails", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
