@@ -146,6 +146,32 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockSsh.hasExecuted(/pkill/)).toBe(false);
   });
 
+  it("allows SSH before denying incoming traffic and verifies a fresh connection", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
+    ssh.mockResponse(/start-myrmidon-firewall-timer|check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    ssh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-firewall-success", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("succeeded");
+    const commands = ssh.executedCommands.map(({ command }) => command);
+    const timer = commands.findIndex((command) => command.includes("check-myrmidon-firewall-timer"));
+    const allow = commands.findIndex((command) => command.includes("sudo ufw allow"));
+    const deny = commands.findIndex((command) => command.includes("sudo ufw default deny incoming"));
+    const verify = commands.findIndex((command) => command.includes('echo "ufw-connectivity-ok"'));
+    expect(timer).toBeGreaterThanOrEqual(0);
+    expect(allow).toBeGreaterThan(timer);
+    expect(deny).toBeGreaterThan(allow);
+    expect(verify).toBeGreaterThan(deny);
+    expect(ssh.connectionHistory.length).toBeGreaterThanOrEqual(2);
+  });
+
   it("fails preflight when disk usage exceeds 90%", async () => {
     const mockSsh = new MockSshExecutor();
     mockSsh.mockResponse(/ssh-keygen -l/, {
