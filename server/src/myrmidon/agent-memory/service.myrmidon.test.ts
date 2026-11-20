@@ -245,6 +245,18 @@ describe("agentMemoryService", () => {
     expect(logActivity).not.toHaveBeenCalled();
   });
 
+  it("does not read settings or contact services for a foreign agent", async () => {
+    const { deps, logActivity } = makeDeps();
+    const readStoredSettings = vi.fn().mockResolvedValue({ apiUrl: API_URL });
+    const client = vi.fn(deps.client);
+    const result = await agentMemoryService({ ...deps, readStoredSettings, client }).probe(AGENT_OTHER_COMPANY, COMPANY);
+    expect(result).toMatchObject({ ready: false, checks: [{ status: "FAIL", reason: "target_unavailable" }] });
+    expect(readStoredSettings).not.toHaveBeenCalled();
+    expect(deps.readSecretValue).not.toHaveBeenCalled();
+    expect(client).not.toHaveBeenCalled();
+    expect(logActivity).not.toHaveBeenCalled();
+  });
+
   it("status reports the bank and enabled flag", async () => {
     const { deps } = makeDeps();
     const service = agentMemoryService(deps);

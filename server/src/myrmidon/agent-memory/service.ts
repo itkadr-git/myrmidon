@@ -157,8 +157,8 @@ export function agentMemoryService(deps: MemoryServiceDeps) {
 
   async function probe(agentId: string, companyId: string) {
     const bank = await resolveAgentMemoryBank(deps.db, { agentId, companyId });
-    const current = await settings();
-    const reason = !bank ? "target_unavailable" : !current.enabled ? "memory_not_enabled" :
+    const current = bank ? await settings() : null;
+    const reason = !bank ? "target_unavailable" : !current?.enabled ? "memory_not_enabled" :
       current.keySecret ? "credential_resolution_required" : "operation_unavailable";
     return {
       schemaVersion: 1,
@@ -168,7 +168,7 @@ export function agentMemoryService(deps: MemoryServiceDeps) {
       ready: false,
       checks: [{
         capability: "authenticatedBankAccess",
-        status: !bank || !current.enabled ? "FAIL" : "UNSUPPORTED",
+        status: !bank || !current?.enabled ? "FAIL" : "UNSUPPORTED",
         reason,
         evidenceOperation: null,
       }],
