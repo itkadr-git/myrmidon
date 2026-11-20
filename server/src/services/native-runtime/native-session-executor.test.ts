@@ -1300,7 +1300,7 @@ describe("split durable provider checkpoint identity", () => {
       requestedModel: "claude-sonnet-5",
       effectiveModel: "claude-sonnet-5",
       permissionMode: "approve-all",
-      providerLifetimeFenceCandidates: [53001, 53002, 53003],
+      providerLifetimeFenceCandidates: [61001, 61002, 61003],
     };
     expect(
       providerSessionIdentityFromDurableProviderState({
@@ -1401,7 +1401,7 @@ describe("split durable provider checkpoint identity", () => {
           requestedModel: "claude-sonnet-5",
           effectiveModel: "claude-sonnet-5",
           permissionMode: "approve-all",
-          providerLifetimeFenceCandidates: [53001, 53002, 53003],
+          providerLifetimeFenceCandidates: [61001, 61002, 61003],
         },
       },
       {
@@ -1429,7 +1429,7 @@ describe("split durable provider checkpoint identity", () => {
           requestedModel: "claude-sonnet-5",
           effectiveModel: "claude-sonnet-5",
           permissionMode: "approve-all",
-          providerLifetimeFenceCandidates: [53001, 53002, 53003],
+          providerLifetimeFenceCandidates: [61001, 61002, 61003],
         },
       },
     ]) {

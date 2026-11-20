@@ -554,7 +554,7 @@ describe("ACPX runtime host", () => {
     expect(lifetimeFenceCandidates).toHaveLength(3);
     expect(new Set(lifetimeFenceCandidates).size).toBe(3);
     expect(
-      lifetimeFenceCandidates.every((port) => port >= 49_152 && port <= 65_535),
+      lifetimeFenceCandidates.every((port) => port >= 61_000 && port <= 65_535),
     ).toBe(true);
     expect(capturedEnvironment.OPENAI_API_KEY).toBe("launch-secret");
     expect(host.persistedEnvironment().OPENAI_API_KEY).toBeUndefined();
@@ -752,7 +752,7 @@ describe("ACPX runtime host", () => {
             requestedModel: "claude-sonnet-5",
             effectiveModel: "claude-sonnet-5",
             permissionMode: "approve-reads",
-            providerLifetimeFenceCandidates: [60_001, 60_002, 60_003],
+            providerLifetimeFenceCandidates: [61_001, 61_002, 61_003],
           },
         },
         fixture.dependencies({ openRuntime }),
@@ -1427,7 +1427,7 @@ describe("ACPX runtime host", () => {
       path: lateCredentialPath,
       mode: "inline_json",
       lifetimeFenceFds: [42, 43],
-      lifetimeFenceCandidates: [60_001, 60_002, 60_003],
+      lifetimeFenceCandidates: [61_001, 61_002, 61_003],
       activateLifetimeOwner: async () => undefined,
       close: lateCredentialClose,
     });
@@ -1572,7 +1572,7 @@ describe("ACPX runtime host", () => {
             path: join(fixture.root, "auth.json"),
             mode: "inline_json",
             lifetimeFenceFds: [42, 43],
-            lifetimeFenceCandidates: [60_001, 60_002, 60_003],
+            lifetimeFenceCandidates: [61_001, 61_002, 61_003],
             activateLifetimeOwner: async () => undefined,
             close: credentialClose,
           }),

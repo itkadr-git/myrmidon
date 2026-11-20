@@ -1110,7 +1110,7 @@ function requiredFenceCandidates(
     !Array.isArray(value) ||
     value.length !== 3 ||
     value.some(
-      (port) => !Number.isSafeInteger(port) || port < 49_152 || port > 65_535,
+      (port) => !Number.isSafeInteger(port) || port < 61_000 || port > 65_535,
     ) ||
     new Set(value).size !== 3
   ) {

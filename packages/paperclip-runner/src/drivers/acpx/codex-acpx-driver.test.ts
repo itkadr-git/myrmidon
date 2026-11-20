@@ -2652,7 +2652,7 @@ function fakeHost(createTurn: () => AcpxRuntimeTurn, onClose: () => void) {
       requestedModel: "gpt-5.6-sol",
       effectiveModel: "gpt-5.6-sol",
       permissionMode: "approve-reads" as const,
-      providerLifetimeFenceCandidates: [60_001, 60_002, 60_003] as const,
+      providerLifetimeFenceCandidates: [61_001, 61_002, 61_003] as const,
     }),
     binding: () => ({
       normalizedSessionId: "session-1",
