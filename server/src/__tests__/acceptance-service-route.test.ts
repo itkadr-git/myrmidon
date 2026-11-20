@@ -25,6 +25,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const fixture = await startEmbeddedPostgresTestDatabase("acceptance-tls-route-");
     const db = createDb(fixture.connectionString);
     const app = express();
+    app.use(express.json());
     app.use("/api", acceptanceServiceRoutes(db));
     app.use(errorHandler);
     const server = createServer({ ...serverCert, ca: [client.cert, other.cert], requestCert: true, rejectUnauthorized: true }, app);
@@ -61,14 +62,14 @@ const support = await getEmbeddedPostgresTestSupport();
         const req = httpsRequest({ host: "127.0.0.1", port: address.port,
           path: `/api/service/native-runs/${randomUUID()}/finalization-requests`, method: "POST",
           ...cert, rejectUnauthorized: false,
-          headers: { authorization: `Bearer ${token}`, ...(match ? { "if-match": match } : {}) },
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "idempotency-key": "request-1", ...(match ? { "if-match": match } : {}) },
         }, (res) => { res.resume(); res.on("end", () => resolve(res.statusCode ?? 0)); });
-        req.on("error", reject); req.end();
+        req.on("error", reject); req.end(JSON.stringify({ documentId: randomUUID(), expectedRevisionId: randomUUID(), expectedIssueEpoch: "1" }));
       });
       expect(await post(issued.token)).toBe(401);
       expect(await post(submit.token, other)).toBe(401);
       expect(await post(submit.token, client, 'W/"weak"')).toBe(400);
-      expect(await post(submit.token, client, `"${"a".repeat(64)}"`)).toBe(503);
+      expect(await post(submit.token, client, `"${"a".repeat(64)}"`)).toBe(404);
       const first = await call(issued.token);
       expect(first.status).toBe(200);
       expect(first.etag).toMatch(/^"[a-f0-9]{64}"$/);

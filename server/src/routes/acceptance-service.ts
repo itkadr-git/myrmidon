@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { TLSSocket } from "node:tls";
 import { Router } from "express";
-import type { Db } from "@myrmidon/db";
+import { and, eq } from "drizzle-orm";
+import { nativeRunFinalizations, type Db } from "@myrmidon/db";
+import { isUuidLike } from "@myrmidon/shared";
 import { acceptanceServiceCredentialsService } from "../services/acceptance-service-credentials.js";
 import { issueAcceptanceSnapshotService } from "../services/issue-acceptance-snapshot.js";
 
@@ -37,7 +39,19 @@ export function acceptanceServiceRoutes(db: Db) {
       res.status(400).json({ error: "Invalid If-Match" });
       return;
     }
-    // No request is accepted until durable run grants and admission exist.
+    const runId = String(req.params.runId);
+    if (!isUuidLike(runId)) {
+      res.status(404).json({ error: "Run not found" });
+      return;
+    }
+    const [run] = await db.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(
+      eq(nativeRunFinalizations.runId, runId), eq(nativeRunFinalizations.companyId, credential.companyId),
+    )).limit(1);
+    if (!run) {
+      res.status(404).json({ error: "Run not found" });
+      return;
+    }
+    // Fail closed until admission and its durable worker are implemented.
     res.status(503).json({ error: "Finalization admission unavailable" });
   });
   router.get("/service/issues/:id/acceptance-scenarios", async (req, res) => {
