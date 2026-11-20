@@ -19,6 +19,46 @@ Myrmidon, построенный для проверки acceptance-сценар
 
 ## Что делает
 
+### Service actor доски (только чтение)
+
+Доска также предоставляет `GET /api/service/issues/{id}/acceptance-scenarios`
+на отдельном mTLS listener, не на обычном listener доски. `{id}` — identifier
+или UUID задачи. Ответ содержит привязанный к компании снимок, описанный ниже;
+при отсутствии acceptance-документа `document` равен `null`.
+
+Задайте `MYRMIDON_ACCEPTANCE_SERVICE_PORT`,
+`MYRMIDON_ACCEPTANCE_SERVICE_TLS_KEY_FILE`,
+`MYRMIDON_ACCEPTANCE_SERVICE_TLS_CERT_FILE` и
+`MYRMIDON_ACCEPTANCE_SERVICE_TLS_CA_FILE`. Необязательный
+`MYRMIDON_ACCEPTANCE_SERVICE_HOST` по умолчанию указывает на loopback. Клиент
+предъявляет проверенный CA сертификат и соответствующий service bearer; обычные
+ключи доски и агента не являются service credentials.
+
+Оператор доски компании выпускает credential через
+`POST /api/companies/{companyId}/acceptance-service-credentials` с JSON-полями
+`certificateSha256` (64 строчных hex-символа, SHA-256 DER-байтов клиентского
+сертификата) и `expiresAt` (будущее ISO-время с часовым поясом). Сервер
+фиксирует компанию и audience `acceptance-scenarios`, хранит хеш токена и
+возвращает bearer только один раз; храните его безопасно, не в логах,
+аргументах команд, репозитории или runner. Отзыв — через
+`DELETE /api/companies/{companyId}/acceptance-service-credentials/{id}`.
+Выпуск и отзыв аудируются. Просроченный, отозванный, с неверным audience или
+несовпадающим сертификатом credential не проходит аутентификацию.
+
+Ответ 200 содержит сильный `ETag` в кавычках, вычисленный из ID задачи, эпохи
+и идентичности revision. Сохраните точное значение и передайте его в `If-Match`
+при следующем чтении: совпадение должно быть точным; слабые теги, списки и
+`*` не считаются совпадением. Изменение снимка даёт 412, неоднозначность — 409,
+отсутствующая или чужая задача — 404. Ошибка service-аутентификации даёт 401;
+недоверенный сертификат может привести к ошибке TLS handshake.
+
+Этот сервис отличается от экспериментального шлюза и его старого upstream
+`/api/issues/{id}/acceptance-scenarios-snapshot`, описанных ниже. Это чтение
+на момент запроса, а не атомарная авторизация на внешней границе privileged use.
+Нельзя использовать его для включения privileged CI или privileged verdicts.
+
+### Существующий шлюз и upstream
+
 - Доска отдаёт один MVCC-снимок на запрос:
   `GET /api/issues/{id}/acceptance-scenarios-snapshot` возвращает минимальную
   идентичность issue (`id`, `identifier`, `companyId`, `version`) и документ

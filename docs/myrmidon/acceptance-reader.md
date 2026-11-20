@@ -19,6 +19,46 @@ threat model and fixture verification live in the experimental
 
 ## What it does
 
+### Board service actor (read-only)
+
+The board also exposes `GET /api/service/issues/{id}/acceptance-scenarios`
+on a separate mTLS listener, not on the ordinary board listener. `{id}` is an
+issue identifier or UUID. The response is the company-bound snapshot described
+below, with a `null` document when no acceptance document is linked.
+
+Configure `MYRMIDON_ACCEPTANCE_SERVICE_PORT`,
+`MYRMIDON_ACCEPTANCE_SERVICE_TLS_KEY_FILE`,
+`MYRMIDON_ACCEPTANCE_SERVICE_TLS_CERT_FILE`, and
+`MYRMIDON_ACCEPTANCE_SERVICE_TLS_CA_FILE`. Optional
+`MYRMIDON_ACCEPTANCE_SERVICE_HOST` defaults to loopback. The client must present
+a CA-verified certificate and its matching service bearer; ordinary board and
+agent keys are not service credentials.
+
+A company board operator provisions a credential via
+`POST /api/companies/{companyId}/acceptance-service-credentials` with JSON
+fields `certificateSha256` (64 lowercase hexadecimal digits, SHA-256 of the
+client certificate's DER bytes) and `expiresAt` (future ISO timestamp with
+timezone). The server fixes the company and `acceptance-scenarios` audience,
+stores a token hash, and returns the bearer only once; store it securely, not in
+logs, command arguments, the repository, or the runner. Revoke via
+`DELETE /api/companies/{companyId}/acceptance-service-credentials/{id}`.
+Issuance and revocation are audited. Expired, revoked, wrong-audience, or
+certificate-mismatched credentials cannot authenticate.
+
+The 200 response carries a strong quoted `ETag` derived from the issue ID,
+epoch, and revision identity. Save the exact value and send it as `If-Match`
+on a later read: only an exact match succeeds; weak tags, lists and `*` are not
+accepted as matches. A changed snapshot returns 412, an ambiguous snapshot 409,
+and a missing or cross-company issue 404. Invalid service authentication returns
+401; an untrusted client certificate can instead fail the TLS handshake.
+
+This service is distinct from the experimental gateway and its older upstream
+`/api/issues/{id}/acceptance-scenarios-snapshot` below. It provides a
+point-in-time read, not atomic authorization at an external privileged use
+boundary. Do not use it to enable privileged CI or issue privileged verdicts.
+
+### Existing gateway and upstream
+
 - The board serves one MVCC snapshot per request:
   `GET /api/issues/{id}/acceptance-scenarios-snapshot` returns the minimal
   issue identity (`id`, `identifier`, `companyId`, `version`) and the
