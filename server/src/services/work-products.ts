@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
-import { heartbeatRunEvents, issueWorkProducts, workspaceRuntimeServices } from "@myrmidon/db";
+import { heartbeatRunEvents, issueWorkProducts, issues, workspaceRuntimeServices } from "@myrmidon/db";
 import type { IssueWorkProduct } from "@myrmidon/shared";
 import { HttpError } from "../errors.js";
 import { insertRowsInChunks } from "./batch-insert.js";
@@ -345,6 +345,9 @@ export function workProductService(
         data = normalizeGithubPullRequestWorkProduct(data);
       }
       const row = await db.transaction(async (tx) => {
+        // Serialize deduplication and primary replacement with issue transitions.
+        await tx.select({ id: issues.id }).from(issues)
+          .where(eq(issues.id, issueId)).for("update");
         // myrmidon(AGENT-PR-WP-NORMALIZE): one record per PR and task. A repeated
         // registration (same external id or url) updates the existing record.
         const duplicate = data.type === "pull_request" && data.provider.toLowerCase() === "github" && (data.externalId || data.url)
@@ -415,6 +418,10 @@ export function workProductService(
           .where(eq(issueWorkProducts.id, id))
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
+
+        // Serialize updates with transitions holding the owning issue row.
+        await tx.select({ id: issues.id }).from(issues)
+          .where(eq(issues.id, existing.issueId)).for("update");
 
         if (patch.isPrimary === true) {
           await tx
@@ -502,11 +509,17 @@ export function workProductService(
     },
 
     remove: async (id: string) => {
-      const row = await db
-        .delete(issueWorkProducts)
-        .where(eq(issueWorkProducts.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const row = await db.transaction(async (tx) => {
+        const existing = await tx.select({ issueId: issueWorkProducts.issueId })
+          .from(issueWorkProducts).where(eq(issueWorkProducts.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!existing) return null;
+        await tx.select({ id: issues.id }).from(issues)
+          .where(eq(issues.id, existing.issueId)).for("update");
+        return await tx.delete(issueWorkProducts)
+          .where(eq(issueWorkProducts.id, id)).returning()
+          .then((rows) => rows[0] ?? null);
+      });
       return row ? toIssueWorkProduct(row) : null;
     },
   };

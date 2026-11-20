@@ -22,7 +22,7 @@ import {
   type ReleaseMembershipVerdict,
   type ReleaseRef,
 } from "./release-membership.js";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 export type ReleaseVerificationVerdict = "confirmed" | "failed";
 
@@ -470,6 +470,110 @@ export async function verifyReleaseComposition(
     allMembersPresent: verdict.verdict === "confirmed",
     checkedAt,
   };
+}
+
+type ReleaseEvidenceScope = {
+  companyId: string;
+  issueId: string;
+  releasePrefix: string;
+  deployedVersion: string | null;
+  members: readonly ReleaseCandidateMember[];
+};
+
+type ReleaseEvidencePayload = {
+  companyId: string;
+  issueId: string;
+  releasePrefix: string;
+  deployedVersion: string | null;
+  candidateDigest: string;
+  verdict: ReleaseVerificationVerdict;
+  checkedAt: string;
+};
+
+function candidateDigest(members: readonly ReleaseCandidateMember[]): string {
+  const canonical = members.map((member) => JSON.stringify([
+    member.id, member.repository, member.mergeCommitSha, member.merged,
+  ])).sort();
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
+function evidenceSignature(payload: ReleaseEvidencePayload, key: string): string {
+  return createHmac("sha256", key).update(JSON.stringify([
+    "release-evidence-v1", payload.companyId, payload.issueId, payload.releasePrefix,
+    payload.deployedVersion, payload.candidateDigest, payload.verdict, payload.checkedAt,
+  ])).digest("hex");
+}
+
+export function createReleaseVerificationEvidence(
+  input: ReleaseEvidenceScope & { verdict: ReleaseVerificationVerdict; checkedAt: string },
+  key: string,
+): ReleaseEvidencePayload & { signature: string } {
+  const payload: ReleaseEvidencePayload = {
+    companyId: input.companyId, issueId: input.issueId, releasePrefix: input.releasePrefix,
+    deployedVersion: input.deployedVersion, candidateDigest: candidateDigest(input.members),
+    verdict: input.verdict, checkedAt: input.checkedAt,
+  };
+  return { ...payload, signature: evidenceSignature(payload, key) };
+}
+
+export function validateReleaseVerificationEvidence(
+  value: unknown,
+  scope: ReleaseEvidenceScope,
+  key: string,
+  now: Date = new Date(),
+): boolean {
+  if (!value || typeof value !== "object" || !key || !scope.deployedVersion || !scope.members.length) return false;
+  const record = value as Record<string, unknown>;
+  if (record.companyId !== scope.companyId || record.issueId !== scope.issueId ||
+      record.releasePrefix !== scope.releasePrefix || record.deployedVersion !== scope.deployedVersion ||
+      record.candidateDigest !== candidateDigest(scope.members) || record.verdict !== "confirmed" ||
+      typeof record.checkedAt !== "string" || !Number.isFinite(Date.parse(record.checkedAt)) ||
+      typeof record.signature !== "string" || !/^[a-f0-9]{64}$/.test(record.signature)) return false;
+  const ageMs = now.getTime() - Date.parse(record.checkedAt);
+  if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > 24 * 60 * 60 * 1000) return false;
+  const payload: ReleaseEvidencePayload = {
+    companyId: scope.companyId, issueId: scope.issueId, releasePrefix: scope.releasePrefix,
+    deployedVersion: scope.deployedVersion, candidateDigest: candidateDigest(scope.members),
+    verdict: "confirmed", checkedAt: record.checkedAt,
+  };
+  return timingSafeEqual(Buffer.from(record.signature, "hex"), Buffer.from(evidenceSignature(payload, key), "hex"));
+}
+
+/** Read signed evidence only from system-authored comments for this issue. */
+export function hasCurrentReleaseVerificationEvidence(
+  comments: readonly { body: string; authorType: string | null }[],
+  scope: ReleaseEvidenceScope,
+  key: string,
+  now: Date = new Date(),
+): boolean {
+  let latestTime = -Infinity;
+  let latestValid = false;
+  for (const comment of comments) {
+    if (comment.authorType !== "system") continue;
+    const line = comment.body.split("\n").find((item) => item.startsWith("release-evidence-v1: "));
+    if (!line) continue;
+    try {
+      const record = JSON.parse(line.slice("release-evidence-v1: ".length)) as ReleaseEvidencePayload & { signature: string };
+      if (!key || record.companyId !== scope.companyId || record.issueId !== scope.issueId ||
+          record.releasePrefix !== scope.releasePrefix ||
+          typeof record.checkedAt !== "string" || typeof record.signature !== "string" ||
+          !/^[a-f0-9]{64}$/.test(record.signature)) continue;
+      const checkedAt = Date.parse(record.checkedAt);
+      if (!Number.isFinite(checkedAt) || !timingSafeEqual(
+        Buffer.from(record.signature, "hex"), Buffer.from(evidenceSignature(record, key), "hex"),
+      )) continue;
+      const valid = validateReleaseVerificationEvidence(record, scope, key, now);
+      if (checkedAt > latestTime) {
+        latestTime = checkedAt;
+        latestValid = valid;
+      } else if (checkedAt === latestTime) {
+        latestValid = latestValid && valid;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return latestValid;
 }
 
 /**

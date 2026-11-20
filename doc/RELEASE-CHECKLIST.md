@@ -120,6 +120,14 @@ query rewrites) — `docs/myrmidon/changes/db-audit-indexes.md`.
       (`scripts/myrmidon/release/verify-on-prod.mjs`) and is passing: the board
       runs exactly `X.Y.Z` and every task carrying the release label is
       `done` — a report with any task not verified refuses the promotion
+- [ ] for release-labelled tasks with merged code, run the existing
+      `POST /api/issues/<issue-id>/release-verify` on the deployed board before
+      completing verification. The persisted system evidence must be signed by
+      `MYRMIDON_RELEASE_VERIFICATION_KEY`, match the issue, release label,
+      deployed build commit and current release-wide candidate set, and be no
+      older than 24 hours. A newer failed check invalidates an earlier success;
+      rerun the check after a deploy or candidate change. A missing key does
+      not produce evidence accepted by the done gate.
 - [ ] `vYYYY.MDD.P` tag pushed; GitHub Release created; `:latest` and the
       versioned Docker tags built
 - [ ] `promote-latest.sh --verify-on-prod-report <report.json>` accepted the

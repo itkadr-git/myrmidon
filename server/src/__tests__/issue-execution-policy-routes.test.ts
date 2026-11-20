@@ -24,6 +24,8 @@ function withAgentDirectory<T>(rows: Array<Record<string, unknown>>, run: () => 
   });
 }
 
+const mockReleaseProducts = vi.hoisted(() => vi.fn(async (): Promise<Array<{ type: string; status: string }>> => []));
+
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getByIdForUpdate: vi.fn(),
@@ -231,7 +233,7 @@ function registerModuleMocks() {
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
-    workProductService: () => ({}),
+    workProductService: () => ({ listForIssue: mockReleaseProducts }),
   }));
 }
 
@@ -293,6 +295,7 @@ describe("issue execution policy routes", () => {
   beforeEach(async () => {
     clearReviewWakesQuotas(new Date());
     vi.clearAllMocks();
+    mockReleaseProducts.mockReset().mockResolvedValue([]);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
@@ -303,7 +306,7 @@ describe("issue execution policy routes", () => {
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
-    mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
+    mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere, innerJoin: () => ({ where: async () => [] }) }));
     mockDbSelectWhere.mockImplementation(() => ({
       for: () => ({
         then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
@@ -488,6 +491,130 @@ describe("issue execution policy routes", () => {
       status: "in_progress",
       assigneeAgentId: "new-executor",
     });
+  });
+
+  it("rejects completion if a merged PR appears before the issue update lock", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "1.7 Release",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getByIdForUpdate.mockImplementation(async () => {
+      mockReleaseProducts.mockResolvedValue([{ type: "pull_request", status: "merged" }]);
+      return issue;
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue, ...patch, updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects completion when the same update changes the title to a release", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "Ordinary task",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockReleaseProducts.mockResolvedValue([{ type: "pull_request", status: "merged" }]);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue, ...patch, updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "done", title: "1.7 Release" });
+
+    expect(res.status).toBe(422);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects completion when the same update adds a release label", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "Ordinary task",
+      executionPolicy: null,
+      executionState: null,
+    };
+    const releaseLabelId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockReleaseProducts.mockResolvedValue([{ type: "pull_request", status: "merged" }]);
+    mockDbSelect.mockImplementation((selection?: Record<string, unknown>) => ({
+      from: selection && Object.keys(selection).join(",") === "name"
+        ? () => ({
+            where: async () => [{ name: "1.7" }],
+            innerJoin: () => ({ where: async () => [] }),
+          })
+        : mockDbSelectFrom,
+    }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue, ...patch, updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "done", labelIds: [releaseLabelId] });
+
+    expect(res.status).toBe(422);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects completion when the same update removes the existing release label", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "Ordinary task",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockReleaseProducts.mockResolvedValue([{ type: "pull_request", status: "merged" }]);
+    mockDbSelect.mockImplementation((selection?: Record<string, unknown>) => ({
+      from: selection && Object.keys(selection).join(",") === "name"
+        ? () => ({
+            innerJoin: () => ({ where: async () => [{ name: "1.7" }] }),
+          })
+        : mockDbSelectFrom,
+    }));
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "done", labelIds: [] });
+
+    expect(res.status).toBe(422);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("reauthorizes a terminal verdict against the review policy held under the update lock", async () => {

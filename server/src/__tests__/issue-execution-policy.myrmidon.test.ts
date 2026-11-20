@@ -2509,6 +2509,152 @@ describe("verify execution stages", () => {
     expect(result.patch).toMatchObject({ status: "in_review", assigneeAgentId: qaAgentId });
   });
 
+  it("rejects closing a release task with no execution policy", () => {
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue: {
+        title: "1.6.6 Feature release",
+        status: "in_progress",
+        assigneeAgentId: coderAgentId,
+        assigneeUserId: null,
+        executionPolicy: null,
+        executionState: null,
+      },
+      policy: null,
+      requestedStatus: "done",
+      requestedAssigneePatch: {},
+      actor: { agentId: coderAgentId },
+      commentBody: "done",
+    })).toThrow(/verify/i);
+  });
+
+  it("rejects an unnumbered release-labelled issue with merged code and no policy", () => {
+    const issue = {
+      title: "Release candidate",
+      labels: ["1.6"],
+      workProducts: [{ type: "pull_request", status: "merged" }],
+      status: "in_progress",
+      assigneeAgentId: coderAgentId,
+      assigneeUserId: null,
+      executionPolicy: null,
+      executionState: null,
+    };
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue, policy: null, requestedStatus: "done", requestedAssigneePatch: {},
+      actor: { agentId: coderAgentId }, commentBody: "done",
+    })).toThrow(/verify/i);
+  });
+
+  it("rejects orphaned final review approval for a release without verify evidence", () => {
+    const originalPolicy = reviewOnlyPolicy();
+    const replacementPolicy = verifyPolicy();
+    const issue = {
+      ...pendingIssue(originalPolicy),
+      title: "Release candidate",
+      labels: ["1.6"],
+      workProducts: [{ type: "pull_request", status: "merged" }],
+      executionPolicy: replacementPolicy,
+    };
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue, policy: replacementPolicy, requestedStatus: "done", requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId }, commentBody: "review approved",
+    })).toThrow(/verify/i);
+  });
+
+  it("rejects a completed release workflow that never completed a verify stage", () => {
+    const policy = reviewOnlyPolicy();
+    const issue = {
+      ...pendingIssue(policy),
+      title: "Release candidate",
+      labels: ["1.6"],
+      executionState: {
+        ...pendingIssue(policy).executionState,
+        status: "completed" as const,
+        currentStageId: null,
+        currentStageType: null,
+        currentParticipant: null,
+        completedStageIds: [policy.stages[0].id],
+      },
+    };
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue, policy, requestedStatus: "done", requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId }, commentBody: "review approved",
+    })).toThrow(/verify/i);
+  });
+
+  it("rejects completed release workflows with merged code and no current signed evidence", () => {
+    const policy = verifyPolicy();
+    const issue = {
+      ...pendingIssue(policy),
+      title: "Release candidate",
+      labels: ["1.6"],
+      workProducts: [{ type: "pull_request", status: "merged" }],
+      executionState: {
+        ...pendingIssue(policy).executionState,
+        status: "completed" as const,
+        currentStageId: null,
+        currentStageType: null,
+        currentParticipant: null,
+        completedStageIds: [policy.stages[0].id],
+      },
+    };
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue, policy, requestedStatus: "done", requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId }, commentBody: "done",
+    })).toThrow(/evidence/i);
+  });
+
+  it("completes a merged release verification with current evidence and an independent verifier", () => {
+    const policy = verifyPolicy();
+    const result = applyIssueExecutionPolicyTransition({
+      issue: {
+        ...pendingIssue(policy),
+        title: "Release candidate",
+        labels: ["1.6"],
+        workProducts: [{ type: "pull_request", status: "merged" }],
+        hasCurrentReleaseEvidence: true,
+      },
+      policy, requestedStatus: "done", requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "deploy version: 2026.11.12\ncheck method: manual smoke on production",
+    });
+    expect(result.patch.executionState).toMatchObject({
+      status: "completed", completedStageIds: [policy.stages[0].id],
+    });
+  });
+
+  it("rejects auto-skipping verification for merged release code without signed evidence", () => {
+    const policy = makePolicy([{
+      type: "verify", participants: [{ type: "agent", agentId: coderAgentId }],
+      requirements: { skip: true },
+    }]);
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue: {
+        title: "Release candidate", labels: ["1.6"],
+        workProducts: [{ type: "pull_request", status: "merged" }],
+        status: "in_progress", assigneeAgentId: coderAgentId, assigneeUserId: null,
+        executionPolicy: policy, executionState: null,
+      },
+      policy, requestedStatus: "done", requestedAssigneePatch: {},
+      actor: { agentId: coderAgentId }, commentBody: "done",
+    })).toThrow(/evidence/i);
+  });
+
+  it("rejects final review approval when the release has no verify stage", () => {
+    const policy = reviewOnlyPolicy();
+    const issue = {
+      ...pendingIssue(policy),
+      title: "1.6.6 Feature release",
+      executionState: {
+        ...pendingIssue(policy).executionState,
+        currentStageType: "review" as const,
+      },
+    };
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue, policy, requestedStatus: "done", requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId }, commentBody: "review approved",
+    })).toThrow(/verify/i);
+  });
+
   it("rejects marking a release task done without a verify stage", () => {
       const reviewPolicy = makePolicy([{
         type: "review",
@@ -2618,6 +2764,24 @@ describe("verify execution stages", () => {
         status: "completed",
         completedStageIds: [unconfiguredVerifyPolicy.stages[0].id],
       });
+    });
+
+    it("rejects arbitrary version and method without persisted deployment evidence for merged release code", () => {
+      const policy = makePolicy([{
+        type: "verify",
+        participants: [{ type: "agent", agentId: qaAgentId }],
+      }]);
+      const issue = {
+        ...pendingIssue(policy),
+        title: "Release without numeric prefix",
+        labels: ["1.6"],
+        workProducts: [{ type: "pull_request", status: "merged" }],
+      };
+      expect(() => applyIssueExecutionPolicyTransition({
+        issue, policy, requestedStatus: "done", requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "deploy version: invented\ncheck method: invented",
+      })).toThrow(/evidence/i);
     });
 
     it("requires deploy version and check method on release tasks even when stage requirements explicitly disable them", () => {

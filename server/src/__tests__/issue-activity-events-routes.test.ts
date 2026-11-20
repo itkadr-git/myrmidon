@@ -34,6 +34,7 @@ const mockFeedbackService = vi.hoisted(() => ({
   saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
 }));
 const mockInstanceSettingsService = vi.hoisted(() => ({
+  getExperimental: vi.fn(async () => ({})),
   get: vi.fn(async () => ({
     id: "instance-settings-1",
     general: {
@@ -132,7 +133,7 @@ function registerModuleMocks() {
     logActivity: mockLogActivity,
     projectService: () => ({}),
     routineService: () => mockRoutineService,
-    workProductService: () => ({}),
+    workProductService: () => ({ listForIssue: vi.fn(async () => []) }),
   }));
 }
 
@@ -570,6 +571,7 @@ describe("issue activity event routes", () => {
       transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback({}),
       select: () => ({
         from: () => ({
+          innerJoin: () => ({ where: async () => [] }),
           where: () => ({
             orderBy: async () => [handoffActivityRow],
           }),
@@ -744,6 +746,7 @@ describe("issue activity event routes", () => {
       transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback({}),
       select: () => ({
         from: () => ({
+          innerJoin: () => ({ where: async () => [] }),
           where: () => ({
             orderBy: async () => [],
           }),
