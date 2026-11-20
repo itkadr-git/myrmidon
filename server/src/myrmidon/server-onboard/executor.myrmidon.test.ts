@@ -620,6 +620,8 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
     ssh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
+    ssh.mockResponse(/check-myrmidon-firewall-prerequisites/, { exitCode: 0, stdout: "" });
+    ssh.mockResponse(/prepare-myrmidon-firewall-restore/, { exitCode: 0, stdout: "" });
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 1, stderr: "timer unavailable" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
