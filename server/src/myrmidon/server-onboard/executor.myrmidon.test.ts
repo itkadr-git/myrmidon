@@ -1639,6 +1639,33 @@ exit 97
     }
   });
 
+  it("does not delete a concurrent operator rule when numbered rules shift during rollback", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 1 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = { job: { id: "job-shifting-rule-numbers", companyId: "c1", serverId: "s1" }, server: { hostname: "1.2.3.4", port: 22, username: "root" }, steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" } };
+    await executor.execute(claim, createMockReporter().reporter);
+    const command = ssh.executedCommands.find(({ command }) => command.includes("prepare-myrmidon-firewall-restore"))?.command ?? "";
+    const script = /printf '%s' '([^']+)'/.exec(command)?.[1] ?? "";
+    const owner = /myrmidon-firewall-[a-f0-9-]+/.exec(command)?.[0] ?? "";
+    expect(script).not.toBe("");
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-shifting-rules-"));
+    try {
+      const rules = join(dir, "rules");
+      writeFileSync(rules, "operator\n");
+      writeFileSync(join(dir, "rule-changed"), "");
+      writeFileSync(join(dir, "ufw"), `#!/bin/sh\ncase "$*" in\n  'status numbered') printf 'Status: active\\n[ 1] 22/tcp ALLOW IN Anywhere # ${owner}\\n';;\n  '--force delete 1') : > "$RULES";;\n  *) exit 1;;\nesac\n`);
+      chmodSync(join(dir, "ufw"), 0o700);
+      const localScript = script.replace(/\/var\/tmp\/myrmidon-firewall-[a-f0-9-]+/g, dir);
+      spawnSync("sh", ["-c", localScript], { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, RULES: rules } });
+      expect(readFileSync(rules, "utf8")).toBe("operator\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails rollback when multiple rules claim the same operation owner", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
