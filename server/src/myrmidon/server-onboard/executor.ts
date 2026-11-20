@@ -379,7 +379,10 @@ export class FleetOnboardExecutor {
         stepsCompleted,
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      let message = error instanceof Error ? error.message : String(error);
+      for (const secret of Object.values(claim.secretValues)) {
+        if (secret) message = message.split(secret).join("[REDACTED]");
+      }
 
       // If firewall rollback was still armed when failure occurred, ensure rollback
       if (firewallRollbackArmed && activeSsh) {
