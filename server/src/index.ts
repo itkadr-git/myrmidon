@@ -30,7 +30,6 @@ import { warnIfUnsupportedNodeVersion } from "@myrmidon/shared/node-version";
 import { and, eq, sql } from "drizzle-orm";
 import type { createDb } from "@myrmidon/db/client";
 import { formatEmbeddedPostgresError, createEmbeddedPostgresLogBuffer } from "@myrmidon/db/embedded-postgres-error";
-import { prepareEmbeddedPostgresNativeRuntime } from "@myrmidon/db/embedded-postgres-native";
 import {
   authUsers,
   companies,
@@ -637,6 +636,7 @@ async function startServerWithDatabaseTeardown(
         "Embedded PostgreSQL mode requires dependency `embedded-postgres`. Reinstall dependencies (without omitting required packages), or set DATABASE_URL for external Postgres.",
       );
     }
+    const { prepareEmbeddedPostgresNativeRuntime } = await import("@myrmidon/db/embedded-postgres-native");
     await prepareEmbeddedPostgresNativeRuntime();
   
     const dataDir = resolve(config.embeddedPostgresDataDir);

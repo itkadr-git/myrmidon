@@ -20,6 +20,12 @@ describe("lazy imports for jsdom and @chat-adapter/discord", () => {
     expect(content).toMatch(/from\s+["']@myrmidon\/db\/schema["']/);
   });
 
+  it("defers the embedded Postgres native setup until embedded startup", () => {
+    const content = fs.readFileSync(path.join(SERVER_SRC, "index.ts"), "utf8");
+    expect(content).not.toMatch(/^import\s+(?!type\b)[^;]*?from\s+["']@myrmidon\/db\/embedded-postgres-native["']/m);
+    expect(content).toMatch(/await\s+import\(["']@myrmidon\/db\/embedded-postgres-native["']\)/);
+  });
+
   it("defers loading the database backup implementation until a backup runs", () => {
     const content = fs.readFileSync(path.join(SERVER_SRC, "index.ts"), "utf8");
     expect(/^import\s+(?!type\b)[^;]*?from\s+["']@myrmidon\/db\/backup-lib["']/m.test(content)).toBe(false);
