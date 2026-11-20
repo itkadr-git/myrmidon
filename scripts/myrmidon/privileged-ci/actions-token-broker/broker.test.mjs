@@ -115,6 +115,24 @@ test('supervised broker alerts when replay anchor is unavailable and refuses sta
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('unowned revocation does not fence later legitimate exchange', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-unowned-revoke-'));
+  const store = createCredentialStore(join(dir, 'credentials.sqlite'), randomBytes(32));
+  let issued = 0;
+  const events = [];
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    installation: { issue: async () => ({ token: `fixture-${++issued}` }), revoke: async () => {} },
+    audit: async event => events.push(event), alert: async () => {}, anchoredIssuance: true });
+  try {
+    const { handle } = await broker.exchange(jwt('owner-exchange'));
+    await assert.rejects(broker.revoke(jwt('other-revoke', { run_id: '101' }), handle));
+    await broker.exchange(jwt('subsequent-exchange'));
+    assert.equal(issued, 2);
+    assert.deepEqual(await store.pendingIssuances(), []);
+    assert.deepEqual(await store.pendingAlerts(), []);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('runtime replay anchor failure alerts and fences issuance after anchor recovers', async () => {
   let offline = true, issued = 0;
   const queued = [], alerts = [];
