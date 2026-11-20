@@ -20,6 +20,8 @@ import { companyTransferRuns } from "@myrmidon/db";
 //                                                          after complete() is a no-op release
 //   applying                --recoverStrandedApplyingRuns-> failed
 //                                                          startup only: in-memory applies died with the process
+//   failed|completed        --claimMigrationRollback--> rolling_back
+//   rolling_back            --recoverStrandedApplyingRuns-> failed
 //   pending|running (idle)  --cancelIfIdle--> cancelled    sweep claim; also guarded on a stale updatedAt
 //   pending|running|failed  --cancel--------> cancelled
 //   (any)                   --fail----------> failed       unguarded settle; callers use it only on runs
@@ -37,6 +39,7 @@ export type CompanyTransferRunStatus =
   | "pending"
   | "running"
   | "applying"
+  | "rolling_back"
   | "completed"
   | "failed"
   | "cancelled";
@@ -173,7 +176,7 @@ export const companyTransferRunService = {
             eq(companyTransferRuns.idempotencyKey, input.idempotencyKey),
             eq(companyTransferRuns.direction, input.direction),
             eq(companyTransferRuns.actorKey, input.actorKey),
-            inArray(companyTransferRuns.status, [...RESUMABLE_STATUSES, "applying", "completed"]),
+            inArray(companyTransferRuns.status, [...RESUMABLE_STATUSES, "applying", "rolling_back", "completed"]),
           ),
         )
         .orderBy(desc(companyTransferRuns.createdAt))
@@ -251,6 +254,24 @@ export const companyTransferRunService = {
       )
       .returning({ id: companyTransferRuns.id });
     return claimed.length > 0;
+  },
+
+  // A rollback claim is durable: retries must find this same run while cleanup
+  // is in flight, and startup recovery makes an interrupted claim retryable.
+  async claimMigrationRollback(db: Db, runId: string, sourceCompanyId: string): Promise<boolean> {
+    const claimed = await db.update(companyTransferRuns)
+      .set({ status: "rolling_back", updatedAt: new Date() })
+      .where(and(
+        eq(companyTransferRuns.id, runId),
+        eq(companyTransferRuns.direction, "import"),
+        inArray(companyTransferRuns.status, ["failed", "completed"]),
+        sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
+        sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' = ${sourceCompanyId}`,
+        sql`${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true'`,
+        sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' is not null`,
+      ))
+      .returning({ id: companyTransferRuns.id });
+    return claimed.length === 1;
   },
 
   async start(db: Db, runId: string): Promise<void> {
@@ -428,7 +449,7 @@ export const companyTransferRunService = {
   },
 
   /**
-   * Fail every run stranded in "applying" by a dead process. Apply jobs run
+   * Fail every run stranded in "applying" or migration "rolling_back" by a dead process. Apply jobs run
    * in-memory in this single server process, so at boot any run still
    * "applying" belongs to an apply that died without settling its claim and
    * would otherwise 409 every retry forever. Failing it makes it claimable
@@ -444,7 +465,7 @@ export const companyTransferRunService = {
         finishedAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(companyTransferRuns.status, "applying"))
+      .where(sql`(${companyTransferRuns.status} = 'applying' or (${companyTransferRuns.status} = 'rolling_back' and ${companyTransferRuns.containerRef}->>'kind' = 'company_migration'))`)
       .returning({ id: companyTransferRuns.id });
     return recovered.map((row) => row.id);
   },
@@ -462,7 +483,7 @@ export const companyTransferRunService = {
         eq(companyTransferRuns.id, runId),
         // Only the guarded releaseApplyClaim may settle an active migration.
         // A stale failure must not reopen a completed or cancelled migration.
-        sql`(coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration' or ${companyTransferRuns.status} not in ('applying', 'completed', 'cancelled'))`,
+        sql`(coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration' or ${companyTransferRuns.status} not in ('applying', 'rolling_back', 'completed', 'cancelled'))`,
       ));
   },
 
