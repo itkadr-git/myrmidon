@@ -3,7 +3,9 @@ import { nativeFinalizationOutbox, nativeFinalizationRequests, type Db } from "@
 
 /** Claim pending work or reclaim a lease abandoned by a crashed worker. */
 export async function claimNativeFinalizationRequest(db: Db, worker: string, now: Date, leaseMs: number) {
-  if (!worker || !Number.isFinite(now.getTime()) || !Number.isFinite(leaseMs) || leaseMs <= 0) {
+  const leaseUntil = new Date(now.getTime() + leaseMs);
+  if (!worker || !Number.isFinite(now.getTime()) || !Number.isFinite(leaseMs) || leaseMs <= 0 ||
+      !Number.isFinite(leaseUntil.getTime()) || leaseUntil <= now) {
     throw new Error("native_finalization_invalid_lease");
   }
   return db.transaction(async (tx) => {
@@ -22,7 +24,7 @@ export async function claimNativeFinalizationRequest(db: Db, worker: string, now
       .for("update", { skipLocked: true });
     if (!candidate) return null;
     const [request] = await tx.update(nativeFinalizationRequests).set({
-      state: "processing", leaseOwner: worker, leaseUntil: new Date(now.getTime() + leaseMs),
+      state: "processing", leaseOwner: worker, leaseUntil,
     }).where(eq(nativeFinalizationRequests.id, candidate.id)).returning();
     return request ?? null;
   });
