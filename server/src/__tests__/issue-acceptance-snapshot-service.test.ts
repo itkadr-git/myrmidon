@@ -57,6 +57,29 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     expect(after?.document).toEqual(before?.document);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
+  it("deletes the author of an unlinked document with multiple revisions", async () => {
+    const dbh = await startEmbeddedPostgresTestDatabase("revision-agent-delete-");
+    cleanups.push(() => dbh.cleanup());
+    const db = createDb(dbh.connectionString);
+    cleanups.push(async () => { await db.$client.end(); });
+    const agentId = randomUUID();
+    const docId = randomUUID();
+    await db.insert(companies).values({ id: companyA, name: "A" });
+    await db.insert(agents).values({ id: agentId, companyId: companyA, name: "Author", role: "engineer" });
+    await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "second", createdByAgentId: agentId, updatedByAgentId: agentId });
+    await db.insert(documentRevisions).values([
+      { documentId: docId, companyId: companyA, revisionNumber: 1, body: "first", createdByAgentId: agentId },
+      { documentId: docId, companyId: companyA, revisionNumber: 2, body: "second", createdByAgentId: agentId },
+    ]);
+    await db.delete(agents).where(eq(agents.id, agentId));
+    const [document] = await db.select().from(documents).where(eq(documents.id, docId));
+    const revisions = await db.select().from(documentRevisions).where(eq(documentRevisions.documentId, docId));
+    expect(document?.latestBody).toBe("second");
+    expect(document?.createdByAgentId).toBeNull();
+    expect(revisions).toHaveLength(2);
+    expect(revisions.every((revision) => revision.createdByAgentId === null)).toBe(true);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("cleans up agents and companies after deleting linked issues", async () => {
     const dbh = await startEmbeddedPostgresTestDatabase("acceptance-cascade-delete-");
     cleanups.push(() => dbh.cleanup());
