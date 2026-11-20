@@ -758,6 +758,33 @@ describe("company migration dry run", () => {
     expect(JSON.stringify(saved)).not.toContain("idle-secret-canary");
   });
 
+  it("preserves destination and storage provenance when startup recovers an interrupted apply", async () => {
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "crash-source", "crash-reservation");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Crash recovery destination" }, { transferRunId: run.id });
+    const storage = createStorageService(createLocalDiskStorageProvider(root));
+    let key = "";
+    await storage.putFile({
+      companyId: destination.id, namespace: "assets/general", originalFilename: "logo.png",
+      contentType: "image/png", body: Buffer.from("recovery fixture"),
+      beforeWrite: async (objectKey) => {
+        key = objectKey;
+        await companyTransferRunService.reserveMigrationObject(db, run.id, destination.id, objectKey);
+      },
+    });
+
+    expect(await companyTransferRunService.recoverStrandedApplyingRuns(db)).toContain(run.id);
+    const recovered = await companyTransferRunService.getRun(db, run.id);
+    expect(recovered?.status).toBe("failed");
+    expect(recovered?.companyId).toBe(destination.id);
+    expect(recovered?.completedParts).toEqual([key]);
+    expect((await storage.headObject(destination.id, key)).exists).toBe(true);
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(false);
+    const retry = await companyTransferRunService.resumeOrCreateMigration(db, "crash-source", "crash-reservation");
+    expect(retry.run.id).toBe(run.id);
+    expect(retry.alreadyCompleted).toBe(false);
+  });
+
   it("retains the run identity after its migration-owned destination is deleted", async () => {
     const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "deleted-destination-source", "deleted-destination-key");
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
