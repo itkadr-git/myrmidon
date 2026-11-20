@@ -1,8 +1,19 @@
-import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import type postgres from "postgres";
 import * as schema from "./schema/index.js";
 import { withTransientWriteRetry } from "./transient-write-retry.js";
 import { withQueryObservation } from "./query-observer.js";
+
+const require = createRequire(import.meta.url);
+
+function loadDrivers() {
+  // Resolve the ESM entry explicitly: the packages' require conditions use
+  // separate CommonJS builds whose classes have different identities.
+  const postgres = (require(fileURLToPath(import.meta.resolve("postgres"))) as typeof import("postgres")).default;
+  const { drizzle } = require(fileURLToPath(import.meta.resolve("drizzle-orm/postgres-js"))) as typeof import("drizzle-orm/postgres-js");
+  return { postgres, drizzle };
+}
 
 type RegisteredPostgresClient = ReturnType<typeof postgres>;
 
@@ -224,11 +235,13 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
  * lifecycle and ends it with its own teardown (the bus `stop` does).
  */
 export function createPostgresJsClient(url: string, options?: DatabaseClientOptions) {
+  const { postgres } = loadDrivers();
   const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
   return postgres(url, postgresJsOptions(resolved));
 }
 
 export function createDb(url: string, options?: DatabaseClientOptions) {
+  const { postgres, drizzle } = loadDrivers();
   const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
   const sql = postgres(url, postgresJsOptions(resolved));
   const key = hostPortKeyOrNull(url);
@@ -239,7 +252,7 @@ export function createDb(url: string, options?: DatabaseClientOptions) {
   // the query observer when someone measures (myrmidon 1.6.6 PROCS-0.3A:
   // observation sits outside the retry, so a replayed statement counts once).
   const client = withTransientWriteRetry(sql);
-  return drizzlePg(
+  return drizzle(
     resolved.onQuery ? withQueryObservation(client, resolved.onQuery) : client,
     { schema },
   );
