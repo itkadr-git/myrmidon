@@ -272,9 +272,8 @@ export const companyTransferRunService = {
         sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' is not null`,
         // Never let corrupted provenance authorize deleting the source company.
         sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' <> ${sourceCompanyId}`,
-        // Deletion clears the foreign key, but a live destination must agree
-        // with the immutable ownership record before cleanup can be claimed.
-        sql`(${companyTransferRuns.companyId} is null or ${companyTransferRuns.companyId}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId')`,
+        // A cleared foreign key is valid only after the owned company is gone.
+        sql`(${companyTransferRuns.companyId}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId' or (${companyTransferRuns.companyId} is null and not exists (select 1 from ${companies} where ${companies.id}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId')))`,
       ))
       .returning({ id: companyTransferRuns.id });
     return claimed.length === 1;
