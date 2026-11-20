@@ -61,7 +61,13 @@ export function detectEntities(text: string, dictionary?: DictionaryMatcher): En
       if (rule.valid && !rule.valid(value)) continue;
       const start = m.index!;
       if (rule.entity === "bic" && /(?:КПП|KPP)\s*[:№-]?\s*$/iu.test(text.slice(0, start))) continue;
-      result.push({ entity: rule.entity, value, score: rule.score, start, end: start + value.length });
+      const account = rule.entity === "bank_account" || rule.entity === "correspondent_account";
+      // Restrict pairing to a single BIC on the same line as the account.
+      const line = text.slice(text.lastIndexOf("\n", start - 1) + 1, text.indexOf("\n", start) < 0 ? text.length : text.indexOf("\n", start));
+      const bics = account ? [...line.matchAll(/(?:БИК|BIC)\s*[:№-]?\s*(\d{9})(?!\d)/giu)] : [];
+      const bic = bics.length === 1 ? bics[0][1] : undefined;
+      if (account && bic && !bankAccountMatchesBic(value, bic)) continue;
+      result.push({ entity: rule.entity, value, score: account && bic ? 0.9 : rule.score, start, end: start + value.length });
     }
   }
   if (dictionary) for (const hit of dictionary.find(text)) {

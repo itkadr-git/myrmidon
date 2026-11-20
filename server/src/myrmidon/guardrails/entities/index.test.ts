@@ -48,6 +48,15 @@ describe("entity recognizer", () => {
     expect(bankAccountMatchesBic("40817810899910004312", "044525226")).toBe(false);
   });
 
+  it("validates an account against a labelled BIC in the same input", () => {
+    const valid = "БИК: 049805000, к/с: 30101810800000000746";
+    const invalid = "БИК: 049806000, к/с: 30101810800000000746";
+    expect(matches(valid, "correspondent_account")[0].score).toBeGreaterThan(0.62);
+    expect(matches(invalid, "correspondent_account")).toHaveLength(0);
+    expect(matches("БИК: 044525225, р/с: 40817810899910004312", "bank_account")[0].score).toBeGreaterThan(0.62);
+    expect(matches("БИК: 044525226, р/с: 40817810899910004312", "bank_account")).toHaveLength(0);
+  });
+
   it("does not classify labelled KPP as BIC for every supported separator", () => {
     for (const value of ["КПП: 770101001", "КПП :   770101001", "КПП - 770101001", "КПП № 770101001", "КПП    770101001", "KPP : 770101001"]) {
       expect(matches(value, "kpp"), value).toHaveLength(1);
