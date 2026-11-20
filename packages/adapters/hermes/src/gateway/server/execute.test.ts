@@ -221,12 +221,14 @@ describe("execute", () => {
       timeoutSec: 5,
       env: { MYRMIDON_LLM_API_KEY: credential },
     });
+    const onMeta = vi.fn(async () => undefined);
+    ctx.onMeta = onMeta;
     ctx.context.runScopedGatewayKeyEnv = "MYRMIDON_LLM_API_KEY";
     expect((await execute(ctx)).exitCode).toBe(0);
     const call = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/v1/runs"));
     expect(JSON.parse(String(call?.[1]?.body)).model_credential).toEqual({ api_key: credential });
     expect(JSON.stringify(vi.mocked(ctx.onLog).mock.calls)).not.toContain(credential);
-    expect(JSON.stringify(vi.mocked(ctx.onMeta).mock.calls)).not.toContain(credential);
+    expect(JSON.stringify(onMeta.mock.calls)).not.toContain(credential);
   });
 
   it("gives a developer an issue-scoped session while a non-developer keeps its configured session", async () => {
