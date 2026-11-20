@@ -1227,6 +1227,9 @@ exit 97
 
   it("attempts firewall restoration when the SSH allow command loses its connection", async () => {
     const ssh = new MockSshExecutor({ timeoutCommands: [/sudo ufw allow/] });
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
+    ssh.mockResponse(/check-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
       job: { id: "job-firewall-allow-timeout", companyId: "c1", serverId: "s1" },
