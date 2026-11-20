@@ -873,6 +873,26 @@ exit 1
     }
   });
 
+  it("retains the restore script when stopping an unconfirmed timer fails", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
+    ssh.mockResponse(/check-myrmidon-firewall-timer/, { exitCode: 1 });
+    ssh.mockResponse(/stop-myrmidon-firewall-timer/, { exitCode: 1 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-timer-stop-fails", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(ssh.hasExecuted(/stop-myrmidon-firewall-timer/)).toBe(true);
+    expect(ssh.hasExecuted(/sudo rm -rf \/var\/tmp\/myrmidon-firewall-/)).toBe(false);
+    expect(ssh.hasExecuted(/sudo ufw (allow|default|delete)/)).toBe(false);
+  });
+
   it("fails closed on conflicting status output from an executed firewall probe", async () => {
     const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-ufw-conflicting-status-"));
     const calls = join(dir, "calls");
