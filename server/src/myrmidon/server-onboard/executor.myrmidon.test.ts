@@ -1406,6 +1406,7 @@ exit 97
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
     ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n" });
     ssh.mockResponse(/check-myrmidon-firewall-prerequisites/, { exitCode: 0, stdout: "" });
+    ssh.mockResponse(/prepare-myrmidon-firewall-restore/, { exitCode: 0, stdout: "" });
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
     ssh.mockResponse(/check-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
     ssh.mockResponse(/sudo ufw allow/, { exitCode: 0, stdout: "Rule added\n" });
