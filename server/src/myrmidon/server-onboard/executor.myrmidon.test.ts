@@ -1254,6 +1254,40 @@ exit 97
     expect(result.error).toContain("deny failed");
   });
 
+  it("checks a fresh SSH login after changing the incoming policy before reporting success", async () => {
+    let policyChanged = false;
+    let verifiedAfterDeny = false;
+    const primary = new MockSshExecutor({ onCommand: (command) => {
+      if (command.includes("start-myrmidon-firewall-timer") || command.includes("check-myrmidon-firewall-timer")) {
+        return { exitCode: 0, stdout: "timer-confirmed\n" };
+      }
+      if (command.includes("sudo ufw default deny incoming")) policyChanged = true;
+      return undefined;
+    } });
+    primary.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    primary.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => {
+      if (!primary.isConnected()) return primary;
+      return new MockSshExecutor({ onCommand: (command) => {
+        if (command === 'echo "ufw-connectivity-ok"') {
+          if (policyChanged) verifiedAfterDeny = true;
+          return { exitCode: 0, stdout: "ufw-connectivity-ok\n" };
+        }
+        return undefined;
+      } });
+    } });
+    const claim: any = {
+      job: { id: "job-verify-after-deny", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(policyChanged).toBe(true);
+    expect(verifiedAfterDeny).toBe(true);
+    expect(result.status).toBe("succeeded");
+  });
+
   it("succeeds without rewriting an already-deny incoming policy", async () => {
     const ssh = new MockSshExecutor();
     const fresh = new MockSshExecutor();
