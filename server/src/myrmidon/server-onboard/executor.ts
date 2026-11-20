@@ -15,6 +15,8 @@
 // - Step failure rolls back hardening changes and leaves server in needs_attention.
 
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
+import { setTimeout as delay } from "node:timers/promises";
 import type { OwnedFleetResource } from "@myrmidon/shared";
 import { generateSshKeyPair, sshPublicKey } from "./ssh-key.js";
 import { OnboardSshTransport } from "./ssh-transport.js";
@@ -24,6 +26,12 @@ import type {
   SshExecutor,
 } from "../../services/fleet/mock-ssh-executor.js";
 import type { OnboardJobClaim } from "./store.js";
+
+const ROLLBACK_DELAY_SECONDS = 300;
+// systemd timers default to a one-minute AccuracySec window.
+const RECOVERY_GRACE_MS = 90_000;
+const RECOVERY_CONNECT_TIMEOUT_MS = 5_000;
+const RECOVERY_RETRY_MS = 1_000;
 
 export interface ExecutorReporter {
   /** Atomically persist the first observed fingerprint; reject a conflicting pin. */
@@ -131,6 +139,37 @@ export class FleetOnboardExecutor {
         } catch (error) {
           await ssh.disconnect().catch(() => {});
           throw error;
+        }
+      };
+
+      const restoreOverSsh = async (
+        original: SshExecutor,
+        options: SshConnectionOptions,
+        timerConfirmedAt: number,
+        restore: (ssh: SshExecutor) => Promise<void>,
+      ) => {
+        try {
+          await restore(original);
+          return;
+        } catch {
+          // The host timer stays armed if the original session is lost.
+        }
+        const deadline = timerConfirmedAt + ROLLBACK_DELAY_SECONDS * 1000 + RECOVERY_GRACE_MS;
+        let recovery: SshExecutor;
+        for (;;) {
+          try {
+            recovery = await connectVerified({ ...options, timeoutMs: RECOVERY_CONNECT_TIMEOUT_MS });
+            break;
+          } catch (error) {
+            const remaining = deadline - performance.now();
+            if (remaining <= 0) throw error;
+            await delay(Math.min(RECOVERY_RETRY_MS, remaining));
+          }
+        }
+        try {
+          await restore(recovery);
+        } finally {
+          await recovery.disconnect().catch(() => {});
         }
       };
 
@@ -264,13 +303,27 @@ flock -x 9
 test "$#" -gt 0 || test ! -e ${backup}/committed || exit 0
 test ! -e ${backup}/restored || exit 0
 touch ${backup}/expired
-if test -f ${backup}/write-started; then
-  if test -f ${backup}/absent; then rm -f ${file}; else cp -p ${backup}/original ${file}; fi
+if test -f ${backup}/installed-inode; then
+  if test ! -f ${backup}/file-restored; then
+    test ! -L ${file}
+    test -f ${file}
+    test "$(stat -c %d:%i ${file})" = "$(cat ${backup}/installed-inode)"
+    cmp -s ${file} ${backup}/installed-content
+    if test -f ${backup}/absent; then
+      rm -f ${file}
+    else
+      replacement=$(mktemp ${file}.restore.XXXXXX)
+      trap "rm -f -- \"$replacement\"" EXIT
+      cp -p ${backup}/original "$replacement"
+      mv -fT "$replacement" ${file}
+    fi
+    touch ${backup}/file-restored
+  fi
   sshd -t
   systemctl reload ssh || systemctl reload sshd
 fi
 touch ${backup}/restored`;
-              const snapshot = await activeSsh.execute(`: snapshot-myrmidon-password-config; sudo mkdir -m 700 ${backup} && (if sudo test -e ${file}; then sudo cp -p ${file} ${backup}/original; else sudo touch ${backup}/absent; fi) && printf '%s' '${restoreScript}' | sudo tee ${backup}/restore.sh >/dev/null && sudo sh -n ${backup}/restore.sh`);
+              const snapshot = await activeSsh.execute(`: snapshot-myrmidon-password-config; sudo mkdir -m 700 ${backup} && sudo test ! -L ${file} && (if sudo test -e ${file}; then sudo test -f ${file} && sudo cp -p ${file} ${backup}/original; else sudo touch ${backup}/absent; fi) && printf '%s' '${restoreScript}' | sudo tee ${backup}/restore.sh >/dev/null && sudo sh -n ${backup}/restore.sh`);
               if (snapshot.exitCode !== 0) throw new Error("Cannot snapshot password hardening configuration");
               const passwordSsh = activeSsh;
               const lockedPassword = (action: string) => passwordSsh.execute(`sudo flock -w 30 ${backup}/lock /bin/sh -c 'set -eu; test ! -e ${backup}/expired; systemctl is-active --quiet ${unit}.timer; ${action}'`);
@@ -283,22 +336,15 @@ touch ${backup}/restored`;
                   await checkSsh.disconnect().catch(() => {});
                 }
               };
-              const armed = await passwordSsh.execute(`: start-myrmidon-password-timer; sudo systemd-run --unit=${unit} --on-active=5m /bin/sh ${backup}/restore.sh >/dev/null && sudo systemctl is-active --quiet ${unit}.timer && echo timer-confirmed`);
+              const armed = await passwordSsh.execute(`: start-myrmidon-password-timer; sudo systemd-run --unit=${unit} --on-active=${ROLLBACK_DELAY_SECONDS}s /bin/sh ${backup}/restore.sh >/dev/null && sudo systemctl is-active --quiet ${unit}.timer && echo timer-confirmed`);
               if (armed.exitCode !== 0 || armed.stdout.trim() !== "timer-confirmed") throw new Error("Password rollback timer start or confirmation failed; refusing to modify sshd");
+              const timerConfirmedAt = performance.now();
               pendingPasswordRollback = async () => {
                 const restore = async (ssh: SshExecutor) => {
                   const result = await ssh.execute(`: restore-myrmidon-password-config; sudo /bin/sh ${backup}/restore.sh immediate && sudo test -f ${backup}/restored && sudo systemctl stop ${unit}.timer`);
                   if (result.exitCode !== 0) throw new Error("configuration restoration failed");
                 };
-                try {
-                  await restore(passwordSsh);
-                } catch {
-                  // The command may have succeeded before its SSH acknowledgement was lost.
-                  // If neither transport is available, leave the host timer armed.
-                  const recovery = await connectVerified({ ...keyConnOptions, timeoutMs: 5000 });
-                  try { await restore(recovery); }
-                  finally { await recovery.disconnect().catch(() => {}); }
-                }
+                await restoreOverSsh(passwordSsh, keyConnOptions, timerConfirmedAt, restore);
                 await verifyPasswordSsh();
               };
               commitPassword = async () => {
@@ -307,7 +353,8 @@ touch ${backup}/restored`;
               };
               discardPasswordBackup = async () => { await passwordSsh.execute(`sudo rm -rf ${backup}`); };
               {
-                const write = await lockedPassword(`mkdir -p /etc/ssh/sshd_config.d; touch ${backup}/write-started; printf "PasswordAuthentication no\\nKbdInteractiveAuthentication no\\n" > ${file}`);
+                // Record the new inode and bytes before publishing the candidate atomically.
+                const write = await lockedPassword(`test ! -L ${file}; if test -f ${backup}/absent; then test ! -e ${file}; else test -f ${file}; cmp -s ${backup}/original ${file}; fi; mkdir -p /etc/ssh/sshd_config.d; candidate=$(mktemp ${file}.new.XXXXXX); trap "rm -f -- \"$candidate\"" EXIT; if test -f ${backup}/original; then cp -p ${backup}/original "$candidate"; else chmod 644 "$candidate"; fi; printf "PasswordAuthentication no\\nKbdInteractiveAuthentication no\\n" > "$candidate"; cp "$candidate" ${backup}/installed-content; stat -c %d:%i "$candidate" > ${backup}/candidate-inode; mv -fT ${backup}/candidate-inode ${backup}/installed-inode; mv -fT "$candidate" ${file}`);
                 if (write.exitCode !== 0) throw new Error("Password hardening write failed");
                 const sshdTest = await activeSsh.execute("sudo sshd -t");
                 if (sshdTest.exitCode !== 0) throw new Error("sshd configuration test failed");
@@ -419,6 +466,7 @@ touch ${backup}/restored`;
             const discard = async () => { await ssh.execute(`sudo rm -rf ${rollbackDir}`); };
             const runLocked = (marker: string, action: string) =>
               ssh.execute(`: ${marker}; sudo flock -w 30 ${rollbackDir}/lock /bin/sh -c 'set -eu; test ! -e ${rollbackDir}/expired; systemctl is-active --quiet ${timer}.timer; ${action}'`);
+            let timerConfirmedAt: number;
             try {
               // UFW matches deletes by rule tuple, not comment. Refuse ambiguous tuples.
               const restoreScript = `#!/bin/sh
@@ -427,6 +475,7 @@ export LC_ALL=C
 exec 9>${rollbackDir}/lock
 flock -x 9
 test "$#" -gt 0 || test ! -e ${rollbackDir}/committed || exit 0
+test ! -e ${rollbackDir}/restored || exit 0
 touch ${rollbackDir}/expired
 if [ -f ${rollbackDir}/policy-changed ]; then
   current=$(ufw status verbose)
@@ -458,10 +507,11 @@ if [ -f ${rollbackDir}/rule-changed ]; then
     if printf "%s\\n" "$rules" | grep -Eq "# ${ruleMarker}[[:space:]]*$"; then exit 1; fi
   fi
 fi
+touch ${rollbackDir}/restored
 `;
               const preparation = await ssh.execute(`: prepare-myrmidon-firewall-restore; sudo mkdir -m 700 ${rollbackDir} && printf '%s' '${restoreScript}' | sudo tee ${rollbackDir}/restore.sh >/dev/null && sudo chmod 700 ${rollbackDir}/restore.sh && sudo sh -n ${rollbackDir}/restore.sh`);
               if (preparation.exitCode !== 0) throw new Error("Firewall rollback preparation failed; refusing unsafe firewall changes");
-              const start = await ssh.execute(`: start-myrmidon-firewall-timer; sudo systemd-run --unit=${timer} --on-active=5m /bin/sh ${rollbackDir}/restore.sh >/dev/null && sudo systemctl is-active --quiet ${timer}.timer && echo timer-confirmed`);
+              const start = await ssh.execute(`: start-myrmidon-firewall-timer; sudo systemd-run --unit=${timer} --on-active=${ROLLBACK_DELAY_SECONDS}s /bin/sh ${rollbackDir}/restore.sh >/dev/null && sudo systemctl is-active --quiet ${timer}.timer && echo timer-confirmed`);
               if (start.exitCode !== 0 || start.stdout.trim() !== "timer-confirmed") {
                 throw new Error("Firewall rollback timer start or confirmation failed; refusing unsafe firewall changes");
               }
@@ -469,6 +519,7 @@ fi
               if (check.exitCode !== 0 || check.stdout.trim() !== "timer-confirmed") {
                 throw new Error("Firewall rollback timer liveness confirmation failed; refusing unsafe firewall changes");
               }
+              timerConfirmedAt = performance.now();
             } catch (error) {
               await disarm().then(discard).catch(() => {});
               const detail = error instanceof Error ? error.message : String(error);
@@ -476,11 +527,14 @@ fi
             }
 
             pendingFirewallRollback = async () => {
-              const restored = await ssh.execute(`: restore-myrmidon-firewall; sudo /bin/sh ${rollbackDir}/restore.sh immediate`);
-              if (restored.exitCode !== 0) throw new Error("Scoped restore command failed");
+              await restoreOverSsh(ssh, connOptions, timerConfirmedAt, async (recovery) => {
+                const restored = await recovery.execute(`: restore-myrmidon-firewall; sudo /bin/sh ${rollbackDir}/restore.sh immediate && sudo test -f ${rollbackDir}/restored`);
+                if (restored.exitCode !== 0) throw new Error("Scoped restore command failed");
+                const stopped = await recovery.execute(`: stop-myrmidon-firewall-timer; sudo systemctl stop ${timer}.timer`);
+                if (stopped.exitCode !== 0) throw new Error("Firewall rollback timer disarm failed");
+                await recovery.execute(`sudo rm -rf ${rollbackDir}`).catch(() => {});
+              });
               await verifyFirewallSsh();
-              await disarm();
-              await discard().catch(() => {});
             };
             commitFirewall = async () => {
               // Fence a timer that has already started before reporting success.

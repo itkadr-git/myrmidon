@@ -491,7 +491,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(ssh.hasExecuted(/apply-myrmidon-firewall-(allow|deny)/)).toBe(false);
   });
 
-  it.each(["allow", "deny", "ambiguous"])("handles a scoped rollback after an executed %s failure", async (failure) => {
+  it.each(["allow", "deny", "ambiguous", "disconnect"])("handles a scoped rollback after an executed %s failure", async (failure) => {
     const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-ufw-partial-"));
     const rules = join(dir, "rules");
     const calls = join(dir, "calls");
@@ -501,7 +501,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     writeFileSync(join(dir, "sudo"), `#!/bin/sh
 printf '%s\\n' "$*" >> "$CALLS"
 case "$1" in
-  ufw|systemctl|systemd-run|flock|mkdir|tee|chmod|sh|/bin/sh|rm) exec "$@" ;;
+  ufw|systemctl|systemd-run|flock|mkdir|tee|chmod|sh|/bin/sh|rm|test) exec "$@" ;;
 esac
 exit 97
 `);
@@ -518,7 +518,7 @@ case "$1" in
       prepend)
         printf '%s\\n' "$5" > "$RULES.owner"
         printf 'onboarding-ssh\\noperator-concurrent\\n' >> "$RULES"
-        if [ "$FAILURE" != deny ]; then exit 1; fi
+        if [ "$FAILURE" != deny ] && [ "$FAILURE" != disconnect ]; then exit 1; fi
         printf 'Rule inserted\\n' ;;
       default)
         printf '%s\\n' "$2" > "$POLICY"
@@ -529,20 +529,44 @@ case "$1" in
       *) exit 97 ;;
 esac
 `);
-    for (const name of ["systemctl", "systemd-run"]) {
-      writeFileSync(join(dir, name), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
-    }
+    writeFileSync(join(dir, "systemctl"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    writeFileSync(join(dir, "systemd-run"), '#!/bin/sh\nprintf "%s\\n" "$4" > "$CALLS.timer"\n', { mode: 0o700 });
     chmodSync(join(dir, "ufw"), 0o700);
     chmodSync(join(dir, "sudo"), 0o700);
     try {
-      const ssh = new VerifiedMockSsh({ onCommand: (command) => {
-        if (command === 'echo "ufw-connectivity-ok"') return { stdout: "ufw-connectivity-ok\n", exitCode: 0 };
+      const events: string[] = [];
+      let disconnected = false;
+      const run = (command: string) => {
         const result = spawnSync("sh", ["-c", command.replaceAll("/var/tmp/myrmidon-firewall-", `${dir}/myrmidon-firewall-`)], {
           encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: calls, RULES: rules, POLICY: policy, FAILURE: failure }, timeout: 5000,
         });
         return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", exitCode: result.status ?? 1 };
-      } });
-      const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+      };
+      const createSshExecutor = () => {
+        const recovery = disconnected;
+        if (recovery && !events.includes("timer-fired")) {
+          events.push("reconnect-before-timer");
+          const timerScript = readFileSync(`${calls}.timer`, "utf8").trim();
+          expect(run(`/bin/sh '${timerScript}'`).exitCode).toBe(0);
+          events.push("timer-fired");
+          throw new Error("SSH unreachable before timer rollback");
+        }
+        return new VerifiedMockSsh({ onCommand: (command) => {
+          if (command === 'echo "ufw-connectivity-ok"') {
+            events.push(recovery ? "verified-after-timer" : "verified-before-deny");
+            return { stdout: "ufw-connectivity-ok\n", exitCode: 0 };
+          }
+          if (disconnected && !recovery) throw new Error("Original SSH session is closed");
+          const result = run(command);
+          if (failure === "disconnect" && command.startsWith(": apply-myrmidon-firewall-deny")) {
+            expect(readFileSync(policy, "utf8")).toBe("deny\n");
+            disconnected = true;
+            throw new Error("SSH disconnected after deny");
+          }
+          return result;
+        } });
+      };
+      const executor = new FleetOnboardExecutor({ createSshExecutor });
       const claim: any = {
         job: { id: "job-real-concurrent-partial", companyId, serverId },
         server: { hostname: "1.2.3.4", port: 22, username: "root" },
@@ -560,9 +584,12 @@ esac
       }
       expect(result.error).not.toMatch(/rollback failed or unconfirmed/);
       expect(readFileSync(calls, "utf8")).toMatch(/ufw prepend allow/);
-      expect(readFileSync(calls, "utf8").includes("ufw default deny incoming")).toBe(failure === "deny");
+      expect(readFileSync(calls, "utf8").includes("ufw default deny incoming")).toBe(failure === "deny" || failure === "disconnect");
       expect(readFileSync(policy, "utf8")).toBe("allow\n");
       expect(readFileSync(rules, "utf8").split("\n").filter(Boolean).sort()).toEqual(["operator-concurrent", "operator-original"]);
+      if (failure === "disconnect") {
+        expect(events).toEqual(["verified-before-deny", "reconnect-before-timer", "timer-fired", "verified-after-timer"]);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

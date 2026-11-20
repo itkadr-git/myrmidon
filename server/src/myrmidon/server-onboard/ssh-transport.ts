@@ -25,6 +25,8 @@ export class OnboardSshTransport implements SshExecutor {
         host: options.host, port: options.port ?? 22, username: options.username,
         password: options.password, privateKey: options.privateKey ? sshTransportPrivateKey(options.privateKey) : undefined, passphrase: options.passphrase,
         readyTimeout: options.timeoutMs ?? 20000,
+        keepaliveInterval: 5000,
+        keepaliveCountMax: 3,
         hostVerifier: (key: Buffer, callback: (accepted: boolean) => void) => {
           const fingerprint = `SHA256:${createHash("sha256").update(key).digest("base64").replace(/=+$/, "")}`;
           void Promise.resolve().then(() => verify(fingerprint)).then(
