@@ -191,16 +191,42 @@ function createMocks() {
 
 describe("SERVER-ONBOARD logic", () => {
   it("preserves existing credentials if a concurrent add for the same slug fails", async () => {
-    const { mockStore, mockSecrets, mockGetServer, secretsStore } = createMocks();
+    const { mockStore, mockSecrets, mockGetServer, secretsStore, store } = createMocks();
     const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
     const input = { companyId: "company-1", slug: "concurrent", name: "Server", hostname: "192.0.2.7", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password" as const, password: "original" }, createdBy: null };
     await service.addServer(input);
-    const originalKey = secretsStore["fleet/concurrent/access-key"];
+    const { passwordSecretKey, accessKeySecretKey } = store.servers[0];
+    const originalKey = secretsStore[accessKeySecretKey];
     mockStore.createServerAndJob = async () => { throw new Error("duplicate slug"); };
 
     await expect(service.addServer({ ...input, auth: { type: "password", password: "replacement" } })).rejects.toThrow("duplicate slug");
-    expect(secretsStore["fleet/concurrent/bootstrap-password"]).toBe("original");
-    expect(secretsStore["fleet/concurrent/access-key"]).toBe(originalKey);
+    expect(secretsStore[passwordSecretKey]).toBe("original");
+    expect(secretsStore[accessKeySecretKey]).toBe(originalKey);
+    expect(Object.keys(secretsStore).sort()).toEqual([passwordSecretKey, accessKeySecretKey].sort());
+  });
+
+  it("isolates concurrent attempts until the registry picks a winner", async () => {
+    const { mockStore, mockSecrets, mockGetServer, secretsStore, store } = createMocks();
+    const create = mockStore.createServerAndJob;
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    let arrivals = 0;
+    mockStore.createServerAndJob = async (companyId, input) => {
+      arrivals += 1;
+      if (arrivals === 2) release();
+      await barrier;
+      if (store.servers.length) throw new Error("duplicate slug");
+      return create(companyId, input);
+    };
+    const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
+    const input = { companyId: "company-1", slug: "race", name: "Server", hostname: "192.0.2.7", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password" as const, password: "first" }, createdBy: null };
+    const results = await Promise.allSettled([service.addServer(input), service.addServer({ ...input, auth: { type: "password", password: "second" } })]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const { passwordSecretKey, accessKeySecretKey } = store.servers[0];
+    expect(["first", "second"]).toContain(secretsStore[passwordSecretKey]);
+    expect(sshPublicKey(secretsStore[accessKeySecretKey])).toMatch(/^ssh-ed25519 /);
+    expect(Object.keys(secretsStore).sort()).toEqual([passwordSecretKey, accessKeySecretKey].sort());
   });
 
   it("marks a job as needing attention if its durable key cannot be retrieved during claim", async () => {
@@ -216,7 +242,7 @@ describe("SERVER-ONBOARD logic", () => {
     await expect(service.claim("company-1", "valid-executor-token")).rejects.toThrow();
     expect(store.jobs[0].status).toBe("failed");
     expect(store.servers[0].onboardState).toBe("needs_attention");
-    expect(secretsStore["fleet/interrupted-claim/bootstrap-password"]).toBe("bootstrap");
+    expect(secretsStore[store.servers[0].passwordSecretKey]).toBe("bootstrap");
   });
 
   it("does not claim an already claimed job while its executor is active", async () => {
@@ -256,7 +282,7 @@ describe("SERVER-ONBOARD logic", () => {
     const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
     await service.addServer({ companyId: "company-1", slug: "password-key", name: "Server", hostname: "192.0.2.7", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password", password: "bootstrap" }, createdBy: null });
     const name = store.servers[0].accessKeySecretKey;
-    expect(name).toBe("fleet/password-key/access-key");
+    expect(name).toMatch(/^fleet\/password-key\/[^/]+\/access-key$/);
     const stored = await mockSecrets.readSecret("company-1", name);
     expect(stored).toBeTruthy();
     expect(sshPublicKey(stored!)).toMatch(/^ssh-ed25519 /);
@@ -266,12 +292,12 @@ describe("SERVER-ONBOARD logic", () => {
   });
 
   it("retains the bootstrap password when an access report has no durable key", async () => {
-    const { mockStore, mockSecrets, mockGetServer, secretsStore } = createMocks();
+    const { mockStore, mockSecrets, mockGetServer, secretsStore, store } = createMocks();
     const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
     await service.addServer({ companyId: "company-1", slug: "no-durable-key", name: "Server", hostname: "192.0.2.7", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password", password: "bootstrap" }, createdBy: null });
     await service.claim("company-1", "valid-executor-token");
     await service.report("valid-executor-token", { companyId: "company-1", jobId: "job-1", entry: { step: "access", result: "ok", detail: null, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString() } });
-    expect(secretsStore["fleet/no-durable-key/bootstrap-password"]).toBe("bootstrap");
+    expect(secretsStore[store.servers[0].passwordSecretKey]).toBe("bootstrap");
   });
 
   it("authenticates ownership reports and derives server scope from the active job", async () => {
@@ -343,7 +369,7 @@ describe("SERVER-ONBOARD logic", () => {
 
     expect(result.serverId).toBe("server-1");
     expect(result.generatedPublicKey).toBeNull();
-    expect(secretsStore["fleet/srv-1/bootstrap-password"]).toBe("pwd-1");
+    expect(secretsStore[store.servers[0].passwordSecretKey]).toBe("pwd-1");
 
     expect(store.servers[0]).toMatchObject({
       slug: "srv-1",
@@ -352,8 +378,8 @@ describe("SERVER-ONBOARD logic", () => {
       port: 2222,
       username: "deploy",
       role: "build-runner",
-      passwordSecretKey: "fleet/srv-1/bootstrap-password",
-      accessKeySecretKey: "fleet/srv-1/access-key",
+      passwordSecretKey: expect.stringMatching(/^fleet\/srv-1\/[^/]+\/bootstrap-password$/),
+      accessKeySecretKey: expect.stringMatching(/^fleet\/srv-1\/[^/]+\/access-key$/),
       onboardState: "new",
     });
 
@@ -387,7 +413,7 @@ describe("SERVER-ONBOARD logic", () => {
     expect(jobAfterReport?.stepLog).toContainEqual(stepEntry);
     expect(store.servers[0].onboardState).toBe("onboarding");
     // The report alone does not establish that a durable key exists.
-    expect(secretsStore["fleet/srv-1/bootstrap-password"]).toBe("pwd-1");
+    expect(secretsStore[store.servers[0].passwordSecretKey]).toBe("pwd-1");
 
     // 4. Report final success
     const finalJob = await service.report("valid-executor-token", {
@@ -418,7 +444,7 @@ describe("SERVER-ONBOARD logic", () => {
     await service.addServer({ companyId: "company-1", slug: "retained", name: "Retained", hostname: "192.0.2.3", port: 22, username: "root", role: "generic", keepPassword: true, auth: { type: "password", password: "pwd-retained" }, createdBy: "actor-1" });
     expect(store.servers[0].keepPassword).toBe(true);
     await service.report("valid-executor-token", { companyId: "company-1", jobId: "job-1", entry: { step: "access", startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), result: "ok", detail: null } });
-    expect(secretsStore["fleet/retained/bootstrap-password"]).toBe("pwd-retained");
+    expect(secretsStore[store.servers[0].passwordSecretKey]).toBe("pwd-retained");
   });
 
   it("can start subsequent job", async () => {
@@ -492,8 +518,7 @@ describe("SERVER-ONBOARD logic", () => {
         createdBy: null,
       }),
     ).rejects.toThrow("DB error");
-    expect(secretsStore["fleet/orphan-test/bootstrap-password"]).toBeUndefined();
-    expect(secretsStore["fleet/orphan-test/access-key"]).toBeUndefined();
+    expect(Object.keys(secretsStore)).toEqual([]);
   });
 
   it("removes the bootstrap secret if access-key persistence fails", async () => {
@@ -505,7 +530,7 @@ describe("SERVER-ONBOARD logic", () => {
     };
     const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
     await expect(service.addServer({ companyId: "company-1", slug: "failed-key", name: "Server", hostname: "192.0.2.7", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password", password: "bootstrap" }, createdBy: null })).rejects.toThrow("secret store unavailable");
-    expect(secretsStore["fleet/failed-key/bootstrap-password"]).toBeUndefined();
+    expect(Object.keys(secretsStore)).toEqual([]);
   });
 
   it("blocks concurrent active jobs for the same server", async () => {

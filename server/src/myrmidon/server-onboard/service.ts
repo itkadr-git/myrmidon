@@ -18,6 +18,7 @@
 // - one-time secret handoff: the claim response carries values exactly once
 //   and they never touch the step log (maskStepDetail re-masks detail).
 
+import { randomUUID } from "node:crypto";
 import { generateSshKeyPair } from "./ssh-key.js";
 import { parseOwnedFleetResource } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
@@ -144,8 +145,8 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
     }
   }
 
-  function secretName(slug: string, kind: "bootstrap-password" | "access-key"): string {
-    return `fleet/${slug}/${kind}`;
+  function secretName(slug: string, attemptId: string, kind: "bootstrap-password" | "access-key"): string {
+    return `fleet/${slug}/${attemptId}/${kind}`;
   }
 
   // The sweep has no natural company scope; the activity row is instance-level.
@@ -196,6 +197,8 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
       const existing = await deps.getServerBySlug?.(input.companyId, input.slug);
       if (existing) throw new OnboardServiceError(409, `Server slug already exists: ${input.slug}`);
 
+      // Each attempt owns its secrets; losing the slug race cannot affect the winner.
+      const attemptId = randomUUID();
       const keepPassword = input.auth.type === "password" && input.keepPassword && deps.settings.allowKeepPassword;
       let generatedPublicKey: string | null = null;
       let passwordSecretName: string | null = null;
@@ -206,8 +209,8 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
         if (input.auth.type === "password") {
           passwordSecretName = await deps.secrets.putSecret(
             input.companyId,
-            secretName(input.slug, "bootstrap-password"),
-            `fleet-${input.slug}-bootstrap-password`,
+            secretName(input.slug, attemptId, "bootstrap-password"),
+            `fleet-${attemptId}-bootstrap-password`,
             input.auth.password,
             "SERVER-ONBOARD: one-time bootstrap password",
           );
@@ -215,8 +218,8 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
         const pair = (deps.generateKeyPair ?? defaultGenerateKeyPair)();
         accessKeySecretName = await deps.secrets.putSecret(
           input.companyId,
-          secretName(input.slug, "access-key"),
-          `fleet-${input.slug}-access-key`,
+          secretName(input.slug, attemptId, "access-key"),
+          `fleet-${attemptId}-access-key`,
           pair.privateKey,
           "SERVER-ONBOARD: board access key (private)",
         );
