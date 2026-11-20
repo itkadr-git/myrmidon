@@ -840,6 +840,19 @@ describe("company migration dry run", () => {
     expect(saved?.companyId).toBe(destination.id);
   });
 
+  it("does not settle rollback when destination ownership remains but its foreign key was cleared", async () => {
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "orphan-rollback-source", "orphan-rollback-key");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Orphan rollback destination" }, { transferRunId: run.id });
+    await companyTransferRunService.releaseApplyClaim(db, run.id, "interrupted");
+    expect(await companyTransferRunService.claimMigrationRollback(db, run.id, "orphan-rollback-source")).toBe(true);
+    await db.update(companyTransferRuns).set({ companyId: null }).where(eq(companyTransferRuns.id, run.id));
+
+    expect(await companyTransferRunService.finishMigrationRollback(db, run.id)).toBe(false);
+    expect((await companyTransferRunService.getRun(db, run.id))?.status).toBe("rolling_back");
+    expect((await db.select().from(companies)).some((company) => company.id === destination.id)).toBe(true);
+  });
+
   it("settles rollback once and retains the migration identity after cleanup", async () => {
     const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "rollback-complete-source", "rollback-complete-key");
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
