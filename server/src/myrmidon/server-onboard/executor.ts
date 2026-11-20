@@ -359,7 +359,7 @@ export class FleetOnboardExecutor {
             try {
               let preparation: SshExecutionResult;
               try {
-                const restoreScript = `#!/bin/sh\nset -eu\nif [ -f ${rollbackDir}/policy-changed ]; then\n  ufw default ${incomingPolicy} incoming\nfi\n`;
+                const restoreScript = `#!/bin/sh\nset -eu\nif [ -f ${rollbackDir}/policy-changed ]; then\n  current=$(ufw status verbose)\n  if printf "%s\\n" "$current" | grep -Eq "^Default: deny \\(incoming\\),"; then\n    ufw default ${incomingPolicy} incoming\n  fi\nfi\n`;
                 preparation = await activeSsh.execute(`: prepare-myrmidon-firewall-restore; sudo mkdir -m 700 ${rollbackDir} && printf '%s' '${restoreScript}' | sudo tee ${rollbackDir}/restore.sh >/dev/null && sudo chmod 700 ${rollbackDir}/restore.sh && sudo sh -n ${rollbackDir}/restore.sh`);
               } catch (error) {
                 const cause = error instanceof Error ? error.message : String(error);
