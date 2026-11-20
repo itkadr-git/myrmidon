@@ -57,6 +57,18 @@ const support = await getEmbeddedPostgresTestSupport();
         req.on("error", reject); req.end();
       });
       expect(submitWithoutPin).toBe(428);
+      const post = (token: string, cert = client, match?: string) => new Promise<number>((resolve, reject) => {
+        const req = httpsRequest({ host: "127.0.0.1", port: address.port,
+          path: `/api/service/native-runs/${randomUUID()}/finalization-requests`, method: "POST",
+          ...cert, rejectUnauthorized: false,
+          headers: { authorization: `Bearer ${token}`, ...(match ? { "if-match": match } : {}) },
+        }, (res) => { res.resume(); res.on("end", () => resolve(res.statusCode ?? 0)); });
+        req.on("error", reject); req.end();
+      });
+      expect(await post(issued.token)).toBe(401);
+      expect(await post(submit.token, other)).toBe(401);
+      expect(await post(submit.token, client, 'W/"weak"')).toBe(400);
+      expect(await post(submit.token, client, `"${"a".repeat(64)}"`)).toBe(503);
       const first = await call(issued.token);
       expect(first.status).toBe(200);
       expect(first.etag).toMatch(/^"[a-f0-9]{64}"$/);
