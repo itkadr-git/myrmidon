@@ -416,8 +416,8 @@ export const companyTransferRunService = {
       .set({ status: "completed", error: null, finishedAt: new Date(), updatedAt: new Date() })
       .where(and(
         eq(companyTransferRuns.id, runId),
-        // Migration completion is meaningful only after atomic destination ownership.
-        sql`(coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration' or (${companyTransferRuns.status} = 'applying' and ${companyTransferRuns.companyId} is not null))`,
+        // A completed migration must retain the same atomically claimed destination.
+        sql`(coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration' or (${companyTransferRuns.status} = 'applying' and ${companyTransferRuns.companyId} is not null and ${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true' and ${companyTransferRuns.companyId}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId'))`,
       ));
   },
 
