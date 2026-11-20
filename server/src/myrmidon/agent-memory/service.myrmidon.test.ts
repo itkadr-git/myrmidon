@@ -231,6 +231,20 @@ describe("parseMemoryPage", () => {
 });
 
 describe("agentMemoryService", () => {
+  it("does not resolve credentials or contact a bank for strict diagnostics", async () => {
+    const { deps, calls, logActivity } = makeDeps();
+    const client = vi.fn(deps.client);
+    const result = await agentMemoryService({ ...deps, client }).probe(AGENT, COMPANY);
+    expect(result).toMatchObject({
+      ready: false,
+      checks: [{ capability: "authenticatedBankAccess", status: "UNSUPPORTED", reason: "credential_resolution_required" }],
+    });
+    expect(deps.readSecretValue).not.toHaveBeenCalled();
+    expect(client).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+    expect(logActivity).not.toHaveBeenCalled();
+  });
+
   it("status reports the bank and enabled flag", async () => {
     const { deps } = makeDeps();
     const service = agentMemoryService(deps);
