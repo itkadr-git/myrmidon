@@ -3,10 +3,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { companies, createDb } from "@myrmidon/db";
+import { agents, companies, createDb } from "@myrmidon/db";
 import { defaultAgentGatewayKeyDeps } from "../myrmidon/litellm-keys/agent-keys.js";
 import { mintRunGatewayKey, revokeRunGatewayKey } from "../myrmidon/litellm-keys/run-keys.js";
 import { secretService } from "../services/secrets.js";
+import { heartbeatService } from "../services/heartbeat.js";
 import { findRunScopedGatewayKeyRef, removeRunScopedGatewayKeyRef } from "../myrmidon/litellm-costs/bot-keys.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -81,4 +82,47 @@ describeDb("run key with the real secret service", () => {
     await expect(secrets.resolveEnvBindings(companyId, { [first.envKey]: first.secretRef })).rejects.toThrow();
     expect((await secrets.resolveEnvBindings(companyId, { [second.envKey]: second.secretRef })).env[second.envKey]).toBe("second-run-value");
   }, 45_000);
+
+  it("mints before lookup and sends only the current run credential to Hermes", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Hermes", issuePrefix: `H${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`, requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "test" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Hermes", role: "engineer", status: "idle", adapterType: "hermes_gateway", adapterConfig: { apiBaseUrl: "http://127.0.0.1:8642", apiKey: "test-gateway-auth", timeoutSec: 5 }, runtimeConfig: {}, permissions: {} });
+    await secretService(db).create(companyId, { name: "gateway-admin", provider: "local_encrypted", value: "test-admin" });
+    const oldBase = process.env.MYRMIDON_LITELLM_BASE_URL;
+    const oldAdmin = process.env.MYRMIDON_LITELLM_ADMIN_KEY_SECRET;
+    process.env.MYRMIDON_LITELLM_BASE_URL = "http://gateway.test";
+    process.env.MYRMIDON_LITELLM_ADMIN_KEY_SECRET = "gateway-admin";
+    const minted = new Map<string, string>();
+    const delivered: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      if (target.endsWith("/key/generate")) minted.set(body.key_alias, body.key);
+      if (target.endsWith("/v1/runs")) {
+        expect(minted.get(`llm-gateway-run-${init?.headers && new Headers(init.headers).get("Idempotency-Key")}`)).toBe(body.model_credential?.api_key);
+        delivered.push(body.model_credential.api_key);
+        return new Response(JSON.stringify({ run_id: `remote-${delivered.length}`, status: "started" }), { status: 200 });
+      }
+      if (target.includes("/v1/runs/")) return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+      return new Response(JSON.stringify({}), { status: 200 });
+    }));
+    const heartbeat = heartbeatService(db);
+    try {
+      for (let i = 0; i < 2; i++) {
+        const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+        expect(run).not.toBeNull();
+        await heartbeat.drainActiveRunExecutions();
+        expect((await heartbeat.getRun(run!.id))?.status).toBe("succeeded");
+        expect(await findRunScopedGatewayKeyRef(db, companyId, run!.id, {})).toBeNull();
+      }
+      expect(delivered).toHaveLength(2);
+      expect(delivered[0]).not.toBe(delivered[1]);
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+      vi.unstubAllGlobals();
+      if (oldBase === undefined) delete process.env.MYRMIDON_LITELLM_BASE_URL; else process.env.MYRMIDON_LITELLM_BASE_URL = oldBase;
+      if (oldAdmin === undefined) delete process.env.MYRMIDON_LITELLM_ADMIN_KEY_SECRET; else process.env.MYRMIDON_LITELLM_ADMIN_KEY_SECRET = oldAdmin;
+    }
+  }, 90_000);
 });
