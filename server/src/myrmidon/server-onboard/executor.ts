@@ -236,9 +236,12 @@ export class FleetOnboardExecutor {
 
             // Optional password disable (only after key login verified)
             if (!claim.options.keepPassword) {
-              await activeSsh.execute(
+              const writeConfig = await activeSsh.execute(
                 "sudo mkdir -p /etc/ssh/sshd_config.d && printf 'PasswordAuthentication no\\nKbdInteractiveAuthentication no\\n' | sudo tee /etc/ssh/sshd_config.d/50-myrmidon-hardening.conf",
               );
+              if (writeConfig.exitCode !== 0) {
+                throw new Error("Unable to write SSH password hardening configuration");
+              }
               const sshdTest = await activeSsh.execute("sudo sshd -t");
               if (sshdTest.exitCode !== 0) {
                 await activeSsh.execute("sudo rm -f /etc/ssh/sshd_config.d/50-myrmidon-hardening.conf");
