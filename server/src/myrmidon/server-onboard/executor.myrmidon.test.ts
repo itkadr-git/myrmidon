@@ -1311,8 +1311,12 @@ exit 97
     const initial = new MockSshExecutor();
     const fresh = new MockSshExecutor();
     initial.mockResponse(/ufw status/, { stdout: "Status: active\n", exitCode: 0 });
+    initial.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    initial.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     fresh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "incorrect", exitCode: 0 });
-    const connections = [initial, fresh];
+    const restored = new MockSshExecutor();
+    restored.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
+    const connections = [initial, fresh, restored];
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => {
       const connection = connections.shift();
       if (!connection) throw new Error("Unexpected SSH connection");
@@ -1326,6 +1330,9 @@ exit 97
 
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
+    expect(fresh.hasExecuted('echo "ufw-connectivity-ok"')).toBe(true);
+    expect(initial.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
+    expect(restored.hasExecuted('echo "ufw-connectivity-ok"')).toBe(true);
     expect(initial.hasExecuted(/ufw disable/)).toBe(false);
   });
 
