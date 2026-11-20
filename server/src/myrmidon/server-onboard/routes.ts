@@ -82,6 +82,7 @@ export const reportSchema = z
     error: z.string().max(2000).nullable().optional(),
     hostKeyFingerprint: z.string().max(256).nullable().optional(),
     verifiedAccessPublicKey: z.string().max(256).optional(),
+    ownedFirewallRule: z.object({ kind: z.literal("firewall_rule"), backend: z.literal("ufw"), rule: z.string().max(32), marker: z.string().max(128) }).strict().optional(),
   })
   .strict();
 
@@ -218,6 +219,7 @@ export function onboardRoutes(deps: { service: OnboardService }) {
         error: body.error ?? null,
         hostKeyFingerprint: body.hostKeyFingerprint ?? null,
         verifiedAccessPublicKey: body.verifiedAccessPublicKey,
+        ownedFirewallRule: body.ownedFirewallRule,
       });
       if (!job) throw notFound("Job not found");
       res.json(job);

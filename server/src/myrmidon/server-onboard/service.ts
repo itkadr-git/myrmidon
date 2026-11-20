@@ -20,7 +20,7 @@
 
 import { randomUUID } from "node:crypto";
 import { generateSshKeyPair, sshPublicKey } from "./ssh-key.js";
-import { parseOwnedFleetResource } from "@myrmidon/shared";
+import { parseOwnedFleetResource, type OwnedFleetResource } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
@@ -359,7 +359,7 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
     /** Executor report after each step; also the terminal transition. */
     async report(
       presentedToken: string | null | undefined,
-      input: { companyId: string; jobId: string; step?: string; entry?: OnboardStepLogEntry; status?: OnboardJob["status"]; error?: string | null; hostKeyFingerprint?: string | null; verifiedAccessPublicKey?: string },
+      input: { companyId: string; jobId: string; step?: string; entry?: OnboardStepLogEntry; status?: OnboardJob["status"]; error?: string | null; hostKeyFingerprint?: string | null; verifiedAccessPublicKey?: string; ownedFirewallRule?: unknown },
     ): Promise<OnboardJob | null> {
       requireEnabled();
       requireExecutorToken(presentedToken);
@@ -367,6 +367,26 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
       if (!job) throw new OnboardServiceError(404, "Job not found");
       if (job.status !== "claimed" && job.status !== "running") {
         throw new OnboardServiceError(409, "Onboarding job is no longer active");
+      }
+
+      let ownedFirewallRule: Extract<OwnedFleetResource, { kind: "firewall_rule" }> | undefined;
+      if (input.ownedFirewallRule !== undefined) {
+        if (job.kind !== "onboard" || input.status !== "succeeded") {
+          throw new OnboardServiceError(400, "Firewall ownership requires successful onboarding");
+        }
+        if (!job.stepLog.some((step) => step.step === "harden" && step.result === "ok")) {
+          throw new OnboardServiceError(409, "Firewall ownership requires verified hardening");
+        }
+        let resource: OwnedFleetResource;
+        try { resource = parseOwnedFleetResource(input.ownedFirewallRule); }
+        catch { throw new OnboardServiceError(400, "Invalid firewall rule identity"); }
+        const server = await deps.store.getServerById(job.companyId, job.serverId);
+        const scope = `myrmidon:${job.companyId}:${job.serverId}:`;
+        if (!server || resource.kind !== "firewall_rule" || resource.rule !== `allow ${server.port}/tcp` ||
+            !resource.marker.startsWith(scope) || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(resource.marker.slice(scope.length))) {
+          throw new OnboardServiceError(400, "Firewall rule identity does not match the onboard server");
+        }
+        ownedFirewallRule = resource;
       }
 
       let bootstrapToDelete: string | null = null;
@@ -393,6 +413,7 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
 
       const updated = await deps.store.updateJob(input.companyId, input.jobId, {
         requireClaimed: true,
+        ownedFirewallRule,
         status: input.status,
         step: input.step ?? (input.status ? null : undefined),
         stepLogEntry: input.entry,
@@ -402,7 +423,7 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
 
       // Server state follows the job.
       const isFailed = input.status === "failed" || input.entry?.result === "failed";
-      if (input.status === "succeeded") {
+      if (input.status === "succeeded" && !ownedFirewallRule) {
         const nextState = job.kind === "decommission" ? "decommissioned" : "ready";
         await deps.store.updateServerOnboard(job.companyId, job.serverId, {
           onboardState: nextState,

@@ -15,7 +15,7 @@ import {
   type OnboardJobStatus,
   type OnboardStepLogEntry,
 } from "./domain.js";
-import type { FleetOwnershipInventory, OwnedFleetResource } from "@myrmidon/shared";
+import { appendOwnedFleetResource, type FleetOwnershipInventory, type OwnedFleetResource } from "@myrmidon/shared";
 
 /** Registry row shape the onboarding flow needs; fleet-console maps its own view. */
 export type OnboardServerRow = {
@@ -77,7 +77,7 @@ export interface FleetOnboardStore {
   updateJob(
     companyId: string,
     jobId: string,
-    patch: { status?: OnboardJobStatus; step?: string | null; stepLogEntry?: OnboardStepLogEntry; error?: string | null; requireClaimed?: boolean },
+    patch: { status?: OnboardJobStatus; step?: string | null; stepLogEntry?: OnboardStepLogEntry; error?: string | null; requireClaimed?: boolean; ownedFirewallRule?: Extract<OwnedFleetResource, { kind: "firewall_rule" }> },
   ): Promise<OnboardJob | null>;
   expireStale(olderThanMs: number): Promise<number>;
   /** Registry rows the onboarding flow owns (fleet-console reads them too). */
@@ -288,7 +288,7 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
       const log: OnboardStepLogEntry[] = Array.isArray(current.stepLog) ? (current.stepLog as OnboardStepLogEntry[]) : [];
       const nextLog = patch.stepLogEntry ? appendStepLog(log, patch.stepLogEntry) : log;
       const finished = patch.status === "succeeded" || patch.status === "failed" || patch.status === "expired";
-      const [row] = await db
+      const update = (client: Pick<Db, "update">) => client
         .update(myrmidonFleetOnboardJobs)
         .set({
           ...(patch.status ? { status: patch.status } : {}),
@@ -304,7 +304,27 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
           patch.requireClaimed ? sql`${myrmidonFleetOnboardJobs.status} IN ('claimed', 'running')` : undefined,
         ))
         .returning();
-      return row ? toJob(row) : null;
+      const resource = patch.ownedFirewallRule;
+      if (!resource) {
+        const [row] = await update(db);
+        return row ? toJob(row) : null;
+      }
+      if (patch.status !== "succeeded" || !patch.requireClaimed || current.kind !== "onboard") {
+        throw new Error("Firewall ownership requires successful completion of an active onboard job");
+      }
+      return db.transaction(async (tx) => {
+        const serverScope = and(eq(myrmidonFleetServers.companyId, companyId), eq(myrmidonFleetServers.id, current.serverId));
+        // Match the ownership endpoint's server-before-job lock order.
+        const [server] = await tx.select({ inventory: myrmidonFleetServers.ownershipInventory })
+          .from(myrmidonFleetServers).where(serverScope).for("update");
+        if (!server) throw new Error("Fleet server not found");
+        const [row] = await update(tx);
+        if (!row) return null;
+        const ownershipInventory = appendOwnedFleetResource(server.inventory, companyId, current.serverId, jobId, resource);
+        const now = new Date();
+        await tx.update(myrmidonFleetServers).set({ ownershipInventory, onboardState: "ready", lastCheckOk: true, lastCheckAt: now, updatedAt: now }).where(serverScope);
+        return toJob(row);
+      });
     },
 
     async expireStale(olderThanMs) {
@@ -411,7 +431,6 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
             eq(myrmidonFleetOnboardJobs.kind, "onboard")))
           .for("update").then((rows) => rows[0] ?? null);
         if (!job) throw new Error("Ownership requires an active onboard job for this server");
-        const { appendOwnedFleetResource } = await import("@myrmidon/shared");
         const next = appendOwnedFleetResource(current.inventory, companyId, serverId, jobId, resource);
         await tx.update(myrmidonFleetServers).set({ ownershipInventory: next, updatedAt: new Date() })
           .where(and(eq(myrmidonFleetServers.companyId, companyId), eq(myrmidonFleetServers.id, serverId)));

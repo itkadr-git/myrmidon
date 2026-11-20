@@ -45,7 +45,7 @@ export function parseOwnedFleetResource(value: unknown): OwnedFleetResource {
       if (resource.backend !== "ufw" || typeof resource.rule !== "string" ||
           !/^allow (?:[1-9][0-9]{0,4})\/(?:tcp|udp)$/.test(resource.rule) ||
           Number(resource.rule.split(" ")[1]?.split("/")[0]) > 65535 ||
-          typeof resource.marker !== "string" || !/^myrmidon:[0-9a-f-]{36}:[0-9a-f-]{36}$/.test(resource.marker)) {
+          typeof resource.marker !== "string" || !/^myrmidon:[0-9a-f-]{36}:[0-9a-f-]{36}(?::[0-9a-f-]{36})?$/.test(resource.marker)) {
         throw new Error("Ownership requires a supported exact firewall rule and scoped marker");
       }
       return { kind: "firewall_rule", backend: "ufw", rule: resource.rule, marker: resource.marker };
@@ -66,7 +66,9 @@ export function parseFleetOwnershipInventory(value: unknown, companyId: string, 
     exactKeys(entry, ["jobId", "resource"]);
     if (typeof entry.jobId !== "string" || !uuid.test(entry.jobId)) throw new Error("Invalid ownership job ID");
     const resource = parseOwnedFleetResource(entry.resource);
-    if (resource.kind === "firewall_rule" && resource.marker !== `myrmidon:${companyId}:${serverId}`) {
+    const scope = `myrmidon:${companyId}:${serverId}`;
+    if (resource.kind === "firewall_rule" && resource.marker !== scope &&
+        !(resource.marker.startsWith(`${scope}:`) && uuid.test(resource.marker.slice(scope.length + 1)))) {
       throw new Error("Firewall ownership marker scope mismatch");
     }
     return { jobId: entry.jobId, resource };

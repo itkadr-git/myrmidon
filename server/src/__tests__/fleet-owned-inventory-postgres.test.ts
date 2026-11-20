@@ -88,6 +88,23 @@ describeEmbeddedPostgres("fleet owned inventory HTTP and persistence contract", 
     expect((await f.read())?.ownershipInventory).toEqual(first);
   });
 
+  it("commits only scoped firewall ownership with successful hardening", async () => {
+    const f = await fixture();
+    await f.store.updateJob(f.companyId, f.job.id, { status: "claimed" });
+    const report = (body: object) => request(f.app).post(`/api/myrmidon/fleet/onboard-jobs/${f.job.id}/report`)
+      .set("x-onboard-token", token).send({ companyId: f.companyId, ...body });
+    const resource = { kind: "firewall_rule", backend: "ufw", rule: "allow 22/tcp", marker: `myrmidon:${f.companyId}:${f.server.id}:${randomUUID()}` };
+    expect((await report({ status: "failed", ownedFirewallRule: resource })).status).toBe(400);
+    expect((await report({ status: "succeeded", ownedFirewallRule: resource })).status).toBe(409);
+    expect((await report({ step: "harden", result: "ok" })).status).toBe(200);
+    expect((await report({ status: "succeeded", ownedFirewallRule: { ...resource, marker: `myrmidon:${f.companyId}:${randomUUID()}:${randomUUID()}` } })).status).toBe(400);
+    expect((await f.read())?.ownershipInventory).toBeNull();
+    expect((await f.store.getJob(f.companyId, f.job.id))?.status).toBe("claimed");
+    expect((await report({ status: "succeeded", ownedFirewallRule: resource })).status).toBe(200);
+    expect(await f.read()).toMatchObject({ onboardState: "ready", ownershipInventory: { resources: [{ jobId: f.job.id, resource }] } });
+    expect((await f.store.getJob(f.companyId, f.job.id))?.status).toBe("succeeded");
+  });
+
   it("rejects foreign scopes and rolls back corrupt inventory without replacing it", async () => {
     const f = await fixture();
     const foreign = await fixture();

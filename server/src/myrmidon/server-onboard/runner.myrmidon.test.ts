@@ -37,11 +37,13 @@ it.each([false, true])("closes every SSH session after stored-key access (firewa
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("missing server address");
   const reports: Array<Record<string, unknown>> = [];
+  const companyId = "11111111-1111-4111-8111-111111111111";
+  const serverId = "22222222-2222-4222-8222-222222222222";
   const fetcher: typeof fetch = async (input, init) => {
     const path = new URL(String(input)).pathname;
     if (path.endsWith("/claim")) return Response.json({
-      job: { id: "job", companyId: "company" },
-      server: { hostname: "127.0.0.1", port: address.port, username: "test", hostKeyFingerprint: null, accessKeySecretKey: "stored" },
+      job: { id: "job", companyId, serverId },
+      server: { id: serverId, hostname: "127.0.0.1", port: address.port, username: "test", hostKeyFingerprint: null, accessKeySecretKey: "stored" },
       steps: harden ? ["access", "harden", "verify"] : ["access", "verify"], options: { keepPassword: true }, secretValues: { bootstrapPassword: "test-password", accessKey: pair.privateKey },
     });
     if (path.endsWith("/host-key")) return Response.json({ accepted: true });
@@ -49,9 +51,15 @@ it.each([false, true])("closes every SSH session after stored-key access (firewa
     throw new Error(`unexpected request: ${path}`);
   };
   try {
-    await runOnboardOnce({ baseUrl: "http://board", companyId: "company", token: "token", fetcher });
+    await runOnboardOnce({ baseUrl: "http://board", companyId, token: "token", fetcher });
     expect(reports.find((report) => report.status === "failed")).toBeUndefined();
-    expect(reports.some((report) => report.status === "succeeded")).toBe(true);
+    const completion = reports.find((report) => report.status === "succeeded");
+    expect(completion).toBeDefined();
+    if (harden) {
+      expect(completion?.ownedFirewallRule).toMatchObject({ kind: "firewall_rule", backend: "ufw", rule: `allow ${address.port}/tcp` });
+    } else {
+      expect(completion?.ownedFirewallRule).toBeUndefined();
+    }
     expect(authMethods).toContain("password");
     expect(authMethods).toContain("publickey");
     expect(installed).toContain(pair.publicKey.trim());

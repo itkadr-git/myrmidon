@@ -7,6 +7,9 @@ import { MockSshExecutor } from "../../services/fleet/mock-ssh-executor.js";
 import { defaultGenerateKeyPair, FleetOnboardExecutor, type ExecutorReporter } from "./executor.js";
 import type { OnboardJobClaim } from "./store.js";
 
+const companyId = "11111111-1111-4111-8111-111111111111";
+const serverId = "22222222-2222-4222-8222-222222222222";
+
 class VerifiedMockSsh extends MockSshExecutor {
   constructor(options: string | ConstructorParameters<typeof MockSshExecutor>[0] = "SHA256:testfingerprint123456789") {
     super(typeof options === "string" ? undefined : options);
@@ -26,10 +29,10 @@ class VerifiedMockSsh extends MockSshExecutor {
 function createMockReporter(): {
   reporter: ExecutorReporter;
   steps: Array<{ step: string; result: "ok" | "skipped" | "failed"; detail?: string | null }>;
-  completion: { status: "succeeded" | "failed"; error?: string | null; hostKeyFingerprint?: string | null } | null;
+  completion: { status: "succeeded" | "failed"; error?: string | null; hostKeyFingerprint?: string | null; ownedFirewallRule?: Parameters<ExecutorReporter["reportCompletion"]>[4] } | null;
 } {
   const steps: Array<{ step: string; result: "ok" | "skipped" | "failed"; detail?: string | null }> = [];
-  let completion: { status: "succeeded" | "failed"; error?: string | null; hostKeyFingerprint?: string | null } | null = null;
+  let completion: ReturnType<typeof createMockReporter>["completion"] = null;
 
   return {
     reporter: {
@@ -37,8 +40,8 @@ function createMockReporter(): {
       async reportStep(step, result, detail) {
         steps.push({ step, result, detail });
       },
-      async reportCompletion(status, error, hostKeyFingerprint) {
-        completion = { status, error, hostKeyFingerprint };
+      async reportCompletion(status, error, hostKeyFingerprint, _publicKey, ownedFirewallRule) {
+        completion = { status, error, hostKeyFingerprint, ownedFirewallRule };
       },
     },
     steps,
@@ -164,8 +167,8 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     const claim: OnboardJobClaim & { secretValues: Record<string, string> } = {
       job: {
         id: "job-1",
-        companyId: "comp-1",
-        serverId: "srv-1",
+        companyId,
+        serverId,
         kind: "onboard",
         status: "claimed",
         step: "connect",
@@ -393,11 +396,12 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     ssh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
-      job: { id: "job-firewall-success", companyId: "c1", serverId: "s1" },
+      job: { id: "job-firewall-success", companyId, serverId },
       server: { hostname: "1.2.3.4", port: 22, username: "root" },
       steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
     };
-    const result = await executor.execute(claim, createMockReporter().reporter);
+    const reporter = createMockReporter();
+    const result = await executor.execute(claim, reporter.reporter);
     expect(result.error ?? null).toBeNull();
     expect(result.status).toBe("succeeded");
     const commands = ssh.executedCommands.map(({ command }) => command);
@@ -407,6 +411,10 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     const verify = commands.findLastIndex((command) => command.includes('echo "ufw-connectivity-ok"'));
     expect(timer).toBeGreaterThanOrEqual(0);
     expect(allow).toBeGreaterThan(timer);
+    const resource = reporter.completion?.ownedFirewallRule;
+    expect(resource).toMatchObject({ kind: "firewall_rule", backend: "ufw", rule: "allow 22/tcp",
+      marker: expect.stringMatching(new RegExp(`^myrmidon:${companyId}:${serverId}:[0-9a-f-]{36}$`)) });
+    expect(commands[allow]).toContain(`comment ${resource?.marker}`);
     expect(deny).toBeGreaterThan(allow);
     expect(verify).toBeGreaterThan(deny);
     expect(ssh.connectionHistory.length).toBeGreaterThanOrEqual(2);
@@ -471,7 +479,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     ssh.mockResponse(/check-myrmidon-firewall-prerequisites/, { stdout: "", exitCode: 0 });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
-      job: { id: "job-firewall-timer-unconfirmed", companyId: "c1", serverId: "s1" },
+      job: { id: "job-firewall-timer-unconfirmed", companyId, serverId },
       server: { hostname: "1.2.3.4", port: 22, username: "root" },
       steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
     };
@@ -536,12 +544,15 @@ esac
       } });
       const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
       const claim: any = {
-        job: { id: "job-real-concurrent-partial", companyId: "c1", serverId: "s1" },
+        job: { id: "job-real-concurrent-partial", companyId, serverId },
         server: { hostname: "1.2.3.4", port: 22, username: "root" },
         steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
       };
-      const result = await executor.execute(claim, createMockReporter().reporter);
+      const reporter = createMockReporter();
+      const result = await executor.execute(claim, reporter.reporter);
       expect(result.status).toBe("failed");
+      expect(reporter.completion?.status).toBe("failed");
+      expect(reporter.completion?.ownedFirewallRule).toBeUndefined();
       if (failure === "ambiguous") {
         expect(result.error).toMatch(/rollback failed or unconfirmed/);
         expect(readFileSync(calls, "utf8")).not.toContain("ufw --force delete");
@@ -576,7 +587,7 @@ esac
       return connection;
     } });
     const claim: any = {
-      job: { id: "job-deny-restore-ssh", companyId: "c1", serverId: "s1" },
+      job: { id: "job-deny-restore-ssh", companyId, serverId },
       server: { hostname: "1.2.3.4", port: 22, username: "root" },
       steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
     };
@@ -624,7 +635,7 @@ esac
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 1, stderr: "timer unavailable" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
-      job: { id: "job-password-then-firewall-failure", companyId: "c1", serverId: "s1" },
+      job: { id: "job-password-then-firewall-failure", companyId, serverId },
       server: { hostname: "1.2.3.4", port: 22, username: "root", accessKeySecretKey: "stored" },
       steps: ["access", "harden"], options: { keepPassword: false },
       secretValues: { accessKey: defaultGenerateKeyPair().privateKey },

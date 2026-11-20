@@ -15,6 +15,7 @@
 // - Step failure rolls back hardening changes and leaves server in needs_attention.
 
 import { randomUUID } from "node:crypto";
+import type { OwnedFleetResource } from "@myrmidon/shared";
 import { generateSshKeyPair, sshPublicKey } from "./ssh-key.js";
 import { OnboardSshTransport } from "./ssh-transport.js";
 import type {
@@ -37,6 +38,7 @@ export interface ExecutorReporter {
     error?: string | null,
     hostKeyFingerprint?: string | null,
     verifiedAccessPublicKey?: string,
+    ownedFirewallRule?: Extract<OwnedFleetResource, { kind: "firewall_rule" }>,
   ): Promise<void>;
 }
 
@@ -73,6 +75,7 @@ export class FleetOnboardExecutor {
     const stepsCompleted: string[] = [];
     let discoveredFingerprint: string | null = claim.server.hostKeyFingerprint ?? null;
     let verifiedAccessPublicKey: string | undefined;
+    let ownedFirewallRule: Extract<OwnedFleetResource, { kind: "firewall_rule" }> | undefined;
     let currentStep: string | null = null;
     let activeSsh: SshExecutor | null = null;
     let activePrivateKey: string | null = claim.secretValues.accessKey ?? null;
@@ -386,7 +389,14 @@ touch ${backup}/restored`;
             }
 
             const ssh = activeSsh;
-            const timer = `myrmidon-firewall-${randomUUID()}`;
+            const nonce = randomUUID();
+            const timer = `myrmidon-firewall-${nonce}`;
+            const { companyId, serverId } = claim.job;
+            const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+            if (!uuid.test(companyId) || !uuid.test(serverId)) {
+              throw new Error("Firewall hardening requires a valid ownership scope");
+            }
+            const ruleMarker = `myrmidon:${companyId}:${serverId}:${nonce}`;
             const rollbackDir = `/var/tmp/${timer}`;
             const incomingPolicy = /^Default:\s+(allow|deny|reject) \(incoming\)/.exec(defaultLines[0] ?? "")?.[1];
             if (!incomingPolicy) throw new Error("Firewall default policy unconfirmed; refusing unsafe firewall changes");
@@ -433,19 +443,19 @@ if [ -f ${rollbackDir}/rule-changed ]; then
   rules=$(ufw status numbered)
   statuses=$(printf "%s\\n" "$rules" | grep -iE "^[[:space:]]*Status:" || true)
   [ "$statuses" = "Status: active" ] || exit 1
-  matches=$(printf "%s\\n" "$rules" | grep -E "# ${timer}[[:space:]]*$" || true)
+  matches=$(printf "%s\\n" "$rules" | grep -E "# ${ruleMarker}[[:space:]]*$" || true)
   if [ -n "$matches" ]; then
-    unexpected=$(printf "%s\\n" "$matches" | grep -vE "^\\[[[:space:]]*[0-9]+\\][[:space:]]+${port}/tcp( \\(v6\\))?[[:space:]]+ALLOW IN[[:space:]]+Anywhere( \\(v6\\))?[[:space:]]+# ${timer}[[:space:]]*$" || true)
+    unexpected=$(printf "%s\\n" "$matches" | grep -vE "^\\[[[:space:]]*[0-9]+\\][[:space:]]+${port}/tcp( \\(v6\\))?[[:space:]]+ALLOW IN[[:space:]]+Anywhere( \\(v6\\))?[[:space:]]+# ${ruleMarker}[[:space:]]*$" || true)
     [ -z "$unexpected" ] || exit 1
     [ "$(printf "%s\\n" "$matches" | grep -c .)" -le 2 ] || exit 1
     [ "$(printf "%s\\n" "$matches" | grep -c "(v6)" || true)" -le 1 ] || exit 1
     [ "$(printf "%s\\n" "$matches" | grep -vc "(v6)" || true)" -le 1 ] || exit 1
     candidates=$(printf "%s\\n" "$rules" | grep -E "^\\[[[:space:]]*[0-9]+\\][[:space:]]+${port}/tcp( \\(v6\\))?[[:space:]]+ALLOW IN[[:space:]]+Anywhere( \\(v6\\))?([[:space:]]+#.*)?[[:space:]]*$" || true)
     [ "$candidates" = "$matches" ] || exit 1
-    ufw --force delete allow ${port}/tcp comment ${timer}
+    ufw --force delete allow ${port}/tcp comment ${ruleMarker}
     rules=$(ufw status numbered)
     [ "$(printf "%s\\n" "$rules" | grep -iE "^[[:space:]]*Status:" || true)" = "Status: active" ] || exit 1
-    if printf "%s\\n" "$rules" | grep -Eq "# ${timer}[[:space:]]*$"; then exit 1; fi
+    if printf "%s\\n" "$rules" | grep -Eq "# ${ruleMarker}[[:space:]]*$"; then exit 1; fi
   fi
 fi
 `;
@@ -482,7 +492,7 @@ fi
             // UFW plain allow can replace an existing rule with the same tuple.
             // Prepend avoids replacing it (a duplicate is reported as skipped).
             // Mark intent inside the lock, before a potentially partial apply.
-            const allow = await runLocked("apply-myrmidon-firewall-allow", `touch ${rollbackDir}/rule-changed; LC_ALL=C ufw prepend allow ${port}/tcp comment ${timer}`);
+            const allow = await runLocked("apply-myrmidon-firewall-allow", `touch ${rollbackDir}/rule-changed; LC_ALL=C ufw prepend allow ${port}/tcp comment ${ruleMarker}`);
             const added = allow.stdout.trim().split(/\r?\n/);
             if (allow.exitCode !== 0 || !added.every((line) => /^Rule (?:inserted|added)(?: \(v6\))?$/.test(line))) {
               throw new Error("Firewall SSH allow failed or existing rule ownership is unconfirmed");
@@ -493,6 +503,7 @@ fi
               if (deny.exitCode !== 0) throw new Error("Firewall incoming deny policy failed or original policy changed");
               await verifyFirewallSsh();
             }
+            ownedFirewallRule = { kind: "firewall_rule", backend: "ufw", rule: `allow ${port}/tcp`, marker: ruleMarker };
             await reporter.reportStep("harden", "ok", "Firewall allow-before-deny verified via fresh SSH; rollback remains armed");
             stepsCompleted.push("harden");
             break;
@@ -567,7 +578,7 @@ fi
 
       if (commitFirewall) await commitFirewall();
       if (commitPassword) await commitPassword();
-      await reporter.reportCompletion("succeeded", null, discoveredFingerprint, verifiedAccessPublicKey);
+      await reporter.reportCompletion("succeeded", null, discoveredFingerprint, verifiedAccessPublicKey, ownedFirewallRule);
       pendingFirewallRollback = null;
       if (discardFirewallBackup) await discardFirewallBackup().catch(() => {});
       pendingPasswordRollback = null;
