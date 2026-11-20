@@ -70,6 +70,20 @@ const {
 let tmpDir;
 
 describe("board project workspace GC", () => {
+  it("keeps an old closed scratch containing unpublished non-git work", async () => {
+    const home = path.join(tmpDir, "home");
+    const scratch = path.join(home, "instances/default/projects/company/project/repo/.scratch/ope900");
+    fs.mkdirSync(scratch, { recursive: true });
+    const file = path.join(scratch, "unpublished.txt");
+    fs.writeFileSync(file, "irreplaceable work");
+    const old = new Date(Date.now() - 30 * 3600000);
+    fs.utimesSync(file, old, old);
+    fs.utimesSync(scratch, old, old);
+    const options = { fetchState: async () => ({ ok: true, status: "done", closedAt: old.toISOString() }) };
+    const plan = await scanBoardProjectWorkspaces(home, Date.now(), options);
+    await pruneBoardProjectWorkspaces(plan, path.join(tmpDir, "safety.jsonl"), options);
+    assert.equal(fs.readFileSync(file, "utf8"), "irreplaceable work");
+  });
   it("runs the board pass from the host env file and journals removals", () => {
     const home = path.join(tmpDir, "board-home");
     const repo = path.join(home, "instances/default/projects/company/project/myrmidon");
