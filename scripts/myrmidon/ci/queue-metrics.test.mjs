@@ -319,7 +319,7 @@ test('calculateCiResultLatency still fails when the gap is not explained by the 
   assert.equal(result.passed, false);
 });
 
-function runVerifyLatency(jobs, workflow = 'ci') {
+function runVerifyLatency(jobs, workflow = 'ci', attempt = 1) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-latency-'));
   const file = path.join(dir, 'jobs.json');
   fs.writeFileSync(file, JSON.stringify({ jobs }));
@@ -327,11 +327,20 @@ function runVerifyLatency(jobs, workflow = 'ci') {
     return spawnSync(process.execPath, [
       path.join(import.meta.dirname, 'queue-metrics.mjs'),
       '--verify-latency', '--file', file, '--workflow', workflow,
-    ], { encoding: 'utf8' });
+    ], { encoding: 'utf8', env: { ...process.env, GITHUB_RUN_ATTEMPT: String(attempt) } });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
+
+test('--verify-latency: rerun-only CI result ignores predecessor from attempt 1', () => {
+  const r = runVerifyLatency([
+    { name: 'checks', run_attempt: 1, completed_at: '2026-11-16T02:42:00Z' },
+    { name: 'CI result', run_attempt: 2, created_at: '2026-11-20T04:40:00Z', started_at: '2026-11-20T04:40:05Z' },
+  ], 'ci', 2);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /NOT_APPLICABLE/);
+});
 
 test('--verify-latency: 300s runner queue with green jobs exits 0 and prints a ::warning::', () => {
   const r = runVerifyLatency([
