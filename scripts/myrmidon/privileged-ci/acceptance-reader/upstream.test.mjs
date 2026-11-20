@@ -16,6 +16,14 @@ test('upstream denies malformed issue identity before network access', async () 
   }
 });
 
+test('upstream requires a dedicated service credential, not a board or agent key', () => {
+  const tls = { origin: 'https://example.com', ca: 'ca', cert: 'cert', key: 'key' };
+  for (const token of [undefined, '', 'board-key', 'myrmidon_svc_short']) {
+    assert.throws(() => createUpstream({ ...tls, token }), TypeError);
+  }
+  assert.doesNotThrow(() => createUpstream({ ...tls, token: `myrmidon_svc_${'a'.repeat(43)}` }));
+});
+
 test('readSnapshot issues one GET against the atomic snapshot path', async () => {
   const upstream = createUpstream({ origin: 'https://127.0.0.1:1', ca: 'ca', cert: 'cert', key: 'key' });
   await assert.rejects(upstream.readSnapshot('OPE-123'));
