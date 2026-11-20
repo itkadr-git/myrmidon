@@ -2837,6 +2837,13 @@
       "when": 1795127313609,
       "tag": "0490_soft_spiral",
       "breakpoints": true
+    },
+    {
+      "idx": 491,
+      "version": "7",
+      "when": 1795133008671,
+      "tag": "0491_dapper_whirlwind",
+      "breakpoints": true
     }
   ]
 }
