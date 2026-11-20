@@ -602,6 +602,7 @@ preflight_all
 if ((nightly_pbs_precheck)); then
   "$MYR_SCRIPT_DIR/nightly-backup-guard.sh" || die "nightly PBS precheck failed; nothing was changed"
   log "nightly PBS evidence does not prove migration rehearsal or database rollback"
+  ((DRY_RUN)) || die "PBS precheck is not a deploy authorization; no dump, DB copy or deploy was performed"
 fi
 
 # DEPLOY-HYGIENE: estimate all target image layers (board, changed release
