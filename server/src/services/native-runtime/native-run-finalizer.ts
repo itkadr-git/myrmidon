@@ -1126,6 +1126,9 @@ export async function finalizeNativeRun(input: {
   const allowIncompleteContinuation = record(sourceWake?.payload).continuationIdempotencyKey !== "native-completion-incomplete";
   let supersedesAssessmentId: string | null = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    let attemptedAssessmentId: string | null = null;
+    let decisionCommitted = false;
+    try {
     const authoritativeIssue = await input.db
       .select()
       .from(issues)
@@ -1233,6 +1236,7 @@ export async function finalizeNativeRun(input: {
       assessment,
       supersedesAssessmentId,
     });
+    attemptedAssessmentId = assessmentRow.id;
     await input.db
       .update(nativeRunFinalizations)
       .set({
@@ -1246,8 +1250,6 @@ export async function finalizeNativeRun(input: {
           eq(nativeRunFinalizations.leaseOwner, claim.leaseOwner!),
         ),
       );
-    let decisionCommitted = false;
-    try {
       const committed = await commitNativeStatusDecision({
         db: input.db,
         companyId: run.companyId,
@@ -1377,10 +1379,11 @@ export async function finalizeNativeRun(input: {
     } catch (error) {
       const retryableRace = !decisionCommitted && (error instanceof NativeStatusRaceError || isRetryablePostgresError(error));
       if (retryableRace && attempt < 2) {
-        supersedesAssessmentId = assessmentRow.id;
+        supersedesAssessmentId = attemptedAssessmentId ?? supersedesAssessmentId;
         await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
         continue;
       }
+      if (!attemptedAssessmentId && !retryableRace) throw error;
       return recordRetryableFailure({
         db: input.db,
         run,

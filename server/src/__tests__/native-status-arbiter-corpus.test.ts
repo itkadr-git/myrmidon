@@ -66,6 +66,7 @@ import {
   resolveNativeReconciliationStatus,
 } from "../services/native-runtime/native-finalization-reconciler.js";
 import * as activityLog from "../services/activity-log.js";
+import * as workAssessmentService from "../services/native-runtime/work-assessments.js";
 import { dismissObsoleteNativePolicyReviews } from "../services/native-runtime/obsolete-policy-reviews.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
@@ -2022,6 +2023,30 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     expect(after).toEqual(before);
     expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, seeded.runId))).toEqual([]);
   });
+
+  it("restarts projection after an assessment deadlock", async () => {
+    const template = corpus.fixtures.find((candidate) => candidate.mode === "native")!;
+    const seeded = await seedFixture({
+      ...template, id: `assessment-deadlock-${randomUUID()}`,
+      given: { ...template.given, priorIssueStatus: "in_progress", completionState: "policy_review_cleanup" },
+    });
+    const original = workAssessmentService.recordNativeWorkAssessment;
+    const calls: string[] = [];
+    const spy = vi.spyOn(workAssessmentService, "recordNativeWorkAssessment").mockImplementation(async (input) => {
+      calls.push(input.priorIssueStatus);
+      if (calls.length === 1) {
+        await db.update(issues).set({ status: "in_review", statusVersion: 1 }).where(eq(issues.id, seeded.issueId));
+        throw Object.assign(new Error("deadlock detected"), { code: "40P01" });
+      }
+      return original(input);
+    });
+    try {
+      await finalizeNativeRun({ db, runId: seeded.runId, workspaceFinalizeStatus: "succeeded" });
+      expect(calls.slice(0, 2)).toEqual(["in_progress", "in_review"]);
+    } finally {
+      spy.mockRestore();
+    }
+  }, 30_000);
 
   it("does not record internal finalization failure for a service-required run", async () => {
     const template = corpus.fixtures.find((candidate) => candidate.mode === "native")!;
