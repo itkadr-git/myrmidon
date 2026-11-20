@@ -7,8 +7,8 @@ export function createUpstream({ origin, ca, cert, key, token }) {
   let url;
   try { url = new URL(origin); } catch { throw new TypeError('invalid upstream origin'); }
   if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash || !ca || !cert || !key) throw new TypeError('invalid upstream configuration');
-  const fetchJson = (path) => new Promise((resolve, reject) => {
-    const req = request({ hostname: url.hostname, port: url.port || 443, path, method: 'GET', ca, cert, key, rejectUnauthorized: true, timeout: 5000, headers: { accept: 'application/json', authorization: `Bearer ${token}` } }, (res) => {
+  const fetchJson = (path, etag) => new Promise((resolve, reject) => {
+    const req = request({ hostname: url.hostname, port: url.port || 443, path, method: 'GET', ca, cert, key, rejectUnauthorized: true, timeout: 5000, headers: { accept: 'application/json', authorization: `Bearer ${token}`, ...(etag ? { 'if-match': etag } : {}) } }, (res) => {
       if (res.statusCode !== 200) {
         // The status rides on the error so readSnapshot can tell the board's
         // not-found (404) apart from real failures — without that split the
@@ -47,9 +47,9 @@ export function createUpstream({ origin, ca, cert, key, token }) {
     // foreign and unknown issues); every other failure — 5xx, network,
     // timeout, oversized or invalid payload — rejects so the gateway fails
     // closed with 502 and never a partial body.
-    readSnapshot: async (id) => {
+    readSnapshot: async (id, etag) => {
       try {
-        return await fetchJson(snapshotPath(id));
+        return await fetchJson(snapshotPath(id), etag);
       } catch (error) {
         if (error && error.status === 404) return null;
         throw error;

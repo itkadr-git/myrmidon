@@ -58,13 +58,15 @@ test('gateway to separate mTLS upstream: production pin/verify path, tenant boun
       return;
     }
     const entry = findState(req.url);
-    if (!entry) {
+    if (!entry || entry.issue.companyId !== 'allowed') {
       // Foreign AND unknown issues are the identical upstream 404.
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'Issue not found' }));
       return;
     }
-    res.writeHead(200, { 'content-type': 'application/json' });
+    const etag = `"${createHash('sha256').update(JSON.stringify([entry.issue.id, entry.issue.version, entry.document?.latestRevisionId ?? null])).digest('hex')}"`;
+    if (req.headers['if-match'] && req.headers['if-match'] !== etag) { res.writeHead(412); res.end(); return; }
+    res.writeHead(200, { 'content-type': 'application/json', etag });
     res.end(JSON.stringify({ issue: { ...entry.issue, secret: 'private-relation' }, document: entry.document }));
   });
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');

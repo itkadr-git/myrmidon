@@ -71,6 +71,12 @@ function canonicalPin(snapshot) {
   });
 }
 
+function snapshotEtag(snapshot) {
+  return `"${createHash('sha256').update(JSON.stringify([
+    snapshot.issue.id, snapshot.issue.version, snapshot.document?.latestRevisionId ?? null,
+  ])).digest('hex')}"`;
+}
+
 // The minimal runner-facing projection of a valid snapshot: exactly the pin
 // fields, never upstream-only data.
 function project(snapshot) {
@@ -156,7 +162,14 @@ export function createHandler({ records, credentialStore, readSnapshot, audit = 
         }
         if (!validSnapshot(pinned)) return respond(400);
       }
-      const snapshot = await readSnapshot(path.issue);
+      if (pinned && (pinned.issue.companyId !== companyId || (path.issue !== pinned.issue.id && path.issue !== pinned.issue.identifier))) return respond(404);
+      let snapshot;
+      try {
+        snapshot = await readSnapshot(path.issue, pinned ? snapshotEtag(pinned) : undefined);
+      } catch (error) {
+        if (error?.status === 412 && pinned) return respond(409);
+        throw error;
+      }
       // Upstream not-found: the identical 404 for foreign and unknown issues.
       if (snapshot === null || snapshot === undefined) return respond(404);
       // A 200 payload that does not match the snapshot contract is an
