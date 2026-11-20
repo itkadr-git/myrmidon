@@ -513,6 +513,25 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(connections).toHaveLength(0);
   });
 
+  it("removes the password backup after an immediate hardening failure is restored and verified", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
+    ssh.mockResponse("sudo sshd -t", { exitCode: 1, stderr: "invalid configuration" });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-password-immediate-rollback-cleanup", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["access"], options: { keepPassword: false }, secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    const commands = ssh.executedCommands.map((entry) => entry.command);
+    const restore = commands.findIndex((command) => command.includes("restore-myrmidon-password-config"));
+    const cleanup = commands.findIndex((command) => command.includes("sudo rm -rf /var/tmp/myrmidon-sshd-"));
+    expect(restore).toBeGreaterThanOrEqual(0);
+    expect(cleanup).toBeGreaterThan(restore);
+  });
+
   it("retains the password backup until completion is reported successfully", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
