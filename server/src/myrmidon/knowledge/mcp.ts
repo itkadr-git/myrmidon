@@ -20,7 +20,7 @@
 
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@myrmidon/db";
-import { knowledgeProposeSchema, isKnowledgeAutoSection, defaultAutonomyMatrix, resolveAutonomy } from "@myrmidon/shared";
+import { knowledgeDraftSchema, knowledgeProposeSchema, isKnowledgeAutoSection, defaultAutonomyMatrix, resolveAutonomy } from "@myrmidon/shared";
 import {
   KNOWLEDGE_APPROVAL_REQUIRED_CODE,
   KNOWLEDGE_INJECTION_FLAGGED_CODE,
@@ -127,6 +127,8 @@ export const KNOWLEDGE_TOOL_DEFINITIONS = [
         content: { type: "string" },
         kind: { type: "string", enum: ["note", "wiki", "answer", "task_outcome", "rule"] },
         folderPath: { type: "string" },
+        lang: { type: "string", enum: ["en", "ru"], description: "Revision language." },
+        translationOf: { type: "string", format: "uuid", description: "Canonical revision of this item." },
         changeSummary: { type: "string", maxLength: 1000, description: "Short change note for the revision history." },
         sources: {
           type: "array",
@@ -410,10 +412,13 @@ export function knowledgeMcpRoutes(deps: KnowledgeMcpDeps) {
       case "knowledge_write_draft": {
         assertCleanWrite(String(args.content ?? ""), "content");
         if (typeof args.idOrSlug === "string" && args.idOrSlug.length > 0) {
+          const input = knowledgeDraftSchema.parse(args);
           const revision = await mod.draft(
             args.idOrSlug,
             {
-              content: String(args.content),
+              content: input.content,
+              lang: input.lang,
+              translationOf: input.translationOf,
               changeSummary: typeof args.changeSummary === "string" ? args.changeSummary : null,
               sources: Array.isArray(args.sources) ? (args.sources as never) : undefined,
               force: args.force === true,
