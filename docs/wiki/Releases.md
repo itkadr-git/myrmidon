@@ -23,6 +23,17 @@ always fetches exactly the files that passed the release checks.
 
 ## Release candidates and finals
 
+### 1.6.9 candidate status
+
+`myr-v1.6.9-rc.22` is a prerelease at
+`2d5174055299f6e1959ac95740333788798712b2`. The later main review gate fix
+#4604 is not in that tag. The final candidate SHA, image digests, CI, rollout,
+database audit and two-hour evidence remain pending; this is not a stable
+release announcement. Privileged activation is off and deferred to 1.7;
+live OIDC and privileged finalization are not complete. See the
+[candidate operator notes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/releases/1.6.9.md)
+for the evidence boundaries.
+
 Work lands on `main` all the time; a release cut freezes it into a version.
 RC pre-releases (`myr-vX.Y.Z-rcN`) are published for testing before the
 final tag. Updating to either is the same operation — re-running the
