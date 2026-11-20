@@ -682,7 +682,12 @@ jobs:
         run: shellcheck --version && shellcheck -x scripts/myrmidon/deploy/*.sh
 
       - name: Script tests (node:test)
-        run: bash scripts/myrmidon/ci/run-script-tests.sh
+        run: |
+          set -euo pipefail
+          PAPERCLIP_RUN_SCRATCH_DIR="$(mktemp -d "$RUNNER_TEMP/myrmidon-script-tests.XXXXXXXX")"
+          export PAPERCLIP_RUN_SCRATCH_DIR
+          trap 'rm -rf "$PAPERCLIP_RUN_SCRATCH_DIR"' EXIT
+          bash scripts/myrmidon/ci/run-script-tests.sh
 
       - name: Cloud source verification (node:test)
         run: node --test scripts/cloud-source-verification.test.mjs
