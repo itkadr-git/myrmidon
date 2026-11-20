@@ -439,44 +439,28 @@ describe("release-stop-notify.sh (fake gh)", () => {
     }
   });
 
-  // Deterministic reproduction of the observed "open #100 + closed #101" pair
-  // (runs 43779902791 and 44507283140) through TWO REAL release-stop-notify.sh
-  // runs. The production script is explicitly designed for a listing that lags
-  // a just-created issue ("if concurrent creations ever race past the lock,
-  // any duplicate is immediately closed in favor of the canonical lowest issue
-  // number"). That lag at the label-lock handover is the one interleaving that
-  // yields the pair:
-  //   1. Run A completes: creates #100 (canonical), releases the label lock.
-  //   2. Run B starts while a listing replica still serves the pre-A view.
-  //      B's initial scan and its rescan-after-lock-acquire both miss #100.
-  //   3. B creates #101. B's post-creation scan (fresh, write path) sees both
-  //      entries and closes #101 in favor of canonical #100.
-  // End state: exactly one OPEN journal entry plus the self-healed closed
-  // duplicate — the pair from CI. The fake emulates the lag deterministically
-  // via the lag-listing.json snapshot (armed by the test, cleared by the
-  // create handler); no sleeps, no wall-clock assertions.
-  it("two real runs under a listing lag at the lock handover reproduce the observed pair and self-heal to one open entry", () => {
-    const sbA = makeSandbox();
-    const ra = runScript(sbA);
+  // A finishes before B sees an out-of-date issue listing. The durable
+  // reservation must prevent B from creating even a subsequently closed copy.
+  it("fails closed on a stale listing after a completed notification", () => {
+    const sb = makeSandbox();
+    const ra = runScript(sb);
     assert.equal(ra.status, 0, ra.stderr);
     assert.match(ra.stdout, /stop=created issue=https:\/\/github\.com\/x\/y\/issues\/100 event=111/);
-    // Fresh sandbox holding A's published state; arm the lagged listing (the
-    // replica view from before A's create) before B starts.
-    const sb = makeSandbox({ issues: JSON.parse(fs.readFileSync(path.join(sbA.dir, "issues.json"), "utf8")) });
     fs.writeFileSync(path.join(sb.dir, "lag-listing.json"), "[]");
-    const rb = runScript(sb);
-    assert.equal(rb.status, 0, rb.stderr);
-    assert.match(rb.stdout, /stop=deduplicated issue=100 event=111/);
+    const rb = runScript(sb, { RELEASE_STOP_LOCK_TIMEOUT: "1", RELEASE_STOP_LOCK_POLL_DELAY: "0" });
+    assert.equal(rb.status, 1, rb.stderr);
+    assert.match(rb.stderr, /timed out waiting/);
     const issues = JSON.parse(fs.readFileSync(path.join(sb.dir, "issues.json"), "utf8"));
     const matching = issues.filter((it) => it.title === "release-stop: myr-v1.8.0 (111)");
     assert.deepEqual(
       matching.map((m) => `${m.number}:${m.state}`).sort(),
-      ["100:open", "101:closed"],
-      `expected the observed self-healed pair, got: ${JSON.stringify(issues)}`,
+      ["100:open"],
+      `expected exactly one issue, got: ${JSON.stringify(issues)}`,
     );
     const mutations = fs.readFileSync(path.join(sb.dir, "mutations.log"), "utf8");
     assert.match(mutations, /create title=release-stop: myr-v1\.8\.0 \(111\)/);
-    assert.match(mutations, /close issue=101/, "the duplicate must be closed by the post-creation self-heal");
+    assert.equal((mutations.match(/create title=/g) || []).length, 1);
+    assert.doesNotMatch(mutations, /close issue=/);
   });
 
   it("rescans after acquiring lock when another run created the issue and released the lock", () => {
