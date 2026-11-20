@@ -66,8 +66,9 @@ describeDb("run key with the real secret service", () => {
     const secrets = secretService(db);
     const firstRun = randomUUID();
     const secondRun = randomUUID();
-    await secrets.create(companyId, { name: `llm-gateway-run-${firstRun}`, provider: "local_encrypted", value: "first-run-value" });
-    await secrets.create(companyId, { name: `llm-gateway-run-${secondRun}`, provider: "local_encrypted", value: "second-run-value" });
+    const expiresAt = new Date(Date.now() + 60_000);
+    await secrets.create(companyId, { name: `llm-gateway-run-${firstRun}`, provider: "local_encrypted", value: "first-run-value", expiresAt });
+    await secrets.create(companyId, { name: `llm-gateway-run-${secondRun}`, provider: "local_encrypted", value: "second-run-value", expiresAt });
     const first = await findRunScopedGatewayKeyRef(db, companyId, firstRun, {});
     const second = await findRunScopedGatewayKeyRef(db, companyId, secondRun, {});
     expect(first).not.toBeNull();
