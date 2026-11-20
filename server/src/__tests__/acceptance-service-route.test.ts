@@ -157,6 +157,10 @@ const support = await getEmbeddedPostgresTestSupport();
       expect((await result(submit.token, requests[0].id, other)).status).toBe(401);
       expect(await db.select().from(nativeFinalizationOutbox).where(eq(nativeFinalizationOutbox.requestId, requests[0].id))).toHaveLength(1);
       const now = new Date();
+      // A finite duration can still overflow the Date range; it must never
+      // create an unclaimable processing lease.
+      await expect(claimNativeFinalizationRequest(db, "worker-invalid", now, 1e20))
+        .rejects.toThrow("native_finalization_invalid_lease");
       const claims = await Promise.all([
         claimNativeFinalizationRequest(db, "worker-a", now, 1000),
         claimNativeFinalizationRequest(db, "worker-b", now, 1000),
