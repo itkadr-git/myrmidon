@@ -218,7 +218,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     const result = await executor.execute(claim, mockReporter.reporter);
     expect(result.status).toBe("failed");
     expect(result.error).toContain("durable access key");
-    expect(mockSsh.hasExecuted('echo "myrmidon-key-verify"')).toBe(true);
+    expect(mockSsh.hasExecuted('echo "myrmidon-key-verify"')).toBe(false);
     expect(mockSsh.hasExecuted(/PasswordAuthentication no/)).toBe(false);
   });
 
@@ -312,10 +312,10 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     const mockReporter = createMockReporter();
     const claim: any = {
       job: { id: "job-key-install", companyId: "c1", serverId: "s1" },
-      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root", accessKeySecretKey: "stored" },
       steps: ["access"],
       options: { keepPassword: true },
-      secretValues: { bootstrapPassword: "pass" },
+      secretValues: { bootstrapPassword: "pass", accessKey: defaultGenerateKeyPair().privateKey },
     };
 
     const result = await executor.execute(claim, mockReporter.reporter);

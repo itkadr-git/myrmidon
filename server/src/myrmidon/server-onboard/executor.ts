@@ -190,15 +190,11 @@ export class FleetOnboardExecutor {
               activeSsh = await connectVerified(connOptions);
             }
 
-            // Key install
-            let pubKeyToInstall = "";
-            if (activePrivateKey) {
-              pubKeyToInstall = sshPublicKey(activePrivateKey);
-            } else {
-              const gen = (this.deps.generateKeyPair ?? defaultGenerateKeyPair)();
-              activePrivateKey = gen.privateKey;
-              pubKeyToInstall = gen.publicKey.trim();
+            // Never leave an unpersisted key authorized on the target host.
+            if (!claim.server.accessKeySecretKey || !activePrivateKey) {
+              throw new Error("Cannot complete access without a durable access key");
             }
+            const pubKeyToInstall = sshPublicKey(activePrivateKey);
 
             const installResult = await activeSsh.execute(
               `mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo "${pubKeyToInstall}" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`,
