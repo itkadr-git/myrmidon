@@ -2007,6 +2007,22 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       .rejects.toThrow("native_pending_effect_target_missing:enqueue_continuation");
   }, 30_000);
 
+  it("does not claim or mutate a service-required finalization through the internal finalizer", async () => {
+    const template = corpus.fixtures.find((candidate) => candidate.mode === "native")!;
+    const seeded = await seedFixture({
+      ...template, id: `service-finalizer-gate-${randomUUID()}`,
+      given: { ...template.given, priorIssueStatus: "in_progress", completionState: "policy_review_cleanup" },
+    });
+    await db.update(nativeRunFinalizations).set({ authorizationMode: "service_required" })
+      .where(eq(nativeRunFinalizations.runId, seeded.runId));
+    const [before] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seeded.runId));
+    await expect(finalizeNativeRun({ db, runId: seeded.runId, workspaceFinalizeStatus: "succeeded" }))
+      .rejects.toThrow("native_service_authorization_required");
+    const [after] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seeded.runId));
+    expect(after).toEqual(before);
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, seeded.runId))).toEqual([]);
+  });
+
   it("rejects a service-required decision without an authorized request", async () => {
     const template = corpus.fixtures.find((candidate) => candidate.mode === "native")!;
     const seeded = await seedFixture({
