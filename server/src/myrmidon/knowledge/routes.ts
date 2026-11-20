@@ -483,7 +483,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
       const idOrSlug = itemIdOrSlug(req);
       const lang = req.query.lang;
       if (lang !== undefined && lang !== "en" && lang !== "ru") throw badRequest("lang must be en or ru.");
-      const item = await mod.get(idOrSlug, lang);
+      const item = lang === undefined ? await mod.get(idOrSlug) : await mod.get(idOrSlug, lang);
       if (!item) throw notFound(`No knowledge item ${JSON.stringify(idOrSlug)} in this company.`);
       // Return the complete published read model in one request. The UI can
       // render immediately without separately loading revisions and backlinks.
