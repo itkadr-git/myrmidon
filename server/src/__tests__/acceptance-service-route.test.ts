@@ -123,10 +123,15 @@ const support = await getEmbeddedPostgresTestSupport();
       const [admitted, concurrentReplay] = await Promise.all([admit(), admit()]);
       expect(admitted.status).toBe(202);
       expect(concurrentReplay.status).toBe(202);
-      expect(JSON.parse(concurrentReplay.body).id).toBe(JSON.parse(admitted.body).id);
+      const receipt = JSON.parse(admitted.body);
+      expect(receipt).toEqual({
+        requestId: expect.any(String), runId, state: "accepted",
+        statusUrl: `/api/service/native-runs/${runId}/finalization-requests/${receipt.requestId}`,
+      });
+      expect(JSON.parse(concurrentReplay.body)).toEqual(receipt);
       const replay = await admit();
       expect(replay.status).toBe(202);
-      expect(JSON.parse(replay.body).id).toBe(JSON.parse(admitted.body).id);
+      expect(JSON.parse(replay.body)).toEqual(receipt);
       expect((await admit("request-1", { ...payload, expectedRevisionId: randomUUID() })).status).toBe(409);
       const alternative = await admit("request-2");
       expect(alternative.status).toBe(409);
