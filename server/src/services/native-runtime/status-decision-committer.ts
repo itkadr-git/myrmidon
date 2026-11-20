@@ -1523,6 +1523,7 @@ export async function commitNativeStatusDecision(input: {
   preMaterializedEffects?: NativeMaterializedStatusEffect[];
   supersedesCommittedDecisionId?: string;
   serviceRequest?: { requestId: string; leaseOwner: string; leaseUntil: Date };
+  serviceCoordinatorLeaseOwner?: string;
   requireExternalChatResponseWaitAuthorization?: { agentId: string };
   requireBoardResponseWaitSource?: NativeBoardResponseWaitSource;
   requireBoardResponseWaitOrigin?: NativeBoardResponseWaitOrigin;
@@ -1561,6 +1562,11 @@ export async function commitNativeStatusDecision(input: {
       throw new Error("native_service_authorization_required");
     }
     if (coordinator.authorizationMode === "internal" && input.serviceRequest) {
+      throw new Error("native_service_authorization_required");
+    }
+    if (input.serviceCoordinatorLeaseOwner && (!input.serviceRequest ||
+        coordinator.leaseOwner !== input.serviceCoordinatorLeaseOwner ||
+        !coordinator.leaseExpiresAt || coordinator.leaseExpiresAt <= new Date())) {
       throw new Error("native_service_authorization_required");
     }
     let serviceRequest: typeof nativeFinalizationRequests.$inferSelect | null = null;
@@ -2146,6 +2152,7 @@ export async function commitNativeStatusDecision(input: {
     if (serviceRequest) {
       const now = new Date();
       if (!serviceRequest.leaseUntil || serviceRequest.leaseUntil <= now ||
+          (input.serviceCoordinatorLeaseOwner && (!coordinator.leaseExpiresAt || coordinator.leaseExpiresAt <= now)) ||
           serviceAuthorizationExpiresAt === null || serviceAuthorizationExpiresAt <= now.getTime()) {
         throw new Error("native_service_authorization_required");
       }
