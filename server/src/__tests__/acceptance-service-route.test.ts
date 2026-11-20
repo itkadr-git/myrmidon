@@ -91,6 +91,10 @@ const support = await getEmbeddedPostgresTestSupport();
       const grantInput = { companyId, issueId, runId, principalId, credentialId: submit.id, notAfter: new Date(Date.now() + 30_000), createdByOperatorId: "test" };
       await db.update(nativeRunFinalizations).set({ phase: "terminal_failure" }).where(eq(nativeRunFinalizations.runId, runId));
       await expect(service.grantFinalization(grantInput)).rejects.toThrow("native_finalization_grant_not_available");
+      for (const phase of ["ready_for_assessment", "arbitrating", "retryable_failure"]) {
+        await db.update(nativeRunFinalizations).set({ phase }).where(eq(nativeRunFinalizations.runId, runId));
+        await expect(service.grantFinalization(grantInput)).rejects.toThrow("native_finalization_grant_not_available");
+      }
       await db.update(nativeRunFinalizations).set({ phase: "awaiting_result", leaseOwner: "worker", leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, runId));
       await expect(service.grantFinalization(grantInput)).rejects.toThrow("native_finalization_grant_not_available");
       await db.update(nativeRunFinalizations).set({ leaseOwner: "worker", leaseExpiresAt: new Date(Date.now() + 30_000) }).where(eq(nativeRunFinalizations.runId, runId));
