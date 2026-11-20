@@ -44,6 +44,20 @@ lives, how many tasks one agent may hold, how often the queue sweep runs
 and whether a priority task jumps the queue are all instance settings,
 changeable from the interface without a restart.
 
+## Automatic queue refill (AUTO-SLICE)
+
+When the board creates an AUTO-SLICE task to refill the engineer queue, an
+existing slicing task prevents another only while it is in `backlog`, `todo`
+or `in_progress`; `blocked` and `in_review` do not prevent another slice.
+
+When an agent creates a child under an AUTO-SLICE task, it must include a
+release label such as `1.6.9` in `labelIds`, or the API rejects it with
+`422 auto_slice_child_needs_release_label`. When the slicing task is closed
+as `done`, its visible open children move to the single existing epic linked
+in its `Открытые эпики:` section. If the section names no epic, several epics,
+or an epic that cannot be found, the children stay and the activity log records
+why.
+
 ## Work-in-progress limits
 
 The WIP limit caps how many tasks one agent may hold in flight
