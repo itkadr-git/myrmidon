@@ -155,6 +155,37 @@ test('competing exchange does not fence the winning exchange or later requests',
   } finally { release(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('competing rejection during anchored audit does not fence legitimate issuance', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-audit-concurrency-'));
+  const store = createCredentialStore(join(dir, 'credentials.sqlite'), randomBytes(32));
+  let head = { seq: 0, mac: '' }, entered, release, issued = 0;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const barrier = new Promise(resolve => { release = resolve; });
+  const anchor = { read: async () => ({ ...head }), compareAndSet: async (previous, next) => {
+    if (next.seq === 1) { entered(); await barrier; }
+    if (JSON.stringify(previous) !== JSON.stringify(head)) return false;
+    head = { ...next }; return true;
+  } };
+  const audit = await createAsyncAuthenticatedAudit(join(dir, 'audit.sqlite'), randomBytes(32), anchor);
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    installation: { issue: async () => ({ token: `fixture-${++issued}` }), revoke: async () => {} },
+    audit: event => audit.record(event), alert: async () => {}, anchoredIssuance: true });
+  try {
+    const first = broker.exchange(jwt('audit-race-first'));
+    await waiting;
+    const second = broker.exchange(jwt('audit-race-second'));
+    const rejected = assert.rejects(second, /broker request failed/);
+    await new Promise(resolve => setImmediate(resolve));
+    release();
+    await rejected;
+    await first;
+    await broker.exchange(jwt('audit-race-third'));
+    assert.equal(issued, 2);
+    assert.deepEqual(await store.pendingIssuances(), []);
+    assert.deepEqual(await store.pendingAlerts(), []);
+  } finally { release(); audit.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('runtime replay anchor failure alerts and fences issuance after anchor recovers', async () => {
   let offline = true, issued = 0;
   const queued = [], alerts = [];
