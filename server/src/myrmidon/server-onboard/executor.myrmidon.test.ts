@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { MockSshExecutor } from "../../services/fleet/mock-ssh-executor.js";
-import { FleetOnboardExecutor, type ExecutorReporter } from "./executor.js";
+import { defaultGenerateKeyPair, FleetOnboardExecutor, type ExecutorReporter } from "./executor.js";
 import type { OnboardJobClaim } from "./store.js";
+
+class VerifiedMockSsh extends MockSshExecutor {
+  constructor(private readonly fingerprint = "SHA256:testfingerprint123456789") { super(); }
+
+  override async connect(options?: Parameters<MockSshExecutor["connect"]>[0]) {
+    if (!options?.hostVerifier || !(await options.hostVerifier(this.fingerprint))) {
+      throw new Error("TOFU host key verification failed");
+    }
+    await super.connect(options);
+  }
+}
 
 function createMockReporter(): {
   reporter: ExecutorReporter;
@@ -13,6 +24,7 @@ function createMockReporter(): {
 
   return {
     reporter: {
+      async pinHostKey() { return true; },
       async reportStep(step, result, detail) {
         steps.push({ step, result, detail });
       },
@@ -28,8 +40,82 @@ function createMockReporter(): {
 }
 
 describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
+  it("redacts claim credentials from transport failures and reports", async () => {
+    const password = "bootstrap-sensitive-value";
+    const key = "private-sensitive-value";
+    class FailingSsh extends MockSshExecutor {
+      override async connect() { throw new Error(`failure ${password} ${key}`); }
+    }
+    const reporter = createMockReporter();
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => new FailingSsh() });
+    const claim = {
+      job: { id: "job", companyId: "c1", serverId: "s1" },
+      server: { hostname: "example.com", port: 22, username: "root" },
+      steps: ["connect"], options: { keepPassword: true },
+      secretValues: { bootstrapPassword: password, accessKey: key },
+    } as unknown as OnboardJobClaim & { secretValues: Record<string, string> };
+    const result = await executor.execute(claim, reporter.reporter);
+    const exposed = JSON.stringify({ result, steps: reporter.steps, completion: reporter.completion });
+    expect(result.status).toBe("failed");
+    expect(exposed).not.toContain(password);
+    expect(exposed).not.toContain(key);
+  });
+
+  it("rejects a changed host key during handshake before authenticating", async () => {
+    const events: string[] = [];
+    class HandshakeSsh extends MockSshExecutor {
+      override async connect(options?: Parameters<MockSshExecutor["connect"]>[0]) {
+        const verify = options && Reflect.get(options, "hostVerifier");
+        if (typeof verify !== "function") throw new Error("Host verifier missing");
+        events.push("host-key");
+        if (!(await verify("SHA256:changed"))) throw new Error("Host key rejected");
+        events.push("authentication");
+      }
+    }
+    const ssh = new HandshakeSsh();
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-host", companyId: "c1", serverId: "s1" },
+      server: { hostname: "example.com", port: 22, username: "root", hostKeyFingerprint: "SHA256:original" },
+      steps: ["connect"],
+      options: { keepPassword: false },
+      secretValues: { bootstrapPassword: "sensitive" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(events).toEqual(["host-key"]);
+  });
+
+  it("rejects a connection that skipped host verification even when a pin exists", async () => {
+    const ssh = new MockSshExecutor();
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-unverified", companyId: "c1", serverId: "s1" },
+      server: { hostname: "example.com", port: 22, username: "root", hostKeyFingerprint: "SHA256:original" },
+      steps: ["connect"],
+      options: { keepPassword: true },
+      secretValues: { bootstrapPassword: "sensitive" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("SSH transport did not provide a verified host key");
+    expect(ssh.hasExecuted("cat /etc/os-release")).toBe(false);
+  });
+
+  it("generates an OpenSSH public key matching its private key", async () => {
+    const { createPublicKey } = await import("node:crypto");
+    const pair = defaultGenerateKeyPair();
+    const derived = createPublicKey(pair.privateKey).export({ format: "jwk" });
+    const [algorithm, encoded] = pair.publicKey.split(" ");
+    expect(algorithm).toBe("ssh-ed25519");
+    const wire = Buffer.from(encoded, "base64");
+    const typeLength = wire.readUInt32BE(0);
+    const keyLength = wire.readUInt32BE(4 + typeLength);
+    expect(derived.x).toBeDefined();
+    expect(wire.subarray(8 + typeLength, 8 + typeLength + keyLength)).toEqual(Buffer.from(derived.x ?? "", "base64url"));
+  });
   it("executes standard onboarding workflow and disables password when keepPassword=false", async () => {
-    const mockSsh = new MockSshExecutor();
+    const mockSsh = new VerifiedMockSsh();
     // mock responses
     mockSsh.mockResponse(/ssh-keygen -l/, {
       stdout: "256 SHA256:testfingerprint123456789 root@test (ED25519)",
@@ -57,12 +143,9 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     mockSsh.mockResponse(/pkill -f 'sleep 300/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse('echo "onboard-verified"', { stdout: "onboard-verified\n", exitCode: 0 });
 
+    const durablePair = defaultGenerateKeyPair();
     const executor = new FleetOnboardExecutor({
       createSshExecutor: () => mockSsh,
-      generateKeyPair: () => ({
-        publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIgeneratedKey test-key",
-        privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nfake-key\n-----END OPENSSH PRIVATE KEY-----",
-      }),
     });
 
     const mockReporter = createMockReporter();
@@ -91,13 +174,14 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
         protocol: "ssh",
         keepPassword: false,
         passwordSecretKey: "fleet-srv-node-1-bootstrap-password",
-        accessKeySecretKey: null,
+        accessKeySecretKey: "fleet-srv-node-1-access-key",
         hostKeyFingerprint: null,
       },
       steps: ["connect", "preflight", "access", "harden", "monitoring", "role", "verify"],
       options: { keepPassword: false, installDocker: false, role: "generic" },
       secretValues: {
         bootstrapPassword: "initial-password-123",
+        accessKey: durablePair.privateKey,
       },
     };
 
@@ -122,8 +206,67 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockSsh.hasExecuted(/pkill -f 'sleep 300/)).toBe(true);
   });
 
+  it("does not install an unpersisted key when the durable key is missing", async () => {
+    const ssh = new VerifiedMockSsh();
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-missing-key", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root", accessKeySecretKey: null },
+      steps: ["access"], options: { keepPassword: false },
+      secretValues: { bootstrapPassword: "pass" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("durable access key");
+    expect(ssh.hasExecuted(/authorized_keys/)).toBe(false);
+  });
+
+  it("never disables password authentication for a key generated only in executor memory", async () => {
+    const mockSsh = new VerifiedMockSsh();
+    mockSsh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
+    const executor = new FleetOnboardExecutor({
+      createSshExecutor: () => mockSsh,
+      generateKeyPair: () => ({ publicKey: "ssh-ed25519 test", privateKey: "private-key" }),
+    });
+    const mockReporter = createMockReporter();
+    const claim: any = {
+      job: { id: "job-ephemeral", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root", accessKeySecretKey: null },
+      steps: ["access"],
+      options: { keepPassword: false },
+      secretValues: { bootstrapPassword: "pass" },
+    };
+    const result = await executor.execute(claim, mockReporter.reporter);
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("durable access key");
+    expect(mockSsh.hasExecuted('echo "myrmidon-key-verify"')).toBe(false);
+    expect(mockSsh.hasExecuted(/PasswordAuthentication no/)).toBe(false);
+  });
+
+  it("fails onboarding with an ephemeral key even when password retention is requested", async () => {
+    const ssh = new VerifiedMockSsh();
+    ssh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
+    const executor = new FleetOnboardExecutor({
+      createSshExecutor: () => ssh,
+      generateKeyPair: () => ({ publicKey: "ssh-ed25519 test", privateKey: "private-key" }),
+    });
+    const claim: any = {
+      job: { id: "job-ephemeral-retained", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root", accessKeySecretKey: null },
+      steps: ["access"],
+      options: { keepPassword: true },
+      secretValues: { bootstrapPassword: "pass" },
+    };
+    const reporter = createMockReporter();
+    const result = await executor.execute(claim, reporter.reporter);
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("durable access key");
+    expect(reporter.completion?.status).toBe("failed");
+    expect(ssh.hasExecuted(/PasswordAuthentication no/)).toBe(false);
+  });
+
   it("fails preflight when disk usage exceeds 90%", async () => {
-    const mockSsh = new MockSshExecutor();
+    const mockSsh = new VerifiedMockSsh();
     mockSsh.mockResponse(/ssh-keygen -l/, {
       stdout: "256 SHA256:fingerprint root@test (ED25519)",
       exitCode: 0,
@@ -161,7 +304,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
   });
 
   it("fails preflight when disk usage cannot be determined", async () => {
-    const mockSsh = new MockSshExecutor();
+    const mockSsh = new VerifiedMockSsh();
     mockSsh.mockResponse("df -P /", { stdout: "", stderr: "df failed", exitCode: 1 });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => mockSsh });
     const mockReporter = createMockReporter();
@@ -202,7 +345,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
   });
 
   it("stops before key verification when authorized_keys installation fails", async () => {
-    const mockSsh = new MockSshExecutor();
+    const mockSsh = new VerifiedMockSsh();
     mockSsh.mockResponse(/mkdir -p ~\/\.ssh/, { stdout: "", stderr: "permission denied", exitCode: 1 });
     mockSsh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
     const executor = new FleetOnboardExecutor({
@@ -212,20 +355,21 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     const mockReporter = createMockReporter();
     const claim: any = {
       job: { id: "job-key-install", companyId: "c1", serverId: "s1" },
-      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root", accessKeySecretKey: "stored" },
       steps: ["access"],
       options: { keepPassword: true },
-      secretValues: { bootstrapPassword: "pass" },
+      secretValues: { bootstrapPassword: "pass", accessKey: defaultGenerateKeyPair().privateKey },
     };
 
     const result = await executor.execute(claim, mockReporter.reporter);
     expect(result.status).toBe("failed");
+    expect(result.error).toContain("SSH key installation failed");
     expect(mockSsh.hasExecuted('echo "myrmidon-key-verify"')).toBe(false);
     expect(mockReporter.completion?.status).toBe("failed");
   });
 
   it("rolls back firewall and fails job when firewall connectivity check fails", async () => {
-    const mockSsh = new MockSshExecutor();
+    const mockSsh = new VerifiedMockSsh();
     mockSsh.mockResponse(/ssh-keygen -l/, {
       stdout: "256 SHA256:fp root@test (ED25519)",
       exitCode: 0,
@@ -249,17 +393,17 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     mockSsh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "", exitCode: 1 });
     mockSsh.mockResponse("sudo ufw disable", { stdout: "Firewall stopped and disabled on system startup", exitCode: 0 });
 
+    const durablePair = defaultGenerateKeyPair();
     const executor = new FleetOnboardExecutor({
       createSshExecutor: () => mockSsh,
-      generateKeyPair: () => ({ publicKey: "pub", privateKey: "priv" }),
     });
     const mockReporter = createMockReporter();
     const claim: any = {
       job: { id: "job-3", companyId: "c1", serverId: "s3" },
-      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root", accessKeySecretKey: "fleet/key" },
       steps: ["connect", "preflight", "access", "harden", "verify"],
       options: { keepPassword: true },
-      secretValues: { bootstrapPassword: "pass" },
+      secretValues: { bootstrapPassword: "pass", accessKey: durablePair.privateKey },
     };
 
     const result = await executor.execute(claim, mockReporter.reporter);
@@ -271,7 +415,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
   });
 
   it("fails TOFU check when host key fingerprint does not match pinned value", async () => {
-    const mockSsh = new MockSshExecutor();
+    const mockSsh = new VerifiedMockSsh("SHA256:differentKeyRoot");
     mockSsh.mockResponse(/ssh-keygen -l/, {
       stdout: "256 SHA256:differentKeyRoot root@test (ED25519)",
       exitCode: 0,
@@ -342,7 +486,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
   });
 
   it("handles decommission job cleanup step", async () => {
-    const mockSsh = new MockSshExecutor();
+    const mockSsh = new VerifiedMockSsh();
     mockSsh.mockResponse(/docker stop/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse(/sed -i/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse(/sudo ufw delete allow/, { stdout: "", exitCode: 0 });

@@ -4,18 +4,10 @@
 # Does NOT require host mounts (/var/run/docker.sock or host filesystem).
 # Communicates with board API over HTTP and target server over SSH.
 
-FROM node:22-bookworm-slim
-
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-       openssh-client \
-       ca-certificates \
-       curl \
-       tini \
-  && rm -rf /var/lib/apt/lists/*
-
+# Supply a Myrmidon CI runtime image containing the compiled server and dependencies.
+ARG MYRMIDON_RUNTIME_IMAGE
+FROM ${MYRMIDON_RUNTIME_IMAGE}
+WORKDIR /app
 USER node
-WORKDIR /home/node
-
-ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["node", "-e", "console.log('myrmidon fleet-onboard executor ready')"]
+ENTRYPOINT []
+CMD ["node", "server/dist/myrmidon/server-onboard/worker.js"]

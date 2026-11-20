@@ -14,7 +14,8 @@
 // - Password secret is consumed only after verified key login (reported in access step).
 // - Step failure rolls back hardening changes and leaves server in needs_attention.
 
-import { generateKeyPairSync } from "node:crypto";
+import { generateSshKeyPair, sshPublicKey } from "./ssh-key.js";
+import { OnboardSshTransport } from "./ssh-transport.js";
 import type {
   SshConnectionOptions,
   SshExecutionResult,
@@ -23,6 +24,8 @@ import type {
 import type { OnboardJobClaim } from "./store.js";
 
 export interface ExecutorReporter {
+  /** Atomically persist the first observed fingerprint; reject a conflicting pin. */
+  pinHostKey?(fingerprint: string): Promise<boolean>;
   reportStep(
     step: string,
     result: "ok" | "skipped" | "failed",
@@ -48,11 +51,7 @@ export interface ExecutorExecutionResult {
 }
 
 export function defaultGenerateKeyPair(): { publicKey: string; privateKey: string } {
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  return {
-    publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
-    privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
-  };
+  return generateSshKeyPair();
 }
 
 export class FleetOnboardExecutor {
@@ -62,7 +61,7 @@ export class FleetOnboardExecutor {
     if (this.deps.createSshExecutor) {
       return this.deps.createSshExecutor(options);
     }
-    throw new Error("No SSH executor provider configured for FleetOnboardExecutor");
+    return new OnboardSshTransport();
   }
 
   async execute(
@@ -84,10 +83,16 @@ export class FleetOnboardExecutor {
         host: claim.server.hostname,
         port: claim.server.port,
         username: claim.server.username,
-        ...(activePrivateKey
-          ? { privateKey: activePrivateKey }
-          : claim.secretValues.bootstrapPassword
-            ? { password: claim.secretValues.bootstrapPassword }
+        hostVerifier: async (fingerprint) => {
+          if (discoveredFingerprint && discoveredFingerprint !== fingerprint) return false;
+          if (!reporter.pinHostKey || !(await reporter.pinHostKey(fingerprint))) return false;
+          discoveredFingerprint = fingerprint;
+          return true;
+        },
+        ...(claim.secretValues.bootstrapPassword
+          ? { password: claim.secretValues.bootstrapPassword }
+          : activePrivateKey
+            ? { privateKey: activePrivateKey }
             : {}),
       };
 
@@ -95,26 +100,39 @@ export class FleetOnboardExecutor {
         throw new Error("No authentication credentials provided in claim secret values");
       }
 
+      const connectVerified = async (options: SshConnectionOptions): Promise<SshExecutor> => {
+        let verified = false;
+        const verifyHost = options.hostVerifier;
+        const checkedOptions: SshConnectionOptions = {
+          ...options,
+          hostVerifier: async (fingerprint) => {
+            const accepted = !!verifyHost && await verifyHost(fingerprint);
+            verified = accepted;
+            return accepted;
+          },
+        };
+        const ssh = await this.getSsh(checkedOptions);
+        try {
+          await ssh.connect(checkedOptions);
+          if (!verified) throw new Error("SSH transport did not provide a verified host key");
+          return ssh;
+        } catch (error) {
+          await ssh.disconnect().catch(() => {});
+          throw error;
+        }
+      };
+
       for (const step of steps) {
         currentStep = step;
 
         switch (step) {
           case "connect": {
-            activeSsh = await this.getSsh(connOptions);
-            await activeSsh.connect(connOptions);
+            activeSsh = await connectVerified(connOptions);
 
-            // TOFU host key fingerprint check
-            const hostKeyRes = await activeSsh.execute(
-              "ssh-keygen -l -f /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null || ssh-keygen -l -f /etc/ssh/ssh_host_rsa_key.pub 2>/dev/null || echo 'SHA256:discovered-default'",
-            );
-            const rawOutput = hostKeyRes.stdout.trim();
-            const fpMatch = rawOutput.match(/SHA256:[A-Za-z0-9+/=]+/);
-            discoveredFingerprint = fpMatch ? fpMatch[0] : (discoveredFingerprint ?? `SHA256:${claim.server.hostname}-ed25519`);
-
-            if (claim.server.hostKeyFingerprint && claim.server.hostKeyFingerprint !== discoveredFingerprint) {
-              throw new Error(
-                `TOFU host key verification failed: expected ${claim.server.hostKeyFingerprint}, got ${discoveredFingerprint}`,
-              );
+            // The transport callback runs before credentials are sent. Do not
+            // execute remote commands to discover the host identity.
+            if (!discoveredFingerprint) {
+              throw new Error("SSH transport did not provide a verified host key");
             }
 
             // OS check (Debian or Ubuntu)
@@ -132,8 +150,7 @@ export class FleetOnboardExecutor {
 
           case "preflight": {
             if (!activeSsh) {
-              activeSsh = await this.getSsh(connOptions);
-              await activeSsh.connect(connOptions);
+              activeSsh = await connectVerified(connOptions);
             }
 
             // 1. Disk check (threshold >= 90%)
@@ -173,19 +190,14 @@ export class FleetOnboardExecutor {
 
           case "access": {
             if (!activeSsh) {
-              activeSsh = await this.getSsh(connOptions);
-              await activeSsh.connect(connOptions);
+              activeSsh = await connectVerified(connOptions);
             }
 
-            // Key install
-            let pubKeyToInstall = "";
-            if (activePrivateKey) {
-              pubKeyToInstall = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExistingKey myrmidon-access";
-            } else {
-              const gen = (this.deps.generateKeyPair ?? defaultGenerateKeyPair)();
-              activePrivateKey = gen.privateKey;
-              pubKeyToInstall = gen.publicKey.trim();
+            // Never leave an unpersisted key authorized on the target host.
+            if (!claim.server.accessKeySecretKey || !activePrivateKey) {
+              throw new Error("Cannot complete access without a durable access key");
             }
+            const pubKeyToInstall = sshPublicKey(activePrivateKey);
 
             const installResult = await activeSsh.execute(
               `mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo "${pubKeyToInstall}" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`,
@@ -200,31 +212,49 @@ export class FleetOnboardExecutor {
               host: claim.server.hostname,
               port: claim.server.port,
               username: claim.server.username,
+              hostVerifier: connOptions.hostVerifier,
               privateKey: activePrivateKey,
             };
-            const verifySsh = await this.getSsh(keyConnOptions);
-            await verifySsh.connect(keyConnOptions);
-            const verifyRes = await verifySsh.execute('echo "myrmidon-key-verify"');
-            if (verifyRes.exitCode !== 0 || !verifyRes.stdout.includes("myrmidon-key-verify")) {
-              throw new Error("Key verification failed: unable to verify SSH login using the installed key");
+            const verifySsh = await connectVerified(keyConnOptions);
+            try {
+              const verifyRes = await verifySsh.execute('echo "myrmidon-key-verify"');
+              if (verifyRes.exitCode !== 0 || !verifyRes.stdout.includes("myrmidon-key-verify")) {
+                throw new Error("Key verification failed: unable to verify SSH login using the installed key");
+              }
+            } catch (error) {
+              await verifySsh.disconnect().catch(() => {});
+              throw error;
             }
 
-            // Key login is verified! We now use this SSH connection.
+            // Close the bootstrap connection before switching to key authentication.
+            await activeSsh.disconnect();
             activeSsh = verifySsh;
             connOptions.privateKey = activePrivateKey;
             delete connOptions.password;
 
+            // A key which exists only in this process cannot support a later reconnect.
+            if (!claim.server.accessKeySecretKey || !claim.secretValues.accessKey) {
+              throw new Error("Cannot complete access without a durable access key");
+            }
+
             // Optional password disable (only after key login verified)
             if (!claim.options.keepPassword) {
-              await activeSsh.execute(
+              const writeConfig = await activeSsh.execute(
                 "sudo mkdir -p /etc/ssh/sshd_config.d && printf 'PasswordAuthentication no\\nKbdInteractiveAuthentication no\\n' | sudo tee /etc/ssh/sshd_config.d/50-myrmidon-hardening.conf",
               );
+              if (writeConfig.exitCode !== 0) {
+                throw new Error("Unable to write SSH password hardening configuration");
+              }
               const sshdTest = await activeSsh.execute("sudo sshd -t");
               if (sshdTest.exitCode !== 0) {
                 await activeSsh.execute("sudo rm -f /etc/ssh/sshd_config.d/50-myrmidon-hardening.conf");
                 throw new Error("sshd configuration test failed; reverted password disable");
               }
-              await activeSsh.execute("sudo systemctl reload ssh || sudo systemctl reload sshd");
+              const reload = await activeSsh.execute("sudo systemctl reload ssh || sudo systemctl reload sshd");
+              if (reload.exitCode !== 0) {
+                await activeSsh.execute("sudo rm -f /etc/ssh/sshd_config.d/50-myrmidon-hardening.conf").catch(() => {});
+                throw new Error("Unable to reload SSH service after password hardening");
+              }
             }
 
             await reporter.reportStep(
@@ -238,8 +268,7 @@ export class FleetOnboardExecutor {
 
           case "harden": {
             if (!activeSsh) {
-              activeSsh = await this.getSsh(connOptions);
-              await activeSsh.connect(connOptions);
+              activeSsh = await connectVerified(connOptions);
             }
 
             // Firewall allow-before-deny with rollback timer:
@@ -255,11 +284,14 @@ export class FleetOnboardExecutor {
 
             // 4. Verify connectivity using fresh connection
             try {
-              const testSsh = await this.getSsh(connOptions);
-              await testSsh.connect(connOptions);
-              const testPing = await testSsh.execute('echo "ufw-connectivity-ok"');
-              if (testPing.exitCode !== 0 || !testPing.stdout.includes("ufw-connectivity-ok")) {
-                throw new Error("Connectivity test failed after firewall enablement");
+              const testSsh = await connectVerified(connOptions);
+              try {
+                const testPing = await testSsh.execute('echo "ufw-connectivity-ok"');
+                if (testPing.exitCode !== 0 || !testPing.stdout.includes("ufw-connectivity-ok")) {
+                  throw new Error("Connectivity test failed after firewall enablement");
+                }
+              } finally {
+                await testSsh.disconnect().catch(() => {});
               }
               // Disarm rollback timer
               await activeSsh.execute("sudo pkill -f 'sleep 300 && sudo ufw disable' || true");
@@ -285,8 +317,7 @@ export class FleetOnboardExecutor {
 
           case "role": {
             if (!activeSsh) {
-              activeSsh = await this.getSsh(connOptions);
-              await activeSsh.connect(connOptions);
+              activeSsh = await connectVerified(connOptions);
             }
 
             const role = claim.options.role ?? "generic";
@@ -308,16 +339,18 @@ export class FleetOnboardExecutor {
               throw new Error("Final verification requires SSH key credentials");
             }
             if (!activeSsh) {
-              activeSsh = await this.getSsh(connOptions);
-              await activeSsh.connect(connOptions);
+              activeSsh = await connectVerified(connOptions);
             }
 
             // Verify key login
-            const testKeySsh = await this.getSsh(connOptions);
-            await testKeySsh.connect(connOptions);
-            const echoRes = await testKeySsh.execute('echo "onboard-verified"');
-            if (echoRes.exitCode !== 0) {
-              throw new Error("Final verification failed: unable to run commands via SSH key");
+            const testKeySsh = await connectVerified(connOptions);
+            try {
+              const echoRes = await testKeySsh.execute('echo "onboard-verified"');
+              if (echoRes.exitCode !== 0) {
+                throw new Error("Final verification failed: unable to run commands via SSH key");
+              }
+            } finally {
+              await testKeySsh.disconnect().catch(() => {});
             }
 
             await reporter.reportStep("verify", "ok", "All end-to-end verification checks passed");
@@ -328,8 +361,7 @@ export class FleetOnboardExecutor {
           case "cleanup": {
             // Decommission step
             if (!activeSsh) {
-              activeSsh = await this.getSsh(connOptions);
-              await activeSsh.connect(connOptions);
+              activeSsh = await connectVerified(connOptions);
             }
 
             // No ownership inventory is available yet; fail closed rather than deleting
@@ -350,7 +382,10 @@ export class FleetOnboardExecutor {
         stepsCompleted,
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      let message = error instanceof Error ? error.message : String(error);
+      for (const secret of Object.values(claim.secretValues)) {
+        if (secret) message = message.split(secret).join("[REDACTED]");
+      }
 
       // If firewall rollback was still armed when failure occurred, ensure rollback
       if (firewallRollbackArmed && activeSsh) {

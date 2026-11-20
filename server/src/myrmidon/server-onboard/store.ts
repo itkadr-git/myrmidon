@@ -73,6 +73,7 @@ export interface FleetOnboardStore {
   /** Atomically move pending→claimed and hand the executor its work. */
   claimNext(companyId: string): Promise<OnboardJobClaim | null>;
   consumeClaimSecrets(companyId: string, jobId: string): Promise<boolean>;
+  pinHostKey(companyId: string, serverId: string, jobId: string, fingerprint: string): Promise<boolean>;
   updateJob(
     companyId: string,
     jobId: string,
@@ -209,9 +210,9 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
       const rows = await db.execute(sql`
         WITH next_job AS (
           SELECT id FROM myrmidon_fleet_onboard_jobs
-          WHERE (status = 'pending' OR (status = 'claimed' AND secret_consumed_at IS NOT NULL))
+          WHERE status = 'pending'
             AND company_id = ${companyId}::uuid
-          ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, created_at ASC
+          ORDER BY created_at ASC
           LIMIT 1
           FOR UPDATE SKIP LOCKED
         )
@@ -261,6 +262,20 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
         .where(and(eq(myrmidonFleetOnboardJobs.id, jobId), eq(myrmidonFleetOnboardJobs.companyId, companyId), eq(myrmidonFleetOnboardJobs.status, "claimed"), sql`${myrmidonFleetOnboardJobs.secretConsumedAt} IS NULL`))
         .returning({ id: myrmidonFleetOnboardJobs.id });
       return rows.length === 1;
+    },
+
+    async pinHostKey(companyId, serverId, jobId, fingerprint) {
+      const rows = await db.execute(sql`
+        UPDATE myrmidon_fleet_servers s
+        SET host_key_fingerprint = ${fingerprint}, updated_at = now()
+        WHERE s.company_id = ${companyId}::uuid AND s.id = ${serverId}::uuid
+          AND (s.host_key_fingerprint IS NULL OR s.host_key_fingerprint = ${fingerprint})
+          AND EXISTS (SELECT 1 FROM myrmidon_fleet_onboard_jobs j
+            WHERE j.id = ${jobId}::uuid AND j.company_id = s.company_id AND j.server_id = s.id
+              AND j.status IN ('claimed', 'running'))
+        RETURNING s.id
+      `);
+      return (rows as unknown as Array<{ id: string }>).length === 1;
     },
 
     async updateJob(companyId, jobId, patch) {
