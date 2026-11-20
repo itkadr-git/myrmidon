@@ -782,6 +782,21 @@ describe("company migration dry run", () => {
     expect(await companyTransferRunService.claimMigrationRollback(db, run.id, "rollback-claim-source")).toBe(true);
   });
 
+  it("releases a failed rollback claim without losing provenance or exposing errors", async () => {
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "rollback-error-source", "rollback-error-key");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Rollback error destination" }, { transferRunId: run.id });
+    await companyTransferRunService.releaseApplyClaim(db, run.id, "interrupted");
+    expect(await companyTransferRunService.claimMigrationRollback(db, run.id, "rollback-error-source")).toBe(true);
+    expect(await companyTransferRunService.releaseMigrationRollbackClaim(db, run.id, "secret-error-canary")).toBe(true);
+    const saved = await companyTransferRunService.getRun(db, run.id);
+    expect(saved?.status).toBe("failed");
+    expect(saved?.companyId).toBe(destination.id);
+    expect(JSON.stringify(saved)).not.toContain("secret-error-canary");
+    expect(await companyTransferRunService.releaseMigrationRollbackClaim(db, run.id, "stale")).toBe(false);
+    expect(await companyTransferRunService.claimMigrationRollback(db, run.id, "rollback-error-source")).toBe(true);
+  });
+
   it("preserves destination and storage provenance when startup recovers an interrupted apply", async () => {
     const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "crash-source", "crash-reservation");
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
