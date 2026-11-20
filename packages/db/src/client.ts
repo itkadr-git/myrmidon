@@ -7,12 +7,14 @@ import { withQueryObservation } from "./query-observer.js";
 
 const require = createRequire(import.meta.url);
 
-function loadDrivers() {
-  // Resolve the ESM entry explicitly: the packages' require conditions use
-  // separate CommonJS builds whose classes have different identities.
-  const { default: postgresDriver } = require(fileURLToPath(import.meta.resolve("postgres"))) as { default: typeof postgres };
-  const { drizzle } = require(fileURLToPath(import.meta.resolve("drizzle-orm/postgres-js"))) as typeof import("drizzle-orm/postgres-js");
-  return { postgres: postgresDriver, drizzle };
+// Resolve the ESM entries explicitly: the packages' require conditions use
+// separate CommonJS builds whose classes have different identities.
+function loadPostgres() {
+  return (require(fileURLToPath(import.meta.resolve("postgres"))) as { default: typeof postgres }).default;
+}
+
+function loadDrizzle() {
+  return (require(fileURLToPath(import.meta.resolve("drizzle-orm/postgres-js"))) as typeof import("drizzle-orm/postgres-js")).drizzle;
 }
 
 type RegisteredPostgresClient = ReturnType<typeof postgres>;
@@ -235,13 +237,14 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
  * lifecycle and ends it with its own teardown (the bus `stop` does).
  */
 export function createPostgresJsClient(url: string, options?: DatabaseClientOptions) {
-  const { postgres } = loadDrivers();
+  const postgres = loadPostgres();
   const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
   return postgres(url, postgresJsOptions(resolved));
 }
 
 export function createDb(url: string, options?: DatabaseClientOptions) {
-  const { postgres, drizzle } = loadDrivers();
+  const postgres = loadPostgres();
+  const drizzle = loadDrizzle();
   const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
   const sql = postgres(url, postgresJsOptions(resolved));
   const key = hostPortKeyOrNull(url);
