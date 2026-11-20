@@ -1,5 +1,6 @@
 import { startNativeFinalizationRequestScheduler } from "./services/native-runtime/native-finalization-request-scheduler.js";
 import { projectToolRoutes } from "./routes/project-tools.js";
+import { lazyAiConnectionRoutes } from "./routes/lazy-ai-connections.js";
 import { emailChannelService } from "./services/email-channels.js";
 import { emailRoutes, emailWebhookRoutes } from "./routes/email.js";
 import { toolActionDeliveryService } from "./services/tool-action-delivery.js";
@@ -1505,23 +1506,14 @@ export async function createApp(
   app.locals.toolGateway = toolGateway;
   app.locals.toolActionDeliveries = toolActionDeliveries;
   app.use(mcpGatewayProtocolRoutes(toolGateway));
-  let cachedAiConnectionRoutes: ((req: any, res: any, next: any) => void) | null = null;
-  api.use(async (req, res, next) => {
-    if (!req.path.includes("ai-connections")) return next();
-    try {
-      if (!cachedAiConnectionRoutes) {
-        const { aiConnectionRoutes } = await import("./routes/ai-connections.js");
-        cachedAiConnectionRoutes = aiConnectionRoutes(db, {
-          deploymentMode: opts.deploymentMode,
-          deploymentExposure: opts.deploymentExposure,
-          trustedLocalStdioRuntimeHost,
-        });
-      }
-      cachedAiConnectionRoutes(req, res, next);
-    } catch (err) {
-      next(err);
-    }
-  });
+  api.use(lazyAiConnectionRoutes(async () => {
+    const { aiConnectionRoutes } = await import("./routes/ai-connections.js");
+    return aiConnectionRoutes(db, {
+      deploymentMode: opts.deploymentMode,
+      deploymentExposure: opts.deploymentExposure,
+      trustedLocalStdioRuntimeHost,
+    });
+  }));
   api.use(
     toolAccessRoutes(db, {
       deploymentMode: opts.deploymentMode,
