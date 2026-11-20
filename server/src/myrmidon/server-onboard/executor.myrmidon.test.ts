@@ -69,6 +69,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     mockSsh.mockResponse(/sudo systemctl reload/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
     mockSsh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
+    mockSsh.mockResponse(/check-myrmidon-firewall-prerequisites/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     mockSsh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     mockSsh.mockResponse(/sudo ufw allow/, { stdout: "", exitCode: 0 });
@@ -1313,6 +1314,7 @@ exit 97
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
     ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
+    ssh.mockResponse(/check-myrmidon-firewall-prerequisites/, { exitCode: 0, stdout: "" });
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
     ssh.mockResponse(/check-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
