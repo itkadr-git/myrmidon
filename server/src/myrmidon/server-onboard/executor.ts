@@ -350,8 +350,8 @@ export class FleetOnboardExecutor {
               throw new Error("Firewall rollback timer prerequisites unavailable; refusing unsafe firewall changes");
             }
 
-            // Prepare a root-owned, operation-specific policy snapshot before arming
-            // anything. This is not yet a restore script: mutations stay forbidden.
+            // The restore script remains inert until a future mutation protocol marks
+            // the policy as changed; rule ownership is not implemented yet.
             const timer = `myrmidon-firewall-${randomUUID()}`;
             const rollbackDir = `/var/tmp/${timer}`;
             const incomingPolicy = /^Default:\s+(allow|deny|reject) \(incoming\)/.exec(defaultLines[0] ?? "")?.[1];
@@ -359,15 +359,16 @@ export class FleetOnboardExecutor {
             try {
               let preparation: SshExecutionResult;
               try {
-                preparation = await activeSsh.execute(`: prepare-myrmidon-firewall-restore; sudo mkdir -m 700 ${rollbackDir} && printf '%s\\n' '${incomingPolicy}' | sudo tee ${rollbackDir}/incoming-policy >/dev/null && sudo chmod 600 ${rollbackDir}/incoming-policy`);
+                const restoreScript = `#!/bin/sh\nset -eu\nif [ -f ${rollbackDir}/policy-changed ]; then\n  ufw default ${incomingPolicy} incoming\nfi\n`;
+                preparation = await activeSsh.execute(`: prepare-myrmidon-firewall-restore; sudo mkdir -m 700 ${rollbackDir} && printf '%s' '${restoreScript}' | sudo tee ${rollbackDir}/restore.sh >/dev/null && sudo chmod 700 ${rollbackDir}/restore.sh`);
               } catch (error) {
                 const cause = error instanceof Error ? error.message : String(error);
                 throw new Error(`Firewall rollback preparation failed: ${cause}`);
               }
               if (preparation.exitCode !== 0) throw new Error("Firewall rollback preparation failed; refusing unsafe firewall changes");
 
-              // Probe only; a real restore and ownership protocol must precede mutations.
-              const start = await activeSsh.execute(`: start-myrmidon-firewall-timer; sudo systemd-run --unit=${timer} --on-active=5m /bin/true >/dev/null && sudo systemctl is-active --quiet ${timer}.timer && echo timer-confirmed`);
+              // No firewall mutation is permitted until rule ownership is implemented.
+              const start = await activeSsh.execute(`: start-myrmidon-firewall-timer; sudo systemd-run --unit=${timer} --on-active=5m /bin/sh ${rollbackDir}/restore.sh >/dev/null && sudo systemctl is-active --quiet ${timer}.timer && echo timer-confirmed`);
               if (start.exitCode !== 0 || start.stdout.trim() !== "timer-confirmed") {
                 throw new Error("Firewall rollback timer start or confirmation failed; refusing unsafe firewall changes");
               }
