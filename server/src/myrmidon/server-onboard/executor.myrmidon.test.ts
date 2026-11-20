@@ -1337,6 +1337,48 @@ exit 97
     expect(launch).not.toMatch(/systemd-run[^\n]*\/bin\/true/);
   });
 
+  it("prepares a restore script with executable shell line breaks", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 1 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-restore-script-lines", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+    await executor.execute(claim, createMockReporter().reporter);
+    const command = ssh.executedCommands.find(({ command }) => command.includes("prepare-myrmidon-firewall-restore"))?.command ?? "";
+    const script = /printf '%s' '([^']+)'/.exec(command)?.[1] ?? "";
+    const syntax = spawnSync("sh", ["-n"], { input: script, encoding: "utf8" });
+    expect(script).toContain("#!/bin/sh\nset -eu\n");
+    expect(syntax.status).toBe(0);
+  });
+
+  it("keeps the rollback timer armed if immediate firewall restoration fails", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
+    ssh.mockResponse(/prepare-myrmidon-firewall-restore/, { exitCode: 0 });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
+    ssh.mockResponse(/check-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
+    ssh.mockResponse(/sudo ufw allow/, { exitCode: 1, stderr: "allow outcome unknown" });
+    ssh.mockResponse(/restore-myrmidon-firewall/, { exitCode: 1, stderr: "restore failed" });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-restore-failed-timer", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(ssh.hasExecuted(/sudo ufw allow/)).toBe(true);
+    expect(ssh.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
+    expect(ssh.hasExecuted(/stop-myrmidon-firewall-timer/)).toBe(false);
+    expect(ssh.hasExecuted(/sudo rm -rf \/var\/tmp\/myrmidon-firewall-/)).toBe(false);
+  });
+
   it("fails closed when the firewall restore script cannot be prepared", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
