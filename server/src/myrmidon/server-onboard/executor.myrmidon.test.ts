@@ -1549,6 +1549,41 @@ exit 97
     }
   });
 
+  it("restores both IPv4 and IPv6 rules created by one owned SSH allow", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 1 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-dual-stack-owned-rule", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+    await executor.execute(claim, createMockReporter().reporter);
+    const command = ssh.executedCommands.find(({ command }) => command.includes("prepare-myrmidon-firewall-restore"))?.command ?? "";
+    const script = /printf '%s' '([^']+)'/.exec(command)?.[1] ?? "";
+    const owner = /myrmidon-firewall-[a-f0-9-]+/.exec(command)?.[0] ?? "";
+    expect(script).not.toBe("");
+    expect(owner).not.toBe("");
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-dual-stack-restore-"));
+    try {
+      const calls = join(dir, "calls");
+      const rules = join(dir, "rules");
+      writeFileSync(calls, "");
+      writeFileSync(rules, "v4\nv6\noperator\n");
+      writeFileSync(join(dir, "rule-changed"), "");
+      writeFileSync(join(dir, "ufw"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "$CALLS"\ncase "$*" in\n  'status numbered') printf 'Status: active\\n'; grep -q '^v4$' "$RULES" && printf '[ 1] 22/tcp ALLOW IN Anywhere # ${owner}\\n'; grep -q '^v6$' "$RULES" && printf '[ 2] 22/tcp (v6) ALLOW IN Anywhere (v6) # ${owner}\\n'; exit 0 ;;\n  '--force delete 1') python3 -c 'import os; p=os.environ["RULES"]; s=open(p).readlines(); open(p,"w").writelines(x for x in s if x != "v4\\n")' ;;\n  '--force delete 2') python3 -c 'import os; p=os.environ["RULES"]; s=open(p).readlines(); open(p,"w").writelines(x for x in s if x != "v6\\n")' ;;\n  *) exit 1 ;;\nesac\n`);
+      chmodSync(join(dir, "ufw"), 0o700);
+      const localScript = script.replace(/\/var\/tmp\/myrmidon-firewall-[a-f0-9-]+/g, dir);
+      const result = spawnSync("sh", ["-c", localScript], { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: calls, RULES: rules } });
+      expect(result.status).toBe(0);
+      expect(readFileSync(rules, "utf8")).toBe("operator\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails rollback when multiple rules claim the same operation owner", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
