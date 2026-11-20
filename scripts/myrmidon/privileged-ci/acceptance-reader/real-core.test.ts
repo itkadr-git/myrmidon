@@ -50,20 +50,19 @@ it("gateway HTTPS reaches real core with company, lifecycle and revision enforce
     const port = reserved.port; await new Promise<void>((resolve) => reservation.close(() => resolve()));
     gateway = start({ host: "127.0.0.1", port, credentialDirectory: file("credentials"), auditFile: file("audit"), listener: { cert: file("gateway.crt"), key: file("gateway.key") }, upstream: { origin: `https://localhost:${address.port}`, ca: file("core.crt"), cert: file("client.crt"), key: file("client.key"), tokenFile: file("service-token") } });
     await new Promise<void>((resolve) => gateway!.once("listening", resolve));
-    const call = (ref: string, pin?: unknown, token = candidate) => new Promise<{ status: number; body: string }>((resolve, reject) => {
-      const payload = pin === undefined ? undefined : JSON.stringify(pin);
-      const req = request({ host: "127.0.0.1", servername: "localhost", port, ca: gatewayTls.cert, path: `/api/issues/${ref}/acceptance-snapshot${payload ? "/verify" : ""}`, method: payload ? "POST" : "GET", headers: { authorization: `Bearer ${token}`, ...(payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {}) } }, (res) => {
-        let body = ""; res.setEncoding("utf8"); res.on("data", (chunk) => { body += chunk; }); res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+    const call = (ref: string, etag?: string) => new Promise<{ status: number; body: string; etag?: string }>((resolve, reject) => {
+      const req = request({ host: "127.0.0.1", servername: "localhost", port, ca: gatewayTls.cert, path: `/api/issues/${ref}/acceptance-snapshot`, method: "GET", headers: { authorization: `Bearer ${candidate}`, ...(etag ? { "if-match": etag } : {}) } }, (res) => {
+        let body = ""; res.setEncoding("utf8"); res.on("data", (chunk) => { body += chunk; }); res.on("end", () => resolve({ status: res.statusCode ?? 0, body, etag: res.headers.etag }));
       });
-      req.on("error", reject); req.end(payload);
+      req.on("error", reject); req.end();
     });
     const first = await call("AAA-1"); expect(first.status).toBe(200);
     const pin = JSON.parse(first.body); expect(pin.issue.id).toBe(issueId); expect(pin.document).toBeNull();
     expect((await call(issueId)).status).toBe(200);
     expect((await call("BBB-1")).status).toBe(404); expect((await call(foreignIssue)).status).toBe(404);
-    expect((await call(issueId, pin)).status).toBe(200);
+    expect((await call(issueId, first.etag)).status).toBe(200);
     await db.update(issues).set({ title: "Changed" }).where(eq(issues.id, issueId));
-    expect((await call(issueId, pin)).status).toBe(409);
+    expect((await call(issueId, first.etag)).status).toBe(412);
     await db.update(acceptanceServiceCredentials).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(acceptanceServiceCredentials.id, issued.id));
     expect((await call(issueId)).status).toBe(502);
     await db.update(acceptanceServiceCredentials).set({ expiresAt: new Date(Date.now() + 60_000) }).where(eq(acceptanceServiceCredentials.id, issued.id));

@@ -3,8 +3,8 @@
 Operator documentation (EN/RU): [docs/myrmidon/acceptance-reader.md](../../../../docs/myrmidon/acceptance-reader.md)
 and [acceptance-reader.ru.md](../../../../docs/myrmidon/acceptance-reader.ru.md).
 
-This standalone gateway is not a production deployment. It exposes exactly two
-runner-facing operations for one company-bound acceptance snapshot. The
+This standalone gateway is not a production deployment. It exposes exactly one read-only
+runner-facing operation for one company-bound acceptance snapshot. The
 upstream is the dedicated service listener's `GET /api/service/issues/{id}/acceptance-scenarios`
 (OPE-15134), authenticated with a certificate-bound service bearer, returning one JSON object:
 
@@ -25,7 +25,7 @@ a bare `502` that never carries a partial body. The real-core integration test
 below exercises this contract against a PostgreSQL-backed core using synthetic
 credentials; it is not a production test.
 
-## Pin and verify
+## Conditional snapshot reads
 
 Security limitation: the database writer protocol has targeted PostgreSQL
 regression coverage, but it and the consumer's check-and-use transaction still
@@ -63,24 +63,18 @@ is missing. The counter
 is a decimal string, exact beyond 2^53 where JavaScript numbers collapse
 adjacent generations.
 
-`POST /api/issues/{ref}/acceptance-snapshot/verify` takes a previously pinned
-snapshot as its JSON body and performs the conditional assertion server-side.
-The gateway reads and validates the bounded request body **first**, then
-reads the fresh snapshot, then compares the whole pin — a slow client cannot
-pin the comparison to a moment older than its own evidence. The response is
-`200 { "ok": true }` when no relevant mutation committed between the pin and
-this verify, `409` when anything moved, `400` for a malformed pin, `401` on
-expiry/revocation, and `502` on upstream failures. A tenant move makes the
-fresh read foreign, so every request fails closed with the identical `404`.
-The pin schema is strict: a missing `document` property is a corrupted
-payload, never silently "no document".
+The response includes a strong `ETag`. Repeat the GET with that exact value in
+`If-Match`: a matching snapshot returns 200, a changed snapshot returns 412,
+malformed or weak conditions return 400, and a foreign or unknown issue returns
+404. All write methods and the former verify route are rejected. The gateway
+forwards the condition to upstream and also checks the returned snapshot locally.
 
 ## Result semantics (read this before trusting a result)
 
-A verify proves the pinned snapshot still equals the current state **as of
-that verify** — nothing more. Check and use are separate operations, and no
+A successful conditional GET proves the pinned snapshot still equals the current state **as of
+that read** — nothing more. Check and use are separate operations, and no
 read-only gateway can see a write that lands after its last read. Even an
-immediate verify followed by publication leaves a race; repeating it cannot
+immediate conditional read followed by publication leaves a race; repeating it cannot
 make the privileged action atomic. The pin is diagnostic evidence only, not
 an authorization to publish or consume a privileged CI verdict.
 
@@ -130,7 +124,7 @@ operator guide. It is separate from the runner-facing gateway credential. Do not
 use a regular board agent key.
 
 Upstream conditional reads send the pin-derived strong `If-Match`; a changed
-snapshot returns 412 upstream and 409 to the gateway client. This detects
+snapshot returns 412 upstream and to the gateway client. This detects
 changes at read time only, not atomic authorization of a later action.
 
 Настройка и ключи принадлежат оператору; runner получает только отдельный
@@ -140,7 +134,7 @@ bearer gateway. Запись содержит SHA-256 токена, неизме
 является проверкой production. Файл `upstream.tokenFile` содержит отдельный
 service bearer, привязанный к компании и клиентскому сертификату; это не bearer
 runner. Условное чтение отправляет сильный `If-Match`: изменение даёт 412 от
-upstream и 409 клиенту шлюза. Проверка не делает последующее действие атомарным.
+upstream и 412 клиенту шлюза. Проверка не делает последующее действие атомарным.
 Реальная сетевая изоляция требует отдельного подтверждения инфраструктуры до
 развёртывания.
 
@@ -169,9 +163,8 @@ checks, and the consumer-side revision enforcement above are complete.
 `devbuild 'node --test scripts/myrmidon/privileged-ci/acceptance-reader/*.test.mjs'`
 uses a separate local TLS fixture with synthetic credentials. It is not a GitHub
 OIDC exchange, a production test, or proof of network isolation. The fixture
-executes the full production path — pin, verify, content/link/company/identifier
-ABA (each detected), mutation after verify (detected at the next verify) — plus
-the tenant, credential-lifecycle and failure-class regressions.
+exercises conditional GET, content ABA, rejected write methods, tenant isolation,
+credential lifecycle and failure classes.
 
 The real-core integration test is `real-core.test.ts` in this directory. The
 server Vitest configuration only discovers tests under `server/src`. Run:
