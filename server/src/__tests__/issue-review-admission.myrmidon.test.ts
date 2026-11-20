@@ -366,7 +366,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     await ctx.db.insert(issues).values({
       id: issueId, companyId, title: "Return from typed review", status: "in_review", priority: "medium", assigneeAgentId: leadId, createdByAgentId: authorId,
       executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewerId }] }], monitor } as any,
-      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewerId }, returnAssignee: { type: "agent", agentId: authorId }, completedStageIds: [], changesRequestedCount: 1, lastDecisionOutcome: "changes_requested" },
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewerId }, returnAssignee: { type: "agent", agentId: authorId }, completedStageIds: [], changesRequestedCount: 2, lastDecisionId: randomUUID(), lastDecisionOutcome: "changes_requested" },
       monitorNextCheckAt: new Date(monitor.nextCheckAt),
     });
     await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewerId, status: "running", contextSnapshot: { issueId } });
@@ -377,8 +377,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     expect(result.status, JSON.stringify(result.body)).toBe(200);
     const [updated] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
     expect(updated?.status).toBe("in_progress");
-    expect(updated?.assigneeAgentId).toBe(authorId);
-    expect(updated?.executionState).toMatchObject({ status: "changes_requested", currentStageId: stageId, changesRequestedCount: 2, returnAssignee: { agentId: authorId } });
+    expect({ status: updated?.status, assignee: updated?.assigneeAgentId, state: updated?.executionState }).toMatchObject({ status: "in_progress", assignee: authorId, state: { status: "changes_requested", currentStageId: stageId, changesRequestedCount: 3, returnAssignee: { agentId: authorId } } });
     const decisions = await ctx.db.select().from(activityLog).where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.execution_decision")));
     expect(decisions.length).toBeLessThanOrEqual(1);
   });
