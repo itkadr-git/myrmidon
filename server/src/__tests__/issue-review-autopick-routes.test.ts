@@ -9,6 +9,7 @@ import {
   agentTaskSessions,
   agentWakeupRequests,
   companySkills,
+  documents,
   heartbeatRunEvents,
   heartbeatRuns,
   instanceSettings,
@@ -47,6 +48,7 @@ const ctx = useEmbeddedPostgres("myrmidon-review-autopick-", {
       await tx.delete(heartbeatRuns);
       await tx.delete(agentWakeupRequests);
       await tx.delete(issueComments);
+      await tx.delete(documents);
       await tx.delete(issues);
       await tx.delete(agentRuntimeState);
       await tx.delete(agentTaskSessions);
