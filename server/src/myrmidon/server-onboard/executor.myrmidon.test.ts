@@ -1005,7 +1005,7 @@ exit 1
     const rules = join(dir, "rules");
     const calls = join(dir, "calls");
     writeFileSync(rules, "operator-original\n");
-    writeFileSync(join(dir, "sudo"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\nif [ "$*" = "ufw status" ]; then printf "operator-concurrent\\n" >> "$RULES"; printf "Status: active\\n"; exit 0; fi\nif [ "$*" = "ufw status verbose" ]; then printf "Status: active\\nDefault: allow (incoming), allow (outgoing), disabled (routed)\\n"; exit 0; fi\nif [ "$*" = "systemctl show --property=Version --value" ]; then exit 0; fi\ncase "$1" in systemd-run) exec "$@";; esac\nexit 97\n');
+    writeFileSync(join(dir, "sudo"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\nif [ "$*" = "ufw status" ]; then printf "operator-concurrent\\n" >> "$RULES"; printf "Status: active\\n"; exit 0; fi\nif [ "$*" = "ufw status verbose" ]; then printf "Status: active\\nDefault: allow (incoming), allow (outgoing), disabled (routed)\\n"; exit 0; fi\nif [ "$*" = "systemctl show --property=Version --value" ]; then exit 0; fi\ncase "$1" in mkdir|tee|chmod|sh|rm) exit 0;; systemd-run) exec "$@";; esac\nexit 97\n');
     writeFileSync(join(dir, "systemd-run"), '#!/bin/sh\nprintf "timer-start\\n" >> "$CALLS"\nexit 1\n');
     chmodSync(join(dir, "sudo"), 0o700);
     chmodSync(join(dir, "systemd-run"), 0o700);
