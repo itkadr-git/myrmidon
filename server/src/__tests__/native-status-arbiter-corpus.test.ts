@@ -2114,6 +2114,75 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     expect(outbox!.dispatchedAt).not.toBeNull();
   }, 30_000);
 
+  it.each(["issue", "document"] as const)("rejects a stale snapshot when a concurrent %s writer wins the fence", async (target) => {
+    const template = corpus.fixtures.find((candidate) => candidate.mode === "native")!;
+    const seeded = await seedFixture({
+      ...template, id: `service-fence-race-${target}-${randomUUID()}`,
+      given: { ...template.given, priorIssueStatus: "in_progress", completionState: "policy_review_cleanup" },
+    });
+    const documentId = randomUUID(), revisionId = randomUUID(), credentialId = randomUUID();
+    const principalId = randomUUID(), grantId = randomUUID(), requestId = randomUUID();
+    const fingerprint = "a".repeat(64), leaseUntil = new Date(Date.now() + 60_000);
+    await db.insert(documents).values({ id: documentId, companyId, latestBody: "criteria", latestRevisionId: revisionId, latestRevisionNumber: 1 });
+    await db.insert(documentRevisions).values({ id: revisionId, documentId, companyId, revisionNumber: 1, body: "criteria" });
+    await db.insert(issueDocuments).values({ companyId, issueId: seeded.issueId, documentId, key: "acceptance-scenarios" });
+    const { issueAcceptanceSnapshotService } = await import("../services/issue-acceptance-snapshot.js");
+    const snapshot = await issueAcceptanceSnapshotService(db).read(seeded.issueId, companyId);
+    const epoch = snapshot!.issue.version;
+    const etag = `"${createHash("sha256").update(JSON.stringify([seeded.issueId, epoch, revisionId])).digest("hex")}"`;
+    await db.insert(acceptanceServiceCredentials).values({ id: credentialId, companyId, audience: "native-finalization-submit", keyHash: randomUUID(), certificateSha256: fingerprint, expiresAt: leaseUntil });
+    await db.insert(nativeFinalizationGrants).values({ id: grantId, companyId, issueId: seeded.issueId, runId: seeded.runId, principalId, credentialId, certificateSha256: fingerprint, notAfter: leaseUntil, createdByOperatorId: "test" });
+    await db.insert(nativeFinalizationRequests).values({ id: requestId, companyId, issueId: seeded.issueId, runId: seeded.runId, grantId, grantGeneration: 1, principalId, credentialId, verifiedPeerSha256: fingerprint, authenticatedAt: new Date(), documentId, expectedRevisionId: revisionId, expectedIssueEpoch: epoch, strongEtag: etag, canonicalPayloadHash: "test", idempotencyKey: "test", state: "processing", leaseOwner: "worker", leaseUntil });
+    await db.insert(nativeFinalizationOutbox).values({ requestId });
+    await db.update(nativeRunFinalizations).set({ authorizationMode: "service_required" }).where(eq(nativeRunFinalizations.runId, seeded.runId));
+
+    let release!: () => void;
+    let locked!: () => void;
+    let writerPid = 0;
+    const held = new Promise<void>((resolve) => { locked = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const writer = db.transaction(async (tx) => {
+      const pid = await tx.execute(sql`select pg_backend_pid() as pid`);
+      writerPid = Number(pid[0]!.pid);
+      if (target === "issue") {
+        await tx.update(issues).set({ title: `changed-${randomUUID()}` }).where(eq(issues.id, seeded.issueId));
+      } else {
+        const nextRevisionId = randomUUID();
+        await tx.insert(documentRevisions).values({ id: nextRevisionId, documentId, companyId, revisionNumber: 2, body: "changed" });
+        await tx.update(documents).set({ latestBody: "changed", latestRevisionId: nextRevisionId, latestRevisionNumber: 2 }).where(eq(documents.id, documentId));
+      }
+      locked();
+      await gate;
+    });
+    await held;
+    const commit = commitNativeStatusDecision({
+      db, companyId, issueId: seeded.issueId, runId: seeded.runId,
+      assessmentId: seeded.assessmentId, priorStatus: "in_progress", priorStatusVersion: 0, priorDecisionId: null,
+      decision: { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "in_review", toStatus: "in_review", reasonCode: "completion_review_required", unblockDescriptor: null, effects: [] },
+      serviceRequest: { requestId, leaseOwner: "worker", leaseUntil },
+    });
+    const rejected = expect(commit).rejects.toThrow("native_service_snapshot_changed");
+    try {
+      const deadline = Date.now() + 10_000;
+      let blocked = false;
+      while (Date.now() < deadline) {
+        const waiting = await db.execute(sql`select 1 from pg_stat_activity where ${writerPid} = any(pg_blocking_pids(pid))`);
+        if (waiting.length > 0) { blocked = true; break; }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(blocked).toBe(true);
+    } finally {
+      release();
+      await writer;
+    }
+    await rejected;
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, seeded.runId))).toEqual([]);
+    const [request] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, requestId));
+    const [outbox] = await db.select().from(nativeFinalizationOutbox).where(eq(nativeFinalizationOutbox.requestId, requestId));
+    expect(request).toMatchObject({ state: "processing", resultDecisionId: null });
+    expect(outbox!.dispatchedAt).toBeNull();
+  }, 30_000);
+
   it("passes a leased service request through the finalizer and rejects stale leases", async () => {
     const template = corpus.fixtures.find((candidate) => candidate.mode === "native")!;
     const seeded = await seedFixture({
