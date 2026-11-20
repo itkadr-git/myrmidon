@@ -9,7 +9,7 @@ function optionsTokens(text) {
   let active = false;
   for (const char of text) {
     if (char === '"') { quoted = !quoted; active = true; }
-    else if (/\s/.test(char) && !quoted) {
+    else if (/[ \t\n\r\v\f]/.test(char) && !quoted) {
       if (active) tokens.push(token);
       token = ''; active = false;
     } else { token += char; active = true; }

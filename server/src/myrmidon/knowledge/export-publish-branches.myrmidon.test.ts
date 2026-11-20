@@ -64,7 +64,7 @@ describe("knowledge export publication branches", () => {
       const result = await publishKnowledgeExport({ workDir, repoUrl, branch, tree, runner });
       expect(result).toEqual({ committed: true, commit, contentHash: tree.contentHash, pageCount: 1 });
       expect(await readFile(path.join(workDir, "ops/runbook.md"), "utf8")).toBe("Runbook\n");
-      const prefix = mode === "empty" ? ["ls-remote", "init", "remote"] : mode === "remote" ? ["ls-remote", "clone"] : ["fetch"];
+      const prefix = mode === "empty" ? ["ls-remote", "init", "remote"] : mode === "remote" ? ["ls-remote", "clone"] : ["fetch", "show-ref", "checkout", "merge"];
       expect(commands(calls)).toEqual([...prefix, "ls-files", "add", "status", "commit", "rev-parse", "push"]);
       if (mode === "empty") {
         expect(calls[0]).toEqual({ cwd: workDir, args: ["ls-remote", "--heads", repoUrl, branch] });
@@ -87,7 +87,7 @@ describe("knowledge export publication branches", () => {
       const { runner, calls } = recordingRunner(mode, false);
       const result = await publishKnowledgeExport({ workDir, repoUrl, branch, tree, runner });
       expect(result).toEqual({ committed: false, commit: null, contentHash: tree.contentHash, pageCount: 1 });
-      const prefix = mode === "empty" ? ["ls-remote", "init", "remote"] : mode === "remote" ? ["ls-remote", "clone"] : ["fetch"];
+      const prefix = mode === "empty" ? ["ls-remote", "init", "remote"] : mode === "remote" ? ["ls-remote", "clone"] : ["fetch", "show-ref", "checkout", "merge"];
       expect(commands(calls)).toEqual([...prefix, "ls-files", "add", "status"]);
       expect(await readFile(path.join(workDir, "ops/runbook.md"), "utf8")).toBe("Runbook\n");
     });

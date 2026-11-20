@@ -205,7 +205,16 @@ export function prepareBundledPackage(sourceDir, destinationDir, { sourceRoot = 
   }
 
   const files = sourcePackage.files ?? [];
-  validateBundleStaging(sourceDir, destinationDir, files);
+  const ancillaryEntries = ["README.md", "LICENSE", "LICENSE.md"].filter((entry) => {
+    try {
+      lstatSync(resolve(sourceDir, entry));
+      return true;
+    } catch (cause) {
+      if (cause.code === "ENOENT") return false;
+      throw cause;
+    }
+  });
+  validateBundleStaging(sourceDir, destinationDir, [...files, ...ancillaryEntries]);
   rmSync(destinationDir, { recursive: true, force: true });
   mkdirSync(destinationDir, { recursive: true });
   for (const entry of files) {

@@ -1,0 +1,110 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import * as authenticatedAudit from './authenticated-audit.mjs';
+const { createAuthenticatedAudit } = authenticatedAudit;
+import { createAuditedRecoveredServer } from './tls.mjs';
+
+test('audited server refuses startup without an independent audit anchor', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-required-'));
+  try {
+    await assert.rejects(createAuditedRecoveredServer({}, {
+      auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32),
+    }), /audit anchor required/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('audited server refuses startup without a recovery alert sink', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-alert-required-'));
+  try {
+    const anchor = { read: () => ({ seq: 0, mac: '' }), compareAndSet: () => true };
+    await assert.rejects(createAuditedRecoveredServer({}, {
+      auditPath: join(dir, 'audit.sqlite'), auditKey: randomBytes(32), auditAnchor: anchor,
+    }), /recovery alert required/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('anchor CAS rejection must fail the audit append closed', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-cas-'));
+  const path = join(dir, 'audit.sqlite');
+  const key = randomBytes(32);
+  const anchor = { read: () => ({ seq: 0, mac: '' }), compareAndSet: () => false };
+  try {
+    const audit = createAuthenticatedAudit(path, key, anchor);
+    await assert.rejects(audit.record('issued'), /anchor/);
+    audit.close();
+    const db = new DatabaseSync(path);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM audit_events').get().count, 0);
+    db.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('an independently retained audit head rejects suffix deletion on restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-anchor-'));
+  const path = join(dir, 'audit.sqlite');
+  const key = randomBytes(32);
+  let head = { seq: 0, mac: '' };
+  const anchor = {
+    read: () => ({ ...head }),
+    compareAndSet: (previous, next) => {
+      if (JSON.stringify(head) !== JSON.stringify(previous)) throw new Error('anchor conflict');
+      head = { ...next };
+      return true;
+    },
+  };
+  try {
+    const audit = createAuthenticatedAudit(path, key, anchor);
+    await audit.record('issued');
+    await audit.record('revoked');
+    audit.close();
+    const db = new DatabaseSync(path);
+    db.exec('DELETE FROM audit_events WHERE seq = 2');
+    db.close();
+    assert.throws(() => createAuthenticatedAudit(path, key, anchor), /audit integrity/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('lost asynchronous CAS response fails closed after restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-cas-lost-'));
+  const path = join(dir, 'audit.sqlite'), key = randomBytes(32);
+  let head = { seq: 0, mac: '' };
+  const anchor = {
+    async read() { return { ...head }; },
+    async compareAndSet(_previous, next) { head = { ...next }; throw new Error('response lost'); },
+  };
+  try {
+    const audit = await authenticatedAudit.createAsyncAuthenticatedAudit(path, key, anchor);
+    await assert.rejects(audit.record('issued'), /response lost/);
+    audit.close();
+    await assert.rejects(authenticatedAudit.createAsyncAuthenticatedAudit(path, key, anchor), /audit integrity/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('async independent anchor detects audit rollback after restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-remote-anchor-'));
+  const path = join(dir, 'audit.sqlite'), key = randomBytes(32);
+  let head = { seq: 0, mac: '' };
+  const anchor = {
+    async read() { return { ...head }; },
+    async compareAndSet(previous, next) {
+      if (JSON.stringify(previous) !== JSON.stringify(head)) return false;
+      head = { ...next };
+      return true;
+    },
+  };
+  try {
+    assert.equal(typeof authenticatedAudit.createAsyncAuthenticatedAudit, 'function');
+    const audit = await authenticatedAudit.createAsyncAuthenticatedAudit(path, key, anchor);
+    await audit.record('issued');
+    await audit.record('revoked');
+    audit.close();
+    const db = new DatabaseSync(path);
+    db.exec('DELETE FROM audit_events WHERE seq = 2');
+    db.close();
+    await assert.rejects(authenticatedAudit.createAsyncAuthenticatedAudit(path, key, anchor), /audit integrity/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

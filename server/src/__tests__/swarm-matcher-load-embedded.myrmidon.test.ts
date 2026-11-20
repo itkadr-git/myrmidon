@@ -21,6 +21,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agentCastes,
+  agentNests,
   agentWakeupRequests,
   agents,
   companies,
@@ -66,6 +67,7 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
     await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(projectMemberships);
+    await db.delete(agentNests);
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(agentCastes);
@@ -668,6 +670,11 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
         .insert(projects)
         .values({ companyId, name: "Project A", leadAgentId: member })
         .returning();
+      const [otherProject] = await db
+        .insert(projects)
+        .values({ companyId, name: "Project B" })
+        .returning();
+      await db.insert(agentNests).values({ companyId, agentId: outsider, projectId: otherProject!.id });
       const projectTask = await seedTask(companyId, { projectId: project!.id });
 
       const first = await matchCompany(deps([]), companyId);

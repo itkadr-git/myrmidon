@@ -166,12 +166,20 @@ export const admAccessRequestScopeSchema = z
       "requestedScope must not contain tokens, secrets, credentials, URLs or endpoints",
   });
 
+export const admChannelResourceTypeSchema = z.enum(["skill", "connection", "tool"]);
+export const admChannelActionSchema = z.enum(["invoke_tool", "grant_capability"]);
+
+export function isAllowedAdmChannelRequest(resourceType: unknown, action: unknown): boolean {
+  return admChannelResourceTypeSchema.safeParse(resourceType).success
+    && admChannelActionSchema.safeParse(action).success;
+}
+
 export const createAdmAccessRequestSchema = z
   .object({
     targetCompanyId: z.string().uuid(),
-    resourceType: z.enum(admResourceTypes),
+    resourceType: admChannelResourceTypeSchema,
     resourceRef: z.string().min(1).max(256),
-    action: z.enum(admAccessActions),
+    action: admChannelActionSchema,
     justification: z.string().min(1).max(2000),
     requestedScope: admAccessRequestScopeSchema,
     ttlSeconds: z.number().int().min(60).max(30 * 24 * 60 * 60).optional(),

@@ -19,6 +19,14 @@ repository of each operation**, so the two never mix.
 
 ## How it works
 
+For `gh repo view OWNER/REPO` and `gh repo clone OWNER/REPO`, the broker
+uses the positional repository rather than the working directory's origin.
+An explicit `-R`/`--repo` or `GH_REPO` takes precedence; `gh api
+repos/OWNER/REPO` also selects the endpoint repository. Other commands do not
+treat branch names such as `origin/main` as repositories. When no target is
+specified, the broker falls back to origin. These rules apply to the container
+wrapper and the staged local/SSH launcher.
+
 - **Registration.** The one-click path: in Company settings → **Shared GitHub
   authorization** click **Create GitHub App**, confirm the dialog (owner —
   your personal account or an organization, the App name `Myrmidon —
@@ -220,6 +228,12 @@ is an error and no token is issued. The key is read as the system consumer
 `github-external-object-resolver`. When a PR still cannot be read, the done
 gate says that the board has no access to the repository and asks to configure
 a GitHub App or PAT, instead of saying the PR is not merged yet.
+
+## Review CI evidence and diagnostics
+
+The review gate can reuse a recent server-fetched, authoritative terminal `CI result` for the same company, repository, PR and exact known head. The head and snapshot must be fresh; check events invalidate cached evidence. A stale snapshot, a pending check, a changed or missing head, ambiguous reruns, or an untrusted comment is not proof of green CI. When the gate cannot establish the result, it does not admit the review on that evidence. A completed failure remains a failure, not a pass. See [PR #4547](https://github.com/itkadr-git/myrmidon/pull/4547).
+
+For an unreadable result, distinguish a GitHub budget denial (for example `token_provider:budget_exhausted` or `skipped_rate_limited`) from `network_error`; both can appear in the same diagnostic. Check the rate-limit reset and connectivity or credentials as appropriate. Do not publish credentials or secret values.
 
 ## CI and pull-request events from the App (webhook)
 

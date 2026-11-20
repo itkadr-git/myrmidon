@@ -388,6 +388,17 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(issueCount).toBe(2);
   });
 
+  it("records the requested repository when an operation targets a different repository", async () => {
+    const input = await seed();
+    const secretId = await registerApp(input, { appId: "101", key: KEY_A, installationId: "5001", tokenPrefix: "tok-a", repos: ["owner-a/origin", "owner-a/target"] });
+    await writeGitHubSharedIdentitySettings(db, input.companyId, rules([entry(secretId, { allowedRepos: ["owner-a/*"] })]));
+    await resolveGitHubOperationCredentials(db, { ...input, repository: "owner-a/origin" });
+    const result = await resolveGitHubOperationCredentials(db, { ...input, repository: "owner-a/target" });
+    expect(result).toMatchObject({ status: "available", source: "app", repository: "owner-a/target" });
+    const contexts = await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.runId, input.runId));
+    expect(contexts.some((row) => row.github?.source === "app" && row.github.repository === "owner-a/target")).toBe(true);
+  });
+
   it("mints a single-repository installation token on the board, with the agent as author, audited without the token", async () => {
     const input = await seed();
     const secretId = await registerApp(input, { appId: "101", key: KEY_A, installationId: "5001", tokenPrefix: "tok-a", repos: ["owner-a/repo-a"] });

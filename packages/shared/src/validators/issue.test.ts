@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
@@ -827,29 +828,12 @@ describe("issue validators", () => {
   describe("execution monitor kind (EMPTY-WAKES-CI-UNREADY)", () => {
     const base = { nextCheckAt: "2026-11-16T12:00:00.000Z" };
 
-    it("takes monitor.kind = ci as external_service and names the service github-ci", () => {
-      const parsed = issueExecutionPolicySchema.parse({ monitor: { ...base, kind: "ci" } });
-      expect(parsed.monitor?.kind).toBe("external_service");
-      expect(parsed.monitor?.serviceName).toBe("github-ci");
-    });
-
-    it("keeps a service name the caller gave", () => {
-      const parsed = issueExecutionPolicySchema.parse({
-        monitor: { ...base, kind: "ci", serviceName: "  review-ci  " },
-      });
-      expect(parsed.monitor?.kind).toBe("external_service");
-      expect(parsed.monitor?.serviceName).toBe("review-ci");
-    });
-
-    it("leaves external_service and an absent kind as they were", () => {
-      const external = issueExecutionPolicySchema.parse({
-        monitor: { ...base, kind: "external_service", serviceName: "x" },
-      });
-      expect(external.monitor?.kind).toBe("external_service");
-      expect(external.monitor?.serviceName).toBe("x");
-      const none = issueExecutionPolicySchema.parse({ monitor: base });
-      expect(none.monitor?.kind).toBeNull();
-      expect(none.monitor?.serviceName).toBeNull();
+    it("accepts monitor.kind = ci and external_service, keeps the schema transform-free", () => {
+      for (const kind of ["ci", "external_service"]) {
+        expect(issueExecutionPolicySchema.parse({ monitor: { ...base, kind } }).monitor?.kind).toBe(kind);
+      }
+      // JSON Schema for agent tools cannot represent a transform.
+      expect(() => z.toJSONSchema(issueExecutionPolicySchema)).not.toThrow();
     });
 
     it("still refuses an unknown kind", () => {

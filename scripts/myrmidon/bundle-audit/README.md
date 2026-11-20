@@ -36,6 +36,15 @@ sorted for the same files and Node.js built-in module list.
   eager subset. `heaviestEager` lists up to ten eager module records, sorted by
   descending bytes and then path.
 
+## Lazy boundaries
+
+Run `node scripts/myrmidon/bundle-audit/import-report-lazy-boundaries.mjs report.json`
+against a scanner report. Each startup lazy boundary reports the total source
+bytes of its target and all modules reachable from it through eager edges,
+excluding modules already eagerly reachable from the entry. Each module counts
+once per boundary, including when paths converge or contain cycles. Nested lazy
+edges are not followed. Different boundaries can include the same module.
+
 ## Resolution and limitations
 
 Relative and absolute specifiers are resolved from the importing file. The CLI
@@ -82,3 +91,27 @@ The manifest must describe the effective runtime argv and environment; this tool
 cannot verify their source or inspect a built image.
 
 Test in CI with `node --test scripts/myrmidon/bundle-audit/boot-contract.test.mjs`.
+
+# Prepared artifact runtime audit
+
+Run `node scripts/myrmidon/bundle-audit/artifact-audit.mjs <artifact-root>` against an already prepared workspace tree containing `pnpm-workspace.yaml`. The command is read-only and does not build or resolve imports.
+
+It inspects workspace package manifests matched by that file and checks runtime `main`, `exports` (including conditional and nested wildcard targets), and `bin` entries. Type declarations and `types` conditions are not runtime entries. Missing files, source TypeScript targets, root escapes and dangling or escaping symlinks cause a nonzero exit; a successful audit prints `PASS`. Invalid or empty workspace discovery also fails closed.
+
+This is a standalone tool, not a release pipeline step. Test with `node --test scripts/myrmidon/bundle-audit/artifact-audit.test.mjs`.
+
+---
+
+# Startup benchmark comparison
+
+Compare two JSON outputs from `measure-board-start.mjs --json` offline:
+
+```
+node scripts/myrmidon/bundle-audit/compare-bench.mjs baseline.json candidate.json
+```
+
+Each input must contain the recorded `cmd`, `envKeys`, and at least four ordered runs: one cold run followed by at least three warm runs. The report recalculates warm min, median, and max from the run values, not the input summary. The ratio is baseline warm median divided by candidate warm median. Exit 0 means ratio >= 2; exit 1 means the ratio is below 2; exit 2 means invalid input or usage.
+
+Different commands or environment key sets require `--override-reason "reason"`. The reason and differing fields appear in the report. The input does not record environment values or all machine conditions, so matching keys alone cannot prove equivalent environments. A PASS establishes only the observed median ratio, not that the measurements were controlled. Use synthetic or explicitly authorized measurements; this command does not run a server or contact a network.
+
+Test with `node --test scripts/myrmidon/bundle-audit/compare-bench.test.mjs`.

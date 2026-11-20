@@ -23,7 +23,11 @@ name: Myrmidon CI (tag)
 # green full run of myrmidon-ci.yml on the SAME commit (the head of the rel
 # branch). When it exists (waited for while it runs) the lanes are skipped and
 # `CI result` is success; with no such run, or a red one, the full pipeline
-# below runs as before. See docs/myrmidon/changes/ci-tag-reuse-branch-run.md.
+# below runs as before. A CANCELLED branch run is not a red verdict: it is
+# waited for like a running one, because its canonical next state is a re-run
+# that can turn green (rc.12/rc.13 of 1.6.9: the branch run cancelled at the
+# tag cut went green on the re-run before the duplicate pipeline finished).
+# See docs/myrmidon/changes/ci-tag-reuse-branch-run.md.
 #
 # The job bodies are kept in sync with myrmidon-ci.yml by
 # scripts/myrmidon/release/release-publish.test.mjs (the "tag CI workflow"
@@ -63,8 +67,9 @@ jobs:
     # same runners and doubled the release CI time. This job waits for that run
     # (scripts/myrmidon/ci/tag-ci-reuse.mjs) and decides: `reuse` (it is green:
     # every lane below is skipped and `CI result` is success) or `full` (no such
-    # run, it failed, timed out, or the check itself failed: the whole pipeline
-    # below runs as before).
+    # run, it is red, the wait timed out, or the check itself failed: the whole
+    # pipeline below runs as before). A cancelled branch run is waited for like a
+    # running one — it carries no code verdict and its re-run can turn green.
     name: reuse branch CI
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}
     timeout-minutes: 80
@@ -485,6 +490,9 @@ jobs:
           printf 'Running %s\n' "${files[@]}"
           node --test "${files[@]}"
 
+      - name: Privileged PR gate tests (node:test)
+        run: node --test .github/scripts/tests/acceptance-gate.test.mjs .github/scripts/tests/privileged-workflows.test.mjs
+
       - name: Secrets (gitleaks, new commits)
         if: ${{ !cancelled() }}
         env:
@@ -755,6 +763,11 @@ jobs:
           if [ ! -s "$jobs_file" ]; then
             echo "ERROR: Unable to fetch job data from GitHub API after retries" >&2
             exit 1
+          fi
+          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ]; then
+            export CI_ATTEMPT_STARTED_AT
+            CI_ATTEMPT_STARTED_AT="$(gh api "repos/$REPO/actions/runs/$RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --jq '.run_started_at // empty')"
+            [ -n "$CI_ATTEMPT_STARTED_AT" ] || { echo 'ERROR: Missing attempt start timestamp' >&2; exit 1; }
           fi
           # No checkout: it fails on some self-hosted runners. Read the script of this commit through the API.
           gh api -H "Accept: application/vnd.github.raw" "repos/$REPO/contents/scripts/myrmidon/ci/queue-metrics.mjs?ref=$GITHUB_SHA" > "$RUNNER_TEMP/queue-metrics.mjs"

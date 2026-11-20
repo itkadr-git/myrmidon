@@ -20,9 +20,8 @@
 //      `in_review`, and the cap does not count it.
 //   2. Real cap: after MAX_CONTINUATIONS_WITHOUT_EXTERNAL_INPUT succeeded
 //      continuation runs of the same (agent, issue) with no external input
-//      between them, no further continuation is enqueued and the issue is
-//      moved to `blocked` with a system comment until an external event
-//      arrives.
+//      between them, further continuations are deferred for a cooldown; the
+//      issue stays actionable and external evidence resets the count.
 //
 // "External input" reuses the movement notion of the cooling guard
 // (wake-task-guard.ts `isRealTaskMovement`): a comment or a movement activity
@@ -55,6 +54,7 @@ export const CONTINUATION_INTERACTION_STATUSES = ["todo", "in_progress", "in_rev
 
 /** Succeeded continuation runs in a row, without external input, before the stop. */
 export const MAX_CONTINUATIONS_WITHOUT_EXTERNAL_INPUT = 3;
+export const CONTINUATION_CAP_COOLDOWN_MS = 60 * 60 * 1000;
 
 /** How long the stop block holds before the board janitor may look at it again. */
 export const CONTINUATION_CAP_BLOCK_TIMEOUT_MS = 7 * 24 * 60 * 60 * 1000;
@@ -258,7 +258,11 @@ export async function readContinuationCap(
     since: runs[runs.length - 1]!.createdAt,
   });
   const count = countContinuationsWithoutExternalInput({ agentId: input.agentId, runs, moves });
-  return { count, max, capped: count >= max };
+  return {
+    count,
+    max,
+    capped: count >= max && Date.now() < runs[0]!.createdAt.getTime() + CONTINUATION_CAP_COOLDOWN_MS,
+  };
 }
 
 /** Activity the stop writes when it parks an issue. */

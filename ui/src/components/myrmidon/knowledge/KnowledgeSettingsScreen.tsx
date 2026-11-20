@@ -7,7 +7,7 @@
 // (`ui`, `env` or `default`). Saving writes only the fields the operator
 // changed; the next read badges those `ui`.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "@/i18n";
 import { Badge } from "@/components/ui/badge";
@@ -108,8 +108,12 @@ function SourceBadge({ source }: { source: KnowledgeSettingSource }) {
 }
 
 export function KnowledgeSettingsScreen() {
-  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
+  return <CompanyKnowledgeSettings key={selectedCompanyId ?? ""} selectedCompanyId={selectedCompanyId} />;
+}
+
+function CompanyKnowledgeSettings({ selectedCompanyId }: { selectedCompanyId: string | null }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const queryKey = ["knowledge-settings", selectedCompanyId] as const;
 
@@ -121,9 +125,23 @@ export function KnowledgeSettingsScreen() {
 
   const [draft, setDraft] = useState<Draft | null>(null);
   const [saved, setSaved] = useState(false);
+  const baseline = useRef<Draft | null>(null);
 
   useEffect(() => {
-    if (query.data) setDraft(draftFromView(query.data));
+    if (!query.data) return;
+    const next = draftFromView(query.data);
+    const previous = baseline.current;
+    baseline.current = next;
+    setDraft((current) => {
+      if (!current || !previous) return next;
+      const merged = { ...next };
+      for (const key of Object.keys(next) as (keyof Draft)[]) {
+        if (JSON.stringify(current[key]) !== JSON.stringify(previous[key])) {
+          Object.assign(merged, { [key]: current[key] });
+        }
+      }
+      return merged;
+    });
   }, [query.data]);
 
   const mutation = useMutation({
@@ -140,7 +158,14 @@ export function KnowledgeSettingsScreen() {
     return <p data-testid="knowledge-settings-no-company">{t("knowledgeSettings.noCompany")}</p>;
   }
   if (query.isError) {
-    return <p data-testid="knowledge-settings-error">{t("knowledgeSettings.loadError")}</p>;
+    return (
+      <div>
+        <p data-testid="knowledge-settings-error">{t("knowledgeSettings.loadError")}</p>
+        {!query.data && <Button type="button" disabled={query.isFetching} onClick={() => void query.refetch()}>
+          {t("common.retry")}
+        </Button>}
+      </div>
+    );
   }
   if (!query.data || !draft) {
     return <p data-testid="knowledge-settings-loading">{t("knowledgeSettings.loading")}</p>;
@@ -149,6 +174,9 @@ export function KnowledgeSettingsScreen() {
   const view = query.data;
   const patch = patchFromDraft(view, draft);
   const fieldErrors = knowledgeSettingsPatchErrors(patch);
+  if (draft.sectionReviewers.some((reviewer) => reviewer.section.trim() === "" && reviewer.reviewerId.trim() !== "")) {
+    if (!fieldErrors.includes("sectionReviewers")) fieldErrors.push("sectionReviewers");
+  }
   const canSave = Object.keys(patch).length > 0 && fieldErrors.length === 0 && !mutation.isPending;
 
   function save() {
@@ -176,6 +204,7 @@ export function KnowledgeSettingsScreen() {
         <p>{t("knowledgeSettings.intro")}</p>
       </header>
 
+      <fieldset disabled={mutation.isPending} style={{ display: "contents" }}>
       <div>
         <Label htmlFor="knowledge-max-items">
           {t("knowledgeSettings.maxItems")} <SourceBadge source={view.maxItems.source} />
@@ -183,6 +212,8 @@ export function KnowledgeSettingsScreen() {
         <Input
           id="knowledge-max-items"
           data-testid="knowledge-max-items"
+          aria-invalid={fieldErrors.includes("maxItems") || undefined}
+          aria-describedby={fieldErrors.includes("maxItems") ? "knowledge-max-items-error" : undefined}
           inputMode="numeric"
           value={draft.maxItems}
           onChange={(event) => {
@@ -197,7 +228,7 @@ export function KnowledgeSettingsScreen() {
             fallback: KNOWLEDGE_MAX_ITEMS_DEFAULT,
           })}
         </p>
-        {fieldErrors.includes("maxItems") ? <p role="alert">{t("knowledgeSettings.invalidNumber")}</p> : null}
+        {fieldErrors.includes("maxItems") ? <p id="knowledge-max-items-error" role="alert">{t("knowledgeSettings.invalidNumber")}</p> : null}
       </div>
 
       <div>
@@ -207,6 +238,8 @@ export function KnowledgeSettingsScreen() {
         <Input
           id="knowledge-max-bytes"
           data-testid="knowledge-max-bytes"
+          aria-invalid={fieldErrors.includes("maxRevisionBytes") || undefined}
+          aria-describedby={fieldErrors.includes("maxRevisionBytes") ? "knowledge-max-bytes-error" : undefined}
           inputMode="numeric"
           value={draft.maxRevisionBytes}
           onChange={(event) => {
@@ -223,7 +256,7 @@ export function KnowledgeSettingsScreen() {
         </p>
         {parseKnowledgeBoundedInt(draft.maxRevisionBytes, KNOWLEDGE_MAX_REVISION_BYTES_MIN, KNOWLEDGE_MAX_REVISION_BYTES_MAX) ===
           null && fieldErrors.includes("maxRevisionBytes") ? (
-          <p role="alert">{t("knowledgeSettings.invalidNumber")}</p>
+          <p id="knowledge-max-bytes-error" role="alert">{t("knowledgeSettings.invalidNumber")}</p>
         ) : null}
       </div>
 
@@ -251,6 +284,8 @@ export function KnowledgeSettingsScreen() {
         <Input
           id="knowledge-confidence"
           data-testid="knowledge-confidence"
+          aria-invalid={fieldErrors.includes("autoAcceptMinConfidence") || undefined}
+          aria-describedby={fieldErrors.includes("autoAcceptMinConfidence") ? "knowledge-confidence-error" : undefined}
           value={draft.autoAcceptMinConfidence}
           onChange={(event) => {
             setDraft({ ...draft, autoAcceptMinConfidence: event.target.value });
@@ -260,7 +295,7 @@ export function KnowledgeSettingsScreen() {
         <p>{t("knowledgeSettings.minConfidenceHint", { fallback: KNOWLEDGE_AUTO_ACCEPT_MIN_CONFIDENCE_DEFAULT })}</p>
         {parseKnowledgeConfidence(draft.autoAcceptMinConfidence) === null &&
         fieldErrors.includes("autoAcceptMinConfidence") ? (
-          <p role="alert">{t("knowledgeSettings.invalidConfidence")}</p>
+          <p id="knowledge-confidence-error" role="alert">{t("knowledgeSettings.invalidConfidence")}</p>
         ) : null}
       </div>
 
@@ -271,6 +306,8 @@ export function KnowledgeSettingsScreen() {
         <Input
           id="knowledge-schedule"
           data-testid="knowledge-schedule"
+          aria-invalid={fieldErrors.includes("schedule") || undefined}
+          aria-describedby={fieldErrors.includes("schedule") ? "knowledge-schedule-error" : undefined}
           value={draft.schedule}
           onChange={(event) => {
             setDraft({ ...draft, schedule: event.target.value });
@@ -279,7 +316,7 @@ export function KnowledgeSettingsScreen() {
         />
         <p>{t("knowledgeSettings.scheduleHint", { fallback: KNOWLEDGE_SCHEDULE_DEFAULT })}</p>
         {!knowledgeScheduleOk(draft.schedule) && fieldErrors.includes("schedule") ? (
-          <p role="alert">{t("knowledgeSettings.invalidSchedule")}</p>
+          <p id="knowledge-schedule-error" role="alert">{t("knowledgeSettings.invalidSchedule")}</p>
         ) : null}
       </div>
 
@@ -317,12 +354,13 @@ export function KnowledgeSettingsScreen() {
             <Button
               type="button"
               variant="outline"
-              onClick={() =>
+              onClick={() => {
                 setDraft({
                   ...draft,
                   sectionReviewers: draft.sectionReviewers.filter((_, i) => i !== index),
-                })
-              }
+                });
+                setSaved(false);
+              }}
             >
               {t("knowledgeSettings.removeReviewer")}
             </Button>
@@ -332,7 +370,10 @@ export function KnowledgeSettingsScreen() {
           type="button"
           variant="outline"
           disabled={draft.sectionReviewers.length >= KNOWLEDGE_SECTION_REVIEWERS_MAX}
-          onClick={() => setDraft({ ...draft, sectionReviewers: [...draft.sectionReviewers, emptyReviewer()] })}
+          onClick={() => {
+            setDraft({ ...draft, sectionReviewers: [...draft.sectionReviewers, emptyReviewer()] });
+            setSaved(false);
+          }}
         >
           {t("knowledgeSettings.addReviewer")}
         </Button>
@@ -348,6 +389,7 @@ export function KnowledgeSettingsScreen() {
         {saved ? <p data-testid="knowledge-settings-saved">{t("knowledgeSettings.saved")}</p> : null}
         {mutation.isError ? <p role="alert">{t("knowledgeSettings.saveError")}</p> : null}
       </div>
+      </fieldset>
     </section>
   );
 }

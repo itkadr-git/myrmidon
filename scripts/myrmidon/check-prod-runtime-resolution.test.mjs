@@ -78,6 +78,12 @@ describe("parseArgs", () => {
 });
 
 describe("scanImports", () => {
+  it("ignores a string after a line comment ending in from", () => {
+    for (const newline of ["\n", "\r\n"]) {
+      assert.deepEqual(scanImports(`// from${newline}"./also-not.js";`), []);
+    }
+  });
+
   it("finds static, export-from, side-effect, dynamic and new URL imports with line numbers", () => {
     const text = [
       'import { a } from "@myrmidon/a";',
