@@ -15,6 +15,13 @@ Current implementation status:
 - Node.js 24.11+
 - pnpm 9+
 
+## CI Script Test Scratch
+
+The `checks` job creates a private directory under `RUNNER_TEMP` for its
+Node script tests, exports it as `PAPERCLIP_RUN_SCRATCH_DIR`, and removes it
+when the test step exits. Local runs should provide a writable run-scoped
+scratch directory through the same variable.
+
 ## Production Runtime Resolution
 
 The production runtime resolution check ignores JavaScript comments when it
