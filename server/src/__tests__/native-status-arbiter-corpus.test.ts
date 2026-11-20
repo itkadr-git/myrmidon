@@ -2029,6 +2029,34 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     expect(await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.issueId, seeded.issueId))).toEqual([]);
   });
 
+  it("fails closed for concurrent service-required decisions without requests", async () => {
+    const template = corpus.fixtures.find((candidate) => candidate.mode === "native")!;
+    const seeded = await seedFixture({
+      ...template, id: `service-gate-concurrent-${randomUUID()}`,
+      given: { ...template.given, priorIssueStatus: "in_progress", completionState: "policy_review_cleanup" },
+    });
+    await db.update(nativeRunFinalizations).set({ authorizationMode: "service_required" })
+      .where(eq(nativeRunFinalizations.runId, seeded.runId));
+    const input = {
+      db, companyId, issueId: seeded.issueId, runId: seeded.runId,
+      assessmentId: seeded.assessmentId, priorStatus: "in_progress", priorStatusVersion: 0, priorDecisionId: null,
+      decision: {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "in_review" as const, toStatus: "in_review" as const, reasonCode: "completion_review_required",
+        unblockDescriptor: null, effects: [],
+      },
+    };
+    const results = await Promise.allSettled([commitNativeStatusDecision(input), commitNativeStatusDecision(input)]);
+    for (const result of results) {
+      expect(result.status).toBe("rejected");
+      if (result.status === "rejected") expect(result.reason.message).toBe("native_service_authorization_required");
+    }
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue!.status).toBe("in_progress");
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, seeded.runId))).toEqual([]);
+    expect(await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.issueId, seeded.issueId))).toEqual([]);
+  });
+
   it("does not replay or supersede a committed decision through the service gate without authorization", async () => {
     const template = corpus.fixtures.find((candidate) => candidate.mode === "native")!;
     const seeded = await seedFixture({
