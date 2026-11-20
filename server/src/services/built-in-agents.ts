@@ -823,6 +823,20 @@ function isBuiltInAgentMarkerConflict(error: unknown): boolean {
   return false;
 }
 
+function isAgentNameConflict(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    seen.add(current);
+    const maybe = current as { status?: number; details?: { code?: string }; cause?: unknown };
+    if (maybe.status === 409 && maybe.details?.code === "agent_name_conflict") {
+      return true;
+    }
+    current = maybe.cause;
+  }
+  return false;
+}
+
 export function builtInAgentService(db: Db) {
   const agentSvc = agentService(db);
   const accessSvc = accessService(db);
@@ -1698,9 +1712,14 @@ export function builtInAgentService(db: Db) {
       }, { allowBuiltInAgentMetadata: true }) as Agent;
     } catch (error) {
       // Lost the provisioning race: a concurrent writer inserted the row first
-      // and the partial unique index rejected ours. Re-run once; the winning
-      // row now exists, so we take the update path instead of inserting again.
-      if (!options.isRaceRetry && isBuiltInAgentMarkerConflict(error)) {
+      // and either the partial unique index or agent name uniqueness rejected ours.
+      // Re-run once; if the winning row now exists, we take the update path
+      // instead of inserting again.
+      if (
+        !options.isRaceRetry &&
+        (isBuiltInAgentMarkerConflict(error) ||
+          (isAgentNameConflict(error) && (await findSingleAgent(companyId, definition))))
+      ) {
         return ensure(companyId, key, input, { isRaceRetry: true });
       }
       throw error;
@@ -1799,10 +1818,11 @@ export function builtInAgentService(db: Db) {
       }, { allowBuiltInAgentMetadata: true }) as Agent;
     } catch (error) {
       // Lost the provisioning race: a concurrent writer inserted the row (and
-      // its own hire approval) first, and the partial unique index rejected
-      // ours before we created a paired approval. Re-resolve to the winner and
-      // return its pending state + open approval instead of surfacing the 23505.
-      if (isBuiltInAgentMarkerConflict(error)) {
+      // its own hire approval) first, and the partial unique index or agent-name
+      // uniqueness rejected ours before we created a paired approval. Re-resolve
+      // to the winner and return its pending state + open approval instead of surfacing
+      // the conflict.
+      if (isBuiltInAgentMarkerConflict(error) || isAgentNameConflict(error)) {
         const winner = await findSingleAgent(companyId, definition);
         if (winner) {
           const winnerApproval = winner.status === "pending_approval"

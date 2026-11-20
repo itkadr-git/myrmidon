@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as runPriorityState from "./run-priority/state.js";
 import {
   continueDevReview,
   devProcessProjectIds,
@@ -103,6 +104,7 @@ describe("dev review continuation", () => {
 });
 
 describe("tryDevReviewContinuationOnRelease integration", () => {
+  afterEach(() => vi.restoreAllMocks());
   it("handles release with next task in dev project", async () => {
     const mockDb = {
       select: vi.fn().mockReturnValue({
@@ -142,9 +144,13 @@ describe("tryDevReviewContinuationOnRelease integration", () => {
   });
 
   it("signals project lead when queue is empty on release", async () => {
+    const focus = vi.spyOn(runPriorityState, "currentCompanyReleaseFocus").mockReturnValue({ currentRelease: "1.6.9", strictReleaseFocus: false });
     const mockDb = {
       select: vi.fn().mockImplementation((fields) => ({
         from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ id: "epic-a", identifier: "DEV-1", title: "Epic 1.6.9", status: "in_progress" }]),
+          }),
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockImplementation(() => {
               if (fields?.leadAgentId !== undefined) {
@@ -176,24 +182,25 @@ describe("tryDevReviewContinuationOnRelease integration", () => {
       enabledProjects: new Set(["project-a"]),
     });
 
+    expect(focus).toHaveBeenCalledWith("company-a");
+
     expect(handled).toBe(true);
     expect(enqueueWakeup).toHaveBeenCalledWith(
       "lead-agent-1",
       expect.objectContaining({
         reason: "dev_project_queue_empty",
-        payload: { issueId: "issue-a", projectId: "project-a", engineerId: "engineer-a" },
+        payload: { issueId: "issue-a", projectId: "project-a", engineerId: "engineer-a", openEpics: [{ id: "epic-a", identifier: "DEV-1", title: "Epic 1.6.9" }] },
+        contextSnapshot: expect.objectContaining({ message: expect.stringMatching(/нарежьте следующую часть.*DEV-1: Epic 1\.6\.9/) }),
       }),
     );
     expect(logActivity).toHaveBeenCalledWith(
       mockDb,
-      expect.objectContaining({
-        action: "dev_project.queue_unavailable",
-        agentId: "engineer-a",
-      }),
+      expect.objectContaining({ action: "dev_project.queue_unavailable", agentId: "engineer-a" }),
     );
+
   });
 
-  it("returns false and does not match when releasedRun is for reviewer", async () => {
+  it("does not trigger continuation when released agent is the reviewer, not author", async () => {
     const mockDb = {
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({

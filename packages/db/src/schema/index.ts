@@ -126,6 +126,7 @@ export { assets } from "./assets.js";
 export { issueAttachments } from "./issue_attachments.js";
 export { documents } from "./documents.js";
 export { documentRevisions } from "./document_revisions.js";
+export { issueAcceptanceEpochs } from "./issue_acceptance_epochs.js";
 export { issueDocuments } from "./issue_documents.js";
 export { summarySlots } from "./summary_slots.js";
 export { statusCards, statusCardUpdates } from "./status_cards.js";
@@ -287,6 +288,8 @@ export {
 } from "./model_providers.js";
 // myrmidon(CUSTOM-CASTES): the company caste (agent role) directory.
 export { agentCastes } from "./agent_castes.js";
+// myrmidon(1.8 MODEL-BY-STEP, OPE-12997): company step-class → model-group rules.
+export { companyModelGroupRules } from "./company_model_group_rules.js";
 // myrmidon(CORPUS-A): corpus knowledge module tables.
 export {
   corpusDatasets,

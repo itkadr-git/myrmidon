@@ -340,6 +340,8 @@ describe("myrmidon(W2b) container card section", () => {
       },
     });
     expect(container.querySelector('[data-testid="myrmidon-bot-idle-stop-runtime"]')?.textContent).toContain("cold start took 1m 36s");
+    renderView({ status: { ...STATUS, idleStopRuntime: { idleStopped: false, lastStoppedAt: "2026-10-20T02:00:00.000Z", lastStartedAt: "2026-10-20T02:00:00.000Z", coldStartDurationMs: 0 } } });
+    expect(container.querySelector('[data-testid="myrmidon-bot-idle-stop-runtime"]')?.textContent).toContain("cold start took 0s");
   });
 
   it("shows no cold-start duration when the server reports none", () => {

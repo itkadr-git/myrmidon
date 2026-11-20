@@ -61,6 +61,47 @@ describe("decideReviewReturnWake: same head", () => {
     expect(decision).toEqual({ action: "wake" });
   });
 
+  it("wakes the executor for a new decision on the same head", async () => {
+    const decision = await decideReviewReturnWake(
+      input({
+        previousState: {
+          status: "pending",
+          lastDecisionId: "decision-1",
+          lastChangesRequestedHeadSha: HEAD_A,
+        },
+        nextState: {
+          status: "changes_requested",
+          lastDecisionId: "decision-2",
+          lastChangesRequestedHeadSha: HEAD_A,
+        },
+        commentBody: CODE_COMMENT,
+      }),
+      { resolveFailedChecks: resolver({ state: "ok", headSha: HEAD_A, pullRequestUrl: PR_URL, failed: [] }) },
+    );
+
+    expect(decision).toEqual({ action: "wake" });
+  });
+
+  it("does not wake the executor for a return on the same head without a new decision", async () => {
+    const decision = await decideReviewReturnWake(
+      input({
+        previousState: {
+          status: "changes_requested",
+          lastDecisionId: "decision-1",
+          lastChangesRequestedHeadSha: HEAD_A,
+        },
+        nextState: {
+          status: "changes_requested",
+          lastDecisionId: "decision-1",
+          lastChangesRequestedHeadSha: HEAD_A,
+        },
+      }),
+      { resolveFailedChecks: resolver({ state: "ok", headSha: HEAD_A, pullRequestUrl: PR_URL, failed: [] }) },
+    );
+
+    expect(decision).toEqual({ action: "suppress", reason: "repeat_same_head", headSha: HEAD_A });
+  });
+
   it("wakes the executor when a new commit changed the head since the previous return", async () => {
     const decision = await decideReviewReturnWake(
       input({

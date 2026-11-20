@@ -26,6 +26,7 @@ import process from "node:process";
 export const DEFAULT_PORT = 3199;
 export const DEFAULT_RUNS = 3;
 export const DEFAULT_TIMEOUT_SEC = 120;
+export const MAX_TIMEOUT_SEC = Math.floor(2147483647 / 1000);
 export const POLL_INTERVAL_MS = 100;
 export const KILL_GRACE_MS = 5000;
 
@@ -72,20 +73,20 @@ export function parseArgs(argv) {
     else if (flag === "--cmd") opts.cmd = readValue("--cmd");
     else if (flag === "--runs") {
       const value = Number(readValue("--runs"));
-      if (argv[i - 1] === undefined || Number.isNaN(value) || !Number.isInteger(value) || value < 1) {
+      if (argv[i - 1] === undefined || !Number.isSafeInteger(value) || value < 1) {
         throw new Error("--runs must be a positive integer");
       }
       opts.runs = value;
     } else if (flag === "--port") {
       const value = Number(readValue("--port"));
-      if (argv[i - 1] === undefined || Number.isNaN(value) || !Number.isInteger(value) || value < 1 || value > 65535) {
+      if (argv[i - 1] === undefined || !Number.isSafeInteger(value) || value < 1 || value > 65535) {
         throw new Error("--port must be an integer in 1..65535");
       }
       opts.port = value;
     } else if (flag === "--timeout-sec") {
       const value = Number(readValue("--timeout-sec"));
-      if (argv[i - 1] === undefined || Number.isNaN(value) || !Number.isInteger(value) || value < 1) {
-        throw new Error("--timeout-sec must be a positive integer");
+      if (argv[i - 1] === undefined || !Number.isSafeInteger(value) || value < 1 || value > MAX_TIMEOUT_SEC) {
+        throw new Error(`--timeout-sec must be a positive integer no greater than ${MAX_TIMEOUT_SEC}`);
       }
       opts.timeoutSec = value;
     } else if (flag === "--env") {
@@ -158,16 +159,23 @@ export function measureRun({
     let pollTimer = null;
     let killTimer = null;
     let timeoutTimer = null;
+    let immediate = null;
+    let probeController = null;
+    let probeTimeout = null;
 
     const clearTimers = () => {
       if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
       if (timeoutTimer) { clearTimeout(timeoutTimer); timeoutTimer = null; }
+      if (immediate) { clearImmediate(immediate); immediate = null; }
+      if (probeTimeout) { clearTimeout(probeTimeout); probeTimeout = null; }
+      probeController?.abort();
     };
 
     /** SIGTERM to the process group, then SIGKILL after killGraceMs. */
     const stopChild = () => {
       if (killed) return;
       killed = true;
+      clearTimers();
       killProcessGroup(pid, "SIGTERM");
       killTimer = setTimeout(() => {
         killProcessGroup(pid, "SIGKILL");
@@ -220,19 +228,26 @@ export function measureRun({
     });
 
     const probe = async () => {
-      if (measured !== null || settled) return;
+      if (measured !== null || settled || killed || probeController) return;
+      const controller = new AbortController();
+      probeController = controller;
+      probeTimeout = setTimeout(() => controller.abort(), Math.min(pollIntervalMs * 5, 2000));
+      probeTimeout.unref?.();
       try {
         const response = await fetchImpl(`http://127.0.0.1:${port}/api/health`, {
-          signal: AbortSignal.timeout(Math.min(pollIntervalMs * 5, 2000)),
+          signal: controller.signal,
         });
         // Only HTTP 200 counts as ready; 503 or others keep polling.
-        if (response.status === 200 && measured === null && !settled) {
+        if (response.status === 200 && measured === null && !settled && !killed && !controller.signal.aborted) {
           measured = elapsedMsSince(startedAt);
           // Stop the server and wait for close so port is free for subsequent runs.
           stopChild();
         }
       } catch {
         // Connection refused / reset / aborted before readiness: keep polling.
+      } finally {
+        if (probeTimeout) { clearTimeout(probeTimeout); probeTimeout = null; }
+        probeController = null;
       }
     };
 
@@ -242,7 +257,8 @@ export function measureRun({
     pollTimer.unref?.();
 
     // Fire first probe shortly after spawn
-    setImmediate(() => {
+    immediate = setImmediate(() => {
+      immediate = null;
       void probe();
     });
 

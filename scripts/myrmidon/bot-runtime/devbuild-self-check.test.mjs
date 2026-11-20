@@ -15,7 +15,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -41,7 +41,10 @@ function makeSandbox({ devbuildExit = 0, withDevbuild = true } = {}) {
   if (withDevbuild) {
     writeFileSync(
       path.join(bin, "devbuild"),
-      `#!/bin/sh\necho "devbuild called with: $@" >> "${logFile}.calls"\nexit ${devbuildExit}\n`,
+      `#!/bin/sh\necho "devbuild called with: $@" >> "${logFile}.calls"\n` +
+        `echo "DEVBUILD_WORKSPACE=$DEVBUILD_WORKSPACE" >> "${logFile}.calls"\n` +
+        `if [ -d "$DEVBUILD_WORKSPACE" ]; then echo "ws_entries=$(ls -A "$DEVBUILD_WORKSPACE" | wc -l)" >> "${logFile}.calls"; fi\n` +
+        `exit ${devbuildExit}\n`,
       { mode: 0o755 },
     );
   }
@@ -109,4 +112,54 @@ test("MYRMIDON_DEVBUILD_CHECK=0 disables the probe entirely", () => {
   assert.equal(r.status, 0, r.stderr);
   assert.ok(!existsSync(sb.logFile), "nothing logged");
   assert.ok(!existsSync(sb.logFile + ".calls"), "devbuild was not invoked");
+});
+
+// myrmidon(1.6.9 DEVBUILD-SELFCHECK): devbuild rsyncs DEVBUILD_WORKSPACE to the build
+// host, so the default probe must not hand it /workspace (15.11: 38 GB in 2 h).
+test("default probe runs on an empty scratch dir, not /workspace, and removes it", () => {
+  const sb = makeSandbox({ devbuildExit: 0 });
+  const scratch = path.join(sb.root, "scratch");
+  mkdirSync(scratch);
+  const r = runSandbox(sb, { DEVBUILD_HOST: "build.example.invalid", TMPDIR: scratch });
+  assert.equal(r.status, 0, r.stderr);
+  const calls = readFileSync(sb.logFile + ".calls", "utf8");
+  const ws = /DEVBUILD_WORKSPACE=(.*)/.exec(calls)?.[1];
+  assert.ok(ws, "devbuild saw DEVBUILD_WORKSPACE");
+  assert.notEqual(ws, "/workspace");
+  assert.ok(!ws.startsWith("/workspace"), `not under /workspace: ${ws}`);
+  assert.ok(ws.startsWith(scratch + path.sep), `inside TMPDIR: ${ws}`);
+  assert.match(calls, /ws_entries=0/, "the probe directory was empty");
+  assert.deepEqual(readdirSync(scratch), [], "temporary directory removed after the check");
+  const report = JSON.parse(readFileSync(path.join(sb.hermesHome, ".myrmidon/devbuild-check.json"), "utf8"));
+  assert.equal(report.ok, true);
+});
+
+test("failed probe still removes the temporary directory", () => {
+  const sb = makeSandbox({ devbuildExit: 1 });
+  const scratch = path.join(sb.root, "scratch");
+  mkdirSync(scratch);
+  const r = runSandbox(sb, { DEVBUILD_HOST: "build.example.invalid", TMPDIR: scratch });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(readdirSync(scratch), []);
+});
+
+test("without TMPDIR the scratch lives under HERMES_HOME/cache/scratch", () => {
+  const sb = makeSandbox({ devbuildExit: 0 });
+  const r = runSandbox(sb, { DEVBUILD_HOST: "build.example.invalid" });
+  assert.equal(r.status, 0, r.stderr);
+  const calls = readFileSync(sb.logFile + ".calls", "utf8");
+  assert.ok(calls.includes(`DEVBUILD_WORKSPACE=${sb.hermesHome}/cache/scratch/`), calls);
+  assert.deepEqual(readdirSync(path.join(sb.hermesHome, "cache/scratch")), []);
+});
+
+test("explicit DEVBUILD_CHECK_WORKSPACE is passed through untouched and not deleted", () => {
+  const sb = makeSandbox({ devbuildExit: 0 });
+  const explicit = path.join(sb.root, "explicit-ws");
+  mkdirSync(explicit);
+  writeFileSync(path.join(explicit, "keep.txt"), "x");
+  const r = runSandbox(sb, { DEVBUILD_HOST: "build.example.invalid", DEVBUILD_CHECK_WORKSPACE: explicit });
+  assert.equal(r.status, 0, r.stderr);
+  const calls = readFileSync(sb.logFile + ".calls", "utf8");
+  assert.ok(calls.includes(`DEVBUILD_WORKSPACE=${explicit}\n`), calls);
+  assert.ok(existsSync(path.join(explicit, "keep.txt")), "explicit workspace left alone");
 });

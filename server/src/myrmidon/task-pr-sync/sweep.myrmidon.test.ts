@@ -16,7 +16,12 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
-import { TASK_PR_SYNC_SETTLED_ACTION, createTaskPrSyncSweep, reconcileClosedIssuePullRequests } from "./sweep.js";
+import {
+  TASK_PR_SYNC_SETTLED_ACTION,
+  createTaskPrSyncSweep,
+  reconcileClosedIssuePullRequests,
+  type TaskPrSyncParentWake,
+} from "./sweep.js";
 import type { TaskPrSyncSettings } from "./settings.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -82,6 +87,7 @@ describeEmbeddedPostgres("task PR sync sweep", () => {
     companyId?: string;
     agentId?: string;
     identifier?: string;
+    parentId?: string;
     executionState?: Record<string, unknown>;
     products: Array<{ number: number; status?: string; updatedAt?: Date }>;
   }) {
@@ -117,6 +123,7 @@ describeEmbeddedPostgres("task PR sync sweep", () => {
       status: input.status ?? "in_progress",
       priority: "medium",
       assigneeAgentId: agentId,
+      ...(input.parentId ? { parentId: input.parentId } : {}),
       ...(input.executionState ? { executionState: input.executionState } : {}),
       ...(input.updatedAt ? { updatedAt: input.updatedAt } : {}),
     });
@@ -135,11 +142,12 @@ describeEmbeddedPostgres("task PR sync sweep", () => {
     return { companyId, agentId, issueId };
   }
 
-  function sweepFor(resolver: PullRequestMergeDetailsResolver) {
+  function sweepFor(resolver: PullRequestMergeDetailsResolver, wakeParent?: TaskPrSyncParentWake) {
     return createTaskPrSyncSweep({
       db,
       resolvePullRequestDetails: resolver,
       isUnderMaintenance: async () => false,
+      ...(wakeParent ? { wakeParent } : {}),
     });
   }
 
@@ -546,5 +554,91 @@ describeEmbeddedPostgres("task PR sync sweep", () => {
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
     expect(comments).toHaveLength(1);
     expect(comments[0]!.body).toContain("Delivered: PR");
+  });
+  // myrmidon(MONITOR-IDLE-LOOP, OPE-13141): the owner of an epic is woken by the board when
+  // a subtask's pull request is merged, so it does not need a monitor that polls with a model.
+  describe("wake of the parent owner when a subtask's pull request is merged", () => {
+    it("wakes the owner of the parent exactly once per merged subtask", async () => {
+      const parent = await seed({ products: [], identifier: "EPIC-1" });
+      const child = await seed({
+        companyId: parent.companyId,
+        parentId: parent.issueId,
+        products: [{ number: 31 }],
+      });
+      await seed({ companyId: parent.companyId, agentId: parent.agentId, parentId: parent.issueId, products: [] });
+      const wakeParent = vi.fn<TaskPrSyncParentWake>(async () => null);
+      const sweep = sweepFor(fakeResolver({ 31: "merged" }), wakeParent);
+
+      const first = await sweep.sweep({ settings: SETTINGS, force: true });
+      const second = await sweep.sweep({ settings: SETTINGS, force: true });
+
+      expect(first).toMatchObject({ settled: 1 });
+      expect(second).toMatchObject({ settled: 0 });
+      expect(wakeParent).toHaveBeenCalledTimes(1);
+      const [agentId, wakeup] = wakeParent.mock.calls[0]!;
+      expect(agentId).toBe(parent.agentId);
+      expect(wakeup).toMatchObject({
+        reason: "issue_children_completed",
+        idempotencyKey: `issue_children_completed:${parent.issueId}:${child.issueId}`,
+        payload: {
+          issueId: parent.issueId,
+          completedChildIssueId: child.issueId,
+          allChildrenTerminal: false,
+          childPullRequestMerged: true,
+        },
+      });
+    });
+
+    it("says that every subtask is finished when the merged one was the last", async () => {
+      const parent = await seed({ products: [], identifier: "EPIC-2" });
+      await seed({ companyId: parent.companyId, parentId: parent.issueId, status: "done", products: [] });
+      const child = await seed({
+        companyId: parent.companyId,
+        parentId: parent.issueId,
+        products: [{ number: 32 }],
+      });
+      const wakeParent = vi.fn<TaskPrSyncParentWake>(async () => null);
+
+      await sweepFor(fakeResolver({ 32: "merged" }), wakeParent).sweep({ settings: SETTINGS, force: true });
+
+      expect(wakeParent).toHaveBeenCalledTimes(1);
+      expect(wakeParent.mock.calls[0]![1]).toMatchObject({
+        payload: { completedChildIssueId: child.issueId, allChildrenTerminal: true },
+      });
+    });
+
+    it("does not wake anyone while the pull request of the subtask is still open", async () => {
+      const parent = await seed({ products: [], identifier: "EPIC-3" });
+      await seed({ companyId: parent.companyId, parentId: parent.issueId, products: [{ number: 33 }] });
+      const wakeParent = vi.fn<TaskPrSyncParentWake>(async () => null);
+
+      await sweepFor(fakeResolver({ 33: "open" }), wakeParent).sweep({ settings: SETTINGS, force: true });
+
+      expect(wakeParent).not.toHaveBeenCalled();
+    });
+
+    it("does not wake a parent that is finished", async () => {
+      const parent = await seed({ products: [], status: "done", identifier: "EPIC-4" });
+      await seed({ companyId: parent.companyId, parentId: parent.issueId, products: [{ number: 34 }] });
+      const wakeParent = vi.fn<TaskPrSyncParentWake>(async () => null);
+
+      await sweepFor(fakeResolver({ 34: "merged" }), wakeParent).sweep({ settings: SETTINGS, force: true });
+
+      expect(wakeParent).not.toHaveBeenCalled();
+    });
+
+    it("still settles the subtask when the wake fails", async () => {
+      const parent = await seed({ products: [], identifier: "EPIC-5" });
+      const child = await seed({ companyId: parent.companyId, parentId: parent.issueId, products: [{ number: 35 }] });
+      const wakeParent = vi.fn<TaskPrSyncParentWake>(async () => {
+        throw new Error("wake backend down");
+      });
+
+      const result = await sweepFor(fakeResolver({ 35: "merged" }), wakeParent).sweep({ settings: SETTINGS, force: true });
+
+      expect(result).toMatchObject({ settled: 1, failed: 0 });
+      const [row] = await db.select().from(issues).where(eq(issues.id, child.issueId));
+      expect(row?.status).toBe("done");
+    });
   });
 });

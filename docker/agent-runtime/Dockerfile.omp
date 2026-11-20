@@ -11,12 +11,13 @@ ENV HOME=/home/paperclip \
 
 COPY scripts/myrmidon/patch-omp-cli.mjs /usr/local/share/myrmidon/patch-omp-cli.mjs
 
+# Global package lives under $HOME/.bun/install/global here (BUN_INSTALL unset): resolve cli.js via the omp bin symlink, not a guessed /usr/local path (OMP-IMAGE-BUILD).
 # oven/bun installs global bins into /usr/local/bin already; linking omp onto itself made a symlink loop (OPE-7762)
 RUN mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$OMP_SESSION_DIR" /workspace \
     && chown -R 1000:1000 /home/paperclip /workspace \
     && bun add --global "@oh-my-pi/pi-coding-agent@${OMP_VERSION}" \
-    && CLI_PATH="$(bun pm bin -g)/../@oh-my-pi/pi-coding-agent/dist/cli.js" \
-    && if [ ! -f "$CLI_PATH" ]; then CLI_PATH="$(find /usr/local -name cli.js -path "*/@oh-my-pi/pi-coding-agent/*" 2>/dev/null | head -1)"; fi \
+    && CLI_PATH="$(readlink -f "$(bun pm bin -g)/omp")" \
+    && if [ ! -f "$CLI_PATH" ]; then CLI_PATH="$(find /usr/local "$HOME/.bun" -name cli.js -path "*/@oh-my-pi/pi-coding-agent/*" 2>/dev/null | head -1)"; fi \
     && test -f "$CLI_PATH" \
     && bun /usr/local/share/myrmidon/patch-omp-cli.mjs "$CLI_PATH" \
     && ! grep -q "RFC 2119 keywords:" "$CLI_PATH" \

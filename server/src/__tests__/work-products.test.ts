@@ -140,6 +140,7 @@ describe("workProductService", () => {
     const tx = {
       update: txUpdate,
       insert: txInsert,
+      select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => [] as unknown[] }) }) })),
     };
     const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => await callback(tx));
 
@@ -203,10 +204,106 @@ describe("workProductService", () => {
       const insertReturning = vi.fn(async () => [createWorkProductRow()]);
       const insertValues = vi.fn(() => ({ returning: insertReturning }));
       const txInsert = vi.fn(() => ({ values: insertValues }));
-      const tx = { insert: txInsert, update: txUpdate };
+      const selectLimit = vi.fn(async () => [] as unknown[]);
+      const txSelect = vi.fn(() => ({ from: () => ({ where: () => ({ limit: selectLimit }) }) }));
+      const tx = { insert: txInsert, update: txUpdate, select: txSelect };
       const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => await callback(tx));
-      return { tx, transaction, txInsert, insertValues };
+      return { tx, transaction, txInsert, insertValues, selectLimit };
     }
+
+    const prInput = (url: string) => ({
+      type: "pull_request" as const,
+      provider: "github",
+      title: "PR 1",
+      status: "open",
+      reviewState: "draft" as const,
+      isPrimary: true,
+      url,
+    });
+
+    // myrmidon(AGENT-PR-WP-NORMALIZE): the webhook finds work products only by external_id.
+    it("derives the webhook-format externalId and repo/number metadata from the PR url alone", async () => {
+      const { transaction, insertValues } = makeTx();
+      const svc = workProductService({ transaction } as any);
+
+      await svc.createForIssue("issue-1", "company-1", prInput("https://github.com/itkadr-git/myrmidon/pull/3321"));
+
+      const insertArg = insertValues.mock.calls[0]![0] as Record<string, unknown>;
+      expect(insertArg.externalId).toBe("itkadr-git/myrmidon#pull/3321");
+      expect(insertArg.metadata).toMatchObject({ repo: "itkadr-git/myrmidon", repository: "itkadr-git/myrmidon", number: 3321 });
+    });
+
+    it("keeps other metadata and ignores non-PR urls", async () => {
+      const { transaction, insertValues } = makeTx();
+      const svc = workProductService({ transaction } as any);
+
+      await svc.createForIssue("issue-1", "company-1", { ...prInput("https://github.com/itkadr-git/myrmidon/pull/9/files"), metadata: { headSha: "a".repeat(40) } });
+      const insertArg = insertValues.mock.calls[0]![0] as Record<string, unknown>;
+      expect(insertArg.externalId).toBe("itkadr-git/myrmidon#pull/9");
+      expect(insertArg.metadata).toMatchObject({ headSha: "a".repeat(40), number: 9 });
+
+      await svc.createForIssue("issue-1", "company-1", { ...prInput("https://example.com/pr/1"), externalId: "ext-1" });
+      const second = insertValues.mock.calls[1]![0] as Record<string, unknown>;
+      expect(second.externalId).toBe("ext-1");
+    });
+
+    it("updates the existing record instead of inserting a duplicate on repeated registration", async () => {
+      const { tx, transaction, txInsert, selectLimit } = makeTx();
+      const existing = createWorkProductRow({
+        id: "existing-1",
+        externalId: "itkadr-git/myrmidon#pull/3321",
+        url: "https://github.com/itkadr-git/myrmidon/pull/3321",
+        metadata: { headSha: "a".repeat(40), repo: "itkadr-git/myrmidon", number: 3321 },
+      });
+      selectLimit.mockResolvedValueOnce([existing]);
+      const updateReturning = vi.fn(async () => [existing]);
+      const updateWhere = vi.fn(() => ({ returning: updateReturning }));
+      const updateSet = vi.fn(() => ({ where: updateWhere }));
+      (tx as any).update = vi.fn(() => ({ set: updateSet }));
+      const svc = workProductService({ transaction } as any);
+
+      const result = await svc.createForIssue("issue-1", "company-1", { ...prInput("https://github.com/itkadr-git/myrmidon/pull/3321"), isPrimary: false });
+
+      expect(txInsert).not.toHaveBeenCalled();
+      expect(updateSet).toHaveBeenCalledTimes(1);
+      const setArg = (updateSet.mock.calls[0] as unknown[])[0] as Record<string, any>;
+      expect(setArg.externalId).toBe("itkadr-git/myrmidon#pull/3321");
+      expect(setArg.metadata).toMatchObject({ headSha: "a".repeat(40), number: 3321 });
+      expect(result?.id).toBe("existing-1");
+    });
+
+    it("keeps status, review state, primary flag and headSha of the stored record on repeated registration", async () => {
+      const { tx, transaction, selectLimit } = makeTx();
+      const existing = createWorkProductRow({
+        id: "existing-2",
+        externalId: "itkadr-git/myrmidon#pull/3321",
+        url: "https://github.com/itkadr-git/myrmidon/pull/3321",
+        status: "merged",
+        reviewState: "approved",
+        isPrimary: true,
+        metadata: { headSha: "b".repeat(40), state: "merged", number: 3321 },
+      });
+      selectLimit.mockResolvedValueOnce([existing]);
+      const updateReturning = vi.fn(async () => [existing]);
+      const updateSet = vi.fn(() => ({ where: () => ({ returning: updateReturning }) }));
+      const txUpdate = vi.fn(() => ({ set: updateSet }));
+      (tx as any).update = txUpdate;
+      const svc = workProductService({ transaction } as any);
+
+      await svc.createForIssue("issue-1", "company-1", {
+        ...prInput("https://github.com/itkadr-git/myrmidon/pull/3321"),
+        status: "open",
+        reviewState: "draft",
+        metadata: { headSha: "a".repeat(40), state: "open" },
+      });
+
+      expect(txUpdate).toHaveBeenCalledTimes(1);
+      const setArg = (updateSet.mock.calls[0] as unknown[])[0] as Record<string, any>;
+      expect(setArg).not.toHaveProperty("status");
+      expect(setArg).not.toHaveProperty("reviewState");
+      expect(setArg).not.toHaveProperty("isPrimary");
+      expect(setArg.metadata).toMatchObject({ headSha: "b".repeat(40), state: "merged" });
+    });
 
     it("derives url and externalId from metadata.repository + metadata.number", async () => {
       const { tx, transaction, txInsert, insertValues } = makeTx();

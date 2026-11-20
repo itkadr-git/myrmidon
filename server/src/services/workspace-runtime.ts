@@ -38,6 +38,7 @@ import { conflict } from "../errors.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 // myrmidon(1.6.1-BOT-DISK-C): refuse a NEW clone when the bot is over its disk quota
 import { botDiskQuotaRejection } from "../myrmidon/bot-containers/bot-quota.js";
+import { worktreePartitionRefusal, WORKTREE_PARTITION_FULL_REASON_CODE } from "./worktree-partition-guard.js";
 import { hasVerifiedWorktreeSeedManifest, isVerifiedWorktreeSeedManifest } from "../worktree-seed-manifest.js";
 import {
   buildManagedWorkspaceGuestEnv,
@@ -166,7 +167,9 @@ export interface ExecutionWorkspaceAgentRef {
 }
 
 export interface RealizedExecutionWorkspace extends ExecutionWorkspaceInput {
-  strategy: "project_primary" | "git_worktree";
+  // myrmidon(1.6.9, OPE-13213): "bot_container" is the task directory of a bot
+  // container (`/workspace/<ISSUE>`); the board holds no files for it.
+  strategy: "project_primary" | "git_worktree" | "bot_container";
   cwd: string;
   branchName: string | null;
   worktreePath: string | null;
@@ -3227,6 +3230,8 @@ export async function realizeExecutionWorkspace(input: {
   enableWorkspaceDirtyQuarantineRepair?: boolean;
   recorder?: WorkspaceOperationRecorder | null;
   resolveGitAuth?: GitRemoteAuthProvider | null;
+  /** Test seam (OPE-13213): replaces the statfs measurement of the worktree partition. */
+  worktreePartitionUsedPercent?: ((dir: string) => Promise<number | null>) | null;
 }): Promise<RealizedExecutionWorkspace> {
   const rawStrategy = parseObject(input.config.workspaceStrategy);
   const strategyType = asString(rawStrategy.type, "project_primary");
@@ -3504,6 +3509,24 @@ export async function realizeExecutionWorkspace(input: {
   // returned above, so the check never bricks a bot that only keeps working
   // where it already works. The rejection message carries the stable code
   // BOT_DISK_QUOTA_EXCEEDED for the agent to parse.
+  // myrmidon(1.6.9, OPE-13213): a board-side worktree is a copy on the board's
+  // disk; it obeys the same refuse-open threshold as every workspace on the
+  // bot disk. Reuse of an existing worktree returned above and is not blocked.
+  const partitionRefusal = await worktreePartitionRefusal({
+    db: input.db,
+    worktreeParentDir,
+    measure: input.worktreePartitionUsedPercent ?? null,
+  });
+  if (partitionRefusal) {
+    throw new WorkspaceRuntimeValidationFailure(partitionRefusal, {
+      workspaceValidation: {
+        reason: "worktree_partition_full",
+        reasonCode: WORKTREE_PARTITION_FULL_REASON_CODE,
+        worktreeParentDir,
+      },
+    });
+  }
+
   const quotaRejection = await botDiskQuotaRejection(input.db, input.agent.id);
   if (quotaRejection) {
     throw new WorkspaceRuntimeValidationFailure(quotaRejection, {

@@ -152,6 +152,7 @@ const SUCCESSFUL_RUN_HANDOFF_VALID_PATH_SKIP_REASONS = new Set([
   "corrective handoff wake already exists for this source run",
   "chat conversation already owns the next action",
   "open pull request is waiting for CI/review external event",
+  "in-progress task of the executor has a board continuation",
 ]);
 
 export function isSuccessfulRunHandoffValidPathSkip(
@@ -493,6 +494,14 @@ export function decideSuccessfulRunHandoff(input: {
   hasPauseHold: boolean;
   hasActiveRoutineContinuation: boolean;
   hasOpenPullRequestWaitingForCi?: boolean;
+  /**
+   * The board itself continues a task its executor leaves `in_progress`: the
+   * in-progress wake (`runPriority.inProgressIdleWakeMinutes` > 0) is on. Then an
+   * `advanced` run that leaves the task `in_progress` has a valid disposition
+   * (the live continuation path), and the corrective "needs a disposition" wake
+   * only adds an empty run. Absent or false: the check works as before.
+   */
+  hasBoardContinuation?: boolean;
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
 }): SuccessfulRunHandoffDecision {
@@ -532,6 +541,9 @@ export function decideSuccessfulRunHandoff(input: {
   }
   if (input.hasOpenPullRequestWaitingForCi) {
     return { kind: "skip", reason: "open pull request is waiting for CI/review external event" };
+  }
+  if (input.hasBoardContinuation && input.livenessState === "advanced") {
+    return { kind: "skip", reason: "in-progress task of the executor has a board continuation" };
   }
   if (!isProductiveSuccessfulRun(input)) {
     return { kind: "skip", reason: "successful run did not produce handoff-relevant progress" };

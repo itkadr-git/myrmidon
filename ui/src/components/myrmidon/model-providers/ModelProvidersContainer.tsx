@@ -179,6 +179,7 @@ export function ModelProvidersScreen() {
     <ModelProvidersScreenView
       view={view}
       companyId={companyId}
+      canManage={isAdmin}
       modelsQuery={(providerId: string) => modelProviderModelsQueryKey(companyId, providerId)}
       channelsQuery={(providerId: string) => modelProviderChannelsQueryKey(companyId, providerId)}
       litellmChannelsQuery={(cid: string) => litellmChannelsQueryKey(cid)}

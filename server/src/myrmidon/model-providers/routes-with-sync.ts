@@ -99,11 +99,7 @@ export interface ModelProviderRoutesWithSyncDeps {
    * configured for this instance or this company has no admin-key value.
    */
   getLitellmSync: (companyId: string) => Promise<LitellmSyncService | null>;
-  /**
-   * Re-applies the enabled-model allowlist to the company's agent gateway
-   * keys. Optional: tests pass none; without it the allowlist step is skipped.
-   * Must not throw on a gateway it cannot reach — it reports and returns.
-   */
+  /** Reconciles each agent's card model allowlist after provider registry changes. */
   refreshAgentAllowlists?: (companyId: string) => Promise<unknown>;
   /** Writes the mutation into the company activity log. Optional: tests pass none. */
   recordActivity?: (entry: ModelProviderActivityEntry) => Promise<void>;

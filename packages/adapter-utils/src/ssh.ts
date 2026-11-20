@@ -1768,6 +1768,24 @@ export async function syncDirectoryFromSsh(input: {
           tarStderr.toLowerCase().includes("unexpected eof") ||
           tarStderr.toLowerCase().includes("unexpected end of archive") ||
           tarStderr.includes("This does not look like a tar archive");
+        // OPE-13128: ssh and tar fail almost together; both are closed here, so the
+        // message must not depend on which one failed first. ssh's own diagnostic
+        // (its stderr tail, with the truncation marker) goes first, tar's error
+        // follows on an extra line. A bare SIGTERM that we sent to ssh carries no
+        // diagnostic and falls through to the tar-only report below.
+        if (
+          (sshExitCode ?? 0) !== 0 &&
+          (tarExitCode === null || tarExitCode !== 0) &&
+          (!sshStoppedAfterTarFailure || !isSshSigterm)
+        ) {
+          const sshError = sshStderr || `ssh exited with code ${sshExitCode ?? -1}`;
+          const tarError =
+            tarExitCode === null
+              ? `tar terminated by signal ${tarSignal ?? "unknown"}${tarStderr ? `: ${tarStderr}` : ""}`
+              : tarStderr || `tar exited with code ${tarExitCode}`;
+          reject(new Error(`${sshError}\n${tarError}`));
+          return;
+        }
         if (
           (!sshStoppedAfterTarFailure || !isSshSigterm || isTarEof) &&
           (sshExitCode ?? 0) !== 0

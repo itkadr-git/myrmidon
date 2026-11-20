@@ -50,8 +50,10 @@ import {
   issues,
   issueRelations,
   issueWorkProducts,
+  projects,
   type Db,
 } from "@myrmidon/db";
+import { releaseFocusCondition } from "../release-focus.js";
 import {
   DEFAULT_SWARM_MAX_ACTIVE_TASKS,
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
@@ -98,7 +100,10 @@ import {
   swarmQueueOrderBy,
   type SwarmQueueOrderOptions,
 } from "./effective-pheromone.js";
-import { projectMemberAgentIds, projectScopedClaimGate } from "../project-membership.js";
+import { projectMemberAgentIds, projectMembershipByProject, projectScopedClaimGate } from "../project-membership.js";
+import { issueService } from "../../services/issues.js";
+import { currentCompanyReleaseFocus } from "../run-priority/state.js";
+import { AUTO_SLICE_DEDUPE_STATUSES, AUTO_SLICE_TITLE, createAutoSlicePolicy, projectQueueShortages, releaseEpicCandidates, runAutoSlicePass } from "./auto-slice-policy.js";
 import { unassignedTaskRoutedToRole } from "./queue.js";
 import { insertClaim, releaseClaimsForIssue, revertIdleClaimAssignment } from "./store.js";
 
@@ -440,13 +445,8 @@ function freeAgentsOfPair(
 ): SwarmMatcherAgent[] {
   // The ceiling of the caste wins over the global one (the same reading the
   // sweeper's idle pass used before this file took the pass over).
-  // 1.6.6 (OPE-9678): Cap automatic assignment at two tasks per agent (DEFAULT_SWARM_MAX_ACTIVE_TASKS).
-  // A caste or settings ceiling can restrict further, but cannot exceed 2 for auto-assignment.
   const rawMax = caste?.maxActiveTasks ?? settings.maxActiveTasks;
-  const maxActiveTasks =
-    rawMax !== null && rawMax !== undefined
-      ? Math.min(rawMax, DEFAULT_SWARM_MAX_ACTIVE_TASKS ?? 2)
-      : (DEFAULT_SWARM_MAX_ACTIVE_TASKS ?? 2);
+  const maxActiveTasks = rawMax ?? DEFAULT_SWARM_MAX_ACTIVE_TASKS ?? 2;
   return pair.agents
     .filter((agent) => {
       if (
@@ -576,14 +576,9 @@ async function claimTaskForAgent(
       ) {
         throw new MatcherClaimLost();
       }
-      // 1.6.6 (SWARM-B / OPE-9678): the capacity check is atomic. Two passes (or a pass and
-      // the claim API) that pick the same agent queue on this lock; the second one
-      // counts the first one's committed assignment and stops at the ceiling.
-      // Auto-assignment is strictly capped at DEFAULT_SWARM_MAX_ACTIVE_TASKS (2).
-      const effectiveLimit =
-        target.maxActiveTasks !== undefined && target.maxActiveTasks !== null
-          ? Math.min(target.maxActiveTasks, DEFAULT_SWARM_MAX_ACTIVE_TASKS ?? 2)
-          : (DEFAULT_SWARM_MAX_ACTIVE_TASKS ?? 2);
+      // Respect the resolved caste/settings ceiling; do not impose a separate
+      // hard-coded automatic-assignment cap here.
+      const effectiveLimit = target.maxActiveTasks ?? DEFAULT_SWARM_MAX_ACTIVE_TASKS ?? 2;
       await txDb.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`swarm-capacity:${target.agentId}`}, 0))`,
       );
@@ -738,6 +733,59 @@ async function casteDirectoryOf(
  * to a free agent of its caste in its nest, one task per agent. Nothing is woken
  * that no task was found for, and a closed host field matches nothing at all.
  */
+const autoSlicePolicies = new WeakMap<object, ReturnType<typeof createAutoSlicePolicy>>();
+
+async function autoSliceCompany(deps: SwarmMatcherDeps, companyId: string, castes: Map<string, SwarmMatcherCaste>): Promise<void> {
+  const release = currentCompanyReleaseFocus(companyId).currentRelease;
+  if (!release) return;
+  const [pools, members, projectRows, issueRows] = await Promise.all([
+    listIdleRolePairs(deps.db, companyId, { roles: ["engineer", "lead"], order: queueOrderOf(deps) }),
+    projectMembershipByProject(deps.db, companyId),
+    deps.db.select({ id: projects.id, leadAgentId: projects.leadAgentId }).from(projects)
+      .where(and(eq(projects.companyId, companyId), eq(projects.status, "in_progress"))),
+    deps.db.select({ id: issues.id, identifier: issues.identifier, title: issues.title, status: issues.status, projectId: issues.projectId })
+      .from(issues).where(and(eq(issues.companyId, companyId), isNull(issues.hiddenAt))),
+  ]);
+  const engineers = pools.find((pool) => pool.role === "engineer");
+  if (!engineers || castes.get("engineer")?.swarmEligible === false) return;
+  const free = await availableAgents(deps, companyId, freeAgentsOfPair(engineers, deps.settings, castes.get("engineer") ?? null));
+  const leadPool = pools.find((pool) => pool.role === "lead");
+  const leads = leadPool ? await availableAgents(deps, companyId, freeAgentsOfPair(leadPool, deps.settings, castes.get("lead") ?? null)) : [];
+  const shortageRows = projectQueueShortages(companyId, projectRows.map((p) => ({ projectId: p.id, memberIds: members.get(p.id) ?? new Set<string>() })), free.map((a) => a.agentId), engineers.queue.filter((task) => !task.assigneeAgentId).map((task) => ({ projectId: task.projectId ?? null })));
+  let policy = autoSlicePolicies.get(deps.db);
+  if (!policy) {
+    const configured = Number(process.env.MYRMIDON_AUTO_SLICE_DELAY_MINUTES ?? 10);
+    policy = createAutoSlicePolicy((Number.isFinite(configured) && configured >= 0 ? configured : 10) * 60_000);
+    autoSlicePolicies.set(deps.db, policy);
+  }
+  await runAutoSlicePass(policy, shortageRows, deps.now.getTime(), {
+    createIfAbsent: async ({ projectId, needed }) => {
+      const project = projectRows.find((p) => p.id === projectId);
+      const epics = releaseEpicCandidates(issueRows.filter((row) => row.projectId === projectId), release);
+      if (!project || !epics.length) return false;
+      const eligible = leads.filter((lead) => members.get(projectId)?.has(lead.agentId));
+      const lead = eligible.find((agent) => agent.agentId === project.leadAgentId) ?? eligible[0];
+      if (!lead) return false;
+      const created = await deps.db.transaction(async (tx) => {
+        // Serialize deduplication across simultaneous matcher passes and server processes.
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${companyId}), hashtext(${projectId}))`);
+        const [existing] = await tx.select({ id: issues.id }).from(issues).where(and(
+          eq(issues.companyId, companyId), eq(issues.projectId, projectId), eq(issues.title, AUTO_SLICE_TITLE),
+          isNull(issues.hiddenAt), inArray(issues.status, [...AUTO_SLICE_DEDUPE_STATUSES]),
+        )).limit(1);
+        if (existing) return null;
+        return issueService(deps.db).create(companyId, {
+          projectId, title: AUTO_SLICE_TITLE, status: "todo", priority: "high", assigneeAgentId: lead.agentId,
+          description: `Нарежьте следующую часть выпуска ${release} и добавьте не менее ${needed} готовых задач инженерам.\n\nОткрытые эпики:\n${epics.map((epic) => `- [${epic.identifier ?? epic.id}](/issues/${epic.identifier ?? epic.id}) ${epic.title}`).join("\n")}`,
+        }, tx);
+      });
+      if (!created) return false;
+      await queueIssueAssignmentWakeup({ heartbeat: deps.heartbeat, issue: created, reason: "auto_slice_queue_shortage", mutation: "created", contextSource: "auto_slice" });
+      return true;
+    },
+  });
+}
+
 export async function matchCompany(
   deps: SwarmMatcherDeps,
   companyId: string,
@@ -753,6 +801,7 @@ export async function matchCompany(
   if (!deps.settings.enabled) return result;
 
   const castes = await casteDirectoryOf(deps, companyId);
+  await autoSliceCompany(deps, companyId, castes);
   const pairs = await listIdleRolePairs(deps.db, companyId, { order: queueOrderOf(deps) });
   for (const pair of pairs) {
     const caste = castes.get(pair.role) ?? null;
@@ -930,6 +979,22 @@ export async function matchAgent(
   );
   if (!self) return null;
 
+  // myrmidon(1.9 SWARM-SPREAD): an agent that already carries an open task (or
+  // is running) is not handed another queue task while a free agent of the same
+  // caste could take it: the freed-agent event must not pile a second task on
+  // one engineer while its colleagues stand idle. No free colleague - as before.
+  const selfBusy =
+    loadOfAgent(self) > 0 || (pair.agents.find((entry) => entry.id === agentId)?.hasLiveRun ?? false);
+  let idleColleagues: SwarmMatcherAgent[] | null = null;
+  const idleColleaguesOf = async (): Promise<SwarmMatcherAgent[]> => {
+    if (idleColleagues) return idleColleagues;
+    const pool = freeAgentsOfPair(pair, deps.settings, caste).filter(
+      (agent) => agent.agentId !== agentId && loadOfAgent(agent) === 0,
+    );
+    idleColleagues = await availableAgents(deps, agentRow.companyId!, pool);
+    return idleColleagues;
+  };
+
   // The pool read is already in the queue order (`swarmQueueOrderBy`).
   // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): project → membership of this agent,
   // read once per project for the loop.
@@ -946,6 +1011,15 @@ export async function matchAgent(
       if (!member) continue;
     }
     if (await isCooling(deps, agentRow.companyId, candidate.issueId)) continue;
+    if (selfBusy) {
+      let idle = await idleColleaguesOf();
+      if (candidate.projectId && idle.length > 0) {
+        const members = await projectMemberAgentIds(deps.db, agentRow.companyId, candidate.projectId);
+        idle = idle.filter((agent) => members.has(agent.agentId));
+      }
+      // A free colleague takes it (the pass or the task event pairs them).
+      if (idle.length > 0) continue;
+    }
     const task: SwarmMatcherTask = {
       issueId: candidate.issueId,
       identifier: candidate.identifier ?? null,
@@ -1306,7 +1380,7 @@ export async function listIdleRolePairs(
   const pairs: SwarmIdleRolePair[] = [];
   roles.forEach((role, index) => {
     const queue = queues[index] ?? [];
-    if (queue.length === 0) return;
+    if (queue.length === 0 && !wanted) return;
     const roleAgents = agentRows
       .filter((agent) => agent.role === role)
       .map((agent) => ({
@@ -1421,12 +1495,21 @@ export async function openLoadByAgent(db: Db, companyId: string): Promise<Map<st
   return loads;
 }
 
+const CI_WAIT_ISSUE_STATUSES: ReadonlySet<string> = new Set(["todo", "in_progress"]);
+
 /**
- * Only a recently observed active CI state for the exact current PR head
- * discounts an assigned issue. Completed runs never release load.
+ * A linked open PR waiting on CI or review discounts assigned load after
+ * fifteen minutes without an activity observation.
+ *
+ * myrmidon(CI-WAIT-NOT-LOAD): a CI wait counts for todo tasks too (a bot
+ * hands the task back to todo while its PR runs CI), draft PRs included. On
+ * 16.11 only in_progress was discounted, 45 such todo tasks kept 8-13 of 14
+ * engineers "busy". The fifteen minutes stay: they keep a task out of the
+ * discount in the first moments after a push, while the agent may still work.
+ * The review wait stays in_progress only.
  */
 async function ciWaitingPullRequestIssueIds(db: Db, companyId: string): Promise<Set<string>> {
-  const products = await db.select({ issueId: issueWorkProducts.issueId, issueStatus: issues.status, metadata: issueWorkProducts.metadata, externalId: issueWorkProducts.externalId })
+  const products = await db.select({ issueId: issueWorkProducts.issueId, issueStatus: issues.status, status: issueWorkProducts.status, metadata: issueWorkProducts.metadata, externalId: issueWorkProducts.externalId, reviewState: issueWorkProducts.reviewState, updatedAt: issueWorkProducts.updatedAt })
     .from(issueWorkProducts)
     .innerJoin(issues, eq(issues.id, issueWorkProducts.issueId))
     .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.provider, "github")));
@@ -1436,26 +1519,32 @@ async function ciWaitingPullRequestIssueIds(db: Db, companyId: string): Promise<
     const repository = typeof metadata?.repository === "string" ? metadata.repository : typeof metadata?.repo === "string" ? metadata.repo : null;
     const number = typeof metadata?.number === "number" ? metadata.number : Number(product.externalId?.match(/#pull\/(\d+)$/)?.[1]);
     const ci = metadata?.activeCi && typeof metadata.activeCi === "object" ? metadata.activeCi as Record<string, unknown> : null;
-    const ciRepository = typeof ci?.repository === "string" ? ci.repository.toLowerCase() : null;
-    const ciNumber = Number(ci?.number);
-    const ciHead = typeof ci?.headSha === "string" ? ci.headSha.toLowerCase() : null;
-    if (product.issueStatus === "in_progress" && repository && Number.isSafeInteger(number) && number > 0 && ciRepository === repository.toLowerCase() && ciNumber === number && ciHead) current.set(`${repository.toLowerCase()}#${number}`, { head: ciHead, issueId: product.issueId });
+    if (CI_WAIT_ISSUE_STATUSES.has(product.issueStatus) && repository && Number.isSafeInteger(number) && number > 0) {
+      current.set(`${repository.toLowerCase()}#${number}`, { head: typeof ci?.headSha === "string" ? ci.headSha.toLowerCase() : "", issueId: product.issueId });
+    }
   }
   if (!current.size) return new Set();
-  const now = Date.now();
   const waiting = new Set<string>();
   for (const product of products) {
-    if (product.issueStatus !== "in_progress") continue;
+    if (!CI_WAIT_ISSUE_STATUSES.has(product.issueStatus)) continue;
     const meta = product.metadata as Record<string, unknown> | null;
     const ci = meta?.activeCi && typeof meta.activeCi === "object" ? meta.activeCi as Record<string, unknown> : null;
     const repository = typeof meta?.repository === "string" ? meta.repository : typeof meta?.repo === "string" ? meta.repo : null;
     const number = typeof meta?.number === "number" ? meta.number : Number(product.externalId?.match(/#pull\/(\d+)$/)?.[1]);
-    if (!repository || !Number.isSafeInteger(number) || !ci || (ci.status !== "queued" && ci.status !== "in_progress")) continue;
-    const currentPr = current.get(`${repository.toLowerCase()}#${number}`);
-    if (!currentPr || currentPr.issueId !== product.issueId) continue;
-    const observed = typeof ci.observedAt === "string" ? Date.parse(ci.observedAt) : NaN;
-    const age = now - observed;
-    if (currentPr.head === String(ci.headSha).toLowerCase() && age >= 0 && age <= 15 * 60_000) waiting.add(product.issueId);
+    const currentPr = repository && Number.isSafeInteger(number)
+      ? current.get(`${repository.toLowerCase()}#${number}`)
+      : undefined;
+    const waitingForCi = ci && (ci.status === "queued" || ci.status === "in_progress");
+    const matchingCiHead = currentPr && ci && currentPr.head !== "" && currentPr.head === String(ci.headSha).toLowerCase();
+    const observedAt = typeof ci?.observedAt === "string" ? Date.parse(ci.observedAt) : NaN;
+    const lastActivityAt = Number.isFinite(observedAt) ? Math.max(observedAt, product.updatedAt.getTime()) : product.updatedAt.getTime();
+    const age = Date.now() - lastActivityAt;
+    const waitingLongEnough = age >= 15 * 60_000;
+    const reviewWait = product.issueStatus === "in_progress" && product.status === "open" && product.reviewState === "ready_for_review" && waitingLongEnough;
+    const ciWait = product.status === "open" && waitingForCi && matchingCiHead && waitingLongEnough;
+    if (currentPr?.issueId === product.issueId && (ciWait || reviewWait)) {
+      waiting.add(product.issueId);
+    }
   }
   return waiting;
 }
@@ -1644,6 +1733,7 @@ export async function liveClaimCountsByAgent(
 function readyQueueConditions(db: Db, companyId: string): SQL[] {
   return [
     eq(issues.companyId, companyId),
+    releaseFocusCondition(companyId),
     isNull(issues.assigneeUserId),
     isNull(issues.hiddenAt),
     isNull(issues.conversationAgentId),

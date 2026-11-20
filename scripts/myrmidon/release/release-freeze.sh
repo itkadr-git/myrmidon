@@ -14,9 +14,12 @@
 #     (the cut that started the current release window);
 #   - freeze is ACTIVE while that tag has no successful "Myrmidon CI" run
 #     (matched by head_branch == the tag via myrmidon-ci-tag.yml, which runs
-#     the full pipeline on the tag itself; as a fallback for older tags also
-#     a green main-branch run of the SAME commit under myrmidon-ci.yml, which
-#     has no tag trigger — the same rule publish-github-release.sh uses);
+#     the full pipeline on the tag itself, or reuses the green branch run of
+#     the same commit; also accepted: a green run of the SAME commit under
+#     myrmidon-ci.yml on ANY branch (rel/* or main) from a push or a manual
+#     dispatch — the release tag is cut on the head of a rel branch whose
+#     full CI already ran, a second full run of it is a pure duplicate; the
+#     same rule publish-github-release.sh uses);
 #   - freeze CLEARS as soon as that CI run is green. A release the publish
 #     gate would accept (its CI gate is the exact same check) unblocks main.
 #
@@ -104,6 +107,10 @@ newest_release_tag() {
 # the full pipeline on the tag itself (head_branch == the tag). Fallback for
 # tags cut before the tag workflow existed: myrmidon-ci.yml has no tag
 # trigger, so accept a run of the same sha with head_branch == main.
+# 16.11 (CI-TAG-REUSE-BRANCH-RUN): a completed green run of myrmidon-ci.yml of
+# the same sha on ANY branch (a push or a manual dispatch; a pull_request run
+# is the fast tier and never counts) is green by itself, so the release tag does
+# not need a second full pipeline of the same commit.
 tag_ci_verdict() {
   local tag="$1" sha verdict status
   sha="$(gh api "repos/$repo/git/ref/tags/$tag" --jq '
@@ -116,6 +123,14 @@ tag_ci_verdict() {
     sha="$(gh api "repos/$repo/git/tags/$sha" --jq '.object.sha' 2>/dev/null || true)"
   fi
   [[ -n "$sha" ]] || { printf 'missing\n'; return; }
+  local branch_green
+  branch_green="$(gh api --paginate "repos/$repo/actions/runs?head_sha=$sha&per_page=100" \
+      --jq '.workflow_runs[]? | select(.path == ".github/workflows/myrmidon-ci.yml"
+              and (.event == "push" or .event == "workflow_dispatch")
+              and .status == "completed" and .conclusion == "success") | "green"' 2>/dev/null | grep -c green || true)"
+  if [[ "${branch_green:-0}" =~ ^[0-9]+$ ]] && ((branch_green > 0)); then
+    printf 'success\n'; return
+  fi
   # (tag workflow on the tag) OR (main workflow on main at the same sha).
   local sel
   sel='((.path == ".github/workflows/myrmidon-ci-tag.yml" and .head_branch == "'"$tag"'") or (.path == ".github/workflows/myrmidon-ci.yml" and .head_branch == "main"))'

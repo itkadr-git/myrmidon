@@ -2891,10 +2891,12 @@ async function buildAttentionFeedSnapshot(
           },
         }));
       }
-      if (partitionState.alertLevel === "warn" || partitionState.alertLevel === "critical") {
+      const partitionLowSpace = partitionState.partition !== null
+        && partitionState.partition.freeBytes / partitionState.partition.totalBytes < 0.1;
+      if (partitionLowSpace || partitionState.alertLevel === "warn" || partitionState.alertLevel === "critical") {
         const partition = partitionState.partition!;
         const thresholds = partitionState.settings!;
-        const critical = partitionState.alertLevel === "critical";
+        const critical = partitionLowSpace || partitionState.alertLevel === "critical";
         const dedupKey = `host_disk:partition:${partition.mount}`;
         add(createItem({
           companyId,
@@ -2909,7 +2911,9 @@ async function buildAttentionFeedSnapshot(
             href: `/${prefix}/instance`,
             metadata: { measuredPath: partition.mount, source: "dockergate" },
           },
-          whyNow: critical
+          whyNow: partitionLowSpace
+            ? `Bot partition has less than 10% free space (${(partition.freeBytes / partition.totalBytes * 100).toFixed(1)}% available). Free space on the bot host.`
+            : critical
             ? `Bot partition is ${Math.round(partition.usedPercent)}% full (critical threshold ${thresholds.partitionCriticalPercent}%). myr-ws open refuses new copies.`
             : `Bot partition is ${Math.round(partition.usedPercent)}% full (threshold ${thresholds.partitionThresholdPercent}%).`,
           decisionVerbs: decisionVerbs(
@@ -2928,7 +2932,7 @@ async function buildAttentionFeedSnapshot(
           detail: {
             kind: "host_disk",
             usedPercent: Math.round(partition.usedPercent),
-            thresholdPercent: critical
+            thresholdPercent: partitionLowSpace ? 90 : critical
               ? thresholds.partitionCriticalPercent
               : thresholds.partitionThresholdPercent,
             usedGb: Math.round(partition.usedBytes / (1024 * 1024 * 1024)),
@@ -2942,7 +2946,7 @@ async function buildAttentionFeedSnapshot(
         }));
       }
       const hostDisk = hostDiskRuntime(db).sweep.lastResult();
-      if (hostDisk?.overThreshold && partitionState.alertLevel !== "warn" && partitionState.alertLevel !== "critical") {
+      if (hostDisk?.overThreshold && !partitionLowSpace && partitionState.alertLevel !== "warn" && partitionState.alertLevel !== "critical") {
         const dedupKey = `host_disk:${hostDisk.measuredPath ?? "unknown"}`;
         add(createItem({
           companyId,

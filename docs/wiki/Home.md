@@ -48,6 +48,8 @@ guides in the repository.
 
 ## Run the server
 
+- [Manual CI timeout smoke](Ci-timeout-smoke) — coordinated single-run timeout and runner cleanup evidence for repository maintainers.
+
 - [Server onboarding dry-run](Server-onboarding-dry-run) — read-only DNS, SSH,
   and permissions probes with stable result codes; the legacy SSH dry-run alias
   remains available for compatibility.

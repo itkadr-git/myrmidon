@@ -12,7 +12,7 @@ export interface IdleStopRuntime {
 
 function dockerTime(value: unknown): Date | null {
   // Docker reports "0001-01-01T00:00:00Z" for a time that never happened.
-  if (typeof value !== "string" || value === "" || value.startsWith("0001-")) return null;
+  if (typeof value !== "string" || value.trim() === "" || value.startsWith("0001-")) return null;
   const date = new Date(value);
   return Number.isFinite(date.getTime()) ? date : null;
 }

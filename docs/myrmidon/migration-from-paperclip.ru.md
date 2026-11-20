@@ -61,22 +61,9 @@
 
 ## 2. Требования и запуск CLI
 
-CLI миграции входит в состав Myrmidon. Поскольку в продакшн-образе Docker нет установленного
-`paperclipai` в `$PATH` и нет предварительно собранного каталога `dist/`, запуск миграции из образа
-выполняется через `tsx` из `/app/cli` либо через встроенную обёртку `/usr/local/bin/myrmidon-migrate`:
+CLI миграции входит в состав Myrmidon. В production Docker-образе запускайте собранный CLI через встроенную обёртку `/usr/local/bin/myrmidon-migrate`:
 
-- **Напрямую через tsx из образа (рекомендуется для продакшна):**
-  ```sh
-  docker run --rm -i \
-    --entrypoint /app/cli/node_modules/.bin/tsx -w /app/cli \
-    -v /path/to/storage:/storage \
-    -v /path/to/keys:/keys:ro \
-    -v /path/to/state:/state \
-    -e SOURCE_DB_URL -e TARGET_DB_URL \
-    <образ> src/index.ts myrmidon:migrate --help
-  ```
-
-- **Через обёртку myrmidon-migrate в образе:**
+- **Из Docker-образа (production):**
   ```sh
   docker run --rm -i \
     -v /path/to/storage:/storage \
@@ -86,12 +73,13 @@ CLI миграции входит в состав Myrmidon. Поскольку �
     <образ> myrmidon-migrate --help
   ```
 
-- **Из исходников репозитория (локальная разработка):**
+- **Из исходников репозитория (только локальная разработка; используется tsx):**
   ```sh
   pnpm --filter myrmidon dev myrmidon:migrate --help
   ```
 
 Остальные требования:
+
 - Сетевой доступ к исходной и целевой базам с хоста или из контейнера, где запускается команда.
 - Роль целевой базы с правом создавать таблицы. Быстрее и точнее всего загрузка идёт с ролью,
   которой разрешено менять `session_replication_role` (суперпользователь или PostgreSQL 15+ с
@@ -105,12 +93,10 @@ CLI миграции входит в состав Myrmidon. Поскольку �
 - Свободное место под полную копию каталога хранилища и под резервную копию (раздел 3).
 
 > **Примечание к командам в примерах ниже:** Для краткости примеры приведены с вызовом `myrmidon-migrate <флаги>`.
-> При запуске через Docker подставляйте полную команду `docker run ... <образ> myrmidon-migrate` или
-> `docker run ... --entrypoint /app/cli/node_modules/.bin/tsx -w /app/cli <образ> src/index.ts myrmidon:migrate`.
+> При запуске через Docker подставляйте полную команду `docker run ... <образ> myrmidon-migrate`.
 
 Во всех командах ниже — заглушки. Настоящие URL и ключи держите в файлах с правами `0600` или в
 переменных окружения; команда вычищает URL и ключи из ошибок и JSON-вывода.
-
 ## 3. Подготовка и резервная копия (до любых изменений)
 
 1. **Остановите пишущих.** Остановите сервер Paperclip и всё, что пишет в его базу или
@@ -296,7 +282,7 @@ myrmidon-migrate --rollback \
 
 ## 9. Справка
 
-Флаги (`myrmidon-migrate --help` / `src/index.ts myrmidon:migrate --help`):
+Флаги (`myrmidon-migrate --help`):
 
 | Флаг | Смысл |
 |---|---|

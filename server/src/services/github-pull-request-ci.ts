@@ -4,6 +4,7 @@ import { issueWorkProducts, issues, issueComments } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { repositoryHasHostedCi, NO_HOSTED_CI_SUMMARY } from "./github-hosted-ci.js";
 import type { FetchLike } from "./github-external-object-provider.js";
+import { GitHubReviewBudgetError, withGitHubReviewBudget } from "./github-review-budget.js";
 import {
   resetGitHubObjectCacheForTests,
   resolveGitHubRepositoryToken,
@@ -711,7 +712,7 @@ export async function fetchCommitCheckRuns(
   headSha: string,
   token: string | null,
   fetchImpl: FetchLike = fetch,
-  options: { maxPages?: number; etag?: string; cachedRuns?: CommitCheckRunsCacheEntry } = {},
+  options: { maxPages?: number; etag?: string; cachedRuns?: CommitCheckRunsCacheEntry; source?: GitHubRequestSource } = {},
 ): Promise<CheckRunsFetchResult> {
   const maxPages = options.maxPages ?? 10;
   const cachedRuns = options.cachedRuns;
@@ -719,6 +720,7 @@ export async function fetchCommitCheckRuns(
   let page = 1;
   let totalCount: number | null = null;
   let fetchFailed = false;
+  let fetchFailureReason = "network_error";
   let failStatus: number | null = null;
   let rateLimitResetAt: number | undefined;
   let rateLimited = false;
@@ -741,8 +743,9 @@ export async function fetchCommitCheckRuns(
     let res: Response;
     try {
       res = await fetchImpl(url, { headers });
-      recordGitHubRequest("ci-resolver", res);
-    } catch {
+      recordGitHubRequest(options.source ?? "ci-resolver", res);
+    } catch (error) {
+      if (error instanceof GitHubReviewBudgetError) fetchFailureReason = error.reason;
       fetchFailed = true;
       break;
     }
@@ -873,7 +876,9 @@ export async function fetchCommitCheckRuns(
     } else {
       result.status = "unavailable";
       result.conclusion = "unavailable";
-      result.summary = `checks unavailable (HTTP ${failStatus ?? "network_error"})`;
+      result.summary = failStatus === null
+        ? `checks unavailable (${fetchFailureReason})`
+        : `checks unavailable (HTTP ${failStatus})`;
     }
   } else if (fetchFailed || (totalCount !== null && allRuns.length < totalCount)) {
     result.authoritative = false;
@@ -942,6 +947,31 @@ interface CacheEntry {
 }
 
 const ciCache = new Map<string, CacheEntry>();
+// In-flight reads started before any webhook invalidation cannot repopulate the cache.
+let ciInvalidationEpoch = 0;
+
+/** Read only recent server-fetched final-check evidence bound to this company, PR and head. */
+export function readFreshReviewCiSnapshot(
+  companyId: string,
+  reference: GitHubPullRequestReference,
+  knownHeadSha: string | null,
+): { state: "complete"; headSha: string; finalCheckConclusion: string } | null {
+  if (!knownHeadSha || reference.host !== "github.com") return null;
+  const repository = `${reference.owner}/${reference.repo}`.toLowerCase();
+  const head = prHeadCache.get(`${repository}#${reference.number}`);
+  if (!head?.headSha || head.expiresAt <= Date.now() || head.headSha !== knownHeadSha) return null;
+  const entry = ciCache.get(`${companyId}:${repository}@${knownHeadSha.toLowerCase()}`);
+  const result = entry?.result;
+  const checked = result ? Date.parse(result.checkedAt) : NaN;
+  if (!entry || entry.expiresAt <= Date.now() || !result || !result.authoritative ||
+      result.repository.toLowerCase() !== repository || result.pullNumber !== reference.number ||
+      result.headSha !== knownHeadSha || result.status !== "completed" ||
+      !Number.isFinite(checked) || checked > Date.now() || Date.now() - checked > PR_HEAD_CACHE_TTL_MS) return null;
+  const checks = result.runs.filter((run) => run.name === "CI result");
+  if (checks.length !== 1 || checks[0].status !== "completed" ||
+      !checks[0].conclusion || ["cancelled", "skipped", "neutral"].includes(checks[0].conclusion)) return null;
+  return { state: "complete", headSha: knownHeadSha, finalCheckConclusion: checks[0].conclusion };
+}
 
 interface PrHeadCacheEntry {
   headSha: string | null;
@@ -959,12 +989,21 @@ interface CommitCheckRunsCacheEntry {
 const checkRunsCache = new Map<string, CommitCheckRunsCacheEntry>();
 
 export function clearCiCacheForTests(): void {
+  ciInvalidationEpoch += 1;
   ciCache.clear();
   prHeadCache.clear();
   checkRunsCache.clear();
   jobLogCache.clear();
   resetGitHubRateLimitForTests();
   resetGitHubObjectCacheForTests();
+}
+
+/** Invalidate cached CI snapshots for one company and PR head after a GitHub event. */
+export function invalidateCiCacheForHead(companyId: string, repository: string, headSha: string): void {
+  ciInvalidationEpoch += 1;
+  const normalizedRepository = repository.toLowerCase();
+  ciCache.delete(`${companyId}:${normalizedRepository}@${headSha.toLowerCase()}`);
+  checkRunsCache.delete(`${normalizedRepository}@${headSha.toLowerCase()}`);
 }
 
 export const GITHUB_REQUEST_TIMEOUT_MS = 8_000;
@@ -993,7 +1032,9 @@ export function createPullRequestCiResolver(
   // (heartbeat), `ui-refresh` for UI-triggered calls (routes); the historical
   // default keeps the pre-OPE-12397 label for callers without a bucket.
   const { source = "run-context", ...resolverOptions } = options;
-  const rawFetch = resolverOptions.fetch ?? fetch;
+  const rawFetch = source === "review-rework"
+    ? withGitHubReviewBudget(db, "review-rework", resolverOptions.fetch ?? fetch)
+    : resolverOptions.fetch ?? fetch;
   const fetchImpl: FetchLike = (input, init) => {
     const timeoutSignal = AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS);
     const signal = init?.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal;
@@ -1230,9 +1271,9 @@ export function createPullRequestCiResolver(
         };
       }
 
-      const cacheKey = `${companyId}:${repoKey}@${headSha}`;
+      const cacheKey = `${companyId}:${repoKey.toLowerCase()}@${headSha.toLowerCase()}`;
       const cached = ciCache.get(cacheKey);
-      const commitCacheKey = `${repoKey}@${headSha}`;
+      const commitCacheKey = `${repoKey.toLowerCase()}@${headSha.toLowerCase()}`;
       const rateLimited = isGitHubRateLimited();
       if (rateLimited) {
         const resetStr = getGitHubRateLimitResetTime() ?? "unknown";
@@ -1283,10 +1324,14 @@ export function createPullRequestCiResolver(
           runs: [],
         };
       }
-      if (cached && cached.expiresAt > Date.now()) {
+      const cachedRunsEntry = checkRunsCache.get(commitCacheKey);
+      const cacheIsFresh = cached && cached.expiresAt > Date.now()
+        && !(source === "run-context" && cached.result.status === "completed");
+      if (cacheIsFresh) {
         return cached.result;
       }
 
+      const cacheEpoch = ciInvalidationEpoch;
       let token: string | null = null;
       try {
         token = await tokenProvider(companyId, repoKey);
@@ -1310,7 +1355,6 @@ export function createPullRequestCiResolver(
         };
       }
 
-      const cachedRunsEntry = checkRunsCache.get(commitCacheKey);
       let runs: CheckRunsFetchResult;
       try {
         runs = await fetchCommitCheckRuns(
@@ -1319,11 +1363,11 @@ export function createPullRequestCiResolver(
           headSha,
           token,
           fetchImpl,
-          { etag: cachedRunsEntry?.etag ?? undefined, cachedRuns: cachedRunsEntry },
+          { etag: cachedRunsEntry?.etag ?? undefined, cachedRuns: cachedRunsEntry, source },
         );
         if (runs.conclusion === "incomplete" && runs.summary === "checks unchanged (not modified)" && cachedRunsEntry) {
           runs = cachedRunsEntry.runs;
-        } else if (runs.etag || cachedRunsEntry) {
+        } else if (cacheEpoch === ciInvalidationEpoch && (runs.etag || cachedRunsEntry)) {
           checkRunsCache.set(commitCacheKey, {
             etag: runs.etag ?? cachedRunsEntry?.etag,
             runs,
@@ -1382,7 +1426,7 @@ export function createPullRequestCiResolver(
         const oldestKey = ciCache.keys().next().value;
         if (oldestKey !== undefined) ciCache.delete(oldestKey);
       }
-      if (result.conclusion !== "rate_limited") {
+      if (result.conclusion !== "rate_limited" && cacheEpoch === ciInvalidationEpoch) {
         ciCache.set(cacheKey, {
           expiresAt: Date.now() + ttlMs,
           result,

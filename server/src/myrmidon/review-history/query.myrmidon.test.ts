@@ -3,7 +3,7 @@
 // myrmidon(1.8 LEARN, OPE-12928): focused tests for the safe 30-day extraction
 // contract. No database, no I/O, no skill files.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   REVIEW_HISTORY_WINDOW_MS,
   extractReviewFeedback,
@@ -123,6 +123,45 @@ describe("extractReviewFeedback — safe 30-day extraction contract", () => {
   });
 
   describe("non-review comments rejection", () => {
+    it.each(["issue_comment", "system"] as const)(
+      "rejects %s without reading its private body, even after an eligible record",
+      (kind) => {
+        const readPrivateBody = vi.fn((): string => {
+          throw new Error("Private fixture body must not be read");
+        });
+        const rejectedSource = {
+          ...validSource({ id: "private-source", kind }),
+          get body() {
+            return readPrivateBody();
+          },
+        };
+
+        const result = extractReviewFeedback([validSource(), rejectedSource], NOW);
+
+        expect(result).toBe(false);
+        expect(readPrivateBody).not.toHaveBeenCalled();
+      },
+    );
+
+    it("excludes unapproved/private review-like bodies unless their source is an approved review record", () => {
+      const privateDraftBody = "REQUEST CHANGES: private draft includes restricted details";
+      const result = extractReviewFeedback(
+        [
+          validSource({
+            id: "draft-comment",
+            kind: "issue_comment",
+            body: privateDraftBody,
+          }),
+        ],
+        NOW,
+      );
+
+      // Review-looking prose is not evidence of approval; only the caller's
+      // authorized review source kind may cross into the digest input.
+      expect(result).toBe(false);
+      expect(JSON.stringify(result)).not.toContain(privateDraftBody);
+    });
+
     it("returns false if an ordinary issue_comment appears", () => {
       const result = extractReviewFeedback(
         [
@@ -153,6 +192,31 @@ describe("extractReviewFeedback — safe 30-day extraction contract", () => {
   });
 
   describe("sensitive fields and PII exclusion", () => {
+    it("builds digest input without reading secret-bearing metadata", () => {
+      const readMetadata = vi.fn((): never => {
+        throw new Error("Secret-bearing fixture metadata must not be read");
+      });
+      const source = {
+        ...validSource(),
+        get metadata() {
+          return readMetadata();
+        },
+      };
+
+      const result = extractReviewFeedback([source], NOW);
+
+      expect(result).toEqual([
+        {
+          feedback: source.body,
+          timestamp: source.createdAt,
+          issue: { id: source.issueId, identifier: source.issueIdentifier },
+          pullRequest: source.pullRequest,
+          sourceRef: `issue:${source.issueId}:pr:${source.pullRequest.repository}#${source.pullRequest.number}:comment:${source.id}`,
+        },
+      ]);
+      expect(readMetadata).not.toHaveBeenCalled();
+    });
+
     it("does not leak author, run id, user id, or extra metadata onto the output object", () => {
       const source = {
         ...validSource(),

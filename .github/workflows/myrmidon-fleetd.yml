@@ -59,7 +59,7 @@ jobs:
       - name: gofmt, go vet, go test
         run: |
           set -euo pipefail
-          docker run --rm --network none -v "$PWD/tools/fleetd:/src" -w /src \
+          docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/tools/fleetd:/src" -w /src \
             -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local -e GOCACHE=/tmp/gocache "$GO_IMAGE" sh -euc '
               out="$(gofmt -l .)"
               if [ -n "$out" ]; then echo "gofmt: $out"; exit 1; fi
