@@ -54,9 +54,17 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(allowed.status, JSON.stringify(allowed.body)).toBe(201);
     expect(allowed.body).toMatchObject({ parentId: parent!.id, projectId: project!.id, assigneeAgentId: target!.id });
 
-    await db.update(agents).set({ permissions: { authorizationPolicy: { trustPreset: "standard", unknownExtension: true } } }).where(eq(agents.id, target!.id));
-    const denied = await create("Unknown policy investigation");
-    expect(denied.status).toBe(403);
-    expect(JSON.stringify(denied.body)).toContain("deny_policy_restricted");
+    const deniedPolicies = [
+      { trustPreset: "standard", unknownExtension: true },
+      { trustPreset: "future-preset" },
+      { assignmentPolicy: { mode: "future-mode" } },
+      { protectedAgent: { blockAssignment: true } },
+    ];
+    for (const policy of deniedPolicies) {
+      await db.update(agents).set({ permissions: { authorizationPolicy: policy } }).where(eq(agents.id, target!.id));
+      const denied = await create("Restricted policy investigation");
+      expect(denied.status, JSON.stringify({ policy, body: denied.body })).toBe(403);
+      expect(JSON.stringify(denied.body)).toContain("deny_policy_restricted");
+    }
   });
 });
