@@ -33,6 +33,7 @@ import {
   type NativeStatusCommitFailpoint,
 } from "./status-decision-committer.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { isRetryablePostgresError } from "../postgres-transaction-retry.js";
 import { issueService } from "../issues.js";
 import { publishChatPublicationCommitSignal } from "../chat-publication-reconciliation.js";
 import { nativeSha256 } from "./canonical.js";
@@ -1239,6 +1240,7 @@ export async function finalizeNativeRun(input: {
           eq(nativeRunFinalizations.leaseOwner, claim.leaseOwner!),
         ),
       );
+    let decisionCommitted = false;
     try {
       const committed = await commitNativeStatusDecision({
         db: input.db,
@@ -1275,6 +1277,7 @@ export async function finalizeNativeRun(input: {
             : undefined,
         failpoint: input.failpoint,
       });
+      decisionCommitted = true;
       const now = new Date();
       const finalizationFailed = decision.effects.some(
         (effect) => effect.kind === "record_finalization_error",
@@ -1366,7 +1369,8 @@ export async function finalizeNativeRun(input: {
         decisionId: committed.decision.id,
       };
     } catch (error) {
-      if (error instanceof NativeStatusRaceError && attempt < 2) {
+      const retryableRace = !decisionCommitted && (error instanceof NativeStatusRaceError || isRetryablePostgresError(error));
+      if (retryableRace && attempt < 2) {
         supersedesAssessmentId = assessmentRow.id;
         await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
         continue;
@@ -1375,15 +1379,11 @@ export async function finalizeNativeRun(input: {
         db: input.db,
         run,
         coordinator,
-        failureCode:
-          error instanceof NativeStatusRaceError
-            ? "status_cas_exhausted"
-            : "side_effect_planning_failed",
+        failureCode: retryableRace ? "status_cas_exhausted" : "side_effect_planning_failed",
         message: error instanceof Error ? error.message : String(error),
-        nextAction:
-          error instanceof NativeStatusRaceError
-            ? "Reassess against the latest authoritative issue status version."
-            : "Retry atomic status and liveness materialization from the persisted assessment.",
+        nextAction: retryableRace
+          ? "Reassess against the latest authoritative issue status version."
+          : "Retry atomic status and liveness materialization from the persisted assessment.",
         projectRunStatus: input.projectRunStatus,
       });
     }
