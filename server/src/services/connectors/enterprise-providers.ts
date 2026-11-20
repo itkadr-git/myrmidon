@@ -23,7 +23,7 @@ import { isPrivateOrReservedIp } from "../remote-http-endpoint-guard.js";
 
 /** Strips anything that looks like a credential from error text. */
 export function redactConnectorError(error: unknown): Error {
-  const message = error instanceof Error ? error.message : "request failed";
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "request failed";
   return new Error(
     message.replace(
       /(bearer\s+|api[-_]?key[=:]\s*|authorization[=:]\s*|token[=:]\s*)[^\s,;]+/gi,
@@ -113,7 +113,7 @@ function applyCredentials(
 ): Promise<void> {
   return Promise.all(
     refs.map(async (ref) => {
-      if (!resolveSecret) fail(`credential ${ref.name} has no secret resolver`);
+      if (!resolveSecret) fail(`Credential ${ref.name} has no secret resolver`);
       const value = `${ref.prefix ?? ""}${await resolveSecret(ref)}`;
       if (ref.placement === "header") headers[ref.key.toLowerCase()] = value;
       else url.searchParams.set(ref.key, value);
@@ -153,9 +153,9 @@ async function dispatchConnectorRequest(
   headers: Record<string, string>,
   request: { readonly method: "GET" | "POST"; readonly body?: string },
 ): Promise<ConnectorCallResult> {
-  await applyCredentials(core.credentials ?? [], core.resolveSecret, headers, url);
-  await core.assertEndpoint?.(url);
   try {
+    await applyCredentials(core.credentials ?? [], core.resolveSecret, headers, url);
+    await core.assertEndpoint?.(url);
     return await core.transport({
       method: request.method,
       url: url.toString(),
@@ -163,6 +163,9 @@ async function dispatchConnectorRequest(
       body: request.body,
     });
   } catch (error) {
+    if ((core.credentials ?? []).length > 0 && core.resolveSecret) {
+      throw new Error("Connector request failed [REDACTED]");
+    }
     throw redactConnectorError(error);
   }
 }
@@ -216,6 +219,7 @@ export function createOneCOdataConnector(options: OneCOdataOptions): OneCOdataCo
 
     async call(actionId, input = {}) {
       const action = actionById[actionId];
+      if (!action) throw new Error(`Unknown 1C OData action: ${actionId}`);
       // URLSearchParams form-encodes `$` (%24) and spaces (+); 1C OData
       // endpoints expect the literal `$option` names and %20 spaces.
       const queryPairs = Object.entries(input.query ?? {}).map(([key, value]) => {
@@ -228,7 +232,7 @@ export function createOneCOdataConnector(options: OneCOdataOptions): OneCOdataCo
             : typeof value === "number" || typeof value === "boolean"
               ? String(value)
               : JSON.stringify(value);
-        return `${key}=${encodeURIComponent(raw).replace(/%24/g, "$")}`;
+        return `${key}=${encodeURIComponent(raw).replace(/%24/g, "$").replace(/%2C/gi, ",")}`;
       });
       const queryString = queryPairs.length > 0 ? `?${queryPairs.join("&")}` : "";
       const url = new URL(`${baseUrl}/${action.path}${queryString}`);
@@ -304,7 +308,7 @@ export function createBitrix24Connector(options: Bitrix24Options): Bitrix24Conne
       if (!action) throw new Error(`Unknown Bitrix24 action: ${actionId}`);
 
       const url = new URL(`${baseUrl}/${action.path}`);
-      const headers: Record<string, string> = { accept: "application/json" };
+      const headers: Record<string, string> = { accept: "application/json", "content-type": "application/json" };
       return dispatchConnectorRequest(options, url, headers, {
         method: "POST",
         body: JSON.stringify(input.params ?? {}),

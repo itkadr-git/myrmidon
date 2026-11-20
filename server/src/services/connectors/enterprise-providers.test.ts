@@ -87,10 +87,10 @@ describe("1C OData provider", () => {
     expect(transport.calls).toHaveLength(0);
   });
 
-  it("rejects unknown entities and query-placed credentials", () => {
+  it("rejects unknown entities and query-placed credentials", async () => {
     const transport = recordingTransport();
     const provider = createOneCOdataConnector({ baseUrl: ONE_C_BASE, transport });
-    expect(provider.call("odata_1c:Document_Sales")).rejects.toThrow(
+    await expect(provider.call("odata_1c:Document_Sales")).rejects.toThrow(
       "Unknown 1C OData action",
     );
     expect(() =>
