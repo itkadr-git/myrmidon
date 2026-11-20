@@ -92,6 +92,21 @@ Only board actors with access to the agent's company can use the tab; an agent
 key cannot read or change any memory bank, and an agent of another company is
 indistinguishable from a missing one (404).
 
+## Strict preflight diagnostic
+
+`GET /api/companies/:companyId/preflight/agents/:id/memory/probe` is board-only
+and requires access to the agent's company. It resolves the agent's configured
+bank but does not read secrets or contact Hindsight. A missing bank or disabled
+memory reports `FAIL`; otherwise authenticated bank access is `UNSUPPORTED`.
+The response always reports `ready: false`: a bank mapping is not proof of
+access. It has `Cache-Control: no-store` and writes no activity or feature
+outcomes. Results are point-in-time diagnostics, not post-move acceptance.
+
+This strict boundary follows OPE-15237 security contract revision
+`b988b11b-74a9-4043-a1eb-77cda573bfc6`. No non-disclosing authenticated bank
+operation is currently approved; secret-backed credentials are never resolved
+and no anonymous fallback is attempted.
+
 ## Activity log
 
 Every export, removal and bank clear writes a row to the company's activity
