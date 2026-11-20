@@ -3,7 +3,6 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import postgres from "postgres";
-import { applyPendingMigrations, closeRegisteredClients, ensurePostgresDatabase } from "./client.js";
 import {
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
@@ -286,6 +285,7 @@ export async function getEmbeddedPostgresTestSupport(): Promise<EmbeddedPostgres
 export async function startEmbeddedPostgresTestDatabase(
   tempDirPrefix: string,
 ): Promise<EmbeddedPostgresTestDatabase> {
+  const { applyPendingMigrations, closeRegisteredClients, ensurePostgresDatabase } = await import("./client.js");
   // The bounded retry hardens the cluster start against the port race. It throws
   // with the real Postgres output if every attempt fails.
   const { port, dataDir, instance } = await startEmbeddedPostgresWithRetry(tempDirPrefix);
@@ -341,6 +341,7 @@ const EMBEDDED_POSTGRES_TEMPLATE_DATABASE = "paperclip_template";
 export async function startEmbeddedPostgresTestCluster(
   tempDirPrefix: string,
 ): Promise<EmbeddedPostgresTestCluster> {
+  const { applyPendingMigrations, closeRegisteredClients, ensurePostgresDatabase } = await import("./client.js");
   const { port, dataDir, instance } = await startEmbeddedPostgresWithRetry(tempDirPrefix);
   const baseUrl = `postgres://paperclip:paperclip@127.0.0.1:${port}`;
   const adminConnectionString = `${baseUrl}/postgres`;
