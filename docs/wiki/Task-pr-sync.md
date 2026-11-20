@@ -97,6 +97,10 @@ events — a human comment or an issue-thread interaction — are never
 suppressed. Settings: `MYRMIDON_TASK_PR_SYNC_WAKE_GUARD_*` in
 [../SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md).
 
+## Review CI admission
+
+After PR #4608 is merged and deployed, APPROVE requires fresh successful CI for the exact PR head. During exhausted GitHub review budget, REQUEST CHANGES alone may use a recent authoritative completed SUCCESS or FAILURE snapshot for the same company, PR and stored head. Missing, pending, stale, invalidated or mismatched evidence is rejected; permissions and provenance remain enforced. Snapshot-based returns record `reviewCiAudit.source` and `headSha` in issue update activity. On exhausted-budget rejection, back off at least 61 minutes rather than retry immediately. See the [operator guide](../myrmidon/review-budget-continuation.md).
+
 ## Settings
 
 The feature ships enabled; only an explicit off value disables it, so a typo

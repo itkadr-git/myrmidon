@@ -31,6 +31,7 @@ import {
   unregisterServerAdapter,
 } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { secretService } from "../services/secrets.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
@@ -171,37 +172,57 @@ describeEmbeddedPostgres("direct adapter native-runner isolation", () => {
         permissions: {},
       });
 
-      const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
-      expect(queued).not.toBeNull();
-      const finished = await waitForRunToFinish(heartbeat, queued!.id);
+      const oldBase = process.env.MYRMIDON_LITELLM_BASE_URL;
+      const oldAdmin = process.env.MYRMIDON_LITELLM_ADMIN_KEY_SECRET;
+      try {
+        if (adapterType === "hermes_gateway") {
+          process.env.MYRMIDON_LITELLM_BASE_URL = "http://gateway.test";
+          process.env.MYRMIDON_LITELLM_ADMIN_KEY_SECRET = "gateway-admin";
+          await secretService(db).create(companyId, {
+            name: "gateway-admin", provider: "local_encrypted", value: "test-admin",
+          });
+          vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+        }
 
-      expect(execute).toHaveBeenCalledOnce();
-      expect(finished).toMatchObject({
-        status: "succeeded",
-        exitCode: 0,
-        signal: null,
-        runtimeMode: "legacy",
-        nativePhase: null,
-      });
-      const persistedResult = finished?.resultJson as Record<
-        string,
-        unknown
-      > | null;
-      expect(persistedResult?.directProofJson).toBe(directProofJson);
-      if (provider === "hermes_gateway") {
-        expect(finished?.status).toBe("succeeded");
-        expect(finished?.error).toBeNull();
-        expect(persistedResult?.output).toBe("Gateway completed output.");
+        const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+        expect(queued).not.toBeNull();
+        const finished = await waitForRunToFinish(heartbeat, queued!.id);
+
+        expect(execute).toHaveBeenCalledOnce();
+        expect(finished).toMatchObject({
+          status: "succeeded",
+          exitCode: 0,
+          signal: null,
+          runtimeMode: "legacy",
+          nativePhase: null,
+        });
+        const persistedResult = finished?.resultJson as Record<
+          string,
+          unknown
+        > | null;
+        expect(persistedResult?.directProofJson).toBe(directProofJson);
+        if (provider === "hermes_gateway") {
+          expect(finished?.status).toBe("succeeded");
+          expect(finished?.error).toBeNull();
+          expect(persistedResult?.output).toBe("Gateway completed output.");
+        }
+
+        const nativeRows = await Promise.all([
+          db.select().from(completionContracts),
+          db.select().from(nativeRunResults),
+          db.select().from(workAssessments),
+          db.select().from(statusDecisions),
+          db.select().from(nativeRunFinalizations),
+        ]);
+        expect(nativeRows.every((rows) => rows.length === 0)).toBe(true);
+      } finally {
+        await heartbeat.drainActiveRunExecutions();
+        vi.unstubAllGlobals();
+        if (oldBase === undefined) delete process.env.MYRMIDON_LITELLM_BASE_URL;
+        else process.env.MYRMIDON_LITELLM_BASE_URL = oldBase;
+        if (oldAdmin === undefined) delete process.env.MYRMIDON_LITELLM_ADMIN_KEY_SECRET;
+        else process.env.MYRMIDON_LITELLM_ADMIN_KEY_SECRET = oldAdmin;
       }
-
-      const nativeRows = await Promise.all([
-        db.select().from(completionContracts),
-        db.select().from(nativeRunResults),
-        db.select().from(workAssessments),
-        db.select().from(statusDecisions),
-        db.select().from(nativeRunFinalizations),
-      ]);
-      expect(nativeRows.every((rows) => rows.length === 0)).toBe(true);
     },
   );
 });

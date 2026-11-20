@@ -49,37 +49,32 @@ function buildComment(author, failures, informational) {
   return lines.join('\n');
 }
 
-export async function findExistingComment(fetchFromGitHub, token, repo, prNumber) {
+export async function updateReviewComment(fetchFromGitHub, token, repo, prNumber, author, failures, informational) {
+  let existing = null;
+  let legacy = false;
   for (let page = 1; ; page += 1) {
     const comments = await fetchFromGitHub(
-      `/repos/${repo}/issues/${prNumber}/comments?per_page=100&page=${page}`,
-      token
+      `/repos/${repo}/issues/${prNumber}/comments?per_page=100&page=${page}`, token
     );
-
-    const existing = comments.find(
-      c => (c.user.login === 'commitperclip[bot]' || c.user.login === 'commitperclip') &&
-           c.body.includes(COMMENT_SIGNATURE)
-    );
-    if (existing) return existing;
-
-    if (comments.length < 100) return null;
+    for (const comment of comments) {
+      if (!comment.body?.includes(COMMENT_SIGNATURE)) continue;
+      if (comment.user?.login === 'github-actions[bot]') existing ??= comment;
+      if (comment.user?.login === 'commitperclip[bot]' || comment.user?.login === 'commitperclip') legacy = true;
+    }
+    if (comments.length < 100) break;
   }
-}
 
-async function upsertComment(token, repo, prNumber, body, existing) {
-  if (existing) {
-    await ghFetch(`/repos/${repo}/issues/comments/${existing.id}`, token, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body }),
-    });
-  } else {
-    await ghFetch(`/repos/${repo}/issues/${prNumber}/comments`, token, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body }),
-    });
-  }
+  if (!existing && !legacy && failures.length === 0 && informational.length === 0) return;
+  let body = buildComment(author, failures, informational);
+  if (legacy) body += '\n\nLegacy commitperclip App comments are historical; this comment contains the current result.';
+  const path = existing
+    ? `/repos/${repo}/issues/comments/${existing.id}`
+    : `/repos/${repo}/issues/${prNumber}/comments`;
+  await fetchFromGitHub(path, token, {
+    method: existing ? 'PATCH' : 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body }),
+  });
 }
 
 async function main() {
@@ -150,13 +145,7 @@ async function main() {
   ];
   const allPassed = allFailures.length === 0;
 
-  const commentBody = buildComment(author, allFailures, informational);
-
-  // Post comment if there are failures/informational, or update existing comment
-  const existing = await findExistingComment(ghFetch, GH_TOKEN, GH_REPO, prNumber);
-  if (allFailures.length > 0 || informational.length > 0 || existing) {
-    await upsertComment(GH_TOKEN, GH_REPO, prNumber, commentBody, existing);
-  }
+  await updateReviewComment(ghFetch, GH_TOKEN, GH_REPO, prNumber, author, allFailures, informational);
 
   console.log(JSON.stringify({ passed: allPassed, failures: allFailures, informational }));
   process.exit(allPassed ? 0 : 1);

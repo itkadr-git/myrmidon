@@ -39,7 +39,7 @@ describeEmbeddedPostgres("fleet owned inventory HTTP and persistence contract", 
   }
 
   it("applies the migration without assigning ownership to preexisting rows", async () => {
-    const migration = await readFile(new URL("../../../packages/db/src/migrations/0488_fleet_ownership_inventory.sql", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../../../packages/db/src/migrations/0495_fleet_ownership_inventory.sql", import.meta.url), "utf8");
     await ctx.db.transaction(async (tx) => {
       // A temporary table shadows the real registry only on this connection.
       await tx.execute(sql`CREATE TEMP TABLE myrmidon_fleet_servers (id uuid PRIMARY KEY) ON COMMIT DROP`);

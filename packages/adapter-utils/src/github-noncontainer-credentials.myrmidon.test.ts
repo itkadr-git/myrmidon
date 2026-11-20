@@ -167,6 +167,22 @@ describe("non-container GitHub repository resolution (GITHUB-SHARED-IDENTITY)", 
     expect(repository.targetRepository("gh", ["-R", "gitlab.com/owner-b/repo-b", "pr", "list"], {}, [])).toBeNull();
   });
 
+  it("keeps explicit, endpoint and origin selection ahead of unrelated slash arguments", () => {
+    const resolver = loadRepository({ originUrl: "https://github.com/origin/repository.git" });
+    const target = (args: string[], env: Record<string, string> = {}) => resolver.targetRepository("gh", args, env, []);
+    expect(target(["repo", "view", "owner/target", "-R", "owner/override"])).toBe("owner/override");
+    expect(target(["repo", "clone", "owner/target"], { GH_REPO: "owner/override" })).toBe("owner/override");
+    expect(target(["api", "repos/owner/target/pulls"])).toBe("owner/target");
+    expect(target(["repo", "view", "--", "owner/target.git"])).toBe("owner/target");
+    expect(target(["repo", "clone", "github.com/owner/target"])).toBe("owner/target");
+    expect(target(["repo", "clone", "owner/target", "origin/main"])).toBe("owner/target");
+    expect(target(["pr", "checkout", "origin/main"])).toBe("origin/repository");
+    expect(target(["repo", "view", "--json", "owner/target"])).toBe("origin/repository");
+    expect(target(["repo", "view", "other.example/owner/target"])).toBe("origin/repository");
+    expect(target(["repo", "view", "owner/target/extra"])).toBe("origin/repository");
+    expect(resolver.targetRepository("git", ["checkout", "origin/main"], {}, [])).toBe("origin/repository");
+  });
+
   it("sends the repository as the broker request body, and nothing when there is none", async () => {
     const { walk, calls } = loadWalk();
     const env = { PAPERCLIP_GITHUB_BROKER_TOKEN: "capability", PAPERCLIP_GITHUB_BROKER_URL: "http://127.0.0.1:3100" };
@@ -269,6 +285,25 @@ process.stdout.write('token=' + (process.env.GH_TOKEN || '') + ' args=' + proces
     };
     return { root, bin, repo, requests, env };
   }
+
+  it("forwards positional repo view and clone targets instead of origin", async () => {
+    const { bin, repo, requests, env } = await stagedRun({ originUrl: "https://github.com/owner-a/repo-a.git" });
+    for (const args of [
+      ["repo", "view", "owner-b/repo-b"],
+      ["repo", "clone", "owner-b/repo-b"],
+      ["repo", "view", "--json", "name", "owner-b/repo-b"],
+      ["repo", "view", "--web", "owner-b/repo-b"],
+      ["repo", "clone", "--no-upstream", "owner-b/repo-b", "local/dir"],
+      ["repo", "view", "--template", "other/value", "owner-b/repo-b"],
+      ["repo", "clone", "--branch", "other/value", "owner-b/repo-b"],
+      ["repo", "clone", "https://github.com/owner-b/repo-b.git"],
+      ["repo", "clone", "git@github.com:owner-b/repo-b.git"],
+    ]) {
+      requests.length = 0;
+      await exec(path.join(bin, "gh"), args, { cwd: repo, env });
+      expect(requests.map((request) => JSON.parse(request.body))).toEqual([{ repository: "owner-b/repo-b" }]);
+    }
+  });
 
   it("names the origin repository and installs the staged helper with useHttpPath", async () => {
     const { bin, repo, requests, env } = await stagedRun({ originUrl: "https://github.com/owner-a/repo-a.git" });

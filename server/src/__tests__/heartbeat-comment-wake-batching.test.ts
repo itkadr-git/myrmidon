@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { WebSocketServer } from "ws";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { applyRunPrioritySettings, currentRunPrioritySettings } from "../myrmidon/run-priority/state.js";
 import {
   agents,
   agentWakeupRequests,
@@ -193,6 +194,8 @@ async function createControlledGatewayServer() {
 }
 
 describeEmbeddedPostgres("heartbeat comment wake batching", () => {
+  // These tests cover the corrective finish-handoff wake: run them with the board in-progress wake off (with it on, in_progress is a valid outcome).
+  applyRunPrioritySettings({ ...currentRunPrioritySettings({}), inProgressIdleWakeMinutes: 0 });
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<
     ReturnType<typeof startEmbeddedPostgresTestDatabase>

@@ -10,7 +10,16 @@
 export {
   REVIEW_HISTORY_WINDOW_MS,
   extractReviewFeedback,
+  redactSensitiveText,
 } from "./query.js";
+export {
+  REVIEW_HISTORY_MAX_PAGE_SIZE,
+  queryApprovedReviewOutcomes,
+} from "./approved-outcomes.js";
+export type {
+  ApprovedReviewOutcomePage,
+  ApprovedReviewOutcomeQueryInput,
+} from "./approved-outcomes.js";
 export {
   REVIEW_PATTERN_MIN_OCCURRENCES,
   REDACTION_MARKER,

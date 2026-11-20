@@ -34,12 +34,17 @@ on:
     # workflow name, so it cannot supersede the runs of this one): it cancels the
     # running run on the head and re-runs it; the `plan` step then reads the PR
     # labels live because the payload of a re-run is the old one.
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
     types: [checks_requested]
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      reason:
+        description: Reason for running full CI
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -79,12 +84,23 @@ env:
 jobs:
   plan:
     name: plan
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}
     timeout-minutes: 10
     outputs:
       tier: ${{ steps.plan.outputs.tier }}
       is_release: ${{ steps.plan.outputs.is_release }}
     steps:
+      - name: Record manual run reason
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          REASON: ${{ github.event.inputs.reason }}
+        run: |
+          if [[ ! "$REASON" =~ [^[:space:]] ]]; then
+            echo '::error::A non-empty dispatch reason is required'
+            exit 1
+          fi
+          printf 'Manual CI reason: %s\n' "$REASON" >> "$GITHUB_STEP_SUMMARY"
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -132,6 +148,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -274,6 +291,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -390,6 +408,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -490,6 +509,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -548,6 +568,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -602,6 +623,7 @@ jobs:
     # gitleaks, the internal-address scan, dependency licenses and plugin
     # compatibility. Every step runs even if an earlier one failed.
     name: checks
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN) || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
@@ -624,6 +646,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -675,12 +698,57 @@ jobs:
       - name: Shellcheck deploy scripts
         run: shellcheck --version && shellcheck -x scripts/myrmidon/deploy/*.sh
 
-      - name: Script tests (node:test under scripts/myrmidon)
+      - name: Script tests (node:test)
+        run: bash scripts/myrmidon/ci/run-script-tests.sh
+
+      - name: Cloud source verification (node:test)
+        run: node --test scripts/cloud-source-verification.test.mjs
+
+      - name: Bundle audit contracts (node:test)
         run: |
           set -euo pipefail
-          mapfile -t files < <(find scripts/myrmidon -name '*.test.mjs' -type f | sort)
+          mapfile -t files < <(find scripts/myrmidon/bundle-audit -name '*.test.mjs' -type f | sort)
+          if (( ${#files[@]} == 0 )); then
+            echo 'No bundle audit tests found' >&2
+            exit 1
+          fi
           printf 'Running %s\n' "${files[@]}"
           node --test "${files[@]}"
+
+      - name: Bootstrap path selection regression
+        run: node --test scripts/bootstrap-path-selection.myrmidon.test.mjs
+
+      - name: Privileged PR gate tests (node:test)
+        run: node --test .github/scripts/tests/acceptance-gate.test.mjs .github/scripts/tests/privileged-workflows.test.mjs
+
+      - name: Root contract tests (node:test)
+        run: node --test scripts/*.myrmidon.test.mjs
+
+      - name: Scan serialization VM test
+        run: |
+          set -euo pipefail
+          if [ -f scripts/dev-runner.scan-serialization.test.mjs ]; then
+            node --experimental-vm-modules --test scripts/dev-runner.scan-serialization.test.mjs
+          else
+            echo 'Scan serialization test is not present in this checkout.'
+          fi
+
+      - name: Dev runner argv regression test
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -f scripts/dev-runner.argv.test.mjs ]; then
+            node --experimental-vm-modules --test scripts/dev-runner.argv.test.mjs
+          else
+            echo 'Dev runner argv regression test is not present in this checkout.'
+          fi
+
+      - name: Dev runner migration policy tests
+        if: ${{ !cancelled() }}
+        run: node --experimental-vm-modules --test scripts/dev-runner.migration-policy.test.mjs
+
+      - name: Dev runner child lifecycle tests
+        if: ${{ !cancelled() }}
+        run: node --experimental-vm-modules --test scripts/dev-runner.child-lifecycle.test.mjs
 
       - name: Brand release audit (DEBRAND gate)
         if: ${{ !cancelled() }}
@@ -835,6 +903,7 @@ jobs:
     # minutes and a red dockergate must not merge. The image itself is built by
     # myrmidon-dockergate.yml. See docs/myrmidon/dockergate.md.
     name: go tools (dockergate + fleetd)
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # fleetd is folded in (one checkout, one runner): tools/fleetd, see
     # docs/myrmidon/fleetd-vmexec.md. Every step runs even if an earlier one failed.
     runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN_GO) || vars.CI_RUNNER_GO || '"ubuntu-latest"') }}
@@ -842,6 +911,28 @@ jobs:
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
     steps:
+      - name: Repair workspace ownership left by earlier container steps
+        # Self-hosted runner: a previous job's docker step may have left
+        # root-owned files in the reused workspace; checkout then cannot clean
+        # it and every job on this runner fails (OPE-13494). Runs BEFORE checkout.
+        run: |
+          set -euo pipefail
+          ws="${GITHUB_WORKSPACE:?}"
+          [ -d "$ws" ] || exit 0
+          foreign() { find "$ws" -not -user "$(id -u)" 2>/dev/null | head -20 || true; }
+          left="$(foreign)"
+          [ -n "$left" ] || exit 0
+          echo "::warning::workspace $ws holds files not owned by $(id -un); first entries:"
+          echo "$left"
+          docker run --rm --network none --user 0:0 -v "$ws:/w" "$GO_IMAGE" \
+            chown -R "$(id -u):$(id -g)" /w
+          left="$(foreign)"
+          if [ -n "$left" ]; then
+            echo "::error::workspace $ws still holds files not owned by $(id -un) after chown:"
+            echo "$left"
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -859,7 +950,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
-          docker run --rm --network none -v "$PWD/tools/dockergate:/src" -w /src \
+          docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/tools/dockergate:/src" -w /src \
             -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local -e GOCACHE=/tmp/gocache "$GO_IMAGE" sh -euc '
               out="$(gofmt -l .)"
               if [ -n "$out" ]; then echo "gofmt: $out"; exit 1; fi
@@ -878,6 +969,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -908,7 +1000,7 @@ jobs:
           # The static fixtures must equal the checked-in ones; traffic.json
           # carries wall-clock mtimes and is only replayed, not compared.
           diff -r -x traffic.json tools/dockergate/contract/testdata "$out"
-          docker run --rm --network none -v "$PWD/tools/dockergate:/src" -v "$out:/contract:ro" -w /src \
+          docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/tools/dockergate:/src" -v "$out:/contract:ro" -w /src \
             -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local -e GOCACHE=/tmp/gocache \
             -e DOCKERGATE_CONTRACT_DIR=/contract "$GO_IMAGE" go test -count=1 ./...
 
@@ -925,7 +1017,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
-          docker run --rm --network none -v "$PWD/tools/fleetd:/src" -w /src \
+          docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/tools/fleetd:/src" -w /src \
             -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local -e GOCACHE=/tmp/gocache "$GO_IMAGE" sh -euc '
               out="$(gofmt -l .)"
               if [ -n "$out" ]; then echo "gofmt: $out"; exit 1; fi
@@ -936,7 +1028,7 @@ jobs:
   plugin-readiness:
     name: plugin readiness timing
     needs: plan
-    if: ${{ !cancelled() && needs.plan.outputs.tier != 'docs' }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) && needs.plan.outputs.tier != 'docs' }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_CHECKS || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 15
     services:
@@ -968,6 +1060,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
+          dest: ${{ runner.tool_cache }}/setup-pnpm
           version: 9.15.4
           run_install: false
 
@@ -1013,6 +1106,7 @@ jobs:
 
   deployed-migrations:
     name: Deployed migration numbers
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 5
     steps:
@@ -1047,8 +1141,8 @@ jobs:
     # stays so a run whose `plan` failed still fails the summary (re-gating on
     # `needs.plan.result` would publish a satisfying `skipped` check on a red
     # plan: GitHub reads `skipped` as passed, OPE-12841, PR #2965).
-    name: CI result
-    if: ${{ !cancelled() }}
+    name: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && 'draft CI omitted' || 'CI result' }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     needs: [plan, migration-guard, typecheck, tests-affected, tests, tests-other, checks, dockergate, plugin-readiness, deployed-migrations]
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}
     timeout-minutes: 5
@@ -1072,6 +1166,11 @@ jobs:
           fi
           echo "$bin" >> "$GITHUB_PATH"
 
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
       - name: Verify queue latency
         shell: bash
         env:
@@ -1080,60 +1179,27 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          echo "Checking CI result start latency relative to predecessor jobs (fail-closed gate)..."
-          if ! command -v gh >/dev/null || ! command -v jq >/dev/null; then
-            echo "ERROR: gh or jq not available for latency check" >&2
-            exit 1
-          fi
-
-          jobs_data=""
+          echo "Checking CI result start latency relative to predecessor jobs (fail-closed gate; a runner-queue delay is only a warning)..."
+          jobs_file="$RUNNER_TEMP/ci-jobs.json"
           for attempt in 1 2 3; do
-            jobs_data="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" 2>/dev/null || true)"
-            if [ -n "$jobs_data" ] && echo "$jobs_data" | jq -e '.jobs | length > 0' >/dev/null 2>&1; then
+            if gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" > "$jobs_file" 2>/dev/null && jq -e '.jobs | length > 0' "$jobs_file" >/dev/null 2>&1; then
               break
             fi
+            : > "$jobs_file"
             sleep 2
           done
-
-          if [ -z "$jobs_data" ]; then
+          if [ ! -s "$jobs_file" ]; then
             echo "ERROR: Unable to fetch job data from GitHub API after retries" >&2
             exit 1
           fi
-
-          res="$(echo "$jobs_data" | jq -r '
-            .jobs as $all |
-            ([$all[] | select(.name == "CI result" and .started_at != null) | .started_at] | last) as $ci_start |
-            ([$all[] | select(
-              (.name == "typecheck + build" or
-               .name == "tests (affected)" or
-               (.name | startswith("tests (")) or
-               .name == "tests (other + runner)" or
-               .name == "checks" or
-               .name == "go tools (dockergate + fleetd)" or
-               .name == "plugin readiness timing" or
-               .name == "Deployed migration numbers" or
-               .name == "migration guard") and
-              .completed_at != null
-            ) | .completed_at] | sort | last) as $test_end |
-            ($test_end // ([$all[] | select(.name == "plan" and .completed_at != null) | .completed_at] | last)) as $last_pred_end |
-            if ($ci_start and $last_pred_end) then
-              (($ci_start | fromdateiso8601) - ($last_pred_end | fromdateiso8601))
-            else
-              empty
-            end
-          ')"
-
-          if [ -z "$res" ]; then
-            echo "ERROR: Could not compute start latency: missing start/completion timestamps" >&2
-            exit 1
+          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ]; then
+            export CI_ATTEMPT_STARTED_AT
+            CI_ATTEMPT_STARTED_AT="$(gh api "repos/$REPO/actions/runs/$RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --jq '.run_started_at // empty')"
+            [ -n "$CI_ATTEMPT_STARTED_AT" ] || { echo 'ERROR: Missing attempt start timestamp' >&2; exit 1; }
           fi
-
-          echo "CI result started ${res}s after the last predecessor job finished."
-          if [ "$res" -gt 120 ]; then
-            echo "ERROR: CI result start latency exceeded threshold: ${res}s > 120s" >&2
-            exit 1
-          fi
-          echo "PASS: CI result started within 2 minutes (${res}s <= 120s)."
+          # No checkout: it fails on some self-hosted runners. Read the script of this commit through the API.
+          gh api -H "Accept: application/vnd.github.raw" "repos/$REPO/contents/scripts/myrmidon/ci/queue-metrics.mjs?ref=$GITHUB_SHA" > "$RUNNER_TEMP/queue-metrics.mjs"
+          node "$RUNNER_TEMP/queue-metrics.mjs" --verify-latency --file "$jobs_file" --workflow ci
 
       - name: Check lane results
         env:

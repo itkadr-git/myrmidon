@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { createServer as createNetServer } from "node:net";
+import { request as httpsRequest } from "node:https";
 
 // Keep startServer wiring tests independent of optional observability bootstrap
 // endpoints inherited from the runner; startServer awaits both modules at entry.
@@ -942,6 +945,48 @@ describe("startServer feedback export wiring", () => {
 
     expect(heartbeatServiceMock.reconcileHotRestartAdoption).toHaveBeenCalledTimes(1);
     expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts and shuts down the configured acceptance TLS listener", async () => {
+    const dir = mkdtempSync(path.join(process.env.PAPERCLIP_SCRATCH_DIR ?? process.env.TMPDIR ?? process.cwd(), "acceptance-startup-"));
+    const key = path.join(dir, "key.pem"), cert = path.join(dir, "cert.pem");
+    const names = ["PORT", "TLS_KEY_FILE", "TLS_CERT_FILE", "TLS_CA_FILE"].map((name) => `MYRMIDON_ACCEPTANCE_SERVICE_${name}`);
+    const prior = names.map((name) => process.env[name]);
+    const reservation = createNetServer();
+    let started: { shutdown(): Promise<void> } | undefined;
+    try {
+      execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=localhost"], { stdio: "ignore" });
+      await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+      const address = reservation.address();
+      if (!address || typeof address === "string") throw new Error("reservation unavailable");
+      const port = address.port;
+      await new Promise<void>((resolve, reject) => reservation.close((error) => error ? reject(error) : resolve()));
+      process.env[names[0]] = String(port);
+      process.env[names[1]] = key;
+      process.env[names[2]] = cert;
+      process.env[names[3]] = cert;
+      started = await startServer();
+      const status = await new Promise<number>((resolve, reject) => {
+        const request = httpsRequest({ host: "127.0.0.1", port, path: "/api/service/issues/AAA-1/acceptance-scenarios", key: readFileSync(key), cert: readFileSync(cert), rejectUnauthorized: false }, (response) => {
+          response.resume();
+          response.on("end", () => resolve(response.statusCode ?? 0));
+        });
+        request.on("error", reject);
+        request.end();
+      });
+      expect(status).toBe(401);
+      await started.shutdown();
+      started = undefined;
+      await expect(new Promise<void>((resolve, reject) => {
+        const request = httpsRequest({ host: "127.0.0.1", port, rejectUnauthorized: false }, () => resolve());
+        request.on("error", reject);
+        request.end();
+      })).rejects.toMatchObject({ code: "ECONNREFUSED" });
+    } finally {
+      if (started) await started.shutdown();
+      names.forEach((name, index) => { if (prior[index] === undefined) delete process.env[name]; else process.env[name] = prior[index]; });
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("closes the bound listener when native startup recovery fails", async () => {

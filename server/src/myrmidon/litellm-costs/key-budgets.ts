@@ -194,19 +194,76 @@ export async function evaluateKeyBudgets(deps: KeyBudgetDeps, companyId: string)
 
 interface CachedReport {
   at: number;
+  /** false once the evaluation has settled (resolved or rejected). */
+  pending: boolean;
   report: Promise<KeyUsageReport>;
 }
 
+/** The longest a whole evaluation may take (gateway read bounds plus the database); then it fails and is forgotten. */
+export const KEY_USAGE_EVALUATION_TIMEOUT_MS = 150_000;
+
 const reports = new Map<string, CachedReport>();
 
-/** Evaluates now and replaces the cached report (the sweep tick). A failed pass is not cached. */
-export function refreshKeyUsageReport(deps: KeyBudgetDeps, companyId: string): Promise<KeyUsageReport> {
-  const entry: CachedReport = { at: Date.now(), report: evaluateKeyBudgets(deps, companyId) };
-  reports.set(companyId, entry);
-  entry.report.catch(() => {
-    if (reports.get(companyId) === entry) reports.delete(companyId);
+function withDeadline<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    if (typeof timer.unref === "function") timer.unref();
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
   });
+}
+
+/**
+ * Evaluates now and replaces the cached report (the sweep tick). At most one
+ * evaluation runs per company in this process: a call that finds one still
+ * running shares it. A failed or timed-out pass is not cached.
+ */
+export function refreshKeyUsageReport(deps: KeyBudgetDeps, companyId: string): Promise<KeyUsageReport> {
+  const running = reports.get(companyId);
+  if (running?.pending) return running.report;
+  const entry: CachedReport = {
+    at: Date.now(),
+    pending: true,
+    report: withDeadline(
+      evaluateKeyBudgets(deps, companyId),
+      KEY_USAGE_EVALUATION_TIMEOUT_MS,
+      "LiteLLM key budget evaluation timed out",
+    ),
+  };
+  reports.set(companyId, entry);
+  entry.report.then(
+    () => {
+      entry.pending = false;
+    },
+    () => {
+      entry.pending = false;
+      if (reports.get(companyId) === entry) reports.delete(companyId);
+    },
+  );
   return entry.report;
+}
+
+/**
+ * Starts a refresh without waiting for it: the cost sweep tick must never
+ * stand on the gateway's key list. Never throws, never returns a promise
+ * that can reject.
+ */
+export function kickKeyUsageRefresh(deps: KeyBudgetDeps, companyId: string): void {
+  try {
+    refreshKeyUsageReport(deps, companyId).catch((err) => {
+      deps.log?.warn({ err, companyId }, "litellm key budget signal evaluation failed for one company");
+    });
+  } catch (err) {
+    deps.log?.warn({ err, companyId }, "litellm key budget signal evaluation failed for one company");
+  }
 }
 
 /** The cached report while it is fresh, else a new evaluation. Concurrent readers share one pass. */

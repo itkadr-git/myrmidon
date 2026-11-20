@@ -390,11 +390,11 @@ describe("process supervisor: readiness deadline and startingSplit moves (OPE-10
     expect(listeners[0].closed).toBe(false);
   });
 
-  it("the api child's old-space ceiling is 1024 MB unless the env override is 256..8192", () => {
-    expect(apiChildMaxOldSpaceMb({})).toBe(1024);
+  it("the api child's old-space ceiling is 2560 MB unless the env override is 256..8192", () => {
+    expect(apiChildMaxOldSpaceMb({})).toBe(2560);
     expect(apiChildMaxOldSpaceMb({ [SUPERVISOR_API_MAX_OLD_SPACE_ENV]: "512" })).toBe(512);
-    expect(apiChildMaxOldSpaceMb({ [SUPERVISOR_API_MAX_OLD_SPACE_ENV]: "128" })).toBe(1024);
-    expect(apiChildMaxOldSpaceMb({ [SUPERVISOR_API_MAX_OLD_SPACE_ENV]: "lots" })).toBe(1024);
+    expect(apiChildMaxOldSpaceMb({ [SUPERVISOR_API_MAX_OLD_SPACE_ENV]: "128" })).toBe(2560);
+    expect(apiChildMaxOldSpaceMb({ [SUPERVISOR_API_MAX_OLD_SPACE_ENV]: "lots" })).toBe(2560);
   });
 });
 

@@ -110,6 +110,7 @@ export interface ReleaseVerificationOptions {
    * real deployment.
    */
   resolvedRefs?: readonly ReleaseRef[];
+
   /** Injectable fetch for deterministic tests. */
   fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
   /** Clock injection for deterministic checkedAt. */
@@ -309,6 +310,10 @@ export async function verifyReleaseComposition(
     }
   }
 
+  // The route resolves refs for the first member with repository metadata.
+  // Other repositories have no ref provenance in the current contract.
+  const resolvedRepository = members.find((member) => member.repository)?.repository;
+
   // Review finding (PR #3093, round 4): the deployed version is validated
   // against the full resolved ref set above, but membership must be checked
   // against the EXACT ref the deployed version corresponds to — not against
@@ -386,6 +391,16 @@ export async function verifyReleaseComposition(
         id: member.id,
         repository: member.repository,
         mergeCommitSha: member.mergeCommitSha ?? null,
+        membership: "unknown",
+        releaseRefs: [],
+      });
+      continue;
+    }
+    if (member.repository !== resolvedRepository) {
+      verified.push({
+        id: member.id,
+        repository: member.repository,
+        mergeCommitSha: member.mergeCommitSha,
         membership: "unknown",
         releaseRefs: [],
       });

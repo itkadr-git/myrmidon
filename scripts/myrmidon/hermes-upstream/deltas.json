@@ -530,6 +530,21 @@
       }
     },
     {
+      "id": "37-run-model-credential",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/37-run-model-credential.patch",
+      "files": ["gateway/platforms/api_server.py", "gateway/platforms/api_server_runs.py"],
+      "reason": "Carry a run-scoped model credential from the authenticated run request to its selected custom gateway without modifying shared profile or process environment, and disable fallback credential pools for that run.",
+      "dropCondition": "Upstream supports isolated run-scoped credentials for a configured gateway without persistence or cross-provider fallback.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "gateway/platforms/api_server_runs.py",
+        "upstreamMarker": "run_model_credential|model_credential"
+      }
+    },
+    {
       "id": "30-vacuum-by-freelist",
       "kind": "patch",
       "patch": "docker/bot-runtime/patches/30-vacuum-by-freelist.patch",

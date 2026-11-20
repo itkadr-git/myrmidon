@@ -273,6 +273,35 @@ describeEmbeddedPostgres("issue monitor that waits for a pull request", () => {
     expect(deferred[0]?.details).toMatchObject({ reason: "pr_wait_unchanged", ciState: "unknown", attemptCount: 1 });
   });
 
+  it("does not defer a replacement monitor from a stale PR wait claim", async () => {
+    const { issueId } = await seed({ agentLastRunFinishedAt: at("12:21") });
+    const replacementAt = new Date(TICK_AT.getTime() + 3_600_000);
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_replace_pr_wait_claim() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_next_check_at = '${replacementAt.toISOString()}'::timestamptz,
+            monitor_wake_requested_at = NULL, monitor_notes = 'new evidence'
+          WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_replace_pr_wait_claim AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_replace_pr_wait_claim();
+    `));
+    try {
+      expect((await heartbeatService(db, { executesRuns: false }).tickTimers(TICK_AT)).enqueued).toBe(0);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue.monitorNextCheckAt?.toISOString()).toBe(replacementAt.toISOString());
+      expect(issue.monitorNotes).toBe("new evidence");
+      expect(issue.monitorAttemptCount).toBe(0);
+      expect((await activityOf(issueId)).filter((row) => row.action === "issue.monitor_deferred")).toHaveLength(0);
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER test_replace_pr_wait_claim ON issues; DROP FUNCTION test_replace_pr_wait_claim();"));
+    }
+  });
+
   it("keeps the agent asleep when CI finished before the agent last looked", async () => {
     const { issueId } = await seed({
       agentLastRunFinishedAt: at("12:21"),

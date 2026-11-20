@@ -7,6 +7,7 @@ import {
 } from "./experimental-api-paths.js";
 import { Router } from "express";
 import { z } from "zod";
+import { executionParticipantsSchema } from "./execution-participants-schema.js";
 import {
   createAiConnectionSchema,
   aiConnectionLoginIntentSchema,
@@ -612,10 +613,10 @@ class OpenAPIRegistry {
         responses: normalizeResponses(responses),
       };
       if (request?.params) {
-        normalizedOperation.parameters = parametersFromSchema(
-          request.params,
-          "path",
-        );
+        normalizedOperation.parameters = [
+          ...((normalizedOperation.parameters as unknown[]) ?? []),
+          ...parametersFromSchema(request.params, "path"),
+        ];
       }
       if (request?.query) {
         normalizedOperation.parameters = [
@@ -1252,6 +1253,7 @@ function registerCurrentRoute(input: {
 
 type OpenApiAuthLevel =
   | "public"
+  | "acceptance_service"
   | "agent_run"
   | "runtime_tools"
   | "authenticated"
@@ -1325,6 +1327,9 @@ const BOARD_ONLY_PREFIXES = [
 ];
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "POST /api/companies/{companyId}/acceptance-service-credentials",
+  "DELETE /api/companies/{companyId}/acceptance-service-credentials/{id}",
+  "GET /api/issues/{id}/acceptance-scenarios-snapshot",
   "GET /api/companies/{companyId}/ai-connections",
   "POST /api/companies/{companyId}/ai-connections",
   "POST /api/companies/{companyId}/ai-connections/local",
@@ -1639,6 +1644,7 @@ function resolveOperationAuthLevel(
 ): OpenApiAuthLevel {
   const key = operationKey(method, path);
   if (PUBLIC_OPERATIONS.has(key)) return "public";
+  if (key === "GET /api/service/issues/{id}/acceptance-scenarios") return "acceptance_service";
   if (key === "POST /api/mcp/project-tools") return "agent_run";
   if (RUNTIME_TOOLS_OPERATIONS.has(key)) return "runtime_tools";
   if (INSTANCE_ADMIN_OPERATIONS.has(key)) return "instance_admin";
@@ -1664,6 +1670,12 @@ function applyOperationStatusOverride(
 function applyDocumentFixups(document: any): any {
   document.components ??= {};
   document.components.securitySchemes = {
+    AcceptanceServiceBearerAuth: {
+      type: "http",
+      scheme: "bearer",
+      bearerFormat: "Acceptance service credential",
+      description: "Server-issued credential bound to the authenticated TLS client certificate; both are required.",
+    },
     [BOARD_SESSION_AUTH_SCHEME]: {
       type: "apiKey",
       in: "cookie",
@@ -1708,6 +1720,8 @@ function applyDocumentFixups(document: any): any {
       const authLevel = resolveOperationAuthLevel(method, path);
       if (authLevel === "public") {
         operation.security = [];
+      } else if (authLevel === "acceptance_service") {
+        operation.security = [securityRequirement("AcceptanceServiceBearerAuth")];
       } else if (authLevel === "agent_run") {
         operation.security = [securityRequirement(AGENT_RUN_AUTH_SCHEME)];
       } else if (authLevel === "runtime_tools") {
@@ -1721,7 +1735,9 @@ function applyDocumentFixups(document: any): any {
       operation["x-paperclip-authorization"] =
         authLevel === "instance_admin"
           ? { actor: "board", instanceAdmin: true }
-          : authLevel === "board"
+          : authLevel === "acceptance_service"
+            ? { actor: "acceptance_service", mutualTls: true }
+            : authLevel === "board"
             ? { actor: "board" }
             : authLevel === "agent_run"
               ? { actor: "agent", heartbeatBound: true, taskBound: true }
@@ -3994,7 +4010,7 @@ registry.registerPath({
   path: "/api/issues/{id}/execution-participants",
   tags: ["issues"],
   summary: "Operator: replace the execution stage participant or return assignee (e.g. a terminated agent)",
-  request: { params: z.object({ id: z.string() }) },
+  request: { params: z.object({ id: z.string() }), body: jsonBody(executionParticipantsSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
@@ -4254,6 +4270,17 @@ registry.registerPath({
   tags: ["issues"],
   summary: "Get an issue document",
   request: { params: z.object({ id: z.string(), key: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/acceptance-scenarios-snapshot",
+  tags: ["issues"],
+  summary: "Get the atomic acceptance snapshot for an issue",
+  description:
+    "One response carries the minimal issue identity `{id, identifier, companyId, version}` and its `acceptance-scenarios` document `{id, latestRevisionId, latestRevisionNumber, body}` (or `document: null`) read by a single SQL statement, so the issue and the document revision always come from the same snapshot. `version` is a per-issue monotonic mutation counter bumped by database triggers on issue/link/document changes, and `latestRevisionNumber` is the document's monotonic write generation; equality of the whole response across two reads proves none of them changed in between. Missing and cross-tenant issues are the identical 404 (no existence oracle).",
+  request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
@@ -8169,6 +8196,86 @@ registry.registerPath({
   summary: "Apply the Myrmidon Cloud onboarding seed collected at signup",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/service/issues/{id}/acceptance-scenarios",
+  tags: ["issues"],
+  summary: "Read a company-bound acceptance snapshot over mutual TLS",
+  description: "Requires a certificate-bound service credential on the dedicated TLS listener. If-Match must exactly match the strong ETag when supplied; this read does not authorize a privileged action.",
+  request: { params: z.object({ id: z.string() }) },
+  parameters: [{ name: "If-Match", in: "header", required: false, schema: { type: "string" } }],
+  responses: { 200: { description: "Acceptance snapshot", headers: { ETag: { schema: { type: "string" } } } }, 401: r.unauthorized, 404: r.notFound, 409: { description: "Ambiguous snapshot" }, 412: { description: "Snapshot changed" } },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/acceptance-service-credentials",
+  tags: ["companies"],
+  summary: "Issue a certificate-bound acceptance service credential",
+  request: { params: z.object({ companyId: z.string() }), body: jsonBody(z.object({ certificateSha256: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.string().datetime({ offset: true }) }).strict()) },
+  responses: { 201: { description: "Credential ID and one-time bearer token" }, 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/acceptance-service-credentials/{id}",
+  tags: ["companies"],
+  summary: "Revoke an acceptance service credential",
+  request: { params: z.object({ companyId: z.string(), id: z.string() }) },
+  responses: { 204: { description: "Credential revoked" }, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/native-finalization-service-credentials",
+  tags: ["companies"],
+  summary: "Issue a certificate-bound finalization service credential",
+  description: "Board-only. The bearer token is returned once and is bound to the supplied client certificate.",
+  request: { params: z.object({ companyId: z.string() }), body: jsonBody(z.object({ certificateSha256: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.string().datetime({ offset: true }) }).strict()) },
+  responses: { 201: { description: "Credential ID and one-time bearer token" }, 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/native-finalization-service-credentials/{id}",
+  tags: ["companies"],
+  summary: "Revoke a finalization service credential",
+  description: "Board-only; revokes a credential within the specified company.",
+  request: { params: z.object({ companyId: z.string(), id: z.string().uuid() }) },
+  responses: { 204: { description: "Credential revoked" }, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/native-finalization-grants",
+  tags: ["companies"],
+  summary: "Grant a principal permission to finalize a native run",
+  description: "Board-only; binds the grant to a run, principal and finalization credential.",
+  request: { params: z.object({ companyId: z.string() }), body: jsonBody(z.object({ issueId: z.string().uuid(), runId: z.string().uuid(), principalId: z.string().uuid(), credentialId: z.string().uuid(), notAfter: z.string().datetime({ offset: true }) }).strict()) },
+  responses: { 201: { description: "Finalization grant issued" }, 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: { description: "Grant conflicts with the current run state" } },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/service/native-runs/{runId}/finalization-requests",
+  tags: ["issues"],
+  summary: "Submit a durable native finalization request over mutual TLS",
+  description: "Requires a certificate-bound finalization credential and a matching active grant. Reusing an idempotency key with a different payload returns a conflict.",
+  request: { params: z.object({ runId: z.string().uuid() }), body: jsonBody(z.object({ documentId: z.string().uuid(), expectedRevisionId: z.string().uuid(), expectedIssueEpoch: z.string().regex(/^(0|[1-9][0-9]*)$/) }).strict()) },
+  parameters: [{ name: "If-Match", in: "header", required: true, schema: { type: "string" } }, { name: "Idempotency-Key", in: "header", required: true, schema: { type: "string", minLength: 1, maxLength: 128 } }],
+  responses: { 202: { description: "Durable request accepted or previously accepted" }, 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: { description: "Request or idempotency conflict" }, 412: { description: "Snapshot changed" }, 428: { description: "If-Match required" } },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/service/native-runs/{runId}/finalization-requests/{requestId}",
+  tags: ["issues"],
+  summary: "Read a native finalization request over mutual TLS",
+  description: "Requires the certificate-bound finalization credential that submitted the request.",
+  request: { params: z.object({ runId: z.string().uuid(), requestId: z.string().uuid() }) },
+  responses: { 200: { description: "Finalization request state and optional decision or error code" }, 401: r.unauthorized, 404: r.notFound },
 });
 
 registry.registerPath({

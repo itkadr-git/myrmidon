@@ -131,6 +131,10 @@ else
   sha="$object_sha"
 fi
 log "tag $tag -> commit $sha"
+checkout_sha="$(git rev-parse --verify 'HEAD^{commit}' 2>/dev/null)" \
+  || die "cannot resolve checkout commit — NOT publishing $tag"
+[[ "$checkout_sha" == "$sha" ]] \
+  || die "checkout commit '$checkout_sha' does not match tag commit '$sha' — NOT publishing $tag"
 
 # -------------------------------------- 1b. DB audit gate (final tags only) --
 # DB-AUDIT-GATE (the 08.10.2026 entry of the OPE-401 decision registry): a
@@ -292,12 +296,10 @@ runs_of() {
 
 run_verdict() {
   local workflow_file="$1" branches verdict
-  # TAG-CI (the 1.6.4 incident): the release green comes ONLY from the tag's
-  # own runs (head_branch == the tag). A green main-branch run of the same
-  # commit used to satisfy the CI gate (myrmidon-ci.yml had no tag trigger);
-  # myrmidon-ci-tag.yml now runs the full pipeline on the tag itself, so the
-  # main fallback is gone — and a push to main can no longer cancel the
-  # tag's run (own concurrency group, cancel-in-progress: false).
+  # TAG-CI (the 1.6.4 incident): the tag's own run (head_branch == the tag) is
+  # un-cancellable by pushes to main (own concurrency group). Since 16.11 a
+  # green push/dispatch run of myrmidon-ci.yml of the same commit on any branch
+  # is accepted too, see branch_ci_green below.
   branches="$(branch_match_expr "$tag")"
   verdict="$(runs_of "$workflow_file" "$branches" \
     | jq "[.[] | select(.status == \"completed\")]
@@ -392,9 +394,28 @@ refuse_if_cancelled() {
   fi
 }
 
+# CI-TAG-REUSE-BRANCH-RUN (16.11): the release tag is cut on the head of a rel
+# branch whose full Myrmidon CI (myrmidon-ci.yml, a push or a manual dispatch;
+# never a pull_request run, which is the fast tier) already ran on this very
+# commit. A completed green run of it on ANY branch is the same rule the
+# freeze gate applies, and it satisfies the CI gate without a second full run
+# on the tag. Otherwise the tag's own run (myrmidon-ci-tag.yml) is awaited.
+branch_ci_green() {
+  local n
+  n="$(runs_of ".github/workflows/myrmidon-ci.yml" '(.event == "push" or .event == "workflow_dispatch")' \
+    | jq '[.[] | select(.status == "completed" and .conclusion == "success")] | length' 2>/dev/null)" || n=0
+  n="${n//\"/}"
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  ((n > 0))
+}
+
 log "gate: Myrmidon CI (tag) on $sha"
-refuse_if_cancelled ".github/workflows/myrmidon-ci-tag.yml" "Myrmidon CI (tag)"
-wait_for ".github/workflows/myrmidon-ci-tag.yml" must "Myrmidon CI (tag)"
+if branch_ci_green; then
+  log "gate: Myrmidon CI (branch run of the same commit) success for $sha"
+else
+  refuse_if_cancelled ".github/workflows/myrmidon-ci-tag.yml" "Myrmidon CI (tag)"
+  wait_for ".github/workflows/myrmidon-ci-tag.yml" must "Myrmidon CI (tag)"
+fi
 log "gate: Myrmidon image (board) on $sha"
 wait_for ".github/workflows/myrmidon-image.yml" must "Myrmidon image (board)"
 log "gate: Myrmidon dockergate image on $sha"
@@ -485,17 +506,27 @@ title="Myrmidon $version$title_suffix"
 prerelease_args=()
 ((prerelease)) && prerelease_args+=(--prerelease)
 if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
-  log "release $tag already exists — updating (idempotent re-run, never --latest)"
-  gh release edit "$tag" --repo "$repo" --title "$title" "${prerelease_args[@]}" \
-    --notes-file release-body.md
+  release_exists=1
 else
-  gh release create "$tag" --repo "$repo" --title "$title" "${prerelease_args[@]}" \
+  release_exists=0
+fi
+# Re-read the ref immediately before the first write; a moved or deleted tag
+# invalidates the gates and artifacts computed from the original checkout.
+current_ref="$(gh api "repos/$repo/git/ref/tags/$tag" 2>/dev/null)" \
+  || die "tag $tag changed or disappeared — NOT publishing"
+current_type="$(jq -r '.object.type // empty' <<<"$current_ref")"
+current_sha="$(jq -r '.object.sha // empty' <<<"$current_ref")"
+[[ "$current_type" == "$object_type" && "$current_sha" == "$object_sha" ]] \
+  || die "tag $tag changed since verification — NOT publishing"
+if ((release_exists)); then
+  die "release $tag already exists — conflict requires manual resolution; NOT overwriting"
+else
+  gh release create "$tag" --verify-tag --repo "$repo" --title "$title" "${prerelease_args[@]}" \
     --notes-file release-body.md
 fi
 
-# The manifest asset: replaced on a re-run (--clobber), so it always matches
-# the body of the same publish.
-gh release upload "$tag" release-components.json --repo "$repo" --clobber
+# Assets are uploaded only to the release just created; never replace existing assets.
+gh release upload "$tag" release-components.json --repo "$repo"
 log "uploaded the component manifest asset release-components.json"
 
 # ONE-COMMAND-INSTALL (1.6.6): the installer of a fresh installation rides with
@@ -505,7 +536,7 @@ log "uploaded the component manifest asset release-components.json"
 # scripts/myrmidon/install/install.sh (the single source of truth).
 installer="$here/../install/install.sh"
 [[ -f "$installer" ]] || die "the installer script $installer is missing"
-gh release upload "$tag" "$installer#install.sh" --repo "$repo" --clobber
+gh release upload "$tag" "$installer#install.sh" --repo "$repo"
 log "uploaded the installer asset install.sh"
 
 # ----------------------------------------------- 5. supersede the previous --

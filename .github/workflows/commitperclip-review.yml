@@ -2,15 +2,21 @@ name: commitperclip PR Review
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, edited]
 
 # Always runs from base branch context — never executes PR code.
-# pull_request_target gives access to secrets for untrusted fork PRs.
+# The gates only read PR data and post/update a single issue comment, so the
+# built-in GITHUB_TOKEN with minimal permissions is sufficient. No App
+# private key (COMMITPERCLIP_KEY) reaches this public runner.
+
+concurrency:
+  group: commitperclip-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
 
 permissions:
-  pull-requests: write
-  checks: write
   contents: read
+  pull-requests: read
+  issues: write
 
 jobs:
   review:
@@ -20,7 +26,8 @@ jobs:
       - name: Checkout base branch (never PR code)
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: master
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
 
       - name: Dependency Review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
@@ -32,15 +39,7 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
-
-      - name: Generate commitperclip token
-        id: token
-        run: |
-          TOKEN=$(node .github/scripts/get-bot-token.mjs)
-          echo "::add-mask::$TOKEN"
-          echo "value=$TOKEN" >> $GITHUB_OUTPUT
-        env:
-          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+          package-manager-cache: false
 
       - name: Run quality gates
         id: quality
@@ -48,7 +47,7 @@ jobs:
         run: node .github/scripts/run-quality-gates.mjs
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ steps.token.outputs.value }}
+          GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}

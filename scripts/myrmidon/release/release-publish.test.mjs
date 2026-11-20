@@ -89,7 +89,13 @@ case "$sub" in
     done
     body=""
     case "$url" in
-      *"/git/ref/tags/"*) body="$(cat "$SANDBOX/ref-tag.json")" ;;
+      *"/git/ref/tags/"*)
+        if [ -f "$SANDBOX/ref-read" ] && [ -f "$SANDBOX/ref-after.json" ]; then
+          body="$(cat "$SANDBOX/ref-after.json")"
+        else
+          body="$(cat "$SANDBOX/ref-tag.json")"
+          touch "$SANDBOX/ref-read"
+        fi ;;
       *"/git/tags/"*)     body="$(cat "$SANDBOX/tag-object.json")" ;;
       *"actions/runs?head_sha="*)
         # RELEASE-PUBLISH-WAIT: scripted progression — when $SANDBOX/runs-after.json
@@ -200,6 +206,7 @@ function writeFakeGh(dir) {
   const bin = path.join(dir, "bin");
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(path.join(bin, "gh"), FAKE_GH, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "git"), '#!/usr/bin/env bash\nprintf "%s\\n" "$CHECKOUT_SHA"\n', { mode: 0o755 });
   return bin;
 }
 
@@ -221,7 +228,7 @@ function sandbox({ runs = [], releases = {}, changelog = CHANGELOG, auditReport 
   // Offline digest simulation for release-body.mjs (the same state shape the
   // real registry probe answers): every component present by default.
   const registryState = {};
-  for (const { repository } of COMPONENTS) registryState[repository] = `sha256:${repository.length}${"d".repeat(63)}`;
+  for (const { repository } of COMPONENTS) registryState[repository] = `sha256:${repository.length.toString(16).padStart(64, "d")}`;
   fs.writeFileSync(path.join(dir, "registry-state.json"), JSON.stringify(registryState));
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   fs.writeFileSync(path.join(dir, "mutations.log"), "");
@@ -246,8 +253,8 @@ function sandbox({ runs = [], releases = {}, changelog = CHANGELOG, auditReport 
 // head_branch mirrors the GitHub API: for a push of tag myr-vX.Y.Z the runs
 // started by that push report head_branch = the tag; runs of the same commit
 // pushed to main earlier report head_branch = "main".
-const run = (sha, pathOfWf, conclusion, status = "completed", headBranch = "myr-v1.6.0") => ({
-  head_sha: sha, path: pathOfWf, status, conclusion, head_branch: headBranch,
+const run = (sha, pathOfWf, conclusion, status = "completed", headBranch = "myr-v1.6.0", event = "push") => ({
+  head_sha: sha, path: pathOfWf, status, conclusion, head_branch: headBranch, event,
 });
 
 function runScript(sb, tag, { extraEnv = {}, args = [] } = {}) {
@@ -255,9 +262,11 @@ function runScript(sb, tag, { extraEnv = {}, args = [] } = {}) {
     cwd: sb.dir,
     env: {
       ...process.env,
+      BASH_ENV: "",
       PATH: `${sb.bin}:${process.env.PATH}`,
       SANDBOX: sb.dir,
       GITHUB_REPOSITORY: REPO,
+      CHECKOUT_SHA: COMMIT,
       // offline digest simulation + fast gate polls (the defaults are sized
       // for CI; the tests must not sleep 20 s per poll)
       MYRMIDON_RELEASE_REGISTRY_STATE: path.join(sb.dir, "registry-state.json"),
@@ -296,6 +305,56 @@ const GREEN_RUNS = [
   run(COMMIT, ".github/workflows/myrmidon-dockergate.yml", "success"),
   run(COMMIT, ".github/workflows/myrmidon-fleetd.yml", "success"),
 ];
+
+describe("publish-github-release.sh: checkout binding", () => {
+  it("refuses publication when checkout differs from the resolved tag commit", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    fs.writeFileSync(path.join(sb.dir, "ref-tag.json"), JSON.stringify({ object: { sha: COMMIT, type: "commit" } }));
+    const result = runScript(sb, "myr-v1.6.0", { extraEnv: { CHECKOUT_SHA: TAG_OBJECT } });
+    assert.notEqual(result.code, 0, result.out);
+    assert.match(result.out, /checkout.*does not match.*tag commit/i);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("preserves a conflicting release and requires a newly verified target after manual resolution", () => {
+    const tag = "myr-v1.6.0";
+    const existing = { [tag]: { name: "Existing", body: "do not overwrite" } };
+    const sb = sandbox({ runs: GREEN_RUNS, releases: existing });
+    fs.writeFileSync(path.join(sb.dir, "ref-after.json"), JSON.stringify({ object: { sha: TAG_OBJECT, type: "commit" } }));
+    const moved = runScript(sb, tag);
+    assert.notEqual(moved.code, 0, moved.out);
+    assert.deepEqual(JSON.parse(read(path.join(sb.dir, "releases.json"))), existing);
+    assert.equal(mutations(sb), "");
+
+    // A stable but conflicting release is not permission to overwrite it.
+    fs.rmSync(path.join(sb.dir, "ref-after.json"));
+    const conflict = runScript(sb, tag);
+    assert.notEqual(conflict.code, 0, conflict.out);
+    assert.deepEqual(JSON.parse(read(path.join(sb.dir, "releases.json"))), existing);
+    assert.equal(mutations(sb), "");
+
+    // Only manual conflict resolution and a new checkout/verdict permit retry.
+    fs.writeFileSync(path.join(sb.dir, "releases.json"), "{}");
+    fs.writeFileSync(path.join(sb.dir, "ref-tag.json"), JSON.stringify({ object: { sha: TAG_OBJECT, type: "commit" } }));
+    const stale = runScript(sb, tag);
+    assert.notEqual(stale.code, 0, stale.out);
+    assert.equal(mutations(sb), "");
+    const verdict = { verdict: "confirmed", deployedVersion: TAG_OBJECT, checkedAt: "2026-11-13T16:00:00Z", issueId: "5f38f2aa-381b-476c-97a8-d8ba190c099b", reason: "all members present" };
+    fs.writeFileSync(path.join(sb.dir, "verification.json"), JSON.stringify({ ...verdict, signature: signVerdict(verdict) }));
+    const retry = runScript(sb, tag, { extraEnv: { CHECKOUT_SHA: TAG_OBJECT } });
+    assert.equal(retry.code, 0, retry.out);
+    assert.match(mutations(sb), /create tag=myr-v1\.6\.0/);
+  });
+
+  it("refuses all writes when the tag moves after initial resolution", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    fs.writeFileSync(path.join(sb.dir, "ref-after.json"), JSON.stringify({ object: { sha: TAG_OBJECT, type: "commit" } }));
+    const result = runScript(sb, "myr-v1.6.0");
+    assert.notEqual(result.code, 0, result.out);
+    assert.match(result.out, /tag.*changed/i);
+    assert.equal(mutations(sb), "");
+  });
+});
 
 describe("publish-github-release.sh: the CI gate", () => {
   it("refuses to publish when Myrmidon CI (tag) failed for the tag commit", () => {
@@ -470,19 +529,43 @@ describe("publish-github-release.sh: the CI gate", () => {
 
   // ---- TAG-CI (the 1.6.4 incident): the tag's own run is the ONLY source of green ----
 
-  it("CI gate no longer accepts the same-commit main run: the publish green comes from the tag's own run only", () => {
-    // 1.6.4 shape: the release commit's main-branch runs are green, but the
-    // tag has no CI run of its own yet (myrmidon-ci-tag.yml still starting).
-    // The old gate passed CI on the main run; the new gate waits for the
-    // TAG run and refuses when it never completes.
+  it("CI gate accepts a green push run of myrmidon-ci.yml of the same commit on a rel branch (CI-TAG-REUSE-BRANCH-RUN)", () => {
+    // The release tag sits on the head of rel/*, whose full CI is green; the
+    // tag has no CI run of its own (it reuses, or has not started yet).
+    const sb = sandbox({ runs: [
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "rel/1.6.6-fixes"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-dockergate.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-fleetd.yml", "success"),
+    ] });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.equal(code, 0, out);
+    assert.match(out, /Myrmidon CI \(branch run of the same commit\) success/);
+    assert.match(mutations(sb), /create tag=myr-v1\.6\.0/);
+  });
+
+  it("a green main-branch push run of the same commit also counts", () => {
     const sb = sandbox({ runs: [
       run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "main"),
       run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-dockergate.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-fleetd.yml", "success"),
     ] });
     const { code, out } = runScript(sb, "myr-v1.6.0");
-    assert.notEqual(code, 0, out);
-    assert.match(out, /no run of Myrmidon CI \(tag\) found|timed out waiting for Myrmidon CI \(tag\)/);
-    assert.equal(mutations(sb), "");
+    assert.equal(code, 0, out);
+  });
+
+  it("a red or pull_request run of myrmidon-ci.yml does not satisfy the gate (the tag run is still required)", () => {
+    for (const ci of [
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "failure", "completed", "rel/1.6.6-fixes"),
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "bot/x", "pull_request"),
+    ]) {
+      const sb = sandbox({ runs: [ci, run(COMMIT, ".github/workflows/myrmidon-image.yml", "success")] });
+      const { code, out } = runScript(sb, "myr-v1.6.0");
+      assert.notEqual(code, 0, out);
+      assert.match(out, /no run of Myrmidon CI \(tag\) found|timed out waiting for Myrmidon CI \(tag\)/);
+      assert.equal(mutations(sb), "");
+    }
   });
 
   it("publishes when the tag's own CI run is green even with no main-branch run at all", () => {
@@ -631,7 +714,7 @@ describe("publish-github-release.sh: the release body and mutations", () => {
     assert.match(out, /never --latest/);
   });
 
-  it("is idempotent: an existing release is edited, not duplicated; an already-superseded previous is not renamed again", () => {
+  it("refuses an existing conflicting release without editing either release", () => {
     const sb = sandbox({
       runs: GREEN_RUNS,
       releases: {
@@ -640,12 +723,10 @@ describe("publish-github-release.sh: the release body and mutations", () => {
       },
     });
     const { code, out } = runScript(sb, "myr-v1.6.0");
-    assert.equal(code, 0, out);
-    const mut = mutations(sb);
-    assert.match(mut, /edit target=myr-v1\.6\.0 title=Myrmidon 1\.6\.0 prerelease=0 latest=0 notes=Myrmidon 1\.6\.0 replaces/s);
-    assert.doesNotMatch(mut, /create tag=/);
-    // previous already carries the marker: the edit for 1.5.0 must NOT appear
-    assert.doesNotMatch(mut, /edit target=myr-v1\.5\.0/);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /already exists.*NOT overwriting/);
+    assert.equal(mutations(sb), "");
+    assert.equal(JSON.parse(read(path.join(sb.dir, "releases.json")))["myr-v1.6.0"].body, "stale body");
   });
 });
 
@@ -835,6 +916,7 @@ cat "$SANDBOX/health.json"`;
       cwd: sb.dir,
       env: {
         ...process.env,
+        BASH_ENV: "",
         PATH: `${sb.bin}:${process.env.PATH}`,
         SANDBOX: sb.dir,
         GITHUB_REPOSITORY: REPO,
@@ -945,7 +1027,7 @@ cat "$SANDBOX/health.json"`;
     delete env.MYRMIDON_PROD_HEALTH_URL; delete env.HEALTH_URL; delete env.MYRMIDON_PROD_HEALTH_TOKEN_FILE; delete env.HEALTH_TOKEN_FILE;
     const result = spawnSync("bash", [PROMOTE, "--tag", "myr-v1.6.0", "--verify-on-prod-report", REPORT(sb)], {
       cwd: sb.dir,
-      env: { ...env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir, GITHUB_REPOSITORY: REPO },
+      env: { ...env, BASH_ENV: "", PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir, GITHUB_REPOSITORY: REPO },
       encoding: "utf8",
     });
     assert.notEqual(result.status, 0);
@@ -1081,6 +1163,18 @@ describe("myrmidon-ci-tag.yml: the tag CI is a separate un-cancellable run", () 
     assert.match(workflow, /all\(to_entries\[\]; \.value\.result == "success"\)/);
   });
 
+  it("reuses the green branch CI run of the same commit: first job decides, lanes are gated, CI result honours the mode (CI-TAG-REUSE-BRANCH-RUN)", () => {
+    assert.match(workflow, /\njobs:\n  reuse-check:/);
+    assert.match(workflow, /tag-ci-reuse\.mjs/);
+    for (const lane of ["typecheck", "build", "tests", "tests-other", "tests-runner", "checks", "fleetd", "dockergate"]) {
+      const m = workflow.match(new RegExp(`\\n  ${lane}:\\n(?:    #[^\\n]*\\n)*    name: [^\\n]*\\n    needs: \\[reuse-check\\]\\n    if: \\$\\{\\{ needs\\.reuse-check\\.outputs\\.mode == 'full' \\}\\}`));
+      assert.ok(m, `lane ${lane} must need reuse-check and run only in full mode`);
+    }
+    assert.match(workflow, /needs: \[reuse-check, typecheck,/);
+    assert.match(workflow, /\.\["reuse-check"\]\.result == "success"/);
+    assert.match(workflow, /\.\["reuse-check"\]\.outputs\.mode == "reuse"/);
+  });
+
   it("workflow_dispatch checks out the typed tag (the 1.6.4 manual re-run path)", () => {
     const checkouts = [...workflow.matchAll(/ref: \$\{\{ ([^}]+) \}\}/g)].map((m) => m[1]);
     assert.ok(checkouts.length >= 3, "every lane's checkout resolves the tag");
@@ -1164,8 +1258,8 @@ describe("release-body.mjs: body construction", () => {
       `## changelog-en\n\n### Huge entry\n\n- ${"x".repeat(130000)}\n`,
     );
     const registryState = {
-      myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b",
-      "myrmidon-fleetd": "sha256:c", "myrmidon-hermes": "sha256:d",
+      myrmidon: `sha256:${"a".repeat(64)}`, "myrmidon-dockergate": `sha256:${"b".repeat(64)}`,
+      "myrmidon-fleetd": `sha256:${"c".repeat(64)}`, "myrmidon-hermes": `sha256:${"d".repeat(64)}`,
     };
     fs.writeFileSync(path.join(dir, "registry-state.json"), JSON.stringify(registryState));
     fs.writeFileSync(path.join(dir, "docs/myrmidon/CHANGELOG.md"), "# Changelog\n");
@@ -1193,8 +1287,8 @@ describe("release-body.mjs: body construction", () => {
       `## changelog-en\n\n### ${"Huge heading ".repeat(11000)}\n\n- entry\n`,
     );
     const registryState = {
-      myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b",
-      "myrmidon-fleetd": "sha256:c", "myrmidon-hermes": "sha256:d",
+      myrmidon: `sha256:${"a".repeat(64)}`, "myrmidon-dockergate": `sha256:${"b".repeat(64)}`,
+      "myrmidon-fleetd": `sha256:${"c".repeat(64)}`, "myrmidon-hermes": `sha256:${"d".repeat(64)}`,
     };
     fs.writeFileSync(path.join(dir, "registry-state.json"), JSON.stringify(registryState));
     fs.writeFileSync(path.join(dir, "docs/myrmidon/CHANGELOG.md"), "# Changelog\n");
@@ -1233,7 +1327,7 @@ describe("release-body.mjs: digest resolution (injected fetch)", () => {
       const repo = /\/v2\/itkadr-git\/([^/]+)\//.exec(url)[1];
       return {
         ok: true,
-        headers: { get: () => `sha256:${repo.length}${"c".repeat(63)}` },
+        headers: { get: () => `sha256:${repo.length.toString(16).padStart(64, "c")}` },
       };
     };
     return componentDigests("1.6.0", { fetchImpl }).then(({ rows, missing }) => {
@@ -1248,7 +1342,7 @@ describe("release-body.mjs: digest resolution (injected fetch)", () => {
   });
 
   it("reports the missing components instead of publishing partial digests", () => {
-    const fetchImpl = registryFetch({ myrmidon: "sha256:x", "myrmidon-hermes": "sha256:y" });
+    const fetchImpl = registryFetch({ myrmidon: `sha256:${"a".repeat(64)}`, "myrmidon-hermes": `sha256:${"b".repeat(64)}` });
     return componentDigests("1.6.0", { fetchImpl }).then(({ rows, missing }) => {
       assert.deepEqual(missing, ["dockergate", "fleetd"]);
       assert.equal(rows.length, 2);
@@ -1280,7 +1374,7 @@ describe("release manifest (release-components.json)", () => {
 
   it("an optional bot variant missing from the registry does not refuse the release", () => {
     const state = {
-      myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b", "myrmidon-fleetd": "sha256:c", "myrmidon-hermes": "sha256:d",
+      myrmidon: `sha256:${"a".repeat(64)}`, "myrmidon-dockergate": `sha256:${"b".repeat(64)}`, "myrmidon-fleetd": `sha256:${"c".repeat(64)}`, "myrmidon-hermes": `sha256:${"d".repeat(64)}`,
     };
     return componentDigests("1.6.2", { registryState: state }).then(({ missing, digests }) => {
       assert.deepEqual(missing, []);

@@ -1,16 +1,22 @@
+import { createHash } from "node:crypto";
 import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import type { CreateIssueThreadInteraction } from "@myrmidon/shared";
 import {
+  acceptanceServiceCredentials,
   agentWakeupRequests,
   agents,
   approvals,
   completionContracts,
+  documents,
   heartbeatRuns,
   issueApprovals,
   issueRecoveryActions,
   issueThreadInteractions,
   issues,
+  nativeFinalizationGrants,
+  nativeFinalizationOutbox,
+  nativeFinalizationRequests,
   nativeRunFinalizations,
   nativeRunResults,
   statusDecisionEffects,
@@ -48,6 +54,7 @@ import {
   type ActivityPublication,
 } from "../activity-log.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
+import { issueAcceptanceSnapshotService } from "../issue-acceptance-snapshot.js";
 
 export class NativeStatusRaceError extends Error {
   readonly code = "native_status_race" as const;
@@ -1515,6 +1522,8 @@ export async function commitNativeStatusDecision(input: {
   failpoint?: NativeStatusCommitFailpoint;
   preMaterializedEffects?: NativeMaterializedStatusEffect[];
   supersedesCommittedDecisionId?: string;
+  serviceRequest?: { requestId: string; leaseOwner: string; leaseUntil: Date };
+  serviceCoordinatorLeaseOwner?: string;
   requireExternalChatResponseWaitAuthorization?: { agentId: string };
   requireBoardResponseWaitSource?: NativeBoardResponseWaitSource;
   requireBoardResponseWaitOrigin?: NativeBoardResponseWaitOrigin;
@@ -1546,6 +1555,47 @@ export async function commitNativeStatusDecision(input: {
       .then((rows) => rows[0] ?? null);
     if (!coordinator)
       throw new Error("native_finalization_coordinator_missing");
+    if (coordinator.authorizationMode !== "internal" && coordinator.authorizationMode !== "service_required") {
+      throw new Error("native_service_authorization_required");
+    }
+    if (coordinator.authorizationMode === "service_required" && !input.serviceRequest) {
+      throw new Error("native_service_authorization_required");
+    }
+    if (coordinator.authorizationMode === "internal" && input.serviceRequest) {
+      throw new Error("native_service_authorization_required");
+    }
+    if (input.serviceCoordinatorLeaseOwner && (!input.serviceRequest ||
+        coordinator.leaseOwner !== input.serviceCoordinatorLeaseOwner ||
+        !coordinator.leaseExpiresAt || coordinator.leaseExpiresAt <= new Date())) {
+      throw new Error("native_service_authorization_required");
+    }
+    let serviceRequest: typeof nativeFinalizationRequests.$inferSelect | null = null;
+    let serviceAuthorizationExpiresAt: number | null = null;
+    if (input.serviceRequest) {
+      const [request] = await tx.select().from(nativeFinalizationRequests).where(and(
+        eq(nativeFinalizationRequests.id, input.serviceRequest.requestId),
+        eq(nativeFinalizationRequests.companyId, input.companyId),
+        eq(nativeFinalizationRequests.issueId, input.issueId),
+        eq(nativeFinalizationRequests.runId, input.runId),
+      )).for("update");
+      const now = new Date();
+      if (!request || request.state !== "processing" || request.leaseOwner !== input.serviceRequest.leaseOwner ||
+          !request.leaseUntil || request.leaseUntil.getTime() !== input.serviceRequest.leaseUntil.getTime() || request.leaseUntil <= now) {
+        throw new Error("native_service_authorization_required");
+      }
+      const [grant] = await tx.select().from(nativeFinalizationGrants).where(eq(nativeFinalizationGrants.id, request.grantId)).for("update");
+      const [credential] = await tx.select().from(acceptanceServiceCredentials).where(eq(acceptanceServiceCredentials.id, request.credentialId)).for("update");
+      if (!grant || grant.companyId !== input.companyId || grant.issueId !== input.issueId || grant.runId !== input.runId ||
+          grant.generation !== request.grantGeneration || grant.principalId !== request.principalId ||
+          grant.credentialId !== request.credentialId || grant.certificateSha256 !== request.verifiedPeerSha256 ||
+          grant.revokedAt || grant.notAfter <= now || !credential || credential.companyId !== input.companyId ||
+          credential.audience !== "native-finalization-submit" || credential.certificateSha256 !== request.verifiedPeerSha256 ||
+          credential.revokedAt || credential.expiresAt <= now) {
+        throw new Error("native_service_authorization_expired_or_revoked");
+      }
+      serviceRequest = request;
+      serviceAuthorizationExpiresAt = Math.min(grant.notAfter.getTime(), credential.expiresAt.getTime());
+    }
     const issue = await tx
       .select()
       .from(issues)
@@ -1559,6 +1609,20 @@ export async function commitNativeStatusDecision(input: {
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!issue) throw new NativeStatusRaceError();
+    if (serviceRequest) {
+      // Document writers can lock document before issue; deadlocks must be retried by the caller.
+      const [document] = await tx.select({ id: documents.id }).from(documents).where(and(
+        eq(documents.id, serviceRequest.documentId), eq(documents.companyId, input.companyId),
+      )).for("update");
+      const snapshot = await issueAcceptanceSnapshotService(tx as unknown as Db).read(input.issueId, input.companyId);
+      const etag = snapshot && `"${createHash("sha256").update(JSON.stringify([snapshot.issue.id, snapshot.issue.version, snapshot.document?.latestRevisionId ?? null])).digest("hex")}"`;
+      if (!document || !snapshot?.document || snapshot.document.id !== serviceRequest.documentId ||
+          snapshot.document.latestRevisionId !== serviceRequest.expectedRevisionId ||
+          snapshot.issue.version !== serviceRequest.expectedIssueEpoch || etag !== serviceRequest.strongEtag ||
+          coordinator.phase === "committed") {
+        throw new Error("native_service_snapshot_changed");
+      }
+    }
     // A completed model turn cannot close a persistent conversation. Preserve
     // the task here; the response finalizer records its durable waiting state.
     if (issue.conversationAgentId && input.decision.statusAction === "done") {
@@ -1765,6 +1829,7 @@ export async function commitNativeStatusDecision(input: {
       decisionRow?.applicationState === "applied" ||
       decisionRow?.applicationState === "proposed"
     ) {
+      if (serviceRequest) throw new NativeStatusRaceError();
       return { decision: decisionRow, issue, replayed: true };
     }
     if (!decisionRow) {
@@ -2084,6 +2149,24 @@ export async function commitNativeStatusDecision(input: {
       },
     });
     publications.push(publication);
+    if (serviceRequest) {
+      const now = new Date();
+      if (!serviceRequest.leaseUntil || serviceRequest.leaseUntil <= now ||
+          (input.serviceCoordinatorLeaseOwner && (!coordinator.leaseExpiresAt || coordinator.leaseExpiresAt <= now))) {
+        throw new Error("native_service_authorization_required");
+      }
+      if (serviceAuthorizationExpiresAt === null || serviceAuthorizationExpiresAt <= now.getTime()) {
+        throw new Error("native_service_authorization_expired_or_revoked");
+      }
+      await tx.update(nativeFinalizationRequests).set({
+        state: "committed", resultDecisionId: decisionRow.id, errorCode: null,
+        completedAt: now, leaseOwner: null, leaseUntil: null,
+      }).where(eq(nativeFinalizationRequests.id, serviceRequest.id));
+      const [outbox] = await tx.update(nativeFinalizationOutbox).set({ dispatchedAt: now }).where(and(
+        eq(nativeFinalizationOutbox.requestId, serviceRequest.id), sql`${nativeFinalizationOutbox.dispatchedAt} is null`,
+      )).returning({ requestId: nativeFinalizationOutbox.requestId });
+      if (!outbox) throw new Error("native_finalization_outbox_missing");
+    }
     return {
       decision: { ...decisionRow, applicationState },
       issue: updated,

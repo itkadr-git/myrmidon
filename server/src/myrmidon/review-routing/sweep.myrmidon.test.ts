@@ -76,6 +76,7 @@ interface Fixture {
   reviewerActiveRuns?: Map<string, number>;
   escalations: Array<Record<string, unknown>>;
   agentModels?: Map<string, string | null>;
+  readFacts?: Map<string, { headChangedAt: Date | null; lastRunStartedAt: Date | null; lastCommentAt: Date | null }>;
 }
 
 function makeStore(fx: Fixture) {
@@ -120,6 +121,8 @@ function makeStore(fx: Fixture) {
       const wake = fx.wakeStates?.get(issueId);
       if (wake) fx.wakeStates?.set(issueId, { ...wake, lastEscalationAt: entry.at as Date });
     },
+    reviewerReadFacts: async ({ issueId }: { companyId: string; issueId: string; reviewerAgentId: string }) =>
+      fx.readFacts?.get(issueId) ?? { headChangedAt: null, lastRunStartedAt: null, lastCommentAt: null },
     recordReviewWake: async ({ issueId, at, attempt }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; at: Date; attempt: number }) => {
       const wake = fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
       fx.wakeStates?.set(issueId, { ...wake, activeRun: false, pendingWake: true, lastWakeAt: at, attempts: attempt });
@@ -1475,6 +1478,109 @@ describe("review rebalancing", () => {
         }),
       }),
     );
+  });
+
+  describe("a review that waits for CI of the head it was read on (REVIEW-REBALANCE-CI)", () => {
+    const LEAD2 = "dddddddd-0000-4000-8000-000000000002";
+    const minutesAgo = (m: number) => new Date(NOW.getTime() - m * 60_000);
+
+    function ciSetup(
+      facts: { headChangedAt: Date | null; lastRunStartedAt: Date | null; lastCommentAt: Date | null },
+      ci: () => Promise<{ state: string; headSha?: string | null }>,
+    ) {
+      const t = setup(
+        { rebalanceAfterMinutes: 30, reassignAfterHours: 24 },
+        {
+          reviewers: [
+            { id: REV_A, role: "reviewer" },
+            { id: LEAD2, role: "lead" },
+          ],
+          load: new Map([
+            [REV_A, 5],
+            [LEAD2, 0],
+          ]),
+          readFacts: new Map([["1", facts]]),
+        },
+        undefined,
+        ci,
+      );
+      const policy = { stages: [{ id: "s", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] };
+      const state = {
+        status: "pending",
+        currentStageId: "s",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: REV_A },
+        returnAssignee: { type: "agent", agentId: ASSIGNEE },
+      };
+      t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, updatedAt: minutesAgo(1), executionPolicy: policy, executionState: state }));
+      t.fixture.history.set("1", { lastAt: minutesAgo(45), reviewerAgentIds: [REV_A] });
+      return t;
+    }
+
+    it("does not rebalance when the reviewer started a run after the head change and CI is pending", async () => {
+      const t = ciSetup(
+        { headChangedAt: minutesAgo(60), lastRunStartedAt: minutesAgo(20), lastCommentAt: null },
+        async () => ({ state: "pending", headSha: "abc" }),
+      );
+      const result = await t.sweep.sweep(NOW, { force: true });
+      expect(result).toMatchObject({ reassigned: 0, failed: 0 });
+      expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(REV_A);
+      expect(t.comments).toHaveLength(0);
+      expect(t.wakes).toHaveLength(0);
+    });
+
+    it("does not rebalance when the reviewer commented after the head change and CI is pending, on repeated passes", async () => {
+      const t = ciSetup(
+        { headChangedAt: minutesAgo(60), lastRunStartedAt: null, lastCommentAt: minutesAgo(10) },
+        async () => ({ state: "pending", headSha: "abc" }),
+      );
+      await t.sweep.sweep(NOW, { force: true });
+      await t.sweep.sweep(new Date(NOW.getTime() + 60_000), { force: true });
+      expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(REV_A);
+      expect(t.comments).toHaveLength(0);
+    });
+
+    it("rebalances as before when the reviewer has not started on the current head", async () => {
+      // The only run and comment of the reviewer are older than the last head change.
+      const t = ciSetup(
+        { headChangedAt: minutesAgo(30), lastRunStartedAt: minutesAgo(50), lastCommentAt: minutesAgo(50) },
+        async () => ({ state: "pending", headSha: "abc" }),
+      );
+      const result = await t.sweep.sweep(NOW, { force: true });
+      expect(result).toMatchObject({ reassigned: 1, failed: 0 });
+      expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(LEAD2);
+      expect(t.comments[0].body).toContain("rebalanced to @" + LEAD2);
+    });
+
+    it("rebalances as before when the only run started before the head change", async () => {
+      const t = ciSetup(
+        { headChangedAt: minutesAgo(30), lastRunStartedAt: minutesAgo(40), lastCommentAt: null },
+        async () => ({ state: "pending", headSha: "abc" }),
+      );
+      const result = await t.sweep.sweep(NOW, { force: true });
+      expect(result).toMatchObject({ reassigned: 1, failed: 0 });
+    });
+
+    it("rebalances as before when the reviewer read the head but CI is no longer pending", async () => {
+      const t = ciSetup(
+        { headChangedAt: minutesAgo(60), lastRunStartedAt: minutesAgo(20), lastCommentAt: null },
+        async () => ({ state: "complete", headSha: "abc" }),
+      );
+      const result = await t.sweep.sweep(NOW, { force: true });
+      expect(result).toMatchObject({ reassigned: 1, failed: 0 });
+      expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(LEAD2);
+    });
+
+    it("rebalances as before when the CI reader fails", async () => {
+      const t = ciSetup(
+        { headChangedAt: minutesAgo(60), lastRunStartedAt: minutesAgo(20), lastCommentAt: null },
+        async () => {
+          throw new Error("github down");
+        },
+      );
+      const result = await t.sweep.sweep(NOW, { force: true });
+      expect(result).toMatchObject({ reassigned: 1 });
+    });
   });
 
   it("skips rebalancing when no eligible pool member has an empty queue (load === 0)", async () => {

@@ -1,6 +1,6 @@
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import { issues, type Db } from "@myrmidon/db";
-import { currentRunPrioritySettings } from "./run-priority/state.js";
+import { currentCompanyReleaseFocus } from "./run-priority/state.js";
 
 /**
  * The release the board is focused on, or null when focus is off: either no
@@ -10,15 +10,26 @@ import { currentRunPrioritySettings } from "./run-priority/state.js";
  * gate on it. When every current-release task is blocked or in review, focus
  * stays active on purpose: the operator lifts it with the setting.
  */
-export function strictReleaseFocusRelease(): string | null {
-  const settings = currentRunPrioritySettings();
+export function strictReleaseFocusRelease(companyId: string): string | null {
+  const settings = currentCompanyReleaseFocus(companyId);
   if (!settings.strictReleaseFocus) return null;
   return settings.currentRelease?.trim() ? settings.currentRelease : null;
 }
 
-/** Shared by swarm queue reads and assigned-task idle pickup; reviews bypass it. */
+/**
+ * A label name that looks like a release number (`1.8`, `1.6.9`). Only such a
+ * label marks a task as belonging to a release; `bug`, `ops` and the like do not.
+ */
+const RELEASE_LABEL_PATTERN = String.raw`^\d+\.\d+(\.\d+)?$`;
+
+/**
+ * Strict focus blocks a task only when it carries a release label of ANOTHER
+ * release. A task without a release label (operations, business bots, leads) and
+ * a task with the current release label pass; so does a task with both.
+ * Shared by swarm queue reads and assigned-task idle pickup; reviews bypass it.
+ */
 export function releaseFocusCondition(companyId: string): SQL {
-  const release = strictReleaseFocusRelease();
+  const release = strictReleaseFocusRelease(companyId);
   if (!release) return sql`true`;
   const normalized = release.trim().toLowerCase();
   const matches = (name: SQL) => sql`lower(trim(${name})) = ${normalized}`;
@@ -61,6 +72,13 @@ export function releaseFocusCondition(companyId: string): SQL {
       and candidate_label.company_id = ${companyId}
     where candidate_link.company_id = ${companyId} and candidate_link.issue_id = ${issues.id}
       and ${matches(sql`candidate_label.name`)}
+  ) or not exists (
+    select 1 from issue_labels other_link
+    join labels other_label on other_label.id = other_link.label_id
+      and other_label.company_id = ${companyId}
+    where other_link.company_id = ${companyId} and other_link.issue_id = ${issues.id}
+      and trim(other_label.name) ~ ${RELEASE_LABEL_PATTERN}
+      and not (${matches(sql`other_label.name`)})
   ))`;
 }
 
@@ -76,7 +94,7 @@ export async function runViolatesReleaseFocus(
   db: Db,
   input: { companyId: string; agentId: string; issueId: string | null },
 ): Promise<boolean> {
-  if (!input.issueId || !strictReleaseFocusRelease()) return false;
+  if (!input.issueId || !strictReleaseFocusRelease(input.companyId)) return false;
   const reviewParticipant = sql`(${issues.status} = 'in_review'
     and ${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent'
     and ${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${input.agentId})`;

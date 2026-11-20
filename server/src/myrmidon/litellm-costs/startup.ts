@@ -24,7 +24,7 @@ import { logger } from "../../middleware/logger.js";
 import { secretService } from "../../services/index.js";
 import { createLitellmGatewayClient, readLitellmCostSettings, sweepLitellmCosts } from "./litellm-costs.js";
 import { listGatewayBotKeys } from "./bot-keys.js";
-import { refreshKeyUsageReport } from "./key-budgets.js"; // myrmidon(OPE-11776)
+import { kickKeyUsageRefresh, type KeyBudgetDeps } from "./key-budgets.js"; // myrmidon(OPE-11776)
 // myrmidon(1.6.5-F-18): the empty-catalog signal registry (see attention.ts).
 import { resetEmptyCatalogSignals } from "./attention.js";
 import { recordFeatureOutcome } from "../features/recorder.js"; // myrmidon(FEATURES)
@@ -56,7 +56,77 @@ const defaultPorts: LitellmSweepPorts = {
   log: logger,
 };
 
+function budgetDeps(db: Db, settings: ReturnType<typeof readLitellmCostSettings>, ports: LitellmSweepPorts, env: NodeJS.ProcessEnv): KeyBudgetDeps {
+  return {
+    db,
+    settings,
+    readGatewayKey: (id, name) => ports.readGatewayKey(db, id, name),
+    listBotKeys: (id) => listGatewayBotKeys(db, id, env),
+    client: createLitellmGatewayClient,
+    now: ports.now,
+    log: ports.log,
+  };
+}
+
 let stopRunning: (() => void) | null = null;
+let stopBudgetRunning: (() => void) | null = null;
+
+/** The start of the first pass in a process that only reports budgets is spread over this window. */
+export const BUDGET_REPORT_START_JITTER_MS = 90_000;
+
+/**
+ * myrmidon(1.6.9 KEY-BUDGETS-OOM): the key budget report alone, for a process
+ * that does not run the background work (an api process of a split board).
+ * The cap gauge of `GET /metrics` is read from this process's memory, and
+ * `/metrics` is served by the api processes, so each needs its own report. It
+ * is the bounded read (25 keys a page, three fields kept, timeouts), once per
+ * BUDGET_SIGNAL_INTERVAL_MS, and the first pass is delayed by a random time so
+ * that the processes do not hit the gateway together after a restart.
+ * Returns the stop function; a no-op when the sweep settings are off.
+ */
+export function startLitellmKeyBudgetReport(
+  db: Db,
+  opts: { env?: NodeJS.ProcessEnv; ports?: Partial<LitellmSweepPorts>; random?: () => number } = {},
+): () => void {
+  const env = opts.env ?? process.env;
+  const settings = readLitellmCostSettings(env);
+  if (!settings.enabled) return () => {};
+  const ports: LitellmSweepPorts = { ...defaultPorts, ...opts.ports };
+  stopLitellmKeyBudgetReport();
+  const random = opts.random ?? Math.random;
+  let stopped = false;
+  const pass = async () => {
+    if (stopped) return;
+    try {
+      for (const companyId of await ports.listCompanyIds(db)) {
+        kickKeyUsageRefresh(budgetDeps(db, settings, ports, env), companyId);
+      }
+    } catch (err) {
+      ports.log.warn({ err }, "litellm key budget report pass failed");
+    }
+  };
+  let interval: NodeJS.Timeout | null = null;
+  const first = setTimeout(() => {
+    void pass();
+    if (stopped) return;
+    interval = setInterval(() => void pass(), BUDGET_SIGNAL_INTERVAL_MS);
+    if (typeof interval.unref === "function") interval.unref();
+  }, Math.floor(random() * BUDGET_REPORT_START_JITTER_MS));
+  if (typeof first.unref === "function") first.unref();
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    clearTimeout(first);
+    if (interval) clearInterval(interval);
+    if (stopBudgetRunning === stop) stopBudgetRunning = null;
+  };
+  stopBudgetRunning = stop;
+  return stop;
+}
+
+export function stopLitellmKeyBudgetReport(): void {
+  stopBudgetRunning?.();
+}
 
 /** Starts the sweep; returns the stop function. A no-op when disabled. */
 export function startLitellmCostSweep(
@@ -110,22 +180,8 @@ export function startLitellmCostSweep(
         const nowMs = ports.now().getTime();
         if (nowMs - (budgetEvaluatedAt.get(companyId) ?? Number.NEGATIVE_INFINITY) >= BUDGET_SIGNAL_INTERVAL_MS) {
           budgetEvaluatedAt.set(companyId, nowMs);
-          try {
-            await refreshKeyUsageReport(
-              {
-                db,
-                settings,
-                readGatewayKey: (id, name) => ports.readGatewayKey(db, id, name),
-                listBotKeys: (id) => listGatewayBotKeys(db, id, env),
-                client: createLitellmGatewayClient,
-                now: ports.now,
-                log: ports.log,
-              },
-              companyId,
-            );
-          } catch (err) {
-            ports.log.warn({ err, companyId }, "litellm key budget signal evaluation failed for one company");
-          }
+          // Not awaited: the tick (and its `sweeping` flag) must not stand on the gateway's key list.
+          kickKeyUsageRefresh(budgetDeps(db, settings, ports, env), companyId);
         }
       }
       // One company without the key is that company's choice; every company without it
@@ -166,4 +222,5 @@ export function startLitellmCostSweep(
 /** Stops the sweep started by `startLitellmCostSweep`; a no-op when none runs. */
 export function stopLitellmCostSweep(): void {
   stopRunning?.();
+  stopLitellmKeyBudgetReport();
 }

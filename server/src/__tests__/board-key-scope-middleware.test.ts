@@ -170,4 +170,16 @@ describe("boardKeyScopeMiddleware (myrmidon ROLE-SCOPED-TOKENS)", () => {
     const read = await request(app).get("/api/companies/1/issues");
     expect(read.status).toBe(200);
   });
+
+  // myrmidon(OPE-15134): the acceptance snapshot is not part of a link key's
+  // liveness surface; role keys that may read (read_only) keep their GET,
+  // every other narrow scope stays default-deny on it.
+  it("acceptance snapshot stays outside the monitoring_link surface and inside read_only", async () => {
+    const link = appFor(boardKeyActor({ kind: "monitoring_link", linkKey: "zabbix-aggregator", companyId: LINK_COMPANY }));
+    const denied = await request(link).get(`/api/issues/${LINK_COMPANY}/acceptance-scenarios-snapshot`);
+    expect(denied.status).toBe(403);
+    const readOnly = appFor(boardKeyActor({ kind: "read_only" }));
+    const allowed = await request(readOnly).get("/api/issues/OPE-1/acceptance-scenarios-snapshot");
+    expect(allowed.status).toBe(200);
+  });
 });

@@ -5,6 +5,7 @@ import {
   ADM_ACCESS_REQUEST_TYPE,
   redactedAdmRequestProjection,
   admAccessActions,
+  isAllowedAdmChannelRequest,
   type AdmAccessAction,
   type AdmRequestStatus,
   type AdmResourceType,
@@ -329,6 +330,9 @@ export function admAccessRequestService(
       input: CreateAdmAccessRequestInput,
       actor: AdmActorContext,
     ): Promise<{ request: RedactedAdmRequest; isExisting: boolean }> {
+      if (!isAllowedAdmChannelRequest(input.resourceType, input.action)) {
+        throw badRequest("ADM channel permits only rights and tools");
+      }
       if (actor.companyId !== sourceCompanyId) {
         throw forbidden("Actor cannot create an access request on behalf of another company");
       }
@@ -511,6 +515,9 @@ export function admAccessRequestService(
       // Only the target (ADM) company operator or instance admin can decide.
       if (payload.targetCompanyId !== callingCompanyId && !actor.isInstanceAdmin) {
         throw forbidden("Only the target ADM company can decide access requests");
+      }
+      if (input.decision === "approved" && !isAllowedAdmChannelRequest(payload.resourceType, payload.action)) {
+        throw forbidden("ADM channel permits only rights and tools");
       }
 
       if (row.status !== "pending") {
@@ -703,6 +710,10 @@ export function admAccessRequestService(
       }
 
       const payload = (row.payload ?? {}) as unknown as AdmRequestStoredPayload;
+      if (!isAllowedAdmChannelRequest(claims.resourceType, claims.action)
+        || !isAllowedAdmChannelRequest(payload.resourceType, payload.action)) {
+        throw forbidden("ADM channel permits only rights and tools");
+      }
       if (payload.expiresAt && Date.now() > new Date(payload.expiresAt).getTime()) {
         throw forbidden("ADM capability has expired");
       }

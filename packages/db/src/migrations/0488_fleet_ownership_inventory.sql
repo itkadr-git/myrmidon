@@ -1,2 +1,0 @@
-ALTER TABLE "myrmidon_fleet_servers"
-  ADD COLUMN "ownership_inventory" jsonb;
