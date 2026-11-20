@@ -29,7 +29,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
-import type { ReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
+import { createReviewPullRequestCiResolver, type ReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -56,6 +56,7 @@ vi.mock("../services/heartbeat.js", async (importOriginal) => {
 });
 
 const PR_URL = "https://github.com/acme/app/pull/1830";
+const HEAD_SHA = "a".repeat(40);
 const RESPONSIBLE_USER_ID = "responsible-user";
 
 describeEmbeddedPostgres("review stage recovery (route level)", () => {
@@ -84,7 +85,20 @@ describeEmbeddedPostgres("review stage recovery (route level)", () => {
     await tempDb?.cleanup();
   });
 
-  function createApp(actor: Express.Request["actor"], resolveCi: ReviewPullRequestCiResolver = async () => ({ state: "complete", pullRequestUrl: PR_URL, headSha: "test-head" })) {
+  function createApp(actor: Express.Request["actor"], resolveCi: ReviewPullRequestCiResolver = createReviewPullRequestCiResolver({
+    db,
+    admission: true,
+    tokenProvider: async () => null,
+    fetch: async (url) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/pulls/1830")) return Response.json({ state: "open", head: { sha: HEAD_SHA } });
+      if (path.endsWith("/contents/.github/workflows")) return Response.json([{ name: "ci.yml" }]);
+      if (path.endsWith(`/commits/${HEAD_SHA}/check-runs`)) {
+        return Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "success", head_sha: HEAD_SHA }] });
+      }
+      return new Response(null, { status: 404 });
+    },
+  })) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -195,7 +209,7 @@ describeEmbeddedPostgres("review stage recovery (route level)", () => {
         url: PR_URL,
         status: input.pullRequestStatus,
         isPrimary: true,
-        metadata: { repo: "acme/app", number: 1830, state: input.pullRequestStatus },
+        metadata: { repo: "acme/app", number: 1830, state: input.pullRequestStatus, headSha: HEAD_SHA },
       });
     }
     return { companyId, engineerAgentId, reviewerAgentId, otherReviewerAgentId, runId, issueId, stageId };

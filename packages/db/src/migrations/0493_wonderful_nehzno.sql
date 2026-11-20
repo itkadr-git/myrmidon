@@ -1,0 +1,2 @@
+ALTER TABLE "native_run_finalizations" ADD COLUMN "authorization_mode" text DEFAULT 'internal' NOT NULL;--> statement-breakpoint
+ALTER TABLE "native_run_finalizations" ADD CONSTRAINT "native_run_finalizations_authorization_mode_check" CHECK ("native_run_finalizations"."authorization_mode" in ('internal', 'service_required'));

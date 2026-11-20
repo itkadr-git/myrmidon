@@ -35,6 +35,12 @@ without any git inspection. There is nothing on the board to delete. The task
 directory on the bot disk follows the bot-disk policy (`general.botDisk`:
 thresholds, scratch TTL, idle TTL).
 
+On reuse, `myr-ws open` and the idle botd `myr-ws repair` leave unfinished
+merge, rebase, cherry-pick, revert and am operations and unresolved index
+stages in place for the task's next run. They do not abort these operations or
+reset the index. A branch switch requested during an unfinished operation is
+not performed; finish or abort the operation explicitly before switching.
+
 ## Bare bases with extensions.worktreeConfig
 
 A task copy is a linked git worktree of the shared bare base of the repository

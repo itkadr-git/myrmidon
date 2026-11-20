@@ -44,6 +44,7 @@ import { connectionEventDeliveries, issueWorkProducts, type Db } from "@myrmidon
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../../services/git-credentials.js";
 import { getGitHubRateLimitMetrics, isGitHubRateLimited, recordGitHubRequest } from "../../services/github-rate-limit.js";
 import { GitHubReviewBudgetError, withGitHubReviewBudget, type ReviewBudgetSnapshot } from "../../services/github-review-budget.js";
+import { readFreshReviewCiSnapshot } from "../../services/github-pull-request-ci.js";
 import { ghFetch, gitHubApiBase } from "../../services/github-fetch.js";
 import { repositoryHasHostedCi } from "../../services/github-hosted-ci.js";
 import { defaultTokenProvider as resolveGitHubReadToken } from "../../services/github-external-object-provider.js";
@@ -359,6 +360,37 @@ async function readHeadCi(input: {
     (entry) => asRecord(entry)?.name === REVIEW_CI_FINAL_CHECK_NAME,
   );
   if (hasAggregateRun) return settledHeadCi({ state: stateFromFinalCheck });
+  const pendingSuites = new Set(allRunsList.flatMap((entry) => {
+    const run = asRecord(entry);
+    const suite = asRecord(run?.check_suite);
+    return run?.status !== "completed" && typeof suite?.id === "number" ? [suite.id] : [];
+  }));
+  if (pendingSuites.size > 0) {
+    const workflows = await readGitHub(fetchImpl, `${apiBase}/repos/${repository}/actions/runs?head_sha=${encodeURIComponent(headSha)}&per_page=100`, input.token, "workflow_runs");
+    if (!workflows.ok) return workflows;
+    const payload = asRecord(workflows.json);
+    const workflowRuns = payload?.workflow_runs;
+    if (!Array.isArray(workflowRuns) || typeof payload?.total_count !== "number" || payload.total_count > workflowRuns.length) {
+      return { ok: false, reason: "workflow_runs:incomplete_payload" };
+    }
+    const excludedSuites = new Set([...pendingSuites].filter((suiteId) => {
+      const matches = workflowRuns.map(asRecord).filter((run) => run?.check_suite_id === suiteId);
+      const run = matches[0];
+      return matches.length === 1 && run?.head_sha === headSha && run.event === "pull_request" &&
+        run.path === ".github/workflows/review-label-sync.yml";
+    }));
+    if (excludedSuites.size > 0) {
+      const relevant = allRunsList.filter((entry) => {
+        const suite = asRecord(asRecord(entry)?.check_suite);
+        return typeof suite?.id !== "number" || !excludedSuites.has(suite.id);
+      });
+      const green = relevant.length > 0 && relevant.every((entry) => {
+        const run = asRecord(entry);
+        return run?.status === "completed" && run.conclusion === "success";
+      });
+      return settledHeadCi(green ? { state: "complete", finalCheckConclusion: "success" } : { state: "pending" });
+    }
+  }
   return settledHeadCi({ state: pullRequestHeadCiStateFromAllChecks({ checkRuns: allRunsList }) });
 }
 
@@ -648,12 +680,9 @@ export function createReviewPullRequestCiResolver(input: {
   tokenProvider?: (companyId: string, repository: string) => Promise<string | null>;
   onDiagnostic?: (diagnostic: { transportCalls: number; budget: ReviewBudgetSnapshot | null }) => void;
   /**
-   * Review-admission readers pass `true`: every GitHub read is fresh (the
-   * read cache is skipped), a stored verdict is never admission evidence —
-   * the head CI of the current head is re-read fresh on every call, because a
-   * rerun of the same head can be queued while a stored verdict still says
-   * complete (OPE-15127) — and a fresh head that differs from the reviewed
-   * head the board stored answers `head_moved` before any CI read (OPE-15127).
+   * Review-admission reads GitHub fresh, rejecting a moved head before CI.
+   * When the review budget is exhausted only, a recent authoritative board
+   * snapshot for the same PR and stored head can supply a completed verdict.
    * Everything else — monitor ticks, sweeps, wake gates — shares the process
    * read cache (OPE-12397); it never decides the verdict, so a cached answer
    * cannot admit a review decision.
@@ -704,14 +733,8 @@ export function createReviewPullRequestCiResolver(input: {
     } catch (error) {
       tokenError = error instanceof GitHubReviewBudgetError ? `token_provider:${error.reason}` : "token provider failed";
     }
-    // OPE-15127: admission never answers from a stored verdict — not even a
-    // webhook one for a head a fresh pull read confirms. The same head can be
-    // re-run while the new check_run deliveries are delayed: a stored complete
-    // would admit a queued rerun. Admission therefore re-reads the head CI of
-    // the current head on every call. The reviewed head the board stored (the
-    // work-product metadata, kept by the PR sync and the webhook) is compared
-    // with the fresh head: a different current head is "head_moved" before any
-    // CI read, even when the new head is fully green and no webhook named it.
+    // Prefer live admission evidence to detect reruns and moved heads. Only
+    // budget exhaustion permits the bounded authoritative snapshot fallback below.
     try {
       const head = await resolvePullRequestHeadCi({
         reference,
@@ -729,6 +752,12 @@ export function createReviewPullRequestCiResolver(input: {
           headSha: head.headSha,
           ...(typeof head.finalCheckConclusion === "string" ? { finalCheckConclusion: head.finalCheckConclusion } : {}),
         };
+      }
+      if (fresh && head.reason?.includes("budget_exhausted")) {
+        const snapshot = readFreshReviewCiSnapshot(companyId, reference, target.knownHeadSha);
+        if (snapshot && ["success", "failure"].includes(snapshot.finalCheckConclusion)) {
+          return { ...snapshot, pullRequestUrl, reason: `budget_exhausted_cached_${snapshot.finalCheckConclusion}` };
+        }
       }
       return {
         state: "unknown",

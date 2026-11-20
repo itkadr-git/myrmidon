@@ -21,6 +21,16 @@ The production runtime resolution check ignores JavaScript comments when it
 identifies import specifiers, including comments before unrelated strings.
 Run it with `node scripts/myrmidon/check-prod-runtime-resolution.mjs --dist server/dist`.
 
+## Review CI Fallback
+
+When a pull request has no aggregate `CI result`, the review gate reads its
+latest check runs. A queued check suite is excluded only when a GitHub Actions
+workflow run on the exact head identifies the `pull_request` workflow at
+`.github/workflows/review-label-sync.yml`. This post-verdict workflow must not
+block the verdict it waits for. Missing or incomplete workflow provenance fails
+closed. After exclusion, every remaining check must be completed successfully;
+failed, cancelled, and pending checks still block the transition.
+
 ## Dependency Lockfile Policy
 
 GitHub Actions owns `pnpm-lock.yaml`.
@@ -50,6 +60,60 @@ remain governed by the repository ruleset.
 When changing the workflow path or branch, authorize the new reference before
 updating the caller. Retain older authorized SHA references while queued runs or
 supported reruns still use them.
+
+## Acceptance Service Credentials
+
+Company board operators can issue a certificate-bound acceptance service credential with `POST /api/companies/:companyId/acceptance-service-credentials`, supplying a lowercase SHA-256 certificate fingerprint in `certificateSha256` and a future ISO timestamp in `expiresAt`. The response returns the bearer token once; store it securely. Revoke it with `DELETE /api/companies/:companyId/acceptance-service-credentials/:id`. Both operations are audited. Issuing a credential does not enable privileged acceptance. To run the isolated service listener, set `MYRMIDON_ACCEPTANCE_SERVICE_PORT`, `MYRMIDON_ACCEPTANCE_SERVICE_TLS_KEY_FILE`, `MYRMIDON_ACCEPTANCE_SERVICE_TLS_CERT_FILE`, and `MYRMIDON_ACCEPTANCE_SERVICE_TLS_CA_FILE`; `MYRMIDON_ACCEPTANCE_SERVICE_HOST` defaults to loopback. The listener requires a CA-verified client certificate and a matching bearer credential. `GET /api/service/issues/:id/acceptance-scenarios` returns a tenant-scoped snapshot with a strong ETag derived from the issue ID, epoch and revision identity; an exact `If-Match` mismatch returns 412. This is a point-in-time read, not an atomic authorization for an external GitHub verdict. Privileged acceptance remains disabled.
+
+
+## Privileged PR Gates
+
+Untrusted PR CI runs without internal secrets. Privileged `pull_request_target`
+workflows execute only code checked out at the event base SHA, never PR head.
+New privileged workflows require security review and a narrowly scoped Actions
+policy allowance for the reviewed workflow path; never allow all workflows.
+
+The privileged acceptance job is disabled in the workflow. A skipped job is not
+an acceptance verification. The script is testable independently, but enabling
+it requires the security prerequisites below and a separate reviewed change.
+
+The acceptance gate skips PRs without an OPE key and prints zero verified
+documents. For linked keys, every document must be fetched and verified; any
+API, parsing or validation error fails the gate. Its successful log reports
+`Documents verified` and the event base and head SHAs. A green check is not a
+live acceptance or deployment verification. Title and body edits rerun the gate;
+changes during a run fail it. Document changes do not trigger GitHub checks:
+maintainers must rerun the gate after an acceptance document changes and before
+merge. The log records the fetched document and revision IDs as a snapshot, not
+proof that the document remained unchanged afterwards. The commitperclip review
+uses the ephemeral GitHub token with read access to contents and pull requests,
+and write access to issue comments; it does not receive the App private key.
+Review runs for each PR are serialized and update the signed `github-actions[bot]`
+comment. Older commitperclip App comments cannot be edited by the new identity;
+they remain historical, and the current comment identifies them as such.
+
+Before activation, ADM/Alex must configure both `myrmidon-acceptance-trusted`
+and `myrmidon-acceptance-external` environments with environment-scoped
+`MYRMIDON_ACCEPTANCE_API_URL`, `MYRMIDON_ACCEPTANCE_API_KEY` and
+`MYRMIDON_ACCEPTANCE_COMPANY_ID`. The external environment must require
+maintainer approval and prevent self-approval. A dedicated acceptance-reader
+capability or authenticated gateway must bind its credential immutably to one
+company, allow only GET issue and GET acceptance-scenarios, and deny all other
+routes and methods. It must enforce expiry, revocation, audit and response-size
+limits. Normal agent keys and read-only board keys do not satisfy this contract.
+The gate expects issue `identifier` and `companyId`, and document `id`, `body`
+and `latestRevisionId` at its existing API paths. Verify cross-company identifier
+and UUID requests, mutations before side effects, and access to other documents,
+secrets, agents and plugins are denied using the actual credential. If a gateway
+is used, block runner access to the board and authenticate and encrypt internal
+transport. Both environments must use an isolated, single-job ephemeral
+self-hosted runner in the `myrmidon-acceptance` group, labelled
+`myrmidon-acceptance-ephemeral`, restricted to this workflow. Never place the
+internal secret on a public GitHub runner. Do not activate until the credential
+restriction and runner isolation are verified.
+Allow only the reviewed acceptance and commitperclip workflow paths under the
+applicable Actions policy after security review. Do not change policies or
+secrets as part of this code change.
 
 ## Start Dev
 

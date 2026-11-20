@@ -479,8 +479,7 @@ async function open(request, deps = {}) {
     }
     let healed = null;
     if (!scratch && known.class !== "G" && isGitCopy(known.path)) {
-      // A copy left half-way (merge/rebase/cherry-pick in progress, unresolved stages, detached
-      // head, another branch than the registry or the caller says) is repaired, not handed on.
+      // Preserve unfinished Git operations; recover branch drift and bare copies separately.
       healed = recover.recoverCopy(ctx, git, known.path, {
         key,
         expectedBranch: request.branch || known.branch || branch,

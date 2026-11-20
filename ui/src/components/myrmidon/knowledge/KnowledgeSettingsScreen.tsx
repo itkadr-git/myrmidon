@@ -7,7 +7,7 @@
 // (`ui`, `env` or `default`). Saving writes only the fields the operator
 // changed; the next read badges those `ui`.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "@/i18n";
 import { Badge } from "@/components/ui/badge";
@@ -125,9 +125,23 @@ function CompanyKnowledgeSettings({ selectedCompanyId }: { selectedCompanyId: st
 
   const [draft, setDraft] = useState<Draft | null>(null);
   const [saved, setSaved] = useState(false);
+  const baseline = useRef<Draft | null>(null);
 
   useEffect(() => {
-    if (query.data) setDraft(draftFromView(query.data));
+    if (!query.data) return;
+    const next = draftFromView(query.data);
+    const previous = baseline.current;
+    baseline.current = next;
+    setDraft((current) => {
+      if (!current || !previous) return next;
+      const merged = { ...next };
+      for (const key of Object.keys(next) as (keyof Draft)[]) {
+        if (JSON.stringify(current[key]) !== JSON.stringify(previous[key])) {
+          Object.assign(merged, { [key]: current[key] });
+        }
+      }
+      return merged;
+    });
   }, [query.data]);
 
   const mutation = useMutation({
@@ -340,12 +354,13 @@ function CompanyKnowledgeSettings({ selectedCompanyId }: { selectedCompanyId: st
             <Button
               type="button"
               variant="outline"
-              onClick={() =>
+              onClick={() => {
                 setDraft({
                   ...draft,
                   sectionReviewers: draft.sectionReviewers.filter((_, i) => i !== index),
-                })
-              }
+                });
+                setSaved(false);
+              }}
             >
               {t("knowledgeSettings.removeReviewer")}
             </Button>
@@ -355,7 +370,10 @@ function CompanyKnowledgeSettings({ selectedCompanyId }: { selectedCompanyId: st
           type="button"
           variant="outline"
           disabled={draft.sectionReviewers.length >= KNOWLEDGE_SECTION_REVIEWERS_MAX}
-          onClick={() => setDraft({ ...draft, sectionReviewers: [...draft.sectionReviewers, emptyReviewer()] })}
+          onClick={() => {
+            setDraft({ ...draft, sectionReviewers: [...draft.sectionReviewers, emptyReviewer()] });
+            setSaved(false);
+          }}
         >
           {t("knowledgeSettings.addReviewer")}
         </Button>

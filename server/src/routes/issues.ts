@@ -124,6 +124,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
+import { executionParticipantsSchema } from "./execution-participants-schema.js";
 import {
   and,
   asc,
@@ -131,6 +132,7 @@ import {
   eq,
   inArray,
   isNull,
+  lt,
   ne,
   notInArray,
   or,
@@ -15006,7 +15008,12 @@ export function issueRoutes(
       assertBoard(req);
       const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
       if (!issue) return;
-      const body = req.body as { returnAssignee?: { type?: string; agentId?: string | null } | null; currentParticipant?: { type?: string; agentId?: string | null } | null };
+      const parsedBody = executionParticipantsSchema.safeParse(req.body);
+      if (!parsedBody.success) {
+        res.status(400).json({ error: "Invalid execution participant repair payload" });
+        return;
+      }
+      const body = parsedBody.data;
       const currentState = parseIssueExecutionState(issue.executionState);
       if (!currentState) {
         res.status(409).json({ error: "Issue has no valid execution state" });
@@ -15015,7 +15022,9 @@ export function issueRoutes(
       const nextState = { ...currentState };
       for (const key of ["returnAssignee", "currentParticipant"] as const) {
         if (!(key in body)) continue;
-        const value = body[key];
+        const value = key === "returnAssignee"
+          ? ("returnAssignee" in body ? body.returnAssignee : undefined)
+          : ("currentParticipant" in body ? body.currentParticipant : undefined);
         if (value !== null && (value?.type !== "agent" || !value.agentId)) {
           res.status(400).json({ error: `${key} must be an agent participant or null` });
           return;
@@ -15714,6 +15723,7 @@ export function issueRoutes(
         const routingStore = createPgReviewRoutingStore(db);
         candidateLoads = await routingStore.loadByAgent(existing.companyId);
       }
+      const requestedExecutionStatus = typeof updateFields.status === "string" ? updateFields.status : undefined;
       const transition = applyIssueExecutionPolicyTransition({
         // myrmidon(OPE-9031): senior escalation chain for the round limit.
         issue: transitionIssue,
@@ -15791,7 +15801,8 @@ export function issueRoutes(
           );
         }
       }
-      if (transition.decision?.outcome === "changes_requested") {
+      let reviewCiAudit: { source: string; headSha: string | null } | null = null;
+      if (transition.decision?.outcome === "changes_requested" || transition.decision?.outcome === "approved") {
         let diagnostic: Parameters<NonNullable<Parameters<typeof createReviewPullRequestCiResolver>[0]["onDiagnostic"]>>[0] | null = null;
         // OPE-15004: the write verdict gate is review admission — its reads are
         // always fresh, never served from the read cache.
@@ -15800,11 +15811,35 @@ export function issueRoutes(
           issueId: existing.id,
         });
         logReviewWriteCi({ issueId: existing.id, runId: actor.runId, ci, diagnostic });
-        if (ci.state === "pending" || ci.state === "unknown") {
+        reviewCiAudit = (ci.reason === "budget_exhausted_cached_success" || ci.reason === "budget_exhausted_cached_failure") && transition.decision?.outcome === "changes_requested"
+          ? { source: ci.reason, headSha: ci.headSha } : null;
+        if (ci.state === "pending" || ci.state === "unknown" || (ci.state === "complete" && ((ci.finalCheckConclusion !== "success" && !(ci.reason === "budget_exhausted_cached_failure" && transition.decision?.outcome === "changes_requested")) || (transition.decision?.outcome === "approved" && ci.reason?.startsWith("budget_exhausted_cached_"))))) {
+          if (ci.reason?.includes("budget_exhausted")) {
+            // A triggered CI-wait monitor otherwise gets rearmed by the stale
+            // monitor sweep and repeatedly wakes a reviewer who cannot decide.
+            await db.update(issueRows).set({
+              monitorNextCheckAt: new Date(Date.now() + 61 * 60_000),
+              monitorWakeRequestedAt: null,
+              executionState: sql`jsonb_set(${issueRows.executionState}, '{reviewCiBudgetDeferred}', 'true'::jsonb, true)`,
+            }).where(and(
+              eq(issueRows.id, existing.id),
+              eq(issueRows.companyId, existing.companyId),
+              eq(issueRows.status, "in_review"),
+              or(
+                isNull(issueRows.monitorNextCheckAt),
+                lt(issueRows.monitorNextCheckAt, new Date(Date.now() + 60 * 60_000)),
+              ),
+              sql`${issueRows.executionState} -> 'monitor' ->> 'status' = 'triggered'`,
+              sql`${issueRows.executionState} -> 'monitor' ->> 'serviceName' = 'Review CI wait'`,
+              sql`${issueRows.executionState} -> 'currentParticipant' ->> 'agentId' = ${actor.agentId ?? null}`,
+            ));
+          }
           throw unprocessable(
             ci.state === "pending"
               ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
-              : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
+              : ci.reason?.includes("budget_exhausted")
+                ? "REQUEST CHANGES rejected: GitHub review budget exhausted. Apply a backoff of at least 61 minutes before retrying; do not repeat the verdict immediately."
+                : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
           );
         }
       }
@@ -16945,6 +16980,7 @@ export function issueRoutes(
               ...updateFields,
               identifier: updated.identifier,
               authorizationReason: issueMutationAuthorizationReason,
+              ...(reviewCiAudit ? { reviewCiAudit } : {}),
               changes,
               ...(reviewInteractionId ? { reviewInteractionId } : {}),
               ...(commentBody ? { source: "comment" } : {}),
@@ -17033,7 +17069,7 @@ export function issueRoutes(
                 )
               : [];
             const lockedTransitionIssue: typeof transitionIssue = {
-              ...existing,
+              ...transitionIssue,
               ...lockedExisting,
               assigneeAgentRole: undefined,
               executionReviewParticipantAgentIds: lockedReviewParticipants,
@@ -17052,7 +17088,8 @@ export function issueRoutes(
               previousPolicy: previousExecutionPolicy,
               // myrmidon(OPE-10045): re-check a pre-merge approval as the
               // approval it is, so a stage that changed under the lock refuses it.
-              requestedStatus: reviewApprovalPendingMerge ? "done" : updateFields.status,
+              // Recompute from the request, not the preliminary transition's status.
+              requestedStatus: reviewApprovalPendingMerge ? "done" : requestedExecutionStatus,
               requestedAssigneePatch: explicitAssigneePatch,
               actor: {
                 agentId: actor.agentId ?? null,
@@ -17086,7 +17123,7 @@ export function issueRoutes(
               updateFields.executionState = currentMergedState;
               issueUpdateData.executionState = currentMergedState;
             }
-            if (lockedTransition.decision?.outcome === "changes_requested") {
+            if (lockedTransition.decision?.outcome === "changes_requested" || lockedTransition.decision?.outcome === "approved") {
               let diagnostic: Parameters<NonNullable<Parameters<typeof createReviewPullRequestCiResolver>[0]["onDiagnostic"]>>[0] | null = null;
               // OPE-15004: the write verdict gate is review admission — its reads are
               // always fresh, never served from the read cache.
@@ -17095,16 +17132,20 @@ export function issueRoutes(
                 issueId: lockedExisting.id,
               });
               logReviewWriteCi({ issueId: lockedExisting.id, runId: actor.runId, ci, diagnostic });
-              if (ci.state === "pending" || ci.state === "unknown") {
+              reviewCiAudit = (ci.reason === "budget_exhausted_cached_success" || ci.reason === "budget_exhausted_cached_failure") && lockedTransition.decision?.outcome === "changes_requested"
+                ? { source: ci.reason, headSha: ci.headSha } : null;
+              if (ci.state === "pending" || ci.state === "unknown" || (ci.state === "complete" && ((ci.finalCheckConclusion !== "success" && !(ci.reason === "budget_exhausted_cached_failure" && lockedTransition.decision?.outcome === "changes_requested")) || (lockedTransition.decision?.outcome === "approved" && ci.reason?.startsWith("budget_exhausted_cached_"))))) {
                 throw unprocessable(
                   ci.state === "pending"
                     ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
-                    : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
+                    : ci.reason?.includes("budget_exhausted")
+                      ? "REQUEST CHANGES rejected: GitHub review budget exhausted. Apply a backoff of at least 61 minutes before retrying; do not repeat the verdict immediately."
+                      : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
                 );
               }
               // myrmidon(OPE-11970): remember the pull request head this return was made on.
               // The next return on the same head does not wake the executor again.
-              if (updateFields.executionState && typeof updateFields.executionState === "object") {
+              if (lockedTransition.decision?.outcome === "changes_requested" && updateFields.executionState && typeof updateFields.executionState === "object") {
                 updateFields.executionState = withChangesRequestedHeadSha(
                   updateFields.executionState as Record<string, unknown>,
                   ci.headSha,
@@ -18055,6 +18096,7 @@ export function issueRoutes(
             ...updateFields,
             identifier: issue.identifier,
             authorizationReason: issueMutationAuthorizationReason,
+            ...(reviewCiAudit ? { reviewCiAudit } : {}),
             changes: issueChanges,
             ...(blockedLoopSignature
               ? { [BLOCKED_LOOP_SIGNATURE_KEY]: blockedLoopSignature }

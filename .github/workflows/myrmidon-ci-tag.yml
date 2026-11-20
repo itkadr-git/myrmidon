@@ -490,6 +490,9 @@ jobs:
           printf 'Running %s\n' "${files[@]}"
           node --test "${files[@]}"
 
+      - name: Privileged PR gate tests (node:test)
+        run: node --test .github/scripts/tests/acceptance-gate.test.mjs .github/scripts/tests/privileged-workflows.test.mjs
+
       - name: Secrets (gitleaks, new commits)
         if: ${{ !cancelled() }}
         env:
@@ -760,6 +763,11 @@ jobs:
           if [ ! -s "$jobs_file" ]; then
             echo "ERROR: Unable to fetch job data from GitHub API after retries" >&2
             exit 1
+          fi
+          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ]; then
+            export CI_ATTEMPT_STARTED_AT
+            CI_ATTEMPT_STARTED_AT="$(gh api "repos/$REPO/actions/runs/$RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --jq '.run_started_at // empty')"
+            [ -n "$CI_ATTEMPT_STARTED_AT" ] || { echo 'ERROR: Missing attempt start timestamp' >&2; exit 1; }
           fi
           # No checkout: it fails on some self-hosted runners. Read the script of this commit through the API.
           gh api -H "Accept: application/vnd.github.raw" "repos/$REPO/contents/scripts/myrmidon/ci/queue-metrics.mjs?ref=$GITHUB_SHA" > "$RUNNER_TEMP/queue-metrics.mjs"

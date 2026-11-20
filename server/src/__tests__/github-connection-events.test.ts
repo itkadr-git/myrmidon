@@ -14,7 +14,7 @@ import {
   toolApplications,
   toolConnections,
 } from "@myrmidon/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { workProductService } from "../services/work-products.js";
 import { githubConnectionEventService } from "../services/github-connection-events.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
@@ -112,14 +112,19 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
       providerTenant: { github: { userId: "42", login: "octocat", installationCount: 1, repositoryCount: 1,
         repositorySelection: "selected", installationIds: ["101"], installationOwnerLogins: ["paperclipai"] } },
     });
-    await db.insert(issues).values({ id: issueId, companyId, title: "PR task", status: "todo", assigneeAgentId: agentId });
+    const deferredUntil = new Date("2026-11-16T13:00:00.000Z");
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "PR task", status: "in_review", assigneeAgentId: agentId,
+      monitorNextCheckAt: deferredUntil,
+      executionState: { reviewCiBudgetDeferred: true, status: "pending", currentStageId: null, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId, userId: null }, returnAssignee: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null, monitor: { status: "triggered", nextCheckAt: null, lastTriggeredAt: "2026-11-16T11:50:00.000Z", attemptCount: 1, notes: "Review CI wait", scheduledBy: "assignee", serviceName: "Review CI wait", externalRef: null, timeoutAt: null, maxAttempts: null, recoveryPolicy: null, clearedAt: null, clearReason: null } },
+    });
     const [product] = await db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", externalId: "paperclipai/paperclip#pull/123", title: "PR #123", status: "open", metadata: { repository: "paperclipai/paperclip", number: 123, headSha: "a".repeat(40) } }).returning({ id: issueWorkProducts.id });
     await db.insert(externalObjects).values({ companyId, providerKey: "github", objectType: "pull_request", externalId: "paperclipai/paperclip#pull/123", statusKey: "open", statusCategory: "open", statusTone: "info", isTerminal: false, data: { provider: "github", owner: "paperclipai", repo: "paperclip", number: 123, state: "open" } });
     const sync = (id: string, headSha: string) => ({
       id, provider: "github" as const, event: "pull_request", action: "synchronize", installationId: "101", repositoryId: "99", createdAt: "2026-11-16T12:00:00.000Z", bindingIds: [`${grantId}_101`],
       payload: { repository: "paperclipai/paperclip", number: 123, state: "open", merged: false, updatedAt: "2026-11-16T12:00:00.000Z", url: "https://github.com/paperclipai/paperclip/pull/123", headRef: "bot/GHE-1", headSha, senderLogin: "bot-eng" },
     });
-    const queue = [sync("delivery-sync-same", "a".repeat(40)), sync("delivery-sync-new", "b".repeat(40)), sync("delivery-sync-new-again", "b".repeat(40))];
+    const queue = [sync("delivery-sync-same", "a".repeat(40)), sync("delivery-sync-new", "b".repeat(40)), sync("delivery-sync-new-again", "b".repeat(40)), sync("delivery-sync-unrelated", "c".repeat(40))];
     const connector = { getCapabilities: vi.fn(async () => ["github.code" as const]), startAuthorization: vi.fn(), claim: vi.fn(), refresh: vi.fn(), revoke: vi.fn(), setWebhookBinding: vi.fn(async () => undefined), leaseEvents: vi.fn(async () => ({ leaseId: randomUUID(), events: [queue.shift()!] })), acknowledgeEvents: vi.fn(async () => 1) } as unknown as PaperclipCloudConnector;
     let currentTime = new Date("2026-11-16T12:00:05.000Z");
     const service = githubConnectionEventService(db, { connector, now: () => currentTime });
@@ -128,6 +133,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     // same head: no row
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, failed: 0 });
     expect(await headRows()).toHaveLength(0);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.monitorNextCheckAt).toEqual(deferredUntil);
 
     // new head: one row on the task with the old and the new sha
     currentTime = new Date("2026-11-16T12:00:30.000Z");
@@ -136,11 +142,19 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ actorType: "system", entityType: "issue", runId: null });
     expect(rows[0]!.details).toMatchObject({ workProductId: product!.id, headShaChanged: true, fromSha: "a".repeat(40), toSha: "b".repeat(40), sender: "bot-eng" });
+    const [afterNewHead] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(afterNewHead?.monitorNextCheckAt?.getTime()).toBeLessThanOrEqual(currentTime.getTime());
 
     // the same new head again: still one row
     currentTime = new Date("2026-11-16T12:01:00.000Z");
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, failed: 0 });
     expect(await headRows()).toHaveLength(1);
+
+    // A different monitor's deadline must not be shortened by a PR push.
+    await db.update(issues).set({ monitorNextCheckAt: deferredUntil, executionState: sql`jsonb_set(${issues.executionState}, '{monitor,serviceName}', '"External service"'::jsonb)` }).where(eq(issues.id, issueId));
+    currentTime = new Date("2026-11-16T12:01:30.000Z");
+    await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, failed: 0 });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.monitorNextCheckAt).toEqual(deferredUntil);
   });
 
   it("updates an agent-registered PR work product on synchronize and writes the head-change row (myrmidon AGENT-PR-WP-NORMALIZE)", async () => {

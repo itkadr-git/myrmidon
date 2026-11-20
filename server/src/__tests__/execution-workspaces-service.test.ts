@@ -3385,6 +3385,8 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       assigneeAgentId: reviewerAgentId,
     });
     expect(result.sourceIssueStatusChanged).toBe(true);
+    expect(result.rescueRef?.branchName).toBeTruthy();
+    await expect(readGit(worktreePath, ["branch", "--show-current"])).resolves.toBe("feature/recorded");
 
     const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(sourceIssue).toMatchObject({
