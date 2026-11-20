@@ -781,7 +781,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
       const result = await executor.execute(claim, createMockReporter().reporter);
       expect(result.status).toBe("failed");
       expect(result.error).toMatch(/timer.*(start|confirm)/i);
-      expect(readFileSync(calls, "utf8")).toMatch(/^ufw status\nufw status verbose\nsystemctl show --property=Version --value\n(?:systemd-run[^\n]*\n)?timer-start\n$/);
+      expect(readFileSync(calls, "utf8")).toMatch(/^ufw status\nufw status verbose\nsystemctl show --property=Version --value\n(?:systemd-run[^\n]*\n)?timer-start\nsystemctl stop myrmidon-firewall-[a-f0-9-]+\.timer\n$/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

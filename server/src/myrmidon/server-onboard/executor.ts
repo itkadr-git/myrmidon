@@ -350,8 +350,22 @@ export class FleetOnboardExecutor {
               throw new Error("Firewall rollback timer prerequisites unavailable; refusing unsafe firewall changes");
             }
 
-            // Snapshot restoration overwrites concurrent changes; the existing timer
-            // cannot provide scoped rollback. Refuse mutation until both are safe.
+            // Probe a uniquely named transient timer without changing firewall state.
+            // This is not a rollback: mutations remain forbidden until a scoped
+            // restore and its ownership protocol are implemented.
+            const timer = `myrmidon-firewall-${randomUUID()}`;
+            try {
+              const start = await activeSsh.execute(`: start-myrmidon-firewall-timer; sudo systemd-run --unit=${timer} --on-active=5m /bin/true >/dev/null && sudo systemctl is-active --quiet ${timer}.timer && echo timer-confirmed`);
+              if (start.exitCode !== 0 || start.stdout.trim() !== "timer-confirmed") {
+                throw new Error("Firewall rollback timer start or confirmation failed; refusing unsafe firewall changes");
+              }
+              const check = await activeSsh.execute(`: check-myrmidon-firewall-timer; sudo systemctl is-active --quiet ${timer}.timer && echo timer-confirmed`);
+              if (check.exitCode !== 0 || check.stdout.trim() !== "timer-confirmed") {
+                throw new Error("Firewall rollback timer liveness confirmation failed; refusing unsafe firewall changes");
+              }
+            } finally {
+              await activeSsh.execute(`: stop-myrmidon-firewall-timer; sudo systemctl stop ${timer}.timer`).catch(() => {});
+            }
             throw new Error("Scoped firewall rollback unavailable; refusing unsafe firewall changes");
           }
 
