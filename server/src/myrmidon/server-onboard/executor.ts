@@ -326,7 +326,13 @@ export class FleetOnboardExecutor {
             }
 
             // Capture the default policy without overwriting concurrent UFW rules.
-            const policy = await activeSsh.execute(": snapshot-myrmidon-firewall; sudo ufw status verbose");
+            let policy: SshExecutionResult;
+            try {
+              policy = await activeSsh.execute(": snapshot-myrmidon-firewall; sudo ufw status verbose");
+            } catch (error) {
+              const cause = error instanceof Error ? error.message : String(error);
+              throw new Error(`Firewall default policy unconfirmed; refusing unsafe firewall changes: ${cause}`);
+            }
             const policyLines = policy.stdout.split(/\r?\n/);
             const policyStatusLines = policyLines.filter((line) => /^\s*Status:/i.test(line));
             if (policy.exitCode === 0 && (policyStatusLines.length !== 1 || !/^Status: active\s*$/.test(policyStatusLines[0] ?? ""))) {
