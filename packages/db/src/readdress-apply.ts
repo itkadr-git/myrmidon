@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { createDb, type Db } from "./index.js";
-import { resolveAddresslessCard, type PendingCard } from "./readdress-report.js";
+import type { PendingCard } from "./readdress-report.js";
 
 export interface ReaddressApplyOptions {
   /**
@@ -100,6 +100,7 @@ export async function applyReaddress(
   databaseUrlOrDb: string | Db,
   options: ReaddressApplyOptions = {},
 ): Promise<ReaddressApplyResult> {
+  const { resolveAddresslessCard } = await import("./readdress-report.js");
   const dryRun = options.dryRun !== false;
   const now = options.now ?? new Date();
 
