@@ -84,7 +84,7 @@ export class FleetOnboardExecutor {
         port: claim.server.port,
         username: claim.server.username,
         hostVerifier: async (fingerprint) => {
-          if (discoveredFingerprint) return discoveredFingerprint === fingerprint;
+          if (discoveredFingerprint && discoveredFingerprint !== fingerprint) return false;
           if (!reporter.pinHostKey || !(await reporter.pinHostKey(fingerprint))) return false;
           discoveredFingerprint = fingerprint;
           return true;
