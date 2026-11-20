@@ -87,6 +87,23 @@ holding it, both vendor mechanism, no code:
    without a code change. If this permission turns out to need its own UI toggle, that is new
    work outside L5's scope (note it as a follow-up, not part of this fix).
 
+### Assignment policy and the standard preset
+
+For `tasks:assign`, the authorization service evaluates the target agent's
+`permissions.authorizationPolicy`, as well as applicable issue and project
+policies. The exact metadata-only object `{ "trustPreset": "standard" }` adds
+no assignment restriction. This does not grant assignment permission: the
+normal company, visibility, grant, and low-trust checks still apply. Unknown
+policy data remains fail-closed; private, protected, and blocked assignment
+policies continue to be evaluated by their existing rules. Other metadata-only
+combinations are not made permissive by this change.
+
+The agent permissions route is the API surface for editing the target's policy;
+this does not establish who last configured any particular production policy.
+Rollout requires the normal reviewed server release, with no policy or grant
+changes. To roll back, revert the server change and redeploy the prior release;
+the prior standard-only denial will return.
+
 ## 3. What L5 did not change
 
 - The `issue:mutate` boundary decision (`decideIssueAccess`), evaluated before any of this,
