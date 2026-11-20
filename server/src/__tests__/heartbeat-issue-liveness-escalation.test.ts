@@ -12,7 +12,6 @@ import {
   companySkills,
   costEvents,
   createDb,
-  documents,
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -116,7 +115,6 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     await db.delete(issueTreeHolds);
     await db.delete(issueRelations);
     await db.delete(issueRecoveryActions);
-    await db.delete(documents);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
