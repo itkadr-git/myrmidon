@@ -19,6 +19,17 @@ describe("native finalization recovery scheduler", () => {
     expect(processRequest).toHaveBeenCalledTimes(2);
   });
 
+  it("bounds a busy pass and resumes on the next tick", async () => {
+    vi.useFakeTimers();
+    const processRequest = vi.fn().mockResolvedValue("processed");
+    const scheduler = startNativeFinalizationRequestScheduler({ db: {} as Db, processRequest, onError: vi.fn(), intervalMs: 100 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(processRequest).toHaveBeenCalledTimes(20);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(processRequest).toHaveBeenCalledTimes(40);
+    await scheduler.stop();
+  });
+
   it("does not overlap a running pass and awaits it during shutdown", async () => {
     vi.useFakeTimers();
     let finish!: (value: "idle") => void;
