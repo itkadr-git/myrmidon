@@ -863,7 +863,7 @@ exit 1
     }
   });
 
-  it("preserves concurrent operator changes when scoped rollback is unavailable", async () => {
+  it("preserves concurrent operator changes when the rollback timer cannot start", async () => {
     const rules = new Set(["operator-original"]);
     let statusRead = false;
     const ssh = new MockSshExecutor({ onCommand: (command) => {
@@ -871,6 +871,9 @@ exit 1
         statusRead = true;
         rules.add("operator-concurrent");
         return { exitCode: 0, stdout: "Status: active\n" };
+      }
+      if (command.includes("start-myrmidon-firewall-timer")) {
+        return { exitCode: 1, stderr: "timer unavailable" };
       }
       if (/ufw (allow|default|delete|disable|--force enable)/.test(command)) {
         rules.delete("operator-concurrent");
@@ -887,7 +890,8 @@ exit 1
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(statusRead).toBe(true);
     expect(result.status).toBe("failed");
-    expect(result.error).toMatch(/scoped.*rollback.*unavailable/i);
+    expect(ssh.hasExecuted(/start-myrmidon-firewall-timer/)).toBe(true);
+    expect(result.error).toMatch(/timer.*(start|confirm)/i);
     expect([...rules].sort()).toEqual(["operator-concurrent", "operator-original"]);
   });
 
