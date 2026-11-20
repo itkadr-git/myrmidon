@@ -223,6 +223,28 @@ describeEmbeddedPostgres("queryApprovedReviewOutcomes — bounded review-history
     expect(new Set([...first.records, ...second.records].map((record) => record.id)).size).toBe(3);
   });
 
+  it("paginates each decision once when an issue has multiple pull requests", async () => {
+    const issue = await makeIssue("OPE-D3");
+    await attachPullRequest(issue, 403);
+    await attachPullRequest(issue, 404);
+    for (let index = 0; index < 3; index += 1) {
+      await makeDecision({ issueId: issue, body: `multi PR ${index}`, createdAt: new Date(NOW.getTime() - (index + 1) * DAY_MS) });
+    }
+
+    const records = [];
+    let cursor: string | null = null;
+    for (let pageIndex = 0; pageIndex < 4; pageIndex += 1) {
+      const page = await queryApprovedReviewOutcomes(db!, { companyId, now: NOW, limit: 1, cursor });
+      records.push(...page.records);
+      cursor = page.nextCursor;
+      if (!cursor) break;
+    }
+    expect(cursor).toBeNull();
+    expect(records).toHaveLength(3);
+    expect(new Set(records.map((record) => record.id)).size).toBe(3);
+    expect(new Set(records.map((record) => record.pullRequest.number)).size).toBe(1);
+  });
+
   it("redacts secrets from approved bodies at the query boundary", async () => {
     const issue = await makeIssue("OPE-E1");
     await attachPullRequest(issue, 501);
