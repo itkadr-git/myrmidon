@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql as sqlTag } from "drizzle-orm";
 import { createDb } from "@myrmidon/db";
 import {
+  agents,
   companies,
   documentRevisions,
   documents,
@@ -29,6 +30,32 @@ afterEach(async () => {
 });
 
 d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
+  it("preserves acceptance documents and revisions when their agent is deleted", async () => {
+    const dbh = await startEmbeddedPostgresTestDatabase("acceptance-agent-delete-");
+    cleanups.push(() => dbh.cleanup());
+    const db = createDb(dbh.connectionString);
+    cleanups.push(async () => { await db.$client.end(); });
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const docId = randomUUID();
+    const revisionId = randomUUID();
+    await db.insert(companies).values({ id: companyA, name: "A" });
+    await db.insert(agents).values({ id: agentId, companyId: companyA, name: "Author", role: "engineer" });
+    await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task", identifier: "OPE-15217" });
+    await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "criteria", latestRevisionId: revisionId, latestRevisionNumber: 1, createdByAgentId: agentId, updatedByAgentId: agentId });
+    await db.insert(documentRevisions).values({ id: revisionId, documentId: docId, companyId: companyA, revisionNumber: 1, body: "criteria", createdByAgentId: agentId });
+    await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
+    const before = await issueAcceptanceSnapshotService(db).read(issueId);
+    await db.delete(agents).where(eq(agents.id, agentId));
+    const [doc] = await db.select().from(documents).where(eq(documents.id, docId));
+    const [revision] = await db.select().from(documentRevisions).where(eq(documentRevisions.id, revisionId));
+    expect(doc?.createdByAgentId).toBeNull();
+    expect(doc?.updatedByAgentId).toBeNull();
+    expect(revision?.createdByAgentId).toBeNull();
+    const after = await issueAcceptanceSnapshotService(db).read(issueId);
+    expect(after?.document).toEqual(before?.document);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it(
     "reads issue identity and document revision as one minimal snapshot",
     async () => {
