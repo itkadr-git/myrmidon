@@ -15723,6 +15723,7 @@ export function issueRoutes(
         const routingStore = createPgReviewRoutingStore(db);
         candidateLoads = await routingStore.loadByAgent(existing.companyId);
       }
+      const requestedExecutionStatus = typeof updateFields.status === "string" ? updateFields.status : undefined;
       const transition = applyIssueExecutionPolicyTransition({
         // myrmidon(OPE-9031): senior escalation chain for the round limit.
         issue: transitionIssue,
@@ -17068,7 +17069,7 @@ export function issueRoutes(
                 )
               : [];
             const lockedTransitionIssue: typeof transitionIssue = {
-              ...existing,
+              ...transitionIssue,
               ...lockedExisting,
               assigneeAgentRole: undefined,
               executionReviewParticipantAgentIds: lockedReviewParticipants,
@@ -17087,7 +17088,8 @@ export function issueRoutes(
               previousPolicy: previousExecutionPolicy,
               // myrmidon(OPE-10045): re-check a pre-merge approval as the
               // approval it is, so a stage that changed under the lock refuses it.
-              requestedStatus: reviewApprovalPendingMerge ? "done" : updateFields.status,
+              // Recompute from the request, not the preliminary transition's status.
+              requestedStatus: reviewApprovalPendingMerge ? "done" : requestedExecutionStatus,
               requestedAssigneePatch: explicitAssigneePatch,
               actor: {
                 agentId: actor.agentId ?? null,

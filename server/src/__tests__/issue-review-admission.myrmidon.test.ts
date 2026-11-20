@@ -14,6 +14,7 @@ import {
   agentTaskSessions,
   issueComments,
   issueExecutionDecisions,
+  issueThreadInteractions,
   issueWorkProducts,
   issues,
 } from "@myrmidon/db";
@@ -404,7 +405,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     }
     const monitor = { nextCheckAt: new Date(Date.now() + 60000).toISOString(), scheduledBy: "assignee", kind: "external_service", serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME, externalRef: issueId, recoveryPolicy: "wake_owner" };
     await ctx.db.insert(issues).values({
-      id: issueId, companyId, title: "Round limit recovery", status: "in_review", priority: "medium", assigneeAgentId: leadId, createdByAgentId: authorId,
+      id: issueId, companyId, title: "Round limit recovery", status: "in_review", priority: "medium", assigneeAgentId: leadId, responsibleAgentId: leadId, createdByAgentId: authorId,
       executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewerId }] }], monitor, reviewEscalationPolicy: { participantRoles: ["lead"], fallbackQueue: "review-recovery", timeoutAt: null, policyRevision: "round-limit-test" } } as any,
       executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewerId }, returnAssignee: { type: "agent", agentId: authorId }, completedStageIds: [], changesRequestedCount: 2, lastDecisionId: randomUUID(), lastDecisionOutcome: "changes_requested" },
       monitorNextCheckAt: new Date(monitor.nextCheckAt),
@@ -420,6 +421,14 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     const decisions = await ctx.db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, issueId));
     expect(decisions).toHaveLength(1);
     expect(decisions[0]).toMatchObject({ outcome: "changes_requested" });
+    expect(updated?.status).toBe("in_review");
+    expect(updated?.assigneeAgentId).toBe(reviewerId);
+    const recoveries = await ctx.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issueId));
+    expect(recoveries).toHaveLength(1);
+    expect(recoveries[0]).toMatchObject({ title: "Review escalation needs recovery", status: "pending", addresseeAgentId: leadId });
+    await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: fix verification." });
+    const afterReplay = await ctx.db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, issueId));
+    expect(afterReplay).toHaveLength(1);
   });
 
   // myrmidon(REVIEW-CHANGES-LOST-STAGE): when the review stage is missing from
