@@ -418,11 +418,40 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     ssh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
     ssh.mockResponse(/check-myrmidon-firewall-prerequisites/, { exitCode: 1 });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
-    const result = await executor.execute({
-      job: { id: "job-firewall-no-prerequisites", companyId: "c1", serverId: "s1" },
-      server: { hostname: "1.2.3.4", port: 22, username: "root" },
-      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
-    } as OnboardJobClaim & { secretValues: Record<string, string> }, createMockReporter().reporter);
+    const timestamp = new Date().toISOString();
+    const claim: OnboardJobClaim & { secretValues: Record<string, string> } = {
+      job: {
+        id: "job-firewall-no-prerequisites",
+        companyId: "c1",
+        serverId: "s1",
+        kind: "onboard",
+        status: "claimed",
+        step: "harden",
+        stepLog: [],
+        error: null,
+        createdBy: null,
+        startedAt: null,
+        finishedAt: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      server: {
+        id: "s1",
+        slug: "server-1",
+        hostname: "1.2.3.4",
+        port: 22,
+        username: "root",
+        protocol: "ssh",
+        passwordSecretKey: null,
+        keepPassword: true,
+        accessKeySecretKey: "fleet-server-1-access-key",
+        hostKeyFingerprint: null,
+      },
+      steps: ["harden"],
+      options: { keepPassword: true, installDocker: false, role: "generic" },
+      secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
 
     expect(result.error).toContain("rollback timer prerequisites unavailable");
     expect(ssh.hasExecuted(/prepare-myrmidon-firewall-restore|start-myrmidon-firewall-timer|apply-myrmidon-firewall-(allow|deny)/)).toBe(false);
