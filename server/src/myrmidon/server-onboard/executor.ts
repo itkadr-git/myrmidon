@@ -36,6 +36,7 @@ export interface ExecutorReporter {
     status: "succeeded" | "failed",
     error?: string | null,
     hostKeyFingerprint?: string | null,
+    verifiedAccessPublicKey?: string,
   ): Promise<void>;
 }
 
@@ -71,6 +72,7 @@ export class FleetOnboardExecutor {
   ): Promise<ExecutorExecutionResult> {
     const stepsCompleted: string[] = [];
     let discoveredFingerprint: string | null = claim.server.hostKeyFingerprint ?? null;
+    let verifiedAccessPublicKey: string | undefined;
     let currentStep: string | null = null;
     let activeSsh: SshExecutor | null = null;
     let activePrivateKey: string | null = claim.secretValues.accessKey ?? null;
@@ -243,6 +245,8 @@ export class FleetOnboardExecutor {
             if (!claim.server.accessKeySecretKey || !claim.secretValues.accessKey) {
               throw new Error("Cannot complete access without a durable access key");
             }
+
+            verifiedAccessPublicKey = pubKeyToInstall;
 
             // Optional password disable (only after key login verified)
             if (!claim.options.keepPassword) {
@@ -561,7 +565,7 @@ fi
 
       if (commitFirewall) await commitFirewall();
       if (commitPassword) await commitPassword();
-      await reporter.reportCompletion("succeeded", null, discoveredFingerprint);
+      await reporter.reportCompletion("succeeded", null, discoveredFingerprint, verifiedAccessPublicKey);
       pendingFirewallRollback = null;
       if (discardFirewallBackup) await discardFirewallBackup().catch(() => {});
       pendingPasswordRollback = null;

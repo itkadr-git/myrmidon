@@ -33,8 +33,8 @@ export async function runOnboardOnce(options: RunnerOptions): Promise<boolean> {
     async reportStep(step, result, detail) {
       await post(`${jobPath}/report`, { companyId: options.companyId, step, result, detail });
     },
-    async reportCompletion(status, error, hostKeyFingerprint) {
-      await post(`${jobPath}/report`, { companyId: options.companyId, status, error, hostKeyFingerprint });
+    async reportCompletion(status, error, hostKeyFingerprint, verifiedAccessPublicKey) {
+      await post(`${jobPath}/report`, { companyId: options.companyId, status, error, hostKeyFingerprint, verifiedAccessPublicKey });
     },
   });
   return true;

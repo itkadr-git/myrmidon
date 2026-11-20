@@ -4,7 +4,7 @@ import type { OnboardJob, OnboardJobKind, OnboardStepLogEntry } from "./domain.j
 import type { FleetOnboardStore, OnboardJobClaim } from "./store.js";
 import type { FleetOnboardSettings } from "./settings.js";
 import { appendOwnedFleetResource } from "@myrmidon/shared";
-import { sshPublicKey } from "./ssh-key.js";
+import { generateSshKeyPair, sshPublicKey } from "./ssh-key.js";
 
 const mockSettings: FleetOnboardSettings = {
   enabled: true,
@@ -305,13 +305,24 @@ describe("SERVER-ONBOARD logic", () => {
     expect(sshPublicKey(storedKey)).toBe(result.generatedPublicKey);
   });
 
-  it("retains the bootstrap password when an access report has no durable key", async () => {
+  it.each(["removed-key", "changed-key", "expired-job"] as const)("retains bootstrap after %s despite a worker completion report", async (scenario) => {
     const { mockStore, mockSecrets, mockGetServer, secretsStore, store } = createMocks();
     const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
     await service.addServer({ companyId: "company-1", slug: "no-durable-key", name: "Server", hostname: "192.0.2.7", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password", password: "bootstrap" }, createdBy: null });
-    await service.claim("company-1", "valid-executor-token");
+    const claim = await service.claim("company-1", "valid-executor-token");
+    const hostKeyFingerprint = "SHA256:first";
+    await service.pinHostKey("valid-executor-token", "company-1", "job-1", hostKeyFingerprint);
     await service.report("valid-executor-token", { companyId: "company-1", jobId: "job-1", entry: { step: "access", result: "ok", detail: null, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString() } });
+    const verifiedAccessPublicKey = sshPublicKey(claim!.secretValues.accessKey);
+    const keyName = store.servers[0].accessKeySecretKey;
+    if (scenario === "removed-key") delete secretsStore[keyName];
+    if (scenario === "changed-key") secretsStore[keyName] = generateSshKeyPair().privateKey;
+    if (scenario === "expired-job") store.jobs[0].status = "expired";
+    await expect(service.report("valid-executor-token", {
+      companyId: "company-1", jobId: "job-1", status: "succeeded", hostKeyFingerprint, verifiedAccessPublicKey,
+    })).rejects.toMatchObject({ status: 409 });
     expect(secretsStore[store.servers[0].passwordSecretKey]).toBe("bootstrap");
+    expect(store.jobs[0].status).not.toBe("succeeded");
   });
 
   it("authenticates ownership reports and derives server scope from the active job", async () => {
@@ -457,6 +468,7 @@ describe("SERVER-ONBOARD logic", () => {
     const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
     await service.addServer({ companyId: "company-1", slug: "retained", name: "Retained", hostname: "192.0.2.3", port: 22, username: "root", role: "generic", keepPassword: true, auth: { type: "password", password: "pwd-retained" }, createdBy: "actor-1" });
     expect(store.servers[0].keepPassword).toBe(true);
+    await service.claim("company-1", "valid-executor-token");
     await service.report("valid-executor-token", { companyId: "company-1", jobId: "job-1", entry: { step: "access", startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), result: "ok", detail: null } });
     expect(secretsStore[store.servers[0].passwordSecretKey]).toBe("pwd-retained");
   });

@@ -12,14 +12,14 @@
 // - at most one open job per server (partial unique index; createJob maps the
 //   violation to a 409 the UI can show);
 // - secrets are written before the registry names them, and the bootstrap
-//   password is deleted after the access step reports key login verified
+//   password is deleted only after successful onboarding with verified stored-key login
 //   (unless the owner chose to keep it);
 // - executor claims/reports require the shared executor token;
 // - one-time secret handoff: the claim response carries values exactly once
 //   and they never touch the step log (maskStepDetail re-masks detail).
 
 import { randomUUID } from "node:crypto";
-import { generateSshKeyPair } from "./ssh-key.js";
+import { generateSshKeyPair, sshPublicKey } from "./ssh-key.js";
 import { parseOwnedFleetResource } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
@@ -359,19 +359,46 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
     /** Executor report after each step; also the terminal transition. */
     async report(
       presentedToken: string | null | undefined,
-      input: { companyId: string; jobId: string; step?: string; entry?: OnboardStepLogEntry; status?: OnboardJob["status"]; error?: string | null; hostKeyFingerprint?: string | null },
+      input: { companyId: string; jobId: string; step?: string; entry?: OnboardStepLogEntry; status?: OnboardJob["status"]; error?: string | null; hostKeyFingerprint?: string | null; verifiedAccessPublicKey?: string },
     ): Promise<OnboardJob | null> {
       requireEnabled();
       requireExecutorToken(presentedToken);
       const job = await deps.store.getJob(input.companyId, input.jobId);
       if (!job) throw new OnboardServiceError(404, "Job not found");
+      if (job.status !== "claimed" && job.status !== "running") {
+        throw new OnboardServiceError(409, "Onboarding job is no longer active");
+      }
+
+      let bootstrapToDelete: string | null = null;
+      // The authenticated worker attests to fresh key-only login. Match that
+      // attestation against the current pin and the key in protected storage.
+      if (job.kind === "onboard" && input.status === "succeeded" && input.verifiedAccessPublicKey !== undefined) {
+        const server = await deps.getServer(job.companyId, job.serverId);
+        if (!server?.hostKeyFingerprint || server.hostKeyFingerprint !== input.hostKeyFingerprint ||
+            !server.accessKeySecretKey || !job.stepLog.some((step) => step.step === "access" && step.result === "ok")) {
+          throw new OnboardServiceError(409, "Cannot confirm verified onboarding access");
+        }
+        let publicKey: string | null = null;
+        try {
+          const key = await deps.secrets.readSecret(job.companyId, server.accessKeySecretKey);
+          if (key) publicKey = sshPublicKey(key);
+        } catch {
+          throw new OnboardServiceError(503, "Unable to confirm stored onboarding key");
+        }
+        if (publicKey !== input.verifiedAccessPublicKey) {
+          throw new OnboardServiceError(409, "Verified access key does not match protected storage");
+        }
+        if (!server.keepPassword) bootstrapToDelete = server.passwordSecretKey;
+      }
+
       const updated = await deps.store.updateJob(input.companyId, input.jobId, {
+        requireClaimed: true,
         status: input.status,
         step: input.step ?? (input.status ? null : undefined),
         stepLogEntry: input.entry,
         error: input.error ?? undefined,
       });
-      if (!updated) return null;
+      if (!updated) throw new OnboardServiceError(409, "Onboarding job is no longer active");
 
       // Server state follows the job.
       const isFailed = input.status === "failed" || input.entry?.result === "failed";
@@ -385,8 +412,16 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
         await deps.store.updateServerOnboard(job.companyId, job.serverId, { onboardState: "needs_attention" });
       } else if (input.entry?.step === "access" && input.entry.result === "ok") {
         await deps.store.updateServerOnboard(job.companyId, job.serverId, { onboardState: "onboarding" });
-        // An access report alone is not proof that the executor's key is durable.
-        // Keep the bootstrap credential until the key lifecycle verifies that proof.
+        // Intermediate reports never retire the bootstrap credential.
+      }
+      if (bootstrapToDelete) {
+        // Cleanup is after the terminal transition. A failed cleanup must not
+        // turn an already committed success into a rollback at the worker.
+        try {
+          await deps.secrets.deleteSecret(job.companyId, bootstrapToDelete);
+        } catch {
+          await writeAudit(job.companyId, "bootstrap_password_cleanup_failed", job.serverId, { jobId: job.id });
+        }
       }
       const actionName = input.status ? `job_${input.status}` : isFailed ? "job_failed" : "step_reported";
       await writeAudit(job.companyId, actionName, job.serverId, {

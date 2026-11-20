@@ -77,7 +77,7 @@ export interface FleetOnboardStore {
   updateJob(
     companyId: string,
     jobId: string,
-    patch: { status?: OnboardJobStatus; step?: string | null; stepLogEntry?: OnboardStepLogEntry; error?: string | null },
+    patch: { status?: OnboardJobStatus; step?: string | null; stepLogEntry?: OnboardStepLogEntry; error?: string | null; requireClaimed?: boolean },
   ): Promise<OnboardJob | null>;
   expireStale(olderThanMs: number): Promise<number>;
   /** Registry rows the onboarding flow owns (fleet-console reads them too). */
@@ -298,7 +298,11 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
           ...(finished ? { finishedAt: new Date() } : {}),
           updatedAt: new Date(),
         })
-        .where(and(eq(myrmidonFleetOnboardJobs.companyId, companyId), eq(myrmidonFleetOnboardJobs.id, jobId)))
+        .where(and(
+          eq(myrmidonFleetOnboardJobs.companyId, companyId),
+          eq(myrmidonFleetOnboardJobs.id, jobId),
+          patch.requireClaimed ? sql`${myrmidonFleetOnboardJobs.status} IN ('claimed', 'running')` : undefined,
+        ))
         .returning();
       return row ? toJob(row) : null;
     },

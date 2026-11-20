@@ -81,6 +81,7 @@ export const reportSchema = z
     status: z.enum(["running", "succeeded", "failed"]).optional(),
     error: z.string().max(2000).nullable().optional(),
     hostKeyFingerprint: z.string().max(256).nullable().optional(),
+    verifiedAccessPublicKey: z.string().max(256).optional(),
   })
   .strict();
 
@@ -216,6 +217,7 @@ export function onboardRoutes(deps: { service: OnboardService }) {
         status: body.status,
         error: body.error ?? null,
         hostKeyFingerprint: body.hostKeyFingerprint ?? null,
+        verifiedAccessPublicKey: body.verifiedAccessPublicKey,
       });
       if (!job) throw notFound("Job not found");
       res.json(job);
