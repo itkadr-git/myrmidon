@@ -168,7 +168,13 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(await settleNativeFinalizationRequest(db, requests[0].id, originalLease.leaseOwner!, recoveredAt, { errorCode: "expired" }, originalLease.leaseUntil!)).toBe(false);
       const [afterExpiry] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, requests[0].id));
       expect(afterExpiry).toMatchObject({ state: "processing", leaseOwner: originalLease.leaseOwner, errorCode: null });
-      const firstLease = await claimNativeFinalizationRequest(db, "worker-c", recoveredAt, 1000);
+      // Competing workers recovering the same crashed lease must not both own it.
+      const recoveryClaims = await Promise.all([
+        claimNativeFinalizationRequest(db, "worker-c", recoveredAt, 1000),
+        claimNativeFinalizationRequest(db, "worker-c", recoveredAt, 1000),
+      ]);
+      expect(recoveryClaims.filter(Boolean)).toHaveLength(1);
+      const firstLease = recoveryClaims.find(Boolean);
       expect(firstLease).toMatchObject({ id: requests[0].id, leaseOwner: "worker-c" });
       const reclaimedAt = new Date(recoveredAt.getTime() + 1001);
       const secondLease = await claimNativeFinalizationRequest(db, "worker-c", reclaimedAt, 1000);
