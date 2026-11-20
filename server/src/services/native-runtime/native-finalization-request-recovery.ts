@@ -34,11 +34,14 @@ export async function settleNativeFinalizationRequest(
   result: { decisionId: string } | { errorCode: string },
   leaseUntil: Date,
 ): Promise<boolean> {
+  if ("decisionId" in result) {
+    throw new Error("native_finalization_commit_requires_decision_transaction");
+  }
   return db.transaction(async (tx) => {
     const [settled] = await tx.update(nativeFinalizationRequests).set({
-      state: "decisionId" in result ? "committed" : "rejected",
-      resultDecisionId: "decisionId" in result ? result.decisionId : null,
-      errorCode: "errorCode" in result ? result.errorCode : null,
+      state: "rejected",
+      resultDecisionId: null,
+      errorCode: result.errorCode,
       completedAt: now, leaseOwner: null, leaseUntil: null,
     }).where(and(
       eq(nativeFinalizationRequests.id, requestId),
