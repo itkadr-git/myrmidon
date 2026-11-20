@@ -769,7 +769,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
   it("leaves UFW unchanged when the real timer launcher fails", async () => {
     const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-timer-fail-"));
     const calls = join(dir, "calls");
-    writeFileSync(join(dir, "sudo"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\nif [ "$*" = "ufw status" ]; then printf "Status: active\\n"; exit 0; fi\nif [ "$*" = "ufw status verbose" ]; then printf "Status: active\\nDefault: allow (incoming), allow (outgoing), disabled (routed)\\n"; exit 0; fi\nif [ "$*" = "systemctl show --property=Version --value" ]; then exit 0; fi\ncase "$1" in systemd-run) exec "$@";; esac\nexit 97\n');
+    writeFileSync(join(dir, "sudo"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\nif [ "$*" = "ufw status" ]; then printf "Status: active\\n"; exit 0; fi\nif [ "$*" = "ufw status verbose" ]; then printf "Status: active\\nDefault: allow (incoming), allow (outgoing), disabled (routed)\\n"; exit 0; fi\nif [ "$*" = "systemctl show --property=Version --value" ]; then exit 0; fi\ncase "$1" in mkdir|tee|chmod|sh|rm) exit 0;; systemd-run) exec "$@";; esac\nexit 97\n');
     writeFileSync(join(dir, "systemd-run"), '#!/bin/sh\nprintf "timer-start\\n" >> "$CALLS"\nexit 1\n');
     chmodSync(join(dir, "sudo"), 0o700);
     chmodSync(join(dir, "systemd-run"), 0o700);
@@ -789,7 +789,8 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
       const result = await executor.execute(claim, createMockReporter().reporter);
       expect(result.status).toBe("failed");
       expect(result.error).toMatch(/timer.*(start|confirm)/i);
-      expect(readFileSync(calls, "utf8")).toMatch(/^ufw status\nufw status verbose\nsystemctl show --property=Version --value\n(?:systemd-run[^\n]*\n)?timer-start\nsystemctl stop myrmidon-firewall-[a-f0-9-]+\.timer\n$/);
+      expect(readFileSync(calls, "utf8")).toMatch(/^ufw status\nufw status verbose\nsystemctl show --property=Version --value\n[\s\S]*timer-start\nsystemctl stop myrmidon-firewall-[a-f0-9-]+\.timer\n/);
+      expect(readFileSync(calls, "utf8")).not.toMatch(/ufw (allow|default|delete|disable|--force enable)/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
