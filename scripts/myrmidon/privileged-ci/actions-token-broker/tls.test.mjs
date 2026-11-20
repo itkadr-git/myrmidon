@@ -128,6 +128,49 @@ test('mTLS server accepts an authorized certificate and rejects an anonymous cli
       const store = createCredentialStore(options.credentialPath, options.credentialKey);
       try { await createCredentialCheckpoint(store, options.credentialAnchor, { provision: true }); } finally { store.close(); }
     }
+    // Overlapping verified identities must not poison the real anchored replay store.
+    let releaseCas, enteredCas, enteredSecond;
+    const casGate = new Promise(resolve => { releaseCas = resolve; });
+    const casEntered = new Promise(resolve => { enteredCas = resolve; });
+    const secondEntered = new Promise(resolve => { enteredSecond = resolve; });
+    const replayAnchor = anchor(), cas = replayAnchor.compareAndSet;
+    let delayed = true, keyLoads = 0;
+    replayAnchor.compareAndSet = async (previous, next) => {
+      if (delayed) { delayed = false; enteredCas(); await casGate; }
+      return cas(previous, next);
+    };
+    const concurrentAlerts = [];
+    const concurrentOptions = {
+      auditPath: join(dir, 'concurrent-audit.sqlite'), auditKey: randomBytes(32), auditAnchor: anchor(),
+      replayPath: join(dir, 'concurrent-replay.sqlite'), replayKey: randomBytes(32), replayAnchor,
+      credentialPath: join(dir, 'concurrent-credentials.sqlite'), credentialKey: randomBytes(32), credentialAnchor: anchor(),
+      policy, loadKeys: async () => { if (++keyLoads === 2) enteredSecond(); return [key]; },
+      installation: { issue: async () => ({ token: 'fixture-only', expiresAt: '2030-01-01T00:00:00Z' }), revoke: async () => {} },
+      alert: async event => concurrentAlerts.push(event), delay: async () => {},
+    };
+    await provisionCredential(concurrentOptions);
+    const concurrent = await createAuditedSupervisedServer({ key: file('server.key'), cert: file('server.crt'), ca: file('ca.crt') }, concurrentOptions);
+    await new Promise(resolve => concurrent.listen(0, '127.0.0.1', resolve));
+    try {
+      const exchange = jti => new Promise((resolve, reject) => {
+        const req = https.request({ hostname: '127.0.0.1', port: concurrent.address().port, path: '/exchange', method: 'POST', ca: file('ca.crt'), servername: 'server', key: file('client.key'), cert: file('client.crt') }, res => {
+          res.resume(); res.on('end', () => resolve(res.statusCode));
+        });
+        req.on('error', reject); req.end(JSON.stringify({ jwt: jwt(jti) }));
+      });
+      const first = exchange('concurrent-first');
+      await casEntered;
+      const second = exchange('concurrent-second');
+      await secondEntered;
+      // Allow the second identity verification to reach its replay claim.
+      await new Promise(resolve => setImmediate(resolve));
+      releaseCas();
+      assert.equal(await first, 200);
+      assert.ok([200, 403].includes(await second));
+      assert.equal(await exchange('concurrent-subsequent'), 200);
+      assert.deepEqual(concurrentAlerts, []);
+    } finally { releaseCas(); await new Promise(resolve => concurrent.close(resolve)); }
+
     let issueCount = 0, revokeCount = 0;
     const alerts = [];
     const options = {
