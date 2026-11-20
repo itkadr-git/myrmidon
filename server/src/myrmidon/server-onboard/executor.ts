@@ -14,6 +14,7 @@
 // - Password secret is consumed only after verified key login (reported in access step).
 // - Step failure rolls back hardening changes and leaves server in needs_attention.
 
+import { randomUUID } from "node:crypto";
 import { generateSshKeyPair, sshPublicKey } from "./ssh-key.js";
 import { OnboardSshTransport } from "./ssh-transport.js";
 import type {
@@ -73,7 +74,12 @@ export class FleetOnboardExecutor {
     let currentStep: string | null = null;
     let activeSsh: SshExecutor | null = null;
     let activePrivateKey: string | null = claim.secretValues.accessKey ?? null;
-    let firewallRollbackArmed = false;
+    let pendingFirewallRollback: (() => Promise<void>) | null = null;
+    let commitFirewall: (() => Promise<void>) | null = null;
+    let discardFirewallBackup: (() => Promise<void>) | null = null;
+    let pendingPasswordRollback: (() => Promise<void>) | null = null;
+    let discardPasswordBackup: (() => Promise<void>) | null = null;
+
 
     try {
       const steps = claim.steps && claim.steps.length > 0 ? claim.steps : ["connect", "preflight", "access", "verify"];
@@ -239,22 +245,65 @@ export class FleetOnboardExecutor {
 
             // Optional password disable (only after key login verified)
             if (!claim.options.keepPassword) {
-              const writeConfig = await activeSsh.execute(
-                "sudo mkdir -p /etc/ssh/sshd_config.d && printf 'PasswordAuthentication no\\nKbdInteractiveAuthentication no\\n' | sudo tee /etc/ssh/sshd_config.d/50-myrmidon-hardening.conf",
-              );
-              if (writeConfig.exitCode !== 0) {
-                throw new Error("Unable to write SSH password hardening configuration");
+              const backup = `/var/tmp/myrmidon-sshd-${randomUUID()}`;
+              const file = "/etc/ssh/sshd_config.d/50-myrmidon-hardening.conf";
+              const snapshot = await activeSsh.execute(`sudo mkdir -m 700 ${backup} && if sudo test -e ${file}; then sudo cp -p ${file} ${backup}/original; else sudo touch ${backup}/absent; fi`);
+              if (snapshot.exitCode !== 0) throw new Error("Cannot snapshot password hardening configuration");
+              const passwordSsh = activeSsh;
+              const restorePassword = async () => {
+                const restore = await passwordSsh.execute(`: restore-myrmidon-password-config; if sudo test -f ${backup}/absent; then sudo rm -f ${file}; else sudo cp -p ${backup}/original ${file}; fi && sudo sshd -t && (sudo systemctl reload ssh || sudo systemctl reload sshd)`);
+                if (restore.exitCode !== 0) throw new Error("configuration restoration failed");
+                const checkSsh = await connectVerified(keyConnOptions);
+                try {
+                  const check = await checkSsh.execute('echo "myrmidon-key-verify"');
+                  if (check.exitCode !== 0 || check.stdout.trim() !== "myrmidon-key-verify") throw new Error("unexpected SSH verification response");
+                } catch (error) {
+                  const detail = error instanceof Error ? error.message : String(error);
+                  throw new Error(`restoration SSH verification failed: ${detail}`);
+                } finally {
+                  await checkSsh.disconnect().catch(() => {});
+                }
+              };
+              try {
+                const write = await activeSsh.execute(
+                  `sudo mkdir -p /etc/ssh/sshd_config.d && printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' | sudo tee ${file}`,
+                );
+                if (write.exitCode !== 0) throw new Error("Password hardening write failed");
+                const sshdTest = await activeSsh.execute("sudo sshd -t");
+                if (sshdTest.exitCode !== 0) throw new Error("sshd configuration test failed");
+                const effective = await activeSsh.execute("sudo sshd -T");
+                const settings = effective.stdout.toLowerCase();
+                if (effective.exitCode !== 0 || !/^passwordauthentication\s+no\s*$/m.test(settings) || !/^kbdinteractiveauthentication\s+no\s*$/m.test(settings)) {
+                  throw new Error("Effective sshd configuration still permits password authentication");
+                }
+                // Match rules may override the global settings for this connection.
+                const contextual = await activeSsh.execute('sudo sshd -T -C "user=$(id -un),addr=${SSH_CONNECTION%% *}"');
+                const contextualSettings = contextual.stdout.toLowerCase();
+                if (contextual.exitCode !== 0 || !/^passwordauthentication\s+no\s*$/m.test(contextualSettings) || !/^kbdinteractiveauthentication\s+no\s*$/m.test(contextualSettings)) {
+                  throw new Error("Effective sshd configuration still permits password authentication");
+                }
+                const reload = await activeSsh.execute("sudo systemctl reload ssh || sudo systemctl reload sshd");
+                if (reload.exitCode !== 0) throw new Error("sshd reload failed");
+                const fresh = await connectVerified(keyConnOptions);
+                try {
+                  const check = await fresh.execute('echo "myrmidon-key-verify"');
+                  if (check.exitCode !== 0 || check.stdout.trim() !== "myrmidon-key-verify") throw new Error("SSH verification after password hardening failed");
+                } finally {
+                  await fresh.disconnect().catch(() => {});
+                }
+              } catch (error) {
+                try {
+                  await restorePassword();
+                } catch (restoreError) {
+                  const cause = error instanceof Error ? error.message : String(error);
+                  const detail = restoreError instanceof Error ? restoreError.message : String(restoreError);
+                  throw new Error(`Password hardening failed: ${cause}; ${detail.includes("restoration SSH") ? detail : `configuration restoration failed: ${detail}`}`);
+                }
+                await passwordSsh.execute(`sudo rm -rf ${backup}`).catch(() => {});
+                throw error;
               }
-              const sshdTest = await activeSsh.execute("sudo sshd -t");
-              if (sshdTest.exitCode !== 0) {
-                await activeSsh.execute("sudo rm -f /etc/ssh/sshd_config.d/50-myrmidon-hardening.conf");
-                throw new Error("sshd configuration test failed; reverted password disable");
-              }
-              const reload = await activeSsh.execute("sudo systemctl reload ssh || sudo systemctl reload sshd");
-              if (reload.exitCode !== 0) {
-                await activeSsh.execute("sudo rm -f /etc/ssh/sshd_config.d/50-myrmidon-hardening.conf").catch(() => {});
-                throw new Error("Unable to reload SSH service after password hardening");
-              }
+              pendingPasswordRollback = restorePassword;
+              discardPasswordBackup = async () => { await passwordSsh.execute(`sudo rm -rf ${backup}`); };
             }
 
             await reporter.reportStep(
@@ -267,43 +316,163 @@ export class FleetOnboardExecutor {
           }
 
           case "harden": {
+            if (!Number.isInteger(claim.server.port) || claim.server.port < 1 || claim.server.port > 65535) {
+              throw new Error("Firewall hardening requires a valid SSH port");
+            }
+            if (!connOptions.privateKey) {
+              throw new Error("Firewall hardening requires SSH key credentials for connectivity verification");
+            }
             if (!activeSsh) {
               activeSsh = await connectVerified(connOptions);
             }
 
-            // Firewall allow-before-deny with rollback timer:
-            // 1. Allow SSH port before deny
-            await activeSsh.execute(`sudo ufw allow ${claim.server.port}/tcp comment 'myrmidon-ssh'`);
-
-            // 2. Start rollback timer (5 minutes / 300s)
-            firewallRollbackArmed = true;
-            await activeSsh.execute("nohup sh -c 'sleep 300 && sudo ufw disable' >/dev/null 2>&1 &");
-
-            // 3. Set default deny incoming & enable
-            await activeSsh.execute("sudo ufw default deny incoming && sudo ufw default allow outgoing && sudo ufw --force enable");
-
-            // 4. Verify connectivity using fresh connection
+            // We cannot safely restore an inactive firewall without disabling UFW.
+            let firewallStatus: SshExecutionResult;
             try {
-              const testSsh = await connectVerified(connOptions);
-              try {
-                const testPing = await testSsh.execute('echo "ufw-connectivity-ok"');
-                if (testPing.exitCode !== 0 || !testPing.stdout.includes("ufw-connectivity-ok")) {
-                  throw new Error("Connectivity test failed after firewall enablement");
-                }
-              } finally {
-                await testSsh.disconnect().catch(() => {});
-              }
-              // Disarm rollback timer
-              await activeSsh.execute("sudo pkill -f 'sleep 300 && sudo ufw disable' || true");
-              firewallRollbackArmed = false;
-            } catch (err) {
-              // Rollback immediately
-              await activeSsh.execute("sudo ufw disable").catch(() => {});
-              firewallRollbackArmed = false;
-              throw new Error(`Firewall allow-before-deny verification failed; rolled back: ${(err as Error).message}`);
+              firewallStatus = await activeSsh.execute("sudo ufw status");
+            } catch (error) {
+              const cause = error instanceof Error ? error.message : String(error);
+              throw new Error(`Firewall status unconfirmed; refusing unsafe firewall changes: ${cause}`);
+            }
+            const statusLines = firewallStatus.stdout.split(/\r?\n/).filter((line) => /^\s*Status:/i.test(line));
+            if (firewallStatus.exitCode === 0 && statusLines.length === 1 && /^Status: inactive\s*$/.test(statusLines[0] ?? "")) {
+              throw new Error("Firewall is inactive; refusing changes because its original disabled state cannot be safely restored");
+            }
+            if (firewallStatus.exitCode !== 0 || statusLines.length !== 1 || !/^Status: active\s*$/.test(statusLines[0] ?? "")) {
+              throw new Error("Firewall inactive or status unconfirmed; refusing unsafe firewall changes");
             }
 
-            await reporter.reportStep("harden", "ok", "Firewall allow-before-deny configured and verified; rollback disarmed");
+            // Capture the default policy without overwriting concurrent UFW rules.
+            let policy: SshExecutionResult;
+            try {
+              policy = await activeSsh.execute(": snapshot-myrmidon-firewall; sudo ufw status verbose");
+            } catch (error) {
+              const cause = error instanceof Error ? error.message : String(error);
+              throw new Error(`Firewall default policy unconfirmed; refusing unsafe firewall changes: ${cause}`);
+            }
+            const policyLines = policy.stdout.split(/\r?\n/);
+            const policyStatusLines = policyLines.filter((line) => /^\s*Status:/i.test(line));
+            if (policy.exitCode === 0 && (policyStatusLines.length !== 1 || !/^Status: active\s*$/.test(policyStatusLines[0] ?? ""))) {
+              throw new Error("Firewall status unconfirmed during policy probe; refusing unsafe firewall changes");
+            }
+            const defaultLines = policyLines.filter((line) => /^\s*Default:/i.test(line));
+            if (policy.exitCode !== 0 || defaultLines.length !== 1 || !/^Default:\s+(?:allow|deny|reject) \(incoming\),\s+(?:allow|deny|reject) \(outgoing\),\s+(?:allow|deny|reject|disabled) \(routed\)\s*$/.test(defaultLines[0] ?? "")) {
+              throw new Error("Firewall default policy unconfirmed; refusing unsafe firewall changes");
+            }
+
+            // Require a usable timer manager before attempting any firewall mutation.
+            const prerequisites = await activeSsh.execute(": check-myrmidon-firewall-prerequisites; command -v systemd-run >/dev/null && command -v systemctl >/dev/null && command -v flock >/dev/null && sudo systemctl show --property=Version --value >/dev/null");
+            if (prerequisites.exitCode !== 0) {
+              throw new Error("Firewall rollback timer prerequisites unavailable; refusing unsafe firewall changes");
+            }
+
+            const ssh = activeSsh;
+            const timer = `myrmidon-firewall-${randomUUID()}`;
+            const rollbackDir = `/var/tmp/${timer}`;
+            const incomingPolicy = /^Default:\s+(allow|deny|reject) \(incoming\)/.exec(defaultLines[0] ?? "")?.[1];
+            if (!incomingPolicy) throw new Error("Firewall default policy unconfirmed; refusing unsafe firewall changes");
+            const port = claim.server.port;
+            const verifyFirewallSsh = async () => {
+              const fresh = await connectVerified(connOptions);
+              try {
+                const probe = await fresh.execute('echo "ufw-connectivity-ok"');
+                if (probe.exitCode !== 0 || probe.stdout.trim() !== "ufw-connectivity-ok") {
+                  throw new Error("Firewall SSH connectivity verification failed");
+                }
+              } finally {
+                await fresh.disconnect().catch(() => {});
+              }
+            };
+            const disarm = async () => {
+              const stopped = await ssh.execute(`: stop-myrmidon-firewall-timer; sudo systemctl stop ${timer}.timer`);
+              if (stopped.exitCode !== 0) throw new Error("Firewall rollback timer disarm failed");
+            };
+            const discard = async () => { await ssh.execute(`sudo rm -rf ${rollbackDir}`); };
+            const runLocked = (marker: string, action: string) =>
+              ssh.execute(`: ${marker}; sudo flock -w 30 ${rollbackDir}/lock /bin/sh -c 'set -eu; test ! -e ${rollbackDir}/expired; systemctl is-active --quiet ${timer}.timer; ${action}'`);
+            try {
+              // Restore by exact rule (including the comment), never by a mutable rule number.
+              const restoreScript = `#!/bin/sh
+set -eu
+export LC_ALL=C
+exec 9>${rollbackDir}/lock
+flock -x 9
+test "$#" -gt 0 || test ! -e ${rollbackDir}/committed || exit 0
+touch ${rollbackDir}/expired
+if [ -f ${rollbackDir}/policy-changed ]; then
+  current=$(ufw status verbose)
+  statuses=$(printf "%s\\n" "$current" | grep -iE "^[[:space:]]*Status:" || true)
+  defaults=$(printf "%s\\n" "$current" | grep -iE "^[[:space:]]*Default:" || true)
+  [ "$statuses" = "Status: active" ] || exit 1
+  printf "%s\\n" "$defaults" | grep -Eq "^Default: (allow|deny|reject) \\(incoming\\), (allow|deny|reject) \\(outgoing\\), (allow|deny|reject|disabled) \\(routed\\)$" || exit 1
+  [ "$(printf "%s\\n" "$defaults" | grep -c .)" -eq 1 ] || exit 1
+  if printf "%s\\n" "$defaults" | grep -q "^Default: deny "; then
+    ufw default ${incomingPolicy} incoming
+  fi
+fi
+if [ -f ${rollbackDir}/rule-changed ]; then
+  rules=$(ufw status numbered)
+  statuses=$(printf "%s\\n" "$rules" | grep -iE "^[[:space:]]*Status:" || true)
+  [ "$statuses" = "Status: active" ] || exit 1
+  matches=$(printf "%s\\n" "$rules" | grep -E "# ${timer}[[:space:]]*$" || true)
+  if [ -n "$matches" ]; then
+    unexpected=$(printf "%s\\n" "$matches" | grep -vE "^\\[[[:space:]]*[0-9]+\\][[:space:]]+${port}/tcp( \\(v6\\))?[[:space:]]+ALLOW IN[[:space:]]+Anywhere( \\(v6\\))?[[:space:]]+# ${timer}[[:space:]]*$" || true)
+    [ -z "$unexpected" ] || exit 1
+    [ "$(printf "%s\\n" "$matches" | grep -c .)" -le 2 ] || exit 1
+    [ "$(printf "%s\\n" "$matches" | grep -c "(v6)" || true)" -le 1 ] || exit 1
+    [ "$(printf "%s\\n" "$matches" | grep -vc "(v6)" || true)" -le 1 ] || exit 1
+    ufw --force delete allow ${port}/tcp comment ${timer}
+    rules=$(ufw status numbered)
+    [ "$(printf "%s\\n" "$rules" | grep -iE "^[[:space:]]*Status:" || true)" = "Status: active" ] || exit 1
+    if printf "%s\\n" "$rules" | grep -Eq "# ${timer}[[:space:]]*$"; then exit 1; fi
+  fi
+fi
+`;
+              const preparation = await ssh.execute(`: prepare-myrmidon-firewall-restore; sudo mkdir -m 700 ${rollbackDir} && printf '%s' '${restoreScript}' | sudo tee ${rollbackDir}/restore.sh >/dev/null && sudo chmod 700 ${rollbackDir}/restore.sh && sudo sh -n ${rollbackDir}/restore.sh`);
+              if (preparation.exitCode !== 0) throw new Error("Firewall rollback preparation failed; refusing unsafe firewall changes");
+              const start = await ssh.execute(`: start-myrmidon-firewall-timer; sudo systemd-run --unit=${timer} --on-active=5m /bin/sh ${rollbackDir}/restore.sh >/dev/null && sudo systemctl is-active --quiet ${timer}.timer && echo timer-confirmed`);
+              if (start.exitCode !== 0 || start.stdout.trim() !== "timer-confirmed") {
+                throw new Error("Firewall rollback timer start or confirmation failed; refusing unsafe firewall changes");
+              }
+              const check = await ssh.execute(`: check-myrmidon-firewall-timer; sudo systemctl is-active --quiet ${timer}.timer && echo timer-confirmed`);
+              if (check.exitCode !== 0 || check.stdout.trim() !== "timer-confirmed") {
+                throw new Error("Firewall rollback timer liveness confirmation failed; refusing unsafe firewall changes");
+              }
+            } catch (error) {
+              await disarm().then(discard).catch(() => {});
+              const detail = error instanceof Error ? error.message : String(error);
+              throw new Error(`Firewall rollback preparation/start failed: ${detail}`);
+            }
+
+            pendingFirewallRollback = async () => {
+              const restored = await ssh.execute(`: restore-myrmidon-firewall; sudo /bin/sh ${rollbackDir}/restore.sh immediate`);
+              if (restored.exitCode !== 0) throw new Error("Scoped restore command failed");
+              await verifyFirewallSsh();
+              await disarm();
+              await discard().catch(() => {});
+            };
+            commitFirewall = async () => {
+              // Fence a timer that has already started before reporting success.
+              const committed = await runLocked("stop-myrmidon-firewall-timer", `systemctl stop ${timer}.timer; touch ${rollbackDir}/committed`);
+              if (committed.exitCode !== 0) throw new Error("Firewall rollback timer disarm failed or rollback already started");
+            };
+            discardFirewallBackup = discard;
+
+            // UFW plain allow can replace an existing rule with the same tuple.
+            // Prepend avoids replacing it (a duplicate is reported as skipped).
+            // Mark intent inside the lock, before a potentially partial apply.
+            const allow = await runLocked("apply-myrmidon-firewall-allow", `touch ${rollbackDir}/rule-changed; LC_ALL=C ufw prepend allow ${port}/tcp comment ${timer}`);
+            const added = allow.stdout.trim().split(/\r?\n/);
+            if (allow.exitCode !== 0 || !added.every((line) => /^Rule (?:inserted|added)(?: \(v6\))?$/.test(line))) {
+              throw new Error("Firewall SSH allow failed or existing rule ownership is unconfirmed");
+            }
+            await verifyFirewallSsh();
+            if (incomingPolicy !== "deny") {
+              const deny = await runLocked("apply-myrmidon-firewall-deny", `export LC_ALL=C; state=$(ufw status verbose); status=$(printf "%s\\n" "$state" | grep -iE "^[[:space:]]*Status:" || true); defaults=$(printf "%s\\n" "$state" | grep -iE "^[[:space:]]*Default:" || true); test "$status" = "Status: active"; test "$(printf "%s\\n" "$defaults" | grep -c .)" -eq 1; printf "%s\\n" "$defaults" | grep -Eq "^Default: ${incomingPolicy} \\(incoming\\), (allow|deny|reject) \\(outgoing\\), (allow|deny|reject|disabled) \\(routed\\)$"; touch ${rollbackDir}/policy-changed; ufw default deny incoming`);
+              if (deny.exitCode !== 0) throw new Error("Firewall incoming deny policy failed or original policy changed");
+              await verifyFirewallSsh();
+            }
+            await reporter.reportStep("harden", "ok", "Firewall allow-before-deny verified via fresh SSH; rollback remains armed");
             stepsCompleted.push("harden");
             break;
           }
@@ -375,7 +544,12 @@ export class FleetOnboardExecutor {
         }
       }
 
+      if (commitFirewall) await commitFirewall();
       await reporter.reportCompletion("succeeded", null, discoveredFingerprint);
+      pendingFirewallRollback = null;
+      if (discardFirewallBackup) await discardFirewallBackup().catch(() => {});
+      pendingPasswordRollback = null;
+      if (discardPasswordBackup) await discardPasswordBackup().catch(() => {});
       return {
         status: "succeeded",
         hostKeyFingerprint: discoveredFingerprint,
@@ -383,13 +557,28 @@ export class FleetOnboardExecutor {
       };
     } catch (error) {
       let message = error instanceof Error ? error.message : String(error);
-      for (const secret of Object.values(claim.secretValues)) {
-        if (secret) message = message.split(secret).join("[REDACTED]");
+
+      if (pendingFirewallRollback) {
+        try {
+          await pendingFirewallRollback();
+        } catch (rollbackError) {
+          const detail = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+          message += `; firewall rollback failed or unconfirmed: ${detail}`;
+        }
       }
 
-      // If firewall rollback was still armed when failure occurred, ensure rollback
-      if (firewallRollbackArmed && activeSsh) {
-        await activeSsh.execute("sudo ufw disable").catch(() => {});
+      if (pendingPasswordRollback) {
+        try {
+          await pendingPasswordRollback();
+          if (discardPasswordBackup) await discardPasswordBackup();
+        } catch (rollbackError) {
+          const detail = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+          message += `; password configuration rollback unconfirmed: ${detail}`;
+        }
+      }
+
+      for (const secret of Object.values(claim.secretValues)) {
+        if (secret) message = message.split(secret).join("[REDACTED]");
       }
 
       if (currentStep) {

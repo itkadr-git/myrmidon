@@ -1,10 +1,19 @@
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { MockSshExecutor } from "../../services/fleet/mock-ssh-executor.js";
 import { defaultGenerateKeyPair, FleetOnboardExecutor, type ExecutorReporter } from "./executor.js";
 import type { OnboardJobClaim } from "./store.js";
 
 class VerifiedMockSsh extends MockSshExecutor {
-  constructor(private readonly fingerprint = "SHA256:testfingerprint123456789") { super(); }
+  constructor(options: string | ConstructorParameters<typeof MockSshExecutor>[0] = "SHA256:testfingerprint123456789") {
+    super(typeof options === "string" ? undefined : options);
+    this.fingerprint = typeof options === "string" ? options : "SHA256:testfingerprint123456789";
+  }
+
+  private readonly fingerprint: string;
 
   override async connect(options?: Parameters<MockSshExecutor["connect"]>[0]) {
     if (!options?.hostVerifier || !(await options.hostVerifier(this.fingerprint))) {
@@ -136,11 +145,12 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     mockSsh.mockResponse(/50-myrmidon-hardening\.conf/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse("sudo sshd -t", { stdout: "", exitCode: 0 });
     mockSsh.mockResponse(/sudo systemctl reload/, { stdout: "", exitCode: 0 });
-    mockSsh.mockResponse(/sudo ufw allow/, { stdout: "", exitCode: 0 });
-    mockSsh.mockResponse(/nohup sh -c 'sleep 300/, { stdout: "", exitCode: 0 });
-    mockSsh.mockResponse(/sudo ufw default deny incoming/, { stdout: "", exitCode: 0 });
+    mockSsh.mockResponse(/sshd -T/, { stdout: "passwordauthentication no\nkbdinteractiveauthentication no\n", exitCode: 0 });
+    mockSsh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    mockSsh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
+    mockSsh.mockResponse(/start-myrmidon-firewall-timer|check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    mockSsh.mockResponse(/ufw prepend allow/, { stdout: "Rule inserted\n", exitCode: 0 });
     mockSsh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
-    mockSsh.mockResponse(/pkill -f 'sleep 300/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse('echo "onboard-verified"', { stdout: "onboard-verified\n", exitCode: 0 });
 
     const durablePair = defaultGenerateKeyPair();
@@ -203,7 +213,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     // Check that hardening conf was written and sshd tested
     expect(mockSsh.hasExecuted("sudo sshd -t")).toBe(true);
     // Check that ufw rollback was disarmed after connectivity verification
-    expect(mockSsh.hasExecuted(/pkill -f 'sleep 300/)).toBe(true);
+    expect(mockSsh.hasExecuted(/stop-myrmidon-firewall-timer/)).toBe(true);
   });
 
   it("does not install an unpersisted key when the durable key is missing", async () => {
@@ -323,7 +333,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
   });
 
   it("fails preflight when memory information is unavailable", async () => {
-    const mockSsh = new MockSshExecutor();
+    const mockSsh = new VerifiedMockSsh();
     mockSsh.mockResponse("free -m", { stdout: "", stderr: "free failed", exitCode: 1 });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => mockSsh });
     const mockReporter = createMockReporter();
@@ -368,50 +378,194 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockReporter.completion?.status).toBe("failed");
   });
 
-  it("rolls back firewall and fails job when firewall connectivity check fails", async () => {
-    const mockSsh = new VerifiedMockSsh();
-    mockSsh.mockResponse(/ssh-keygen -l/, {
-      stdout: "256 SHA256:fp root@test (ED25519)",
-      exitCode: 0,
-    });
-    mockSsh.mockResponse("cat /etc/os-release", {
-      stdout: 'NAME="Debian GNU/Linux"\nID=debian',
-      exitCode: 0,
-    });
-    mockSsh.mockResponse("df -P /", {
-      stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 10000000 1000000 9000000 10% /",
-      exitCode: 0,
-    });
-    mockSsh.mockResponse("sudo -n true", { stdout: "", exitCode: 0 });
-    mockSsh.mockResponse(/test -d/, { stdout: "", exitCode: 1 });
-    mockSsh.mockResponse(/mkdir -p ~\/\.ssh/, { stdout: "", exitCode: 0 });
-    mockSsh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
-    mockSsh.mockResponse(/sudo ufw allow/, { stdout: "", exitCode: 0 });
-    mockSsh.mockResponse(/nohup sh -c 'sleep 300/, { stdout: "", exitCode: 0 });
-    mockSsh.mockResponse(/sudo ufw default deny incoming/, { stdout: "", exitCode: 0 });
-    // Simulate connectivity failure after ufw enable:
-    mockSsh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "", exitCode: 1 });
-    mockSsh.mockResponse("sudo ufw disable", { stdout: "Firewall stopped and disabled on system startup", exitCode: 0 });
+  it("allows SSH before denying incoming traffic and verifies a fresh connection", async () => {
+    const ssh = new VerifiedMockSsh();
+    ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
+    ssh.mockResponse(/check-myrmidon-firewall-prerequisites/, { stdout: "", exitCode: 0 });
+    ssh.mockResponse(/prepare-myrmidon-firewall-restore/, { stdout: "", exitCode: 0 });
+    ssh.mockResponse(/start-myrmidon-firewall-timer|check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    ssh.mockResponse(/ufw prepend allow/, { stdout: "Rule added\n", exitCode: 0 });
+    ssh.mockResponse(/ufw default deny incoming/, { stdout: "", exitCode: 0 });
+    ssh.mockResponse(/stop-myrmidon-firewall-timer/, { stdout: "", exitCode: 0 });
+    ssh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-firewall-success", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.error ?? null).toBeNull();
+    expect(result.status).toBe("succeeded");
+    const commands = ssh.executedCommands.map(({ command }) => command);
+    const timer = commands.findIndex((command) => command.includes("check-myrmidon-firewall-timer"));
+    const allow = commands.findIndex((command) => command.includes("ufw prepend allow"));
+    const deny = commands.findIndex((command) => command.includes("ufw default deny incoming"));
+    const verify = commands.findLastIndex((command) => command.includes('echo "ufw-connectivity-ok"'));
+    expect(timer).toBeGreaterThanOrEqual(0);
+    expect(allow).toBeGreaterThan(timer);
+    expect(deny).toBeGreaterThan(allow);
+    expect(verify).toBeGreaterThan(deny);
+    expect(ssh.connectionHistory.length).toBeGreaterThanOrEqual(2);
+  });
 
-    const durablePair = defaultGenerateKeyPair();
+  it("refuses firewall mutation when timer startup exits successfully without confirmation", async () => {
+    let timerStartAttempted = false;
+    const ssh = new VerifiedMockSsh({ onCommand: (command) => {
+      if (command.includes("start-myrmidon-firewall-timer")) {
+        timerStartAttempted = true;
+        return { exitCode: 0, stdout: "" };
+      }
+      return undefined;
+    } });
+    ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
+    ssh.mockResponse(/check-myrmidon-firewall-prerequisites/, { stdout: "", exitCode: 0 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-firewall-timer-unconfirmed", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(timerStartAttempted).toBe(true);
+    expect(result.error).toMatch(/timer.*confirm/i);
+    expect(ssh.hasExecuted(/apply-myrmidon-firewall-(allow|deny)/)).toBe(false);
+  });
+
+  it("preserves an operator rule added during an executed partial SSH allow failure", async () => {
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-ufw-partial-"));
+    const rules = join(dir, "rules");
+    const calls = join(dir, "calls");
+    writeFileSync(rules, "operator-original\n");
+    writeFileSync(join(dir, "sudo"), `#!/bin/sh
+printf '%s\\n' "$*" >> "$CALLS"
+case "$1" in
+  ufw|systemctl|systemd-run|flock|mkdir|tee|chmod|sh|/bin/sh|rm) exec "$@" ;;
+esac
+exit 97
+`);
+    writeFileSync(join(dir, "ufw"), `#!/bin/sh
+printf 'ufw %s\\n' "$*" >> "$CALLS"
+case "$1" in
+      status)
+        printf 'Status: active\\n'
+        if [ "$2" = verbose ]; then printf 'Default: allow (incoming), allow (outgoing), disabled (routed)\\n'; fi
+        if [ "$2" = numbered ] && [ -s "$RULES.owner" ]; then
+          printf '[ 1] 22/tcp ALLOW IN Anywhere # %s\\n' "$(tr -d '\\n' < "$RULES.owner")"
+        fi ;;
+      prepend) printf '%s\\n' "$5" > "$RULES.owner"; printf 'onboarding-ssh\\noperator-concurrent\\n' >> "$RULES"; exit 1 ;;
+      --force)
+        [ "$2 $3 $4 $5 $6" = "delete allow 22/tcp comment $(tr -d '\\n' < "$RULES.owner")" ] || exit 1
+        grep -vx onboarding-ssh "$RULES" > "$RULES.new" && mv "$RULES.new" "$RULES" && rm "$RULES.owner" ;;
+      *) exit 97 ;;
+esac
+`);
+    for (const name of ["systemctl", "systemd-run"]) {
+      writeFileSync(join(dir, name), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    }
+    chmodSync(join(dir, "ufw"), 0o700);
+    chmodSync(join(dir, "sudo"), 0o700);
+    try {
+      const ssh = new VerifiedMockSsh({ onCommand: (command) => {
+        const result = spawnSync("sh", ["-c", command.replaceAll("/var/tmp/myrmidon-firewall-", `${dir}/myrmidon-firewall-`)], {
+          encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: calls, RULES: rules }, timeout: 5000,
+        });
+        return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", exitCode: result.status ?? 1 };
+      } });
+      const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+      const claim: any = {
+        job: { id: "job-real-concurrent-partial", companyId: "c1", serverId: "s1" },
+        server: { hostname: "1.2.3.4", port: 22, username: "root" },
+        steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+      };
+      const result = await executor.execute(claim, createMockReporter().reporter);
+      expect(result.status).toBe("failed");
+      expect(readFileSync(calls, "utf8")).toMatch(/ufw prepend allow/);
+      expect(readFileSync(rules, "utf8").split("\n").filter(Boolean).sort()).toEqual(["operator-concurrent", "operator-original"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("verifies a fresh SSH connection after a failed deny policy is restored", async () => {
+    const primary = new VerifiedMockSsh();
+    const beforeDeny = new VerifiedMockSsh();
+    const restored = new VerifiedMockSsh();
+    primary.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    primary.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
+    primary.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    primary.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    primary.mockResponse(/ufw prepend allow/, { stdout: "Rule inserted\n", exitCode: 0 });
+    primary.mockResponse(/ufw default deny incoming/, { exitCode: 1, stderr: "policy failed" });
+    beforeDeny.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
+    restored.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
+    const connections = [primary, beforeDeny, restored];
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => {
+      const connection = connections.shift();
+      if (!connection) throw new Error("Unexpected SSH connection");
+      return connection;
+    } });
+    const claim: any = {
+      job: { id: "job-deny-restore-ssh", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(primary.hasExecuted(/ufw default deny incoming/)).toBe(true);
+    expect(beforeDeny.hasExecuted('echo "ufw-connectivity-ok"')).toBe(true);
+    expect(beforeDeny.isConnected()).toBe(false);
+    expect(primary.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
+    expect(restored.hasExecuted('echo "ufw-connectivity-ok"')).toBe(true);
+    expect(restored.isConnected()).toBe(false);
+  });
+
+  it("fails and restores password configuration when sshd reload fails", async () => {
+    const mockSsh = new VerifiedMockSsh();
+    mockSsh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
+    mockSsh.mockResponse(/sshd -T/, { stdout: "passwordauthentication no\nkbdinteractiveauthentication no\n", exitCode: 0 });
+    mockSsh.mockResponse(/sudo systemctl reload ssh \|\| sudo systemctl reload sshd/, { exitCode: 1, stderr: "reload failed" });
     const executor = new FleetOnboardExecutor({
       createSshExecutor: () => mockSsh,
     });
     const mockReporter = createMockReporter();
     const claim: any = {
-      job: { id: "job-3", companyId: "c1", serverId: "s3" },
-      server: { hostname: "1.2.3.4", port: 22, username: "root", accessKeySecretKey: "fleet/key" },
-      steps: ["connect", "preflight", "access", "harden", "verify"],
-      options: { keepPassword: true },
-      secretValues: { bootstrapPassword: "pass", accessKey: durablePair.privateKey },
+      job: { id: "job-reload", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root", accessKeySecretKey: "stored" },
+      steps: ["access"], options: { keepPassword: false },
+      secretValues: { bootstrapPassword: "pass", accessKey: defaultGenerateKeyPair().privateKey },
     };
 
     const result = await executor.execute(claim, mockReporter.reporter);
     expect(result.status).toBe("failed");
-    expect(result.error).toContain("Firewall allow-before-deny verification failed; rolled back");
     expect(mockReporter.completion?.status).toBe("failed");
-    // Verify rollback command was executed
-    expect(mockSsh.hasExecuted("sudo ufw disable")).toBe(true);
+    expect(mockSsh.hasExecuted(/restore-myrmidon-password-config/)).toBe(true);
+  });
+
+  it("restores password configuration if subsequent firewall hardening fails", async () => {
+    const ssh = new VerifiedMockSsh();
+    ssh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
+    ssh.mockResponse(/sshd -T/, { stdout: "passwordauthentication no\nkbdinteractiveauthentication no\n", exitCode: 0 });
+    ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
+    ssh.mockResponse(/check-myrmidon-firewall-prerequisites/, { exitCode: 0, stdout: "" });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 1, stderr: "timer unavailable" });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-password-then-firewall-failure", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root", accessKeySecretKey: "stored" },
+      steps: ["access", "harden"], options: { keepPassword: false },
+      secretValues: { accessKey: defaultGenerateKeyPair().privateKey },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(ssh.hasExecuted(/start-myrmidon-firewall-timer/)).toBe(true);
+    expect(result.error).toMatch(/timer.*(start|confirm)/i);
+    expect(ssh.hasExecuted(/restore-myrmidon-password-config/)).toBe(true);
   });
 
   it("fails TOFU check when host key fingerprint does not match pinned value", async () => {

@@ -22,7 +22,7 @@ describe("onboarding production entrypoint", () => {
     try {
       await Promise.race([
         received,
-        new Promise<never>((_, reject) => child.once("exit", (code) => reject(new Error(`worker exited before claiming: ${code}`))),
+        new Promise<never>((_, reject) => child.once("exit", (code) => reject(new Error(`worker exited before claiming: ${code}`)))),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error("worker did not claim")), 5000)),
       ]);
     } finally {
