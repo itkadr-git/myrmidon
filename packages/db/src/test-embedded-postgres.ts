@@ -8,7 +8,6 @@ import {
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
 } from "./embedded-postgres-error.js";
-import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
 import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 // Time budget (ms) for a vitest test in the embedded-Postgres cost class: a
@@ -65,6 +64,7 @@ type EmbeddedPostgresCtorProvider = () => Promise<EmbeddedPostgresCtor>;
 
 async function loadEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
   const mod = await import("embedded-postgres");
+  const { prepareEmbeddedPostgresNativeRuntime } = await import("./embedded-postgres-native.js");
   await prepareEmbeddedPostgresNativeRuntime();
   return mod.default as EmbeddedPostgresCtor;
 }
