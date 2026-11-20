@@ -287,6 +287,12 @@ async function recordRetryableFailure(input: {
         : ("failed" as const);
   let terminalRunToEmit: typeof heartbeatRuns.$inferSelect | null = null;
   const outcome = await input.db.transaction(async (tx) => {
+    const [lockedCoordinator] = await tx.select().from(nativeRunFinalizations)
+      .where(and(eq(nativeRunFinalizations.runId, input.run.id), eq(nativeRunFinalizations.companyId, input.run.companyId)))
+      .for("update");
+    if (!lockedCoordinator || lockedCoordinator.authorizationMode !== "internal") {
+      throw new Error("native_service_authorization_required");
+    }
     const issue = await tx
       .select({
         lastStatusDecisionId: issues.lastStatusDecisionId,
