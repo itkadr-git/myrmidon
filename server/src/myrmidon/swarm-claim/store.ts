@@ -257,6 +257,9 @@ export async function assignIssueToAgentForIdleClaim(
         eq(issues.id, input.issueId),
         eq(issues.companyId, input.companyId),
         isNull(issues.assigneeAgentId),
+        // 1.7 PRIVATE-TASKS (OPE-12704): the idle-claim path must not bypass
+        // the queue's privacy filter — a private task is never assigned here.
+        eq(issues.isPrivate, false),
         inArray(issues.status, [...SWARM_CLAIM_QUEUE_ISSUE_STATUSES]),
       ),
     )
