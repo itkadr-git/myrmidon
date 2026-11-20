@@ -12,7 +12,7 @@
 // so a token stays in the environment the caller already owns.
 
 import { execFile } from "node:child_process";
-import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
@@ -112,6 +112,58 @@ export async function commitKnowledgeTreeIfChanged(
     if (file.path.includes("..") || path.isAbsolute(file.path)) {
       throw new Error(`refusing to write a path outside the export repo: ${file.path}`);
     }
+  }
+  for (const file of tree.files) {
+    if (path.normalize(prefix + file.path).split(path.sep)[0] === ".git") {
+      throw new Error(`refusing to write git metadata: ${file.path}`);
+    }
+  }
+  // Validate the entire requested shape and existing components before any write.
+  const targets = new Set<string>();
+  for (const file of tree.files) {
+    const target = path.resolve(workDir, prefix + file.path);
+    if (targets.has(target)) {
+      throw new Error(`knowledge export: duplicate file path: ${file.path}`);
+    }
+    targets.add(target);
+  }
+  if ((await lstat(workDir)).isSymbolicLink()) {
+    throw new Error("refusing to write through a symlink checkout root");
+  }
+  for (const file of tree.files) {
+    const components = (prefix + file.path).split(path.sep).filter((part) => part && part !== ".");
+    let current = workDir;
+    for (let i = 0; i < components.length; i++) {
+      current = path.join(current, components[i]!);
+      const leaf = i === components.length - 1;
+      if (!leaf && targets.has(path.resolve(current))) {
+        throw new Error(`knowledge export: conflicting file and directory: ${file.path}`);
+      }
+      try {
+        const stat = await lstat(current);
+        if (stat.isSymbolicLink()) {
+          throw new Error(`refusing to write through a symlink: ${file.path}`);
+        }
+        if (leaf ? !stat.isFile() : !stat.isDirectory()) {
+          throw new Error(`knowledge export: incompatible path shape: ${file.path}`);
+        }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
+    }
+  }
+  if (prefix) {
+    const status = await git(runner, workDir, ["status", "--porcelain", "-z", "--untracked-files=all"], env);
+    const entries = status.stdout.split("\0").filter(Boolean);
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i]!;
+      const renamed = entry[0] === "R" || entry[0] === "C" || entry[1] === "R" || entry[1] === "C";
+      if (!entry.slice(3).startsWith(prefix) || (renamed && !entries[++i]?.startsWith(prefix))) {
+        throw new Error("knowledge export: dirty checkout outside company; refusing to commit");
+      }
+    }
+  }
+  for (const file of tree.files) {
     const abs = path.join(workDir, prefix + file.path);
     await mkdir(path.dirname(abs), { recursive: true });
     await writeFile(abs, file.content, "utf8");
@@ -123,9 +175,23 @@ export async function commitKnowledgeTreeIfChanged(
   const tracked = listed.stdout.split("\0").filter((name) => name.length > 0);
   for (const name of tracked) {
     if (name.startsWith(prefix) && !keep.has(name)) {
+      let current = workDir;
+      for (const component of name.split(path.sep).filter(Boolean).slice(0, -1)) {
+        current = path.join(current, component);
+        try {
+          if ((await lstat(current)).isSymbolicLink()) {
+            throw new Error(`refusing to delete through a symlink: ${name}`);
+          }
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === "ENOENT") break;
+          throw err;
+        }
+      }
       // Unlink first so a runner that only records argv still leaves a
       // dirty work tree; `git add -A` below stages the deletion.
-      await unlink(path.join(workDir, name)).catch(() => undefined);
+      await unlink(path.join(workDir, name)).catch((err: NodeJS.ErrnoException) => {
+        if (err.code !== "ENOENT") throw err;
+      });
     }
   }
 
@@ -156,7 +222,9 @@ export async function commitKnowledgeTreeIfChanged(
     authorEnv,
   );
   const head = await git(runner, workDir, ["rev-parse", "HEAD"], authorEnv);
-  return { committed: true, commit: head.stdout.trim() || null };
+  const commit = head.stdout.trim();
+  if (!commit) throw new Error("knowledge export: empty HEAD after commit");
+  return { committed: true, commit };
 }
 
 /**
@@ -208,10 +276,16 @@ export async function publishKnowledgeExport(input: PublishKnowledgeExportInput)
       await git(runner, input.workDir, ["remote", "add", "origin", input.repoUrl], env);
     }
   } else {
-    await git(runner, input.workDir, ["fetch", "origin", input.branch], env).catch(() => {
-      // The branch may not exist yet. A failed fetch must not hide a later
-      // push error: we only swallow "no such branch" by continuing to commit.
-    });
+    // Even a missing branch fails closed: an existing checkout may be stale.
+    await git(runner, input.workDir, ["fetch", "origin", input.branch], env);
+    const localBranchExists = await git(runner, input.workDir, ["show-ref", "--verify", "--quiet", `refs/heads/${input.branch}`], env)
+      .then(() => true).catch(() => false);
+    if (localBranchExists) {
+      await git(runner, input.workDir, ["checkout", input.branch], env);
+      await git(runner, input.workDir, ["merge", "--ff-only", "FETCH_HEAD"], env);
+    } else {
+      await git(runner, input.workDir, ["checkout", "-b", input.branch, "FETCH_HEAD"], env);
+    }
   }
 
   const { committed, commit } = await commitKnowledgeTreeIfChanged(
@@ -237,9 +311,12 @@ function redactUrl(url: string): string {
   return redactSecrets(url);
 }
 
-/** Replaces `user:token@` in every URL of a text with `<redacted>@`. */
+/** Redacts URL userinfo, authorization bearer values, and Myrmidon keys in text. */
 export function redactSecrets(text: string): string {
-  return text.replace(/\/\/[^/\s]*@/g, "//<redacted>@");
+  return text
+    .replace(/(\bAuthorization\s*:\s*Bearer\s+)[^\s]+/gi, "$1<redacted>")
+    .replace(/\bpcp_[A-Za-z0-9][A-Za-z0-9_-]*/g, "pcp_<redacted>")
+    .replace(/\/\/[^/\s]*@/g, "//<redacted>@");
 }
 
 /** A log-safe message for any thrown value: never the error object itself. */

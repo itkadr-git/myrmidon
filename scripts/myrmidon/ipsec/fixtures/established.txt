@@ -1,0 +1,11 @@
+office: #1, ESTABLISHED, IKEv2
+  local  'local.example' @ 192.0.2.1[500]
+  remote 'remote.example' @ 192.0.2.2[500]
+  AES_GCM_16-128/PRF_HMAC_SHA2_256/MODP_2048
+  established 10s ago, rekeying in 1200s
+  office-net: #2, reqid 1, INSTALLED, TUNNEL, ESP:AES_GCM_16_128
+    installed 10s ago, rekeying in 300s, expires in 400s
+    in  c1234567,   1024 bytes, 12 packets, 1s ago
+    out c7654321,   2048 bytes, 13 packets, 2s ago
+    local  192.0.2.0/24
+    remote 198.51.100.0/24

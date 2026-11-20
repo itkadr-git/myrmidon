@@ -1,14 +1,16 @@
-import { pgTable, uuid, text, integer, timestamp, index, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, timestamp, index, jsonb, foreignKey } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import type { SourceTrustMetadata } from "@myrmidon/shared";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
+import { issues } from "./issues.js";
 
 export const documents = pgTable(
   "documents",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    acceptanceIssueId: uuid("acceptance_issue_id"),
     title: text("title"),
     format: text("format").notNull().default("markdown"),
     latestBody: text("latest_body").notNull(),
@@ -26,6 +28,7 @@ export const documents = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    acceptanceIssueCompanyFk: foreignKey({ name: "documents_acceptance_issue_company_fk", columns: [table.acceptanceIssueId, table.companyId], foreignColumns: [issues.id, issues.companyId] }),
     companyUpdatedIdx: index("documents_company_updated_idx").on(table.companyId, table.updatedAt),
     companyCreatedIdx: index("documents_company_created_idx").on(table.companyId, table.createdAt),
     titleSearchIdx: index("documents_title_search_idx").using("gin", table.title.op("gin_trgm_ops")),

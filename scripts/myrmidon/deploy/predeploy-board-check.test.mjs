@@ -44,6 +44,9 @@ case "$1" in
     fi
     echo "0123456789ab"
     exit 0 ;;
+  cp)
+    cp "$2" "$SANDBOX/copied-dump"
+    exit $? ;;
   exec)
     case "$*" in *psql*ANALYZE*)
       [ -e "$SANDBOX/analyze-fails" ] && { echo "psql: error: analyze failed" >&2; exit 1; }
@@ -60,6 +63,9 @@ case "$1" in
       exit 0 ;;
     esac
     case "$*" in *pg_restore*)
+      case "$*" in *--jobs*)
+        [ -f "$SANDBOX/copied-dump" ] && [[ "$*" == *' /tmp/myrmidon-predeploy.dump' ]] || { echo 'pg_restore: parallel restore requires a regular archive file' >&2; exit 1; } ;;
+      esac
       # myrmidon(PREDEPLOY-NO-ACL): models a dump with GRANTs to production-only
       # roles. Such a dump restores only when pg_restore skips privileges:
       # without --no-acl the restore aborts on the missing role, exactly like
@@ -571,6 +577,81 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     assert.match(out, /volume=myr-predeploy-dbvol-/);
     assert.doesNotMatch(calls(sb), /docker rm -f/);
     assert.doesNotMatch(calls(sb), /docker volume rm/);
+  });
+});
+
+// myrmidon(PREDEPLOY-ROUTE-TIMEOUT / PREDEPLOY-RESTORE-JOBS, OPE-15009): the
+// route walk used to curl with a hardcoded --max-time 30 — on a cold copy the
+// attention list answers in more than 30 s while still healthy (rc.18: 200 in
+// 32.19 s on production, curl exit 28 at 30 s on the copy) and the check
+// false-negatived before the window. And the restore of a production dump ran
+// single-threaded for ~an hour. Both are operator-tunable with fail-closed
+// validation; the defaults are 90 s for the walk and 4 parallel pg_restore jobs.
+describe("predeploy-board-check.sh (PREDEPLOY-ROUTE-TIMEOUT and PREDEPLOY-RESTORE-JOBS, OPE-15009)", () => {
+  const routeWalks = (sb) =>
+    calls(sb).split("\n").filter((l) => l.startsWith("curl ") && l.includes("/api/companies/"));
+
+  it("walks the routes with the default 90 s timeout and restores with the default 4 jobs", () => {
+    const sb = sandbox();
+    const { code, out } = full(sb);
+    assert.equal(code, 0, out);
+    const walks = routeWalks(sb);
+    assert.ok(walks.length > 0, calls(sb));
+    for (const line of walks) assert.ok(line.includes("--max-time 90"), line);
+    assert.match(calls(sb), /pg_restore .*--jobs 4 --no-owner --no-acl/);
+    // the health wait keeps its own short probe timeout
+    assert.match(calls(sb), /curl -fsS --max-time 10 .*\/api\/health/);
+  });
+
+  it("honors MYRMIDON_PREDEPLOY_ROUTE_TIMEOUT_SEC=120 on the walk only", () => {
+    const sb = sandbox({ extraConfig: "MYRMIDON_PREDEPLOY_ROUTE_TIMEOUT_SEC=120\n" });
+    const { code, out } = full(sb);
+    assert.equal(code, 0, out);
+    const walks = routeWalks(sb);
+    assert.ok(walks.length > 0, calls(sb));
+    for (const line of walks) assert.ok(line.includes("--max-time 120"), line);
+    assert.match(calls(sb), /curl -fsS --max-time 10 .*\/api\/health/);
+    assert.match(out, /route timeout 120s/);
+  });
+
+  it("refuses an invalid MYRMIDON_PREDEPLOY_ROUTE_TIMEOUT_SEC before any docker call", () => {
+    for (const bad of ["0", "601", "abc", "90.5", "-5"]) {
+      const sb = sandbox({ extraConfig: `MYRMIDON_PREDEPLOY_ROUTE_TIMEOUT_SEC=${bad}\n` });
+      const { code, out } = full(sb);
+      assert.notEqual(code, 0, `value ${bad}: ${out}`);
+      assert.match(out, /MYRMIDON_PREDEPLOY_ROUTE_TIMEOUT_SEC must be a positive integer in 1\.\.600/);
+      assert.match(out, new RegExp(`got: '${bad}'`));
+      assert.equal(calls(sb), "");
+    }
+  });
+
+  it("honors MYRMIDON_PREDEPLOY_RESTORE_JOBS=2 on the default restore command", () => {
+    const sb = sandbox({ extraConfig: "MYRMIDON_PREDEPLOY_RESTORE_JOBS=2\n" });
+    const { code, out } = full(sb);
+    assert.equal(code, 0, out);
+    assert.match(calls(sb), /pg_restore .*--jobs 2 --no-owner --no-acl/);
+  });
+
+  it("an overridden restore command is used verbatim and does not gain --jobs", () => {
+    const sb = sandbox({
+      extraConfig:
+        'MYRMIDON_PREDEPLOY_RESTORE_COMMAND=\'docker exec -i custom-db pg_restore -U custom --no-acl < "$DUMP_FILE"\'\nMYRMIDON_PREDEPLOY_RESTORE_JOBS=8\n',
+    });
+    const { code, out } = full(sb);
+    assert.equal(code, 0, out);
+    assert.match(calls(sb), /docker exec -i custom-db pg_restore -U custom --no-acl/);
+    assert.doesNotMatch(calls(sb), /--jobs/);
+  });
+
+  it("refuses an invalid MYRMIDON_PREDEPLOY_RESTORE_JOBS before any docker call", () => {
+    for (const bad of ["0", "17", "abc", "4.5", "-1"]) {
+      const sb = sandbox({ extraConfig: `MYRMIDON_PREDEPLOY_RESTORE_JOBS=${bad}\n` });
+      const { code, out } = full(sb);
+      assert.notEqual(code, 0, `value ${bad}: ${out}`);
+      assert.match(out, /MYRMIDON_PREDEPLOY_RESTORE_JOBS must be a positive integer in 1\.\.16/);
+      assert.match(out, new RegExp(`got: '${bad}'`));
+      assert.equal(calls(sb), "");
+    }
   });
 });
 

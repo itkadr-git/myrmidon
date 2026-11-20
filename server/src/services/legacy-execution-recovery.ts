@@ -70,6 +70,7 @@ export function legacyExecutionNeedsReconciliation(
   if (
     run.status === "cancelled" &&
     (run.errorCode === "issue_continuation_waiting_on_review" ||
+      run.errorCode === "issue_review_participant_changed" ||
       run.errorCode === "issue_waiting_for_response")
   )
     return false;

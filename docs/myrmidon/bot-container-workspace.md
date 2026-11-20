@@ -35,6 +35,36 @@ without any git inspection. There is nothing on the board to delete. The task
 directory on the bot disk follows the bot-disk policy (`general.botDisk`:
 thresholds, scratch TTL, idle TTL).
 
+On reuse, `myr-ws open` and the idle botd `myr-ws repair` leave unfinished
+merge, rebase, cherry-pick, revert and am operations and unresolved index
+stages in place for the task's next run. They do not abort these operations or
+reset the index. A branch switch requested during an unfinished operation is
+not performed; finish or abort the operation explicitly before switching.
+
+## Bare bases with extensions.worktreeConfig
+
+A task copy is a linked git worktree of the shared bare base of the repository
+(the class-D base under the bot home). A base can also carry the git extension
+`extensions.worktreeConfig=true`. In that shape git never writes the
+`config.worktree` of a new worktree, so the copy would inherit `core.bare=true`
+from the base: `git rev-parse` works there, but `git status`, `read-tree` and
+sparse checkout refuse with "this operation must be run in a work tree".
+
+`myr-ws` handles such bases itself:
+
+- After `git worktree add`, `myr-ws open` writes `core.bare=false` into the
+  copy's own `config.worktree` (inside the administrative git directory of the
+  copy). The common config of the base is not touched; the base stays bare.
+- A copy left half-created by an earlier `open` (only its `.git` file, no
+  checkout) is healed, not rejected: on reuse, `open` and the janitor
+  `myr-ws repair` (botd) fix the config and then materialize the checkout a
+  fresh open would have created. HEAD, the checked-out branch, the index and
+  untracked files of the copy are preserved; nothing is reset or deleted. The
+  base stays bare and gains no `config.worktree`.
+- `repair` skips a copy with a live process inside it.
+- A review copy healed this way gets a normal checkout; `open --review`
+  already warns when it reuses an existing copy instead of recreating it.
+
 ## Adapters that run on the board host
 
 A local adapter keeps the git worktree under `.paperclip/worktrees` of the

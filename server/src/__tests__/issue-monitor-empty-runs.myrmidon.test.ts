@@ -577,6 +577,35 @@ describeEmbeddedPostgres("issue monitors that cannot change anything", () => {
     await waitForHeartbeatSideEffectsSettled();
   });
 
+  it("does not back off a replacement leaf monitor using a stale claim", async () => {
+    const { issueId, recordWake } = await seedLeafMonitor({
+      serviceName: "CI", kind: "external_service", withPullRequest: true,
+    });
+    await recordWake();
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_replace_leaf_monitor() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.monitor_wake_requested_at IS NULL AND NEW.monitor_wake_requested_at IS NOT NULL THEN
+          UPDATE issues SET monitor_next_check_at = '2026-04-11T13:30:00Z'::timestamptz,
+            monitor_wake_requested_at = NULL, monitor_notes = 'new evidence'
+          WHERE id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_replace_leaf_monitor AFTER UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION test_replace_leaf_monitor();
+    `));
+    try {
+      expect((await heartbeatService(db, { executesRuns: false }).tickTimers(TICK_AT)).enqueued).toBe(0);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue.monitorNextCheckAt?.toISOString()).toBe("2026-04-11T13:30:00.000Z");
+      expect(issue.monitorNotes).toBe("new evidence");
+      expect(await activityOf(issueId, "issue.monitor_deferred")).toHaveLength(0);
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_replace_leaf_monitor ON issues; DROP FUNCTION IF EXISTS test_replace_leaf_monitor();"));
+    }
+  });
+
   it("wakes a monitor of an external service on its date even when the board sees nothing new", async () => {
     const { engineerId, recordWake } = await seedLeafMonitor({
       serviceName: "Deploy of the staging stand",

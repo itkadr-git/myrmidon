@@ -128,6 +128,7 @@ function makeSandbox(opts = {}) {
   const run = {
     path: opts.runPath ?? ".github/workflows/myrmidon-ci-tag.yml",
     head_branch: opts.headBranch ?? "myr-v1.6.10",
+    event: opts.event ?? "push",
     status: opts.ciStatus ?? "completed",
     conclusion: opts.ciConclusion ?? "success",
   };
@@ -248,6 +249,41 @@ describe("release-freeze.sh (fake gh)", () => {
     });
     const r = runScript(sb, "--check");
     assert.equal(r.status, 0, r.stderr);
+  });
+
+  it("--check accepts a green push run of myrmidon-ci.yml of the tag commit on a REL branch (CI-TAG-REUSE-BRANCH-RUN)", () => {
+    const sb = makeSandbox({
+      runPath: ".github/workflows/myrmidon-ci.yml",
+      headBranch: "rel/1.6.6-fixes",
+      ciConclusion: "success",
+    });
+    const r = runScript(sb, "--check");
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /merges open/);
+    const s = runScript(sb, "--set-state");
+    assert.equal(s.status, 0, s.stderr);
+    assert.match(s.stdout, /freeze=inactive/);
+  });
+
+  it("a green manual dispatch of myrmidon-ci.yml on the tag commit counts too", () => {
+    const sb = makeSandbox({
+      runPath: ".github/workflows/myrmidon-ci.yml",
+      headBranch: "rel/1.6.6-fixes",
+      event: "workflow_dispatch",
+    });
+    assert.equal(runScript(sb, "--check").status, 0);
+  });
+
+  it("--check stays RED on a red rel-branch run or a green pull_request run of the same commit", () => {
+    for (const opts of [
+      { headBranch: "rel/1.6.6-fixes", ciConclusion: "failure" },
+      { headBranch: "bot/x", event: "pull_request", ciConclusion: "success" },
+    ]) {
+      const sb = makeSandbox({ runPath: ".github/workflows/myrmidon-ci.yml", ...opts });
+      const r = runScript(sb, "--check");
+      assert.equal(r.status, 1, r.stderr);
+      assert.match(r.stderr, /RELEASE FREEZE ACTIVE/);
+    }
   });
 
   it("--check stays RED when the tag workflow runs on a DIFFERENT branch name (path/head_branch must pair)", () => {

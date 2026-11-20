@@ -218,12 +218,17 @@ export function calculateCiResultLatency(jobs, {
   allowedPredecessors = null,
   ciResultName = 'CI result',
   maxLatencySec = 120,
+  attempt = 1,
+  attemptStartedAt = null,
 } = {}) {
+  if (!Number.isInteger(attempt) || attempt < 1) throw new Error('Invalid workflow attempt');
+  const attemptStart = attempt > 1 ? Date.parse(attemptStartedAt) : null;
+  if (attempt > 1 && !Number.isFinite(attemptStart)) throw new Error('Missing or invalid attempt start timestamp');
   if (!Array.isArray(jobs)) {
     throw new Error('Expected jobs to be an array');
   }
 
-  const ciJob = jobs.find((j) => j.name === ciResultName && j.started_at);
+  const ciJob = jobs.find((j) => j.name === ciResultName && j.started_at && (attempt === 1 || j.run_attempt === attempt));
   if (!ciJob || !ciJob.started_at) {
     throw new Error(`CI result job ("${ciResultName}") not found or has no started_at timestamp`);
   }
@@ -243,10 +248,27 @@ export function calculateCiResultLatency(jobs, {
     });
   });
 
-  // If no test/check predecessor completed (e.g. docs tier where all tests were skipped), fall back to plan
-  if (completedPredecessors.length === 0 && workflow === 'ci') {
-    completedPredecessors = jobs.filter((j) => j.name === 'plan' && j.completed_at);
+  if (attempt > 1) {
+    // GitHub can relabel inherited jobs with the current attempt; their completion
+    // timestamp still predates this attempt's run_started_at.
+    const currentAttempt = jobs.filter((job) => job.run_attempt === attempt);
+    const isPredecessor = (job) => job.name === 'plan' && workflow === 'ci' ||
+      primaryPatterns.some((pattern) => pattern instanceof RegExp ? pattern.test(job.name) : pattern === job.name);
+    const relevant = currentAttempt.filter((job) => job.name !== ciResultName && isPredecessor(job));
+    for (const job of relevant) {
+      if (!job.completed_at || !Number.isFinite(Date.parse(job.completed_at))) {
+        throw new Error(`Missing or invalid completion timestamp on predecessor ${job.name}`);
+      }
+    }
+    completedPredecessors = completedPredecessors.filter((job) =>
+      job.run_attempt === attempt && Date.parse(job.completed_at) >= attemptStart);
   }
+  // Fall back to plan only after filtering out predecessors from older attempts.
+  if (completedPredecessors.length === 0 && workflow === 'ci') {
+    completedPredecessors = jobs.filter((j) => j.name === 'plan' && j.completed_at &&
+      (attempt === 1 || (j.run_attempt === attempt && Date.parse(j.completed_at) >= attemptStart)));
+  }
+  if (attempt > 1 && completedPredecessors.length === 0) return { notApplicable: true };
 
   if (completedPredecessors.length === 0) {
     throw new Error('No completed relevant predecessor jobs found to compute latency');
@@ -268,13 +290,31 @@ export function calculateCiResultLatency(jobs, {
   }
 
   const latencySeconds = Math.round((ciStartTime - latestEndTime) / 1000);
-  const passed = latencySeconds <= maxLatencySec;
+
+  // Time the CI result job spent in `queued` waiting for a free runner
+  // (created_at -> started_at of the job itself). A runner queue clogged by
+  // other PRs is not a defect of this run, so it is split off the latency.
+  const ciCreatedTime = ciJob.created_at ? new Date(ciJob.created_at).getTime() : NaN;
+  let queueWaitSeconds = 0;
+  if (!isNaN(ciCreatedTime) && ciCreatedTime <= ciStartTime) {
+    queueWaitSeconds = Math.round((ciStartTime - ciCreatedTime) / 1000);
+  }
+  // Latency that the runner queue does not explain: the gap between the last
+  // predecessor and the moment the job was queued. This part stays
+  // fail-closed (the job must not hang before it reaches the queue).
+  const residualLatencySeconds = latencySeconds - queueWaitSeconds;
+  const queueDelayed = latencySeconds > maxLatencySec && queueWaitSeconds > 0;
+  const passed = residualLatencySeconds <= maxLatencySec;
 
   return {
     ciStart: ciJob.started_at,
     lastPredecessorEnd: latestJob.completed_at,
     lastPredecessorJob: latestJob.name,
     latencySeconds,
+    queueWaitSeconds,
+    residualLatencySeconds,
+    queueDelayed,
+    runnerName: ciJob.runner_name || null,
     maxLatencySec,
     passed,
     evaluatedJobsCount: completedPredecessors.length,
@@ -324,11 +364,17 @@ export function main(args = process.argv.slice(2)) {
       const result = calculateCiResultLatency(jobsList, {
         workflow: workflowType || 'ci',
         maxLatencySec: maxLatency || 120,
+        attempt: Number(process.env.GITHUB_RUN_ATTEMPT || 1),
+        attemptStartedAt: process.env.CI_ATTEMPT_STARTED_AT,
       });
-      if (result.passed) {
+      if (result.notApplicable) {
+        console.log('NOT_APPLICABLE: no predecessor completed in the current workflow attempt.');
+      } else if (result.passed && result.queueDelayed) {
+        console.log(`::warning::CI result start latency ${result.latencySeconds}s > ${result.maxLatencySec}s was caused by the runner queue: the job waited ${result.queueWaitSeconds}s in queued before runner "${result.runnerName || 'unknown'}" took it; residual latency ${result.residualLatencySeconds}s <= ${result.maxLatencySec}s relative to predecessor "${result.lastPredecessorJob}". Not a failure.`);
+      } else if (result.passed) {
         console.log(`PASS: CI result start latency is ${result.latencySeconds}s (<= ${result.maxLatencySec}s) relative to predecessor "${result.lastPredecessorJob}" (${result.evaluatedJobsCount} predecessor jobs evaluated).`);
       } else {
-        console.error(`ERROR: CI result start latency exceeded threshold: ${result.latencySeconds}s > ${result.maxLatencySec}s relative to predecessor "${result.lastPredecessorJob}".`);
+        console.error(`ERROR: CI result start latency exceeded threshold: ${result.latencySeconds}s > ${result.maxLatencySec}s relative to predecessor "${result.lastPredecessorJob}" (runner queue explains ${result.queueWaitSeconds}s, ${result.residualLatencySeconds}s remain).`);
         process.exit(1);
       }
     } catch (err) {

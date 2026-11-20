@@ -60,6 +60,7 @@ export interface AgentSummary {
   role: string;
   status?: string;
   pausedAt?: Date | null;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface GuardReturnDecision {
@@ -342,12 +343,7 @@ export function decideGuardReturn(
   const isAvailableEngineer = (id: string | null | undefined): boolean => {
     if (!id) return false;
     const agent = agentMap.get(id) ?? activeEngineers?.find((entry) => entry.id === id);
-    return Boolean(agent && agent.role === "engineer" && agent.status !== "paused" && agent.status !== "terminated" && agent.status !== "pending_approval" && !agent.pausedAt);
-  };
-  const isAvailableLead = (id: string | null | undefined): boolean => {
-    if (!id) return false;
-    const agent = agentMap.get(id);
-    return Boolean(agent && agent.role === "lead" && agent.status !== "paused" && agent.status !== "terminated" && agent.status !== "pending_approval" && !agent.pausedAt);
+    return Boolean(agent && agent.role === "engineer" && agent.status !== "retired" && agent.status !== "paused" && agent.status !== "terminated" && agent.status !== "pending_approval" && !agent.pausedAt && agent.metadata?.swarmQueueEligible !== false);
   };
 
   // Prefer the original author only while they can accept a new run.
@@ -369,24 +365,16 @@ export function decideGuardReturn(
     }
   }
 
-  // Priority 3: an active engineer, then the project lead for planning tasks.
+  // Priority 3: an eligible active engineer.
   if (!targetAssigneeAgentId && activeEngineers && activeEngineers.length > 0) {
     targetAssigneeAgentId = activeEngineers.find((agent) => isAvailableEngineer(agent.id))?.id ?? null;
     if (targetAssigneeAgentId) targetKind = "active_engineer";
   }
 
-  if (!targetAssigneeAgentId && candidate.projectId) {
-    const projectLead = candidate.projectLeadAgentId;
-    if (isAvailableLead(projectLead)) {
-      targetAssigneeAgentId = projectLead ?? null;
-      targetKind = "project_lead";
-    }
-  }
-
   if (!targetAssigneeAgentId) {
     return {
       action: "skip",
-      reason: "Could not find a valid engineer to return the task to",
+      reason: "Could not find an eligible available engineer to return the task to",
     };
   }
 

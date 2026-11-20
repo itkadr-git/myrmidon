@@ -111,6 +111,24 @@ Pending knowledge proposals from `/api/myrmidon/companies/:companyId/knowledge/s
 - **Type filter**: the inbox filter popover includes a **Knowledge** category filter, allowing operators to filter the inbox exclusively to knowledge suggestions or combine it with other categories. The category selection is persisted in local storage preferences.
 - **Review routing**: activating a knowledge inbox item (via click or keyboard navigation) routes directly to `/knowledge/review` where the proposal's title, rationale, source references, and proposed content can be inspected, accepted, or declined.
 
+On the review screen, the accessible names of Accept, Reject, and Edit include
+the stable suggestion ID after the localized action label, so screen readers can
+distinguish actions for different suggestions. The visible EN/RU labels do not change.
+
+## Git export: foreign changes in a checkout
+
+For an export with a non-empty company path prefix, tracked, staged, or
+untracked changes outside that prefix (including either side of a rename) stop
+export with `knowledge export: dirty checkout outside company; refusing to commit`.
+The check runs before export writes or stages files: it creates no commit,
+leaves HEAD unchanged, and preserves the local changes.
+
+Ask the checkout owner to inspect `git status --short` and preserve the foreign
+changes in an appropriate separate checkout or stash, including untracked files,
+without publishing them in this company's export. Once the owner has safely
+cleared those changes from this checkout, check its status again and retry the
+export. Do not discard changes or commit another company's files as a workaround.
+
 ## Where the code lives
 
 - `server/src/myrmidon/knowledge/routes.ts` — the REST router and its gates.

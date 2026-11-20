@@ -11,7 +11,6 @@ import { heartbeatService, instanceSettingsService, logActivity } from "../../se
 import { scheduleQueuedResweep } from "../run-admission.js";
 import { runPriorityRoutes } from "./routes.js";
 import { runPriorityService, type RunPriorityServiceDeps } from "./service.js";
-import { applyRunPrioritySettings } from "./state.js";
 import { advanceFocusDeferredRuns, applyStoredRunPriority, startRunPriorityRefresh } from "./sync.js";
 
 export {
@@ -74,7 +73,7 @@ export async function startRunPriority(db: Db): Promise<void> {
   try {
     const view = await runPriorityService(db, defaultDeps(db)).read();
     assertRunPriorityQueueInvariant(view.settings);
-    applyRunPrioritySettings(view.settings);
+    await applyStoredRunPriority(db);
     startRunPriorityRefresh(db);
     logger.info(
       { settings: view.settings, source: view.source },
