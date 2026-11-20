@@ -291,6 +291,20 @@ describe("SERVER-ONBOARD logic", () => {
     expect(claim?.secretValues.bootstrapPassword).toBe("bootstrap");
   });
 
+  it("retrieves the persisted key after recreating the onboarding service", async () => {
+    const { mockStore, mockSecrets, mockGetServer } = createMocks();
+    const deps = { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer };
+    const first = onboardService(null as any, deps);
+    const result = await first.addServer({ companyId: "company-1", slug: "recreated", name: "Server", hostname: "192.0.2.7", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "generate-key" }, createdBy: null });
+
+    const recreated = onboardService(null as any, deps);
+    const claim = await recreated.claim("company-1", "valid-executor-token");
+    const storedKey = claim?.secretValues.accessKey;
+    expect(storedKey).toBeTruthy();
+    if (!storedKey) throw new Error("recreated service did not retrieve the access key");
+    expect(sshPublicKey(storedKey)).toBe(result.generatedPublicKey);
+  });
+
   it("retains the bootstrap password when an access report has no durable key", async () => {
     const { mockStore, mockSecrets, mockGetServer, secretsStore, store } = createMocks();
     const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
