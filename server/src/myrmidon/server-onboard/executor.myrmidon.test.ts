@@ -1305,7 +1305,7 @@ case "$1" in
   ufw)
     shift
     case "$1" in
-      status) printf 'Status: active\\n'; exit 0 ;;
+      status) printf 'Status: active\\n'; if [ "$2" = verbose ]; then printf 'Default: allow (incoming), allow (outgoing), disabled (routed)\\n'; fi; exit 0 ;;
       allow) printf '22/tcp\\n' >> "$RULES"; exit 1 ;;
       delete|--force) : > "$RULES"; exit 0 ;;
     esac ;;
@@ -1413,6 +1413,7 @@ exit 97
   it("does not disarm another onboarding job's firewall rollback timer", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     ssh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     ssh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
@@ -1431,6 +1432,7 @@ exit 97
   it("keeps firewall rollback armed until a later verification step succeeds", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     ssh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     ssh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
