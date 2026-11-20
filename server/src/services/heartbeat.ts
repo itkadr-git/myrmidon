@@ -598,6 +598,7 @@ import { reportRunFailure } from "./run-failure-report.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope, type BudgetServiceHooks } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
+import { findRunScopedGatewayKeyRef, removeRunScopedGatewayKeyRef } from "../myrmidon/litellm-costs/bot-keys.js";
 import {
   resolveDefaultAgentWorkspaceDir,
   resolveManagedProjectWorkspaceDir,
@@ -2195,6 +2196,11 @@ export async function resolveExecutionRunAdapterConfig(input: {
   /** Audited class-3 values resolved by an internal credential broker. */
   trustedEnvProjection?: Record<string, string>;
   trustedEnvSecretKeys?: string[];
+  /**
+   * Server-owned run secret references. They remain references in the input;
+   * the dispatch-only config resolves them without overriding explicit bindings.
+   */
+  runScopedSecretEnv?: Record<string, unknown>;
 }) {
   const executionRunConfig = stripForbiddenEnvFromAdapterConfig(
     input.executionRunConfig,
@@ -2500,6 +2506,26 @@ export async function resolveExecutionRunAdapterConfig(input: {
       ...input.trustedEnvProjection,
     };
     for (const key of input.trustedEnvSecretKeys ?? []) secretKeys.add(key);
+  }
+  // Resolve only server-created run references at dispatch, never persisting the
+  // resolved value in the agent config. Explicit bindings keep precedence.
+  if (
+    allowTrustedEnvProjection &&
+    input.runScopedSecretEnv &&
+    Object.keys(input.runScopedSecretEnv).length > 0
+  ) {
+    const existingEnv = parseObject(resolvedConfig.env);
+    const projectedEnv: Record<string, unknown> = {};
+    for (const [key, ref] of Object.entries(input.runScopedSecretEnv)) {
+      if (existingEnv[key] !== undefined) continue;
+      projectedEnv[key] = ref;
+    }
+    if (Object.keys(projectedEnv).length > 0) {
+      const runResolution = await input.secretsSvc.resolveEnvBindings(input.companyId, projectedEnv);
+      resolvedConfig.env = { ...existingEnv, ...runResolution.env };
+      for (const key of runResolution.secretKeys) secretKeys.add(key);
+      manifest.push(...runResolution.manifest);
+    }
   }
   // Pre-dispatch credential gate for codex_local: a managed Codex home with no
   // usable auth.json and an empty OPENAI_API_KEY would dispatch a run that
@@ -28003,6 +28029,35 @@ export function heartbeatService(
           availableModels: availableModels.map((model) => model.id),
         });
       }
+      const hermesRunKeySettings = readGatewayKeySettings(process.env);
+      let hermesMintExpiresAt: number | null = null;
+      if (agent.adapterType === "hermes_gateway") {
+        if (!hermesRunKeySettings.canManageKeys) {
+          throw new Error("Run gateway credential management is unavailable");
+        }
+        const minted = await mintRunGatewayKey(defaultAgentGatewayKeyDeps(db), {
+          companyId: agent.companyId,
+          runId: run.id,
+        });
+        issuedRunGatewayKey = minted.value;
+        hermesMintExpiresAt = Date.parse(minted.expiresAt);
+        if (!issuedRunGatewayKey || !Number.isFinite(hermesMintExpiresAt) || hermesMintExpiresAt <= Date.now()) {
+          throw new Error("Run gateway credential is missing or expired");
+        }
+        await createRunSecretRedactionRegistry(db).register(agent.companyId, run.id, issuedRunGatewayKey);
+        const registeredRun = await getRun(run.id);
+        context.paperclipSecretRedactions = parseObject(registeredRun?.contextSnapshot).paperclipSecretRedactions;
+      }
+      const runScopedGatewayKeyRef =
+        agent.adapterType === "hermes_gateway" && hermesRunKeySettings.canManageKeys
+          ? await findRunScopedGatewayKeyRef(db, agent.companyId, run.id)
+          : null;
+      if (hermesMintExpiresAt !== null && !runScopedGatewayKeyRef) {
+        throw new Error("Run gateway credential binding is unavailable");
+      }
+      const runScopedSecretEnv = runScopedGatewayKeyRef
+        ? { [runScopedGatewayKeyRef.envKey]: runScopedGatewayKeyRef.secretRef }
+        : undefined;
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
           managedAiCredentials: Boolean(runScopedAiBinding),
@@ -28021,9 +28076,20 @@ export function heartbeatService(
           executionRunConfig: runScopedAiBinding ? { ...runAdapterConfig, env: stripAiAuthBindings(runAdapterConfig.env) } : runAdapterConfig,
           projectEnv: runScopedAiBinding ? stripAiAuthBindings(projectContext?.env) : projectContext?.env ?? null,
           routineEnv: runScopedAiBinding ? stripAiAuthBindings(routineEnvContext.env) : routineEnvContext.env,
+          runScopedSecretEnv,
           secretsSvc,
           trustPreset,
         });
+      if (runScopedGatewayKeyRef && (
+        parseObject(resolvedConfig.env)[runScopedGatewayKeyRef.envKey] !== issuedRunGatewayKey ||
+        hermesMintExpiresAt === null || hermesMintExpiresAt <= Date.now()
+      )) {
+        throw new Error("Run gateway credential does not match its valid binding");
+      }
+      // Never accept this marker from a wake payload; it identifies only the
+      // run credential that was just minted and verified by the control plane.
+      delete context.runScopedGatewayKeyEnv;
+      if (runScopedGatewayKeyRef) context.runScopedGatewayKeyEnv = runScopedGatewayKeyRef.envKey;
       if (runScopedAiBinding) {
         try {
           managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: runScopedAiBinding, config: { ...resolvedConfig, ...(typeof externalSession.model === "string" ? { model: externalSession.model } : {}) } });
