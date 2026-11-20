@@ -84,6 +84,8 @@ test("negative control detects a changed accept header", { timeout: 20_000 }, as
     await writeFile(join(scripts, "verify-release-registry-state.mjs"), mutated);
     await writeFile(join(scripts, "myrmidon", "registry-http-isolation.test.mjs"), await readFile(fileURLToPath(import.meta.url)));
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/npm|registry|token|auth|credential/i.test(key)));
+    // A nested node --test must not inherit the parent test runner's context.
+    delete env.NODE_TEST_CONTEXT;
     env.MYRMIDON_REGISTRY_NEGATIVE_CONTROL = "1";
     child = spawn(process.execPath, ["--test", join(scripts, "myrmidon", "registry-http-isolation.test.mjs")], { env, stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
