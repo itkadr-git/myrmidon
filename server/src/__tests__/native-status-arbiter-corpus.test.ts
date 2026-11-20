@@ -2093,11 +2093,20 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     await db.insert(nativeFinalizationRequests).values({ id: requestId, companyId, issueId: seeded.issueId, runId: seeded.runId, grantId, grantGeneration: 1, principalId, credentialId, verifiedPeerSha256: fingerprint, authenticatedAt: new Date(), documentId, expectedRevisionId: revisionId, expectedIssueEpoch: epoch, strongEtag: etag, canonicalPayloadHash: "test", idempotencyKey: "test", state: "processing", leaseOwner: "worker", leaseUntil });
     await db.insert(nativeFinalizationOutbox).values({ requestId });
     await db.update(nativeRunFinalizations).set({ authorizationMode: "service_required" }).where(eq(nativeRunFinalizations.runId, seeded.runId));
-    const committed = await commitNativeStatusDecision({
+    const decisionInput = {
       db, companyId, issueId: seeded.issueId, runId: seeded.runId,
       assessmentId: seeded.assessmentId, priorStatus: "in_progress", priorStatusVersion: 0, priorDecisionId: null,
-      serviceRequest: { requestId, leaseOwner: "worker", leaseUntil },
-      decision: { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "in_review", toStatus: "in_review", reasonCode: "completion_review_required", unblockDescriptor: null, effects: [] },
+      decision: { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "in_review" as const, toStatus: "in_review" as const, reasonCode: "completion_review_required" as const, unblockDescriptor: null, effects: [] },
+    };
+    await expect(commitNativeStatusDecision({
+      ...decisionInput, serviceRequest: { requestId, leaseOwner: "stale-worker", leaseUntil },
+    })).rejects.toThrow();
+    const [afterStale] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, requestId));
+    const [issueAfterStale] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(afterStale).toMatchObject({ state: "processing", resultDecisionId: null, leaseOwner: "worker" });
+    expect(issueAfterStale!.status).toBe("in_progress");
+    const committed = await commitNativeStatusDecision({
+      ...decisionInput, serviceRequest: { requestId, leaseOwner: "worker", leaseUntil },
     });
     const [request] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, requestId));
     const [outbox] = await db.select().from(nativeFinalizationOutbox).where(eq(nativeFinalizationOutbox.requestId, requestId));
