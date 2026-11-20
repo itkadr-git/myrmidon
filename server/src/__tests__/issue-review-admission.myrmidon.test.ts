@@ -367,7 +367,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     await ctx.db.insert(issues).values({
       id: issueId, companyId, title: "Return from typed review", status: "in_review", priority: "medium", assigneeAgentId: leadId, createdByAgentId: authorId,
       executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewerId }] }], monitor } as any,
-      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewerId }, returnAssignee: { type: "agent", agentId: authorId }, completedStageIds: [], changesRequestedCount: 2, lastDecisionId: randomUUID(), lastDecisionOutcome: "changes_requested" },
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewerId }, returnAssignee: { type: "agent", agentId: authorId }, completedStageIds: [], changesRequestedCount: 0, lastDecisionId: null, lastDecisionOutcome: null },
       monitorNextCheckAt: new Date(monitor.nextCheckAt),
     });
     await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewerId, status: "running", contextSnapshot: { issueId } });
@@ -378,7 +378,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     expect(result.status, JSON.stringify(result.body)).toBe(200);
     const [updated] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
     expect(updated?.status).toBe("in_progress");
-    expect({ status: updated?.status, assignee: updated?.assigneeAgentId, state: updated?.executionState }).toMatchObject({ status: "in_progress", assignee: authorId, state: { status: "changes_requested", currentStageId: stageId, changesRequestedCount: 3, returnAssignee: { agentId: authorId } } });
+    expect({ status: updated?.status, assignee: updated?.assigneeAgentId, state: updated?.executionState }).toMatchObject({ status: "in_progress", assignee: authorId, state: { status: "changes_requested", currentStageId: stageId, changesRequestedCount: 1, returnAssignee: { agentId: authorId } } });
     const decisions = await ctx.db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, issueId));
     expect(decisions).toHaveLength(1);
     expect(decisions[0]).toMatchObject({ outcome: "changes_requested" });
@@ -389,6 +389,37 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     const [afterReplay] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
     expect(afterReplay?.status).toBe("in_progress");
     expect(afterReplay?.assigneeAgentId).toBe(authorId);
+  });
+
+  it("records the round-limit decision once and addresses escalation recovery", async () => {
+    const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Review round limit recovery");
+    const authorId = randomUUID();
+    const reviewerId = randomUUID();
+    const leadId = randomUUID();
+    const stageId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    for (const [id, name, role] of [[authorId, "limit-author", "engineer"], [reviewerId, "limit-reviewer", "reviewer"], [leadId, "limit-lead", "lead"]]) {
+      await ctx.db.insert(agents).values({ id, companyId, name, role, status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    }
+    const monitor = { nextCheckAt: new Date(Date.now() + 60000).toISOString(), scheduledBy: "assignee", kind: "external_service", serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME, externalRef: issueId, recoveryPolicy: "wake_owner" };
+    await ctx.db.insert(issues).values({
+      id: issueId, companyId, title: "Round limit recovery", status: "in_review", priority: "medium", assigneeAgentId: leadId, createdByAgentId: authorId,
+      executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewerId }] }], monitor, reviewEscalationPolicy: { participantRoles: ["lead"], fallbackQueue: "review-recovery", timeoutAt: null, policyRevision: "round-limit-test" } } as any,
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewerId }, returnAssignee: { type: "agent", agentId: authorId }, completedStageIds: [], changesRequestedCount: 2, lastDecisionId: randomUUID(), lastDecisionOutcome: "changes_requested" },
+      monitorNextCheckAt: new Date(monitor.nextCheckAt),
+    });
+    await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewerId, status: "running", contextSnapshot: { issueId } });
+    const actor = { type: "agent" as const, source: "agent_jwt" as const, agentId: reviewerId, companyId, runId, isInstanceAdmin: false };
+    const routes = (db: any, storage: any) => issueRoutes(db, storage, { resolveReviewPullRequestCi: async () => ({ state: "ok", pullRequestUrl: null, headSha: null }) });
+    const app = routeApp(ctx.db, actor as any, routes as any);
+    const result = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: fix verification." });
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    const [updated] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
+    expect(updated?.executionState).toMatchObject({ status: "pending", currentStageId: stageId, changesRequestedCount: 3, lastDecisionOutcome: "changes_requested", escalationReason: "review_round_limit", escalationToParticipant: null });
+    const decisions = await ctx.db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, issueId));
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({ outcome: "changes_requested" });
   });
 
   // myrmidon(REVIEW-CHANGES-LOST-STAGE): when the review stage is missing from
