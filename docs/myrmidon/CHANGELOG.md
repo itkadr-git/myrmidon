@@ -845,6 +845,10 @@ new settings key. Board and admin callers are not subject to the matrix. Guide:
 
 ### Knowledge distiller v2: closed tasks to suggestions (KNOWLEDGE-2.0 K-5)
 
+- The suggestion list returns the K-5 classifier's `recommendation` and
+  `rationale`. A recommendation is `accepted` or `rejected` only when the
+  model supplies a valid verdict and a non-empty rationale; otherwise it is
+  null. Existing rows remain null. Trust and auto-accept are independent.
 - New server module `server/src/myrmidon/distill/`: `domain.ts` (pure
   filtering rules: silent `noise` drop, ≥1 internal source per proposal, the
   `life`-source exclusion for common sections (I-7), the ≤10 human package,

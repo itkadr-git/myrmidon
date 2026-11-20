@@ -127,6 +127,19 @@ describe("distill settings (K-5)", () => {
 });
 
 describe("distill model parsing (K-5)", () => {
+  it("accepts only explicit verdicts with a non-empty classifier rationale", () => {
+    const base = { class: "decision", body: "claim", evidence: ["A-1"] };
+    const parsed = parseDistillAnswer(JSON.stringify([
+      { ...base, recommendation: "accepted", rationale: "supported" },
+      { ...base, recommendation: "rejected", rationale: "conflicting" },
+      { ...base, recommendation: "maybe", rationale: "unclear" },
+      { ...base, recommendation: "accepted", rationale: "  " },
+      { ...base, rationale: "legacy" },
+    ]));
+    expect(parsed.map((item) => item.recommendation)).toEqual(["accepted", "rejected", null, null, null]);
+    expect(parsed.map((item) => item.rationale)).toEqual(["supported", "conflicting", "unclear", "", "legacy"]);
+  });
+
   it("parses the JSON array and drops malformed entries silently", () => {
     const text = [
       "prefix chatter",
