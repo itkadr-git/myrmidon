@@ -161,6 +161,11 @@ const support = await getEmbeddedPostgresTestSupport();
       // create an unclaimable processing lease.
       await expect(claimNativeFinalizationRequest(db, "worker-invalid", now, 1e20))
         .rejects.toThrow("native_finalization_invalid_lease");
+      // An unusable owner must not claim work that it cannot settle.
+      await expect(claimNativeFinalizationRequest(db, " ", now, 1000))
+        .rejects.toThrow("native_finalization_invalid_lease");
+      const [unclaimed] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, requests[0].id));
+      expect(unclaimed).toMatchObject({ state: "accepted", leaseOwner: null, leaseUntil: null });
       const claims = await Promise.all([
         claimNativeFinalizationRequest(db, "worker-a", now, 1000),
         claimNativeFinalizationRequest(db, "worker-b", now, 1000),
