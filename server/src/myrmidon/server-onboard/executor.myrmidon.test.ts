@@ -1546,6 +1546,29 @@ exit 97
     }
   });
 
+  it("reports rollback failure when the firewall becomes inactive before rule restoration", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 1 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    await executor.execute({ job: { id: "job-rule-probe-failure", companyId: "c1", serverId: "s1" }, server: { hostname: "1.2.3.4", port: 22, username: "root" }, steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" } } as OnboardJobClaim & { secretValues: Record<string, string> }, createMockReporter().reporter);
+    const command = ssh.executedCommands.find(({ command }) => command.includes("prepare-myrmidon-firewall-restore"))?.command ?? "";
+    const script = /printf '%s' '([^']+)'/.exec(command)?.[1] ?? "";
+    expect(script).not.toBe("");
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-rule-probe-"));
+    try {
+      writeFileSync(join(dir, "rule-changed"), "");
+      writeFileSync(join(dir, "ufw"), '#!/bin/sh\nprintf "Status: inactive\\n"\nexit 0\n');
+      chmodSync(join(dir, "ufw"), 0o700);
+      const localScript = script.replace(/\/var\/tmp\/myrmidon-firewall-[a-f0-9-]+/g, dir);
+      const restored = spawnSync("sh", ["-c", localScript], { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
+      expect(restored.status).not.toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("restores only a uniquely owned SSH rule while preserving an operator rule", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
