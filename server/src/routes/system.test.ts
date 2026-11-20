@@ -1,4 +1,4 @@
-import express from "express";
+import express, { type Request } from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { systemRoutes } from "./system.js";
@@ -26,7 +26,7 @@ function extractProjectId(condition: any): string | null {
   return search(condition);
 }
 
-function fixture() {
+function fixture(actor: Request["actor"] = { type: "board", source: "local_implicit", isInstanceAdmin: true }) {
   const projectRows = new Map<string, { companyId: string; env: Record<string, unknown> | null }>([
     ["p1", { companyId: "c1", env: {} }],
     ["p2", { companyId: "c1", env: {} }],
@@ -64,7 +64,7 @@ function fixture() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = { type: "board", source: "local_implicit", isInstanceAdmin: true };
+    req.actor = actor;
     next();
   });
   app.use("/api", systemRoutes(db as any));
@@ -82,6 +82,17 @@ describe("project auto-update settings API", () => {
     const get = await request(app).get("/api/projects/p1/system/auto-update-settings");
     expect(get.status).toBe(200);
     expect(get.body.settings).toEqual(settings);
+  });
+  it("rejects agent key PUT with 403 and leaves env untouched", async () => {
+    const { app, projectRows } = fixture({ type: "agent", agentId: "agent-1", companyId: "c1" });
+    const put = await request(app)
+      .put("/api/projects/p1/system/auto-update-settings")
+      .send({ enabled: true, cron: "0 3 * * 1", durationMinutes: 60, timezone: "UTC" });
+    expect(put.status).toBe(403);
+    expect(projectRows.get("p1")!.env).toEqual({});
+    const get = await request(app).get("/api/projects/p1/system/auto-update-settings");
+    expect(get.status).toBe(200);
+    expect(get.body.settings).toEqual({ enabled: false, cron: "0 2 * * 0", durationMinutes: 120, timezone: "UTC" });
   });
 
   it("rejects an invalid timezone and malformed/conflicting settings", async () => {
