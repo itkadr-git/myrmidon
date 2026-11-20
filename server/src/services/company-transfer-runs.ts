@@ -403,6 +403,8 @@ export const companyTransferRunService = {
       eq(companyTransferRuns.status, "applying"),
       sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
       sql`${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true'`,
+      sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' is not null`,
+      sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' <> ${companyId}`,
       sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' = ${companyId}`,
     )).returning({ id: companyTransferRuns.id });
     if (updated.length !== 1) throw new Error("Migration object reservation rejected");
