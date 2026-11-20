@@ -107,6 +107,14 @@ This strict boundary follows OPE-15237 security contract revision
 operation is currently approved; secret-backed credentials are never resolved
 and no anonymous fallback is attempted.
 
+The companion board-only `GET /api/companies/:companyId/preflight/secrets/:bindingId/probe`
+checks an agent binding's company ownership and selected version metadata. It
+never reads secret material or contacts the provider. Metadata availability is
+not value resolvability: `valueResolvable` is always `UNSUPPORTED`, and `ready`
+is false. A missing pinned version is not replaced by the latest version. The
+response is non-cacheable and produces no secret access or activity events.
+Only agent-target bindings are supported by this diagnostic.
+
 ## Activity log
 
 Every export, removal and bank clear writes a row to the company's activity

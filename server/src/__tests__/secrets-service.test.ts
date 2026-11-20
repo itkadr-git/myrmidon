@@ -1518,6 +1518,43 @@ describeEmbeddedPostgres("secretService", () => {
     expect(JSON.stringify(events)).not.toContain("runtime-secret");
   });
 
+  it("keeps strict binding probes read-only and never substitutes latest for a pinned version", async () => {
+    const companyId = await seedCompany();
+    const otherCompany = await seedCompany("Other");
+    const agentId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Probe target" });
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, { name: `probe-${randomUUID()}`, provider: "local_encrypted", value: "sentinel-secret" });
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: "agent", targetId: agentId }, {
+      API_KEY: { type: "secret_ref", secretId: secret.id, version: 99 },
+    });
+    const [binding] = await svc.listBindings(companyId, secret.id);
+    const resolve = vi.spyOn(localEncryptedProvider, "resolveVersion");
+    const beforeEvents = await db.select().from(secretAccessEvents);
+    const beforeActivity = await db.select().from(activityLog);
+    const result = await svc.probeBinding(companyId, binding.id);
+    expect(result.ready).toBe(false);
+    expect(result.checks).toEqual([
+      expect.objectContaining({ capability: "metadataAvailable", status: "FAIL" }),
+      expect.objectContaining({ capability: "valueResolvable", status: "UNSUPPORTED", reason: "decryption_required" }),
+    ]);
+    expect(JSON.stringify(result)).not.toContain("sentinel-secret");
+    await db.update(companySecretBindings).set({ versionSelector: "latest" }).where(eq(companySecretBindings.id, binding.id));
+    const present = await svc.probeBinding(companyId, binding.id);
+    expect(present.ready).toBe(false);
+    expect(present.checks).toEqual([
+      expect.objectContaining({ capability: "metadataAvailable", status: "PASS" }),
+      expect.objectContaining({ capability: "valueResolvable", status: "UNSUPPORTED" }),
+    ]);
+    expect(resolve).not.toHaveBeenCalled();
+    expect(await db.select().from(secretAccessEvents)).toEqual(beforeEvents);
+    expect(await db.select().from(activityLog)).toEqual(beforeActivity);
+    await expect(svc.probeBinding(otherCompany, binding.id)).rejects.toMatchObject({ status: 404 });
+    await db.update(agents).set({ companyId: otherCompany }).where(eq(agents.id, agentId));
+    await expect(svc.probeBinding(companyId, binding.id)).rejects.toMatchObject({ status: 404 });
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
   it("collects declared secret refs that have no binding without resolving values", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);

@@ -3907,6 +3907,32 @@ export function secretService(db: Db | DbTransaction) {
       }));
     },
 
+    probeBinding: async (companyId: string, bindingId: string) => {
+      if (!isUuidLike(bindingId)) throw notFound("Binding not found");
+      const [binding] = await db.select({ secretId: companySecretBindings.secretId, targetType: companySecretBindings.targetType, targetId: companySecretBindings.targetId, versionSelector: companySecretBindings.versionSelector })
+        .from(companySecretBindings).where(and(eq(companySecretBindings.companyId, companyId), eq(companySecretBindings.id, bindingId)));
+      if (!binding || binding.targetType !== "agent" || !isUuidLike(binding.targetId)) throw notFound("Binding not found");
+      const [agent] = await db.select({ id: agents.id }).from(agents).where(and(eq(agents.id, binding.targetId), eq(agents.companyId, companyId)));
+      if (!agent) throw notFound("Binding not found");
+      const [secret] = await db.select({ id: companySecrets.id, provider: companySecrets.provider, status: companySecrets.status, latestVersion: companySecrets.latestVersion })
+        .from(companySecrets).where(and(eq(companySecrets.id, binding.secretId), eq(companySecrets.companyId, companyId), eq(companySecrets.scope, "company")));
+      if (!secret) throw notFound("Binding not found");
+      const version = binding.versionSelector === "latest" ? secret.latestVersion : Number(binding.versionSelector);
+      const [versionRow] = Number.isSafeInteger(version) && version > 0
+        ? await db.select({ version: companySecretVersions.version, status: companySecretVersions.status, revokedAt: companySecretVersions.revokedAt })
+          .from(companySecretVersions).where(and(eq(companySecretVersions.secretId, secret.id), eq(companySecretVersions.version, version)))
+        : [];
+      const available = secret.status === "active" && !!versionRow && !versionRow.revokedAt && !["disabled", "destroyed"].includes(versionRow.status);
+      const reason = secret.provider === "local_encrypted" ? "decryption_required" : secret.provider === "aws_secrets_manager" ? "no_non_disclosing_value_probe" : "provider_capability_unavailable";
+      return {
+        schemaVersion: 1, mode: "strict_no_secret_reads", checkedAt: new Date().toISOString(), subjectId: bindingId, ready: false,
+        checks: [
+          { capability: "metadataAvailable", status: available ? "PASS" : "FAIL", reason: available ? "metadata_available" : "target_unavailable", evidenceOperation: "database_metadata_select" },
+          { capability: "valueResolvable", status: "UNSUPPORTED", reason, evidenceOperation: null },
+        ],
+      };
+    },
+
     listBindings: (companyId: string, secretId?: string) =>
       db
         .select()

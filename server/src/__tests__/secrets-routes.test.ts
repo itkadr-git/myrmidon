@@ -37,6 +37,7 @@ const mockSecretService = vi.hoisted(() => ({
   previewRemoteImport: vi.fn(),
   importRemoteSecrets: vi.fn(),
   listBindingReferences: vi.fn(),
+  probeBinding: vi.fn(),
   listAccessEvents: vi.fn(),
   listAgentSecretAccess: vi.fn(),
   listAgentSecretAccessOffRun: vi.fn(),
@@ -104,6 +105,24 @@ describe("secret routes", () => {
       reason: "deny_missing_grant",
       explanation: "Missing permission: secrets:read_off_run.",
     });
+  });
+
+  it("exposes strict binding diagnostics only to the company board without activity writes", async () => {
+    const result = { ready: false, checks: [{ capability: "valueResolvable", status: "UNSUPPORTED" }] };
+    mockSecretService.probeBinding.mockResolvedValue(result);
+    const url = "/api/companies/company-1/preflight/secrets/11111111-1111-4111-8111-111111111111/probe";
+    const response = await request(createApp()).get(url);
+    expect(response.status).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.body).toEqual(result);
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    mockSecretService.probeBinding.mockClear();
+    const denied = await request(createApp({ type: "agent", companyId: "company-1", agentId: "agent-1" })).get(url);
+    expect(denied.status).toBe(403);
+    expect(mockSecretService.probeBinding).not.toHaveBeenCalled();
+    const other = await request(createApp()).get(url.replace("company-1", "company-2"));
+    expect(other.status).toBe(403);
+    expect(mockSecretService.probeBinding).not.toHaveBeenCalled();
   });
 
   it("returns an opaque secretRef in agent secret metadata without internal binding details", async () => {
