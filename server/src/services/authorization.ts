@@ -273,6 +273,8 @@ function evaluateAuthorizationPolicyForAssignment(
   label: string,
 ): AssignmentPolicyEffect {
   if (!policy || objectIsEmpty(policy)) return { kind: "none" };
+  // The standard preset alone does not impose an assignment restriction.
+  if (Object.keys(policy).length === 1 && policy.trustPreset === "standard") return { kind: "none" };
 
   const agentVisibility = readPolicyObject(policy, "agentVisibility");
   const assignmentPolicy = readPolicyObject(policy, "assignmentPolicy");

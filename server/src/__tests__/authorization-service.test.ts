@@ -1356,6 +1356,48 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
   });
 
+  it("allows normal assignment to a target with a standard-only trust preset", async () => {
+    const company = await createCompany(db, "StandardPresetAssignment");
+    const project = await createProject(db, company.id, "Read-only PBS WAL");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const targetAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      permissions: { authorizationPolicy: { trustPreset: "standard" } },
+    });
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, projectId: project.id, assigneeAgentId: targetAgent.id },
+      scope: { projectId: project.id, assigneeAgentId: targetAgent.id },
+    });
+    expect(decision).toMatchObject({ allowed: true });
+  });
+
+  it.each([
+    { trustPreset: "standard", unknownExtension: true },
+    { trustPreset: "standard", managedBy: "core-trust-preset" },
+    { managedBy: "permissions-extension" },
+    { trustPreset: "standard", trustBoundary: { mode: "low_trust_review" } },
+    { trustPreset: "standard", reviewPreset: { id: "low_trust_review", version: 1, rawOutputDisposition: "quarantine" } },
+    { trustPreset: "future" },
+    { trustPreset: "standard", assignmentPolicy: { mode: "future" } },
+    { trustPreset: "standard", agentVisibility: { mode: "future" } },
+  ])("fails closed on unsupported assignment policy %j", async (policy) => {
+    const company = await createCompany(db, "UnsupportedAssignmentPolicy");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const targetAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      permissions: { authorizationPolicy: policy },
+    });
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+    expect(decision).toMatchObject({ allowed: false, reason: "deny_policy_restricted" });
+  });
+
   it("hard-blocks assignment when the target agent blocks protected assignment", async () => {
     const company = await createCompany(db, "ProtectedAssignment");
     const actorAgent = await createAgent(db, company.id, { role: "engineer" });
