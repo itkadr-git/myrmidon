@@ -67,11 +67,13 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     mockSsh.mockResponse("sudo sshd -T", { stdout: "passwordauthentication no\nkbdinteractiveauthentication no\n", exitCode: 0 });
     mockSsh.mockResponse(/sshd -T -C /, { stdout: "passwordauthentication no\nkbdinteractiveauthentication no\n", exitCode: 0 });
     mockSsh.mockResponse(/sudo systemctl reload/, { stdout: "", exitCode: 0 });
+    mockSsh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    mockSsh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    mockSsh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     mockSsh.mockResponse(/sudo ufw allow/, { stdout: "", exitCode: 0 });
-    mockSsh.mockResponse(/nohup sh -c 'sleep 300/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse(/sudo ufw default deny incoming/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
-    mockSsh.mockResponse(/pkill -f 'sleep 300/, { stdout: "", exitCode: 0 });
+    mockSsh.mockResponse(/stop-myrmidon-firewall-timer/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse('echo "onboard-verified"', { stdout: "onboard-verified\n", exitCode: 0 });
 
     const executor = new FleetOnboardExecutor({
@@ -135,8 +137,9 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
 
     // Check that hardening conf was written and sshd tested
     expect(mockSsh.hasExecuted("sudo sshd -t")).toBe(true);
-    // Check that ufw rollback was disarmed after connectivity verification
-    expect(mockSsh.hasExecuted(/pkill -f 'sleep 300/)).toBe(true);
+    // The timer belongs to this operation; unrelated timers must not be killed.
+    expect(mockSsh.hasExecuted(/stop-myrmidon-firewall-timer/)).toBe(true);
+    expect(mockSsh.hasExecuted(/pkill/)).toBe(false);
   });
 
   it("fails preflight when disk usage exceeds 90%", async () => {
