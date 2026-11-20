@@ -161,6 +161,11 @@ const support = await getEmbeddedPostgresTestSupport();
       const secondLease = await claimNativeFinalizationRequest(db, "worker-c", reclaimedAt, 1000);
       expect(secondLease).toMatchObject({ id: requests[0].id, leaseOwner: "worker-c" });
       expect(await settleNativeFinalizationRequest(db, requests[0].id, "worker-c", reclaimedAt, { errorCode: "stale" }, firstLease!.leaseUntil!)).toBe(false);
+      // A worker cannot claim success outside the decision transaction.
+      await expect(settleNativeFinalizationRequest(db, requests[0].id, "worker-c", reclaimedAt, { decisionId: randomUUID() }, secondLease!.leaseUntil!))
+        .rejects.toThrow("native_finalization_commit_requires_decision_transaction");
+      const [afterForgedSuccess] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, requests[0].id));
+      expect(afterForgedSuccess).toMatchObject({ state: "processing", resultDecisionId: null, leaseOwner: "worker-c" });
       // Failure after updating the request must roll back the whole settlement.
       await db.delete(nativeFinalizationOutbox).where(eq(nativeFinalizationOutbox.requestId, requests[0].id));
       await expect(settleNativeFinalizationRequest(db, requests[0].id, "worker-c", reclaimedAt, { errorCode: "denied" }, secondLease!.leaseUntil!))
