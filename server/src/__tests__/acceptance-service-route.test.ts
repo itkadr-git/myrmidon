@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import { agents, companies, createDb, documentRevisions, documents, heartbeatRuns, issueDocuments, issues, nativeFinalizationGrants, nativeFinalizationOutbox, nativeFinalizationRequests, nativeRunFinalizations } from "@myrmidon/db";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "@myrmidon/db/test-embedded-postgres";
 import { acceptanceServiceCredentialsService } from "../services/acceptance-service-credentials.js";
+import { claimNativeFinalizationRequest } from "../services/native-runtime/native-finalization-request-recovery.js";
 import { acceptanceServiceRoutes } from "../routes/acceptance-service.js";
 import { errorHandler } from "../middleware/index.js";
 
@@ -133,6 +134,14 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(requests).toHaveLength(1);
       expect(requests[0]).toMatchObject({ companyId, runId, issueId, credentialId: submit.id, principalId, verifiedPeerSha256: fingerprint, documentId, expectedRevisionId: revisionId });
       expect(await db.select().from(nativeFinalizationOutbox).where(eq(nativeFinalizationOutbox.requestId, requests[0].id))).toHaveLength(1);
+      const now = new Date();
+      const claims = await Promise.all([
+        claimNativeFinalizationRequest(db, "worker-a", now, 1000),
+        claimNativeFinalizationRequest(db, "worker-b", now, 1000),
+      ]);
+      expect(claims.filter(Boolean)).toHaveLength(1);
+      expect(claims.find(Boolean)?.id).toBe(requests[0].id);
+      expect(await claimNativeFinalizationRequest(db, "worker-c", new Date(now.getTime() + 1001), 1000)).toMatchObject({ id: requests[0].id, leaseOwner: "worker-c" });
       const first = await call(issued.token);
       expect(first.status).toBe(200);
       expect(first.etag).toMatch(/^"[a-f0-9]{64}"$/);
