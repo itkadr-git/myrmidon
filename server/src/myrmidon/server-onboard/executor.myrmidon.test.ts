@@ -1259,6 +1259,31 @@ exit 97
     expect(ssh.hasExecuted(/pkill\s+-f/)).toBe(false);
   });
 
+  it("keeps firewall rollback armed until a later verification step succeeds", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    ssh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    ssh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
+    ssh.mockResponse('echo "onboard-verified"', { stdout: "wrong\n", exitCode: 0 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-firewall-later-failure", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden", "verify"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(result.stepsCompleted).toContain("harden");
+    expect(ssh.hasExecuted('echo "onboard-verified"')).toBe(true);
+    expect(ssh.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
+    const commands = ssh.executedCommands.map((entry) => entry.command);
+    const verify = commands.findIndex((command) => command === 'echo "onboard-verified"');
+    const disarm = commands.findIndex((command) => command.includes("stop-myrmidon-firewall-timer"));
+    expect(disarm === -1 || disarm > verify).toBe(true);
+  });
+
   it("does not disable an existing firewall when connectivity verification fails", async () => {
     const initial = new MockSshExecutor();
     const fresh = new MockSshExecutor();
