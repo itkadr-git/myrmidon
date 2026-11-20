@@ -39,6 +39,9 @@ export async function settleNativeFinalizationRequest(
   if ("decisionId" in result) {
     throw new Error("native_finalization_commit_requires_decision_transaction");
   }
+  if (!worker.trim() || !Number.isFinite(now.getTime()) || !Number.isFinite(leaseUntil.getTime()) || !result.errorCode.trim()) {
+    throw new Error("native_finalization_invalid_settlement");
+  }
   return db.transaction(async (tx) => {
     const [settled] = await tx.update(nativeFinalizationRequests).set({
       state: "rejected",
