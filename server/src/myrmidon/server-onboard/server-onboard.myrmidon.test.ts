@@ -190,6 +190,19 @@ function createMocks() {
 }
 
 describe("SERVER-ONBOARD logic", () => {
+  it("preserves existing credentials if a concurrent add for the same slug fails", async () => {
+    const { mockStore, mockSecrets, mockGetServer, secretsStore } = createMocks();
+    const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
+    const input = { companyId: "company-1", slug: "concurrent", name: "Server", hostname: "192.0.2.7", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password" as const, password: "original" }, createdBy: null };
+    await service.addServer(input);
+    const originalKey = secretsStore["fleet/concurrent/access-key"];
+    mockStore.createServerAndJob = async () => { throw new Error("duplicate slug"); };
+
+    await expect(service.addServer({ ...input, auth: { type: "password", password: "replacement" } })).rejects.toThrow("duplicate slug");
+    expect(secretsStore["fleet/concurrent/bootstrap-password"]).toBe("original");
+    expect(secretsStore["fleet/concurrent/access-key"]).toBe(originalKey);
+  });
+
   it("marks a job as needing attention if its durable key cannot be retrieved during claim", async () => {
     const { mockStore, mockSecrets, mockGetServer, store, secretsStore } = createMocks();
     const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
