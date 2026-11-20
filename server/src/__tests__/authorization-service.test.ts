@@ -1375,6 +1375,10 @@ describeEmbeddedPostgres("authorization service", () => {
 
   it.each([
     { trustPreset: "standard", unknownExtension: true },
+    { trustPreset: "standard", managedBy: "core-trust-preset" },
+    { managedBy: "permissions-extension" },
+    { trustPreset: "standard", trustBoundary: { mode: "low_trust_review" } },
+    { trustPreset: "standard", reviewPreset: { id: "low_trust_review", version: 1, rawOutputDisposition: "quarantine" } },
     { trustPreset: "future" },
     { trustPreset: "standard", assignmentPolicy: { mode: "future" } },
     { trustPreset: "standard", agentVisibility: { mode: "future" } },

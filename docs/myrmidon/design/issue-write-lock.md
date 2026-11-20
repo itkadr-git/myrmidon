@@ -96,7 +96,11 @@ no assignment restriction. This does not grant assignment permission: the
 normal company, visibility, grant, and low-trust checks still apply. Unknown
 policy data remains fail-closed; private, protected, and blocked assignment
 policies continue to be evaluated by their existing rules. Other metadata-only
-combinations are not made permissive by this change.
+combinations are not made permissive by this change. `managedBy` identifies a
+policy manager but does not itself define assignment access; alone or alongside
+`trustPreset` it remains unknown to the assignment evaluator. `reviewPreset` and
+`trustBoundary` carry low-trust semantics and are not equivalent to the standard
+preset. Known assignment sections retain their existing interpretation.
 
 The agent permissions route is the API surface for editing the target's policy;
 this does not establish who last configured any particular production policy.
