@@ -47,3 +47,74 @@ commands, URLs, or credentials in the manifest. References are printed verbatim;
 no generic filter can detect all secrets. Extra fields and references with
 unsupported characters or common secret labels are rejected. Errors never echo
 input. A rejected manifest produces no plan.
+
+# Offline IPsec manifest check
+
+Run `node scripts/myrmidon/ipsec/config-check.mjs manifest.json`. The command reads only the JSON manifest; it does not resolve names, connect to hosts, or read referenced secret files. Use synthetic data for tests.
+
+```json
+{
+  "sides": [
+    { "endpoint": "192.0.2.1", "localCidr": "192.0.2.0/24", "remoteCidr": "198.51.100.0/24", "proposal": "aes256-sha256-modp2048", "id": "left.example", "secretFile": "/secrets/left" },
+    { "endpoint": "192.0.2.2", "localCidr": "198.51.100.0/24", "remoteCidr": "192.0.2.0/24", "proposal": "aes256-sha256-modp2048", "id": "right.example", "secretFile": "/secrets/right" }
+  ]
+}
+```
+
+Each side requires an IP literal endpoint, local and remote CIDRs, IKEv2 proposal, identity, and secret-file path. CIDR networks on each side must not overlap; endpoints must differ. Unknown properties are rejected, including plaintext PSK fields. Proposal syntax, peer compatibility, secret existence and secret content are not checked.
+
+Output is JSON with `status` and an `errors` array of `{path, message}`. Exit 0 means `PASS`; exit 1 means manifest validation `FAIL`; exit 2 means usage, read or JSON parse `ERROR`. No validation result applies configuration.
+
+Run tests with `node --test scripts/myrmidon/ipsec/config-check.test.mjs`.
+# Offline swanctl SA parser
+
+Run `node scripts/myrmidon/ipsec/parse-sas.mjs [file]`; without a file it reads
+saved text from stdin. The command never invokes swanctl or connects to a host.
+It prints JSON with IKE and CHILD names, numeric IDs, states, installed flags,
+and inbound/outbound byte counters as decimal strings (avoiding integer precision
+loss). It does not copy addresses, identities, keys, or other source lines.
+
+`healthy` requires at least one IKE SA, every IKE SA to be ESTABLISHED, and
+at least one CHILD per IKE, all INSTALLED with both counters present. Empty,
+unsupported, incomplete or malformed input is `unknown`; an input read error
+exits nonzero. This is a conservative snapshot interpretation, not proof of
+connectivity or current traffic.
+
+The fixtures are hand-authored synthetic examples of the standard human-readable
+`swanctl --list-sas` layout. Names, documentation addresses, identifiers and
+counters are invented; no node output or production data was used. The rekey
+fixture models overlapping CHILD SAs. The established fixture includes the
+separate negotiated-algorithm and IKE timing lines from the human-readable
+layout; unrecognized metadata and truncated or extra record fields are rejected
+conservatively. Only the supported human-readable layouts are accepted; other
+valid swanctl variants may return `unknown`. Run the tests with
+`node --test scripts/myrmidon/ipsec/parse-sas.test.mjs`.
+# swanctl configuration renderer
+
+`node scripts/myrmidon/ipsec/render-swanctl.mjs < input.json` writes an
+example IKEv2 PSK `swanctl.conf` to stdout. It only renders: it does not call
+`swanctl`, alter network state, or read the referenced secrets file. Review the
+result and the secret include separately before any use. The example addresses
+are synthetic.
+
+The JSON object must have exactly these fields (see `example.json`):
+
+- `name`: nonempty connection/child name, ASCII letters, digits, `_` or `-`.
+- `local` and `remote`: objects with exactly `endpoint`, `identity`, and
+  `trafficSelectors`. Endpoint and identity are nonempty single tokens;
+  identities may start with `@`. Traffic selectors are nonempty arrays of
+  single address/subnet tokens.
+- `proposals`: nonempty array of single IKE proposal tokens, in preference order.
+- `secretFile`: absolute path to a swanctl configuration include containing the
+  PSK secrets section; not a raw secret or key file. The include is emitted, not
+  opened. The operator is responsible for its contents and file permissions.
+
+Only conservative ASCII token characters are accepted; whitespace, quotes,
+control characters, braces, commas inside tokens, glob characters and unknown
+fields are rejected. This is syntax/injection validation, not proof that the
+addresses, selectors, proposals or secret file are valid for a deployment.
+Invalid JSON or schema exits nonzero without writing configuration to stdout.
+Order of arrays is preserved; identical inputs produce identical output.
+
+Run `node --test scripts/myrmidon/ipsec/render-swanctl.test.mjs` for the golden
+and rejection checks. No real network, keys, or daemon are used.

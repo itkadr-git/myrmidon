@@ -1,0 +1,15 @@
+## changelog-en
+
+### Reviewers and leads get no full task copy on a wake; the host cleanup frees a reviewer's copy even while the reviewer is the assignee (NO-COPIES-FOR-REVIEWERS-LEADS)
+
+- On 16.11 the bot volume still lost about 5 GB in 10 minutes. Reviewers (adm-dev-review-8..11) and leads (adm-dev-lead-4) kept creating full task copies (499 MB each), engineers already had light ones (215 MB). The previous rule looked only at `executionStage.wakeRole`, but a reviewer is also woken with `ci_completed` without `wakeRole`, and a lead with `auto_slice_queue_shortage` on an epic it executes.
+- The gateway adapter no longer sends the `workspace` field (the full copy that the bot gateway makes with `myr-ws open`) to an agent that does not write code, on ANY wake reason. The agent is recognised by its role (caste key, now passed in the run context as `paperclipAgentRole`): `reviewer`, `verifier`, `lead`; or by the `-review-`, `-reviewer-`, `-verifier-`, `-lead-` part of its name (the board has no reviewer role: reviewers have `qa`). Engineers and other agents get the copy as before. An explicit `myr-ws open` by the agent still works.
+- The host cleanup (`host-clone-cache-gc.mjs`) freed a copy only if the bot was not the task assignee, but during the review stage the reviewer is the assignee, so its copies stayed. For reviewer bots the copy is now freed in any status, even if the reviewer is the assignee. Unchanged conditions: no live run of the reviewer, the copy untouched for 10 minutes, clean, HEAD on the server. Leads and engineers are handled as before.
+
+## changelog-ru
+
+### Ревьюеры и лиды не получают полную копию задачи при побудке; уборка хоста освобождает копию ревьюера, даже если он исполнитель (NO-COPIES-FOR-REVIEWERS-LEADS)
+
+- 16.11 том ботов по-прежнему терял около 5 ГБ за 10 минут. Ревьюеры (adm-dev-review-8..11) и лиды (adm-dev-lead-4) продолжали создавать полные копии задач (по 499 МБ), у инженеров уже облегчённые (215 МБ). Прежнее правило смотрело только на `executionStage.wakeRole`, но ревьюера будят и с `ci_completed` без `wakeRole`, а лида с `auto_slice_queue_shortage` по эпику, где он исполнитель.
+- Адаптер шлюза больше не отправляет поле `workspace` (полная копия, которую шлюз бота делает через `myr-ws open`) агенту, который не пишет код, при ЛЮБОЙ причине побудки. Агент определяется по роли (ключ касты, теперь передаётся в контексте прогона как `paperclipAgentRole`): `reviewer`, `verifier`, `lead`; или по части имени `-review-`, `-reviewer-`, `-verifier-`, `-lead-` (роли ревьюера на доске нет: у ревьюеров `qa`). Инженеры и остальные получают копию как раньше. Явный `myr-ws open` агентом работает.
+- Уборка хоста (`host-clone-cache-gc.mjs`) освобождала копию, только если бот не исполнитель задачи, но на стадии ревью ревьюер как раз исполнитель, и его копии оставались. Для ботов-ревьюеров копия теперь освобождается при любом статусе, даже если ревьюер исполнитель. Условия те же: нет живого прогона ревьюера, копию не трогали 10 минут, чисто, HEAD на сервере. Лиды и инженеры — как прежде.

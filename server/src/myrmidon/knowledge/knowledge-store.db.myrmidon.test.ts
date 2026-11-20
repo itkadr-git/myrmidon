@@ -1001,6 +1001,29 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
       expect(overrideLogs.length).toBeGreaterThanOrEqual(1);
     });
 
+    it("publishes a translation through REST without changing the canonical revision", async () => {
+      companyId = await makeCompany();
+      const store = makeStore();
+      const slug = "architecture/translation-test";
+      const original = "Original English content with enough detail to preserve the canonical article.";
+      const translated = "Russian translation content with enough detail to preserve the canonical article.";
+      await store.create({ companyId, nestId: companyId, slug, title: "Original", content: original }, OWNER);
+      await store.publish(companyId, slug, OWNER);
+      const canonical = (await store.listRevisions(companyId, slug))[0]!;
+      const app = httpApp(grade("owner", true));
+      const url = `/api/myrmidon/companies/${companyId}/knowledge/items/${slug}`;
+      const draft = await request(app).post(`${url}/draft`).send({ content: translated, lang: "ru", translationOf: canonical.id });
+      expect(draft.status).toBe(201);
+      const revisions = await store.listRevisions(companyId, slug);
+      const translation = revisions.find((revision) => revision.translationOf === canonical.id);
+      expect(translation).toMatchObject({ lang: "ru", content: translated });
+      expect((await request(app).post(`${url}/publish`).send({ revisionId: translation!.id })).status).toBe(200);
+      expect((await request(app).get(`${url}?lang=ru`)).body.item.deliveredContent).toBe(translated);
+      expect((await request(app).get(`${url}?lang=en`)).body.item.deliveredContent).toBe(original);
+      expect(await store.getRevision(companyId, slug, canonical.id)).toMatchObject({ content: original, lang: "en", translationOf: null });
+      expect((await request(app).post(`${url}/draft`).send({ content: translated, lang: "ru", translationOf: "not-a-uuid" })).status).toBe(400);
+    });
+
     it("HTTP router enforces live write protection and returns 422 with write_protection_rejected", async () => {
       companyId = await makeCompany();
       const store = makeStore();

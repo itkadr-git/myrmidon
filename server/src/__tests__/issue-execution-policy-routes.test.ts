@@ -344,6 +344,63 @@ describe("issue execution policy routes", () => {
     await import("../routes/issues.js");
   });
 
+  it("rejects malformed operator participant repair without updating the issue", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1",
+      executionState: {
+        status: "pending", currentStageId: "c808bd8d-4af3-41d1-8d5c-ec43d02188b1",
+        currentStageIndex: 0, currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "d674a53a-3abd-43fe-8f49-696a04937323" },
+        returnAssignee: null, completedStageIds: [], lastDecisionId: null,
+        lastDecisionOutcome: null, monitor: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    const app = await createApp();
+    for (const payload of [{}, { returnAssignee: { type: "agent", agentId: "not-a-uuid" }, unexpected: true }]) {
+      const res = await request(app).patch(`/api/issues/${issue.id}/execution-participants`).send(payload);
+      expect(res.status).toBe(400);
+    }
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("keeps the review gate intact when an operator repairs the return assignee", async () => {
+    const author = "6709c59e-dc49-4622-aecd-72eddeb03652";
+    const reviewer = "d674a53a-3abd-43fe-8f49-696a04937323";
+    const stage = "c808bd8d-4af3-41d1-8d5c-ec43d02188b1";
+    const executionState = {
+      status: "pending", currentStageId: stage, currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: reviewer }, returnAssignee: null,
+      completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null, monitor: null,
+    };
+    const executionPolicy = { mode: "normal", stages: [{ id: stage, type: "review", approvalsNeeded: 1, participants: [{ type: "agent", agentId: reviewer }] }] };
+    const issue = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1", executionState, executionPolicy };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id, patch) => ({ ...issue, ...patch }));
+    const res = await request(await createApp()).patch(`/api/issues/${issue.id}/execution-participants`)
+      .send({ returnAssignee: { type: "agent", agentId: author } });
+    expect(res.status).toBe(200);
+    expect(res.body.executionState).toMatchObject({ currentStageId: stage, currentParticipant: { type: "agent", agentId: reviewer }, returnAssignee: { type: "agent", agentId: author } });
+    expect(res.body.executionPolicy).toEqual(executionPolicy);
+    expect(mockIssueService.update).toHaveBeenCalledWith(issue.id, expect.objectContaining({ companyGuard: "company-1" }));
+  });
+
+  it("rejects agent and cross-company participant repairs", async () => {
+    const author = "6709c59e-dc49-4622-aecd-72eddeb03652";
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1",
+      executionState: { status: "pending", currentStageId: "c808bd8d-4af3-41d1-8d5c-ec43d02188b1", currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: "d674a53a-3abd-43fe-8f49-696a04937323" }, returnAssignee: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null, monitor: null },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    const payload = { returnAssignee: { type: "agent", agentId: author } };
+    const agent = await createApp({ type: "agent", agentId: author, companyId: "company-1", runId: null });
+    expect((await request(agent).patch(`/api/issues/${issue.id}/execution-participants`).send(payload)).status).toBe(403);
+    await withAgentDirectory([{ id: author, companyId: "company-2", status: "idle", role: "engineer" }], async () => {
+      expect((await request(await createApp()).patch(`/api/issues/${issue.id}/execution-participants`).send(payload)).status).toBe(409);
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("clears return assignee when assigned executor is a reviewer", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",

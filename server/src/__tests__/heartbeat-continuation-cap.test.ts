@@ -26,7 +26,7 @@ import {
 import { heartbeatService, type WakeupOptions } from "../services/heartbeat.ts";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { runningProcesses } from "../adapters/index.ts";
-import { CONTINUATION_CAP_COMMENT } from "../myrmidon/continuation-cap.js";
+import { CONTINUATION_CAP_COMMENT, readContinuationCap } from "../myrmidon/continuation-cap.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -356,7 +356,63 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
   });
 
   describe("real attempt cap", () => {
-    it("stops after three continuations that only carry the agent's own activity, and parks the issue", async () => {
+    it("the recovery sweep wakes unfinished work after the cooldown", async () => {
+      const ctx = await seedCompanyAgentIssue("in_progress");
+      await seedContinuationRun({ ...ctx, minutesAgo: 90 });
+      await seedContinuationRun({ ...ctx, minutesAgo: 80 });
+      await seedContinuationRun({ ...ctx, minutesAgo: 70 });
+
+      await heartbeat.reconcileStrandedAssignedIssues({ issueIds: [ctx.issueId] });
+
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      const runs = await db.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.agentId, ctx.agentId));
+      expect(runs.filter((run) => (run.context as Record<string, unknown>)?.wakeReason === "issue_continuation_needed")).toHaveLength(4);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, ctx.issueId));
+      expect(issue?.status).toBe("in_progress");
+    });
+
+    it("the recovery sweep restores legacy continuation blocks and wakes the assignee", async () => {
+      const ctx = await seedCompanyAgentIssue("blocked");
+      await db.update(issues).set({ blockerMetadata: {
+        blockReason: "human_decision", externalRef: `continuation_cap:${ctx.issueId}`,
+      } }).where(eq(issues.id, ctx.issueId));
+      await seedContinuationRun({ ...ctx, minutesAgo: 90 });
+      await seedContinuationRun({ ...ctx, minutesAgo: 80 });
+      await seedContinuationRun({ ...ctx, minutesAgo: 70 });
+
+      await heartbeat.reconcileStrandedAssignedIssues({ issueIds: [ctx.issueId] });
+
+      const [issue] = await db.select().from(issues).where(eq(issues.id, ctx.issueId));
+      expect(issue?.status).toBe("in_progress");
+      expect(issue?.blockerMetadata).toBeNull();
+      expect(await runCount(ctx.agentId)).toBe(4);
+    });
+
+    it("admits a retry after the cooldown even without new evidence", async () => {
+      const ctx = await seedCompanyAgentIssue("in_progress");
+      await seedContinuationRun({ ...ctx, minutesAgo: 90 });
+      await seedContinuationRun({ ...ctx, minutesAgo: 80 });
+      await seedContinuationRun({ ...ctx, minutesAgo: 70 });
+      expect(await continuationWake(ctx.agentId, ctx.issueId)).not.toBeNull();
+      const [issue] = await db.select().from(issues).where(eq(issues.id, ctx.issueId));
+      expect(issue?.status).toBe("in_progress");
+    });
+
+    it.each([true, false])("does not invent a human decision for unfinished work (open PR: %s)", async (hasPullRequest) => {
+      const ctx = await seedCompanyAgentIssue("in_progress");
+      if (hasPullRequest) {
+        await seedPullRequestWorkProduct({ ...ctx, headSha: "4b27a2c0b2428ab1352c8af64cb8bd40328b4f3b" });
+      }
+      await seedThreeContinuationRuns(ctx);
+
+      await continuationWake(ctx.agentId, ctx.issueId);
+
+      const [issue] = await db.select().from(issues).where(eq(issues.id, ctx.issueId));
+      expect(issue?.status).toBe("in_progress");
+      expect(issue?.blockerMetadata?.blockReason).not.toBe("human_decision");
+    });
+
+    it("cools down after three continuations without external activity without blocking the issue", async () => {
       const ctx = await seedCompanyAgentIssue("in_progress");
       const { companyId, agentId, issueId } = ctx;
       await seedThreeContinuationRuns(ctx);
@@ -385,22 +441,21 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
       expect(capSkips[0]!.payload).toMatchObject({
         heartbeatSkip: { consecutiveContinuations: 3, maxContinuations: 3 },
       });
-      // The issue is parked with a system comment in Russian.
+      // The issue remains actionable during the cooldown.
       const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
-      expect(issue?.status).toBe("blocked");
-      expect(issue?.blockerMetadata).toMatchObject({ blockReason: "human_decision" });
+      expect(issue?.status).toBe("in_progress");
+      expect(issue?.blockerMetadata ?? null).toBeNull();
       const stopComments = (await db.select().from(issueComments).where(eq(issueComments.issueId, issueId)))
         .filter((comment) => comment.body === CONTINUATION_CAP_COMMENT);
-      expect(stopComments).toHaveLength(1);
-      expect(stopComments[0]).toMatchObject({ authorAgentId: null, authorUserId: null });
+      expect(stopComments).toHaveLength(0);
       const stopActivity = await db.select().from(activityLog).where(eq(activityLog.action, "issue.continuation_cap_reached"));
-      expect(stopActivity).toHaveLength(1);
+      expect(stopActivity).toHaveLength(0);
 
-      // Nothing wakes it again until an external event.
+      // Repeated attempts during the cooldown remain throttled.
       expect(await continuationWake(agentId, issueId)).toBeNull();
       expect(await runCount(agentId)).toBe(3);
-      expect(skippedWith(await wakeRequests(agentId), "issue_not_actionable")).toHaveLength(1);
-      expect(skippedWith(await wakeRequests(agentId), "continuation_cap_reached")).toHaveLength(1);
+      expect(skippedWith(await wakeRequests(agentId), "issue_not_actionable")).toHaveLength(0);
+      expect(skippedWith(await wakeRequests(agentId), "continuation_cap_reached")).toHaveLength(2);
     });
 
     it.each<[string, (ctx: { companyId: string; agentId: string; issueId: string }) => Promise<void>]>([
@@ -455,6 +510,23 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
       expect(skippedWith(await wakeRequests(ctx.agentId), "continuation_cap_reached")).toHaveLength(0);
       const [issue] = await db.select().from(issues).where(eq(issues.id, ctx.issueId));
       expect(issue?.blockerMetadata ?? null).toBeNull();
+    });
+
+    it("counts a PR head change by the webhook between the runs as external input: three runs with pushes are not capped", async () => {
+      const ctx = await seedCompanyAgentIssue("in_progress");
+      const { companyId, agentId, issueId } = ctx;
+      await seedThreeContinuationRuns(ctx);
+      await db.insert(activityLog).values([
+        { companyId, actorType: "system", actorId: "system:github-webhook", action: "issue.work_product_head_changed", entityType: "issue", entityId: issueId, createdAt: minutesAgo(45) },
+        { companyId, actorType: "system", actorId: "system:github-webhook", action: "issue.work_product_head_changed", entityType: "issue", entityId: issueId, createdAt: minutesAgo(35) },
+      ]);
+
+      const reading = await readContinuationCap(db, { companyId, issueId, agentId });
+
+      // Only the run after the latest push (30 minutes ago) counts.
+      expect(reading).toMatchObject({ count: 1, max: 3, capped: false });
+      expect(await continuationWake(agentId, issueId)).not.toBeNull();
+      expect(skippedWith(await wakeRequests(agentId), "continuation_cap_reached")).toHaveLength(0);
     });
 
     it("does not count a continuation that answers a resolved interaction card", async () => {
@@ -532,7 +604,7 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
         createdAt: minutesAgo(20),
       });
 
-      // 4th continuation attempt must be capped and park the issue as blocked
+      // 4th continuation attempt must be cooled down without blocking the issue.
       expect(await continuationWake(agentId, issueId)).toBeNull();
 
       expect(await runCount(agentId)).toBe(3);
@@ -544,8 +616,8 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
       });
 
       const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
-      expect(issue?.status).toBe("blocked");
-      expect(issue?.blockerMetadata).toMatchObject({ blockReason: "human_decision" });
+      expect(issue?.status).toBe("in_progress");
+      expect(issue?.blockerMetadata ?? null).toBeNull();
     });
 
     it("caps automatic wakes when task runs without commit limit is reached (OPE-13080)", async () => {

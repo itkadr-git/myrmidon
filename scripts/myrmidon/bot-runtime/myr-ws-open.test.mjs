@@ -145,6 +145,26 @@ describe("myr-ws open — contract constants", () => {
 });
 
 describe("myr-ws open — task copy", { skip: !hasGit }, () => {
+  it("creates its real git base under MYRMIDON_WS_HOME", async () => {
+    const originRoot = path.join(tmp, `local-origin-${n}`);
+    const repoOrigin = path.join(originRoot, "acme", "widgets.git");
+    fs.mkdirSync(path.dirname(repoOrigin), { recursive: true });
+    git(tmp, "clone", "-q", "--bare", originDir, repoOrigin);
+    const env = {
+      ...ctx.env,
+      MYRMIDON_WS_HOME: ctx.home,
+      MYRMIDON_WS_REMOTE_BASE: `file://${originRoot}`,
+    };
+    const result = await run(["ABC-100", REPO, "--json"], { env, ensureBase: null });
+    assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+    const out = copyOf(result);
+    const base = path.join(ctx.home, "git-base", "acme", "widgets.git");
+    assert.equal(git(base, "rev-parse", "--is-bare-repository"), "true");
+    const common = git(out.path, "rev-parse", "--git-common-dir");
+    assert.equal(fs.realpathSync(path.resolve(out.path, common)), fs.realpathSync(base));
+    assert.equal(fs.readFileSync(path.join(out.path, "README.md"), "utf8"), "# widgets\n");
+  });
+
   it("creates a worktree of the base on bot/<KEY> without an object store", async () => {
     const r = await run(["ABC-101", REPO, "--json"]);
     assert.equal(r.exitCode, 0, r.stderr);
@@ -376,6 +396,158 @@ describe("myr-ws open — task copy", { skip: !hasGit }, () => {
   });
 });
 
+describe("myr-ws open — bare base with extensions.worktreeConfig (OPE-14584)", { skip: !hasGit }, () => {
+  // Live (myrmidon-omp-runner-eng10, git 2.34.1): a class-D base with
+  // core.bare=true and extensions.worktreeConfig=true hands every linked
+  // worktree the base's bareness — `git worktree add` never writes the admin
+  // dir's config.worktree. The copy still answers rev-parse but is not a work
+  // tree: finishCopy dies on `read-tree -m -u HEAD`
+  // ("fatal: this operation must be run in a work tree"), leaving a
+  // half-created copy that contains only its .git file (OPE-14584, OPE-12971).
+  const BREPO = "acme/barewidgets";
+  let bareOrigin;
+
+  before(() => {
+    if (!hasGit) return;
+    const seed = path.join(tmp, "seed-barewidgets");
+    fs.mkdirSync(path.join(seed, "packages/db/src/migrations/meta"), { recursive: true });
+    git(seed, "init", "-q", "-b", "main");
+    fs.writeFileSync(path.join(seed, "README.md"), "# barewidgets\n");
+    fs.writeFileSync(
+      path.join(seed, "packages/db/src/migrations/meta/_journal.json"),
+      JSON.stringify({
+        version: "7",
+        dialect: "postgresql",
+        entries: [
+          { idx: 0, version: "7", when: 1, tag: "0000_init", breakpoints: true },
+          { idx: 1, version: "7", when: 2, tag: "0001_later", breakpoints: true },
+        ],
+      }),
+    );
+    fs.writeFileSync(path.join(seed, "packages/db/src/migrations/meta/0000_snapshot.json"), "{}\n");
+    fs.writeFileSync(path.join(seed, "packages/db/src/migrations/meta/0001_snapshot.json"), "{}\n");
+    git(seed, "add", ".");
+    git(seed, "commit", "-q", "-m", "init");
+    bareOrigin = path.join(tmp, "origin-barewidgets.git");
+    git(tmp, "clone", "-q", "--bare", seed, bareOrigin);
+    git(bareOrigin, "config", "extensions.worktreeConfig", "true");
+  });
+
+  // Fake of lib/base.js ensureBase: a bare base carrying extensions.worktreeConfig=true,
+  // exactly like the live class-D base of OPE-14584.
+  function bareEnsureBase(repo) {
+    const base = path.join(ctx.home, "git-base", `${repo}.git`);
+    if (!fs.existsSync(base)) {
+      fs.mkdirSync(base, { recursive: true });
+      git(base, "init", "-q", "--bare");
+      git(base, "remote", "add", "origin", `file://${bareOrigin}`);
+      git(base, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
+      git(base, "fetch", "-q", "origin");
+      git(base, "config", "extensions.worktreeConfig", "true");
+      git(base, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+    }
+    return base;
+  }
+  const openArgs = { ensureBase: bareEnsureBase };
+  const baseOf = () => path.join(ctx.home, "git-base", `${BREPO}.git`);
+  const adminDirOf = (copy) => fs.realpathSync(git(copy, "rev-parse", "--absolute-git-dir"));
+
+  // The corpse a failed open leaves on such a base: `worktree add --no-checkout`
+  // succeeded, finishCopy never ran (the copy is not a work tree).
+  const halfCreatedCopy = (key) => {
+    const dir = path.join(ctx.workspaceRoot, key);
+    fs.mkdirSync(ctx.workspaceRoot, { recursive: true });
+    git(baseOf(), "worktree", "add", "--no-checkout", "-b", `bot/${key}`, dir, "refs/remotes/origin/main");
+    return dir;
+  };
+  const registerCopy = (key, dir) => {
+    const regPath = path.join(ctx.home, "ws-registry.json");
+    const reg = fs.existsSync(regPath) ? JSON.parse(fs.readFileSync(regPath, "utf8")) : { version: 1, entries: [] };
+    reg.entries.push({ key, repo: BREPO, path: dir, class: "E", branch: `bot/${key}`, openedAt: "2026-11-18T00:00:00Z" });
+    fs.writeFileSync(regPath, JSON.stringify(reg, null, 2));
+  };
+
+  it("creates a usable task copy: config.worktree gets core.bare=false, the base stays bare", async () => {
+    const r = await run(["BWC-101", BREPO, "--json"], openArgs);
+    assert.equal(r.exitCode, 0, r.stderr);
+    const out = checkOpenSchema(copyOf(r));
+    assert.equal(out.branch, "bot/BWC-101");
+    assert.equal(out.reused, false);
+    // the copy is a real work tree now
+    assert.equal(git(out.path, "rev-parse", "--is-bare-repository"), "false");
+    assert.equal(git(out.path, "status", "--porcelain"), "");
+    assert.equal(fs.readFileSync(path.join(out.path, "README.md"), "utf8"), "# barewidgets\n");
+    // the sparse task checkout ran: the journal and the latest snapshot only
+    assert.deepEqual(
+      fs.readdirSync(path.join(out.path, "packages/db/src/migrations/meta")).sort(),
+      ["0001_snapshot.json", "_journal.json"],
+    );
+    // the fix lives in the admin dir's config.worktree, not in the common config
+    assert.match(fs.readFileSync(path.join(adminDirOf(out.path), "config.worktree"), "utf8"), /bare\s*=\s*false/);
+    assert.equal(git(baseOf(), "rev-parse", "--is-bare-repository"), "true");
+    assert.equal(git(baseOf(), "config", "core.bare"), "true");
+    assert.ok(!fs.existsSync(path.join(baseOf(), "config.worktree")), "the common config must not gain a worktree file");
+  });
+
+  it("heals a registered half-created copy on reuse: no deletion, no reset, HEAD and branch kept", async () => {
+    bareEnsureBase(BREPO);
+    const dir = halfCreatedCopy("BWC-102");
+    const head = git(dir, "rev-parse", "HEAD");
+    registerCopy("BWC-102", dir);
+    const r = await run(["BWC-102", BREPO, "--json"], openArgs);
+    assert.equal(r.exitCode, 0, r.stderr);
+    const out = copyOf(r);
+    assert.equal(out.reused, true);
+    assert.match(r.stderr, /bare_worktree -> worktree_config_fixed/);
+    assert.equal(git(out.path, "rev-parse", "HEAD"), head, "HEAD is not moved");
+    assert.equal(git(out.path, "rev-parse", "--abbrev-ref", "HEAD"), "bot/BWC-102");
+    assert.equal(git(out.path, "rev-parse", "--is-bare-repository"), "false");
+    assert.equal(git(out.path, "status", "--porcelain"), "");
+    assert.equal(fs.readFileSync(path.join(out.path, "README.md"), "utf8"), "# barewidgets\n");
+    assert.deepEqual(
+      fs.readdirSync(path.join(out.path, "packages/db/src/migrations/meta")).sort(),
+      ["0001_snapshot.json", "_journal.json"],
+    );
+    assert.equal(git(baseOf(), "config", "core.bare"), "true", "the base stays bare");
+  });
+
+  it("adopts and heals an unregistered half-created copy", async () => {
+    bareEnsureBase(BREPO);
+    const dir = halfCreatedCopy("BWC-103");
+    const head = git(dir, "rev-parse", "HEAD");
+    const r = await run(["BWC-103", BREPO, "--json"], openArgs);
+    assert.equal(r.exitCode, 0, r.stderr);
+    const out = copyOf(r);
+    assert.equal(out.reused, true);
+    assert.equal(out.path, dir);
+    assert.equal(out.branch, "bot/BWC-103");
+    assert.equal(git(out.path, "rev-parse", "HEAD"), head);
+    assert.equal(fs.readFileSync(path.join(out.path, "README.md"), "utf8"), "# barewidgets\n");
+    const reg = JSON.parse(fs.readFileSync(path.join(ctx.home, "ws-registry.json"), "utf8"));
+    assert.equal(reg.entries.length, 1);
+    assert.equal(git(baseOf(), "config", "core.bare"), "true");
+  });
+
+  it("a scratch worktree of such a base is a usable work tree", async () => {
+    const out = copyOf(await run(["--scratch", "bare-probe", BREPO, "--json"], openArgs));
+    assert.equal(git(out.path, "rev-parse", "--is-bare-repository"), "false");
+    assert.equal(git(out.path, "status", "--porcelain"), "");
+    assert.equal(fs.readFileSync(path.join(out.path, "README.md"), "utf8"), "# barewidgets\n");
+    assert.equal(git(baseOf(), "config", "core.bare"), "true");
+  });
+
+  it("a review copy of such a base stays file-less but usable", async () => {
+    const r = await run(["BWC-104", BREPO, "--review", "--branch", "no-such-branch", "--json"], openArgs);
+    assert.equal(r.exitCode, 0, r.stderr);
+    const out = copyOf(r);
+    assert.deepEqual(fs.readdirSync(out.path), [".git"]);
+    assert.equal(git(out.path, "status", "--porcelain"), "");
+    assert.equal(git(out.path, "rev-parse", "--is-bare-repository"), "false");
+    assert.equal(git(out.path, "show", "HEAD:README.md"), "# barewidgets");
+    assert.equal(git(baseOf(), "config", "core.bare"), "true");
+  });
+});
+
 describe("myr-ws open — invalid keys", { skip: !hasGit }, () => {
   for (const key of ["../ABC-1", "ABC-1/x", "a/b", "..", "ABC-1/..", "abc-1", "ABC", "/etc", "ABC-1;rm", "-ABC-1"]) {
     it(`rejects ${JSON.stringify(key)} with code 2 and creates nothing`, async () => {
@@ -400,6 +572,41 @@ describe("myr-ws open — invalid keys", { skip: !hasGit }, () => {
 
   it("rejects unknown options", async () => {
     assert.equal((await run(["ABC-1", REPO, "--wat"])).exitCode, 2);
+  });
+});
+
+describe("myr-ws open — physical volume budget", { skip: !hasGit }, () => {
+  it("refuses a new copy at 4.9% free and permits it after recovery to 5%", async () => {
+    let free = 49;
+    const statfs = () => ({ blocks: 1000, bavail: free });
+    const refused = await run(["ABC-901", REPO, "--json"], { statfs });
+    assert.equal(refused.exitCode, 3);
+    assert.match(copyOf(refused).error, /^BOT_DISK_QUOTA_EXCEEDED:.*disk_budget/);
+    assert.equal(ctx.calls.length, 0);
+    assert.equal(fs.existsSync(path.join(ctx.workspaceRoot, "ABC-901")), false);
+
+    free = 50;
+    const recovered = await run(["ABC-901", REPO, "--json"], { statfs });
+    assert.equal(recovered.exitCode, 0, recovered.stderr);
+    assert.equal(copyOf(recovered).reused, false);
+  });
+
+  it("reuses an existing copy even when the volume falls below the threshold", async () => {
+    const opened = await run(["ABC-902", REPO, "--json"], { statfs: () => ({ blocks: 1000, bavail: 50 }) });
+    assert.equal(opened.exitCode, 0, opened.stderr);
+    const reused = await run(["ABC-902", REPO, "--json"], { statfs: () => ({ blocks: 1000, bavail: 49 }) });
+    assert.equal(reused.exitCode, 0, reused.stderr);
+    assert.equal(copyOf(reused).reused, true);
+  });
+
+  it("warns and preserves existing admission when the filesystem measurement fails", async () => {
+    const warnings = [];
+    const result = await run(["ABC-903", REPO, "--json"], {
+      statfs: () => { throw new Error("statfs unavailable"); },
+      warn: (message) => warnings.push(message),
+    });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.match(warnings.join("\n"), /physical disk budget measurement failed: statfs unavailable/);
   });
 });
 

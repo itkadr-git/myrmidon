@@ -280,7 +280,7 @@ async function runPnpm(args, options = {}) {
       const stdout = stdoutBuffer.finish();
       const stderr = stderrBuffer.finish();
       resolve({
-        code: code ?? 0,
+        code,
         signal,
         stdout: stdout.text,
         stderr: stderr.text,
@@ -294,13 +294,17 @@ async function getMigrationStatusPayload() {
     ["--filter", "@myrmidon/db", "exec", "tsx", "src/migration-status.ts", "--json"],
     { env },
   );
+  if (status.signal) {
+    process.stderr.write(`[paperclip] migration-status terminated by ${status.signal}\n`);
+    exitForSignal(status.signal);
+  }
   if (status.code !== 0) {
     process.stderr.write(
       status.stderr ||
         status.stdout ||
         `[paperclip] Command failed with code ${status.code}: pnpm --filter @myrmidon/db exec tsx src/migration-status.ts --json\n`,
     );
-    process.exit(status.code);
+    process.exit(status.code ?? 1);
   }
 
   try {

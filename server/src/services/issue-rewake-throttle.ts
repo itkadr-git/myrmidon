@@ -364,6 +364,19 @@ export interface IssueRewakeThrottleInput {
   recentTerminalRuns: RecentIssueRunSample[];
   /** Runs among the sample that produced issue-visible progress. */
   runIdsWithIssueProgress: ReadonlySet<string>;
+  /**
+   * Runs among the sample that left progress other than their own comment
+   * (a status move, a document, a work product, a monitor, ...). When given,
+   * the no-progress streak breaks on this set instead of
+   * `runIdsWithIssueProgress`: myrmidon(OPE-14746) an engineer run that only
+   * parks the task in place with a comment ("CI red, waiting for ADM to
+   * restart", "disk quota, waiting for space") leaves no issue-visible
+   * change the next event-free wake could build on, so it must not reset the
+   * rewake throttle; on 17.11 such comment-only parked runs kept the streak
+   * at zero and let automatic continuations re-run the same task every minute
+   * (32 of 38 empty engineer runs in two hours sat in such repeat series).
+   */
+  runIdsWithNonCommentProgress?: ReadonlySet<string>;
   /** New issue input landed after the newest run finished. */
   hasNewIssueInputSinceLastRun: boolean;
 }
@@ -408,11 +421,13 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
   if (input.hasNewIssueInputSinceLastRun) return { blocked: false, noProgressStreak: 0 };
 
   let noProgressStreak = 0;
+  const substantiveProgress =
+    input.runIdsWithNonCommentProgress ?? input.runIdsWithIssueProgress;
   for (const run of runs) {
     // Ordinary failed/cancelled/interrupted runs break the no-op streak;
     // a single stale timeout may retry once without cooldown.
     if (run.status !== "succeeded" || !run.finishedAt) break;
-    if (input.runIdsWithIssueProgress.has(run.id)) break;
+    if (substantiveProgress.has(run.id)) break;
     noProgressStreak += 1;
   }
 

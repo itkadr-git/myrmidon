@@ -28,6 +28,27 @@ What the merged 1.6.6 code actually does:
 - Both surfaces pass the same gates, in the same order, over the same module
   (`createKnowledgeModule`), so rights do not depend on the entry point.
 
+## Publishing a translation (proposed, not deployed)
+
+This contract is proposed in PR #4621 and is not deployed yet. After deployment,
+for an existing item use the company-scoped REST API (normal access and approval
+rules still apply):
+
+1. `POST /api/myrmidon/companies/{companyId}/knowledge/items/{slug}/draft`
+   with JSON `{"content":"Translated text","lang":"ru","translationOf":"<canonical-revision-uuid>"}`.
+   `lang` is `en` or `ru`; `translationOf` must identify a canonical revision
+   of the same item, not another translation. Save `revision.id` from the response,
+   or obtain it with `GET .../items/{slug}/revisions`.
+2. Once the canonical revision is approved, `POST .../items/{slug}/publish`
+   with `{"revisionId":"<translation-revision-uuid>"}`. Publication and
+   approval gates still apply.
+3. Read `GET .../items/{slug}?lang=ru`; `?lang=en` reads English. A missing
+   approved translation falls back to the canonical revision. Publishing moves the
+   delivery pointer to the translation but preserves the canonical revision.
+
+For an existing item MCP `knowledge_write_draft` accepts the same `lang` and
+`translationOf` fields with `idOrSlug` and `content`.
+
 ## Gates (the same five on both surfaces)
 
 1. **Company access.** `assertCompanyAccess` — a caller outside the company
@@ -110,6 +131,24 @@ Pending knowledge proposals from `/api/myrmidon/companies/:companyId/knowledge/s
 - **Item type**: proposals are represented as `kind: "knowledge"` with stable unique keys (`knowledge:<suggestionId>`).
 - **Type filter**: the inbox filter popover includes a **Knowledge** category filter, allowing operators to filter the inbox exclusively to knowledge suggestions or combine it with other categories. The category selection is persisted in local storage preferences.
 - **Review routing**: activating a knowledge inbox item (via click or keyboard navigation) routes directly to `/knowledge/review` where the proposal's title, rationale, source references, and proposed content can be inspected, accepted, or declined.
+
+On the review screen, the accessible names of Accept, Reject, and Edit include
+the stable suggestion ID after the localized action label, so screen readers can
+distinguish actions for different suggestions. The visible EN/RU labels do not change.
+
+## Git export: foreign changes in a checkout
+
+For an export with a non-empty company path prefix, tracked, staged, or
+untracked changes outside that prefix (including either side of a rename) stop
+export with `knowledge export: dirty checkout outside company; refusing to commit`.
+The check runs before export writes or stages files: it creates no commit,
+leaves HEAD unchanged, and preserves the local changes.
+
+Ask the checkout owner to inspect `git status --short` and preserve the foreign
+changes in an appropriate separate checkout or stash, including untracked files,
+without publishing them in this company's export. Once the owner has safely
+cleared those changes from this checkout, check its status again and retry the
+export. Do not discard changes or commit another company's files as a workaround.
 
 ## Where the code lives
 
