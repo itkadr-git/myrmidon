@@ -274,6 +274,9 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
         const { owner, exp } = await identity(jwt);
         if (typeof handle !== 'string' || !/^[0-9a-f-]{36}$/.test(handle)) throw new Error('invalid handle');
         if (auditFailed) throw new Error('audit unavailable');
+        // Reject known non-owners before establishing the durable recovery fence.
+        // withOwned still verifies ownership atomically at the revocation boundary.
+        if (typeof store.hasOwner === 'function' && !await store.hasOwner(handle, owner)) throw new Error('credential not found');
         // Reserve before revocation: a crash or failure must keep issuance fenced.
         const durable = typeof store.reserveIssuance === 'function';
         const attempt = randomUUID();
