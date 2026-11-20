@@ -339,7 +339,7 @@ export class FleetOnboardExecutor {
               throw new Error("Firewall status unconfirmed during policy probe; refusing unsafe firewall changes");
             }
             const defaultLines = policyLines.filter((line) => /^\s*Default:/i.test(line));
-            if (policy.exitCode !== 0 || defaultLines.length !== 1 || !/^Default:\s+(?:allow|deny|reject) \(incoming\),/.test(defaultLines[0] ?? "")) {
+            if (policy.exitCode !== 0 || defaultLines.length !== 1 || !/^Default:\s+(?:allow|deny|reject) \(incoming\),\s+(?:allow|deny|reject) \(outgoing\),\s+(?:allow|deny|reject|disabled) \(routed\)\s*$/.test(defaultLines[0] ?? "")) {
               throw new Error("Firewall default policy unconfirmed; refusing unsafe firewall changes");
             }
 
