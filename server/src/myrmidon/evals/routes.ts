@@ -9,6 +9,8 @@
 //   POST /api/myrmidon/companies/:companyId/evals/verdict         (board only)
 //   GET  /api/myrmidon/companies/:companyId/evals/runs?role&limit
 //   GET  /api/myrmidon/companies/:companyId/evals/runs/:runId
+//   POST /api/myrmidon/companies/:companyId/evals/caste-models/:casteKey/rank  (board only)
+//   POST /api/myrmidon/companies/:companyId/evals/caste-models/:casteKey/apply (board only, owner grade)
 //
 // Reads need company access; run mutations need a board actor (they spend
 // real gateway calls). While the judge contour is not configured, reads
@@ -33,6 +35,17 @@ import { createLangfuseScoreExporter, noopScoreExporter, readLangfuseExportSetti
 import { ENGINEER_REFERENCE_TASKS, EVALS_PILOT_ROLE, seedReferenceTasks } from "./seed.js";
 import { isEvalVerdict } from "./domain.js";
 import { ADAPTER_SPECIAL_MODEL_VALUES } from "../agent-model-validation.js";
+import { approverKindFromRequest } from "../approver-kind.js";
+import { approverKindSatisfies } from "../knowledge/domain.js";
+import { badRequest, forbidden, notFound, HttpError } from "../../errors.js";
+import { createCasteService } from "../castes/service.js";
+import {
+  createCandidateAnswerGenerator,
+  DEFAULT_CANDIDATE_TIMEOUT_MS,
+  freeEnabledModels,
+  type GenerateCandidateAnswer,
+} from "./caste-models.js";
+import { CASTE_MODEL_EVAL_SUBJECT_PREFIX } from "./caste-models-shared.js";
 
 export interface EvalsRoutesDeps {
   env?: NodeJS.ProcessEnv;
@@ -47,6 +60,12 @@ export interface EvalsRoutesDeps {
    * (`subjectModelFromAgentCard`). Never the judge's own model.
    */
   subjectModelFor?(input: EvalRunSubject): string | undefined | Promise<string | undefined>;
+  /**
+   * 1.8 CASTE-MODEL-EVAL: generates one candidate answer for one reference
+   * task on a free model. Tests inject a stub; production calls the same
+   * LiteLLM contour as the judge.
+   */
+  generateCandidateAnswer?: GenerateCandidateAnswer;
   now(): Date;
 }
 
@@ -347,6 +366,182 @@ export function myrmidonEvalsRoutes(db: Db, deps: Partial<EvalsRoutesDeps> = {})
       return;
     }
     res.json({ run });
+  });
+
+
+  // 1.8 CASTE-MODEL-EVAL: the candidate-answer generator for the rank run.
+  // Tests inject `deps.generateCandidateAnswer`; production calls the same
+  // LiteLLM contour as the judge, with the company key.
+  async function buildCandidateGenerator(
+    companyId: string,
+  ): Promise<{ generateAnswer: GenerateCandidateAnswer | null; problem: string | null }> {
+    if (deps.generateCandidateAnswer) return { generateAnswer: deps.generateCandidateAnswer, problem: null };
+    const current = settings();
+    const problem = evalsSettingsProblem(current);
+    if (problem) return { generateAnswer: null, problem };
+    const readCompanyKey =
+      deps.readCompanyKey ??
+      (async (id: string, secretName: string) => {
+        const secrets = secretService(db);
+        const row = await secrets.getByName(id, secretName);
+        return row ? secrets.resolveSecretValue(id, row.id, "latest") : null;
+      });
+    const key = current.keySecret ? await readCompanyKey(companyId, current.keySecret) : null;
+    if (!key || !current.baseUrl) {
+      return {
+        generateAnswer: null,
+        problem: `the evals API key secret "${current.keySecret ?? "—"}" is not available`,
+      };
+    }
+    return {
+      generateAnswer: createCandidateAnswerGenerator({
+        fetch: deps.fetch ?? fetch,
+        apiKey: key,
+        baseUrl: current.baseUrl,
+      }),
+      problem: null,
+    };
+  }
+
+  // 1.8 CASTE-MODEL-EVAL: rank the company's free+enabled models on the
+  // caste's reference set. Each model gets one persisted eval run, so the
+  // apply route can re-verify the model/run pairing afterwards.
+  router.post("/myrmidon/companies/:companyId/evals/caste-models/:casteKey/rank", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const casteKey = req.params.casteKey as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const { service, problem } = await buildService(companyId);
+    if (problem) {
+      res.status(503).json({ error: problem, enabled: false });
+      return;
+    }
+    const { generateAnswer, problem: generatorProblem } = await buildCandidateGenerator(companyId);
+    if (generatorProblem || !generateAnswer) {
+      res.status(503).json({ error: generatorProblem ?? "candidate generation is not configured", enabled: false });
+      return;
+    }
+    let tasks;
+    try {
+      tasks = await service.loadTasks(companyId, casteKey);
+    } catch (error) {
+      res.status(502).json({ error: (error as Error).message });
+      return;
+    }
+    if (tasks.length === 0) {
+      res.status(404).json({ error: `no reference tasks for role "${casteKey}"` });
+      return;
+    }
+    const models = await freeEnabledModels(db, companyId);
+    const rows: Array<{ model: string; litellmModelName: string; runId: string; scorePercent: number }> = [];
+    const failed: string[] = [];
+    for (const model of models) {
+      const answers: Record<string, string> = {};
+      let modelFailed = false;
+      for (const task of tasks) {
+        try {
+          // Never log the model response; only the fact of the failure.
+          answers[task.slug] = await generateAnswer({ model, prompt: task.prompt, timeoutMs: DEFAULT_CANDIDATE_TIMEOUT_MS });
+        } catch {
+          modelFailed = true;
+          break;
+        }
+      }
+      if (modelFailed) {
+        failed.push(model.modelName);
+        continue;
+      }
+      try {
+        const outcome = await service.runEval({
+          companyId,
+          role: casteKey,
+          subject: `${CASTE_MODEL_EVAL_SUBJECT_PREFIX}${model.modelName}`,
+          answers,
+        });
+        const scorePercent = outcome.run.scores?.scorePercent;
+        if (typeof scorePercent !== "number") {
+          failed.push(model.modelName);
+          continue;
+        }
+        rows.push({ model: model.modelName, litellmModelName: model.litellmModelName, runId: outcome.run.id, scorePercent });
+      } catch {
+        failed.push(model.modelName);
+      }
+    }
+    rows.sort((a, b) => b.scorePercent - a.scorePercent || a.model.localeCompare(b.model));
+    await logActivity(db, {
+      companyId,
+      actorType: "system",
+      actorId: EVALS_ACTOR_ID,
+      action: "evals.caste_models_ranked",
+      entityType: "caste",
+      entityId: casteKey,
+      details: { casteKey, ranked: rows.length, failed: failed.length },
+    });
+    res.json({ casteKey, rows, failed });
+  });
+
+  // 1.8 CASTE-MODEL-EVAL: write `agent_castes.default_model` from a ranking
+  // run. Owner grade only (the default model steers every new agent of the
+  // caste); the run must be this company's completed ranking run of the very
+  // model, so the caller cannot apply a score it made up.
+  router.post("/myrmidon/companies/:companyId/evals/caste-models/:casteKey/apply", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const casteKey = req.params.casteKey as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const presented = approverKindFromRequest(req, companyId);
+    if (!approverKindSatisfies("owner", presented)) {
+      throw forbidden("changing a caste default model requires the owner", {
+        code: "approver_kind_mismatch",
+        required: "owner",
+        presented: presented ?? "none",
+      });
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof body.model !== "string" || !body.model.trim() || typeof body.runId !== "string" || !body.runId.trim()) {
+      throw badRequest("model and runId are required");
+    }
+    const model = body.model.trim();
+    const runId = body.runId.trim();
+    const { service, problem } = await buildService(companyId);
+    if (problem) {
+      res.status(503).json({ error: problem, enabled: false });
+      return;
+    }
+    const run = await service.getRun(companyId, runId);
+    if (!run || run.companyId !== companyId) {
+      throw notFound("run not found");
+    }
+    if (run.status !== "completed") {
+      throw badRequest(`run ${runId} is not completed`, { code: "eval_run_not_completed" });
+    }
+    if (run.role !== casteKey || run.subject !== `${CASTE_MODEL_EVAL_SUBJECT_PREFIX}${model}`) {
+      throw badRequest("the run is not a completed ranking run of this model on this caste", {
+        code: "eval_run_model_mismatch",
+      });
+    }
+    const castes = createCasteService({ db, now });
+    let caste;
+    try {
+      caste = await castes.updateCaste({ companyId, key: casteKey, body: { defaultModel: model } });
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 404) {
+        throw notFound(`caste "${casteKey}" not found in this company`);
+      }
+      throw error;
+    }
+    const scorePercent = run.scores?.scorePercent ?? null;
+    await logActivity(db, {
+      companyId,
+      actorType: "system",
+      actorId: EVALS_ACTOR_ID,
+      action: "evals.caste_model_applied",
+      entityType: "caste",
+      entityId: casteKey,
+      details: { casteKey, model, runId, scorePercent, appliedBy: presented ?? "owner" },
+    });
+    res.json({ caste, model, runId, scorePercent });
   });
 
   return router;
