@@ -351,6 +351,38 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     expect(stages.map((stage) => stage.id)).toContain(state?.currentStageId);
   });
 
+  it("returns a typed review decision once while admission monitor is present", async () => {
+    const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Review return with admission monitor");
+    const authorId = randomUUID();
+    const reviewerId = randomUUID();
+    const leadId = randomUUID();
+    const stageId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    for (const [id, name, role] of [[authorId, "adm-dba", "engineer"], [reviewerId, "adm-dev-review-8", "reviewer"], [leadId, "adm-dev-lead", "lead"]]) {
+      await ctx.db.insert(agents).values({ id, companyId, name, role, status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    }
+    const monitor = { nextCheckAt: new Date(Date.now() + 60000).toISOString(), scheduledBy: "assignee", kind: "external_service", serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME, externalRef: issueId, recoveryPolicy: "wake_owner" };
+    await ctx.db.insert(issues).values({
+      id: issueId, companyId, title: "Return from typed review", status: "in_review", priority: "medium", assigneeAgentId: leadId, createdByAgentId: authorId,
+      executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewerId }] }], monitor } as any,
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewerId }, returnAssignee: { type: "agent", agentId: authorId }, completedStageIds: [], changesRequestedCount: 1, lastDecisionOutcome: "changes_requested" },
+      monitorNextCheckAt: new Date(monitor.nextCheckAt),
+    });
+    await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewerId, status: "running", contextSnapshot: { issueId } });
+    const actor = { type: "agent" as const, source: "agent_jwt" as const, agentId: reviewerId, companyId, runId, isInstanceAdmin: false };
+    const routes = (db: any, storage: any) => issueRoutes(db, storage, { resolveReviewPullRequestCi: async () => ({ state: "ok", pullRequestUrl: null, headSha: null }) });
+    const app = routeApp(ctx.db, actor as any, routes as any);
+    const result = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: fix the missing verification." });
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    const [updated] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
+    expect(updated?.status).toBe("in_progress");
+    expect(updated?.assigneeAgentId).toBe(authorId);
+    expect(updated?.executionState).toMatchObject({ status: "changes_requested", currentStageId: stageId, changesRequestedCount: 2, returnAssignee: { agentId: authorId } });
+    const decisions = await ctx.db.select().from(activityLog).where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.execution_decision")));
+    expect(decisions.length).toBeLessThanOrEqual(1);
+  });
+
   // myrmidon(REVIEW-CHANGES-LOST-STAGE): when the review stage is missing from
   // the execution policy, a changes_requested decision from the assigned reviewer
   // must return 2xx and persist the issue back to the author with status in_progress
