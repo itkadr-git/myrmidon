@@ -27,6 +27,7 @@ case "$1" in
     case "$2" in
       inspect)
         case "$*" in
+          *RepoDigests*) cat "$SANDBOX/repo-digests" 2>/dev/null || exit 1; exit 0 ;;
           *postgres:16-alpine*)
             case "$*" in *-f*) echo /var/lib/postgresql/data ;; esac
             exit 0 ;;
@@ -125,7 +126,10 @@ case "$1" in
   inspect)
     # a container exists for every service and runs; its image is not recorded
     # here (the previous image then falls back to the override file)
-    case "$*" in *"{{.State.Status}} {{.State.Restarting}}"*) echo "running false" ;; esac
+    case "$*" in
+      *"{{.State.Status}} {{.State.Restarting}}"*) echo "running false" ;;
+      *"{{.Image}}"*) echo "sha256:imageid" ;;
+    esac
     exit 0 ;;
   compose)
     case "$*" in
@@ -477,8 +481,24 @@ describe("deploy.sh", () => {
     assert.equal(fs.existsSync(path.join(sb.dir, "dumps")), false);
   });
 
+  it("refuses RC deployment if the actual running image has no verified RepoDigest", () => {
+    const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
+    const start = Math.floor(Date.now() / 1000) - 600;
+    const stamp = new Date(start * 1000).toISOString().replace('.000Z', 'Z');
+    const tasks = JSON.stringify([{ id: "100", node: "hk01", type: "vzdump", status: "OK", starttime: start, endtime: start + 10 }]);
+    fs.writeFileSync(path.join(sb.bin, "runuser"), '#!/bin/sh\ncase "$*" in *pvesm*) printf "%s\\n" "$ARCHIVE";; *) printf "%s\\n" "$TASKS";; esac\n', { mode: 0o755 });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW], undefined, {
+      ARCHIVE: `pbs-offsite:backup/vm/100/${stamp}`, TASKS: tasks,
+    });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /actual running board image digest unavailable/);
+    assert.doesNotMatch(calls(sb), /docker pull|up -d --no-deps server/);
+    assert.equal(maintenance(sb), "");
+  });
+
   it("keeps RC deployment fail-closed even when nightly PBS succeeds", () => {
     const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
+    fs.writeFileSync(path.join(sb.dir, "repo-digests"), JSON.stringify([`${CI_IMAGE}@${OLD}`]));
     const start = Math.floor(Date.now() / 1000) - 600;
     const stamp = new Date(start * 1000).toISOString().replace('.000Z', 'Z');
     const tasks = JSON.stringify([{ id: "100", node: "hk01", type: "vzdump", status: "OK", starttime: start, endtime: start + 10 }]);

@@ -619,6 +619,14 @@ preflight_all
 if [[ "${CI_IMAGE_VERSION:-}" =~ -rc\.[0-9]+$ ]]; then
   ((urgent == 0)) || die "RC deploy refuses --urgent; nothing was changed"
   "$MYR_SCRIPT_DIR/nightly-backup-guard.sh" || die "nightly PBS guard failed; nothing was changed"
+  # Resolve from the container's immutable image ID, never the mutable tag or
+  # the compose override. Require exactly one digest for the board repository.
+  board_id="$(docker ps -q --filter "label=com.docker.compose.service=$COMPOSE_SERVICE" --filter "label=com.docker.compose.project.working_dir=$COMPOSE_DIR")"
+  [[ -n "$board_id" && "$board_id" != *$'\n'* ]] || die "actual running board image digest unavailable: expected one running container"
+  board_image_id="$(docker inspect --format '{{.Image}}' "$board_id")" || die "actual running board image digest unavailable: container inspect failed"
+  board_digests="$(docker image inspect --format '{{json .RepoDigests}}' "$board_image_id")" || die "actual running board image digest unavailable: image inspect failed"
+  actual_previous="$(jq -er --arg repo "$MYRMIDON_IMAGE" '[.[] | select(startswith($repo + "@sha256:")) | select(test("@sha256:[0-9a-f]{64}$"))] | unique | if length == 1 then .[0] else error("ambiguous RepoDigests") end' <<<"$board_digests")" || die "actual running board image digest unavailable: missing or ambiguous RepoDigest"
+  log "verified running board image for rollback: $actual_previous"
   die "RC deploy guard incomplete: digest and rollback verification required; no dump, DB copy or deploy was performed"
 fi
 
