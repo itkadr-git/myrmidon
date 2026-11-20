@@ -1210,6 +1210,50 @@ exit 97
     }
   });
 
+  it("verifies a fresh SSH login after the allow rule and before changing the incoming policy", async () => {
+    let allowApplied = false;
+    let freshLoginVerified = false;
+    let denyAttempted = false;
+    const primary = new MockSshExecutor({ onCommand: (command) => {
+      if (command.includes("start-myrmidon-firewall-timer") || command.includes("check-myrmidon-firewall-timer")) {
+        return { exitCode: 0, stdout: "timer-confirmed\n" };
+      }
+      if (command.includes("sudo ufw allow")) {
+        allowApplied = true;
+        return { exitCode: 0, stdout: "Rule added\n" };
+      }
+      if (command.includes("sudo ufw default deny incoming")) {
+        denyAttempted = true;
+        if (!freshLoginVerified) throw new Error("deny attempted before fresh SSH verification");
+        return { exitCode: 1, stderr: "deny failed" };
+      }
+      return undefined;
+    } });
+    primary.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    primary.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => {
+      if (!allowApplied) return primary;
+      return new MockSshExecutor({ onCommand: (command) => {
+        if (command === 'echo "ufw-connectivity-ok"') {
+          freshLoginVerified = true;
+          return { exitCode: 0, stdout: "ufw-connectivity-ok\n" };
+        }
+        return undefined;
+      } });
+    } });
+    const claim: any = {
+      job: { id: "job-verify-before-deny", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(allowApplied).toBe(true);
+    expect(freshLoginVerified).toBe(true);
+    expect(denyAttempted).toBe(true);
+    expect(result.error).toContain("deny failed");
+  });
+
   it("succeeds without rewriting an already-deny incoming policy", async () => {
     const ssh = new MockSshExecutor();
     const fresh = new MockSshExecutor();
