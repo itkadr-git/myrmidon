@@ -150,7 +150,12 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
     ssh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
+    ssh.mockResponse(/check-myrmidon-firewall-prerequisites/, { stdout: "", exitCode: 0 });
+    ssh.mockResponse(/prepare-myrmidon-firewall-restore/, { stdout: "", exitCode: 0 });
     ssh.mockResponse(/start-myrmidon-firewall-timer|check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    ssh.mockResponse(/sudo ufw allow/, { stdout: "Rule added\n", exitCode: 0 });
+    ssh.mockResponse(/sudo ufw default deny incoming/, { stdout: "", exitCode: 0 });
+    ssh.mockResponse(/stop-myrmidon-firewall-timer/, { stdout: "", exitCode: 0 });
     ssh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
@@ -159,6 +164,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
       steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
     };
     const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.error ?? null).toBeNull();
     expect(result.status).toBe("succeeded");
     const commands = ssh.executedCommands.map(({ command }) => command);
     const timer = commands.findIndex((command) => command.includes("check-myrmidon-firewall-timer"));
