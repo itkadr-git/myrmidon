@@ -10,9 +10,9 @@ const require = createRequire(import.meta.url);
 function loadDrivers() {
   // Resolve the ESM entry explicitly: the packages' require conditions use
   // separate CommonJS builds whose classes have different identities.
-  const postgres = (require(fileURLToPath(import.meta.resolve("postgres"))) as typeof import("postgres")).default;
+  const { default: postgresDriver } = require(fileURLToPath(import.meta.resolve("postgres"))) as { default: typeof postgres };
   const { drizzle } = require(fileURLToPath(import.meta.resolve("drizzle-orm/postgres-js"))) as typeof import("drizzle-orm/postgres-js");
-  return { postgres, drizzle };
+  return { postgres: postgresDriver, drizzle };
 }
 
 type RegisteredPostgresClient = ReturnType<typeof postgres>;
