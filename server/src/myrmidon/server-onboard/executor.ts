@@ -401,9 +401,9 @@ export class FleetOnboardExecutor {
         }
       }
 
-      if (discardPasswordBackup) await discardPasswordBackup();
-      pendingPasswordRollback = null;
       await reporter.reportCompletion("succeeded", null, discoveredFingerprint);
+      pendingPasswordRollback = null;
+      if (discardPasswordBackup) await discardPasswordBackup().catch(() => {});
       return {
         status: "succeeded",
         hostKeyFingerprint: discoveredFingerprint,
