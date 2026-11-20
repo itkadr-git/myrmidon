@@ -57,6 +57,43 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
     expect(after?.document).toEqual(before?.document);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
+  it("fences a stale issue writer when its document author is deleted", async () => {
+    const dbh = await startEmbeddedPostgresTestDatabase("acceptance-agent-delete-fence-");
+    cleanups.push(() => dbh.cleanup());
+    const db = createDb(dbh.connectionString);
+    cleanups.push(async () => { await db.$client.end(); });
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const docId = randomUUID();
+    await db.insert(companies).values({ id: companyA, name: "A" });
+    await db.insert(agents).values({ id: agentId, companyId: companyA, name: "Author", role: "engineer" });
+    await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task" });
+    await db.insert(documents).values({ id: docId, companyId: companyA, latestBody: "criteria", createdByAgentId: agentId });
+    await db.insert(documentRevisions).values({ documentId: docId, companyId: companyA, revisionNumber: 1, body: "criteria", createdByAgentId: agentId });
+    await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId: docId, key: "acceptance-scenarios" });
+    let resume!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { resume = resolve; });
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const writer = db.transaction(async (tx) => {
+      await tx.execute(sqlTag`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
+      await tx.execute(sqlTag`SELECT id FROM issues WHERE id = ${issueId}::uuid`);
+      started();
+      await gate;
+      await tx.update(issues).set({ title: "stale" }).where(eq(issues.id, issueId));
+    });
+    const outcome = writer.then(() => null, (error: unknown) => error);
+    try {
+      await ready;
+      await db.delete(agents).where(eq(agents.id, agentId));
+    } finally {
+      resume();
+    }
+    expect(await outcome).toMatchObject({ cause: { code: "40001" } });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue?.title).toBe("Task");
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("deletes the author of an unlinked document with multiple revisions", async () => {
     const dbh = await startEmbeddedPostgresTestDatabase("revision-agent-delete-");
     cleanups.push(() => dbh.cleanup());
