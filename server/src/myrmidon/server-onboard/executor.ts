@@ -325,6 +325,12 @@ export class FleetOnboardExecutor {
               throw new Error("Firewall inactive or status unconfirmed; refusing unsafe firewall changes");
             }
 
+            // Capture the default policy without overwriting concurrent UFW rules.
+            const policy = await activeSsh.execute(": snapshot-myrmidon-firewall; sudo ufw status verbose");
+            if (policy.exitCode !== 0 || !/^Default:\s+(?:allow|deny|reject) \(incoming\),/m.test(policy.stdout)) {
+              throw new Error("Firewall default policy unconfirmed; refusing unsafe firewall changes");
+            }
+
             // Snapshot restoration overwrites concurrent changes; the existing timer
             // cannot provide scoped rollback. Refuse mutation until both are safe.
             throw new Error("Scoped firewall rollback unavailable; refusing unsafe firewall changes");
