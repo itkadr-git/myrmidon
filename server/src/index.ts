@@ -28,15 +28,7 @@ import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
 import { warnIfUnsupportedNodeVersion } from "@myrmidon/shared/node-version";
 import { and, eq, sql } from "drizzle-orm";
-import {
-  createDb,
-  createPostgresJsClient,
-  ensurePostgresDatabase,
-  getPostgresDataDirectory,
-  inspectMigrations,
-  applyPendingMigrations,
-  reconcilePendingMigrationHistory,
-} from "@myrmidon/db/client";
+import type { createDb } from "@myrmidon/db/client";
 import { formatEmbeddedPostgresError, createEmbeddedPostgresLogBuffer } from "@myrmidon/db/embedded-postgres-error";
 import { prepareEmbeddedPostgresNativeRuntime } from "@myrmidon/db/embedded-postgres-native";
 import {
@@ -341,6 +333,15 @@ async function startServerWithDatabaseTeardown(
   // Error monitoring must be ready before the first request can fail — see
   // sentry.ts.
   await sentryReady;
+  const {
+    createDb,
+    createPostgresJsClient,
+    ensurePostgresDatabase,
+    getPostgresDataDirectory,
+    inspectMigrations,
+    applyPendingMigrations,
+    reconcilePendingMigrationHistory,
+  } = await import("@myrmidon/db/client");
   ensureDecisionSigningSecret();
   let config = loadConfig();
 
