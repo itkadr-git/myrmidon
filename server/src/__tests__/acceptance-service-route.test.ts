@@ -111,12 +111,12 @@ const support = await getEmbeddedPostgresTestSupport();
       const pinned = await call(issued.token);
       const snapshot = JSON.parse(pinned.body);
       const payload = { documentId, expectedRevisionId: revisionId, expectedIssueEpoch: snapshot.issue.version };
-      const admit = (key = "request-1") => new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const admit = (key = "request-1", requestBody: object = payload) => new Promise<{ status: number; body: string }>((resolve, reject) => {
         const req = httpsRequest({ host: "127.0.0.1", port: address.port, path: `/api/service/native-runs/${runId}/finalization-requests`, method: "POST", ...client, rejectUnauthorized: false,
           headers: { authorization: `Bearer ${submit.token}`, "content-type": "application/json", "if-match": pinned.etag, "idempotency-key": key } }, (res) => {
           let body = ""; res.setEncoding("utf8"); res.on("data", (chunk) => { body += chunk; }); res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
         });
-        req.on("error", reject); req.end(JSON.stringify(payload));
+        req.on("error", reject); req.end(JSON.stringify(requestBody));
       });
       const [admitted, concurrentReplay] = await Promise.all([admit(), admit()]);
       expect(admitted.status).toBe(202);
@@ -125,6 +125,7 @@ const support = await getEmbeddedPostgresTestSupport();
       const replay = await admit();
       expect(replay.status).toBe(202);
       expect(JSON.parse(replay.body).id).toBe(JSON.parse(admitted.body).id);
+      expect((await admit("request-1", { ...payload, expectedRevisionId: randomUUID() })).status).toBe(409);
       const alternative = await admit("request-2");
       expect(alternative.status).toBe(409);
       const requests = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.runId, runId));
