@@ -24,6 +24,7 @@
 | INV-12 | Нет пилотных полей и слова `pilot` в настройках и коде роя — пилоты живут как флаги релиза с ADR, а не как скрытые настройки | `scripts/myrmidon/ci/arch-invariants-gate.test.mjs` (`checkNoPilot`) | ADR-0004 |
 | INV-13 | Номера миграций БД уникальны; исторические пробелы зафиксированы baseline, новые пробелы запрещены | `scripts/myrmidon/ci/arch-invariants-gate.test.mjs` (`checkMigrations`) | ADR-0005 |
 | INV-14 | Слой решений оркестратора не импортирует БД, сеть или I/O-клиенты; фиксация событий принадлежит adapter/application sink | `scripts/myrmidon/ci/arch-invariants-gate.test.mjs` (`checkDecisionLayerPurity`) | OPE-12797 |
+| INV-15 | Тесты effect-worker не спят: запрет setTimeout/setInterval/sleep; только drain и waitForEffectMilestone из test-helpers.ts | `scripts/myrmidon/ci/arch-invariants-gate.test.mjs` (`checkEffectWorkerNoSleep`) | ADR-0053 |
 
 ## Прецеденты разъездов 09.10 (финал 1.6.5), закрываемые инвариантами
 

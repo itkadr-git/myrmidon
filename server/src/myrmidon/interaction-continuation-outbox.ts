@@ -8,6 +8,13 @@ import type { Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 import { isUniqueViolation } from "../db-errors.js";
 import { liveWakeDeliverySettings } from "./runs-queue-settings/live.js";
+import type { EffectWorker } from "./effect-worker/effect-worker.js";
+
+/** Effect kind the continuation-delivery runs under on the effect-worker
+ * layer (OPE-12798). The intent keeps its outbox actor id and key; the kind
+ * is declared in the payload so the worker can route it. */
+export const CONTINUATION_DELIVER_EFFECT_KIND =
+  "interaction-continuation-deliver";
 
 /**
  * Transactional outbox for interaction-continuation wakes (O1).
@@ -189,6 +196,7 @@ export async function recordInteractionContinuationOutbox(
         issueId: input.contract.payload.issueId ?? null,
         interactionId: input.interactionId,
         interactionStatus: input.interactionStatus,
+        effectKind: CONTINUATION_DELIVER_EFFECT_KIND,
         [OUTBOX_CONTRACT_KEY]: input.contract,
       },
       status: "queued",
@@ -433,7 +441,25 @@ export function interactionContinuationOutboxService(
       .returning();
     const claimed = claimedRows[0];
     if (!claimed) return;
+    await executeClaimedIntent(claimed, now);
+  }
 
+  /**
+   * Post-claim delivery body shared by the direct path and the effect-worker
+   * layer (OPE-12798): the effect worker claims the intent through its own
+   * lease and then invokes this body, so the continuation-delivery runs on
+   * the effect layer without a second claim. All semantics (target
+   * re-resolution, contract validation, durable-wake detection, expiry,
+   * dispatch, settle/release) are identical.
+   */
+  async function executeClaimedIntent(
+    claimed: typeof agentWakeupRequests.$inferSelect,
+    now: Date,
+  ): Promise<
+    | { outcome: "settled"; runId: string | null }
+    | { outcome: "skipped"; error?: string | null }
+    | { outcome: "released" }
+  > {
     const interactionId = claimed.payload?.interactionId;
     if (typeof interactionId !== "string" || interactionId.length === 0) {
       await markIntentTerminal(db, {
@@ -442,7 +468,7 @@ export function interactionContinuationOutboxService(
         runId: null,
         error: "interaction_continuation_outbox_invalid_contract",
       });
-      return;
+      return { outcome: "skipped", error: "interaction_continuation_outbox_invalid_contract" };
     }
 
     // Re-resolve the live wake target: the resolution transaction may have
@@ -502,7 +528,7 @@ export function interactionContinuationOutboxService(
         runId: null,
         error: retireReason ?? "interaction_continuation_outbox_target_missing",
       });
-      return;
+      return { outcome: "skipped", error: retireReason ?? "interaction_continuation_outbox_target_missing" };
     }
     const assigneeAgentId = resolved.assigneeAgentId;
 
@@ -530,7 +556,7 @@ export function interactionContinuationOutboxService(
         runId: null,
         error: "interaction_continuation_outbox_invalid_contract",
       });
-      return;
+      return { outcome: "skipped", error: "interaction_continuation_outbox_invalid_contract" };
     }
     const allowRunCoalescing = contract.allowRunCoalescing !== false;
 
@@ -559,7 +585,7 @@ export function interactionContinuationOutboxService(
         status: "coalesced",
         runId: durable.runId ?? null,
       });
-      return;
+      return { outcome: "settled", runId: durable.runId ?? null };
     }
 
     // The wake is refused on purpose (scheduling suppression, held tree,
@@ -576,7 +602,7 @@ export function interactionContinuationOutboxService(
         runId: null,
         error: "interaction_continuation_outbox_expired",
       });
-      return;
+      return { outcome: "skipped", error: "interaction_continuation_outbox_expired" };
     }
 
     try {
@@ -601,7 +627,7 @@ export function interactionContinuationOutboxService(
           status: "coalesced",
           runId: settled.runId ?? wakeRun?.id ?? null,
         });
-        return;
+        return { outcome: "settled", runId: settled.runId ?? wakeRun?.id ?? null };
       }
       if (wakeRun?.id) {
         // O1-DIRECT-SETTLED (b1): wakeup() returned a run — the vendor
@@ -616,11 +642,12 @@ export function interactionContinuationOutboxService(
           status: "coalesced",
           runId: wakeRun.id,
         });
-        return;
+        return { outcome: "settled", runId: wakeRun.id };
       }
       // wakeup() admitted nothing durable (returned null / wrote a skipped
       // row). Release the claim; the sweep retries on its next pass.
       await releaseIntentClaim(db, claimed.id);
+      return { outcome: "released" };
     } catch (error) {
       if (isUniqueViolation(error)) {
         // A racing worker inserted the canonical wake first.
@@ -631,7 +658,7 @@ export function interactionContinuationOutboxService(
             status: "coalesced",
             runId: raced.runId ?? null,
           });
-          return;
+          return { outcome: "settled", runId: raced.runId ?? null };
         }
       }
       // Release the claim so the lease does not hold a just-failed attempt
@@ -701,5 +728,51 @@ export function interactionContinuationOutboxService(
     return { scanned: candidates.length, delivered, failed };
   }
 
-  return { tryDeliver, sweepPending };
+  async function readIntentById(intentId: string) {
+    const rows = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, intentId))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  return { tryDeliver, sweepPending, executeClaimedIntent, readIntentById };
+}
+
+/**
+ * Register the continuation-delivery step on the effect-worker layer
+ * (OPE-12798). The existing intent row (key
+ * `interaction-continuation-outbox:{interactionId}:{status}`, actor
+ * `interaction-continuation-outbox`) is claimed by the effect worker through
+ * its own lease; the post-claim body (`executeClaimedIntent`) runs unchanged.
+ * The result is recorded as an `effect_result` run-event on the settled run
+ * (when one exists) and as a `payload.effect` milestone on the intent row —
+ * the "result as command" feedback.
+ */
+export function registerContinuationDeliverEffect(
+  worker: EffectWorker,
+  db: Db,
+  heartbeat: { wakeup: HeartbeatWakeup },
+): void {
+  const service = interactionContinuationOutboxService(db, heartbeat);
+  worker.registerEffect(
+    CONTINUATION_DELIVER_EFFECT_KIND,
+    async (ctx) => {
+      // The effect worker has already claimed the intent; re-read it so the
+      // post-claim body sees the same row shape as the legacy path.
+      const intent = await service.readIntentById(ctx.intent.id);
+      if (!intent) {
+        return { outcome: "skipped", error: "interaction_continuation_outbox_target_missing" };
+      }
+      const result = await service.executeClaimedIntent(intent, new Date());
+      if (result.outcome === "settled") {
+        return { outcome: "settled", runId: result.runId, result: { interactionId: intent.payload?.interactionId ?? null } };
+      }
+      if (result.outcome === "skipped") {
+        return { outcome: "skipped", error: result.error ?? null };
+      }
+      return { outcome: "released" };
+    },
+  );
 }
