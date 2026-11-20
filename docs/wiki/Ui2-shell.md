@@ -99,7 +99,7 @@ tab items are 60 px tall with touch targets of at least 44 px.
 
 Plugin page routes load their UI contribution directly, so opening a plugin URL
 from a fresh UI2 session does not depend on first visiting the sidebar. See
-[`1-6-6-ui2-plugin-nav.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/1-6-6-ui2-plugin-nav.md) for the
+[`1-6-6-ui2-plugin-nav.md`](https://github.com/itkadr-git/myrmidon/blob/e3232d40472aba02bd79a79f63c4bac645cda502/docs/myrmidon/changes/1-6-6-ui2-plugin-nav.md) for the
 implementation and verification record.
 
 Two shell parts are honest stubs for now:

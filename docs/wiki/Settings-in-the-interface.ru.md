@@ -29,7 +29,7 @@
 
 ## Настройки injection-защиты
 
-Раздел «Параметры компании → Guardrails» сохраняет `guardrailModes.injectionConfig` (`enabled`, `scoreThreshold`) и показывает эффективные значения с источником. Приоритет: переопределение окружением, настройка интерфейса, значение по умолчанию (порог по умолчанию `0.6`, диапазон 0–1). Явное `false` в окружении учитывается. См. [описание изменения injection-защиты](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/ope-8319-injection-config.md).
+Раздел «Параметры компании → Guardrails» сохраняет `guardrailModes.injectionConfig` (`enabled`, `scoreThreshold`) и показывает эффективные значения с источником. Приоритет: переопределение окружением, настройка интерфейса, значение по умолчанию (порог по умолчанию `0.6`, диапазон 0–1). Явное `false` в окружении учитывается. См. [описание изменения injection-защиты](https://github.com/itkadr-git/myrmidon/blob/e3232d40472aba02bd79a79f63c4bac645cda502/docs/myrmidon/changes/ope-8319-injection-config.md).
 
 ## Пользовательский каталог локализации в UI 2.0
 
