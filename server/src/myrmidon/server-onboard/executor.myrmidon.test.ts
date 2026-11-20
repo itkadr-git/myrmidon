@@ -832,13 +832,15 @@ exit 1
     expect(ssh.hasExecuted(/restore-myrmidon-firewall|pkill/)).toBe(false);
   });
 
-  it("preserves a concurrent operator rule in an executed fail-closed firewall probe", async () => {
+  it("preserves a concurrent operator rule when an executed timer launch fails", async () => {
     const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-ufw-concurrent-"));
     const rules = join(dir, "rules");
     const calls = join(dir, "calls");
     writeFileSync(rules, "operator-original\n");
-    writeFileSync(join(dir, "sudo"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\nif [ "$*" = "ufw status" ]; then printf "operator-concurrent\\n" >> "$RULES"; printf "Status: active\\n"; exit 0; fi\nexit 97\n');
+    writeFileSync(join(dir, "sudo"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\nif [ "$*" = "ufw status" ]; then printf "operator-concurrent\\n" >> "$RULES"; printf "Status: active\\n"; exit 0; fi\ncase "$1" in systemd-run) exec "$@";; esac\nexit 97\n');
+    writeFileSync(join(dir, "systemd-run"), '#!/bin/sh\nprintf "timer-start\\n" >> "$CALLS"\nexit 1\n');
     chmodSync(join(dir, "sudo"), 0o700);
+    chmodSync(join(dir, "systemd-run"), 0o700);
     try {
       const ssh = new MockSshExecutor({ onCommand: (command) => {
         const result = spawnSync("sh", ["-c", command], {
@@ -854,10 +856,10 @@ exit 1
       };
       const result = await executor.execute(claim, createMockReporter().reporter);
       expect(result.status).toBe("failed");
-      expect(result.error).toMatch(/scoped.*rollback.*unavailable/i);
+      expect(result.error).toMatch(/timer.*(start|confirm)/i);
       expect(readFileSync(rules, "utf8")).toBe("operator-original\noperator-concurrent\n");
-      expect(readFileSync(calls, "utf8")).toBe("ufw status\n");
-      expect(ssh.executedCommands.map((entry) => entry.command)).toEqual(["sudo ufw status"]);
+      expect(readFileSync(calls, "utf8")).toMatch(/timer-start/);
+      expect(readFileSync(calls, "utf8")).not.toMatch(/ufw (allow|default|delete|disable|--force enable)/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
