@@ -1107,6 +1107,34 @@ exit 97
     expect(allowCommand).toMatch(/\bcomment\b.*myrmidon/i);
   });
 
+  it("preserves a pre-existing SSH rule when UFW skips a duplicate allow", async () => {
+    const rules = ["operator-ssh"];
+    let allowAttempted = false;
+    const ssh = new MockSshExecutor({ onCommand: (command) => {
+      if (command.includes("start-myrmidon-firewall-timer") || command.includes("check-myrmidon-firewall-timer")) {
+        return { exitCode: 0, stdout: "timer-confirmed\n" };
+      }
+      if (command.includes("sudo ufw allow")) {
+        allowAttempted = true;
+        return { exitCode: 0, stdout: "Skipping adding existing rule\n" };
+      }
+      if (/ufw\s+(?:--force\s+)?delete/.test(command)) rules.pop();
+      return undefined;
+    } });
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-existing-ssh-rule", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(allowAttempted).toBe(true);
+    expect(result.status).toBe("failed");
+    expect(rules).toEqual(["operator-ssh"]);
+  });
+
   it("does not delete an indistinguishable operator rule after an uncertain allow", async () => {
     const rules = ["operator-ssh"];
     let allowAttempted = false;
