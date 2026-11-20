@@ -512,6 +512,32 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(connections).toHaveLength(0);
   });
 
+  it("retains the password backup until completion is reported successfully", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
+    ssh.mockResponse(/sshd -T/, { stdout: "passwordauthentication no\nkbdinteractiveauthentication no\n", exitCode: 0 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const reporter: ExecutorReporter = {
+      async reportStep() {},
+      async reportCompletion(status) {
+        if (status === "succeeded") throw new Error("completion persistence failed");
+      },
+    };
+    const claim: any = {
+      job: { id: "job-completion-failure", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["access"], options: { keepPassword: false }, secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, reporter);
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("completion persistence failed");
+    const commands = ssh.executedCommands.map((entry) => entry.command);
+    const restoreIndex = commands.findIndex((command) => command.includes("restore-myrmidon-password-config"));
+    const cleanupIndex = commands.findIndex((command) => command.includes("sudo rm -rf /var/tmp/myrmidon-sshd-"));
+    expect(restoreIndex).toBeGreaterThanOrEqual(0);
+    expect(cleanupIndex).toBeGreaterThan(restoreIndex);
+  });
+
   it("restores password configuration if subsequent firewall hardening fails", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
