@@ -148,6 +148,13 @@ const support = await getEmbeddedPostgresTestSupport();
       const secondLease = await claimNativeFinalizationRequest(db, "worker-c", reclaimedAt, 1000);
       expect(secondLease).toMatchObject({ id: requests[0].id, leaseOwner: "worker-c" });
       expect(await settleNativeFinalizationRequest(db, requests[0].id, "worker-c", reclaimedAt, { errorCode: "stale" }, firstLease!.leaseUntil!)).toBe(false);
+      // Failure after updating the request must roll back the whole settlement.
+      await db.delete(nativeFinalizationOutbox).where(eq(nativeFinalizationOutbox.requestId, requests[0].id));
+      await expect(settleNativeFinalizationRequest(db, requests[0].id, "worker-c", reclaimedAt, { errorCode: "denied" }, secondLease!.leaseUntil!))
+        .rejects.toThrow("native_finalization_outbox_missing");
+      const [afterFailedSettlement] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, requests[0].id));
+      expect(afterFailedSettlement).toMatchObject({ state: "processing", leaseOwner: "worker-c", errorCode: null, completedAt: null });
+      await db.insert(nativeFinalizationOutbox).values({ requestId: requests[0].id });
       expect(await settleNativeFinalizationRequest(db, requests[0].id, "worker-c", reclaimedAt, { errorCode: "denied" }, secondLease!.leaseUntil!)).toBe(true);
       expect(await settleNativeFinalizationRequest(db, requests[0].id, "worker-c", reclaimedAt, { errorCode: "denied" }, secondLease!.leaseUntil!)).toBe(false);
       expect(await claimNativeFinalizationRequest(db, "worker-d", new Date(now.getTime() + 4000), 1000)).toBeNull();
