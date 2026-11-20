@@ -96,6 +96,18 @@ const support = await getEmbeddedPostgresTestSupport();
       const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
       expect(coordinator.authorizationMode).toBe("service_required");
       expect(await db.select().from(nativeFinalizationGrants).where(eq(nativeFinalizationGrants.runId, runId))).toHaveLength(1);
+      const racingRunId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: racingRunId, companyId, agentId, nativeIssueId: issueId });
+      await db.insert(nativeRunFinalizations).values({ runId: racingRunId, companyId, issueId, phase: "awaiting_result" });
+      const grantRace = await Promise.allSettled([
+        service.grantFinalization({ ...grantInput, runId: racingRunId }),
+        service.grantFinalization({ ...grantInput, runId: racingRunId }),
+      ]);
+      expect(grantRace.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(grantRace.filter((result) => result.status === "rejected")).toHaveLength(1);
+      expect(await db.select().from(nativeFinalizationGrants).where(eq(nativeFinalizationGrants.runId, racingRunId))).toHaveLength(1);
+      const [racingCoordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, racingRunId));
+      expect(racingCoordinator.authorizationMode).toBe("service_required");
       const pinned = await call(issued.token);
       const snapshot = JSON.parse(pinned.body);
       const payload = { documentId, expectedRevisionId: revisionId, expectedIssueEpoch: snapshot.issue.version };
