@@ -1534,8 +1534,11 @@ exit 97
 
   it("fails hardening if the rollback timer cannot be disarmed", async () => {
     const mockSsh = new MockSshExecutor();
+    mockSsh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    mockSsh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    mockSsh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     mockSsh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
-    mockSsh.mockResponse(/pkill -f 'sleep 300/, { exitCode: 1, stderr: "timer still active" });
+    mockSsh.mockResponse(/stop-myrmidon-firewall-timer/, { exitCode: 1, stderr: "timer still active" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => mockSsh });
     const claim: any = {
       job: { id: "job-firewall-disarm", companyId: "c1", serverId: "s1" },
@@ -1545,6 +1548,8 @@ exit 97
 
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
+    expect(mockSsh.hasExecuted(/stop-myrmidon-firewall-timer/)).toBe(true);
+    expect(result.error).toMatch(/timer.*(disarm|stop)/i);
     expect(result.stepsCompleted).not.toContain("harden");
   });
 
