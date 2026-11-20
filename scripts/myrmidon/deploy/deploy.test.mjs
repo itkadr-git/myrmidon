@@ -437,6 +437,16 @@ const callsWithoutVersionStamp = (sb) =>
 const maintenance = (sb) => read(path.join(sb.dir, "maintenance.log"));
 
 describe("deploy.sh", () => {
+  it("refuses an RC deploy when release components are disabled", () => {
+    const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
+    fs.appendFileSync(sb.config, "MYRMIDON_RELEASE_COMPONENTS=none\n");
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /RC deploy requires dockergate and fleetd release components/);
+    assert.doesNotMatch(calls(sb), /docker pull|up -d --no-deps server/);
+    assert.equal(maintenance(sb), "");
+  });
+
   it("refuses an RC deploy before pull when the mandatory nightly PBS query fails", () => {
     const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
     fs.writeFileSync(path.join(sb.bin, "runuser"), '#!/bin/sh\nexit 42\n', { mode: 0o755 });

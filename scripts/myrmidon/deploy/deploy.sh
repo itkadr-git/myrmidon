@@ -267,6 +267,17 @@ if ! check_ci_image "$ref"; then
 fi
 log "image ok: built by CI from commit ${CI_IMAGE_REVISION:0:12}, version ${CI_IMAGE_VERSION:-<none>}"
 
+# RC deployment must resolve both required release components; a configured
+# empty/partial list must not silently turn the release gate off.
+if [[ "${CI_IMAGE_VERSION:-}" =~ -rc\.[0-9]+$ ]]; then
+  for required_component in dockergate fleetd; do
+    case ",$MYR_RELEASE_COMPONENTS," in
+      *",$required_component,"*) ;;
+      *) die "RC deploy requires dockergate and fleetd release components; nothing was changed" ;;
+    esac
+  done
+fi
+
 # RELEASE-GATE: resolve the component digests of the SAME release before
 # anything changes. Order: the myr-vX.Y.Z tag when the board commit carries
 # one (version label of a tag build), else the sha-<short> tag of the commit.
