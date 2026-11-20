@@ -5,8 +5,8 @@ and [acceptance-reader.ru.md](../../../../docs/myrmidon/acceptance-reader.ru.md)
 
 This standalone gateway is not a production deployment. It exposes exactly two
 runner-facing operations for one company-bound acceptance snapshot. The
-upstream must implement `GET /api/issues/{id}/acceptance-scenarios-snapshot`
-(OPE-15134) returning one JSON object:
+upstream is the dedicated service listener's `GET /api/service/issues/{id}/acceptance-scenarios`
+(OPE-15134), authenticated with a certificate-bound service bearer, returning one JSON object:
 
 ```json
 {
@@ -109,7 +109,7 @@ as a dedicated unprivileged service account. Configuration is operator-owned JSO
   "credentialDirectory": "/private/reader-credentials",
   "auditFile": "/private/reader-audit.jsonl",
   "listener": { "cert": "/private/listener.crt", "key": "/private/listener.key" },
-  "upstream": { "origin": "https://upstream.example:8443", "ca": "/private/upstream-ca.crt", "cert": "/private/client.crt", "key": "/private/client.key" }
+  "upstream": { "origin": "https://upstream.example:8443", "ca": "/private/upstream-ca.crt", "cert": "/private/client.crt", "key": "/private/client.key", "tokenFile": "/private/service-token" }
 }
 ```
 
@@ -122,15 +122,26 @@ expiry in Unix milliseconds. `revoke(hash)` writes a persistent revocation marke
 Do not delete or rewrite records/markers; protect the directory from other writers.
 All gateway instances need the same durable, coherently shared directory. Revocation
 is checked before serving responses; storage errors deny access.
-Rotate by issuing a new token and revoking the old one. Do not use a regular
-board agent key.
+Rotate by issuing a new token and revoking the old one. The upstream token file
+must contain the dedicated service bearer bound to the configured client
+certificate and company; provision and revoke it as described in the linked
+operator guide. It is separate from the runner-facing gateway credential. Do not
+use a regular board agent key.
+
+Upstream conditional reads send the pin-derived strong `If-Match`; a changed
+snapshot returns 412 upstream and 409 to the gateway client. This detects
+changes at read time only, not atomic authorization of a later action.
 
 Настройка и ключи принадлежат оператору; runner получает только отдельный
 bearer gateway. Запись содержит SHA-256 токена, неизменяемый companyId и срок
 действия в миллисекундах; отзыв сохраняется отдельным маркером. Запрещено менять
 записи или давать runner доступ к каталогу, ключам TLS и upstream. Fixture не
-является проверкой production. Реальная сетевая изоляция требует отдельного
-подтверждения инфраструктуры до развёртывания.
+является проверкой production. Файл `upstream.tokenFile` содержит отдельный
+service bearer, привязанный к компании и клиентскому сертификату; это не bearer
+runner. Условное чтение отправляет сильный `If-Match`: изменение даёт 412 от
+upstream и 409 клиенту шлюза. Проверка не делает последующее действие атомарным.
+Реальная сетевая изоляция требует отдельного подтверждения инфраструктуры до
+развёртывания.
 
 ## Threat model and limitations
 
