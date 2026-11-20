@@ -1490,6 +1490,10 @@ exit 97
 
   it("fails hardening when the firewall policy command fails even if SSH remains reachable", async () => {
     const mockSsh = new MockSshExecutor();
+    mockSsh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    mockSsh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    mockSsh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    mockSsh.mockResponse(/sudo ufw allow/, { exitCode: 0 });
     mockSsh.mockResponse(/sudo ufw default deny incoming/, { exitCode: 1, stderr: "ufw failed" });
     mockSsh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "ufw-connectivity-ok\n", exitCode: 0 });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => mockSsh });
@@ -1501,6 +1505,7 @@ exit 97
     };
     const result = await executor.execute(claim, mockReporter.reporter);
     expect(result.status).toBe("failed");
+    expect(mockSsh.hasExecuted(/sudo ufw default deny incoming/)).toBe(true);
     expect(mockReporter.completion?.status).toBe("failed");
   });
 
