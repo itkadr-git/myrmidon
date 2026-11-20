@@ -302,6 +302,10 @@ if [[ -z "$manifest_lines" && -n "$version_tag" ]]; then
     manifest_lines="$candidate"
   fi
 fi
+if [[ "${CI_IMAGE_VERSION:-}" =~ -rc\.[0-9]+$ ]]; then
+  [[ -n "$manifest_lines" && "$(manifest_digest board)" == "$digest" ]] \
+    || die "RC deploy requires a matching release-components manifest; nothing was changed"
+fi
 if [[ -n "$manifest_lines" ]]; then
   component_source="manifest"
   [[ -n "$release_tag" ]] && version_tag="${release_tag#myr-v}"

@@ -379,6 +379,15 @@ printf '/dev/fake 100000000 1000000 99000000 1%% /var/lib/docker\\n'
       "",
     ].join("\n"),
   );
+  if (labelVersion.includes("-rc.")) {
+    const manifest = path.join(dir, "release-components.json");
+    fs.writeFileSync(manifest, JSON.stringify({ schema: 1, components: {
+      board: { repository: CI_IMAGE, digest: NEW },
+      dockergate: { repository: `${CI_IMAGE}-dockergate`, digest: `sha256:${"c".repeat(64)}` },
+      fleetd: { repository: `${CI_IMAGE}-fleetd`, digest: `sha256:${"d".repeat(64)}` },
+    } }));
+    fs.appendFileSync(config, `MYRMIDON_RELEASE_MANIFEST_FILE=${manifest}\n`);
+  }
   return { dir, bin, config, override, unitDir, noGit, predeployEnv };
 }
 
@@ -443,6 +452,16 @@ describe("deploy.sh", () => {
     const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
     assert.notEqual(code, 0, out);
     assert.match(out, /RC deploy requires dockergate and fleetd release components/);
+    assert.doesNotMatch(calls(sb), /docker pull|up -d --no-deps server/);
+    assert.equal(maintenance(sb), "");
+  });
+
+  it("refuses an RC deploy without its matching release manifest", () => {
+    const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
+    fs.rmSync(path.join(sb.dir, "release-components.json"));
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /RC deploy requires a matching release-components manifest/);
     assert.doesNotMatch(calls(sb), /docker pull|up -d --no-deps server/);
     assert.equal(maintenance(sb), "");
   });
