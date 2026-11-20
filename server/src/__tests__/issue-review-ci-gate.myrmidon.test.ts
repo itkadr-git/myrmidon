@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
-import { agentWakeupRequests, agents, companies, connectionEventDeliveries, heartbeatRuns, issueComments, issueWorkProducts, issues, toolGatewayRateLimitCounters } from "@myrmidon/db";
+import { activityLog, agentWakeupRequests, agents, companies, connectionEventDeliveries, heartbeatRuns, issueComments, issueWorkProducts, issues, toolGatewayRateLimitCounters } from "@myrmidon/db";
 import { describeEmbeddedPostgres, routeApp, seedCompanyWithBoardAccess, useEmbeddedPostgres } from "./helpers/route-test-harness.js";
 import { issueRoutes } from "../routes/issues.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
@@ -85,7 +85,8 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
       "transportCalls" in fields && fields.transportCalls === 0 &&
       "budget" in fields && JSON.stringify(fields.budget) === JSON.stringify({ used: 2000, cap: 2000, windowMinutes: 60 }))).toBe(true);
     expect(rejected.status, JSON.stringify(rejected.body)).toBe(422);
-    expect(JSON.stringify(rejected.body)).toContain("CI status for the current pull request head is unavailable");
+    expect(JSON.stringify(rejected.body)).toContain("GitHub review budget exhausted");
+    expect(JSON.stringify(rejected.body)).toContain("backoff");
     expect(transport).not.toHaveBeenCalled();
     const [unchanged] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
     expect(unchanged?.status).toBe("in_review");
@@ -170,6 +171,15 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
       if (url === checkUrl) return Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "failure", head_sha: headSha }] });
       throw new Error("Unexpected external transport");
     });
+    const red = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
+    expect(red.status).toBe(422);
+    transport.mockImplementation(async (url) => {
+      if (url === pullUrl) return Response.json({ state: "open", head: { sha: headSha } });
+      if (url === workflowUrl) return Response.json([{ name: "ci.yml" }]);
+      if (url === checkUrl) return Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "success", head_sha: headSha }] });
+      throw new Error("Unexpected external transport");
+    });
+    transport.mockClear();
     const accepted = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
     await drainHeartbeatRunsToQuiescence(ctx.db, heartbeatService(ctx.db));
     expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
@@ -278,7 +288,7 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     transport.mockImplementation(async (url) => {
       if (url === pullUrl) return Response.json({ state: "open", head: { sha: headSha } });
       if (url === workflowUrl) return Response.json([{ name: "ci.yml" }]);
-      if (url === checkUrl) return Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "failure", head_sha: headSha }] });
+      if (url === checkUrl) return Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "success", head_sha: headSha }] });
       throw new Error("Unexpected external transport");
     });
     // The timer itself must resume review after the budget window; a manual
@@ -309,7 +319,88 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     expect(JSON.stringify(comments.body)).toContain("REQUEST CHANGES: preserve this finding");
   });
 
-  it("rejects a verdict on stored wake evidence alone when the review budget is exhausted (OPE-15114)", async () => {
+  it.each(["approve", "changes"] as const)("applies fail-closed %s policy to an authoritative cached SUCCESS when review budget is exhausted", async (verdict) => {
+    const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Cached success admission");
+    const author = randomUUID(), reviewer = randomUUID(), issueId = randomUUID(), runId = randomUUID(), stageId = randomUUID();
+    const headSha = "f".repeat(40);
+    const base = { companyId, status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} };
+    await ctx.db.insert(agents).values([
+      { ...base, id: author, name: "Author", role: "engineer" },
+      { ...base, id: reviewer, name: "Reviewer", role: "reviewer" },
+    ]);
+    await ctx.db.insert(issues).values({
+      id: issueId, companyId, title: "Cached success", status: "in_review", priority: "critical",
+      createdByAgentId: author, assigneeAgentId: author,
+      executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewer, userId: null }] }] },
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewer, userId: null }, returnAssignee: { type: "agent", agentId: author, userId: null }, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null },
+    });
+    await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewer, status: "succeeded", contextSnapshot: { issueId } });
+    await ctx.db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", title: "Synthetic PR", url: "https://github.com/acme/app/pull/7", status: "open", isPrimary: true, metadata: { repo: "acme/app", number: 7, headSha } });
+    let checkState: "success" | "failure" | "pending" | "missing" = "success";
+    let liveHeadSha = headSha;
+    let invalidateDuringRead = false;
+    const wakeFetch = vi.fn(async (url: string) => {
+      if (url.includes("/pulls/7")) return Response.json({ state: "open", head: { sha: liveHeadSha, ref: "branch" } });
+      if (url.includes("/check-runs")) {
+        if (invalidateDuringRead) invalidateCiCacheForHead(companyId, "acme/app", headSha);
+        return Response.json({ total_count: checkState === "missing" ? 0 : 1, check_runs: checkState === "missing" ? [] : [{ id: 1, name: "CI result", status: checkState === "pending" ? "in_progress" : "completed", conclusion: checkState === "pending" ? null : checkState, head_sha: headSha, html_url: "https://github.com/acme/app/actions/runs/1", started_at: new Date().toISOString(), completed_at: new Date().toISOString() }] });
+      }
+      return new Response(null, { status: 404 });
+    });
+    const wake = createPullRequestCiResolver(ctx.db, { source: "run-context", fetch: wakeFetch, tokenProvider: async () => canary });
+    const evidence = await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
+    expect(evidence).toMatchObject({ authoritative: true, status: "completed", conclusion: "success", headSha });
+    const [clock] = await ctx.db.execute(sql`select floor(extract(epoch from clock_timestamp()) / 60)::bigint as minute`);
+    const minute = Number(clock?.minute), start = new Date(minute * 60_000);
+    const [carrier] = await ctx.db.select({ id: companies.id }).from(companies).orderBy(companies.createdAt).limit(1);
+    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: carrier.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
+    const app = routeApp(ctx.db, { type: "agent", agentId: reviewer, companyId, source: "agent_key", runId } as never, issueRoutes);
+    const decision = verdict === "approve"
+      ? { status: "done", comment: `APPROVE PR #7 ${headSha}` }
+      : { status: "in_progress", comment: `REQUEST CHANGES PR #7 ${headSha}: server/src/example.ts:42 is broken` };
+    await ctx.db.update(issueWorkProducts).set({ metadata: { repo: "acme/app", number: 7, headSha: "a".repeat(40) } }).where(sql`${issueWorkProducts.issueId} = ${issueId}`);
+    const staleHead = await request(app).patch(`/api/issues/${issueId}`).send(decision);
+    expect(staleHead.status, JSON.stringify(staleHead.body)).toBe(422);
+    await ctx.db.update(issueWorkProducts).set({ metadata: { repo: "acme/app", number: 7, headSha } }).where(sql`${issueWorkProducts.issueId} = ${issueId}`);
+    // A rerun event invalidates even a recent successful snapshot on the same SHA.
+    invalidateCiCacheForHead(companyId, "acme/app", headSha);
+    const invalidated = await request(app).patch(`/api/issues/${issueId}`).send(decision);
+    expect(invalidated.status, JSON.stringify(invalidated.body)).toBe(422);
+    for (const state of ["pending", "missing"] as const) {
+      checkState = state;
+      clearCiCacheForTests();
+      await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
+      const rejected = await request(app).patch(`/api/issues/${issueId}`).send(decision);
+      expect(rejected.status, `${state}: ${JSON.stringify(rejected.body)}`).toBe(422);
+    }
+    checkState = "success";
+    clearCiCacheForTests();
+    invalidateDuringRead = true;
+    await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
+    const raced = await request(app).patch(`/api/issues/${issueId}`).send(decision);
+    expect(raced.status, JSON.stringify(raced.body)).toBe(422);
+    invalidateDuringRead = false;
+    clearCiCacheForTests();
+    await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
+    // An undelivered webhook cannot be ruled out when the budget is exhausted.
+    if (verdict === "approve") {
+      liveHeadSha = "b".repeat(40);
+      const delayedHeadWebhook = await request(app).patch(`/api/issues/${issueId}`).send(decision);
+      expect(delayedHeadWebhook.status).toBe(422);
+      liveHeadSha = headSha;
+      checkState = "pending";
+      const delayedWebhook = await request(app).patch(`/api/issues/${issueId}`).send(decision);
+      expect(delayedWebhook.status).toBe(422);
+    }
+    const response = await request(app).patch(`/api/issues/${issueId}`).send(decision);
+    expect(response.status, JSON.stringify(response.body)).toBe(verdict === "approve" ? 422 : 200);
+    if (verdict === "changes") {
+      const records = await ctx.db.select().from(activityLog).where(sql`${activityLog.entityId} = ${issueId} and ${activityLog.action} = 'issue.updated'`);
+      expect(records.some((record) => JSON.stringify(record.details?.reviewCiAudit) === JSON.stringify({ source: "budget_exhausted_cached_success", headSha }))).toBe(true);
+    }
+  });
+
+  it("admits only a return on matching authoritative failure when the review budget is exhausted", async () => {
     const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Shared wake evidence");
     const author = randomUUID(), reviewer = randomUUID(), issueId = randomUUID(), runId = randomUUID(), stageId = randomUUID();
     const headSha = "c".repeat(40);
@@ -363,11 +454,13 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     transport.mockReset();
     await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: budgetCompany.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
     await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
-    // OPE-15114: stored wake evidence is not an admission-grade read. With the
-    // budget exhausted the gate cannot confirm the current head, so it fails
-    // closed instead of returning the task on a remembered verdict.
+    const approval = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done", comment: `APPROVE PR #7 ${headSha}` });
+    expect(approval.status, JSON.stringify(approval.body)).toBe(422);
     const response = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI failed" });
-    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.executionState.lastDecisionOutcome).toBe("changes_requested");
+    const records = await ctx.db.select().from(activityLog).where(sql`${activityLog.entityId} = ${issueId} and ${activityLog.action} = 'issue.updated'`);
+    expect(records.some((record) => JSON.stringify(record.details?.reviewCiAudit) === JSON.stringify({ source: "budget_exhausted_cached_failure", headSha }))).toBe(true);
     expect(transport).not.toHaveBeenCalled();
   });
 });

@@ -15792,7 +15792,8 @@ export function issueRoutes(
           );
         }
       }
-      if (transition.decision?.outcome === "changes_requested") {
+      let reviewCiAudit: { source: string; headSha: string | null } | null = null;
+      if (transition.decision?.outcome === "changes_requested" || transition.decision?.outcome === "approved") {
         let diagnostic: Parameters<NonNullable<Parameters<typeof createReviewPullRequestCiResolver>[0]["onDiagnostic"]>>[0] | null = null;
         // OPE-15004: the write verdict gate is review admission — its reads are
         // always fresh, never served from the read cache.
@@ -15801,7 +15802,9 @@ export function issueRoutes(
           issueId: existing.id,
         });
         logReviewWriteCi({ issueId: existing.id, runId: actor.runId, ci, diagnostic });
-        if (ci.state === "pending" || ci.state === "unknown") {
+        reviewCiAudit = (ci.reason === "budget_exhausted_cached_success" || ci.reason === "budget_exhausted_cached_failure") && transition.decision?.outcome === "changes_requested"
+          ? { source: ci.reason, headSha: ci.headSha } : null;
+        if (ci.state === "pending" || ci.state === "unknown" || (ci.state === "complete" && ((ci.finalCheckConclusion !== "success" && !(ci.reason === "budget_exhausted_cached_failure" && transition.decision?.outcome === "changes_requested")) || (transition.decision?.outcome === "approved" && ci.reason?.startsWith("budget_exhausted_cached_"))))) {
           if (ci.reason?.includes("budget_exhausted")) {
             // A triggered CI-wait monitor otherwise gets rearmed by the stale
             // monitor sweep and repeatedly wakes a reviewer who cannot decide.
@@ -15825,7 +15828,9 @@ export function issueRoutes(
           throw unprocessable(
             ci.state === "pending"
               ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
-              : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
+              : ci.reason?.includes("budget_exhausted")
+                ? "REQUEST CHANGES rejected: GitHub review budget exhausted. Apply a backoff of at least 61 minutes before retrying; do not repeat the verdict immediately."
+                : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
           );
         }
       }
@@ -16966,6 +16971,7 @@ export function issueRoutes(
               ...updateFields,
               identifier: updated.identifier,
               authorizationReason: issueMutationAuthorizationReason,
+              ...(reviewCiAudit ? { reviewCiAudit } : {}),
               changes,
               ...(reviewInteractionId ? { reviewInteractionId } : {}),
               ...(commentBody ? { source: "comment" } : {}),
@@ -17107,7 +17113,7 @@ export function issueRoutes(
               updateFields.executionState = currentMergedState;
               issueUpdateData.executionState = currentMergedState;
             }
-            if (lockedTransition.decision?.outcome === "changes_requested") {
+            if (lockedTransition.decision?.outcome === "changes_requested" || lockedTransition.decision?.outcome === "approved") {
               let diagnostic: Parameters<NonNullable<Parameters<typeof createReviewPullRequestCiResolver>[0]["onDiagnostic"]>>[0] | null = null;
               // OPE-15004: the write verdict gate is review admission — its reads are
               // always fresh, never served from the read cache.
@@ -17116,16 +17122,20 @@ export function issueRoutes(
                 issueId: lockedExisting.id,
               });
               logReviewWriteCi({ issueId: lockedExisting.id, runId: actor.runId, ci, diagnostic });
-              if (ci.state === "pending" || ci.state === "unknown") {
+              reviewCiAudit = (ci.reason === "budget_exhausted_cached_success" || ci.reason === "budget_exhausted_cached_failure") && lockedTransition.decision?.outcome === "changes_requested"
+                ? { source: ci.reason, headSha: ci.headSha } : null;
+              if (ci.state === "pending" || ci.state === "unknown" || (ci.state === "complete" && ((ci.finalCheckConclusion !== "success" && !(ci.reason === "budget_exhausted_cached_failure" && lockedTransition.decision?.outcome === "changes_requested")) || (lockedTransition.decision?.outcome === "approved" && ci.reason?.startsWith("budget_exhausted_cached_"))))) {
                 throw unprocessable(
                   ci.state === "pending"
                     ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
-                    : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
+                    : ci.reason?.includes("budget_exhausted")
+                      ? "REQUEST CHANGES rejected: GitHub review budget exhausted. Apply a backoff of at least 61 minutes before retrying; do not repeat the verdict immediately."
+                      : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
                 );
               }
               // myrmidon(OPE-11970): remember the pull request head this return was made on.
               // The next return on the same head does not wake the executor again.
-              if (updateFields.executionState && typeof updateFields.executionState === "object") {
+              if (lockedTransition.decision?.outcome === "changes_requested" && updateFields.executionState && typeof updateFields.executionState === "object") {
                 updateFields.executionState = withChangesRequestedHeadSha(
                   updateFields.executionState as Record<string, unknown>,
                   ci.headSha,
@@ -18076,6 +18086,7 @@ export function issueRoutes(
             ...updateFields,
             identifier: issue.identifier,
             authorizationReason: issueMutationAuthorizationReason,
+            ...(reviewCiAudit ? { reviewCiAudit } : {}),
             changes: issueChanges,
             ...(blockedLoopSignature
               ? { [BLOCKED_LOOP_SIGNATURE_KEY]: blockedLoopSignature }

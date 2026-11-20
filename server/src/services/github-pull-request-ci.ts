@@ -947,6 +947,8 @@ interface CacheEntry {
 }
 
 const ciCache = new Map<string, CacheEntry>();
+// In-flight reads started before any webhook invalidation cannot repopulate the cache.
+let ciInvalidationEpoch = 0;
 
 /** Read only recent server-fetched final-check evidence bound to this company, PR and head. */
 export function readFreshReviewCiSnapshot(
@@ -987,6 +989,7 @@ interface CommitCheckRunsCacheEntry {
 const checkRunsCache = new Map<string, CommitCheckRunsCacheEntry>();
 
 export function clearCiCacheForTests(): void {
+  ciInvalidationEpoch += 1;
   ciCache.clear();
   prHeadCache.clear();
   checkRunsCache.clear();
@@ -997,6 +1000,7 @@ export function clearCiCacheForTests(): void {
 
 /** Invalidate cached CI snapshots for one company and PR head after a GitHub event. */
 export function invalidateCiCacheForHead(companyId: string, repository: string, headSha: string): void {
+  ciInvalidationEpoch += 1;
   const normalizedRepository = repository.toLowerCase();
   ciCache.delete(`${companyId}:${normalizedRepository}@${headSha.toLowerCase()}`);
   checkRunsCache.delete(`${normalizedRepository}@${headSha.toLowerCase()}`);
@@ -1327,6 +1331,7 @@ export function createPullRequestCiResolver(
         return cached.result;
       }
 
+      const cacheEpoch = ciInvalidationEpoch;
       let token: string | null = null;
       try {
         token = await tokenProvider(companyId, repoKey);
@@ -1362,7 +1367,7 @@ export function createPullRequestCiResolver(
         );
         if (runs.conclusion === "incomplete" && runs.summary === "checks unchanged (not modified)" && cachedRunsEntry) {
           runs = cachedRunsEntry.runs;
-        } else if (runs.etag || cachedRunsEntry) {
+        } else if (cacheEpoch === ciInvalidationEpoch && (runs.etag || cachedRunsEntry)) {
           checkRunsCache.set(commitCacheKey, {
             etag: runs.etag ?? cachedRunsEntry?.etag,
             runs,
@@ -1421,7 +1426,7 @@ export function createPullRequestCiResolver(
         const oldestKey = ciCache.keys().next().value;
         if (oldestKey !== undefined) ciCache.delete(oldestKey);
       }
-      if (result.conclusion !== "rate_limited") {
+      if (result.conclusion !== "rate_limited" && cacheEpoch === ciInvalidationEpoch) {
         ciCache.set(cacheKey, {
           expiresAt: Date.now() + ttlMs,
           result,
