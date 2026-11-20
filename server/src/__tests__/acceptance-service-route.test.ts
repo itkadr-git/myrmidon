@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import express from "express";
 import { describe, expect, it } from "vitest";
-import { agents, companies, createDb, documentRevisions, documents, heartbeatRuns, issueDocuments, issues, nativeFinalizationGrants, nativeFinalizationOutbox, nativeFinalizationRequests, nativeRunFinalizations, workspaceOperations } from "@myrmidon/db";
+import { agents, companies, completionContracts, createDb, documentRevisions, documents, heartbeatRuns, issueDocuments, issues, nativeFinalizationGrants, nativeFinalizationOutbox, nativeFinalizationRequests, nativeRunFinalizations, nativeRunResults, statusDecisions, workspaceOperations } from "@myrmidon/db";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "@myrmidon/db/test-embedded-postgres";
 import { acceptanceServiceCredentialsService } from "../services/acceptance-service-credentials.js";
 import { claimNativeFinalizationRequest, processNativeFinalizationRequest, settleNativeFinalizationRequest } from "../services/native-runtime/native-finalization-request-recovery.js";
@@ -73,6 +73,7 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(await post(submit.token, client, `"${"a".repeat(64)}"`)).toBe(404);
       const agentId = randomUUID(), runId = randomUUID();
       await db.insert(agents).values({ id: agentId, companyId, name: "Agent", role: "engineer" });
+      await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, issueId));
       await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issueId });
       await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "awaiting_result" });
       const ungranted = await new Promise<number>((resolve, reject) => {
@@ -250,6 +251,25 @@ const support = await getEmbeddedPostgresTestSupport();
       // The default recovery path must invoke the real finalizer, not merely claim work.
       await expect(processNativeFinalizationRequest({ db, worker: "recovery-real", now: new Date(finalTime.getTime() + 1001), leaseMs: 60_000 }))
         .rejects.toThrow("native_finalization_run_missing");
+      const contractId = randomUUID(), resultId = randomUUID();
+      await db.update(heartbeatRuns).set({ runtimeMode: "native", completionContractId: contractId, completionContractSha256: "contract" }).where(eq(heartbeatRuns.id, runId));
+      await db.insert(completionContracts).values({ id: contractId, companyId, issueId, revision: 1, schemaVersion: "paperclip.completion-contract.v1", policyVersion: "phase6-v1", risk: "standard", completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal", contractJson: { revision: "v1", criteria: [{ id: "objective", requirement: "test" }] }, canonicalSha256: "contract", createdByActorType: "system", createdByActorId: "test" });
+      await db.insert(nativeRunResults).values({ id: resultId, companyId, issueId, runId, completionContractId: contractId, serverFingerprint: "test", schemaStatus: "accepted", canonicalSha256: "result", resultJson: { result: { reportedWorkDisposition: "done", summary: "test", completionClaim: { contractRevision: "v1", objectiveSatisfied: true, criteria: [], remainingWork: [] }, verification: [] }, terminal: { runTerminalState: "succeeded" } } });
+      await db.update(nativeRunFinalizations).set({ resultId, phase: "awaiting_result" }).where(eq(nativeRunFinalizations.runId, runId));
+      await db.update(nativeFinalizationRequests).set({ leaseUntil: new Date(Date.now() - 1000) }).where(eq(nativeFinalizationRequests.id, recoveryRequestId));
+      const resumed = await Promise.all([
+        processNativeFinalizationRequest({ db, worker: "restart-a", now: new Date(), leaseMs: 60_000 }),
+        processNativeFinalizationRequest({ db, worker: "restart-b", now: new Date(), leaseMs: 60_000 }),
+      ]);
+      expect(resumed.sort()).toEqual(["idle", "processed"]);
+      const [committed] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, recoveryRequestId));
+      const [outboxAfterCommit] = await db.select().from(nativeFinalizationOutbox).where(eq(nativeFinalizationOutbox.requestId, recoveryRequestId));
+      expect(committed.state).toBe("committed");
+      expect(committed.resultDecisionId).toBeTruthy();
+      expect(outboxAfterCommit.dispatchedAt).not.toBeNull();
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId))).toHaveLength(1);
+      expect(JSON.parse((await result(submit.token, recoveryRequestId)).body)).toMatchObject({ state: "committed", decisionId: committed.resultDecisionId });
+      expect(await processNativeFinalizationRequest({ db, worker: "restart-c", now: new Date(), leaseMs: 60_000 })).toBe("idle");
       const first = await call(issued.token);
       expect(first.status).toBe(200);
       expect(first.etag).toMatch(/^"[a-f0-9]{64}"$/);
