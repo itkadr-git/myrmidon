@@ -32,6 +32,20 @@ test("a newer failed VM backup cannot be hidden by an older successful archive",
   assert.notEqual(runFixture(`pbs-offsite:backup/vm/100/${stamp} backup 100 10`, [task, failed]).status, 0);
 });
 
+test("stale, future, incomplete and ambiguous backup evidence is rejected", () => {
+  const now = Math.floor(Date.now() / 1000);
+  const task = { id: "100", node: "hk01", type: "vzdump", status: "OK", starttime: now - 600, endtime: now - 590 };
+  const archive = (start) => `pbs-offsite:backup/vm/100/${new Date(start * 1000).toISOString().replace('.000Z', 'Z')} backup 100 10`;
+  const stale = now - 36 * 3600 - 10;
+  assert.notEqual(runFixture(archive(stale), [{ ...task, starttime: stale, endtime: stale + 10 }]).status, 0);
+  const future = now + 600;
+  assert.notEqual(runFixture(archive(future), [{ ...task, starttime: future, endtime: future + 10 }]).status, 0);
+  assert.notEqual(runFixture(archive(task.starttime), [{ ...task, endtime: null }]).status, 0);
+  assert.notEqual(runFixture(archive(task.starttime), [task, task]).status, 0);
+  assert.notEqual(runFixture(`${archive(task.starttime)}\n${archive(task.starttime)}`, [task]).status, 0);
+  assert.notEqual(runFixture(archive(task.starttime), [{ ...task, id: "101" }]).status, 0);
+});
+
 test("a failed operator backup query stops the guard", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "nightly-guard-"));
   try {
