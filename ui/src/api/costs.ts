@@ -4,6 +4,7 @@ import type {
   CostByProviderModel,
   CostByBiller,
   CostByAgentModel,
+  CostByStepClass,
   CostByProject,
   CostByDay,
   CostWindowSpendRow,
@@ -36,6 +37,8 @@ export const costsApi = {
     api.get<CostByAgent[]>(`/companies/${companyId}/costs/by-agent${dateParams(from, to)}`),
   byAgentModel: (companyId: string, from?: string, to?: string) =>
     api.get<CostByAgentModel[]>(`/companies/${companyId}/costs/by-agent-model${dateParams(from, to)}`),
+  byStepClass: (companyId: string, from?: string, to?: string) =>
+    api.get<CostByStepClass[]>(`/companies/${companyId}/costs/by-step-class${dateParams(from, to)}`),
   byProject: (companyId: string, from?: string, to?: string) =>
     api.get<CostByProject[]>(`/companies/${companyId}/costs/by-project${dateParams(from, to)}`),
   byDay: (companyId: string, from?: string, to?: string) =>

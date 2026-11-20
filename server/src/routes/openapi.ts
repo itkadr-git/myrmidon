@@ -5531,6 +5531,7 @@ const costSummaryPaths = [
   "summary",
   "by-agent",
   "by-agent-model",
+  "by-step-class",
   "by-provider",
   "by-biller",
   "by-project",
