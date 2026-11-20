@@ -190,6 +190,14 @@ function createMocks() {
 }
 
 describe("SERVER-ONBOARD logic", () => {
+  it("does not claim an already claimed job while its executor is active", async () => {
+    const { mockStore, mockSecrets, mockGetServer } = createMocks();
+    const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
+    await service.addServer({ companyId: "company-1", slug: "active-job", name: "Server", hostname: "192.0.2.7", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password", password: "bootstrap" }, createdBy: null });
+    expect(await service.claim("company-1", "valid-executor-token")).not.toBeNull();
+    expect(await service.claim("company-1", "valid-executor-token")).toBeNull();
+  });
+
   it("does not replace a verified host pin with a completion report", async () => {
     const { mockStore, mockSecrets, mockGetServer, store } = createMocks();
     const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
