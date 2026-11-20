@@ -42,10 +42,14 @@ export {
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
 } from "./embedded-postgres-error.js";
-export {
-  ensureLinuxSharedLibraryAliases,
-  prepareEmbeddedPostgresNativeRuntime,
-} from "./embedded-postgres-native.js";
+export async function ensureLinuxSharedLibraryAliases(libDir: string): Promise<string[]> {
+  const native = await import("./embedded-postgres-native.js");
+  return native.ensureLinuxSharedLibraryAliases(libDir);
+}
+export async function prepareEmbeddedPostgresNativeRuntime(): Promise<void> {
+  const native = await import("./embedded-postgres-native.js");
+  return native.prepareEmbeddedPostgresNativeRuntime();
+}
 export { loadWithoutEmbeddedPostgresExitHooks } from "./embedded-postgres-lifecycle.js";
 export {
   applyReaddress,
