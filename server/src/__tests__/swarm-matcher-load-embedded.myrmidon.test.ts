@@ -21,6 +21,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agentCastes,
+  agentNests,
   agentWakeupRequests,
   agents,
   companies,
@@ -28,6 +29,7 @@ import {
   heartbeatRuns,
   issueClaims,
   issueRelations,
+  issueWorkProducts,
   issues,
   projectMemberships,
   projects,
@@ -61,9 +63,11 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issueClaims);
+    await db.delete(issueWorkProducts);
     await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(projectMemberships);
+    await db.delete(agentNests);
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(agentCastes);
@@ -285,6 +289,29 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
       expect(wakes).toEqual([]);
     });
 
+    it("honors a configured active-task ceiling above the default", async () => {
+      const companyId = await seedCompany();
+      const agent = await seedAgent(companyId, "agent-configured-five");
+      await seedTask(companyId, { assigneeAgentId: agent, status: "todo" });
+      await seedTask(companyId, { assigneeAgentId: agent, status: "in_progress" });
+      const task = await seedTask(companyId);
+      const wakes: string[] = [];
+
+      const result = await matchCompany(
+        deps(wakes, {
+          maxActiveTasks: 5,
+          casteDirectory: async () => [
+            { role: "engineer", casteKey: "engineer", maxActiveTasks: 5, description: "Configured engineer ceiling" },
+          ],
+        }),
+        companyId,
+      );
+
+      expect(result.pairs.map((pair) => pair.issueId)).toEqual([task]);
+      expect(await assigneeOf(task)).toBe(agent);
+      expect(wakes).toEqual([agent]);
+    });
+
     it("counts reserved todo and in_progress tasks against the ceiling, not only leases", async () => {
       const companyId = await seedCompany();
       const agent = await seedAgent(companyId, "agent-a");
@@ -301,6 +328,27 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
       expect(wakes).toEqual([]);
       const claims = await db.select().from(issueClaims).where(isNull(issueClaims.releasedAt));
       expect(claims).toHaveLength(0);
+    });
+
+    it("frees an in-progress issue with an open PR in review for over 15 minutes", async () => {
+      const companyId = await seedCompany();
+      const agent = await seedAgent(companyId, "agent-reviewing");
+      const issueId = await seedTask(companyId, { assigneeAgentId: agent, status: "in_progress" });
+      await db.insert(issueWorkProducts).values({
+        id: randomUUID(), companyId, issueId, type: "pull_request", provider: "github",
+        title: "PR awaiting review", status: "open", reviewState: "ready_for_review",
+        metadata: { repository: "example/repo", number: 42 },
+        updatedAt: new Date(Date.now() - 20 * 60_000),
+      });
+      expect((await openLoadByAgent(db, companyId)).get(agent) ?? 0).toBe(0);
+      await seedTask(companyId, { assigneeAgentId: agent, status: "in_progress" });
+
+      const task = await seedTask(companyId);
+      const wakes: string[] = [];
+      const result = await matchCompany(deps(wakes), companyId);
+
+      expect(result.pairs.map((pair) => pair.issueId)).toContain(task);
+      expect(await assigneeOf(task)).toBe(agent);
     });
 
     it("hands the task over once the executor is below the ceiling", async () => {
@@ -622,6 +670,11 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
         .insert(projects)
         .values({ companyId, name: "Project A", leadAgentId: member })
         .returning();
+      const [otherProject] = await db
+        .insert(projects)
+        .values({ companyId, name: "Project B" })
+        .returning();
+      await db.insert(agentNests).values({ companyId, agentId: outsider, projectId: otherProject!.id });
       const projectTask = await seedTask(companyId, { projectId: project!.id });
 
       const first = await matchCompany(deps([]), companyId);

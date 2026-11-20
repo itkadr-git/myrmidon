@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, sys.argv[1] if len(sys.argv) > 1 else "/opt/hermes-src")
 
@@ -73,6 +74,21 @@ def main() -> None:
     finally:
         reset_run_task_workspace(token)
     assert run_task_workspace_path() is None
+
+    # Concurrent gateway runs must retain their own task path via ContextVar.
+    def concurrent_binding(key: str) -> str:
+        path = f"/workspace/{key}"
+        token = set_run_task_workspace(path, fallback=False)
+        try:
+            assert run_task_workspace_path() == path
+            assert run_task_workspace_env() == {"MYRMIDON_TASK_WORKSPACE": path}
+            return run_task_workspace_path()
+        finally:
+            reset_run_task_workspace(token)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        paths = sorted(pool.map(concurrent_binding, ("OPE-101", "OPE-202")))
+    assert paths == ["/workspace/OPE-101", "/workspace/OPE-202"]
 
     # No field: unbound context injects nothing and STRIPS an inherited value —
     # an earlier surface's path must never serve a different run.

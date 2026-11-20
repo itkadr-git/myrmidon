@@ -55,6 +55,7 @@ import { summarySlotRoutes } from "./routes/summary-slots.js";
 import { statusCardRoutes } from "./routes/status-cards.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
+
 import type { SetupTokenSessionService } from "./services/setup-token-session.js";
 import {
   buildSetupTokenLoginTransport,
@@ -68,6 +69,7 @@ import { environmentRuntimeService } from "./services/environment-runtime.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { blockerGraphRoutes } from "./routes/blocker-graph.js";
+import { issueAcceptanceSnapshotRoutes } from "./routes/issue-acceptance-snapshot.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { caseRoutes } from "./routes/cases.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
@@ -78,6 +80,7 @@ import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { onboardingSeedRoutes } from "./routes/onboarding-seed.js";
 import { serverOnboardingRoutes } from "./routes/servers.js";
+import { acceptanceServiceCredentialRoutes } from "./routes/acceptance-service-credentials.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { admAccessRequestRoutes } from "./routes/adm-access-requests.js";
@@ -247,11 +250,14 @@ import {
   createChatReconciliationWorkGates,
   type ChatReconciliationWorkGates,
   myrmidonCasteRoutes,
+  myrmidonModelGroupRulesRoutes,
   myrmidonGuardrailsRoutes,
   myrmidonInstalledLocalesRoutes,
   myrmidonVendorNameCheckRoutes,
   startDenyListPuller,
   createPluginProviderModelSync,
+  updateAgentAllowlistsForCompany,
+  defaultAgentGatewayKeyDeps,
   localeUploadRoutes,
   localeModuleRoutes,
   myrmidonHindsightModelsRoutes,
@@ -1177,6 +1183,23 @@ export async function createApp(
   });
   api.use(
     agentRoutes(db, {
+      syncAgentModelAllowlist: async ({ companyId, agentId, db: transactionDb }) => {
+        const result = await updateAgentAllowlistsForCompany(
+          transactionDb,
+          defaultAgentGatewayKeyDeps(transactionDb),
+          companyId,
+          [],
+          [],
+          { cardModelsOnly: true, agentId, apply: true },
+        );
+        const failures = result.skipped.filter((reason) => reason !== "gateway-key-management-not-configured" && reason !== `agent-without-key:${agentId}` && reason !== `key-all-models:${agentId}`);
+        if (failures.length) {
+          logger.warn({ companyId, agentId, failures }, "agent card saved but gateway allowlist reconciliation failed");
+        }
+      },
+      onAgentModelAllowlistSyncFailure: ({ companyId, agentId, error }) => {
+        logger.warn({ companyId, agentId, err: error }, "agent card saved but gateway allowlist reconciliation failed");
+      },
       chatRunRetries: chatChannels,
       pluginWorkerManager: workerManager,
       deploymentMode: opts.deploymentMode,
@@ -1215,6 +1238,7 @@ export async function createApp(
   api.use(goalRoutes(db));
   api.use(onboardingSeedRoutes(db));
   api.use(serverOnboardingRoutes(db)); // myrmidon(SERVER-ONBOARD): SSH dry-run probe
+  api.use(acceptanceServiceCredentialRoutes(db));
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(admAccessRequestRoutes(db, {
@@ -1265,7 +1289,7 @@ export async function createApp(
   api.use(myrmidonAutoUpdateRoutes(db)); // myrmidon(1.7-AUTO-UPDATE-B)
   api.use(myrmidonRuntimeLimitsRoutes(db)); // myrmidon(C0)
   api.use(myrmidonPauseGuardRoutes(db)); // myrmidon(PAUSE-GUARD)
-  api.use(myrmidonRunPriorityRoutes(db)); // myrmidon(1.6.5 RUN-PRIORITY A)
+  api.use(myrmidonRunPriorityRoutes(db, opts.processBus ?? null)); // myrmidon(1.6.5 RUN-PRIORITY A)
   api.use(myrmidonRunStallRoutes(db)); // myrmidon(RUN-STALL-SETTINGS)
   api.use(myrmidonCorpusRoutes(db, { ports: resolveCorpusPorts })); // myrmidon(1.6.6 CORPUS-2.0 ч.C): corpus datasets/documents/search + module settings
   api.use(myrmidonProcessesRouter(db as any, opts.processSupervisor ?? null, opts.processBus ?? null)); // myrmidon(PROCS-1.1/1.2): GET/PATCH /api/myrmidon/processes, applied without a restart; myrmidon(OPE-10011): the save reaches the worker's supervisor over the bus
@@ -1468,6 +1492,9 @@ export async function createApp(
   // issue approval endpoints delegate to it. The intervening routers use distinct
   // route prefixes, so this dependency does not change issue-route precedence.
   api.use(blockerGraphRoutes(db));
+  // myrmidon(OPE-15134): the atomic acceptance snapshot for the acceptance-reader
+  // gateway; a distinct literal prefix, mounted before the issue router.
+  api.use(issueAcceptanceSnapshotRoutes(db));
   api.use(issueRoutes(db, opts.storageService, {
     chatRunRetries: chatChannels,
     feedbackExportService: opts.feedbackExportService,
@@ -1590,6 +1617,7 @@ export async function createApp(
     }),
   );
   api.use(myrmidonCasteRoutes(db)); // myrmidon(CUSTOM-CASTES): caste directory CRUD
+  api.use(myrmidonModelGroupRulesRoutes(db)); // myrmidon(1.8 MODEL-BY-STEP, OPE-12997)
   api.use(myrmidonGuardrailsRoutes(db)); // myrmidon(1.6-GRD): flag-only guardrail event journal (board-only read route)
   api.use(
     accessRoutes(db, {

@@ -6,14 +6,16 @@
 // scheduler, the backup), everyone else waits in the contender loop.
 //
 // The protocol is the one of design §5.3:
-//   acquire: INSERT … ON CONFLICT DO NOTHING, then
+//   acquire: INSERT … ON CONFLICT DO NOTHING (expired seed), then
 //            UPDATE board_leases
-//               SET holder_boot_id=me, epoch=epoch+1,
+//               SET holder_boot_id=me,
+//                   epoch = CASE WHEN expires_at < clock_timestamp()
+//                                THEN epoch + 1 ELSE epoch END,
 //                   acquired_at=now(), expires_at=now()+ttl
 //             WHERE name=? AND (expires_at < clock_timestamp() OR holder_boot_id=me)
 //         RETURNING epoch
-//   renew:   the same UPDATE with holder_boot_id=me every ttl/3 (10 s by default).
-//            A renewal that returns no row means the lease is gone → onLost().
+//   renew:   the same UPDATE every ttl/3 (10 s by default).  A renewal that
+//            returns no row means the lease is gone → onLost().
 //   expire:  the UPDATE WHERE carries the expiry check on clock_timestamp().
 //   release: DELETE WHERE name=? AND holder_boot_id=me → the next contender
 //            takes over within its own renewal tick (§5.3: ≤ 1 s handover at
@@ -111,6 +113,7 @@ export function leaderLeaseService(db: Db, options: LeaderLeaseServiceOptions = 
   const lease = (name: BoardLeaseName, hooks: LeaderLeaseHooks = {}): LeaderLease => {
     const log = hooks.log ?? (() => {});
     let timer: NodeJS.Timeout | null = null;
+    let passInFlight = false;
     let epoch = 0;
     let lostController: AbortController | null = null;
     let ttlMs = defaultTtlMs;
@@ -129,11 +132,20 @@ export function leaderLeaseService(db: Db, options: LeaderLeaseServiceOptions = 
 
     /** The §5.3 UPDATE; returns the new epoch when the pass won, else null. */
     const tryTake = async (): Promise<number | null> => {
+      // OPE-13146: distinguish a renewal (same holder, lease still alive) from
+      // a reacquisition (the lease had expired — even if the row still names
+      // us) atomically in the UPDATE. When expires_at < now the lease is
+      // dead: whoever takes it must bump the fencing epoch so stale epoch
+      // tokens from the previous leadership are invalidated. When the lease
+      // is alive and the holder is unchanged the epoch stays.
       const rows = await db
         .update(boardLeases)
         .set({
           holderBootId: bootId,
-          epoch: sql`${boardLeases.epoch} + 1`,
+          epoch: sql`CASE
+            WHEN ${boardLeases.expiresAt} < clock_timestamp() THEN ${boardLeases.epoch} + 1
+            ELSE ${boardLeases.epoch}
+          END`,
           acquiredAt: sql`clock_timestamp()`,
           expiresAt: sql`clock_timestamp() + ${ttlMs} * interval '1 millisecond'`,
         })
@@ -153,14 +165,18 @@ export function leaderLeaseService(db: Db, options: LeaderLeaseServiceOptions = 
 
     /** One acquire pass: seed the row, then try to take it. */
     const acquirePass = async (): Promise<boolean> => {
+      // Seed with no holder and an already-expired timestamp: an uncontended
+      // first pass must read as a real take (epoch bumps to 1) and not as a
+      // renewal of a live lease. The WHERE fence lets the write through
+      // because expires_at < clock_timestamp().
       await db
         .insert(boardLeases)
         .values({
           name,
-          holderBootId: bootId,
+          holderBootId: null,
           epoch: 0,
           acquiredAt: sql`clock_timestamp()`,
-          expiresAt: sql`clock_timestamp()`,
+          expiresAt: sql`clock_timestamp() - interval '1 second'`,
         })
         .onConflictDoNothing();
       const won = await tryTake();
@@ -177,6 +193,8 @@ export function leaderLeaseService(db: Db, options: LeaderLeaseServiceOptions = 
 
     /** One renew pass; failure (no row) means the lease is gone → onLost(). */
     const renewPass = async (): Promise<void> => {
+      const prevEpoch = epoch;
+      const prevLeader = isLeader();
       const won = await tryTake();
       if (won === null) {
         log("warn", "leader lease renew returned no row — lease lost", { name, bootId });
@@ -184,10 +202,18 @@ export function leaderLeaseService(db: Db, options: LeaderLeaseServiceOptions = 
         return;
       }
       epoch = won;
-      hooks.onLeaderChanged?.(bootId, won);
+      // OPE-13146: a renewal that kept the same owner and epoch is not a
+      // handover — no live event, no activity-log noise. A real epoch bump
+      // (a new fencing token after expiry) or an owner switch reaches the
+      // observers.
+      if (won !== prevEpoch || !prevLeader) {
+        hooks.onLeaderChanged?.(bootId, won);
+      }
     };
 
     const pass = async () => {
+      if (passInFlight) return;
+      passInFlight = true;
       try {
         if (epoch === 0) {
           const acquired = await acquirePass();
@@ -208,6 +234,8 @@ export function leaderLeaseService(db: Db, options: LeaderLeaseServiceOptions = 
           bootId,
           err: err instanceof Error ? err.message : String(err),
         });
+      } finally {
+        passInFlight = false;
       }
     };
 

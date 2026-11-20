@@ -534,6 +534,28 @@ test("run: red CI refuses even with an override (CI not bypassable)", async () =
   assert.equal(runGit(root, ["tag", "-l", "myr-v1.7.0-rc.25"]), "");
 });
 
+test("run: verified flaky waiver permits the otherwise failing CI gate", async () => {
+  const run = await importRun();
+  const root = makeRepo();
+  const board = fakeBoard({ labels: [LABEL_17], issues: CLEAN_ISSUES, workProductsByIssue: { i1: [], i2: [] } });
+  const logs = [];
+  const code = await run(
+    { version: "1.7.0", rc: "25", root, boardLabel: "1.7", flakyWaiverVerify: true },
+    {
+      api: API, fetchBoard: board.fetchBoard, log: (m) => logs.push(m), err: () => {}, root,
+      ciStatus: () => ({ ok: false, reason: "CI failed: flaky test" }),
+      verifyFlakyWaiver: ({ tag, sha, root: verifierRoot }) => {
+        assert.equal(tag, "myr-v1.7.0-rc.25");
+        assert.equal(sha, runGit(verifierRoot, ["rev-parse", "HEAD"]));
+        return true;
+      },
+    },
+  );
+  assert.equal(code, 0);
+  assert.equal(runGit(root, ["tag", "-l", "myr-v1.7.0-rc.25"]), "myr-v1.7.0-rc.25");
+  assert.ok(logs.some((line) => line.includes("verified flaky waiver accepted")));
+});
+
 test("run: missing release label on the board refuses", async () => {
   const run = await importRun();
   const root = makeRepo();

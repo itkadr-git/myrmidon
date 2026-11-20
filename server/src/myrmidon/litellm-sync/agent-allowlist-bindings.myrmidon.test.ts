@@ -130,7 +130,7 @@ describe("updateAgentAllowlistsForCompany finds the key through the card's bindi
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({
       keyHash,
-      models: ["kimi/kimi-for-coding", "openai/gpt-4o", "anthropic/claude"],
+      models: ["openai/gpt-4o", "kimi/kimi-for-coding"],
     });
     // Only the hash leaves the board, never the key value.
     expect(JSON.stringify(calls)).not.toContain("agent-key-value-1");
@@ -227,7 +227,7 @@ describe("updateAgentAllowlistsForCompany finds the key through the card's bindi
     // Alias addressing, exactly as before: no hash.
     expect(calls[0]).toEqual({
       alias: "llm-gateway-key-managed-agent-6",
-      models: ["openai/gpt-4o", "anthropic/claude"],
+      models: ["openai/gpt-4o"],
     });
   });
 
@@ -255,7 +255,6 @@ describe("updateAgentAllowlistsForCompany finds the key through the card's bindi
       "company-a",
       [],
       ["openai/gpt-4o", "anthropic/claude"],
-      true,
     );
 
     expect(result.updated).toBe(1);

@@ -10,7 +10,10 @@
 //   - two deliveries of one pull request at once both finish with no error and
 //     both are applied; the metadata of the rows is merged by Postgres, so a
 //     key written by someone else is kept;
-//   - a delivery of another pull request does not wait for the lock.
+//   - a delivery of another pull request does not wait for the lock;
+//   - (WEBHOOK-LOCK-POOL) 30 deliveries of one pull request at once keep no more
+//     delivery transactions open than the limit, all are applied, and while they
+//     wait for the lock of the pull request an ordinary query gets a connection.
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -28,6 +31,7 @@ import {
   toolConnections,
 } from "@myrmidon/db";
 import { eq, sql } from "drizzle-orm";
+import { githubDeliveryTransactionGate, GITHUB_DELIVERY_MAX_CONCURRENT_TRANSACTIONS } from "../services/github-delivery-gate.js";
 import { githubConnectionEventService } from "../services/github-connection-events.js";
 import type { PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 import type { CiReturnFacts } from "../myrmidon/review-return-guard/ci-failure-return.js";
@@ -224,4 +228,30 @@ describeEmbeddedPostgres.sequential("deliveries of one pull request are serializ
 
     expect((await productsOf(seeded))[0]!.metadata).toMatchObject({ ciReturnHold: { headSha: "x" }, other: 1, lastCompletedCi: { final: true } });
   });
+
+  it("keeps the pool free while 30 deliveries of one pull request wait for its lock (WEBHOOK-LOCK-POOL)", async () => {
+    const seeded = await seed(1);
+    const lock = await holdLock(lockKeyOf(seeded, 123));
+    githubDeliveryTransactionGate.resetPeak();
+    const services = Array.from({ length: 30 }, () => startService());
+    const finished = services.map((service) => service.deliver([ciEvent(seeded, "success", "CI result")]));
+    try {
+      await pause(600);
+      // On the old code the waiting deliveries held every connection of the
+      // pool here, and this query waited behind them.
+      const startedAt = Date.now();
+      await db.execute(sql`select 1`);
+      expect(Date.now() - startedAt).toBeLessThan(1000);
+      expect(githubDeliveryTransactionGate.active()).toBeLessThanOrEqual(1);
+    } finally {
+      lock.release();
+      await lock.done;
+    }
+    const results = await Promise.all(finished);
+    expect(results.reduce((sum, result) => sum + result.processed, 0)).toBe(30);
+    expect(results.reduce((sum, result) => sum + result.failed, 0)).toBe(0);
+    expect(githubDeliveryTransactionGate.peak()).toBeLessThanOrEqual(GITHUB_DELIVERY_MAX_CONCURRENT_TRANSACTIONS);
+    expect(await receiptStatuses(seeded)).toEqual(Array(30).fill("processed"));
+    expect(githubDeliveryTransactionGate.active()).toBe(0);
+  }, 60_000);
 });

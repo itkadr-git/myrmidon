@@ -78,6 +78,7 @@ describeEmbeddedPostgres("execution hold: mention wake and confirm-continue (OPE
   }, TEST_TIMEOUT_MS);
 
   afterAll(async () => {
+    await heartbeat.drainActiveRunExecutions();
     await tempDb?.cleanup();
   });
 

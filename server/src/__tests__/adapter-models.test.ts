@@ -9,6 +9,7 @@ import { listAdapterModels, listServerAdapters, refreshAdapterModels } from "../
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
 import { resetGatewayModelsCacheForTests } from "../adapters/hermes-gateway-models.js";
+import { logger } from "../middleware/logger.js";
 
 vi.mock("acpx/runtime", () => ({
   createAcpRuntime: vi.fn(),
@@ -33,6 +34,8 @@ describe("adapter model listing", () => {
     delete process.env.MYRMIDON_LITELLM_API_KEY;
     delete process.env.MYRMIDON_LITELLM_MASTER_KEY;
     delete process.env.MYRMIDON_LITELLM_ADMIN_KEY;
+    delete process.env.MYRMIDON_LITELLM_KEY_SECRET;
+    delete process.env.MYRMIDON_LITELLM_ADMIN_KEY_SECRET;
     delete process.env.LITELLM_MASTER_KEY;
     delete process.env.LLM_GATEWAY_API_KEY;
     delete process.env.PAPERCLIP_ADAPTER_MODELS;
@@ -356,9 +359,14 @@ describe("adapter model listing", () => {
       vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
         throw new Error("Connection refused");
       });
+      const warning = vi.spyOn(logger, "warn");
 
       const models = await listAdapterModels("hermes_gateway");
       expect(models).toEqual([{ id: "fallback-env-model", label: "fallback-env-model" }]);
+      expect(warning).toHaveBeenCalledWith(
+        expect.objectContaining({ adapterType: "hermes_gateway" }),
+        "Live LiteLLM catalog unavailable; falling back to declared adapter models",
+      );
     });
 
     it("reflects newly added model in LiteLLM without restart on refreshAdapterModels", async () => {

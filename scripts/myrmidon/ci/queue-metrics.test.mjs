@@ -1,6 +1,10 @@
 // scripts/myrmidon/ci/queue-metrics.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import {
   calculatePercentile,
   analyzeQueueMetrics,
@@ -275,4 +279,118 @@ test('calculateCiResultLatency throws when no predecessors or missing CI result'
       { name: 'unrelated-only', completed_at: '2026-10-30T13:59:00Z' },
     ], { workflow: 'ci' });
   }, /No completed relevant predecessor jobs found/);
+});
+
+test('calculateCiResultLatency treats runner queue delay as queue wait, not failure (OPE-13479, PR 3306 run 43789711787)', () => {
+  const jobs = [
+    { name: 'tests (affected)', started_at: '2026-11-16T02:30:00Z', completed_at: '2026-11-16T02:42:00Z' },
+    {
+      name: 'CI result',
+      created_at: '2026-11-16T02:42:03Z',
+      started_at: '2026-11-16T02:46:09Z', // 249s after the predecessor, 246s of it in queued
+      completed_at: '2026-11-16T02:46:15Z',
+      runner_name: 'vps-ci-3',
+    },
+  ];
+  const result = calculateCiResultLatency(jobs, { workflow: 'ci', maxLatencySec: 120 });
+  assert.equal(result.latencySeconds, 249);
+  assert.equal(result.queueWaitSeconds, 246);
+  assert.equal(result.residualLatencySeconds, 3);
+  assert.equal(result.queueDelayed, true);
+  assert.equal(result.passed, true);
+  assert.equal(result.runnerName, 'vps-ci-3');
+});
+
+test('calculateCiResultLatency still fails when the gap is not explained by the runner queue', () => {
+  const jobs = [
+    { name: 'tests (affected)', started_at: '2026-11-16T02:30:00Z', completed_at: '2026-11-16T02:42:00Z' },
+    {
+      name: 'CI result',
+      created_at: '2026-11-16T02:45:00Z', // queued only 180s after the predecessor
+      started_at: '2026-11-16T02:45:20Z', // 20s queue wait
+      completed_at: '2026-11-16T02:45:30Z',
+      runner_name: 'vps-ci-3',
+    },
+  ];
+  const result = calculateCiResultLatency(jobs, { workflow: 'ci', maxLatencySec: 120 });
+  assert.equal(result.latencySeconds, 200);
+  assert.equal(result.queueWaitSeconds, 20);
+  assert.equal(result.residualLatencySeconds, 180);
+  assert.equal(result.passed, false);
+});
+
+function runVerifyLatency(jobs, workflow = 'ci', attempt = 1) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-latency-'));
+  const file = path.join(dir, 'jobs.json');
+  fs.writeFileSync(file, JSON.stringify({ jobs }));
+  try {
+    return spawnSync(process.execPath, [
+      path.join(import.meta.dirname, 'queue-metrics.mjs'),
+      '--verify-latency', '--file', file, '--workflow', workflow,
+    ], { encoding: 'utf8', env: { ...process.env, GITHUB_RUN_ATTEMPT: String(attempt), CI_ATTEMPT_STARTED_AT: '2026-11-20T04:40:10Z' } });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('--verify-latency: rerun-only CI result ignores predecessor from attempt 1', () => {
+  const r = runVerifyLatency([
+    { name: 'checks', run_attempt: 1, created_at: '2026-11-16T02:24:27Z', started_at: '2026-11-16T02:24:28Z', completed_at: '2026-11-16T02:35:46Z' },
+    // GitHub's attempt endpoint also returns carried-over jobs under attempt 2.
+    { name: 'checks', run_attempt: 2, created_at: '2026-11-20T04:40:12Z', started_at: '2026-11-16T02:24:28Z', completed_at: '2026-11-16T02:35:46Z' },
+    { name: 'CI result', run_attempt: 2, created_at: '2026-11-20T04:40:12Z', started_at: '2026-11-20T04:40:14Z' },
+  ], 'ci', 2);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /NOT_APPLICABLE/);
+});
+
+test('rerun latency selects current attempt predecessors and ignores old completions', () => {
+  const options = { attempt: 2, attemptStartedAt: '2026-11-20T04:40:10Z' };
+  const jobs = [
+    { name: 'checks', run_attempt: 1, completed_at: '2026-11-20T04:42:10Z' },
+    { name: 'checks', run_attempt: 2, completed_at: '2026-11-20T04:40:20Z' },
+    { name: 'CI result', run_attempt: 2, started_at: '2026-11-20T04:42:21Z' },
+  ];
+  const result = calculateCiResultLatency(jobs, options);
+  assert.equal(result.latencySeconds, 121);
+  assert.equal(result.passed, false);
+  assert.equal(result.evaluatedJobsCount, 1);
+});
+
+test('rerun latency fails closed on missing attempt or predecessor timestamps', () => {
+  const ci = { name: 'CI result', run_attempt: 2, started_at: '2026-11-20T04:42:21Z' };
+  assert.throws(() => calculateCiResultLatency([ci], { attempt: 2 }), /attempt start timestamp/);
+  assert.throws(() => calculateCiResultLatency([ci, { name: 'checks', run_attempt: 2 }], {
+    attempt: 2, attemptStartedAt: '2026-11-20T04:40:10Z',
+  }), /completion timestamp/);
+  assert.throws(() => calculateCiResultLatency([{ name: 'CI result', run_attempt: 2 }], {
+    attempt: 2, attemptStartedAt: '2026-11-20T04:40:10Z',
+  }), /started_at/);
+});
+
+test('--verify-latency: 300s runner queue with green jobs exits 0 and prints a ::warning::', () => {
+  const r = runVerifyLatency([
+    { name: 'tests (affected)', started_at: '2026-11-16T02:30:00Z', completed_at: '2026-11-16T02:42:00Z' },
+    { name: 'CI result', created_at: '2026-11-16T02:42:02Z', started_at: '2026-11-16T02:47:02Z', runner_name: 'vps-ci-1' },
+  ]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /::warning::CI result start latency 302s > 120s/);
+  assert.match(r.stdout, /waited 300s in queued/);
+});
+
+test('--verify-latency: a stall that the queue does not explain exits 1', () => {
+  const r = runVerifyLatency([
+    { name: 'tests (affected)', started_at: '2026-11-16T02:30:00Z', completed_at: '2026-11-16T02:42:00Z' },
+    { name: 'CI result', created_at: '2026-11-16T02:46:00Z', started_at: '2026-11-16T02:46:05Z', runner_name: 'vps-ci-1' },
+  ]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /exceeded threshold: 245s > 120s/);
+});
+
+test('--verify-latency: no created_at keeps the old fail-closed behaviour', () => {
+  const r = runVerifyLatency([
+    { name: 'tests (affected)', started_at: '2026-11-16T02:30:00Z', completed_at: '2026-11-16T02:42:00Z' },
+    { name: 'CI result', started_at: '2026-11-16T02:47:02Z' },
+  ]);
+  assert.equal(r.status, 1);
 });

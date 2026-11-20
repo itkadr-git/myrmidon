@@ -10,6 +10,18 @@ and know nothing about a specific installation: everything comes from the settin
 example is [`deploy.env.example`](../../scripts/myrmidon/deploy/deploy.env.example); the real
 settings file of an installation lives in a private deploy repository and never enters this one.
 
+## RC predeploy guard
+
+For an RC image the normal deploy path requires the matching release-components manifest,
+no `--urgent`, a fresh successful nightly PBS VM backup, and exactly one RepoDigest for the
+running board image. The actual running digest is recorded as the image rollback target.
+Failure of any guard stops the deploy. This path takes no new database dump and creates no
+production database copy or rehearsal environment. A passing guard authorizes deployment only:
+it does not test migrations on production data or prove that the database can be rolled back.
+`rollback.sh --config deploy.env` returns to the recorded image, but does not restore database
+changes. The release operator must assess migration compatibility and arrange VM restoration
+through the existing backup procedure if needed; image rollback alone cannot undo migrations.
+
 ## What the host needs
 
 - bash 4+, `docker` with the `compose` and `buildx` plugins, `curl`, `jq`, `git`;

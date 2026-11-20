@@ -220,6 +220,20 @@ describeEmbeddedPostgres("stale block sweep", () => {
     expect(comments[0]!.body).toContain("the due date passed");
   });
 
+  it("does not sweep a run-cap block without blocker edges", async () => {
+    const seeded = await seed({ blockerStatus: undefined, unblockDescriptor: {
+      owner: { agentId: "run-cap-agent" },
+      action: "runs_without_commit_cap_released",
+    } });
+    const { injected, sweep } = sweepWith();
+    const result = await sweep.sweep();
+    expect(result).toMatchObject({ scanned: 1, unblocked: 0, skippedLive: 1, failed: 0 });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue!.status).toBe("blocked");
+    expect(issue!.unblockDescriptor).toMatchObject({ action: "runs_without_commit_cap_released" });
+    expect(injected.logActivity).not.toHaveBeenCalled();
+  });
+
   it("leaves a live blocker completely untouched", async () => {
     const seeded = await seed({ blockerStatus: "in_progress", withRelation: true });
     const { injected, sweep } = sweepWith();

@@ -38,8 +38,9 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { createCasteDirectoryReader } from "../myrmidon/castes/directory.js";
 import { matchFreedAgent } from "../myrmidon/swarm-claim/index.js";
-import { matchAgent, matchCompany, type SwarmMatcherDeps } from "../myrmidon/swarm-claim/matcher.js";
+import { listIdleRolePairs, matchAgent, matchCompany, type SwarmMatcherDeps } from "../myrmidon/swarm-claim/matcher.js";
 import { tryDevReviewContinuationOnRelease } from "../myrmidon/review-continuation.js";
+import { applyCompanyReleaseFocus, resetRunPriorityForTests } from "../myrmidon/run-priority/state.js";
 import { createSwarmClaimSweeper, type SwarmClaimSweeperDeps } from "../myrmidon/swarm-claim/sweep.js";
 import type { HostCpuGate, HostMemoryGate } from "../myrmidon/run-admission.js";
 
@@ -90,6 +91,7 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
   }, 60_000);
 
   afterEach(async () => {
+    resetRunPriorityForTests();
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
@@ -104,6 +106,48 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("reports idle engineers even when their ready queue is empty", async () => {
+    const companyId = await seedCompany();
+    const engineerId = await seedAgent(companyId);
+
+    const pairs = await listIdleRolePairs(db, companyId, { roles: ["engineer"] });
+
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0].queue).toEqual([]);
+    expect(pairs[0].agents.map((agent) => agent.id)).toContain(engineerId);
+  });
+
+  it("creates one assigned auto-slice task after a sustained empty engineer queue", async () => {
+    const companyId = await seedCompany();
+    applyCompanyReleaseFocus(new Map([[companyId, { currentRelease: "1.6.9", strictReleaseFocus: false }]]));
+    const leadId = await seedAgent(companyId, "lead");
+    await db.update(agents).set({ role: "lead" }).where(eq(agents.id, leadId));
+    const projectId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId, name: "dev", status: "in_progress", leadAgentId: leadId });
+    await db.insert(projectMemberships).values({ companyId, projectId, userId: leadId, state: "joined" });
+    for (let i = 0; i < 3; i++) {
+      const id = await seedAgent(companyId, `engineer-${i}`);
+      await db.insert(projectMemberships).values({ companyId, projectId, userId: id, state: "joined" });
+    }
+    await db.insert(issues).values({ companyId, projectId, title: "Epic 1.6.9", identifier: "EPIC-1", status: "in_progress" });
+    const wakes: Wake[] = [];
+    const deps = matcherDeps(wakes);
+    deps.isAgentAvailable = async () => true;
+    await matchCompany(deps, companyId);
+    await Promise.all([
+      matchCompany({ ...deps, now: new Date(NOW.getTime() + 10 * MIN) }, companyId),
+      matchCompany({ ...deps, now: new Date(NOW.getTime() + 10 * MIN) }, companyId),
+    ]);
+    await matchCompany({ ...deps, now: new Date(NOW.getTime() + 11 * MIN) }, companyId);
+    const slices = await db.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.title, "[AUTO-SLICE] Пополнить очередь инженеров")));
+    expect(slices).toHaveLength(1);
+    expect(slices[0].assigneeAgentId).toBe(leadId);
+    expect(slices[0].description).toContain("3");
+    expect(slices[0].description).toContain("EPIC-1");
+    expect(slices[0].description).toContain("\n\nОткрытые эпики:\n- [EPIC-1]");
+    expect(wakes.filter((wake) => wake.agentId === leadId)).toHaveLength(1);
   });
 
   it("dev handoff scopes both own and unassigned queues before the SQL limit", async () => {
@@ -262,7 +306,10 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
       issueId: submittedId,
       projectId,
       engineerId,
+      openEpics: [],
     });
+    expect(wakeups[0].options.contextSnapshot.message).toContain("нарежьте следующую часть");
+    expect(wakeups[0].options.contextSnapshot.message).toContain("Открытые эпики выпуска");
   });
 
   async function seedCompany() {

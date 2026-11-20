@@ -1,9 +1,5 @@
-// myrmidon(MYR-WS-RECOVER): botd's sweep for copies an interrupted run left half-way
-// (maintenance drain, kill, crash: a merge/rebase/cherry-pick in progress, unresolved
-// stages). The repair itself is `myr-ws repair` (state saved to refs/myr-ws/recovery/<KEY>
-// first, then the operation aborted); botd only decides WHEN it is safe to call it:
-// not while a run is going or its state is unknown (runs.js: live true / null), because a
-// bot may be resolving a conflict right now. A failure never breaks the pass.
+// botd runs myr-ws repair only when no run is active or potentially active.
+// The repair preserves unfinished Git operations. A failure never breaks the pass.
 
 /**
  * @param {{ ws: (args: string[]) => Promise<any>, runProbe: { probe: () => { live: boolean | null } }, log: (line: string) => void }} deps

@@ -1189,6 +1189,31 @@ export function secretService(db: Db | DbTransaction) {
     errorCode?: string | null;
   }) {
     if (!input.context) return;
+    const configPath = input.context.configPath;
+    const isStaticAgentSecret =
+      input.outcome === "success" &&
+      input.context.consumerType === "agent" &&
+      input.context.actorType === "agent" &&
+      input.secretScope !== "user" &&
+      Boolean(input.context.actorId) &&
+      Boolean(configPath?.startsWith("env.") && configPath.length > "env.".length);
+    if (isStaticAgentSecret) {
+      const windowMs = Number(process.env.SECRET_ACCESS_AUDIT_DEDUPE_WINDOW_MS ?? 60 * 60_000);
+      const since = new Date(Date.now() - (Number.isFinite(windowMs) && windowMs >= 0 ? windowMs : 60 * 60_000));
+      const [priorEvent] = await db
+        .select({ id: secretAccessEvents.id })
+        .from(secretAccessEvents)
+        .where(and(
+          eq(secretAccessEvents.companyId, input.companyId),
+          eq(secretAccessEvents.secretId, input.secretId),
+          eq(secretAccessEvents.actorType, "agent"),
+          eq(secretAccessEvents.actorId, input.context.actorId!),
+          ...(input.outcome === "success" ? [eq(secretAccessEvents.outcome, "success")] : []),
+          sql`${secretAccessEvents.createdAt} >= ${since}`,
+        ))
+        .limit(1);
+      if (priorEvent) return;
+    }
     await db.insert(secretAccessEvents).values({
       companyId: input.companyId,
       secretId: input.secretId,

@@ -22,6 +22,7 @@ const RUN_PRIORITY_VIEW = {
   source: "settings" as const,
   settings: {
     enabled: true,
+    strictReleaseFocus: true,
     roleWeights: { review: 90, release: 80, lead: 70, engineer: 50, docs: 30 },
     issuePriorityWeights: { critical: 100, high: 80, medium: 60, low: 40, none: 20 },
     defaultRoleWeight: 10,
@@ -33,6 +34,7 @@ const RUN_PRIORITY_VIEW = {
     starvationLimitMinutes: 90,
     starvationTopWeight: 10_000,
     pheromoneWeight: 15,
+    inProgressIdleWakeMinutes: 20,
   },
 };
 
@@ -110,6 +112,27 @@ afterEach(async () => {
 });
 
 describe("run priority panel locales", () => {
+  it("saves strict focus and displays the persisted value after remount", async () => {
+    let stored = { ...RUN_PRIORITY_VIEW.settings };
+    vi.spyOn(api, "get").mockImplementation(async () => ({ source: "settings", settings: stored }) as never);
+    const patch = vi.spyOn(api, "patch").mockImplementation(async (_path, body) => {
+      stored = { ...stored, ...(body as Partial<typeof stored>) };
+      return { source: "settings", settings: stored } as never;
+    });
+    await i18n.changeLanguage("en");
+    await renderPanel(<RunPrioritySettingsPanel />);
+    const toggle = container.querySelectorAll<HTMLInputElement>("input[type=checkbox]")[1];
+    expect(toggle.checked).toBe(true);
+    click(toggle);
+    click(buttonWithText("Save queue priority"));
+    await settle();
+    expect(patch.mock.calls[0]?.[1]).toEqual({ strictReleaseFocus: false });
+    act(() => root!.unmount());
+    root = null;
+    container.remove();
+    await renderPanel(<RunPrioritySettingsPanel />);
+    expect(container.querySelectorAll<HTMLInputElement>("input[type=checkbox]")[1].checked).toBe(false);
+  });
   it("shows the Russian title and Russian field captions with the RU locale", async () => {
     await i18n.changeLanguage("ru");
     await renderPanel(<RunPrioritySettingsPanel />);

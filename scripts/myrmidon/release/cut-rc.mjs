@@ -52,9 +52,6 @@ const DEFAULT_API_URL = "http://127.0.0.1:3100";
 const DEFAULT_COMPANY_ID = "2870b911-483a-4091-9f15-183841811143";
 const DONE_STATUSES = new Set(["done"]);
 const OPEN_STATUSES = new Set(["backlog", "todo", "in_progress", "in_review", "blocked"]);
-// Work-product states of an attached PR that block the cut; `closed-unmerged`
-// is computed from state "closed" when the PR never merged.
-const PR_BLOCKING_STATES = new Set(["open", "draft", "closed-unmerged"]);
 
 // gh pr view fields of one attached PR. `mergeCommit` is null until GitHub
 // merges; `headRefName` and `title` name the branch when the merge commit is
@@ -173,13 +170,14 @@ options:
   --branch <name>        branch whose CI must be green (default: default branch)
   --board-label NAME     release label name (default: "<major>.<minor>" of --version)
   --dry-run              run every check, print the plan, tag nothing
+  --flaky-waiver-verify  accept a verified flaky-CI waiver for this tag only
   -h | --help`);
 }
 
 export function parseArgs(argv) {
   const args = {
     version: null, rc: null, override: null, journal: null, root: null,
-    sha: null, branch: null, boardLabel: null, dryRun: false,
+    sha: null, branch: null, boardLabel: null, dryRun: false, flakyWaiverVerify: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -193,6 +191,7 @@ export function parseArgs(argv) {
       case "--branch": args.branch = argv[++i]; break;
       case "--board-label": args.boardLabel = argv[++i]; break;
       case "--dry-run": args.dryRun = true; break;
+      case "--flaky-waiver-verify": args.flakyWaiverVerify = true; break;
       case "-h": case "--help": args.help = true; break;
       default: throw new UsageError(`unknown argument: ${a}`);
     }
@@ -294,7 +293,7 @@ export function describePr(wp) {
 // `closed` state is ambiguous: closed-after-merge shows state "merged" in the
 // board metadata; a PR closed WITHOUT merging blocks the cut.
 export function prBlockingState(wp) {
-  const status = String(wp.status || "").toLowerCase();
+  const status = typeof wp.status === "string" ? wp.status.toLowerCase() : "";
   if (status === "merged") return null;
   if (status === "open" || status === "draft" || status === "ready") {
     return status === "ready" ? "open" : status;
@@ -303,14 +302,14 @@ export function prBlockingState(wp) {
   return status || "unknown";
 }
 
-// Checks the attached PRs of one issue against the blocking states.
+// Only a proven merged PR is safe for the release.
 // Returns the list of blocking descriptions (empty = clean).
 export function blockingPrsOfIssue(issue, workProducts) {
   const blockers = [];
   for (const wp of workProducts || []) {
     if ((wp.type || "") !== "pull_request") continue;
     const st = prBlockingState(wp);
-    if (st && PR_BLOCKING_STATES.has(st)) {
+    if (st !== null) {
       blockers.push(`${describePr(wp)} - PR ${st}`);
     }
   }
@@ -613,6 +612,18 @@ export async function run(args, deps = {}) {
     const ci = ghImpl(gitRoot, { repo: GITHUB_REPO, branch, sha, env: deps.env });
     if (!ci.ok) {
       ciProblem = ci.reason;
+    }
+  }
+  if (ciProblem && args.flakyWaiverVerify) {
+    const waiver = deps.verifyFlakyWaiver || (() => {
+      try {
+        execFileSync("node", [path.join(gitRoot, "scripts/myrmidon/release/release-flaky-waiver.mjs"), "verify", "--tag", tag], { encoding: "utf8", env: deps.env ? { ...process.env, ...deps.env } : process.env });
+        return true;
+      } catch { return false; }
+    });
+    if (waiver({ tag, sha, root: gitRoot })) {
+      log(`cut-rc: verified flaky waiver accepted for ${tag}`);
+      ciProblem = null;
     }
   }
 

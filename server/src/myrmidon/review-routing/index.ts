@@ -6,7 +6,7 @@ import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { isInstanceUnderMaintenance } from "../maintenance/gate.js";
 import { createGitHubPrHeadResolver } from "./github.js";
-import { createGitHubBoardMergeClient } from "./github-board-merge.js";
+import { createGitHubBoardMergeClient, createWebhookQueuedChecksReader } from "./github-board-merge.js";
 import { setBoardMergeTrigger } from "./merge-trigger.js";
 import { readReviewRoutingSettings } from "./settings.js";
 import { createReviewRoutingSweep } from "./sweep.js";
@@ -37,11 +37,27 @@ export function createReviewRoutingScheduler(input: {
   track: (work: Promise<unknown>) => void;
 }): () => void {
   const settings = instanceSettingsService(input.db);
+  // myrmidon(OPE-13149): one CI reader for the life of the scheduler, so its cache
+  // is shared across passes (the GitHub App rate limit is shared by the board).
+  let reviewCiResolver: ((ref: { companyId: string; issueId: string }) => Promise<{ state: string; headSha?: string | null }>) | null = null;
   const sweep = createReviewRoutingSweep({
     store: createPgReviewRoutingStore(input.db),
     prResolver: createGitHubPrHeadResolver({ db: input.db }),
     // myrmidon(OPE-11767): the board-side merge of an approved, green pull request.
     boardMerge: createGitHubBoardMergeClient({ db: input.db }),
+    headChecksQueued: createWebhookQueuedChecksReader(input.db),
+    // myrmidon(OPE-13149): the liveness wake looks at the CI of the head under review
+    // with the board's own reader (the one REQUEST CHANGES is checked against).
+    // OPE-15004: the sweep is a non-admission reader — no `admission` flag — so
+    // the cached reader built here actually shares its reads across passes
+    // instead of re-reading GitHub on every pass.
+    resolveReviewCi: async (ref) => {
+      if (!reviewCiResolver) {
+        const { createReviewPullRequestCiResolver } = await import("../review-stage-recovery/github-ci.js");
+        reviewCiResolver = createReviewPullRequestCiResolver({ db: input.db });
+      }
+      return reviewCiResolver(ref);
+    },
     readSettings: () => readReviewRoutingSettings(settings),
     isUnderMaintenance: () => isInstanceUnderMaintenance(input.db),
     addComment: async (issueId, body, options) => {

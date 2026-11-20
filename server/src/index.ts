@@ -19,6 +19,10 @@ import { createPullRequestMergeDetailsResolver } from "./services/github-pull-re
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server as HttpServer } from "node:http";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
+import express from "express";
+import { acceptanceServiceRoutes } from "./routes/acceptance-service.js";
+import { errorHandler } from "./middleware/index.js";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -88,6 +92,7 @@ import {
   issueService,
   instanceSettingsService,
   logActivity, // myrmidon(1.6.6 OPE-12000)
+  reconcileIssueParentCyclesOnStartup,
   reconcileBuiltInAgentsOnStartup,
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
@@ -156,7 +161,7 @@ import { startBotContainers, stopBotContainers } from "./myrmidon/bot-containers
 import { getBotContainerRuntime } from "./myrmidon/bot-containers/routes-wiring.js";
 import { registerSiteLostRunFinalizer } from "./myrmidon/bot-containers/site-health-startup.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { initializeIdleStopService, shutdownIdleStopService } from "./myrmidon/idle-stop-startup.js";
-import { startLitellmCostSweep, stopLitellmCostSweep } from "./myrmidon/litellm-costs/startup.js"; // myrmidon(M2-A)
+import { startLitellmCostSweep, startLitellmKeyBudgetReport, stopLitellmCostSweep } from "./myrmidon/litellm-costs/startup.js"; // myrmidon(M2-A)
 import {
   startBoardProcessRegistry,
   stopBoardProcessRegistry,
@@ -174,7 +179,7 @@ import {
   type LeaderLeaseManager,
 } from "./myrmidon/leader-lease/index.js"; // myrmidon(PROCS-1.7): leader lease (design OPE-5394 §5)
 import { startLitellmBudgetSync } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
-import { startLitellmModelReconciliation } from "./myrmidon/litellm-sync/startup-reconciler.js"; // myrmidon(1.6.1 MODEL-PROVIDERS B)
+import { startLitellmModelReconciliation, startAgentAllowlistWatchdog, reconcileAgentAllowlistDrift } from "./myrmidon/litellm-sync/startup-reconciler.js";
 import { startModelFallbackSignalSweep } from "./myrmidon/litellm-fallback-signal/sweep.js"; // myrmidon(BOT-RUNTIME-TUNING D)
 import { startFeatureHealthSweep, stopFeatureHealthSweep } from "./myrmidon/features/sweep.js"; // myrmidon(FEATURES)
 import { startBaselineSnapshots, stopBaselineSnapshots } from "./myrmidon/baseline/startup.js"; // myrmidon(1.6-BASELINE)
@@ -209,6 +214,8 @@ import { createDataRetentionScheduler } from "./myrmidon/data-retention/index.js
 import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
 // myrmidon(HERMES-RUN-REATTACH): reattach live gateway runs after a board restart
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
+// myrmidon(1.8 AGENT-LIVENESS A1, OPE-13021): periodic process probe of every probeable agent
+import { AGENT_LIVENESS_PROBE_SWEEP_INTERVAL_MS } from "./myrmidon/agent-liveness/probe-sweep.js";
 import { GATEWAY_REMOTE_CLOSE_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-close.js";
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
 import { createTaskPrSyncScheduler, reconcileClosedIssuePullRequests, backfillPullRequestWorkProducts } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
@@ -241,6 +248,7 @@ import {
   createPendingInteractionWakeSweep,
   readPendingInteractionWakeContextSnapshot,
 } from "./myrmidon/pending-interaction-wake-sweep.js"; // myrmidon(P12)
+import { createStaleInteractionRewakeSweep } from "./myrmidon/stale-interaction-rewake-sweep.js"; // myrmidon(INTERACTION-WAKES-DAILY-LIMIT)
 import { createInteractionEscalationSweep } from "./myrmidon/interaction-escalation/index.js"; // myrmidon(P1.8)
 // myrmidon(P11): database backup catch-up
 import { BACKUP_CATCHUP_WINDOW_ENV, readBackupCatchUpSettings, startBackupCatchUp } from "./myrmidon/backup-catch-up.js";
@@ -1338,7 +1346,31 @@ async function startServerWithDatabaseTeardown(
   writeProductEnv(process.env, "API_URL", configuredApiUrl); // myrmidon(REBRAND-C)
 
   let startupListenerBound = false;
+  let acceptanceListener: HttpsServer | null = null;
   try {
+  // A separate listener never trusts proxy-supplied certificate identities.
+  const acceptancePort = readProductEnv("ACCEPTANCE_SERVICE_PORT");
+  const acceptanceKey = readProductEnv("ACCEPTANCE_SERVICE_TLS_KEY_FILE");
+  const acceptanceCert = readProductEnv("ACCEPTANCE_SERVICE_TLS_CERT_FILE");
+  const acceptanceCa = readProductEnv("ACCEPTANCE_SERVICE_TLS_CA_FILE");
+  if (processRoleProfile.role !== "api" && [acceptancePort, acceptanceKey, acceptanceCert, acceptanceCa].some(Boolean)) {
+    const port = Number(acceptancePort);
+    if (!acceptancePort || !acceptanceKey || !acceptanceCert || !acceptanceCa || !Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error("Incomplete or invalid acceptance service TLS configuration");
+    }
+    const serviceApp = express();
+    serviceApp.use("/api", acceptanceServiceRoutes(db));
+    serviceApp.use(errorHandler);
+    acceptanceListener = createHttpsServer({ key: readFileSync(acceptanceKey), cert: readFileSync(acceptanceCert), ca: readFileSync(acceptanceCa), requestCert: true, rejectUnauthorized: true }, serviceApp);
+    const listener = acceptanceListener;
+    await new Promise<void>((resolveListen, rejectListen) => {
+      listener.once("error", rejectListen);
+      listener.listen(port, readProductEnv("ACCEPTANCE_SERVICE_HOST") || "127.0.0.1", () => {
+        listener.off("error", rejectListen);
+        resolveListen();
+      });
+    });
+  }
   // myrmidon(OPE-11755): runnerd is local; bind its URL to the actual listening socket.
   // myrmidon(OPE-12274): `executesRuns` roles own runnerd registrations (worker in
   // single mode serves the public port itself), so the PRP upgrade handler must
@@ -1515,6 +1547,15 @@ async function startServerWithDatabaseTeardown(
     return listener;
   }
   const workerLoopbackServer = await openWorkerLoopbackListener();
+
+  try {
+    const result = await reconcileIssueParentCyclesOnStartup(db as any);
+    if (result.repaired > 0) {
+      logger.warn(result, "repaired cyclic issue parent relationships during startup");
+    }
+  } catch (err) {
+    logger.error({ err }, "startup reconciliation of cyclic issue parent relationships failed");
+  }
 
   try {
     const result = await workspaceOperationService(db as any)
@@ -1694,6 +1735,7 @@ async function startServerWithDatabaseTeardown(
   // instead of doubling up on candidates the startup sweep just scanned.
   let lastGatewayReattachSweepAtMs = 0;
   let lastGatewayRemoteCloseSweepAtMs = 0; // myrmidon(HERMES-GATEWAY-CLOSE, OPE-11889)
+  let lastAgentLivenessProbeSweepAtMs = 0; // myrmidon(AGENT-LIVENESS, OPE-13021)
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     let tracked: Promise<void>;
@@ -1920,8 +1962,33 @@ async function startServerWithDatabaseTeardown(
       });
     },
   });
+  // myrmidon(INTERACTION-WAKES-DAILY-LIMIT): a card still pending for its addressee
+  // after 30 minutes, with no live run and no recent wake, wakes the addressee
+  // again (at most once per card per 30 minutes).
+  const staleInteractionRewakeSweep = createStaleInteractionRewakeSweep({
+    db: db as any,
+    rewake: async (wake) => {
+      await backgroundHeartbeat.wakeup(wake.agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "interaction_pending",
+        payload: wake.payload,
+        contextSnapshot: wake.contextSnapshot,
+        idempotencyKey: wake.idempotencyKey,
+        requestedByActorType: "system",
+        requestedByActorId: "stale-interaction-rewake",
+      });
+    },
+  });
   const schedulePendingInteractionWakeSweep = () => {
     if (heartbeatSchedulerStopped) return;
+    trackHeartbeatSchedulerWork(staleInteractionRewakeSweep().then((result) => {
+      if (result.rewoken > 0) {
+        logger.info(result, "stale interaction re-wake sweep woke addressees of unanswered cards");
+      }
+    }).catch((err) => {
+      logger.error({ err }, "stale interaction re-wake sweep failed");
+    }));
     trackHeartbeatSchedulerWork(pendingInteractionWakeSweep().then((result) => {
       if (result.reAdmitted > 0 || result.cancelled > 0) {
         logger.info(result, "pending interaction wake sweep settled parked addressee wakes");
@@ -2567,9 +2634,16 @@ async function startServerWithDatabaseTeardown(
       await initializeIdleStopService(botContainerRuntime.driver, db as any);
     }
     runContextColumnsBackfill = startRunContextColumnsBackfill(db as any, logger); // OPE-5007 П2: batched, per-batch-commit fill of the thin run-context columns (the migration only adds them)
-    startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set
+    // myrmidon(1.6.9 KEY-BUDGETS-OOM): the spend sweep runs in the one process that owns background
+    // work, never in every api child. The attention feed is forwarded to that process
+    // (singleton-proxy/allowlist.ts), but GET /metrics is served by every api process from its own
+    // memory (monitoring/metrics/routes.ts), so an api process keeps only the key budget report:
+    // the bounded read, every 15 min, first pass delayed by a random time.
+    if (processRoleProfile.runsBackground) startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set
+    else startLitellmKeyBudgetReport(db as any);
     startLitellmBudgetSync(db as any); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection; a no-op unless the gateway contour is set and the document enables it
     startLitellmModelReconciliation(db as any); // myrmidon(1.6.1 MODEL-PROVIDERS B): reconcile LiteLLM models with DB state
+    if (processRoleProfile.runsBackground) startAgentAllowlistWatchdog(() => reconcileAgentAllowlistDrift(db as any));
     startModelFallbackSignalSweep(db as any); // myrmidon(BOT-RUNTIME-TUNING D): model fallback attention signals; a no-op unless MYRMIDON_MODEL_FALLBACK_ENABLED=1
     startFeatureHealthSweep(db as any); // myrmidon(FEATURES): feature health pass that feeds the attention signal
     startBaselineSnapshots(db as any); // myrmidon(1.6-BASELINE): freeze the 14-day metric window; a no-op unless MYRMIDON_BASELINE_INTERVAL_SEC is set
@@ -3068,6 +3142,14 @@ async function startServerWithDatabaseTeardown(
                 );
               }
             })
+            // myrmidon(OPE-13202): the safety wake of an in_progress task whose
+            // executor has had no run and no wake for runPriority.inProgressIdleWakeMinutes.
+            .then(async () => {
+              const woken = await heartbeat.sweepInProgressIdleWake(new Date());
+              if (woken.woken > 0) {
+                logger.warn({ ...woken }, "periodic in-progress idle wake woke idle executors");
+              }
+            })
             // myrmidon(T1.6, design BOARD-PROCESSES §4.3): the periodic
             // orphan-reattach pass. When an executor process dies, its gateway
             // runs keep a frozen controller lease until expiry; once expired,
@@ -3106,6 +3188,20 @@ async function startServerWithDatabaseTeardown(
               const closed = await heartbeat.sweepTerminalGatewayRunCloses();
               if (closed.attempted > 0 || closed.failed > 0) {
                 logger.info({ ...closed }, "periodic terminal gateway run close pass complete");
+              }
+            })
+            // myrmidon(1.8 AGENT-LIVENESS A1, OPE-13021): the periodic process
+            // probe of every probeable agent (hermes_gateway / http): stamp
+            // lastProbeAt/lastProbeOutcome so the agents list can show an
+            // honest derived status instead of "spawned once, assumed alive".
+            .then(async () => {
+              if (Date.now() - lastAgentLivenessProbeSweepAtMs < AGENT_LIVENESS_PROBE_SWEEP_INTERVAL_MS) {
+                return;
+              }
+              lastAgentLivenessProbeSweepAtMs = Date.now();
+              const swept = await heartbeat.sweepAgentLivenessProbes();
+              if (swept.probed > 0) {
+                logger.info({ ...swept }, "periodic agent liveness probe pass complete");
               }
             })
             .catch((err) => {
@@ -3295,6 +3391,7 @@ async function startServerWithDatabaseTeardown(
     // myrmidon(PROCS-1.1): the worker's internal listener is a second server,
     // so it needs its own close.
     workerLoopbackServer?.close();
+    if (acceptanceListener) await closeHttpListenerForShutdown({ server: acceptanceListener, signal, log: logger });
     stopBotContainers(); // myrmidon(W2a)
     shutdownIdleStopService(); // myrmidon(IDLE-STOP)
     stopLitellmCostSweep(); // myrmidon(M2-A)
@@ -3454,6 +3551,7 @@ async function startServerWithDatabaseTeardown(
     shutdown: (signal = "SIGTERM") => shutdown(signal, false),
   };
   } catch (error) {
+    if (acceptanceListener?.listening) await new Promise<void>((resolveClose) => acceptanceListener?.close(() => resolveClose()));
     if (startupListenerBound) {
       await new Promise<void>((resolveClose) => {
         try {

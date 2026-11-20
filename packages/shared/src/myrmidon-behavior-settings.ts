@@ -208,6 +208,17 @@ export function validateString(value: unknown, allowed?: readonly string[]): str
 
 // Development & Runtime Base Settings
 behaviorSettingRegistry.register({
+  key: "monitorUnchangedWakeLimit",
+  envName: "",
+  default: 3,
+  scope: "instance",
+  section: "system",
+  valueType: "number",
+  validate: (value) => typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 100 ? value : null,
+  description: "Unchanged monitor deadlines before removal; 0 disables the idle guard.",
+});
+
+behaviorSettingRegistry.register({
   key: "bot_egress_mode",
   envName: "MYRMIDON_BOT_EGRESS_MODE",
   default: "off",
@@ -834,7 +845,7 @@ export function parseSettingFromEnv<T>(raw: string | undefined, def: BehaviorSet
  * does not declare it.
  */
 export function readSettingFromEnv<T>(env: Record<string, string | undefined>, def: BehaviorSettingDef<T>): T | null {
-  return parseSettingFromEnv(env[def.envName], def);
+  return def.envName ? parseSettingFromEnv(env[def.envName], def) : null;
 }
 
 /**

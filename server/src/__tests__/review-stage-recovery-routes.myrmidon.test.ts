@@ -29,7 +29,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
-import type { ReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
+import { createReviewPullRequestCiResolver, type ReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -56,6 +56,7 @@ vi.mock("../services/heartbeat.js", async (importOriginal) => {
 });
 
 const PR_URL = "https://github.com/acme/app/pull/1830";
+const HEAD_SHA = "a".repeat(40);
 const RESPONSIBLE_USER_ID = "responsible-user";
 
 describeEmbeddedPostgres("review stage recovery (route level)", () => {
@@ -84,7 +85,20 @@ describeEmbeddedPostgres("review stage recovery (route level)", () => {
     await tempDb?.cleanup();
   });
 
-  function createApp(actor: Express.Request["actor"], resolveCi: ReviewPullRequestCiResolver = async () => ({ state: "complete", pullRequestUrl: PR_URL, headSha: "test-head" })) {
+  function createApp(actor: Express.Request["actor"], resolveCi: ReviewPullRequestCiResolver = createReviewPullRequestCiResolver({
+    db,
+    admission: true,
+    tokenProvider: async () => null,
+    fetch: async (url) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/pulls/1830")) return Response.json({ state: "open", head: { sha: HEAD_SHA } });
+      if (path.endsWith("/contents/.github/workflows")) return Response.json([{ name: "ci.yml" }]);
+      if (path.endsWith(`/commits/${HEAD_SHA}/check-runs`)) {
+        return Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "success", head_sha: HEAD_SHA }] });
+      }
+      return new Response(null, { status: 404 });
+    },
+  })) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -195,7 +209,7 @@ describeEmbeddedPostgres("review stage recovery (route level)", () => {
         url: PR_URL,
         status: input.pullRequestStatus,
         isPrimary: true,
-        metadata: { repo: "acme/app", number: 1830, state: input.pullRequestStatus },
+        metadata: { repo: "acme/app", number: 1830, state: input.pullRequestStatus, headSha: HEAD_SHA },
       });
     }
     return { companyId, engineerAgentId, reviewerAgentId, otherReviewerAgentId, runId, issueId, stageId };
@@ -245,22 +259,19 @@ describeEmbeddedPostgres("review stage recovery (route level)", () => {
     }
   });
 
-  it("allows REQUEST CHANGES when current-head CI is running or unavailable if the comment references code (path:line)", async () => {
+  it("rejects REQUEST CHANGES when CI is incomplete even if the comment references code", async () => {
     for (const state of ["pending", "unknown"] as const) {
       const s = await seed({ status: "in_review", pullRequestStatus: "open" });
       const res = await request(createApp(reviewerActor(s), async () => ({ state, pullRequestUrl: PR_URL, headSha: "test-head" })))
         .patch(`/api/issues/${s.issueId}`)
         .send({ status: "in_progress", comment: "REQUEST CHANGES: repack.js:318 without cleanup after failure." });
 
-      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.error).toContain("REQUEST CHANGES rejected");
       const issue = await readIssue(s.issueId);
-      expect(issue.status).toBe("in_progress");
-      expect(issue.assigneeAgentId).toBe(s.engineerAgentId);
-      expect(issue.executionState).toMatchObject({
-        status: "changes_requested",
-        lastDecisionOutcome: "changes_requested",
-        returnAssignee: { type: "agent", agentId: s.engineerAgentId },
-      });
+      expect(issue.status).toBe("in_review");
+      expect(issue.executionState).toMatchObject({ status: "pending", lastDecisionOutcome: null });
+      expect(await db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, s.issueId))).toHaveLength(0);
     }
   });
 

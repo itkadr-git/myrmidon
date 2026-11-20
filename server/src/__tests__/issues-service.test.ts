@@ -3152,6 +3152,12 @@ describeEmbeddedPostgres("issueService.findOpenAncestorCreatedByAgent", () => {
     expect(found?.id).toBe(midId);
     expect(await svc.findOpenAncestorCreatedByAgent(midId, randomUUID())).toBeNull();
   });
+
+  it("rejects self and descendant parent assignments", async () => {
+    const { companyId, rootId, midId } = await seedChain();
+    await expect(svc.update(rootId, { companyGuard: companyId, parentId: rootId })).rejects.toMatchObject({ status: 422 });
+    await expect(svc.update(rootId, { companyGuard: companyId, parentId: midId })).rejects.toMatchObject({ status: 422 });
+  });
 });
 
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {

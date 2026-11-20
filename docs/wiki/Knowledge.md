@@ -28,6 +28,22 @@ What the merged 1.6.6 code actually does:
 - Both surfaces pass the same gates, in the same order, over the same module
   (`createKnowledgeModule`), so rights do not depend on the entry point.
 
+## Publishing a translation (proposed, not deployed)
+
+PR #4621 proposes this contract; it is not deployed yet. After deployment, for
+an existing item, `POST /api/myrmidon/companies/{companyId}/knowledge/items/{slug}/draft`
+with `{"content":"Translated text","lang":"ru","translationOf":"<canonical-revision-uuid>"}`.
+`lang` is `en` or `ru`; the UUID must identify a canonical revision of the same
+item, not a translation. Save `revision.id` from the response or list revisions
+with `GET .../items/{slug}/revisions`. Once the canonical revision is approved,
+`POST .../items/{slug}/publish` with `{"revisionId":"<translation-revision-uuid>"}`.
+Normal access, publication and approval gates apply.
+
+Read `GET .../items/{slug}?lang=ru` or `?lang=en`; a missing approved
+translation falls back to canonical content. Publication preserves the canonical
+revision but moves the delivery pointer to the translation. MCP `knowledge_write_draft` accepts the same
+language fields for an existing `idOrSlug`.
+
 ## Gates (the same five on both surfaces)
 
 1. **Company access.** `assertCompanyAccess` — a caller outside the company
@@ -110,6 +126,21 @@ Pending knowledge proposals from `/api/myrmidon/companies/:companyId/knowledge/s
 - **Item type**: proposals are represented as `kind: "knowledge"` with stable unique keys (`knowledge:<suggestionId>`).
 - **Type filter**: the inbox filter popover includes a **Knowledge** category filter, allowing operators to filter the inbox exclusively to knowledge suggestions or combine it with other categories. The category selection is persisted in local storage preferences.
 - **Review routing**: activating a knowledge inbox item (via click or keyboard navigation) routes directly to `/knowledge/review` where the proposal's title, rationale, source references, and proposed content can be inspected, accepted, or declined.
+
+On the review screen, the accessible names of Accept, Reject, and Edit include
+the stable suggestion ID after the localized action label, so screen readers can
+distinguish actions for different suggestions. The visible EN/RU labels do not change.
+
+## Company knowledge settings
+
+If the initial settings load fails, use Retry on the screen without reloading
+the page. Retry is unavailable while the request is pending, becomes available
+again after another failure, and a successful response restores the form.
+
+During a background refresh for the same company, unsaved edits remain in the
+form while untouched fields receive the latest values. Saving sends fields that
+still differ from the latest values. Switching companies resets the form for the
+new company instead of carrying over the previous company's draft.
 
 ## Where the code lives
 

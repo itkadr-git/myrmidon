@@ -1,3 +1,5 @@
+import type { Db } from "@myrmidon/db";
+import { secretService } from "../services/secrets.js";
 import type { AdapterModel } from "./types.js";
 
 export const GATEWAY_MODELS_CACHE_TTL_MS = 15_000;
@@ -7,7 +9,31 @@ interface CacheEntry {
   cachedAt: number;
 }
 
-let cache: CacheEntry | null = null;
+const cache = new Map<string, CacheEntry>();
+
+export interface GatewayModelsOptions {
+  forceRefresh?: boolean;
+  env?: NodeJS.ProcessEnv;
+  companyId?: string;
+  db?: Db;
+}
+
+async function resolveCatalogApiKey(env: NodeJS.ProcessEnv, options: GatewayModelsOptions): Promise<string | null> {
+  const direct = resolveGatewayApiKey(env);
+  if (direct) return direct;
+  const names = [env.MYRMIDON_LITELLM_KEY_SECRET, env.MYRMIDON_LITELLM_ADMIN_KEY_SECRET]
+    .map((name) => name?.trim()).filter((name): name is string => Boolean(name));
+  if (names.length === 0) return null;
+  if (!options.db || !options.companyId) throw new Error("Gateway catalog secrets require company context");
+  const secrets = secretService(options.db);
+  for (const name of names) {
+    const row = await secrets.getByName(options.companyId, name);
+    if (!row) continue;
+    const value = (await secrets.resolveSecretValue(options.companyId, row.id, "latest")).trim();
+    if (value) return value;
+  }
+  throw new Error("Gateway catalog key secret has no value");
+}
 
 export function resolveGatewayBaseUrl(env: NodeJS.ProcessEnv = process.env): string | null {
   const raw =
@@ -103,19 +129,16 @@ export async function fetchGatewayModels(
 }
 
 export async function listGatewayModels(
-  options: { forceRefresh?: boolean; env?: NodeJS.ProcessEnv } = {},
+  options: GatewayModelsOptions = {},
 ): Promise<AdapterModel[]> {
   const now = Date.now();
-  if (
-    !options.forceRefresh &&
-    cache &&
-    now - cache.cachedAt < GATEWAY_MODELS_CACHE_TTL_MS
-  ) {
-    return cache.models;
-  }
-
   const env = options.env ?? process.env;
   const baseUrl = resolveGatewayBaseUrl(env);
+  const cacheKey = JSON.stringify([options.companyId ?? null, baseUrl]);
+  const cached = cache.get(cacheKey);
+  if (!options.forceRefresh && cached && now - cached.cachedAt < GATEWAY_MODELS_CACHE_TTL_MS) {
+    return cached.models;
+  }
   if (!baseUrl) {
     // A missing gateway URL means the live catalog could not be consulted at
     // all — a discovery failure, not an authoritative empty catalog. Throw so
@@ -126,10 +149,10 @@ export async function listGatewayModels(
     );
   }
 
-  const apiKey = resolveGatewayApiKey(env);
+  const apiKey = await resolveCatalogApiKey(env, options);
   try {
     const models = await fetchGatewayModels(baseUrl, apiKey);
-    cache = { models, cachedAt: now };
+    cache.set(cacheKey, { models, cachedAt: now });
     return models;
   } catch (error) {
     // A failed request is distinct from a successful empty catalog. Throw so
@@ -146,5 +169,5 @@ export async function refreshGatewayModels(): Promise<AdapterModel[]> {
 }
 
 export function resetGatewayModelsCacheForTests(): void {
-  cache = null;
+  cache.clear();
 }

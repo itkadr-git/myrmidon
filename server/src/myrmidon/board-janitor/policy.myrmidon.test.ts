@@ -5,6 +5,8 @@ import { notifySwarmIssueEvent, setSwarmEventSink } from "../swarm-claim/events.
 import {
   extractReleasePrefix,
   generateJanitorReportMarkdown,
+  buildJanitorActivityEntry,
+  janitorStatusChange,
   judgeMergedPrClosure,
   judgeOverdueDeadline,
   judgeStaleBlock,
@@ -334,6 +336,49 @@ describe("Rule 3: Unassigned release tasks", () => {
     expect(judgeUnassignedReleaseTask(assigned)).toBeNull();
   });
 
+  it.each(["backlog", "blocked", "in_review", "in_progress"])(
+    "does NOT queue an unassigned release task in %s",
+    (status) => {
+      const task: IssueCandidate = {
+        id: `task-3-${status}`,
+        identifier: "OPE-300s",
+        title: "Deliberately parked release task",
+        labels: [{ name: "1.6.9" }],
+        status,
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        createdAt: BASE_NOW,
+        updatedAt: BASE_NOW,
+      };
+      expect(judgeUnassignedReleaseTask(task)).toBeNull();
+    },
+  );
+
+  it("queues a todo release task without any status change", () => {
+    const task: IssueCandidate = {
+      id: "task-3-todo",
+      identifier: "OPE-300u",
+      title: "Release task in todo",
+      labels: [{ name: "1.6.9" }],
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdAt: BASE_NOW,
+      updatedAt: BASE_NOW,
+    };
+    const judgment = judgeUnassignedReleaseTask(task);
+    expect(judgment?.shouldQueue).toBe(true);
+    const action = {
+      type: "queue_unassigned_release" as const,
+      issueId: task.id,
+      identifier: task.identifier,
+      releasePrefix: judgment!.releasePrefix,
+      comment: judgment!.comment,
+    };
+    expect(janitorStatusChange(action)).toBeNull();
+    expect(buildJanitorActivityEntry("co-1", action)).toBeNull();
+  });
+
   it("delivers issue to swarm matcher when queued by janitor", async () => {
     const forIssue = vi.fn(async () => null);
     setSwarmEventSink({ forIssue, forAgent: vi.fn(async () => null) });
@@ -346,6 +391,55 @@ describe("Rule 3: Unassigned release tasks", () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(forIssue).toHaveBeenCalledWith("task-3");
     setSwarmEventSink(null);
+  });
+});
+
+describe("Janitor status changes are logged in activity_log", () => {
+  it("builds an issue.updated entry with source board_janitor and from/to", () => {
+    const entry = buildJanitorActivityEntry("co-1", {
+      type: "unblock_stale",
+      issueId: "t-9",
+      identifier: "OPE-900",
+      fromStatus: "blocked",
+      comment: "x",
+    });
+    expect(entry).toEqual({
+      companyId: "co-1",
+      actorType: "system",
+      actorId: "board_janitor",
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: "t-9",
+      details: {
+        source: "board_janitor",
+        identifier: "OPE-900",
+        changes: { status: { from: "blocked", to: "todo" } },
+        rule: "unblock_stale",
+      },
+    });
+  });
+
+  it("covers close_merged_pr and move_stale_to_backlog", () => {
+    expect(
+      janitorStatusChange({
+        type: "close_merged_pr",
+        issueId: "a",
+        identifier: "OPE-1",
+        fromStatus: "in_review",
+        prNumber: 1,
+        comment: "c",
+      }),
+    ).toEqual({ from: "in_review", to: "done", rule: "close_merged_pr" });
+    expect(
+      janitorStatusChange({
+        type: "move_stale_to_backlog",
+        issueId: "a",
+        identifier: "OPE-1",
+        fromStatus: "todo",
+        staleDays: 30,
+        comment: "c",
+      }),
+    ).toEqual({ from: "todo", to: "backlog", rule: "move_stale_to_backlog" });
   });
 });
 
@@ -442,6 +536,7 @@ describe("Rule 6: Report generation", () => {
           type: "close_merged_pr",
           issueId: "t-1",
           identifier: "OPE-100",
+          fromStatus: "in_progress",
           prNumber: 1890,
           comment: "закрыто по влитому PR #1890",
         },

@@ -11,7 +11,7 @@ import { heartbeatService, instanceSettingsService, logActivity } from "../../se
 import { scheduleQueuedResweep } from "../run-admission.js";
 import { runPriorityRoutes } from "./routes.js";
 import { runPriorityService, type RunPriorityServiceDeps } from "./service.js";
-import { applyRunPrioritySettings } from "./state.js";
+import { advanceFocusDeferredRuns, applyStoredRunPriority, startRunPriorityRefresh } from "./sync.js";
 
 export {
   applyRunPrioritySettings,
@@ -37,13 +37,19 @@ export {
   type PriorityScoredRun,
 } from "./scoring.js";
 
-function defaultDeps(db: Db): RunPriorityServiceDeps {
+export interface RunPriorityBus {
+  publish(channel: "settings_changed", payload: unknown): Promise<void>;
+}
+
+function defaultDeps(db: Db, bus: RunPriorityBus | null = null): RunPriorityServiceDeps {
   const heartbeat = heartbeatService(db);
   return {
     settings: instanceSettingsService(db),
     listCompanyIds: () => instanceSettingsService(db).listCompanyIds(),
     logActivity: (entry) => logActivity(db, entry),
-    apply: applyRunPrioritySettings,
+    applyStored: () => applyStoredRunPriority(db),
+    advanceDeferredRuns: () => advanceFocusDeferredRuns(db),
+    publishChanged: bus ? () => bus.publish("settings_changed", { changedKeys: ["runPriority"] }) : undefined,
     scheduleResweep: () =>
       scheduleQueuedResweep(() =>
         heartbeat.resumeQueuedRuns().catch((err) => {
@@ -54,8 +60,8 @@ function defaultDeps(db: Db): RunPriorityServiceDeps {
 }
 
 /** Router for app.ts: GET/PATCH /api/myrmidon/run-priority. */
-export function myrmidonRunPriorityRoutes(db: Db) {
-  return runPriorityRoutes(db, runPriorityService(db, defaultDeps(db)));
+export function myrmidonRunPriorityRoutes(db: Db, bus: RunPriorityBus | null = null) {
+  return runPriorityRoutes(db, runPriorityService(db, defaultDeps(db, bus)));
 }
 
 /**
@@ -67,7 +73,8 @@ export async function startRunPriority(db: Db): Promise<void> {
   try {
     const view = await runPriorityService(db, defaultDeps(db)).read();
     assertRunPriorityQueueInvariant(view.settings);
-    applyRunPrioritySettings(view.settings);
+    await applyStoredRunPriority(db);
+    startRunPriorityRefresh(db);
     logger.info(
       { settings: view.settings, source: view.source },
       "run queue priority settings at startup",

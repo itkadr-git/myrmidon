@@ -18,6 +18,8 @@ const apiPrefixes: Record<string, string> = {
   "admin-assistant.ts": "/api",
   "guardrails.ts": "/api",
   "access.ts": "/api",
+  "acceptance-service.ts": "/api",
+  "acceptance-service-credentials.ts": "/api",
   "activity.ts": "/api",
   "adapters.ts": "/api",
   "agents.ts": "/api",
@@ -59,6 +61,7 @@ const apiPrefixes: Record<string, string> = {
   "instance-database-backups.ts": "/api",
   "instance-settings.ts": "/api",
   "issues.ts": "/api",
+  "issue-acceptance-snapshot.ts": "/api",
   "issue-tree-control.ts": "/api",
   "llms.ts": "/api",
   "managed-agent-profiles.ts": "/api",
@@ -321,6 +324,26 @@ describe("openapi routes", () => {
       required: ["companyId"], additionalProperties: false,
     });
     expect(dismiss.description).toContain("viewers may dismiss their own");
+  });
+
+  it("documents the participant repair request body", () => {
+    const { spec } = loadSpecRoutes();
+    const repair = spec.paths["/api/issues/{id}/execution-participants"].patch;
+    const schema = repair.requestBody.content["application/json"].schema;
+    expect(schema.oneOf).toHaveLength(3);
+    expect(schema.oneOf.map((branch: { required: string[] }) => branch.required)).toEqual([
+      ["returnAssignee"], ["currentParticipant"], ["returnAssignee", "currentParticipant"],
+    ]);
+    for (const branch of schema.oneOf) {
+      expect(branch.additionalProperties).toBe(false);
+      for (const key of branch.required) {
+        expect(branch.properties[key]).toMatchObject({
+          nullable: true, additionalProperties: false,
+          properties: { type: { enum: ["agent"] }, agentId: { type: "string", format: "uuid" } },
+          required: expect.arrayContaining(["type", "agentId"]),
+        });
+      }
+    }
   });
 
   it("documents stalled-review decisions as board-only", () => {

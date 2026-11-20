@@ -36,6 +36,7 @@ import {
   summarizeAcpxTurnUsage,
   type AcpxEngineExecutorOptions,
 } from "./execute.js";
+import { TerminalCallbackRegistry } from "./terminal-callback-mapping.js";
 import { ACPX_HANDSHAKE_TIMEOUT_MS } from "./constants.js";
 import { runChildProcess } from "../server-utils.js";
 import { setExpensiveWorkspaceGitExecutor } from "../git-workspace-sync.js";
@@ -171,7 +172,9 @@ async function runExecutor(
     executionTarget?: Record<string, unknown>;
     runtimeMcp?: AdapterRuntimeMcpAccess;
     prepareRemoteManagedHome?: AcpxEngineExecutorOptions["prepareRemoteManagedHome"];
+    terminalCallbackRegistry?: AcpxEngineExecutorOptions["terminalCallbackRegistry"];
     startupTraceContext?: AdapterExecutionContext["startupTraceContext"];
+    expectedExitCode?: number;
   } = {},
 ) {
   const runtimeOptions: Record<string, unknown>[] = [];
@@ -184,6 +187,9 @@ async function runExecutor(
   const execute = createAcpxEngineExecutor({
     ...(options.prepareRemoteManagedHome
       ? { prepareRemoteManagedHome: options.prepareRemoteManagedHome }
+      : {}),
+    ...(options.terminalCallbackRegistry
+      ? { terminalCallbackRegistry: options.terminalCallbackRegistry }
       : {}),
     createRuntime: (options) => {
       runtimeOptions.push(options as unknown as Record<string, unknown>);
@@ -215,12 +221,13 @@ async function runExecutor(
     onMeta: async (payload: unknown) => {
       meta.push(payload as Record<string, unknown>);
     },
+    onExternalRunId: (options as Record<string, unknown>).onExternalRunId as ((id: string) => Promise<void>) | undefined,
     onEvent: async (event: { eventType: string; payload?: Record<string, unknown> }) => {
       events.push(event);
     },
   } as never);
 
-  expect(result.exitCode).toBe(0);
+  expect(result.exitCode).toBe(options.expectedExitCode ?? 0);
   return { logs, meta, events, runtimeOptions, configOptions, sessionInputs, turnInputs, result };
 }
 
@@ -4062,10 +4069,16 @@ describe("ACPX engine remote session-lifecycle re-staging (PR 3: stage once / re
         let call = 0;
         return () => {
           call += 1;
-          return recordingRuntime({
+          const runtime = recordingRuntime({
             ensureInputs,
             terminalStatus: call === 1 ? "failed" : "completed",
-          }) as never;
+          });
+          const ensureSession = runtime.ensureSession;
+          runtime.ensureSession = async (...args: Parameters<typeof ensureSession>) => ({
+            ...await ensureSession(...args),
+            backendSessionId: `backend-session-${call}`,
+          });
+          return runtime as never;
         };
       })(),
     });
@@ -7759,4 +7772,68 @@ describe("ACPX startup handshake guard and late-completion fence", () => {
       vi.useRealTimers();
     }
   }, 10000);
+
+  it("does not report success when the terminal callback lacks completion evidence", async () => {
+    const { result } = await runExecutor(
+      { agent: "claude" },
+      {
+        expectedExitCode: 1,
+        terminalCallbackRegistry: {
+          apply: () => ({
+            applied: true,
+            providerJobId: "job-without-evidence",
+            mapping: { kind: "non_terminal", holdReason: "completion_evidence_missing" },
+          }),
+        },
+      } as never,
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.resultJson).toMatchObject({
+      mappedTerminal: { kind: "non_terminal", holdReason: "completion_evidence_missing" },
+    });
+  });
+
+  it("persists external agent job id via onExternalRunId and includes mappedTerminal in resultJson", async () => {
+    let persistedJobId: string | null = null;
+    const { result } = await runExecutor(
+      { agent: "claude" },
+      {
+        onExternalRunId: async (id: string) => {
+          persistedJobId = id;
+        },
+      } as never,
+    );
+    expect(persistedJobId).toBeTruthy();
+    expect(result.resultJson).toHaveProperty("mappedTerminal");
+    expect((result.resultJson as Record<string, unknown>).mappedTerminal).toMatchObject({
+      kind: "terminal",
+      boardState: "done",
+      providerJobId: persistedJobId,
+    });
+  });
+
+  it("idempotently preserves the first mapped terminal callback across duplicate executions", async () => {
+    const registry = new TerminalCallbackRegistry();
+    const { result: firstResult } = await runExecutor(
+      { agent: "claude" },
+      {
+        terminalCallbackRegistry: registry,
+      } as never,
+    );
+    const firstMapped = (firstResult.resultJson as Record<string, unknown>).mappedTerminal;
+    expect(firstMapped).toMatchObject({
+      kind: "terminal",
+      boardState: "done",
+    });
+
+    const { result: secondResult } = await runExecutor(
+      { agent: "claude" },
+      {
+        terminalCallbackRegistry: registry,
+      } as never,
+    );
+    const secondMapped = (secondResult.resultJson as Record<string, unknown>).mappedTerminal;
+    expect(secondMapped).toEqual(firstMapped);
+  });
 });

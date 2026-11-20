@@ -1,18 +1,8 @@
 "use strict";
 // docker/bot-runtime/myr-ws/lib/recover.js
 //
-// myrmidon(MYR-WS-RECOVER): a task copy that a run left half-way — a merge,
-// rebase, cherry-pick, revert or `git am` in progress, unresolved index stages,
-// a detached head, a branch other than the one the registry (or the caller)
-// names — must not be handed to the next run as it is. `open` (reuse path) and
-// `repair` (botd, no run attached) share the code below.
-//
-// Nothing is thrown away. Before any step that changes the copy the whole state
-// (HEAD, the index including conflict stages as plain files, the working tree,
-// untracked files) is written as a commit to refs/myr-ws/recovery/<KEY> (a
-// numeric suffix when the ref is taken) in the base repository; only then the
-// operation is aborted. If the abort does not clean the copy, the worktree is
-// recreated on the same branch (the branch commits are untouched).
+// Preserve interrupted Git operations for the next task run. Branch recovery
+// snapshots local work before switching branches; bare copies can be repaired.
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -39,6 +29,17 @@ const IN_PROGRESS = [
 function gitDirOf(git, dir) {
   const r = git(dir, ["rev-parse", "--absolute-git-dir"], { allowFail: true });
   return r.status === 0 && r.stdout ? r.stdout : null;
+}
+
+/**
+ * True when a linked worktree inherited core.bare=true from its base. That happens
+ * when the base is bare and carries extensions.worktreeConfig=true: git never
+ * writes the admin dir's config.worktree in `worktree add`, so the copy answers
+ * rev-parse but is not a work tree (status, read-tree, checkout all refuse).
+ */
+function isBareWorktree(git, dir) {
+  const r = git(dir, ["rev-parse", "--is-bare-repository"], { allowFail: true });
+  return r.status === 0 && r.stdout === "true";
 }
 
 function commonDirOf(git, dir) {
@@ -77,6 +78,12 @@ function inspectCopy(git, dir, { expectedBranch } = {}) {
   if (!gitDir) return { broken: true, gitDir: null, branch: null, problems: [{ kind: "broken_git", detail: "git cannot read this copy" }] };
   const problems = [];
   for (const op of operationsInProgress(gitDir)) problems.push({ kind: op.kind, detail: op.kind.replace(/_/g, " "), abort: op.abort });
+  if (isBareWorktree(git, dir)) {
+    problems.push({
+      kind: "bare_worktree",
+      detail: "the copy inherits core.bare=true from its base (extensions.worktreeConfig) and is not a work tree",
+    });
+  }
   const unmerged = unmergedPaths(git, dir);
   if (unmerged.length > 0) problems.push({ kind: "unmerged_paths", detail: `${unmerged.length} unresolved path(s)`, count: unmerged.length });
   const head = git(dir, ["symbolic-ref", "--quiet", "--short", "HEAD"], { allowFail: true });
@@ -115,7 +122,8 @@ function snapshotCopy(git, dir, key, gitDir, reason) {
   try {
     if (fs.existsSync(path.join(gitDir, "index"))) fs.copyFileSync(path.join(gitDir, "index"), tmpIndex);
     const env = { ...IDENTITY, GIT_INDEX_FILE: tmpIndex };
-    git(dir, ["add", "-A", "--", "."], { env });
+    // --sparse: a new migration snapshot lies outside the sparse patterns of a task copy (1.6.9)
+    git(dir, ["add", "-A", "--sparse", "--", "."], { env });
     const tree = git(dir, ["write-tree"], { env }).stdout;
     const parents = [];
     const head = git(dir, ["rev-parse", "--verify", "--quiet", "HEAD"], { allowFail: true });
@@ -153,22 +161,6 @@ function isDirty(git, dir) {
   return git(dir, ["status", "--porcelain", "--untracked-files=all"], { allowFail: true }).stdout !== "";
 }
 
-/**
- * Removes the worktree and adds it again on `branch` (which keeps its commits).
- * The state must already be in a recovery ref.
- */
-function recreateWorktree(ctx, git, dir, branch, commonDir) {
-  const root = path.resolve(ctx.workspaceRoot);
-  const resolved = path.resolve(dir);
-  if (!resolved.startsWith(`${root}${path.sep}`)) {
-    throw new MyrWsError(1, `${dir} is outside ${root}; refusing to recreate it`);
-  }
-  if (!commonDir) throw new MyrWsError(1, `${dir}: no base repository found; refusing to recreate it`);
-  git(commonDir, ["worktree", "remove", "--force", "--force", dir], { allowFail: true });
-  if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
-  git(commonDir, ["worktree", "prune"]);
-  git(commonDir, ["worktree", "add", dir, branch]);
-}
 
 /**
  * Brings a copy back to a usable state.
@@ -181,7 +173,7 @@ function recreateWorktree(ctx, git, dir, branch, commonDir) {
  */
 function recoverCopy(ctx, git, dir, opts) {
   const { key, expectedBranch = null, explicitBranch = false } = opts;
-  const state = inspectCopy(git, dir, { expectedBranch });
+  let state = inspectCopy(git, dir, { expectedBranch });
   const recovered = [];
   if (state.problems.length === 0) return { action: "ok", recovered, branch: state.branch };
 
@@ -195,44 +187,34 @@ function recoverCopy(ctx, git, dir, opts) {
     return { action: "fallthrough", recovered, movedTo: moved };
   }
 
+  // A copy whose base carries extensions.worktreeConfig=true can inherit
+  // core.bare=true (git never writes the admin dir's config.worktree in
+  // `worktree add`). Refs resolve, but the copy is not a work tree, so nothing
+  // below (status, stash, abort) can run there. Fix the config first, let the
+  // caller materialize the checkout a fresh open would have created, then judge
+  // the copy again. Such a copy is a create that died in finish*: no operation
+  // can be in progress in a non-worktree, and nothing is reset or deleted.
+  if (isBareWorktree(git, dir)) {
+    git(dir, ["config", "--worktree", "core.bare", "false"]);
+    recovered.push({ problem: "bare_worktree", action: "worktree_config_fixed", detail: "wrote core.bare=false to the copy's config.worktree" });
+    if (typeof opts.materialize === "function") opts.materialize(dir);
+    state = inspectCopy(git, dir, { expectedBranch });
+  }
+
   const halfWay = state.problems.filter(isHalfWay);
+  // An unfinished Git operation is task work, not evidence of corruption.
+  // Preserve its index, markers and files across both idle sweeps and opens.
+  if (halfWay.length > 0) {
+    return { action: "ok", recovered, branch: state.branch };
+  }
   const drift = state.problems.filter((p) => !isHalfWay(p));
   const reason = describeProblems(state.problems);
   let recoveryRef;
   let branch = state.branch;
-  const commonDir = commonDirOf(git, dir);
-
-  if (halfWay.length > 0 || (drift.length > 0 && explicitBranchNeedsMove(state, drift, explicitBranch))) {
+  if (drift.length > 0 && explicitBranchNeedsMove(state, drift, explicitBranch)) {
     recoveryRef = snapshotCopy(git, dir, key, state.gitDir, reason);
   }
-
-  // 1. Interrupted operations: abort them, in order.
-  // Unresolved stages are the symptom of an operation in progress: report them on their own only when nothing explains them.
-  const reported = halfWay.some((p) => p.kind !== "unmerged_paths") ? halfWay.filter((p) => p.kind !== "unmerged_paths") : halfWay;
-  if (halfWay.length > 0) {
-    for (const p of halfWay) {
-      if (p.abort) git(dir, p.abort, { allowFail: true, env: IDENTITY });
-    }
-    let after = inspectCopy(git, dir, {});
-    let leftover = after.problems.filter(isHalfWay);
-    if (leftover.length > 0) {
-      // `merge --abort` can refuse (e.g. no MERGE_HEAD but stages left): drop the stages of a clean-HEAD copy.
-      git(dir, ["reset", "--merge"], { allowFail: true });
-      after = inspectCopy(git, dir, {});
-      leftover = after.problems.filter(isHalfWay);
-    }
-    if (leftover.length > 0) {
-      const target = state.branch || expectedBranch;
-      if (!target) throw new MyrWsError(1, `${key}: copy is stuck (${describeProblems(leftover)}), saved to ${recoveryRef}; no branch to recreate it on`);
-      recreateWorktree(ctx, git, dir, target, commonDir);
-      for (const p of reported) recovered.push({ problem: p.kind, action: "recreated", detail: `abort did not clean the copy; recreated on ${target}` });
-      branch = target;
-    } else {
-      for (const p of reported) recovered.push({ problem: p.kind, action: "aborted", detail: p.abort ? `git ${p.abort.join(" ")}` : "reset --merge" });
-    }
-  }
-
-  // 2. Branch policy (open only; repair passes no expected branch).
+  // Branch policy (open only; repair passes no expected branch).
   const nowState = inspectCopy(git, dir, { expectedBranch });
   const drift2 = nowState.problems.filter((p) => !isHalfWay(p));
   for (const p of drift2) {
@@ -324,6 +306,7 @@ module.exports = {
   recoveredSummary,
   hasLiveProcess,
   isHalfWay,
+  isBareWorktree,
   commonDirOf,
   IDENTITY,
 };

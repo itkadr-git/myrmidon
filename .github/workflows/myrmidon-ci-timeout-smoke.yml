@@ -1,0 +1,14 @@
+name: Myrmidon CI timeout smoke
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  timeout-smoke:
+    runs-on: self-hosted
+    timeout-minutes: 1
+    steps:
+      - name: Wait for job timeout
+        run: sleep 99999
