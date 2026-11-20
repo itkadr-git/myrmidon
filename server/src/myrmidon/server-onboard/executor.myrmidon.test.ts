@@ -1377,6 +1377,9 @@ exit 97
     };
 
     const result = await executor.execute(claim, createMockReporter().reporter);
+    // Distinguish a missing timer prerequisite from a failure of the success path.
+    expect(primary.hasExecuted(/start-myrmidon-firewall-timer/)).toBe(true);
+    expect(primary.hasExecuted(/check-myrmidon-firewall-timer/)).toBe(true);
     expect(policyChanged).toBe(true);
     expect(verifiedAfterDeny).toBe(true);
     expect(result.status).toBe("succeeded");
