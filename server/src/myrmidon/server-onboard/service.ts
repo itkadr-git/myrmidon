@@ -392,9 +392,9 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
       let bootstrapToDelete: string | null = null;
       // The authenticated worker attests to fresh key-only login. Match that
       // attestation against the current pin and the key in protected storage.
-      if (job.kind === "onboard" && input.status === "succeeded" && input.verifiedAccessPublicKey !== undefined) {
+      if (job.kind === "onboard" && input.status === "succeeded") {
         const server = await deps.getServer(job.companyId, job.serverId);
-        if (!server?.hostKeyFingerprint || server.hostKeyFingerprint !== input.hostKeyFingerprint ||
+        if (!input.verifiedAccessPublicKey || !server?.hostKeyFingerprint || server.hostKeyFingerprint !== input.hostKeyFingerprint ||
             !server.accessKeySecretKey || !job.stepLog.some((step) => step.step === "access" && step.result === "ok")) {
           throw new OnboardServiceError(409, "Cannot confirm verified onboarding access");
         }

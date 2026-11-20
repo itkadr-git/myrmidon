@@ -14,6 +14,19 @@ const mockSettings: FleetOnboardSettings = {
   allowKeepPassword: true,
 };
 
+async function reportVerifiedOnboarding(service: ReturnType<typeof onboardService>) {
+  const companyId = "company-1";
+  const token = "valid-executor-token";
+  const claim = await service.claim(companyId, token);
+  if (!claim?.secretValues.accessKey) throw new Error("Expected a claimed job with a stored access key");
+  const jobId = claim.job.id;
+  const hostKeyFingerprint = "SHA256:test-pin";
+  expect(await service.pinHostKey(token, companyId, jobId, hostKeyFingerprint)).toBe(true);
+  const now = new Date().toISOString();
+  await service.report(token, { companyId, jobId, entry: { step: "access", result: "ok", detail: null, startedAt: now, finishedAt: now } });
+  return service.report(token, { companyId, jobId, status: "succeeded", hostKeyFingerprint, verifiedAccessPublicKey: sshPublicKey(claim.secretValues.accessKey) });
+}
+
 function createMocks() {
   const store: Record<string, any> = {
     servers: [] as any[],
@@ -257,9 +270,14 @@ describe("SERVER-ONBOARD logic", () => {
     const { mockStore, mockSecrets, mockGetServer, store } = createMocks();
     const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
     await service.addServer({ companyId: "company-1", slug: "pin-report", name: "Server", hostname: "192.0.2.7", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password", password: "bootstrap" }, createdBy: null });
-    await service.claim("company-1", "valid-executor-token");
+    const claim = await service.claim("company-1", "valid-executor-token");
     expect(await service.pinHostKey("valid-executor-token", "company-1", "job-1", "SHA256:first")).toBe(true);
-    await service.report("valid-executor-token", { companyId: "company-1", jobId: "job-1", status: "succeeded", hostKeyFingerprint: "SHA256:changed" });
+    const now = new Date().toISOString();
+    await service.report("valid-executor-token", { companyId: "company-1", jobId: "job-1", entry: { step: "access", result: "ok", detail: null, startedAt: now, finishedAt: now } });
+    await expect(service.report("valid-executor-token", {
+      companyId: "company-1", jobId: "job-1", status: "succeeded", hostKeyFingerprint: "SHA256:changed",
+      verifiedAccessPublicKey: sshPublicKey(claim!.secretValues.accessKey),
+    })).rejects.toMatchObject({ status: 409 });
     expect(store.servers[0].hostKeyFingerprint).toBe("SHA256:first");
   });
 
@@ -441,16 +459,19 @@ describe("SERVER-ONBOARD logic", () => {
     expect(secretsStore[store.servers[0].passwordSecretKey]).toBe("pwd-1");
 
     // 4. Report final success
+    const hostKeyFingerprint = "SHA256:fingerprint";
+    expect(await service.pinHostKey("valid-executor-token", "company-1", "job-1", hostKeyFingerprint)).toBe(true);
     const finalJob = await service.report("valid-executor-token", {
       companyId: "company-1",
       jobId: "job-1",
       status: "succeeded",
-      hostKeyFingerprint: "SHA256:fingerprint",
+      hostKeyFingerprint,
+      verifiedAccessPublicKey: sshPublicKey(claim!.secretValues.accessKey),
     });
 
     expect(finalJob?.status).toBe("succeeded");
     expect(store.servers[0].onboardState).toBe("ready");
-    expect(store.servers[0].hostKeyFingerprint).toBeNull();
+    expect(store.servers[0].hostKeyFingerprint).toBe(hostKeyFingerprint);
   });
 
   it("claims only the requested company and consumes a claim secret once", async () => {
@@ -482,7 +503,7 @@ describe("SERVER-ONBOARD logic", () => {
       getServer: mockGetServer,
     });
 
-    const { serverId, job: initialJob } = await service.addServer({
+    const { serverId } = await service.addServer({
       companyId: "company-1",
       slug: "srv-2",
       name: "Srv 2",
@@ -498,12 +519,7 @@ describe("SERVER-ONBOARD logic", () => {
     expect(store.servers[0].onboardState).toBe("new");
 
     // Complete initial job before starting subsequent job
-    await service.claim("company-1", "valid-executor-token");
-    await service.report("valid-executor-token", {
-      companyId: "company-1",
-      jobId: initialJob.id,
-      status: "succeeded",
-    });
+    await reportVerifiedOnboarding(service);
 
     // Start subsequent recheck job
     const job = await service.startJob({
@@ -588,8 +604,7 @@ describe("SERVER-ONBOARD logic", () => {
     ).rejects.toThrow("already in progress");
 
     // Claim the job and report succeeded
-    await service.claim("company-1", "valid-executor-token");
-    await service.report("valid-executor-token", { companyId: "company-1", jobId: job.id, status: "succeeded" });
+    await reportVerifiedOnboarding(service);
 
     // Now startJob should succeed
     const job2 = await service.startJob({ companyId: "company-1", serverId, kind: "recheck", createdBy: null });
