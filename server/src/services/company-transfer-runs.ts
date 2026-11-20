@@ -268,6 +268,7 @@ export const companyTransferRunService = {
         inArray(companyTransferRuns.status, ["failed", "completed"]),
         sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
         sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' = ${sourceCompanyId}`,
+        sql`nullif(${companyTransferRuns.containerRef}->>'sourceCompanyId', '') is not null`,
         sql`${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true'`,
         sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' is not null`,
         // Never let corrupted provenance authorize deleting the source company.
@@ -304,7 +305,7 @@ export const companyTransferRunService = {
         sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
         // Revalidate ownership at settlement; the earlier claim is not enough.
         sql`${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true'`,
-        sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' is not null`,
+        sql`nullif(${companyTransferRuns.containerRef}->>'sourceCompanyId', '') is not null`,
         sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' <> ${companyTransferRuns.containerRef}->>'sourceCompanyId'`,
         // Cleanup must remove the owned company and every reserved object first.
         sql`${companyTransferRuns.companyId} is null`,
@@ -402,7 +403,7 @@ export const companyTransferRunService = {
       eq(companyTransferRuns.status, "applying"),
       sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
       sql`${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true'`,
-      sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' is not null`,
+      sql`nullif(${companyTransferRuns.containerRef}->>'sourceCompanyId', '') is not null`,
       sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' <> ${companyId}`,
       sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' = ${companyId}`,
     )).returning({ id: companyTransferRuns.id });
@@ -421,7 +422,7 @@ export const companyTransferRunService = {
       eq(companyTransferRuns.status, "rolling_back"),
       sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
       sql`${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true'`,
-      sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' is not null`,
+      sql`nullif(${companyTransferRuns.containerRef}->>'sourceCompanyId', '') is not null`,
       sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' <> ${companyTransferRuns.containerRef}->>'sourceCompanyId'`,
       sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' = ${companyId}`,
       sql`(${companyTransferRuns.companyId}::text = ${companyId} or (${companyTransferRuns.companyId} is null and not exists (select 1 from ${companies} where ${companies.id}::text = ${companyId})))`,
@@ -450,7 +451,7 @@ export const companyTransferRunService = {
       .where(and(
         eq(companyTransferRuns.id, runId),
         // A completed migration must retain the same atomically claimed destination.
-        sql`(coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration' or (${companyTransferRuns.status} = 'applying' and ${companyTransferRuns.companyId} is not null and ${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true' and ${companyTransferRuns.companyId}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId' and ${companyTransferRuns.containerRef}->>'sourceCompanyId' is not null and ${companyTransferRuns.containerRef}->>'sourceCompanyId' <> ${companyTransferRuns.containerRef}->>'destinationCompanyId'))`,
+        sql`(coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration' or (${companyTransferRuns.status} = 'applying' and ${companyTransferRuns.companyId} is not null and ${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true' and ${companyTransferRuns.companyId}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId' and nullif(${companyTransferRuns.containerRef}->>'sourceCompanyId', '') is not null and ${companyTransferRuns.containerRef}->>'sourceCompanyId' <> ${companyTransferRuns.containerRef}->>'destinationCompanyId'))`,
       )).returning({ id: companyTransferRuns.id });
     return completed.length === 1;
   },
