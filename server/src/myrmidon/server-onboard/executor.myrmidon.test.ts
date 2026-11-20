@@ -1359,6 +1359,9 @@ exit 97
 
   it("does not enable the firewall when the SSH allow rule fails", async () => {
     const mockSsh = new MockSshExecutor();
+    mockSsh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    mockSsh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    mockSsh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     mockSsh.mockResponse(/sudo ufw allow/, { stdout: "", stderr: "rule rejected", exitCode: 1 });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => mockSsh });
     const mockReporter = createMockReporter();
@@ -1372,6 +1375,7 @@ exit 97
 
     const result = await executor.execute(claim, mockReporter.reporter);
     expect(result.status).toBe("failed");
+    expect(mockSsh.hasExecuted(/sudo ufw allow/)).toBe(true);
     expect(mockSsh.hasExecuted(/sudo ufw default deny incoming/)).toBe(false);
     expect(mockReporter.completion?.status).toBe("failed");
   });
