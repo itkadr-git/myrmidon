@@ -29,6 +29,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "Persistent long-term memory for Paperclip agents. Automatically recalls relevant context before each run and retains agent output after — so every agent gets smarter over time.",
   categories: ["automation"],
   capabilities: [
+    "jobs.schedule",
     "events.subscribe",
     "agent.tools.register",
     "plugin.state.read",
@@ -42,6 +43,12 @@ const manifest: PaperclipPluginManifestV1 = {
   entrypoints: {
     worker: "./dist/worker.js",
   },
+  jobs: [{
+    jobKey: "nightly-consolidation",
+    displayName: "Nightly memory consolidation",
+    description: "Bounded additive consolidation for explicitly configured Hindsight banks.",
+    schedule: "0 2 * * *",
+  }],
   instanceConfigSchema: {
     type: "object",
     required: ["hindsightApiUrl"],
@@ -71,6 +78,30 @@ const manifest: PaperclipPluginManifestV1 = {
         description: "'low' is fastest, 'mid' balances speed and depth, 'high' is most thorough.",
         enum: ["low", "mid", "high"],
         default: "mid",
+      },
+      consolidationEnabled: {
+        type: "boolean",
+        title: "Enable Nightly Consolidation",
+        description: "Opt in to nightly additive consolidation; disabled by default.",
+        default: false,
+      },
+      consolidationBankIds: {
+        type: "array",
+        title: "Consolidation Bank IDs",
+        description: "Explicit Hindsight banks to consolidate; empty by default.",
+        items: { type: "string" },
+      },
+      consolidationTimeBudgetMs: {
+        type: "number",
+        title: "Consolidation Budget (ms)",
+        description: "Maximum run time per bank (default 300000 ms).",
+        default: 300000,
+      },
+      consolidationStallThreshold: {
+        type: "number",
+        title: "Watchdog Stall Threshold",
+        description: "Stop after this many consecutive incomplete bank passes (default 1).",
+        default: 1,
       },
       autoRetain: {
         type: "boolean",

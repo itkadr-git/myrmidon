@@ -197,16 +197,19 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
   });
 
   /**
-   * Company-wide pass that sets every restricted agent key to the company's
-   * enabled registry models: it adds the enabled names a key lacks and drops
-   * the registry names that are no longer enabled; names the registry does not
-   * own are kept, and a key with no restriction (all models) is left alone.
+   * Explicit admin pass over every restricted agent key (full mode, NOT
+   * `cardModelsOnly`): it removes EVERY model the registry has disabled from
+   * every key, whether or not the agent's card names it, and adds the enabled
+   * models each agent's card names. Models the registry does not own are kept,
+   * and a key with no restriction (all models) is left alone. A key left with
+   * nothing gets the disabled sentinel, so applying can lock a bot out.
    *
    * A DRY RUN by default: it reads the keys and answers what would change
    * (`dryRun.changes` per agent, `added` / `removed` per model name) and sends
-   * nothing. Only `?apply=true` writes. Applying widens every curated list by
-   * the enabled names, so it is an explicit owner/admin action: the startup
-   * check and the provider-change hooks only report.
+   * nothing. Only `?apply=true` writes. The automatic paths (watchdog, startup,
+   * provider and card changes) run scoped (`cardModelsOnly`): they remove a
+   * disabled model only from keys whose card names it, so this endpoint is the
+   * only place that sweeps disabled models the cards do not mention.
    *
    * Registered before the `/:agentId` routes, which would take "allowlist-sync"
    * for an agent id.
@@ -221,7 +224,7 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
     const applyParam = String(req.query.apply ?? "").trim().toLowerCase();
     const apply = applyParam === "true" || applyParam === "1";
     const result = await withCompanySyncGuard(companyId, () =>
-      updateAgentAllowlistsForCompany(db, input.deps, companyId, [], [], false, { apply }),
+      updateAgentAllowlistsForCompany(db, input.deps, companyId, [], [], { apply }),
     );
     if (apply) {
       const actor = getActorInfo(req);

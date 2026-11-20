@@ -12,7 +12,8 @@ import {
   toolConnections,
   type Db,
 } from "@myrmidon/db";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { invalidateCiCacheForHead } from "./github-pull-request-ci.js";
 import {
   logActivity,
   publishActivity,
@@ -25,6 +26,7 @@ import {
   type SealedConnectorEvents,
 } from "./paperclip-cloud-connector.js";
 import { issueService } from "./issues.js";
+import { PR_HEAD_CHANGE_ACTIVITY_ACTION } from "./issue-rewake-throttle.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logger } from "../middleware/logger.js";
@@ -61,6 +63,7 @@ import {
   pullRequestWorkProductData,
 } from "../myrmidon/task-pr-sync/linking.js";
 import { workProductService } from "./work-products.js";
+import { githubDeliveryTransactionGate, githubPullRequestDeliveryQueue } from "./github-delivery-gate.js";
 import { lockObjectInTransaction, postgresErrorInfo, runTransactionWithRetry } from "./postgres-transaction-retry.js";
 
 type LeasedEvent = SealedConnectorEvents["events"][number];
@@ -1102,15 +1105,26 @@ export function githubConnectionEventService(
   async function applyCiCompletionEvent(companyId: string, event: LeasedEvent, database: Db = db, afterCommit?: DeliveryWakes) {
     if (event.event !== "workflow_run" && event.event !== "check_suite" && event.event !== "check_run") return;
     const payload = event.payload;
+    const action = stringValue(payload.action);
     const status = stringValue(payload.status) ?? (stringValue(payload.conclusion) ? "completed" : null);
     const conclusion = stringValue(payload.conclusion);
-    if (!status || !["queued", "in_progress", "completed"].includes(status)) return;
+    const isRerequested = action === "rerequested";
+    if (!isRerequested && (!status || !["queued", "in_progress", "completed"].includes(status))) return;
     const repositoryValue = payload.repository;
     const repository = stringValue(repositoryValue) ?? stringValue(record(repositoryValue).full_name);
     const pullRequestNumber = positiveInteger(payload.pullRequestNumber) ?? positiveInteger(payload.number) ?? positiveInteger(payload.checkSuitePullRequestNumber);
     const headSha = commitSha(payload.headSha);
     const runId = identifier(payload.runId) ?? identifier(payload.checkSuiteId) ?? event.id;
     if (!repository || !pullRequestNumber || !headSha) return;
+    invalidateCiCacheForHead(companyId, repository.toLowerCase(), headSha);
+    // A rerequest carries no status: the cache is already dropped, nothing to deliver.
+    if (!status) return;
+    // A completed check of the head may release a pull request the board parked after
+    // GitHub refused its merge ("... is queued"); the merger ignores every other one.
+    if (status === "completed") {
+      await sendOrDeferAction(afterCommit, companyId, "board merge check notice", () =>
+        notifyBoardMergeTrigger({ companyId, repository, number: pullRequestNumber, headSha, source: "check_completed" }));
+    }
 
     const active = status === "queued" || status === "in_progress";
     if (!active && !conclusion) return;
@@ -1292,6 +1306,38 @@ export function githubConnectionEventService(
     }));
   }
 
+  /**
+   * myrmidon(EMPTY-RUNS-1): one `issue.work_product_head_changed` row per work product whose PR head moved to
+   * `toSha`. The row is the board-side trace of a push (the wake-task guard and the rewake throttle read it as
+   * progress of the run that pushed). Nothing is written when the head stays the same or the event has no head.
+   */
+  async function recordPrHeadChanges(
+    companyId: string,
+    before: ReadonlyArray<{ id: string; issueId: string; headSha: string | null }>,
+    toSha: string | null,
+    deliveryId: string,
+    sender: string | null,
+    afterCommit?: DeliveryWakes,
+  ) {
+    if (!toSha) return;
+    for (const product of before) {
+      if (product.headSha === toSha) continue;
+      try {
+        const publications: ActivityPublication[] = [];
+        await logActivity(db, {
+          companyId, actorType: "system", actorId: "system:github-webhook",
+          action: PR_HEAD_CHANGE_ACTIVITY_ACTION, entityType: "issue", entityId: product.issueId,
+          details: { workProductId: product.id, headShaChanged: true, fromSha: product.headSha, toSha, deliveryId, ...(sender ? { sender } : {}) },
+        }, publications);
+        for (const publication of publications) {
+          await sendOrDeferAction(afterCommit, companyId, "PR head change activity publication", () => publishActivity(publication));
+        }
+      } catch (err) {
+        logger.warn({ err, companyId, workProductId: product.id }, "could not record a PR head change");
+      }
+    }
+  }
+
   async function applyPullRequestEvent(database: Db, companyId: string, event: LeasedEvent, afterCommit?: DeliveryWakes) {
     const snapshot = githubSnapshotUpdate(event.payload);
     if (!snapshot) return;
@@ -1323,8 +1369,35 @@ export function githubConnectionEventService(
       eq(externalObjects.objectType, "pull_request"),
       sql`lower(${externalObjects.externalId}) = lower(${snapshot.externalId})`,
     ));
+    // myrmidon(EMPTY-RUNS-1): a push moves `metadata.headSha` and leaves no other trace on the task; remember
+    // the old head to write the head-change row (see recordPrHeadChanges) once the new one is stored.
+    const prWorkProductWhere = and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.provider, "github"), sql`lower(${issueWorkProducts.externalId}) = lower(${snapshot.externalId})`);
+    const headBefore = await db.select({ id: issueWorkProducts.id, issueId: issueWorkProducts.issueId, headSha: sql<string | null>`${issueWorkProducts.metadata} ->> 'headSha'` })
+      .from(issueWorkProducts).where(prWorkProductWhere);
     await db.update(issueWorkProducts).set({ metadata: sql`(${issueWorkProducts.metadata} - 'activeCi') || ${JSON.stringify({ repository: snapshot.repository, number: snapshot.number, headSha: snapshot.data.headSha })}::jsonb`, updatedAt: appliedAt })
-      .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.provider, "github"), eq(issueWorkProducts.externalId, snapshot.externalId)));
+      .where(prWorkProductWhere);
+    await recordPrHeadChanges(companyId, headBefore, stringValue(snapshot.data.headSha), event.id, stringValue(event.payload.senderLogin), afterCommit);
+    const newHead = stringValue(snapshot.data.headSha);
+    if (newHead) {
+      for (const product of headBefore) {
+        if (product.headSha === newHead) continue;
+        // Only release a budget-specific deferral; unrelated monitors keep their deadline.
+        await database.update(issues).set({
+          monitorNextCheckAt: appliedAt,
+          monitorWakeRequestedAt: null,
+          executionState: sql`${issues.executionState} - 'reviewCiBudgetDeferred'`,
+          updatedAt: appliedAt,
+        }).where(and(
+          eq(issues.id, product.issueId),
+          eq(issues.companyId, companyId),
+          eq(issues.status, "in_review"),
+          gt(issues.monitorNextCheckAt, appliedAt),
+          sql`${issues.executionState} ->> 'reviewCiBudgetDeferred' = 'true'`,
+          sql`${issues.executionState} -> 'monitor' ->> 'status' = 'triggered'`,
+          sql`${issues.executionState} -> 'monitor' ->> 'serviceName' = 'Review CI wait'`,
+        ));
+      }
+    }
     if (snapshot.merged && event.action === "closed") {
       const products = await database.select({ product: issueWorkProducts, issue: issues })
         .from(issueWorkProducts)
@@ -1623,23 +1696,10 @@ export function githubConnectionEventService(
           eq(connectionEventDeliveries.provider, event.provider),
           eq(connectionEventDeliveries.providerDeliveryId, event.id),
         ));
-        await logActivity(database, {
-          companyId,
-          actorType: "system",
-          actorId: "system:github-webhook",
-          action: "tool_connection.webhook_processed",
-          entityType: "tool_connection",
-          entityId: bindings[0]?.connectionId ?? `github-app:${appId ?? "unknown"}`,
-          details: {
-            provider: "github",
-            event: event.event,
-            action: event.action,
-            deliveryId: event.id,
-            installationId: event.installationId,
-            repositoryId: event.repositoryId,
-            ...(appId ? { appId } : {}),
-          },
-        }, postCommitPublications);
+        // OPE-13146: the delivery receipt above is the audit trail; a per-event
+        // activity row for every processed webhook is noise (36k rows/day) and
+        // duplicates connection_event_deliveries. Only failures leave an
+        // activity entry (see the failed-path handler below).
       };
       if (event.event === "pull_request" || event.event === "workflow_run" || event.event === "check_suite" || event.event === "check_run" || event.event === "installation" || event.event === "installation_repositories") {
         // myrmidon(EMPTY-RUNS-3): deliveries of one pull request (a dozen jobs
@@ -1650,43 +1710,78 @@ export function githubConnectionEventService(
         // a transaction Postgres rolled back for a deadlock or a serialization
         // failure runs again, a bounded number of times, from a clean slate.
         const lockKey = githubPullRequestLockKey(companyId, normalizedEvent.payload);
-        await runTransactionWithRetry(async () => {
-          postCommitWakes.length = 0;
-          postCommitPublications.length = 0;
-          await db.transaction(async (tx) => {
-            if (lockKey) await lockObjectInTransaction(tx, lockKey);
-            await applyAndFinalize(tx as unknown as Db);
+        // myrmidon(WEBHOOK-LOCK-POOL): the wait for the turn of the pull request and
+        // for a free transaction slot is here, in the process, before a pooled
+        // connection is taken; the advisory lock below only keeps the other api
+        // process apart. The pull request queue is entered first, so a delivery
+        // that waits for its pull request holds no slot.
+        const runDelivery = () => githubDeliveryTransactionGate.run(async () => {
+          await runTransactionWithRetry(async () => {
+            postCommitWakes.length = 0;
+            postCommitPublications.length = 0;
+            await db.transaction(async (tx) => {
+              if (lockKey) await lockObjectInTransaction(tx, lockKey);
+              await applyAndFinalize(tx as unknown as Db);
+            });
+          }, {
+            onRetry: ({ attempt, error }) => {
+              logger.warn({
+                companyId,
+                providerDeliveryId: event.id,
+                attempt,
+                pgCode: error.code,
+                pgMessage: error.message,
+              }, "GitHub delivery transaction rolled back by Postgres, running it again");
+            },
           });
-        }, {
-          onRetry: ({ attempt, error }) => {
-            logger.warn({
-              companyId,
-              providerDeliveryId: event.id,
-              attempt,
-              pgCode: error.code,
-              pgMessage: error.message,
-            }, "GitHub delivery transaction rolled back by Postgres, running it again");
-          },
         });
+        await (lockKey ? githubPullRequestDeliveryQueue.run(lockKey, runDelivery) : runDelivery());
       } else {
         await applyAndFinalize(db);
       }
     } catch (error) {
+      const failedAt = now();
+      const lastError = (() => {
+        const pg = postgresErrorInfo(error);
+        if (pg) return `postgres ${pg.code}: ${pg.message}`.slice(0, 500);
+        return error instanceof Error ? error.message.slice(0, 500) : "GitHub event processing failed";
+      })();
       await db.update(connectionEventDeliveries).set({
         status: "failed",
         // The wrapper of the query builder says only "Failed query"; the
         // reason is the Postgres code and text behind it.
-        lastError: (() => {
-          const pg = postgresErrorInfo(error);
-          if (pg) return `postgres ${pg.code}: ${pg.message}`.slice(0, 500);
-          return error instanceof Error ? error.message.slice(0, 500) : "GitHub event processing failed";
-        })(),
-        updatedAt: now(),
+        lastError,
+        updatedAt: failedAt,
       }).where(and(
         eq(connectionEventDeliveries.companyId, companyId),
         eq(connectionEventDeliveries.provider, event.provider),
         eq(connectionEventDeliveries.providerDeliveryId, event.id),
       ));
+      // OPE-13146: successful deliveries no longer write activity rows (the
+      // receipt above is the audit trail); a failed one still surfaces in
+      // activity_log so the attention feed sees it.
+      try {
+        await logActivity(db, {
+          companyId,
+          actorType: "system",
+          actorId: "system:github-webhook",
+          action: "tool_connection.webhook_failed",
+          entityType: "tool_connection",
+          entityId: bindings[0]?.connectionId ?? `github-app:${appId ?? "unknown"}`,
+          details: {
+            provider: "github",
+            event: event.event,
+            action: event.action,
+            deliveryId: event.id,
+            installationId: event.installationId,
+            repositoryId: event.repositoryId,
+            ...(appId ? { appId } : {}),
+            error: lastError,
+          },
+        }, postCommitPublications);
+      } catch {
+        // The failure row is best-effort; never mask the original error.
+      }
       throw error;
     }
     // Persistence is complete at this point (and installation deltas have
@@ -1943,16 +2038,22 @@ export function githubConnectionEventService(
           continue;
         }
 
-        const [lastActivity] = await db.select({ createdAt: activityLog.createdAt })
-          .from(activityLog)
+        // OPE-13146: the general-event freshness probe moved off activity_log
+        // (the per-webhook rows were removed as noise). The delivery receipt
+        // table carries the same signal — any GitHub event delivery, not only
+        // CI — and stays the single audit trail.
+        const [lastGeneralDelivery] = await db.select({ createdAt: connectionEventDeliveries.createdAt })
+          .from(connectionEventDeliveries)
           .where(and(
-            eq(activityLog.companyId, companyId),
-            eq(activityLog.action, "tool_connection.webhook_processed"),
+            eq(connectionEventDeliveries.companyId, companyId),
+            eq(connectionEventDeliveries.provider, "github"),
           ))
-          .orderBy(desc(activityLog.createdAt))
+          .orderBy(desc(connectionEventDeliveries.createdAt))
           .limit(1);
 
-        let lastEventAtMs: number | null = lastActivity?.createdAt ? new Date(lastActivity.createdAt).getTime() : null;
+        let lastEventAtMs: number | null = lastGeneralDelivery?.createdAt
+          ? new Date(lastGeneralDelivery.createdAt).getTime()
+          : null;
 
         for (const binding of bindings.filter((b) => b.companyId === companyId)) {
           const lastWebhookAt = binding.providerTenant?.github?.lastWebhookAt;

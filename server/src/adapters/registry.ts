@@ -1,3 +1,5 @@
+import type { Db } from "@myrmidon/db";
+import { logger } from "../middleware/logger.js";
 import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
 import { getPluginProviderModels } from "../myrmidon/plugin-provider-models.js";
@@ -1087,7 +1089,24 @@ function getDeclaredAdapterModels(): ReturnType<typeof parseAdapterModelsEnv> {
   return value;
 }
 
-export async function listAdapterModels(type: string, companyId?: string): Promise<{ id: string; label: string }[]> {
+export async function listAdapterModels(type: string, companyId?: string, db?: Db, forceRefresh = false): Promise<{ id: string; label: string }[]> {
+  const gatewayCatalog = ["hermes_gateway", "hermes_local", "omp_local"].includes(type);
+  if (gatewayCatalog) {
+    try {
+      const models = await listGatewayModels({ companyId, db, forceRefresh });
+      if (type !== "omp_local") return models;
+      return models.map((model) => ({
+        ...model,
+        id: model.id.startsWith("litellm/") ? model.id : `litellm/${model.id}`,
+      }));
+    } catch {
+      // Do not log upstream errors: secret providers can include credentials.
+      logger.warn({ adapterType: type, companyId }, "Live LiteLLM catalog unavailable; falling back to declared adapter models");
+    }
+    const declared = getDeclaredAdapterModels();
+    return declared?.[type]?.map((m) => ({ id: m.id, label: m.label ?? m.id }))
+      ?? findActiveServerAdapter(type)?.models ?? [];
+  }
   const pluginModels = (companyId ? getPluginProviderModels(companyId) : [])
     .filter((model) => model.pluginKey === type || model.provider === type || `${model.pluginKey}-plugin` === type)
     .map(({ modelId, label }) => ({ id: modelId, label }));
@@ -1116,7 +1135,10 @@ export async function listAdapterModels(type: string, companyId?: string): Promi
   return adapter.models ?? [];
 }
 
-export async function refreshAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+export async function refreshAdapterModels(type: string, companyId?: string, db?: Db): Promise<{ id: string; label: string }[]> {
+  if (["hermes_gateway", "hermes_local", "omp_local"].includes(type)) {
+    return listAdapterModels(type, companyId, db, true);
+  }
   const adapter = findActiveServerAdapter(type);
   if (adapter?.refreshModels) {
     try {

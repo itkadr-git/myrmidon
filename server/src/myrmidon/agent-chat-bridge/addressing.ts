@@ -40,6 +40,7 @@ export interface TelegramAddressee {
 export type BridgeAddresseeResult =
   | { kind: "resolved"; addressee: TelegramAddressee }
   | { kind: "ambiguous"; handle: string; candidates: Array<{ agentId: string; name: string }> }
+  | { kind: "invalid_id" }
   | { kind: "none" };
 
 /**
@@ -294,10 +295,10 @@ export function addDefaultAliases<T extends AgentAliasCard>(cards: readonly T[])
 
 /**
  * `@<alias>` tokens the resolver looks for. A token is `@` followed by word
- * characters (letters, digits, underscore). The longest match wins so a
- * `@гип` token cannot shadow `@гип2`.
+ * characters (letters, digits, underscore, and hyphen). Matching requires the
+ * entire token, including for explicit and computed aliases.
  */
-const MENTION_PATTERN = /@([\p{L}\p{N}_]+)/gu;
+const MENTION_PATTERN = /(?<![\p{L}\p{N}\p{M}_@.%+\-])@([\p{L}\p{N}_-]+)/gu;
 
 /**
  * myrmidon(X9b): removes the leading @-token (with surrounding whitespace)
@@ -307,7 +308,7 @@ const MENTION_PATTERN = /@([\p{L}\p{N}_]+)/gu;
  * leading whitespace); an @-mention mid-text is ordinary content and stays.
  */
 export function stripLeadingMentionToken(text: string): string {
-  return text.replace(/^\s*@([\p{L}\p{N}_]+)\s*/u, "");
+  return text.replace(/^\s*@([\p{L}\p{N}_-]+)\s*/u, "");
 }
 
 /** Extracts every @-token in the text, in order of appearance. */
@@ -374,8 +375,7 @@ async function loadCompanyAgents(db: Db, companyId: string): Promise<AgentCandid
 
 /**
  * Resolves the first @-token in `text` that matches an agent of `companyId`.
- * Alias match first, then agent name, then title, case-insensitive; the
- * longest alias of a candidate wins.
+ * Matches aliases, names and titles case-insensitively against the entire token.
  *
  * When a token matches exactly one agent, returns `{ kind: "resolved", addressee }`.
  * When a token matches multiple agents (e.g. duplicate names/aliases), returns
@@ -391,9 +391,21 @@ export async function resolveBridgeAddressee(
     endpointAgentId: string;
   },
 ): Promise<BridgeAddresseeResult> {
+  // Explicit IDs take precedence over every textual mention and fail closed.
+  const explicitIds = [...input.text.matchAll(/(?:^|\s)agent:\/\/([^\s]*)/gi)];
   const tokens = extractMentionTokens(input.text);
-  if (tokens.length === 0) return { kind: "none" };
+  if (explicitIds.length === 0 && tokens.length === 0) return { kind: "none" };
   const candidates = await loadCompanyAgents(db, input.companyId);
+  if (explicitIds.length > 0) {
+    const id = explicitIds[0]?.[1] ?? "";
+    if (explicitIds.length !== 1 || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      return { kind: "invalid_id" };
+    }
+    const agent = candidates.find((candidate) => candidate.id.toLowerCase() === id.toLowerCase());
+    return agent
+      ? { kind: "resolved", addressee: { agentId: agent.id, displayName: agent.name } }
+      : { kind: "invalid_id" };
+  }
   const candidateById = new Map(candidates.map((c) => [c.id, c]));
   const byToken = new Map<string, string[]>();
 
@@ -420,31 +432,22 @@ export async function resolveBridgeAddressee(
     }
   }
   for (const token of tokens) {
-    // Longest-match-first: try the whole token, then progressively shorter
-    // prefixes, so `@гип2` does not resolve as `@гип` plus a stray `2`.
-    for (let length = token.length; length > 0; length -= 1) {
-      const subKey = token.slice(0, length).toLowerCase();
-      const matchedAgentIds = byToken.get(subKey);
-      if (matchedAgentIds && matchedAgentIds.length > 0) {
-        if (matchedAgentIds.length === 1) {
-          const agentId = matchedAgentIds[0];
-          const agent = candidateById.get(agentId)!;
-          return {
-            kind: "resolved",
-            addressee: { agentId, displayName: agent.name },
-          };
-        }
-        const matchingCandidates = matchedAgentIds.map((id) => {
-          const agent = candidateById.get(id)!;
-          return { agentId: id, name: agent.name };
-        });
-        return {
-          kind: "ambiguous",
-          handle: subKey,
-          candidates: matchingCandidates,
-        };
-      }
+    const key = token.toLowerCase();
+    const matchedAgentIds = byToken.get(key);
+    if (!matchedAgentIds?.length) continue;
+    if (matchedAgentIds.length === 1) {
+      const agentId = matchedAgentIds[0]!;
+      const agent = candidateById.get(agentId)!;
+      return { kind: "resolved", addressee: { agentId, displayName: agent.name } };
     }
+    return {
+      kind: "ambiguous",
+      handle: key,
+      candidates: matchedAgentIds.map((id) => {
+        const agent = candidateById.get(id)!;
+        return { agentId: id, name: agent.name };
+      }),
+    };
   }
   return { kind: "none" };
 }

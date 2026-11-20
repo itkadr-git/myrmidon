@@ -319,7 +319,7 @@ export function AgentCardContainerFieldsView({
                 })}
                 {status?.idleStopRuntime?.lastStoppedAt && t("area.settings-agent-card.agent-card-container-fields.idleStopLastStopped", { at: new Date(status.idleStopRuntime.lastStoppedAt).toLocaleString() })}
                 {status?.idleStopRuntime?.lastStartedAt && t("area.settings-agent-card.agent-card-container-fields.idleStopLastStarted", { at: new Date(status.idleStopRuntime.lastStartedAt).toLocaleString() })}
-                {status?.idleStopRuntime?.coldStartDurationMs != null && t("area.settings-agent-card.agent-card-container-fields.idleStopColdStart", { duration: formatDurationMs(status.idleStopRuntime.coldStartDurationMs) })}
+                {status?.idleStopRuntime?.coldStartDurationMs !== null && status?.idleStopRuntime?.coldStartDurationMs !== undefined && t("area.settings-agent-card.agent-card-container-fields.idleStopColdStart", { duration: formatDurationMs(status.idleStopRuntime.coldStartDurationMs) })}
               </div>
             </div>
 

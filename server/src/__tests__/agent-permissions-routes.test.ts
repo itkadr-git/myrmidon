@@ -961,6 +961,36 @@ describe.sequential("agent permission routes", () => {
     expect(JSON.stringify(res.body)).not.toContain(plaintextValue);
   }, 20_000);
 
+  it("merges a model-only card patch with the server-side Hermes config", async () => {
+    const original = {
+      model: "chatgpt-pool/old",
+      env: {
+        PLAIN: { type: "plain", value: "private-value" },
+        REF: { type: "secret_ref", secretId: "44444444-4444-4444-8444-444444444444", version: 2 },
+      },
+      unknown: { nested: [1, { enabled: true }] },
+      password: "private-password",
+    };
+    let stored = { ...baseAgent, adapterType: "hermes_gateway", adapterConfig: original };
+    mockAgentService.getById.mockImplementation(async () => stored);
+    mockAgentService.update.mockImplementation(async (_id, patch) => {
+      stored = { ...stored, ...patch };
+      return stored;
+    });
+    const app = createApp({
+      type: "board", userId: "board-user", source: "local_implicit",
+      isInstanceAdmin: true, companyIds: [companyId],
+    });
+    const before = await requestApp(app, (url) => request(url).get(`/api/agents/${agentId}`));
+    expect(before.status).toBe(200);
+    expect(JSON.stringify(before.body)).not.toContain("private-password");
+    const saved = await requestApp(app, (url) => request(url).patch(`/api/agents/${agentId}`).send({
+      adapterConfig: { model: "chatgpt-pool/new" },
+    }));
+    expect(saved.status).toBe(200);
+    expect(stored.adapterConfig).toEqual({ ...original, model: "chatgpt-pool/new" });
+  }, 20_000);
+
   it("preserves stored env values when a redacted detail response is submitted unchanged", async () => {
     const plaintextValue = "stored-value-must-be-preserved";
     mockAgentService.getById.mockResolvedValue({

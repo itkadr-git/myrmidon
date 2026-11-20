@@ -19,6 +19,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { MyrWsError } = require("./errors.js");
 const recover = require("./recover.js");
+const sparse = require("./sparse.js");
 
 // --- contract constants (C1/C2); a drift here is caught by the unit test ---
 const EXIT = { ok: 0, usage: 2, quotaExceeded: 3, baseLimit: 4, network: 5, notFound: 6, unpushed: 7 };
@@ -289,6 +290,31 @@ function isGitCopy(dir) {
   }
 }
 
+// Bounded scan: at most NESTED_CLONE_MAX_DEPTH levels below the workspace root, no symlinks
+// (lstat-based Dirent), no Git metadata and no dependency/build caches. Gitfiles used by
+// submodules and linked worktrees are allowed; only a directory with its own object store is a clone.
+const NESTED_CLONE_MAX_DEPTH = 3;
+const NESTED_CLONE_SKIP = new Set([".git", "node_modules", ".pnpm-store", "dist", "build", ".turbo", ".cache"]);
+function assertNoNestedClones(root) {
+  const pending = [{ dir: root, depth: 0 }];
+  while (pending.length) {
+    const { dir, depth } = pending.pop();
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isSymbolicLink() || !entry.isDirectory() || NESTED_CLONE_SKIP.has(entry.name)) continue;
+      const child = path.join(dir, entry.name);
+      const metadata = path.join(child, ".git");
+      try {
+        if (fs.lstatSync(metadata).isDirectory() && fs.statSync(path.join(metadata, "objects")).isDirectory()) {
+          throw usage(`nested full clone found at ${child}; preserve its changes and move it outside the workspace before reopening. Nothing was deleted.`);
+        }
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      if (depth + 1 < NESTED_CLONE_MAX_DEPTH) pending.push({ dir: child, depth: depth + 1 });
+    }
+  }
+}
+
 function isWorktreeOf(dir) {
   try {
     return fs.statSync(path.join(dir, ".git")).isFile();
@@ -319,6 +345,24 @@ function repoFromOrigin(git, dir) {
 
 // --- open ------------------------------------------------------------------
 
+/**
+ * A base that is bare with extensions.worktreeConfig=true hands every linked
+ * worktree its core.bare=true: `git worktree add` never writes the admin dir's
+ * config.worktree, so the copy answers rev-parse but is not a work tree, and
+ * status/read-tree/sparse-checkout refuse. Write the override exactly where git
+ * looks for it — the copy's config.worktree; the common config and the base's
+ * bareness stay untouched. A linked worktree can only read as bare when the
+ * extension is on (without it git reports a worktree of a bare base as
+ * non-bare), so `git config --worktree` is valid exactly here. Returns true
+ * when a fix was written.
+ */
+function ensureWorktreeNotBare(git, wt) {
+  const r = git(wt, ["rev-parse", "--is-bare-repository"], { allowFail: true });
+  if (r.status !== 0 || r.stdout !== "true") return false;
+  git(wt, ["config", "--worktree", "core.bare", "false"]);
+  return true;
+}
+
 /** Short directory suffix of a repository: `owner/name(.git)` -> `name`. */
 function repoShortName(repo) {
   return repo.split("/")[1].replace(/\.git$/, "");
@@ -343,6 +387,12 @@ function resolveCopyDir(ctx, reg, { key, repo, scratch, klass }) {
   return { dir: secondary, known: reg.entries.find((e) => e.path === secondary) };
 }
 
+// Minimum free percent of the physical volume (default 5, MYRMIDON_DISK_BUDGET_MIN_FREE_PERCENT, same as the board gate).
+function diskBudgetMinFreePercent(env) {
+  const value = Number(String(env.MYRMIDON_DISK_BUDGET_MIN_FREE_PERCENT ?? "").trim());
+  return Number.isFinite(value) && value > 0 && value <= 50 ? value : 5;
+}
+
 function makeCtx(deps = {}) {
   const env = deps.env || process.env;
   return {
@@ -353,6 +403,7 @@ function makeCtx(deps = {}) {
     now: deps.now || (() => Date.now()),
     diskStateStaleSec: deps.diskStateStaleSec ?? DISK_STATE_STALE_SEC,
     sizeOf: deps.sizeOf || defaultSizeOf,
+    statfs: deps.statfs || fs.statfsSync,
     ensureBase: deps.ensureBase || null,
     warn: deps.warn || ((m) => process.stderr.write(`myr-ws: ${m}\n`)),
   };
@@ -380,10 +431,37 @@ async function open(request, deps = {}) {
   // The reviewer reads the change by refs: git diff origin/main...HEAD, git show HEAD:<path>.
   const review = Boolean(request.review) && !scratch;
   const warn = ctx.warn;
-  const wtAdd = review ? ["-c", "core.hooksPath=/dev/null", "worktree", "add", "--no-checkout"] : ["worktree", "add"];
+  // Task copy (1.6.9, OPE-13410 item 5): created without a checkout, then checked out sparsely:
+  // in packages/db/src/migrations/meta only _journal.json and the latest snapshot (lib/sparse.js).
+  const taskCopy = !review && !scratch;
+  const wtAdd = review
+    ? ["-c", "core.hooksPath=/dev/null", "worktree", "add", "--no-checkout"]
+    : taskCopy ? ["worktree", "add", "--no-checkout"] : ["worktree", "add"];
   const finishReview = (wt) => {
     git(wt, ["sparse-checkout", "set", "--no-cone", "/.myr-ws-review-empty"]);
     git(wt, ["read-tree", "-m", "-u", "HEAD"]);
+  };
+  const finishCopy = (wt) => {
+    if (review) return finishReview(wt);
+    if (!taskCopy) return;
+    const res = sparse.checkoutTaskCopy(git, wt);
+    if (!res.sparse) warn(`${wt}: full checkout (${res.reason})`);
+  };
+  // `git worktree add` of a base with extensions.worktreeConfig=true leaves the
+  // new copy inheriting core.bare=true: make it a real work tree before any
+  // checkout step (finishCopy/finishReview) runs.
+  const addCopy = (basePath, args) => {
+    git(basePath, args);
+    ensureWorktreeNotBare(git, dir);
+  };
+  // Recover of a copy that inherited core.bare=true fixes the copy's config
+  // inside recoverCopy; a copy whose create died in finish* still has no
+  // checkout at all, so give it the one a fresh open would have created. A copy
+  // that already has a checkout (a plain `worktree add` populates one) is left
+  // alone.
+  const materializeBare = (wt) => {
+    if (git(wt, ["ls-files"], { allowFail: true }).stdout !== "") return;
+    finishCopy(wt);
   };
   const baseTarget = request.base ? `refs/remotes/origin/${request.base}` : "refs/remotes/origin/HEAD";
   let recovered = [];
@@ -394,19 +472,20 @@ async function open(request, deps = {}) {
   //    /workspace/<KEY>, each further one next to it at /workspace/<KEY>.<name>.
   const reg = readRegistry(ctx);
   const { dir, known } = resolveCopyDir(ctx, reg, { key, repo, scratch, klass });
+  if (!scratch && fs.existsSync(dir) && fs.statSync(dir).isDirectory()) assertNoNestedClones(dir);
   if (known && fs.existsSync(known.path)) {
     if (repo && known.repo && repo !== known.repo) {
       throw usage(`${dir} is already open for ${known.repo}; cannot open ${repo} there`);
     }
     let healed = null;
     if (!scratch && known.class !== "G" && isGitCopy(known.path)) {
-      // A copy left half-way (merge/rebase/cherry-pick in progress, unresolved stages, detached
-      // head, another branch than the registry or the caller says) is repaired, not handed on.
+      // Preserve unfinished Git operations; recover branch drift and bare copies separately.
       healed = recover.recoverCopy(ctx, git, known.path, {
         key,
         expectedBranch: request.branch || known.branch || branch,
         explicitBranch: Boolean(request.branch),
         baseTarget,
+        materialize: materializeBare,
       });
     }
     if (!healed || healed.action !== "fallthrough") {
@@ -441,7 +520,7 @@ async function open(request, deps = {}) {
   //     registry was lost or a previous open died before writing it) is adopted.
   if (!scratch && fs.existsSync(dir) && isWorktreeOf(dir)) {
     const adoptedRepo = repo || repoFromOrigin(git, dir) || undefined;
-    const healed = recover.recoverCopy(ctx, git, dir, { key, expectedBranch: request.branch || null, explicitBranch: Boolean(request.branch), baseTarget });
+    const healed = recover.recoverCopy(ctx, git, dir, { key, expectedBranch: request.branch || null, explicitBranch: Boolean(request.branch), baseTarget, materialize: materializeBare });
     if (healed.action === "fallthrough") {
       recovered = healed.recovered;
       repo = repo || adoptedRepo;
@@ -456,6 +535,19 @@ async function open(request, deps = {}) {
       });
       return stripUndefined({ ok: true, key, path: dir, class: klass, repo: adoptedRepo, branch: adoptedBranch, reused: true, ...recoveryFields(healed) });
     }
+  }
+
+  // Measure the containing filesystem, even before the workspace directory exists.
+  let volumePath = scratch ? ctx.scratchRoot : ctx.workspaceRoot;
+  while (!fs.existsSync(volumePath) && path.dirname(volumePath) !== volumePath) volumePath = path.dirname(volumePath);
+  try {
+    const volume = ctx.statfs(volumePath);
+    if (volume.blocks > 0 && volume.bavail * 100 < volume.blocks * diskBudgetMinFreePercent(process.env)) {
+      throw new MyrWsError(EXIT.quotaExceeded, `${QUOTA_PREFIX} disk_budget: less than ${diskBudgetMinFreePercent(process.env)}% free on the workspace filesystem; no new copy is created`);
+    }
+  } catch (error) {
+    if (error instanceof MyrWsError) throw error;
+    warn(`physical disk budget measurement failed: ${error.message}`);
   }
 
   // 2b. Full legacy clones are converted only after validating their identity.
@@ -493,9 +585,9 @@ async function open(request, deps = {}) {
       baseRef = resolveBaseRef(git, basePath, request.base);
       const target = `refs/remotes/origin/${baseRef}`;
       const existingBranch = git(basePath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { allowFail: true }).status === 0;
-      if (existingBranch) git(basePath, [...wtAdd, dir, branch]);
-      else git(basePath, [...wtAdd, "--no-track", "-b", branch, dir, target]);
-      if (review) finishReview(dir);
+      if (existingBranch) addCopy(basePath, [...wtAdd, dir, branch]);
+      else addCopy(basePath, [...wtAdd, "--no-track", "-b", branch, dir, target]);
+      finishCopy(dir);
       if (sourceHead && sourceHead !== git(dir, ["rev-parse", "HEAD"])) {
         const recoveryBranch = `myr-ws/recovery/${key}`;
         const recoveryExists = git(basePath, ["rev-parse", "--verify", "--quiet", `refs/heads/${recoveryBranch}`], { allowFail: true }).status === 0;
@@ -536,7 +628,7 @@ async function open(request, deps = {}) {
     if (fs.existsSync(dir)) fs.rmdirSync(dir); // empty leftover dir: worktree add wants to make it
     const target = `refs/remotes/origin/${baseRef}`;
     if (scratch) {
-      git(basePath, ["worktree", "add", "--detach", dir, target]);
+      addCopy(basePath, ["worktree", "add", "--detach", dir, target]);
     } else {
       const haveBranch = git(basePath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { allowFail: true }).status === 0;
       if (review) {
@@ -559,13 +651,14 @@ async function open(request, deps = {}) {
           }
         }
         if (haveBranch || hasRemote) {
-          if (haveBranch) git(basePath, [...wtAdd, dir, branch]);
-          else git(basePath, [...wtAdd, "--no-track", "-b", branch, dir, remote]);
-        } else git(basePath, [...wtAdd, "--no-track", "-b", branch, dir, target]);
+          if (haveBranch) addCopy(basePath, [...wtAdd, dir, branch]);
+          else addCopy(basePath, [...wtAdd, "--no-track", "-b", branch, dir, remote]);
+        } else addCopy(basePath, [...wtAdd, "--no-track", "-b", branch, dir, target]);
         finishReview(dir);
       } else if (haveBranch) {
         // A branch left by an earlier copy of this task keeps its commits: reattach it, do not reset it.
-        git(basePath, ["worktree", "add", dir, branch]);
+        addCopy(basePath, [...wtAdd, dir, branch]);
+        finishCopy(dir);
       } else {
         // An explicit --branch (the head branch of the task's pull request) starts from its
         // remote state when the repository has it, otherwise from the base ref.
@@ -576,7 +669,8 @@ async function open(request, deps = {}) {
           if (!has()) git(basePath, ["fetch", "--no-tags", "origin", `+refs/heads/${branch}:${remote}`], { allowFail: true });
           if (has()) from = remote;
         }
-        git(basePath, ["worktree", "add", "--no-track", "-b", branch, dir, from]);
+        addCopy(basePath, [...wtAdd, "--no-track", "-b", branch, dir, from]);
+        finishCopy(dir);
       }
     }
   } else {

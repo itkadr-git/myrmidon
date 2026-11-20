@@ -426,6 +426,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     taskId: typeof context.taskId === "string" ? context.taskId : null,
     issueId: typeof context.issueId === "string" ? context.issueId : null,
   });
+  // A task on an SSH runner opens its own worktree; never copy the board's
+  // potentially unrelated checkout over the runner workspace by default.
+  const taskManagedSshWorkspace = Boolean(taskWorkspaceFolderName) &&
+    executionTarget?.kind === "remote" && executionTarget.transport === "ssh" &&
+    !asString(config.workspaceSync, "").trim();
   const wakeReason =
     typeof context.wakeReason === "string" && context.wakeReason.trim().length > 0
       ? context.wakeReason.trim()
@@ -455,6 +460,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // the MYRMIDON_* spelling — unlike the REBRAND-C aliases above which use
     // writeProductEnv to keep both spellings alive for one release.
     env[`MYRMIDON_TASK_FOLDER_NAME`] = taskWorkspaceFolderName;
+    env.MYRMIDON_TASK_BRANCH = `bot/${taskWorkspaceFolderName}`;
+    if (taskManagedSshWorkspace) env.MYRMIDON_WS_HOME = "/home/paperclip/.myrmidon";
   }
   if (issueWorkMode) writeProductEnv(env, "ISSUE_WORK_MODE", issueWorkMode); // myrmidon(REBRAND-C)
   if (wakeReason) writeProductEnv(env, "WAKE_REASON", wakeReason); // myrmidon(REBRAND-C)
@@ -746,7 +753,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           adapterKey: "omp",
           timeoutSec,
           workspaceLocalDir: cwd,
-          workspaceSyncMode: effectiveWorkspaceSyncMode,
+          syncWorkspace: taskManagedSshWorkspace ? false : undefined,
+          workspaceSyncMode: taskManagedSshWorkspace ? undefined : effectiveWorkspaceSyncMode,
           installCommand: SANDBOX_INSTALL_COMMAND,
           detectCommand: command,
           onProgress: (line) => onLog("stdout", line),
@@ -1035,6 +1043,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       wakePrompt,
       taskContextNote,
       sessionHandoffNote,
+      taskManagedSshWorkspace
+        ? "This SSH runner does not synchronize the board checkout. Before working on the task, open its isolated checkout with `myr-ws open \"$MYRMIDON_TASK_FOLDER_NAME\" <owner/repo> --json` using the task's repository (for example itkadr-git/myrmidon), then work in the returned path. The task branch is in MYRMIDON_TASK_BRANCH."
+        : "",
       renderedHeartbeatPrompt,
     ]);
     const promptMetrics = {

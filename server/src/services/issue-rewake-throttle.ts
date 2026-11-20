@@ -66,6 +66,7 @@ export const THROTTLED_ISSUE_REWAKE_REASONS: ReadonlySet<string> = new Set([
   // холостые петли «агент будится по своей же задаче без прогресса».
   "swarm_matched",
   "idle_pickup",
+  "in_progress_no_run",
   "issue_disposition_repair",
   "queued_run_stale_timeout",
 ]);
@@ -265,6 +266,68 @@ export function collectRunIdsWithIssueProgress(
   return withProgress;
 }
 
+/**
+ * myrmidon(EMPTY-RUNS-1): the activity row the board writes when the head of the
+ * task's pull request moves (`metadata.headSha` of the `pull_request` work
+ * product changes, see github-connection-events.ts). An engineer's run pushes
+ * commits to the PR and hands the task back to `todo`; the push leaves no row
+ * under the run (the board learns of it from GitHub), so this row is the only
+ * trace of the code work. Deliberately not part of ISSUE_PROGRESS_ACTIVITY_ACTIONS
+ * and ISSUE_NEW_INPUT_ACTIVITY_ACTIONS: it carries no run id, and as new input it
+ * would wake and thaw the very tasks it is only meant to explain.
+ */
+export const PR_HEAD_CHANGE_ACTIVITY_ACTION = "issue.work_product_head_changed";
+
+/**
+ * How long after a run ends a PR head change is still credited to that run. The
+ * webhook (or the reconciliation of the PR) reports a push with a delay, so the
+ * row can land after the run is already finished.
+ */
+export const PR_HEAD_CHANGE_LATE_WINDOW_MS = 15 * 60_000;
+
+/** The span of one run, as the head-change credit needs it. */
+export interface RunSpan {
+  id: string;
+  createdAt?: Date | null;
+  startedAt?: Date | null;
+  finishedAt?: Date | null;
+}
+
+/**
+ * The runs that moved the head of the task's PR. One head change is credited to
+ * one run: the run whose span [start, end] holds the change (the latest started,
+ * if spans overlap); otherwise the run that ended last before the change, when
+ * the change comes at most PR_HEAD_CHANGE_LATE_WINDOW_MS after its end. A run
+ * that has not finished ends at `now`. A run with neither start nor creation
+ * time is never credited.
+ */
+export function collectRunIdsWithPrHeadChange(
+  runs: readonly RunSpan[],
+  headChangeTimes: readonly Date[],
+  now: Date = new Date(),
+): Set<string> {
+  const spans = runs.flatMap((run) => {
+    const from = (run.startedAt ?? run.createdAt)?.getTime();
+    if (from === undefined) return [];
+    return [{ id: run.id, from, to: (run.finishedAt ?? now).getTime() }];
+  });
+  const credited = new Set<string>();
+  for (const change of headChangeTimes) {
+    const at = change.getTime();
+    let owner: { id: string; from: number; to: number } | undefined;
+    for (const span of spans) {
+      if (at >= span.from && at <= span.to && (!owner || span.from > owner.from)) owner = span;
+    }
+    if (!owner) {
+      for (const span of spans) {
+        if (span.to < at && at <= span.to + PR_HEAD_CHANGE_LATE_WINDOW_MS && (!owner || span.to > owner.to)) owner = span;
+      }
+    }
+    if (owner) credited.add(owner.id);
+  }
+  return credited;
+}
+
 export interface IssueRewakeCandidateInput {
   reason: string | null;
   wakeCommentId: string | null;
@@ -301,6 +364,19 @@ export interface IssueRewakeThrottleInput {
   recentTerminalRuns: RecentIssueRunSample[];
   /** Runs among the sample that produced issue-visible progress. */
   runIdsWithIssueProgress: ReadonlySet<string>;
+  /**
+   * Runs among the sample that left progress other than their own comment
+   * (a status move, a document, a work product, a monitor, ...). When given,
+   * the no-progress streak breaks on this set instead of
+   * `runIdsWithIssueProgress`: myrmidon(OPE-14746) an engineer run that only
+   * parks the task in place with a comment ("CI red, waiting for ADM to
+   * restart", "disk quota, waiting for space") leaves no issue-visible
+   * change the next event-free wake could build on, so it must not reset the
+   * rewake throttle; on 17.11 such comment-only parked runs kept the streak
+   * at zero and let automatic continuations re-run the same task every minute
+   * (32 of 38 empty engineer runs in two hours sat in such repeat series).
+   */
+  runIdsWithNonCommentProgress?: ReadonlySet<string>;
   /** New issue input landed after the newest run finished. */
   hasNewIssueInputSinceLastRun: boolean;
 }
@@ -345,11 +421,13 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
   if (input.hasNewIssueInputSinceLastRun) return { blocked: false, noProgressStreak: 0 };
 
   let noProgressStreak = 0;
+  const substantiveProgress =
+    input.runIdsWithNonCommentProgress ?? input.runIdsWithIssueProgress;
   for (const run of runs) {
     // Ordinary failed/cancelled/interrupted runs break the no-op streak;
     // a single stale timeout may retry once without cooldown.
     if (run.status !== "succeeded" || !run.finishedAt) break;
-    if (input.runIdsWithIssueProgress.has(run.id)) break;
+    if (substantiveProgress.has(run.id)) break;
     noProgressStreak += 1;
   }
 

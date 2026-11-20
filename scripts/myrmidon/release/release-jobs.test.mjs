@@ -79,6 +79,7 @@ describe("extractJobs", () => {
     const jobs = extractJobs(yaml);
     // The full tier of the tag CI. Keep this list in sync with the workflow.
     const expected = [
+      "reuse branch CI",
       "typecheck",
       "build",
       "tests (${{ matrix.label }})",
@@ -1097,15 +1098,16 @@ describe("extractJobGraph", () => {
       "checks",
       "dockergate",
       "fleetd",
+      "reuse-check",
       "tests",
       "tests-other",
       "tests-runner",
       "typecheck",
     ]);
-    // Build jobs have no needs of their own (flat graph).
+    // Full lanes depend on the reuse decision.
     for (const id of gate.needs) {
       const job = graph.find((j) => j.id === id);
-      assert.deepEqual(job.needs, [], `${id} has no needs`);
+      assert.deepEqual(job.needs, id === "reuse-check" ? [] : ["reuse-check"], `${id} dependencies`);
     }
   });
 });
@@ -1191,6 +1193,7 @@ describe("gateDependencyJobs", () => {
     const yaml = fs.readFileSync(TAG_WORKFLOW, "utf8");
     const deps = gateDependencyJobs(yaml, "ci-result");
     assert.deepEqual(deps, [
+      "reuse branch CI",
       "typecheck",
       "build",
       "tests (${{ matrix.label }})",

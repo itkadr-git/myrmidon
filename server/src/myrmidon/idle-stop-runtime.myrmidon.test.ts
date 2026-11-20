@@ -39,14 +39,28 @@ describe("idleStopRuntimeFromStatus", () => {
     expect(before.coldStartDurationMs).toBeNull();
   });
 
-  it("leaves the cold-start duration null when either timestamp is missing", () => {
-    const noStop = idleStopRuntimeFromStatus({
-      botKey: "b",
-      state: "running",
-      inspect: { State: { StartedAt: "2026-10-20T01:00:00.000Z", FinishedAt: "0001-01-01T00:00:00Z" } },
-    });
+  it("leaves timestamps and cold-start duration null for empty, invalid, or Docker zero times", () => {
+    const invalidTimes = ["", "not-a-timestamp", "0001-01-01T00:00:00Z"];
+    for (const invalidTime of invalidTimes) {
+      for (const timestampField of ["StartedAt", "FinishedAt"] as const) {
+        const inspectState = {
+          StartedAt: "2026-10-20T01:00:00.000Z",
+          FinishedAt: "2026-10-20T02:00:00.000Z",
+          [timestampField]: invalidTime,
+        };
+        expect(() => {
+          const runtime = idleStopRuntimeFromStatus({
+            botKey: "b",
+            state: "running",
+            inspect: { State: inspectState },
+          });
+          expect(runtime[timestampField === "StartedAt" ? "lastStartedAt" : "lastStoppedAt"]).toBeNull();
+          expect(runtime.coldStartDurationMs).toBeNull();
+        }).not.toThrow();
+      }
+    }
+
     const noInspect = idleStopRuntimeFromStatus({ botKey: "b", state: "missing" });
-    expect(noStop.coldStartDurationMs).toBeNull();
     expect(noInspect.coldStartDurationMs).toBeNull();
   });
 

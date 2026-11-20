@@ -16,6 +16,7 @@ function runStep(runs) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tag-queue-test-"));
   try {
     fs.writeFileSync(path.join(dir, "runs.json"), JSON.stringify(runs));
+    fs.copyFileSync(path.join(root, "scripts/myrmidon/release/release-jobs.mjs"), path.join(dir, "release-jobs.mjs"));
     fs.writeFileSync(path.join(dir, "gh"), `#!/usr/bin/env node
 const runs = require(process.env.FIXTURE);
 const url = new URL('https://example.test/' + process.argv[3]);
@@ -26,7 +27,7 @@ console.log(JSON.stringify({total_count: filtered.length, workflow_runs: filtere
 `, { mode: 0o755 });
     return spawnSync("bash", ["-c", script], { cwd: root, encoding: "utf8", env: {
       ...process.env, BASH_ENV: "", PATH: `${dir}:${process.env.PATH}`, FIXTURE: path.join(dir, "runs.json"),
-      REPO: "example/repo", WORKFLOW: "Myrmidon CI (tag)", PRIORITY_POOL: '["priority"]',
+      RUNNER_TEMP: dir, REPO: "example/repo", WORKFLOW: "Myrmidon CI (tag)", PRIORITY_POOL: '["priority"]',
     } });
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }

@@ -31,6 +31,14 @@ export function formatUtcTime(date: Date): string {
   return `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())} UTC`;
 }
 
+// myrmidon: a limit answer whose known window is already over (the answer crossed the window
+// edge, or the headers are stale) must not lock the process for an hour. A locked process makes no
+// request, sees no fresh headers, and never learns that the limit is back (16.11: 06:14-07:28 UTC).
+// The short pause lets the next request fetch fresh headers.
+export const GITHUB_RATE_LIMIT_STALE_WINDOW_PAUSE_SECONDS = 60;
+// The unknown-window fallback stays one hour.
+export const GITHUB_RATE_LIMIT_UNKNOWN_WINDOW_PAUSE_SECONDS = 3600;
+
 interface RateLimitState {
   remaining: number | null;
   limit: number | null;
@@ -142,8 +150,11 @@ export function recordGitHubRequest(
       state.rateLimitResetEpochSeconds = retryAfterEpochSeconds;
     } else if (state.windowResetEpochSeconds && state.windowResetEpochSeconds * 1000 > Date.now()) {
       state.rateLimitResetEpochSeconds = state.windowResetEpochSeconds;
+    } else if (state.windowResetEpochSeconds) {
+      // The window is known and already in the past.
+      state.rateLimitResetEpochSeconds = Math.floor(Date.now() / 1000) + GITHUB_RATE_LIMIT_STALE_WINDOW_PAUSE_SECONDS;
     } else {
-      state.rateLimitResetEpochSeconds = Math.floor(Date.now() / 1000) + 3600;
+      state.rateLimitResetEpochSeconds = Math.floor(Date.now() / 1000) + GITHUB_RATE_LIMIT_UNKNOWN_WINDOW_PAUSE_SECONDS;
     }
   } else if (status !== undefined && status >= 200 && status < 400 && state.remaining !== null && state.remaining > 0) {
     state.rateLimitResetEpochSeconds = null;

@@ -80,18 +80,40 @@ const defaultPorts: LitellmReconcilePorts = {
       companyId,
       [],
       [],
-      false,
-      { apply: false },
+      { apply: true, cardModelsOnly: true },
     );
   },
   log: logger,
 };
 
 /**
- * Reconciles each company's enabled models with the gateway once, at startup.
+ * Reconciles each company's enabled models and card-key allowlists with the gateway once, at startup.
  * A no-op when the gateway settings are absent; one company's failure never
  * stops the others; nothing here rejects the caller's promise.
  */
+export async function reconcileAgentAllowlistDrift(db: Db): Promise<void> {
+  for (const companyId of await defaultPorts.listCompanyIds(db)) {
+    try {
+      const result = await defaultPorts.reportAgentAllowlists(db, companyId, process.env);
+      logger.info({ companyId, ...summarizeAllowlistResult(result as Parameters<typeof summarizeAllowlistResult>[0]) }, "litellm allowlist watchdog completed");
+    } catch (err) {
+      logger.warn({ err, companyId }, "litellm allowlist watchdog failed for company");
+    }
+  }
+}
+
+export function startAgentAllowlistWatchdog(reconcile: () => Promise<void>, intervalMs = 300_000): () => void {
+  let running = false;
+  const timer = setInterval(() => {
+    if (running) return;
+    running = true;
+    void reconcile().catch((err) => logger.warn({ err }, "litellm allowlist watchdog failed"))
+      .finally(() => { running = false; });
+  }, intervalMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+
 export async function startLitellmModelReconciliation(
   db: Db,
   opts: { env?: NodeJS.ProcessEnv; ports?: Partial<LitellmReconcilePorts> } = {},
@@ -145,9 +167,12 @@ export async function startLitellmModelReconciliation(
           resolveCredential: (ownerCompanyId, secretName) => ports.resolveCredential(db, ownerCompanyId, secretName),
         }).reconcileWithLitellm(companyId);
         const allowlists = await ports.reportAgentAllowlists(db, companyId, env);
+        const summary = summarizeAllowlistResult(allowlists as Parameters<typeof summarizeAllowlistResult>[0]);
         ports.log.info(
-          { companyId, ...summarizeAllowlistResult(allowlists as Parameters<typeof summarizeAllowlistResult>[0]) },
-          "litellm agent key allowlists checked at startup (dry run, nothing applied)",
+          { companyId, ...summary },
+          summary.mode === "dry-run"
+            ? "litellm agent key allowlists checked at startup (dry run, nothing applied)"
+            : "litellm agent key allowlists reconciled at startup",
         );
       });
     } catch (err) {

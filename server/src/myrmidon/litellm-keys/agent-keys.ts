@@ -9,6 +9,7 @@ import {
 } from "@myrmidon/shared";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../../errors.js";
 import { secretService } from "../../services/index.js";
+import { getConfiguredSecretProvider } from "../../secrets/configured-provider.js";
 import { readBudgetProjectionSettings } from "../litellm-budget-sync/settings.js";
 import { keyBudgetUsage, type KeyBudgetLimitView, type KeyBudgetUsageView } from "./key-budget-adapter.js";
 import { AGENT_SPEND_WINDOW_MS, readAgentSpendWindows, type AgentSpendWindow } from "./key-spend.js";
@@ -96,6 +97,7 @@ export interface AgentGatewayKeyDeps {
   readSpendWindows?(): Promise<AgentSpendWindow[]>;
   env?: NodeJS.ProcessEnv;
   log?: { info(fields: object, message: string): void; warn(fields: object, message: string): void };
+  recordAllowlistDrift?: (input: { companyId: string; agentId: string; add: string[]; remove: string[] }) => Promise<void>;
 }
 
 /** The key-management surface of the gateway this module uses. */
@@ -746,16 +748,36 @@ export function defaultAgentGatewayKeyDeps(
         {
           name: input.name,
           key: input.name,
+          provider: getConfiguredSecretProvider(),
           value: input.value,
           description: input.description,
           expiresAt: input.expiresAt,
-        } as never,
+        },
         { userId: null, agentId: null },
       )) as { id: string };
       return { id: created.id };
     },
     rotateSecret: async (secretId, value, expiresAt) => {
       await secrets.rotate(secretId, { value, expiresAt }, { userId: null, agentId: null });
+    },
+    recordAllowlistDrift: async ({ companyId, agentId, add, remove }) => {
+      const details = { addedModels: add, removedModels: remove };
+      console.info({ companyId, agentId, ...details }, "agent gateway allowlist reconciled");
+      try {
+        const { logActivity } = await import("../../services/activity-log.js");
+        await logActivity(db, {
+          companyId,
+          actorType: "system",
+          actorId: "system",
+          action: "agent.gateway_allowlist_reconciled",
+          entityType: "agent",
+          entityId: agentId,
+          agentId,
+          details,
+        });
+      } catch (error) {
+        console.warn({ companyId, agentId, error }, "could not record allowlist reconciliation activity");
+      }
     },
     deleteSecret: async (secretId) => {
       await secrets.remove(secretId);

@@ -105,6 +105,7 @@ function apiView() {
       tool_timeout_slow_ms: 45000,
       bot_reconcile_interval_sec: 60,
       input_limit_precheck: true,
+      monitorUnchangedWakeLimit: 3,
     },
     sources: {
       debug_mode: "default",
@@ -119,6 +120,7 @@ function apiView() {
       tool_timeout_slow_ms: "default",
       bot_reconcile_interval_sec: "default",
       input_limit_precheck: "default",
+      monitorUnchangedWakeLimit: "default",
     },
   };
 }
@@ -286,6 +288,27 @@ describe("myrmidon(UI2) Ui2FineSettings (SWEEP-2)", () => {
     expect(mockUpdate).toHaveBeenCalledTimes(1);
     expect(mockUpdate).toHaveBeenCalledWith({ input_limit_precheck: false });
     expect(container.querySelector('[data-testid="ui2-fine-row-input_limit_precheck"] button')).toBeNull();
+  });
+
+  it("lets an admin change the idle monitor limit", async () => {
+    setAdmin(true);
+    const view = apiView();
+    mockUpdate.mockResolvedValue({
+      settings: { ...view.settings, monitorUnchangedWakeLimit: 2 },
+      sources: { ...view.sources, monitorUnchangedWakeLimit: "ui" },
+    });
+    await renderBlock();
+    const row = container.querySelector('[data-testid="ui2-fine-row-monitorUnchangedWakeLimit"]');
+    const input = row?.querySelector('input[type="number"]') as HTMLInputElement;
+    expect(input.value).toBe("3");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setValue.call(input, "2");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await flushReact();
+    (row?.querySelector("button") as HTMLButtonElement).click();
+    await flushReact();
+    expect(mockUpdate).toHaveBeenCalledWith({ monitorUnchangedWakeLimit: 2 });
+    expect(input.value).toBe("2");
   });
 
   it("non-admin sees no inputs and no buttons", async () => {

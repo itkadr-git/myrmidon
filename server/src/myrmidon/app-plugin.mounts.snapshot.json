@@ -19,7 +19,7 @@
   "api.use(summarySlotRoutes(db))",
   "api.use(statusCardRoutes(db))",
   "api.use(teamsCatalogRoutes(db))",
-  "api.use(\n    agentRoutes(db, {\n      chatRunRetries: chatChannels,\n      pluginWorkerManager: workerManager,\n      deploymentMode: opts.deploymentMode,\n      confidentialProxyAllowlist: setupTokenLoginProxyAllowlist,\n      confidentialEdgeTlsTerminated: setupTokenLoginEdgeTlsTerminated,\n      setupTokenLogin: setupTokenLoginTransport,\n      onSetupTokenLoginService: (service) => {\n        // Capture the service, so the graceful-shutdown hook cancels every live\n        // session and releases each lease. The standalone scheduled reaper owns\n        // the startup and interval lease cleanup now (SR-4).\n        setupTokenLoginService = service;\n      },\n    }),\n  )",
+  "api.use(\n    agentRoutes(db, {\n      syncAgentModelAllowlist: async ({ companyId, agentId, db: transactionDb }) => {\n        const result = await updateAgentAllowlistsForCompany(\n          transactionDb,\n          defaultAgentGatewayKeyDeps(transactionDb),\n          companyId,\n          [],\n          [],\n          { cardModelsOnly: true, agentId, apply: true },\n        );\n        const failures = result.skipped.filter((reason) => reason !== \"gateway-key-management-not-configured\" && reason !== `agent-without-key:${agentId}` && reason !== `key-all-models:${agentId}`);\n        if (failures.length) {\n          logger.warn({ companyId, agentId, failures }, \"agent card saved but gateway allowlist reconciliation failed\");\n        }\n      },\n      onAgentModelAllowlistSyncFailure: ({ companyId, agentId, error }) => {\n        logger.warn({ companyId, agentId, err: error }, \"agent card saved but gateway allowlist reconciliation failed\");\n      },\n      chatRunRetries: chatChannels,\n      pluginWorkerManager: workerManager,\n      deploymentMode: opts.deploymentMode,\n      confidentialProxyAllowlist: setupTokenLoginProxyAllowlist,\n      confidentialEdgeTlsTerminated: setupTokenLoginEdgeTlsTerminated,\n      setupTokenLogin: setupTokenLoginTransport,\n      onSetupTokenLoginService: (service) => {\n        // Capture the service, so the graceful-shutdown hook cancels every live\n        // session and releases each lease. The standalone scheduled reaper owns\n        // the startup and interval lease cleanup now (SR-4).\n        setupTokenLoginService = service;\n      },\n    }),\n  )",
   "api.use(assetRoutes(db, opts.storageService))",
   "api.use(projectToolRoutes(db))",
   "api.use(projectRoutes(db))",
@@ -69,7 +69,7 @@
   "api.use(myrmidonAutoUpdateRoutes(db))",
   "api.use(myrmidonRuntimeLimitsRoutes(db))",
   "api.use(myrmidonPauseGuardRoutes(db))",
-  "api.use(myrmidonRunPriorityRoutes(db))",
+  "api.use(myrmidonRunPriorityRoutes(db, opts.processBus ?? null))",
   "api.use(myrmidonRunStallRoutes(db))",
   "api.use(myrmidonCorpusRoutes(db, { ports: resolveCorpusPorts }))",
   "api.use(myrmidonProcessesRouter(db as any, opts.processSupervisor ?? null, opts.processBus ?? null))",
@@ -196,6 +196,7 @@
   "api.use(poolChatRoutes(db, resolvePoolChatTransport))",
   "api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService))",
   "api.use(blockerGraphRoutes(db))",
+  "api.use(issueAcceptanceSnapshotRoutes(db))",
   "api.use(issueRoutes(db, opts.storageService, {\n    chatRunRetries: chatChannels,\n    feedbackExportService: opts.feedbackExportService,\n    pluginWorkerManager: workerManager,\n    approveToolActionRequest: (input) => toolGateway.approveActionRequest(input),\n    declineToolActionRequest: (input) => toolGateway.declineActionRequest(input),\n  }))",
   "api.use(aiConnectionRoutes(db, { deploymentMode: opts.deploymentMode, deploymentExposure: opts.deploymentExposure, trustedLocalStdioRuntimeHost }))",
   "api.use(\n    toolAccessRoutes(db, {\n      deploymentMode: opts.deploymentMode,\n      deploymentExposure: opts.deploymentExposure,\n      authPublicBaseUrl: opts.authPublicBaseUrl,\n      trustedLocalStdioRuntimeHost,\n      toolGateway,\n      connectionIntentHeartbeat,\n    }),\n  )",
@@ -205,6 +206,7 @@
   "api.use(\n    pluginRoutes(\n      db,\n      loader,\n      { scheduler, jobStore },\n      { workerManager },\n      { toolDispatcher },\n      { workerManager, providerModelSync: createPluginProviderModelSync(db) },\n      { toolGateway },\n    ),\n  )",
   "api.use(\n    adapterRoutes({\n      getNativeRunnerEnabled: async () =>\n        (await instanceSettingsService(db).getExperimental())\n          .enableNativeRunner === true,\n    }),\n  )",
   "api.use(myrmidonCasteRoutes(db))",
+  "api.use(myrmidonModelGroupRulesRoutes(db))",
   "api.use(myrmidonGuardrailsRoutes(db))",
   "api.use(\n    accessRoutes(db, {\n      deploymentMode: opts.deploymentMode,\n      deploymentExposure: opts.deploymentExposure,\n      bindHost: opts.bindHost,\n      allowedHostnames: opts.allowedHostnames,\n      authPublicBaseUrl: opts.authPublicBaseUrl,\n    }),\n  )"
 ]

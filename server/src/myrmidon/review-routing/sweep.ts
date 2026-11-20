@@ -165,6 +165,8 @@ export interface ReviewRoutingSweepDeps {
    * step stays inert; with it, `boardMerge.enabled` (default on) decides.
    */
   boardMerge?: BoardMergeClient;
+  /** OPE-13942: webhooks show a check of the head still queued (the board merge would be refused). */
+  headChecksQueued?: (input: { companyId: string; repository: string; number: number; headSha: string }) => Promise<boolean>;
   /** PR approval propagator (propagates board review approvals to GitHub PR). */
   approvalPropagator?: (input: {
     companyId: string;
@@ -188,6 +190,14 @@ export interface ReviewRoutingSweepDeps {
     issueId: string;
     details: Record<string, unknown>;
   }) => Promise<void>;
+  /**
+   * myrmidon(OPE-13149): the board's own reader of the CI result of the
+   * pull request head under review (the one that makes REQUEST CHANGES refuse
+   * with "CI result ... is not complete"). Without it the wake lane does not
+   * look at CI (older behaviour); with it a reviewer is not woken while the
+   * head's CI is still running.
+   */
+  resolveReviewCi?: (input: { companyId: string; issueId: string }) => Promise<{ state: string; headSha?: string | null }>;
   isUnderMaintenance?: () => Promise<boolean>;
   intervalMs?: number;
   now?: () => Date;
@@ -231,10 +241,22 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
   const recentReassignments = new Map<string, { signal: ReviewRoutingSignal; untilMs: number }>();
   /** PR-lane signals from the lane's last actual run, kept through throttle gaps. */
   const prLaneSignalsByCompany = new Map<string, ReviewRoutingSignal[]>();
+  /**
+   * myrmidon(OPE-13149): the last wake of the liveness lane per
+   * (issue, reviewer, stage, PR head, CI state). The same key is not woken
+   * again by the periodic pass: a reviewer who ran and left no verdict has
+   * nothing new to look at until the head, the stage or the CI state moves.
+   * A cancelled run (failed dispatch) still retries; the key is dropped after
+   * REVIEW_WAKE_REARM_AFTER_MS like an exhausted series.
+   */
+  const livenessWakeByKey = new Map<string, number>();
+  // myrmidon(REVIEW-REBALANCE-CI): reviews whose rebalance was held because they wait for CI; one log line per key.
+  const rebalanceHeldByCi = new Map<string, number>();
   const boardMerger = deps.boardMerge
     ? createBoardMerger({
         store: deps.store,
         client: deps.boardMerge,
+        headChecksQueued: deps.headChecksQueued,
         addComment: deps.addComment,
         wakeAgent: (agentId, wake) => deps.wakeReviewer(agentId, wake),
         logActivity: deps.logActivity,
@@ -309,7 +331,15 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         : {};
       return state.status === "pending" && state.currentStageType === "review" && state.currentStageId === review.stageId && participant.type === "agent" && participant.agentId === review.reviewerAgentId && activeStageIdsByIssue.get(row.id)?.has(review.stageId) === true;
     });
-    const orderedPending = [...activeStages].sort((a, b) => a.row.createdAt.getTime() - b.row.createdAt.getTime());
+    // myrmidon(OPE-13149): only a task that is still `in_review` with a pending
+    // review stage awaiting this reviewer is woken; a task returned to the
+    // implementer (changes_requested, in_progress) has nothing for a reviewer.
+    const orderedPending = [...activeStages]
+      .filter(({ row }) => row.status === "in_review")
+      .sort((a, b) => a.row.createdAt.getTime() - b.row.createdAt.getTime());
+    for (const [key, at] of livenessWakeByKey) {
+      if (now.getTime() - at >= REVIEW_WAKE_REARM_AFTER_MS) livenessWakeByKey.delete(key);
+    }
     const reviewersWoken = new Set<string>();
     for (const { row, review } of orderedPending) {
       if (reviewersWoken.has(review.reviewerAgentId)) continue;
@@ -363,6 +393,30 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           const lastActivity = row.updatedAt ?? row.createdAt;
           if (now.getTime() - lastActivity.getTime() < REVIEW_WAKE_STALE_AFTER_MS) continue;
         }
+        // myrmidon(OPE-13149): the reviewer cannot give a verdict on a head whose
+        // CI is still running (REQUEST CHANGES is refused with "CI result ... is
+        // not complete"), so a wake is an empty run. The `ci_completed` event
+        // wakes the reviewer when the result arrives; this pass stays a safety
+        // net for a completed head. An unreadable CI ("unknown") does not hold
+        // the wake: the backoff above still bounds it.
+        let ciState = "unread";
+        let headSha = "";
+        if (deps.resolveReviewCi) {
+          const ci = await deps.resolveReviewCi({ companyId, issueId: row.id }).catch(() => null);
+          if (ci) {
+            ciState = ci.state;
+            headSha = typeof ci.headSha === "string" ? ci.headSha : "";
+            if (ci.state === "pending") continue;
+          }
+        }
+        // The same head in the same stage and CI state was already woken and the
+        // run did not fail to dispatch: nothing new to review, no repeat wake.
+        const wakeKey = [row.id, review.reviewerAgentId, review.stageId, headSha, ciState].join("|");
+        const cancelledAfterWake = wakeState.lastCancelledRunAt != null
+          && (!wakeState.lastWakeAt || wakeState.lastCancelledRunAt > wakeState.lastWakeAt);
+        // Without a known head (no CI reader wired, or the head unreadable) there is
+        // no key to compare: the plain backoff above is the only bound.
+        if (headSha !== "" && livenessWakeByKey.has(wakeKey) && !cancelledAfterWake) continue;
         const attempt = seriesAttempts + 1;
         const wakeContext = buildReviewRoutingWakeContext(
           (row.executionState ?? {}) as Record<string, unknown>,
@@ -391,6 +445,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           executionStage: wakeContext as unknown as Record<string, unknown>,
           retryAttempt: attempt,
         });
+        if (headSha !== "") livenessWakeByKey.set(wakeKey, now.getTime());
         liveByReviewer.set(review.reviewerAgentId, (liveByReviewer.get(review.reviewerAgentId) ?? 0) + 1);
         result.woken += 1;
       } catch (err) {
@@ -755,6 +810,11 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
 
         emptyCandidates.sort((a, b) => a.id.localeCompare(b.id));
         const picked = emptyCandidates[0];
+
+        // myrmidon(REVIEW-REBALANCE-CI): a reviewer who already read the current
+        // head and waits only for its CI is not replaced: the next reviewer
+        // would read the same head and wait for the same CI.
+        if (await reviewWaitsForCi(row, review.reviewerAgentId, waitingSince, now)) continue;
 
         try {
           const state = await rebalance(row, review.reviewerAgentId, picked, waitingMinutes);
@@ -1248,6 +1308,49 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     return applied;
   }
 
+  /**
+   * myrmidon(REVIEW-REBALANCE-CI): true when the current reviewer already read the
+   * current head and CI of that head has no verdict yet. "Read": a succeeded run
+   * of the reviewer started, or the reviewer commented, after the last head
+   * change (without a head-change row: after the review was routed to them).
+   * "Waits for CI": the board's CI reader (the one the liveness lane and the
+   * verdict check use) says `pending` for the head. Reader failures answer false:
+   * the rebalance goes on as before. Logs once per issue, reviewer and head.
+   */
+  async function reviewWaitsForCi(
+    row: InReviewIssueRow,
+    reviewerAgentId: string,
+    routedAt: Date,
+    now: Date,
+  ): Promise<boolean> {
+    if (!deps.resolveReviewCi) return false;
+    try {
+      // The CI reader is cached (60 s); the run query is not: ask CI first.
+      const ci = await deps.resolveReviewCi({ companyId: row.companyId, issueId: row.id });
+      if (ci.state !== "pending") return false;
+      const facts = await deps.store.reviewerReadFacts({ companyId: row.companyId, issueId: row.id, reviewerAgentId });
+      const since = (facts.headChangedAt ?? routedAt).getTime();
+      const readAt = Math.max(facts.lastRunStartedAt?.getTime() ?? 0, facts.lastCommentAt?.getTime() ?? 0);
+      if (readAt <= since) return false;
+      const headSha = typeof ci.headSha === "string" ? ci.headSha : "";
+      const key = [row.id, reviewerAgentId, headSha].join("|");
+      if (!rebalanceHeldByCi.has(key)) {
+        for (const [oldKey, at] of rebalanceHeldByCi) {
+          if (now.getTime() - at >= REVIEW_WAKE_REARM_AFTER_MS) rebalanceHeldByCi.delete(oldKey);
+        }
+        rebalanceHeldByCi.set(key, now.getTime());
+        log.info(
+          { issueId: row.id, reviewerId: reviewerAgentId, headSha },
+          "review routing keeps the reviewer: the review of this head was read and waits for CI, no rebalance",
+        );
+      }
+      return true;
+    } catch (err) {
+      log.warn({ err, issueId: row.id }, "review routing could not tell whether a review waits for CI; rebalance goes on");
+      return false;
+    }
+  }
+
   async function rebalance(
     row: InReviewIssueRow,
     previousReviewerId: string,
@@ -1333,11 +1436,20 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       lastSweepAtMs = 0;
       lastPrLaneAtMs = 0;
       recentReassignments.clear();
+      livenessWakeByKey.clear();
+      rebalanceHeldByCi.clear();
       prLaneSignalsByCompany.clear();
       boardMerger?.resetForTest();
     },
     async mergeOnEvent(event) {
       if (!boardMerger) return null;
+      // A completed check matters only for a pull request the merger parked: no settings read otherwise.
+      if (
+        event.source === "check_completed" &&
+        !(event.repository && event.number && boardMerger.isParked(event.companyId, { repository: event.repository, number: event.number }))
+      ) {
+        return null;
+      }
       if (deps.isUnderMaintenance && (await deps.isUnderMaintenance())) return null;
       const settings = await deps.readSettings();
       const now = (deps.now ?? (() => new Date()))();
@@ -1345,7 +1457,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       if (event.repository && event.number) {
         return boardMerger.mergePullRequest(
           event.companyId,
-          { repository: event.repository, number: event.number },
+          { repository: event.repository, number: event.number, headSha: event.headSha ?? null, checkCompleted: event.source !== "review_approved" },
           settings,
           now,
         );

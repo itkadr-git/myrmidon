@@ -1261,7 +1261,9 @@ describe("TaskChatComposer", () => {
         onAdd={onAdd}
         workMode="standard"
         mentions={[
-          { id: "agent:a1", kind: "agent", name: "Clippy", agentId: "a1" },
+          // The display/list key is intentionally different from the durable agent
+          // address: selection must serialize agentId, not infer it from id.
+          { id: "agent:legacy-list-key", kind: "agent", name: "Clippy", agentId: "a1" },
         ]}
       />,
     );

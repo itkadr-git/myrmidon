@@ -965,6 +965,12 @@ describe("renderPaperclipWakePrompt", () => {
     };
     const ordinary = renderPaperclipWakePrompt(payload, { resumedSession: true });
     expect(ordinary).toContain("Execution contract:");
+    expect(ordinary).toContain("the board resumes a task in progress by itself");
+    expect(ordinary).toContain("set it only when you stop working on it");
+    expect(ordinary).toContain("set `blocked` with a named unblock owner/action, not `in_progress`");
+    expect(ordinary).toContain("Open the pull request at your first push on the task, at once: a draft while the work is not finished");
+    expect(ordinary).toContain("run `gh pr ready` and move the task to `in_review` with a reviewer");
+    expect(ordinary).not.toContain("only when a live continuation path exists");
     expect(ordinary).toContain("Create child issues from the approved plan");
     for (const resumedSession of [false, true]) {
       const chat = renderPaperclipWakePrompt(payload, {
@@ -1463,7 +1469,13 @@ describe("renderPaperclipWakePrompt", () => {
       "evidence, not valid liveness paths by themselves",
     );
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "keep `in_progress` only when a live continuation path exists",
+      "leave the issue `in_progress`: the board resumes a task in progress by itself",
+    );
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
+      "`todo` puts the issue back into the queue, so set it only when you stop working on it",
+    );
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
+      "do not end the heartbeat after the first piece of work if you can keep going in this same heartbeat",
     );
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
       "Prefer the smallest verification that proves the change",

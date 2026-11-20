@@ -14,6 +14,7 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueComments,
+  issueWorkProducts,
   issues,
 } from "@myrmidon/db";
 import {
@@ -26,6 +27,7 @@ import {
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
   collectRunIdsWithIssueProgress,
 } from "../services/issue-rewake-throttle.js";
+import { readRunIdsWithPrHeadChange } from "../services/pr-head-change-progress.js";
 
 export interface TasklessWakeContext {
   source: string | null | undefined;
@@ -428,6 +430,44 @@ export function decideIssueCooling(input: {
 }
 
 /**
+ * myrmidon(CI-WAIT-NOT-LOAD): does the task have an open GitHub PR (draft or
+ * ready) whose CI is queued or in_progress on a known head right now? No age
+ * threshold: unlike the load discount of the matcher, "no progress" must not
+ * be declared at all while the PR is waiting for CI.
+ */
+/** An activeCi observation older than this is treated as never closed. */
+const CI_WAIT_COOLING_MAX_AGE_MS = 2 * 3_600_000;
+
+export async function issueWaitsForOwnPrCi(db: Db, companyId: string, issueId: string): Promise<boolean> {
+  const products = await db
+    .select({ status: issueWorkProducts.status, metadata: issueWorkProducts.metadata })
+    .from(issueWorkProducts)
+    .where(and(
+      eq(issueWorkProducts.companyId, companyId),
+      eq(issueWorkProducts.issueId, issueId),
+      eq(issueWorkProducts.type, "pull_request"),
+      eq(issueWorkProducts.provider, "github"),
+    ));
+  return products.some((product) => {
+    if (product.status !== "open") return false;
+    const meta = product.metadata as Record<string, unknown> | null;
+    const ci = meta?.activeCi && typeof meta.activeCi === "object" ? meta.activeCi as Record<string, unknown> : null;
+    if (!ci || !(ci.status === "queued" || ci.status === "in_progress")) return false;
+    const ciHead = typeof ci.headSha === "string" ? ci.headSha.trim().toLowerCase() : "";
+    if (!ciHead) return false;
+    // The CI must belong to the CURRENT head of the PR (same rule as the
+    // matcher): a record left for an older head proves nothing.
+    const currentHead = typeof meta?.headSha === "string" ? meta.headSha.trim().toLowerCase() : "";
+    if (currentHead && currentHead !== ciHead) return false;
+    // A record that no completion event ever closed must not hold the task out
+    // of the cooling for ever: an observation older than the cap is ignored.
+    const observedAt = typeof ci.observedAt === "string" ? Date.parse(ci.observedAt) : NaN;
+    if (Number.isFinite(observedAt) && Date.now() - observedAt > CI_WAIT_COOLING_MAX_AGE_MS) return false;
+    return true;
+  });
+}
+
+/**
  * Cooling evaluation for one issue (§4.3). Stable port: other swarm branches
  * call it through an adapter. Reads the last automatic terminal runs and the
  * task movement (comments and movement activity by a user or another agent;
@@ -490,7 +530,16 @@ export async function isIssueCoolingDown(
     );
     const moves = await taskMovements(db, companyId, issueId, oldestFinished);
     const runs = await withIssueProgress(db, companyId, issueId, issueRow.status, rows);
-    return decideIssueCooling({ issueStatus: issueRow.status, runs, moves, settings, now });
+    const decision = decideIssueCooling({ issueStatus: issueRow.status, runs, moves, settings, now });
+    // myrmidon(CI-WAIT-NOT-LOAD): a task that went back to todo only because
+    // its own PR waits for CI is not parked. The run left nothing visible
+    // because there was nothing to do until CI ends, and ci_completed wakes
+    // the task by itself. Freezing it hid 8-13 of 14 engineers from the swarm
+    // on 16.11. Other reasons (blocked, failed, ...) keep their cooling.
+    if (decision.cooling && decision.reason === "no_progress" && (await issueWaitsForOwnPrCi(db, companyId, issueId))) {
+      return NOT_COOLING;
+    }
+    return decision;
   } catch {
     return NOT_COOLING;
   }
@@ -503,7 +552,8 @@ export async function isIssueCoolingDown(
  * final text, a release and a hand-back to the queue with its parking note are
  * not progress. The activity is read only where it can change the decision —
  * the task is in `todo` and at least one succeeded run is "advanced"; every
- * other run goes through unmarked.
+ * other run goes through unmarked. A run that moved the head of the task's PR
+ * (a head-change row inside its window, any actor) made progress too.
  */
 async function withIssueProgress<T extends CoolingRun & { id: string }>(
   db: Db,
@@ -541,6 +591,11 @@ async function withIssueProgress<T extends CoolingRun & { id: string }>(
     activity,
     (runId) => agentIdByRunId.get(runId) ?? null,
   );
+  // A hand-back leaves no row about the code the run pushed to the task's PR; the board records the move of the
+  // PR head (any actor, up to PR_HEAD_CHANGE_LATE_WINDOW_MS after the run) and that is the run's progress.
+  for (const runId of await readRunIdsWithPrHeadChange(db, companyId, issueId, advanced)) {
+    withProgress.add(runId);
+  }
   return rows.map((row) =>
     agentIdByRunId.has(row.id) ? { ...row, madeIssueProgress: withProgress.has(row.id) } : row,
   );

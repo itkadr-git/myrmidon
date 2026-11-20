@@ -34,6 +34,7 @@ import {
 } from "./policy.js";
 import { readStaleBlockSettings, type StaleBlockSettings } from "./settings.js";
 import { recordStaleBlockSignal, type StaleBlockSignal } from "./attention.js";
+import { RUN_CAP_NO_COMMIT_UNBLOCK_ACTION } from "../run-cap-no-commit.js";
 
 export const STALE_BLOCK_SWEEP_PAGE_SIZE = 50;
 export const STALE_BLOCK_ACTIVITY_ACTOR = "stale_block_sweep";
@@ -667,6 +668,13 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
 
     for (const row of rows) {
       try {
+        // Run-cap blocks have an explicit release condition, not a stale dependency.
+        const descriptor = row.unblockDescriptor as { action?: unknown } | null;
+        if (descriptor?.action === RUN_CAP_NO_COMMIT_UNBLOCK_ACTION) {
+          result.skippedLive += 1;
+          lastSweptAtByIssueId.set(row.id, at.getTime());
+          continue;
+        }
         if (deps.isUnderMaintenance && await deps.isUnderMaintenance(deps.db)) {
           result.skippedUnknown += 1;
           lastSweptAtByIssueId.set(row.id, at.getTime());

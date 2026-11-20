@@ -893,6 +893,51 @@ describe("execute", () => {
     expect(body.workspace).toEqual({ key: "ABC-101", repo: "acme/widgets" });
   });
 
+  it.each(["reviewer", "verifier"])("does not open a task copy for a %s wake of an execution stage (OPE-13410 item 6)", async (wakeRole) => {
+    const ctx = makeCtx(wsBaseConfig);
+    ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets.git", repoRef: "main" };
+    ctx.context.paperclipPullRequest = { repo: "acme/widgets", number: 5, headRef: "bot/ABC-101" };
+    ctx.context.executionStage = { wakeRole, stageType: "review" };
+    expect("workspace" in (await runAndReadBody(ctx))).toBe(false);
+  });
+
+  it.each([
+    ["a reviewer by role on ci_completed without wakeRole", "Hermes", "reviewer", "ci_completed"],
+    ["a reviewer by name (role qa) on ci_completed without wakeRole", "adm-dev-review-8", "qa", "ci_completed"],
+    ["a verifier by role", "Hermes", "verifier", "ci_completed"],
+    ["a lead by name on auto_slice_queue_shortage", "adm-dev-lead-4", "engineer", "auto_slice_queue_shortage"],
+    ["a lead by role", "Hermes", "lead", "auto_slice_queue_shortage"],
+  ])("does not open a task copy for %s (NO-COPIES-FOR-REVIEWERS-LEADS)", async (_label, name, role, wakeReason) => {
+    const ctx = makeCtx(wsBaseConfig);
+    ctx.agent.name = name;
+    ctx.context.paperclipAgentRole = role;
+    ctx.context.wakeReason = wakeReason;
+    ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets.git", repoRef: "main" };
+    expect("workspace" in (await runAndReadBody(ctx))).toBe(false);
+  });
+
+  it("opens the task copy for an engineer on any wake reason (NO-COPIES-FOR-REVIEWERS-LEADS)", async () => {
+    for (const wakeReason of ["ci_completed", "auto_slice_queue_shortage", "issue_assigned"]) {
+      const ctx = makeCtx(wsBaseConfig);
+      ctx.agent.name = "adm-dev-eng-3";
+      ctx.context.paperclipAgentRole = "engineer";
+      ctx.context.wakeReason = wakeReason;
+      ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+      ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets.git", repoRef: "main" };
+      expect((await runAndReadBody(ctx)).workspace).toEqual(fixture);
+    }
+  });
+
+  it("still opens the task copy for an executor wake of an execution stage", async () => {
+    const ctx = makeCtx(wsBaseConfig);
+    ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets.git", repoRef: "main" };
+    ctx.context.executionStage = { wakeRole: "executor", stageType: "review" };
+    expect((await runAndReadBody(ctx)).workspace).toEqual(fixture);
+  });
+
   it("overrides a workspace forged in payloadTemplate, and removes it when the task has no repository", async () => {
     const forged = { key: "EVIL-1", repo: "evil/repo", baseRef: "x" };
     const withRepo = makeCtx(wsBaseConfig);
