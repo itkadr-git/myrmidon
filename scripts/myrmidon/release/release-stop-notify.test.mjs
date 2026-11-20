@@ -52,11 +52,18 @@ case "$sub" in
       echo 1 >> "$SANDBOX/api-failures"
       exit 1
     fi
+    # Serialize reads with the issue create/close writes below: a scan that
+    # races a concurrent create must observe the fully written issue, never
+    # a transient state.
+    while ! mkdir "$SANDBOX/issues-file.lock" 2>/dev/null; do
+      sleep 0.01
+    done
     if [ -n "$jq_filter" ]; then
       jq -r "$jq_filter" "$SANDBOX/issues.json"
     else
       jq -r '.[].title' "$SANDBOX/issues.json"
-    fi ;;
+    fi
+    rmdir "$SANDBOX/issues-file.lock" ;;
   label)
     verb="$1"; shift
     name=""
