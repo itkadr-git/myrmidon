@@ -241,6 +241,9 @@ export function approvalRoutes(
         : approvalInput.payload;
 
     const actor = getActorInfo(req);
+    if (actor.actorType === "agent" && uniqueIssueIds.length > 0) {
+      await issueApprovalsSvc.assertNoPrivateIssues(uniqueIssueIds);
+    }
     const approval = await svc.create(companyId, {
       ...approvalInput,
       payload: normalizedPayload,
@@ -280,7 +283,9 @@ export function approvalRoutes(
     const approval = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
     if (!approval) return;
     if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
-    const issues = await issueApprovalsSvc.listIssuesForApproval(id);
+    const issues = await issueApprovalsSvc.listIssuesForApproval(id, {
+      excludePrivate: req.actor.type === "agent",
+    });
     res.json(issues);
   });
 
