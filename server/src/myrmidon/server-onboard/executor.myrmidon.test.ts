@@ -735,7 +735,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
   it("leaves UFW unchanged when a real timer launch cannot be confirmed", async () => {
     const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-timer-unconfirmed-"));
     const calls = join(dir, "calls");
-    writeFileSync(join(dir, "sudo"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\nif [ "$*" = "ufw status" ]; then printf "Status: active\\n"; exit 0; fi\ncase "$1" in systemd-run|systemctl) exec "$@";; esac\nexit 97\n');
+    writeFileSync(join(dir, "sudo"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\nif [ "$*" = "ufw status" ]; then printf "Status: active\\n"; exit 0; fi\nif [ "$*" = "ufw status verbose" ]; then printf "Status: active\\nDefault: allow (incoming), allow (outgoing), disabled (routed)\\n"; exit 0; fi\ncase "$1" in systemd-run|systemctl) exec "$@";; esac\nexit 97\n');
     writeFileSync(join(dir, "systemd-run"), '#!/bin/sh\nprintf "timer-start\\n" >> "$CALLS"\nexit 0\n');
     writeFileSync(join(dir, "systemctl"), '#!/bin/sh\nprintf "timer-check\\n" >> "$CALLS"\nexit 1\n');
     for (const name of ["sudo", "systemd-run", "systemctl"]) chmodSync(join(dir, name), 0o700);
@@ -772,6 +772,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     writeFileSync(join(dir, "sudo"), `#!/bin/sh
 printf '%s\\n' "$*" >> "$CALLS"
 if [ "$*" = "ufw status" ]; then printf 'Status: active\\n'; exit 0; fi
+if [ "$*" = "ufw status verbose" ]; then printf 'Status: active\\nDefault: allow (incoming), allow (outgoing), disabled (routed)\\n'; exit 0; fi
 case "$1" in systemd-run|systemctl) exec "$@";; esac
 exit 97
 `);
@@ -916,7 +917,7 @@ exit 1
     const rules = join(dir, "rules");
     const calls = join(dir, "calls");
     writeFileSync(rules, "operator-original\n");
-    writeFileSync(join(dir, "sudo"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\nif [ "$*" = "ufw status" ]; then printf "operator-concurrent\\n" >> "$RULES"; printf "Status: active\\n"; exit 0; fi\ncase "$1" in systemd-run) exec "$@";; esac\nexit 97\n');
+    writeFileSync(join(dir, "sudo"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\nif [ "$*" = "ufw status" ]; then printf "operator-concurrent\\n" >> "$RULES"; printf "Status: active\\n"; exit 0; fi\nif [ "$*" = "ufw status verbose" ]; then printf "Status: active\\nDefault: allow (incoming), allow (outgoing), disabled (routed)\\n"; exit 0; fi\ncase "$1" in systemd-run) exec "$@";; esac\nexit 97\n');
     writeFileSync(join(dir, "systemd-run"), '#!/bin/sh\nprintf "timer-start\\n" >> "$CALLS"\nexit 1\n');
     chmodSync(join(dir, "sudo"), 0o700);
     chmodSync(join(dir, "systemd-run"), 0o700);
