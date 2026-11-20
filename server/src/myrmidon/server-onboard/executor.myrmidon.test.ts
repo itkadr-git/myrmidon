@@ -1059,6 +1059,22 @@ exit 1
     expect(ssh.hasExecuted(/start-myrmidon-firewall-timer|sudo ufw (allow|default|delete)/)).toBe(false);
   });
 
+  it("refuses a policy probe whose firewall status changed to inactive", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: inactive\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-firewall-policy-inactive", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatch(/firewall.*status.*unconfirmed/i);
+    expect(ssh.hasExecuted(/start-myrmidon-firewall-timer|sudo ufw (allow|default|delete)/)).toBe(false);
+  });
+
   it("refuses firewall mutation when the original state cannot be snapshotted", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
