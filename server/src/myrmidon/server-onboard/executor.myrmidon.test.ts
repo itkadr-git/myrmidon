@@ -185,6 +185,21 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     expect(mockSsh.hasExecuted(/pkill -f 'sleep 300/)).toBe(true);
   });
 
+  it("does not install an unpersisted key when the durable key is missing", async () => {
+    const ssh = new VerifiedMockSsh();
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-missing-key", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root", accessKeySecretKey: null },
+      steps: ["access"], options: { keepPassword: false },
+      secretValues: { bootstrapPassword: "pass" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("durable access key");
+    expect(ssh.hasExecuted(/authorized_keys/)).toBe(false);
+  });
+
   it("never disables password authentication for a key generated only in executor memory", async () => {
     const mockSsh = new VerifiedMockSsh();
     mockSsh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
