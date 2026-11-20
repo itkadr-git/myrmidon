@@ -16,6 +16,7 @@ import {
   collectFailures,
   main,
   parseArgs,
+  resolveMyrmidonSpecifier,
   scanImports,
 } from "./check-prod-runtime-resolution.mjs";
 
@@ -373,6 +374,24 @@ describe("main on fixtures", () => {
       );
       const { code, output } = runMain(dir, ["--dist", path.relative(dir, dist)]);
       assert.equal(code, 0, output);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not resolve a foreign nested package's import as an ancestor self-reference", () => {
+    const dir = mkdtemp();
+    try {
+      const pkg = path.join(dir, "packages", "selfpkg");
+      const foreign = path.join(pkg, "nested");
+      fs.mkdirSync(path.join(pkg, "dist"), { recursive: true });
+      fs.mkdirSync(path.join(foreign, "dist"), { recursive: true });
+      fs.writeFileSync(path.join(pkg, "package.json"), JSON.stringify({ name: "@myrmidon/selfpkg", exports: { "./target": "./dist/target.js" } }));
+      fs.writeFileSync(path.join(pkg, "dist", "target.js"), "export {};\n");
+      fs.writeFileSync(path.join(foreign, "package.json"), JSON.stringify({ name: "@myrmidon/other" }));
+      assert.deepEqual(resolveMyrmidonSpecifier("@myrmidon/selfpkg/target", path.join(foreign, "dist")), {
+        failure: "пакет не найден в node_modules", packageName: "@myrmidon/selfpkg",
+      });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
