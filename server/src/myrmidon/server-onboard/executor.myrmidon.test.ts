@@ -1452,6 +1452,7 @@ exit 97
     const primary = new MockSshExecutor();
     const restored = new MockSshExecutor();
     primary.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    primary.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
     primary.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     primary.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     primary.mockResponse(/sudo ufw allow/, { exitCode: 0 });
