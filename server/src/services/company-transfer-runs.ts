@@ -420,6 +420,8 @@ export const companyTransferRunService = {
       eq(companyTransferRuns.status, "rolling_back"),
       sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
       sql`${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true'`,
+      sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' is not null`,
+      sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' <> ${companyTransferRuns.containerRef}->>'sourceCompanyId'`,
       sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' = ${companyId}`,
       sql`(${companyTransferRuns.companyId} is null or ${companyTransferRuns.companyId}::text = ${companyId})`,
       sql`${companyTransferRuns.completedParts} @> ${JSON.stringify([objectKey])}::jsonb`,
