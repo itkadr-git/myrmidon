@@ -73,8 +73,18 @@ export interface AgentExchangeFeedIssueRef {
 
 /** The port the feed reads through — bound to the database in `feed-wiring.ts`. */
 export interface AgentExchangeFeedStore {
-  /** The newest rooms of the company, at most `limit`, plus the total count. */
-  listRooms(companyId: string, limit: number): Promise<{ rows: AgentExchangeFeedRoomRow[]; total: number }>;
+  /**
+   * The newest rooms of the company, at most `limit`, plus the total count.
+   * `opts.excludePrivate` (myrmidon 1.7 PRIVATE-TASKS G2) drops the rooms of
+   * private tasks from the page *and* from the total before the limit, so an
+   * agent-facing reader can neither see the tasks' labels nor count the
+   * hidden rooms through `truncated`; the owner-facing read passes no opts.
+   */
+  listRooms(
+    companyId: string,
+    limit: number,
+    opts?: { excludePrivate?: boolean },
+  ): Promise<{ rows: AgentExchangeFeedRoomRow[]; total: number }>;
   /** The task labels of the referenced issues (`getIssueRefs([])` answers empty). */
   getIssueRefs(issueIds: string[]): Promise<Map<string, AgentExchangeFeedIssueRef>>;
   /**
@@ -129,12 +139,25 @@ function toIso(value: Date | string | null): string | null {
  * Assemble the feed of one company. `limit` and `skillCandidateEnabled` are
  * the resolved settings of the caller (read per request, never cached at
  * boot), so a settings-page change reaches the next read without a restart.
+ * `excludePrivate` (myrmidon 1.7 PRIVATE-TASKS G2) is set by the route for an
+ * agent actor: the store then drops the rooms of private tasks from the page
+ * and the total, so the feed keeps the owner's screen unchanged while an
+ * agent can neither read a private task's label nor infer hidden rooms from
+ * `truncated`. Filtering happens in the store query — before the limit — so
+ * the hidden rooms cannot eat the agent's page.
  */
 export async function readAgentExchangeFeed(
   deps: AgentExchangeFeedDeps,
-  input: { companyId: string; limit: number; skillCandidateEnabled: boolean },
+  input: {
+    companyId: string;
+    limit: number;
+    skillCandidateEnabled: boolean;
+    excludePrivate?: boolean;
+  },
 ): Promise<AgentExchangeFeedResponse> {
-  const { rows, total } = await deps.store.listRooms(input.companyId, input.limit);
+  const { rows, total } = await deps.store.listRooms(input.companyId, input.limit, {
+    excludePrivate: input.excludePrivate === true,
+  });
   const issueRefs = await deps.store.getIssueRefs([...new Set(rows.map((row) => row.issueId))]);
   const candidates = await deps.store.findSkillCandidates(
     input.companyId,
