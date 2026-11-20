@@ -1546,7 +1546,22 @@ describeEmbeddedPostgres("secretService", () => {
       expect.objectContaining({ capability: "metadataAvailable", status: "PASS" }),
       expect.objectContaining({ capability: "valueResolvable", status: "UNSUPPORTED" }),
     ]);
+    const awsResolve = vi.spyOn(awsSecretsManagerProvider, "resolveVersion");
+    for (const [provider, reason] of [
+      ["aws_secrets_manager", "no_non_disclosing_value_probe"],
+      ["unknown_provider", "provider_capability_unavailable"],
+    ] as const) {
+      await db.update(companySecrets).set({ provider }).where(eq(companySecrets.id, secret.id));
+      const diagnostic = await svc.probeBinding(companyId, binding.id);
+      expect(diagnostic.ready).toBe(false);
+      expect(diagnostic.checks).toEqual([
+        expect.objectContaining({ capability: "metadataAvailable", status: "PASS" }),
+        expect.objectContaining({ capability: "valueResolvable", status: "UNSUPPORTED", reason }),
+      ]);
+      expect(JSON.stringify(diagnostic)).not.toContain("sentinel-secret");
+    }
     expect(resolve).not.toHaveBeenCalled();
+    expect(awsResolve).not.toHaveBeenCalled();
     expect(await db.select().from(secretAccessEvents)).toEqual(beforeEvents);
     expect(await db.select().from(activityLog)).toEqual(beforeActivity);
     await expect(svc.probeBinding(otherCompany, binding.id)).rejects.toMatchObject({ status: 404 });
