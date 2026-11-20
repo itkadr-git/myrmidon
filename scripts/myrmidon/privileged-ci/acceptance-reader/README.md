@@ -78,23 +78,18 @@ payload, never silently "no document".
 
 A verify proves the pinned snapshot still equals the current state **as of
 that verify** — nothing more. Check and use are separate operations, and no
-read-only gateway can see a write that lands after its last read. The
-supported pattern is:
+read-only gateway can see a write that lands after its last read. Even an
+immediate verify followed by publication leaves a race; repeating it cannot
+make the privileged action atomic. The pin is diagnostic evidence only, not
+an authorization to publish or consume a privileged CI verdict.
 
-1. Pin with `GET`; remember the whole response.
-2. Immediately before producing or consuming a result, `POST /verify` with
-   the pin. On `409`/`401`/`502` fail closed.
-3. Publish the verified pin as the result's evidence.
-4. Use the result immediately after the verify. Any later reliance — a new
-   step, a re-run, a consumer — performs its own `POST /verify` first; the
-   evidence pin makes staleness detectable at any point.
-
-There is deliberately no "atomic at use" claim: an atomic commit of the
-verification with the publication of a CI verdict lives in the gate layer,
-which is out of scope for this gateway. What this gateway guarantees is
-exact: one MVCC snapshot per response and tenant confinement checked before
-any output. The writer protocol and consumer integration require independent
-review before this experimental endpoint is trusted.
+Atomic use is unavailable: publishing a GitHub CI verdict is an external
+side effect and cannot commit in the database transaction that checks the
+snapshot epoch. No core transactional privileged consumer is connected to
+this snapshot. Keep the privileged acceptance workflow disabled until an
+actual consumer enforces the same revision at its own use boundary and its
+security prerequisites are independently reviewed. This gateway guarantees
+only one MVCC snapshot per response and tenant confinement before output.
 
 This contract also does not bind requests to one CI job: with the current
 operator-issued shared bearer, run binding is the caller's discipline. A

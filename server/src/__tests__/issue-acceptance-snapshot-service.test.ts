@@ -218,6 +218,12 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
         document: null,
       });
 
+      const scoped = issueAcceptanceSnapshotService(db);
+      expect(await scoped.read(issue!.id, companyA)).toEqual(withDocument);
+      expect(await scoped.read("OPE-7001", companyA)).toEqual(withDocument);
+      expect(await scoped.read(issue!.id, companyB)).toBeNull();
+      expect(await scoped.read("OPE-7001", companyB)).toBeNull();
+
       const missing = await issueAcceptanceSnapshotService(db).read(randomUUID());
       expect(missing).toBeNull();
     },
@@ -251,6 +257,28 @@ d("issueAcceptanceSnapshotService read model (embedded postgres)", () => {
       const snapshot = await issueAcceptanceSnapshotService(db).read(issueId);
       expect(snapshot?.issue.companyId).toBe(companyA);
       expect(snapshot?.document).toBeNull();
+      // A scoped service read must distinguish a corrupt link from no document.
+      await expect(issueAcceptanceSnapshotService(db).read(issueId, companyA)).rejects.toThrow("Ambiguous acceptance snapshot");
+    },
+    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "rejects a published revision whose number disagrees with the document",
+    async () => {
+      const dbh = await startEmbeddedPostgresTestDatabase("issue-acceptance-revision-number-");
+      cleanups.push(() => dbh.cleanup());
+      const db = createDb(dbh.connectionString);
+      cleanups.push(async () => { await db.$client.end(); });
+      const issueId = randomUUID();
+      const documentId = randomUUID();
+      const revisionId = randomUUID();
+      await db.insert(companies).values({ id: companyA, name: "A" });
+      await db.insert(issues).values({ id: issueId, companyId: companyA, title: "Task", identifier: "OPE-7998" });
+      await db.insert(documents).values({ id: documentId, companyId: companyA, latestBody: "criteria", latestRevisionId: revisionId, latestRevisionNumber: 2 });
+      await db.insert(documentRevisions).values({ id: revisionId, companyId: companyA, documentId, revisionNumber: 1, body: "criteria" });
+      await db.insert(issueDocuments).values({ companyId: companyA, issueId, documentId, key: "acceptance-scenarios" });
+      await expect(issueAcceptanceSnapshotService(db).read(issueId, companyA)).rejects.toThrow("Ambiguous acceptance snapshot");
     },
     EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   );

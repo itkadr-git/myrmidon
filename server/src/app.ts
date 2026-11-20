@@ -80,6 +80,7 @@ import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { onboardingSeedRoutes } from "./routes/onboarding-seed.js";
 import { serverOnboardingRoutes } from "./routes/servers.js";
+import { acceptanceServiceCredentialRoutes } from "./routes/acceptance-service-credentials.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { admAccessRequestRoutes } from "./routes/adm-access-requests.js";
@@ -1237,6 +1238,7 @@ export async function createApp(
   api.use(goalRoutes(db));
   api.use(onboardingSeedRoutes(db));
   api.use(serverOnboardingRoutes(db)); // myrmidon(SERVER-ONBOARD): SSH dry-run probe
+  api.use(acceptanceServiceCredentialRoutes(db));
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(admAccessRequestRoutes(db, {
