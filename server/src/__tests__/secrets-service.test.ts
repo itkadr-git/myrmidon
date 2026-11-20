@@ -1577,7 +1577,13 @@ describeEmbeddedPostgres("secretService", () => {
     await expect(svc.probeBinding(companyId, binding.id)).rejects.toMatchObject({ status: 404 });
     await db.update(companySecretBindings).set({ targetId: agentId }).where(eq(companySecretBindings.id, binding.id));
     await db.update(agents).set({ companyId: otherCompany }).where(eq(agents.id, agentId));
+    const beforeErrorBindings = await db.select().from(companySecretBindings);
+    const beforeErrorSecrets = await db.select().from(companySecrets);
+    const beforeErrorVersions = await db.select().from(companySecretVersions);
     await expect(svc.probeBinding(companyId, binding.id)).rejects.toMatchObject({ status: 404 });
+    expect(await db.select().from(companySecretBindings)).toEqual(beforeErrorBindings);
+    expect(await db.select().from(companySecrets)).toEqual(beforeErrorSecrets);
+    expect(await db.select().from(companySecretVersions)).toEqual(beforeErrorVersions);
     expect(resolve).not.toHaveBeenCalled();
     expect(awsResolve).not.toHaveBeenCalled();
     expect(await db.select().from(secretAccessEvents)).toEqual(beforeEvents);
