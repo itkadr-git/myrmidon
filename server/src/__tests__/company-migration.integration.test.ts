@@ -1297,6 +1297,17 @@ describe("company migration dry run", () => {
     expect(saved?.companyId).toBeNull();
   });
 
+  it("rejects a destination claim when migration source provenance is absent", async () => {
+    const [run] = await db.insert(companyTransferRuns).values({
+      direction: "import", status: "applying", actorKey: "migration-test",
+      idempotencyKey: "missing-migration-source", containerRef: { kind: "company_migration" },
+    }).returning();
+    await expect(companyService(db).create({ name: "Missing source destination" }, { transferRunId: run!.id }))
+      .rejects.toThrow("Transfer run cannot claim a new company");
+    expect((await companyTransferRunService.getRun(db, run!.id))?.companyId).toBeNull();
+    expect((await db.select().from(companies)).some((company) => company.name === "Missing source destination")).toBe(false);
+  });
+
   it("does not attach a new destination to an export transfer run", async () => {
     const [run] = await db.insert(companyTransferRuns).values({
       direction: "export", status: "applying", actorKey: "migration-test",
