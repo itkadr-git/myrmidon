@@ -114,6 +114,7 @@ export async function runDistillPass(opts: DistillServiceOptions): Promise<Disti
         class: item.class,
         body: item.body,
         rationale: item.rationale,
+        recommendation: item.recommendation,
         target: {
           section: isAutoAcceptSection(item.section) ? item.section : "general",
           slug: item.slug,
@@ -145,10 +146,10 @@ export async function runDistillPass(opts: DistillServiceOptions): Promise<Disti
 
     for (const proposal of filtered.kept) {
       const primary = proposal.sources[0]!;
-      const evidenceNote = proposal.evidenceTaskRefs.join(", ");
       const suggestion = await opts.knowledge.suggest(AUTO_ACTOR, {
         body: `[distill:${proposal.class}] ${proposal.body}`,
-        rationale: `${proposal.rationale ?? ""} — evidence: ${evidenceNote}`.trim(),
+        rationale: proposal.rationale || null,
+        recommendation: proposal.recommendation ?? null,
         targetSlug: proposal.target.slug ?? undefined,
         sourceKind: primary.kind,
         sourceRef: primary.ref,
