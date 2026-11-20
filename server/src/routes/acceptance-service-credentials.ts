@@ -14,9 +14,7 @@ const issueSchema = z.object({
 
 export function acceptanceServiceCredentialRoutes(db: Db) {
   const router = Router();
-  const path = "/companies/:companyId/acceptance-service-credentials";
-
-  router.post(path, async (req, res) => {
+  router.post("/companies/:companyId/acceptance-service-credentials", async (req, res) => {
     assertAuthenticated(req);
     assertBoard(req);
     const companyId = String(req.params.companyId);
@@ -35,7 +33,7 @@ export function acceptanceServiceCredentialRoutes(db: Db) {
     res.set("Cache-Control", "no-store").status(201).json(issued);
   });
 
-  router.delete(`${path}/:id`, async (req, res) => {
+  router.delete("/companies/:companyId/acceptance-service-credentials/:id", async (req, res) => {
     assertAuthenticated(req);
     assertBoard(req);
     const companyId = String(req.params.companyId);

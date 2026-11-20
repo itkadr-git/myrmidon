@@ -18,6 +18,8 @@ const apiPrefixes: Record<string, string> = {
   "admin-assistant.ts": "/api",
   "guardrails.ts": "/api",
   "access.ts": "/api",
+  "acceptance-service.ts": "/api",
+  "acceptance-service-credentials.ts": "/api",
   "activity.ts": "/api",
   "adapters.ts": "/api",
   "agents.ts": "/api",
