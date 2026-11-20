@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { expect, it } from "vitest";
-import { agents, documentRevisions, documents, heartbeatRuns, issueDocuments, issues, issueThreadInteractions } from "@myrmidon/db";
+import { agents, companyMemberships, documentRevisions, documents, heartbeatRuns, issueDocuments, issues, issueThreadInteractions } from "@myrmidon/db";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
@@ -14,6 +14,8 @@ describeEmbeddedPostgres("human-only plan confirmation recipient", () => {
 
   async function seed() {
     const { companyId, userId } = await seedCompanyWithBoardAccess(ctx.db, "Synthetic plan");
+    const recipientUserId = `recipient-${randomUUID()}`;
+    await ctx.db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: recipientUserId, membershipRole: "member", status: "active" });
     const issueId = randomUUID();
     const agentId = randomUUID();
     const leadId = randomUUID();
@@ -36,16 +38,18 @@ describeEmbeddedPostgres("human-only plan confirmation recipient", () => {
     app.use((req, _res, next) => { req.actor = { type: "agent", agentId, companyId, runId }; next(); });
     app.use("/api", issueRoutes(ctx.db, {} as never));
     app.use(errorHandler);
-    return { companyId, userId, issueId, agentId, leadId, leadRunId, target, app };
+    return { companyId, userId, recipientUserId, issueId, agentId, leadId, leadRunId, target, app };
   }
 
   it.each(["explicit", "owner fallback"])("routes %s to a human through HTTP and persists the recipient", async (mode) => {
     const s = await seed();
-    const body = { kind: "request_confirmation", resolverPolicy: "human_only", idempotencyKey: `confirmation:${s.issueId}:plan:${s.target.revisionId}`, ...(mode === "explicit" ? { addresseeUserId: s.userId } : {}), payload: { version: 1, prompt: "Approve the plan?", target: s.target } };
+    expect(s.recipientUserId).not.toBe(s.userId);
+    const expectedUserId = mode === "explicit" ? s.recipientUserId : s.userId;
+    const body = { kind: "request_confirmation", resolverPolicy: "human_only", idempotencyKey: `confirmation:${s.issueId}:plan:${s.target.revisionId}`, ...(mode === "explicit" ? { addresseeUserId: s.recipientUserId } : {}), payload: { version: 1, prompt: "Approve the plan?", target: s.target } };
     const response = await request(s.app).post(`/api/issues/${s.issueId}/interactions`).send(body);
     expect(response.status, JSON.stringify(response.body)).toBe(201);
     const [row] = await ctx.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, response.body.id));
-    expect(row).toMatchObject({ status: "pending", effectiveResolverPolicy: "human_only", addresseeUserId: s.userId, addresseeAgentId: null, routeType: "human_input" });
+    expect(row).toMatchObject({ status: "pending", effectiveResolverPolicy: "human_only", addresseeUserId: expectedUserId, addresseeAgentId: null, routeType: "human_input" });
     const retry = await request(s.app).post(`/api/issues/${s.issueId}/interactions`).send(body);
     expect(retry.status, JSON.stringify(retry.body)).toBe(201);
     expect(retry.body.id).toBe(response.body.id);
