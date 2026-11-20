@@ -27,7 +27,7 @@
 //   (OPE-12928) directly and the 30-day admissibility check there stays the
 //   second, independent gate.
 
-import { and, desc, eq, gt, isNull, lt, or, type SQL } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, lt, or, sql, type SQL } from "drizzle-orm";
 import {
   issueExecutionDecisions,
   issues,
@@ -187,8 +187,14 @@ export async function queryApprovedReviewOutcomes(
     .leftJoin(
       issueWorkProducts,
       and(
+        eq(issueWorkProducts.companyId, input.companyId),
         eq(issueWorkProducts.issueId, issues.id),
         eq(issueWorkProducts.type, "pull_request"),
+        // Choose one stable work product before paginating decisions.
+        sql`${issueWorkProducts.id} = (select p.id from issue_work_products p
+          where p.company_id = ${issues.companyId} and p.issue_id = ${issues.id}
+            and p.type = 'pull_request'
+          order by p.is_primary desc, p.created_at desc, p.id desc limit 1)`,
       ),
     )
     .where(and(...filters, isNull(issues.hiddenAt)))
