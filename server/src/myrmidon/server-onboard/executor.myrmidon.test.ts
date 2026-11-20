@@ -976,6 +976,9 @@ exit 1
 
   it("restores the saved firewall state when adding the SSH rule partially fails", async () => {
     const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
+    ssh.mockResponse(/check-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
     ssh.mockResponse(/sudo ufw allow/, { exitCode: 1, stderr: "rule partially applied" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
@@ -986,6 +989,7 @@ exit 1
 
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
+    expect(ssh.hasExecuted(/sudo ufw allow/)).toBe(true);
     expect(ssh.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
     expect(ssh.hasExecuted("sudo ufw disable")).toBe(false);
   });
