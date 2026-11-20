@@ -282,6 +282,7 @@ export class FleetOnboardExecutor {
                   const detail = restoreError instanceof Error ? restoreError.message : String(restoreError);
                   throw new Error(`Password hardening failed: ${cause}; ${detail.includes("restoration SSH") ? detail : `configuration restoration failed: ${detail}`}`);
                 }
+                await passwordSsh.execute(`sudo rm -rf ${backup}`).catch(() => {});
                 throw error;
               }
               pendingPasswordRollback = restorePassword;
