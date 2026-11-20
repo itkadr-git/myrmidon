@@ -211,6 +211,18 @@ describe("Bitrix24 provider", () => {
 });
 
 describe("secret and error safety", () => {
+  it("does not expose arbitrary secret values in transport or endpoint errors", async () => {
+    for (const source of ["transport", "endpoint"] as const) {
+      const provider = createBitrix24Connector({
+        baseUrl: BITRIX_BASE,
+        credentials: [{ name: "key", secretId: "s", placement: "header", key: "x-key" }],
+        resolveSecret: async () => "private-value",
+        assertEndpoint: async () => { if (source === "endpoint") throw new Error("private-value"); },
+        transport: async () => { throw new Error("private-value"); },
+      });
+      await expect(provider.call("bitrix24:tasks.task.list")).rejects.not.toThrow("private-value");
+    }
+  });
   it("keeps credentials out of the action catalog and runtime errors", async () => {
     const transport = recordingTransport(() => {
       throw new Error(
