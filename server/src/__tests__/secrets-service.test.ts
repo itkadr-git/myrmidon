@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -1540,7 +1540,13 @@ describeEmbeddedPostgres("secretService", () => {
     ]);
     expect(JSON.stringify(result)).not.toContain("sentinel-secret");
     await db.update(companySecretBindings).set({ versionSelector: "latest" }).where(eq(companySecretBindings.id, binding.id));
+    await db.update(companySecretVersions).set({ material: { scheme: "local_encrypted_v1", ciphertext: "corrupt" } }).where(eq(companySecretVersions.secretId, secret.id));
+    const originalKeyFile = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+    const missingKeyFile = path.join(secretsTmpDir, `missing-${randomUUID()}.key`);
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = missingKeyFile;
     const present = await svc.probeBinding(companyId, binding.id);
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = originalKeyFile;
+    expect(existsSync(missingKeyFile)).toBe(false);
     expect(present.ready).toBe(false);
     expect(present.checks).toEqual([
       expect.objectContaining({ capability: "metadataAvailable", status: "PASS" }),
