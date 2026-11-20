@@ -258,6 +258,7 @@ type StoppedRuntimeServiceReuseCandidate = {
 };
 
 const runtimeServicesById = new Map<string, RuntimeServiceRecord>();
+const runtimeExitCleanups = new Set<Promise<void>>();
 let exitCleanupHookForTests: (() => Promise<void>) | null = null;
 export function setWorkspaceRuntimeExitCleanupHookForTests(hook: (() => Promise<void>) | null) {
   exitCleanupHookForTests = hook;
@@ -530,6 +531,9 @@ export async function resetRuntimeServicesForTests(
   if (opts.terminateProcesses) {
     for (const serviceId of [...runtimeServicesById.keys()]) {
       await stopRuntimeService(serviceId).catch(() => undefined);
+    }
+    while (runtimeExitCleanups.size > 0) {
+      await Promise.all([...runtimeExitCleanups]);
     }
   }
   for (const record of runtimeServicesById.values()) {
@@ -7206,7 +7210,7 @@ function registerRuntimeService(db: Db | undefined, record: RuntimeServiceRecord
     if (current.reuseKey && runtimeServicesByReuseKey.get(current.reuseKey) === current.id) {
       runtimeServicesByReuseKey.delete(current.reuseKey);
     }
-    void (async () => {
+    const cleanup = (async () => {
       // The child exited on its own. Record the terminal status as best effort.
       // The persist can fail when a parent row is already gone: a caller can
       // delete the project or the company while this service still runs, and the
@@ -7225,6 +7229,8 @@ function registerRuntimeService(db: Db | undefined, record: RuntimeServiceRecord
         );
       }
     })();
+    runtimeExitCleanups.add(cleanup);
+    void cleanup.then(() => runtimeExitCleanups.delete(cleanup));
   });
 }
 
