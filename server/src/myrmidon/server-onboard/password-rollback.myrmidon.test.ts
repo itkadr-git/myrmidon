@@ -8,13 +8,18 @@ import { expect, it } from "vitest";
 import { FleetOnboardExecutor, defaultGenerateKeyPair } from "./executor.js";
 import type { OnboardJobClaim } from "./store.js";
 
-it.each([true, false])("restores sshd after disconnect via its host timer (prior file present: %s)", async (present) => {
+it.each([
+  { present: true, operatorEdit: false },
+  { present: false, operatorEdit: false },
+  { present: true, operatorEdit: true },
+])("scopes timer rollback after SSH loss ($present prior file, $operatorEdit operator edit)", async ({ present, operatorEdit }) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-password-rollback-"));
   const configDir = join(dir, "sshd_config.d");
   const config = join(configDir, "50-myrmidon-hardening.conf");
   const timer = join(dir, "timer");
   const effective = join(dir, "effective");
   const previous = "PasswordAuthentication yes\nKbdInteractiveAuthentication yes\n";
+  const operatorConfig = "# operator edit\n";
   mkdirSync(configDir);
   if (present) writeFileSync(config, previous);
   writeFileSync(effective, previous);
@@ -50,7 +55,20 @@ it.each([true, false])("restores sshd after disconnect via its host timer (prior
     client.on("authentication", (ctx) => {
       if (ctx.method === "none") { ctx.reject(["publickey"]); return; }
       if (ctx.method !== "publickey") { ctx.reject(); return; }
-      if (drop && !fired) { ctx.reject(); return; }
+      if (drop && !fired) {
+        ctx.reject();
+        if (events.includes("reconnect-before-timer")) return;
+        events.push("reconnect-before-timer");
+        // The first recovery handshake fails before the host timer runs.
+        setImmediate(() => {
+          if (operatorEdit) writeFileSync(config, operatorConfig);
+          const restorePath = readFileSync(timer, "utf8").trim();
+          timerExit = run(`/bin/sh '${restorePath}'`).status;
+          fired = true;
+          events.push("timer-fired");
+        });
+        return;
+      }
       ctx.accept();
     });
     client.on("ready", () => {
@@ -67,14 +85,6 @@ it.each([true, false])("restores sshd after disconnect via its host timer (prior
           run("systemctl reload ssh");
           events.push("config-written");
           drop = true;
-          // Dispatch the simulated host timer only once the write session is gone.
-          client.once("close", () => {
-            if (!existsSync(timer)) return;
-            const restorePath = readFileSync(timer, "utf8").trim();
-            timerExit = run(`/bin/sh '${restorePath}'`).status;
-            fired = timerExit === 0;
-            events.push("timer-fired");
-          });
           client.end();
           return;
         }
@@ -100,9 +110,15 @@ it.each([true, false])("restores sshd after disconnect via its host timer (prior
     });
     expect(result.status).toBe("failed");
     expect(timerWasArmed).toBe(true);
+    if (operatorEdit) {
+      expect(timerExit).not.toBe(0);
+      expect(readFileSync(config, "utf8")).toBe(operatorConfig);
+      expect(result.error).toContain("password configuration rollback unconfirmed");
+      return;
+    }
     expect(timerExit).toBe(0);
     expect(result.error).not.toContain("rollback unconfirmed");
-    expect(events).toEqual(["login", "login", "config-written", "timer-fired", "fresh-login-after-timer", "fresh-login-after-timer"]);
+    expect(events).toEqual(["login", "login", "config-written", "reconnect-before-timer", "timer-fired", "fresh-login-after-timer", "fresh-login-after-timer"]);
     expect(existsSync(config)).toBe(present);
     if (present) expect(readFileSync(config, "utf8")).toBe(previous);
     expect(readFileSync(effective, "utf8")).toBe(previous);
