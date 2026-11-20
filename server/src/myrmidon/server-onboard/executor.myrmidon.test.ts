@@ -1354,6 +1354,7 @@ exit 97
     const syntax = spawnSync("sh", ["-n"], { input: script, encoding: "utf8" });
     expect(script).toContain("#!/bin/sh\nset -eu\n");
     expect(syntax.status).toBe(0);
+    expect(command).toMatch(/(?:sudo )?sh -n \/var\/tmp\/myrmidon-firewall-[a-f0-9-]+\/restore\.sh/);
   });
 
   it("keeps the rollback timer armed if immediate firewall restoration fails", async () => {
