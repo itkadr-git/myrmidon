@@ -1284,6 +1284,9 @@ exit 97
   it("does not disable an existing firewall when applying the deny policy fails", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse(/ufw status/, { stdout: "Status: active\n", exitCode: 0 });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    ssh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    ssh.mockResponse(/sudo ufw allow/, { stdout: "", exitCode: 0 });
     ssh.mockResponse(/sudo ufw default deny incoming/, { exitCode: 1, stderr: "policy failed" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
@@ -1294,6 +1297,7 @@ exit 97
 
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
+    expect(ssh.hasExecuted(/sudo ufw default deny incoming/)).toBe(true);
     expect(ssh.hasExecuted("sudo ufw disable")).toBe(false);
   });
 
