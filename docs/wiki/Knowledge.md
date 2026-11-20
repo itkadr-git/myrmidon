@@ -105,6 +105,13 @@ client can react to codes, not message text.
 
 ## Unified inbox and review routing (KNOWLEDGE-2.0 L-1, 1.7)
 
+K-5 suggestions expose `recommendation` (`accepted`, `rejected`, or `null`)
+and `rationale` in the suggestions API. A recommendation is available only
+when the classifier supplied a valid verdict and a non-empty reason. Legacy
+or invalid data remains unavailable; existing reasons are preserved. The
+recommendation is advice, independent of trust, automatic acceptance and the
+suggestion's lifecycle status. A failed model pass does not invent a verdict.
+
 Pending knowledge proposals from `/api/myrmidon/companies/:companyId/knowledge/suggestions` (with status `pending`) are integrated directly into the unified inbox (`/inbox`, both Streamlined and standard views) alongside issues, run alerts, and join requests.
 
 - **Item type**: proposals are represented as `kind: "knowledge"` with stable unique keys (`knowledge:<suggestionId>`).

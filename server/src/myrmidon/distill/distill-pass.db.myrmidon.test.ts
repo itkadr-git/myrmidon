@@ -10,6 +10,8 @@
 // life-shaped evidence ref is dropped before the nest.
 
 import { randomUUID } from "node:crypto";
+import express from "express";
+import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
@@ -30,6 +32,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
 import { createKnowledgeModule } from "../knowledge/service.js";
+import { knowledgeRoutes, type KnowledgeRoutesDeps } from "../knowledge/routes.js";
 import { runDistillPass } from "./service.js";
 import { resolveDistillSettings } from "./settings.js";
 import type { DistillModelCall } from "./model.js";
@@ -258,6 +261,39 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-5) distiller pass over 
     expect(byBody("missing reason")).toMatchObject({ recommendation: null, rationale: null });
     expect(byBody("legacy")).toMatchObject({ recommendation: null, rationale: "old reason" });
     expect(await otherKnowledge.listSuggestions("all")).toEqual([]);
+
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as unknown as { actor: unknown }).actor = {
+        type: "board", source: "session", userId: "reviewer", isInstanceAdmin: false,
+        companyIds: [companyId, otherCompanyId],
+        memberships: [companyId, otherCompanyId].map((id) => ({ companyId: id, status: "active", membershipRole: "operator" })),
+      };
+      next();
+    });
+    app.use("/api", knowledgeRoutes({ moduleFor: (id: string) => createKnowledgeModule(db, id, { now: () => NOW }) } as unknown as KnowledgeRoutesDeps));
+    const response = await request(app).get(`/api/myrmidon/companies/${companyId}/knowledge/suggestions`).query({ status: "all" });
+    expect(response.status).toBe(200);
+    expect(response.body.suggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ body: expect.stringContaining("accept claim"), recommendation: "accepted", rationale: "supported" }),
+      expect.objectContaining({ body: expect.stringContaining("reject claim"), recommendation: "rejected", rationale: "contradicted", status: "accepted" }),
+      expect.objectContaining({ body: "legacy", recommendation: null, rationale: "old reason" }),
+      expect.objectContaining({ body: expect.stringContaining("invalid verdict"), recommendation: null }),
+      expect.objectContaining({ body: expect.stringContaining("missing reason"), recommendation: null, rationale: null }),
+    ]));
+    const otherResponse = await request(app).get(`/api/myrmidon/companies/${otherCompanyId}/knowledge/suggestions`).query({ status: "all" });
+    expect(otherResponse.status).toBe(200);
+    expect(otherResponse.body.suggestions).toEqual([]);
+  });
+
+  it("does not invent a recommendation when the model fails", async () => {
+    companyId = await seedCompany();
+    await seedClosedTask({ identifier: "E-1", title: "model failure evidence" });
+    const knowledge = createKnowledgeModule(db, companyId, { now: () => NOW });
+    await knowledge.suggest({ actorType: "system", actorId: "legacy" }, { body: "existing", rationale: "old reason" });
+    const model: DistillModelCall = async () => { throw new Error("model unavailable"); };
+    await expect(runDistillPass({ db, knowledge, model, settings: settings([]), now: () => NOW })).rejects.toThrow("model unavailable");
+    expect(await knowledge.listSuggestions("all")).toEqual([expect.objectContaining({ body: "existing", recommendation: null })]);
   });
 
   it("over-budget is a signal, not a crash", async () => {
