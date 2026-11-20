@@ -681,6 +681,26 @@ the outcome commits. Resolution records an answer; every continuation, task
 creation, tool/provider call, execution-policy transition, spend, deployment, or
 other effect independently re-runs its own authorization and approval gates.
 
+#### Waiting for an owner versus technical review
+
+An agent waiting for a human decision should create a `human_only` confirmation
+and enter `in_review` with its `reviewInteractionId`, rather than starting a
+technical review stage. For a plan, publish the document and target its current
+revision. The interaction is the waiting path; the human decision returns the
+confirmation to its creator. An agent cannot resolve a human-only card. Do not
+use a technical review verdict or spend review rounds to represent this wait.
+
+If a pending technical stage has drifted, a non-participant's attempt to leave
+review receives HTTP 422; it must not silently restore `in_review`. Do not use
+an agent to bypass the reviewer. An authorized board operator can explicitly
+set `blocked`, supply the intended executor, a real `blockedByIssueIds` dependency
+and complete `blockerMetadata`, and replace `executionPolicy` with its existing
+stages but without `monitor`. Verify the resulting status, dependency, assignee,
+and cleared monitor. The override clears the pending stage without recording an
+approval or changes-requested verdict. Removing the monitor is explicit: a
+blocked issue can otherwise retain an existing schedule. Apply operator actions
+to real issues only under the relevant operating authorization.
+
 A pending interaction cannot outlive its issue. When the issue reaches a
 terminal status (`done` or `cancelled`) through any path — an HTTP status
 update or a direct service-level transition — every still-pending interaction

@@ -16,9 +16,19 @@ fail, skip и todo.
 
 ## Два уровня CI
 
-Workflow [`myrmidon-ci.yml`](../../.github/workflows/myrmidon-ci.yml) — на каждый
-`pull_request`, на `push` в `main` и вручную (`workflow_dispatch`). Все job идут на
-раннерах GitHub (`ubuntu-latest`), секреты не нужны. Уровень выбирает job `plan`
+Workflow [`myrmidon-ci.yml`](../../.github/workflows/myrmidon-ci.yml) реагирует на
+`pull_request`, `merge_group`, `push` в `main` и ручной запуск (`workflow_dispatch`).
+На draft PR при `opened`, `reopened` и `synchronize` тяжёлые задания, включая `plan`,
+сборку, тесты и `checks`, не выполняются. Когда PR переводят в ready, событие
+`ready_for_review` запускает обычный CI на текущей голове. Отсутствие `CI result` на
+draft не является зелёным merge gate: пропущенный итог носит другое имя `draft CI omitted`,
+а обязательный `CI result` должен получить настоящий вердикт для ready PR.
+
+Для ручного `workflow_dispatch` требуется непустой, не состоящий только из пробелов
+`reason`: шаг `plan` записывает его в GitHub Actions job summary; пустая причина
+завершает `plan` с ошибкой. Ручной запуск выбирает полный уровень. Push в `main` и
+`merge_group` по-прежнему проходят полный уровень; отдельный workflow релизных тегов
+не меняется. Уровень выбирает job `plan`
 (`scripts/myrmidon/ci/affected-tests.mjs plan`):
 
 | Уровень | Когда | Что запускается |
@@ -29,8 +39,9 @@ Workflow [`myrmidon-ci.yml`](../../.github/workflows/myrmidon-ci.yml) — на �
 
 **Экономия заданий:** обычный PR выполняет только `plan`, `checks`, `typecheck`+`build`, `tests (affected)` и сводную `CI result` вместо всех частей полного прогона (около 13 заданий по замеру из OPE-8531): было около 13 заданий на каждый push в PR, стало 5, то есть `plan`, `checks`, `typecheck`+`build`, `tests (affected)` и `CI result`; ещё `dockergate` при изменениях в его области. Новый push в тот же PR отменяет предыдущий прогон. Основной workflow `Myrmidon CI` на событие `labeled` не запускается совсем (CI-LABEL-NOOP-KEEPS-RESULT): метки `review-approved`, `review-in-progress`, `needs-rebase`, `adm-hold`... не создают прогона и не меняют обязательную проверку `CI result` на голове PR, так что зелёный PR с меткой `review-approved` вливается штатно. Метку `full-ci` обрабатывает отдельный маленький workflow `myrmidon-ci-full-label.yml`: он отменяет идущий прогон `Myrmidon CI` на голове PR (если есть) и перезапускает его (`scripts/myrmidon/ci/rerun-full-ci.mjs`); шаг `plan` читает метки PR живьём и выбирает полный уровень. Метка `review-approved` полный прогон не запускает (с 30.10). Merge queue на репозитории владельца-пользователя недоступна, `merge_group` работает только если очередь включат.
 
-**Обязателен для слияния быстрый уровень** (сводная проверка `CI result` на PR). Полный
-уровень проходит PR с меткой `review-approved` (или кандидат merge queue, если она включена) до вливания и затем `main` после слияния; сбой на
+**Обязателен для слияния реальный вердикт** сводной проверки `CI result` на ready PR,
+на выбранном уровне. Кандидат merge queue, если она включена, и `main` после слияния
+проходят полный уровень; сбой на
 `main` сразу виден (ниже).
 
 **Основа — PR получает полный уровень:** `pnpm-lock.yaml`, `pnpm-workspace.yaml`, корневой
@@ -111,7 +122,7 @@ run 37277281522), а релиз публиковать руками.
 ### Полный прогон на PR вручную
 
 - поставить на PR метку **`full-ci`**: `myrmidon-ci-full-label.yml` отменит идущий прогон на голове и перезапустит его (новая попытка того же прогона, проверка `CI result` заменяется результатом попытки); план увидит метку живьём и выберет полный уровень. Отдельного прогона `Myrmidon CI` на событие `labeled` нет: он стал бы самым новым прогоном на голове и оставил бы обязательную `CI result` «ожидаемой»;
-- или Actions → Myrmidon CI → Run workflow по ветке PR.
+- или Actions → Myrmidon CI → Run workflow по ветке PR, указав непустой `reason`; он записывается в summary задания `plan`.
 
 Известные ограничения метки `full-ci` (CI-LABEL-NOOP-KEEPS-RESULT):
 - у уже открытых PR, чей ref слияния появился до `myrmidon-ci-full-label.yml`, метка не действует, пока ветку не обновят (update-branch) или не запушат в неё;
@@ -159,9 +170,10 @@ run 37277281522), а релиз публиковать руками.
 | `report main status` | только `main` | issue `main-red` (выше) |
 
 **Для ruleset `main-protection` достаточно одной проверки — `CI result`.** Она есть в каждом
-прогоне на PR любого уровня, включая `docs`: пропущенные уровнем проверки она принимает как
+неотменённом прогоне ready PR любого уровня, включая `docs`: пропущенные уровнем проверки она принимает как
 «не требовались», но только если `plan` прошёл. У отменённого прогона (новый push) `CI result`
-не запускается вовсе — ложного зелёного нет.
+не запускается вовсе — ложного зелёного нет. Draft не публикует `CI result`: `draft CI omitted`
+не заменяет обязательный merge gate.
 
 ### Проверка ключевых файлов (hot files review / hot-files-review)
 
