@@ -1421,6 +1421,25 @@ exit 97
     }
   });
 
+  it("prepares a rollback script that can delete an operation-owned SSH rule", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 1 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-owned-rule-rollback", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+    await executor.execute(claim, createMockReporter().reporter);
+    const command = ssh.executedCommands.find(({ command }) => command.includes("prepare-myrmidon-firewall-restore"))?.command ?? "";
+    const script = /printf '%s' '([^']+)'/.exec(command)?.[1] ?? "";
+    expect(script).not.toBe("");
+    expect(script).toMatch(/ufw .*delete/);
+    expect(script).toMatch(/myrmidon-firewall-/);
+  });
+
   it("keeps the rollback timer armed if immediate firewall restoration fails", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
