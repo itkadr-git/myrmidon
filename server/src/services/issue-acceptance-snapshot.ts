@@ -51,8 +51,8 @@ export function issueAcceptanceSnapshotService(db: Db) {
      *   - the link row matches issue_id, company_id and the fixed key;
      *   - the document matches id AND company_id;
      *   - the published revision matches latest_revision_id, document_id
-     *     AND company_id, and its body equals documents.latest_body
-     *     (a row rewritten outside the revision log binds to nothing).
+     *     AND company_id, and its number and body equal the document's
+     *     latest values (an inconsistent publication binds to nothing).
      * Otherwise the document fails closed to null — never a foreign or
      * mixed body. A missing issue yields null.
      *
@@ -61,7 +61,7 @@ export function issueAcceptanceSnapshotService(db: Db) {
      * check, not an atomic publication or a run identity binding; see the
      * acceptance-reader README for the remaining security prerequisites.
      */
-    read: async (issueRef: string): Promise<IssueAcceptanceSnapshot | null> => {
+    read: async (issueRef: string, companyId?: string): Promise<IssueAcceptanceSnapshot | null> => {
       const ref = issueRef.trim();
       if (!ref) return null;
       const identity = isUuidLike(ref)
@@ -73,6 +73,8 @@ export function issueAcceptanceSnapshotService(db: Db) {
           identifier: issues.identifier,
           companyId: issues.companyId,
           issueEpoch: issueAcceptanceEpochs.epoch,
+          linkDocumentId: issueDocuments.documentId,
+          linkCompanyId: issueDocuments.companyId,
           documentId: documents.id,
           latestRevisionId: documents.latestRevisionId,
           latestRevisionNumber: documents.latestRevisionNumber,
@@ -87,7 +89,6 @@ export function issueAcceptanceSnapshotService(db: Db) {
           issueDocuments,
           and(
             eq(issueDocuments.issueId, issues.id),
-            eq(issueDocuments.companyId, issues.companyId),
             eq(issueDocuments.key, "acceptance-scenarios"),
           ),
         )
@@ -95,6 +96,7 @@ export function issueAcceptanceSnapshotService(db: Db) {
           documents,
           and(
             eq(documents.id, issueDocuments.documentId),
+            eq(issueDocuments.companyId, issues.companyId),
             eq(documents.companyId, issues.companyId),
           ),
         )
@@ -104,14 +106,20 @@ export function issueAcceptanceSnapshotService(db: Db) {
             eq(documentRevisions.id, documents.latestRevisionId),
             eq(documentRevisions.documentId, documents.id),
             eq(documentRevisions.companyId, issues.companyId),
+            eq(documentRevisions.revisionNumber, documents.latestRevisionNumber),
             eq(documentRevisions.body, documents.latestBody),
           ),
         )
-        .where(identity)
+        .where(companyId ? and(identity, eq(issues.companyId, companyId)) : identity)
         .limit(1);
       const row = rows[0];
       if (!row) return null;
       const generation = row.latestRevisionNumber;
+      if (companyId && row.linkDocumentId &&
+          (row.linkCompanyId !== companyId || !row.documentId || !row.latestRevisionId || row.body === null ||
+           typeof generation !== "number" || !Number.isInteger(generation) || generation <= 0)) {
+        throw new Error("Ambiguous acceptance snapshot");
+      }
       return {
         issue: {
           id: row.issueId,

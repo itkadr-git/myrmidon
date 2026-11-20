@@ -1546,6 +1546,9 @@ export async function commitNativeStatusDecision(input: {
       .then((rows) => rows[0] ?? null);
     if (!coordinator)
       throw new Error("native_finalization_coordinator_missing");
+    if (coordinator.authorizationMode !== "internal") {
+      throw new Error("native_service_authorization_required");
+    }
     const issue = await tx
       .select()
       .from(issues)
