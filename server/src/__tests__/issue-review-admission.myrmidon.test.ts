@@ -368,7 +368,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     await ctx.db.insert(issues).values({
       id: issueId, companyId, title: "Return from typed review", status: "in_review", priority: "medium", assigneeAgentId: leadId, createdByAgentId: authorId,
       executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewerId }] }], monitor } as any,
-      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewerId }, returnAssignee: { type: "agent", agentId: authorId }, completedStageIds: [], changesRequestedCount: 0, lastDecisionId: null, lastDecisionOutcome: null },
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewerId }, returnAssignee: { type: "agent", agentId: authorId }, completedStageIds: [], changesRequestedCount: 0, lastDecisionId: null, lastDecisionOutcome: null, monitor: { ...monitor, notes: null, status: "scheduled", attemptCount: 0, lastTriggeredAt: null, timeoutAt: null, maxAttempts: null, clearedAt: null, clearReason: null } },
       monitorNextCheckAt: new Date(monitor.nextCheckAt),
     });
     await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewerId, status: "running", contextSnapshot: { issueId } });
@@ -390,6 +390,10 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     const [afterReplay] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
     expect(afterReplay?.status).toBe("in_progress");
     expect(afterReplay?.assigneeAgentId).toBe(authorId);
+    await heartbeatService(ctx.db).tickTimers(new Date(Date.now() + 120_000));
+    const [afterTick] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
+    expect(afterTick).toMatchObject({ status: "in_progress", assigneeAgentId: authorId, executionState: { status: "changes_requested", currentStageId: stageId, changesRequestedCount: 1 } });
+    expect(await ctx.db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, issueId))).toHaveLength(1);
   });
 
   it("records the round-limit decision once and addresses escalation recovery", async () => {
@@ -407,7 +411,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     await ctx.db.insert(issues).values({
       id: issueId, companyId, title: "Round limit recovery", status: "in_review", priority: "medium", assigneeAgentId: leadId, responsibleAgentId: leadId, createdByAgentId: authorId,
       executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewerId }] }], monitor, reviewEscalationPolicy: { participantRoles: ["lead"], fallbackQueue: "review-recovery", timeoutAt: null, policyRevision: "round-limit-test" } } as any,
-      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewerId }, returnAssignee: { type: "agent", agentId: authorId }, completedStageIds: [], changesRequestedCount: 2, lastDecisionId: randomUUID(), lastDecisionOutcome: "changes_requested" },
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewerId }, returnAssignee: { type: "agent", agentId: authorId }, completedStageIds: [], changesRequestedCount: 2, lastDecisionId: randomUUID(), lastDecisionOutcome: "changes_requested", monitor: { ...monitor, notes: null, status: "scheduled", attemptCount: 0, lastTriggeredAt: null, timeoutAt: null, maxAttempts: null, clearedAt: null, clearReason: null } },
       monitorNextCheckAt: new Date(monitor.nextCheckAt),
     });
     await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewerId, status: "running", contextSnapshot: { issueId } });
@@ -429,6 +433,11 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: fix verification." });
     const afterReplay = await ctx.db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, issueId));
     expect(afterReplay).toHaveLength(1);
+    await heartbeatService(ctx.db).tickTimers(new Date(Date.now() + 120_000));
+    const [afterTick] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
+    expect(afterTick).toMatchObject({ status: "in_review", assigneeAgentId: reviewerId, executionState: { status: "pending", currentStageId: stageId, changesRequestedCount: 3, escalationReason: "review_round_limit" } });
+    expect(await ctx.db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, issueId))).toHaveLength(1);
+    expect(await ctx.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issueId))).toHaveLength(1);
   });
 
   // myrmidon(REVIEW-CHANGES-LOST-STAGE): when the review stage is missing from
