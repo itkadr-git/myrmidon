@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { runOnboardOnce } from "./runner.js";
 import { generateSshKeyPair } from "./ssh-key.js";
 
-it("closes every SSH session after stored-key access and final verification", async () => {
+it.each([false, true])("closes every SSH session after stored-key access (firewall enabled: %s)", async (harden) => {
   const hostKey = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs1", format: "pem" });
   const pair = generateSshKeyPair();
   const clients = new Set<import("ssh2").Connection>();
@@ -22,6 +22,7 @@ it("closes every SSH session after stored-key access and final verification", as
         if (info.command.includes("authorized_keys")) installed = info.command;
         if (info.command.includes("myrmidon-key-verify")) stream.write("myrmidon-key-verify\n");
         if (info.command.includes("onboard-verified")) stream.write("onboard-verified\n");
+        if (info.command.includes("ufw-connectivity-ok")) stream.write("ufw-connectivity-ok\n");
         stream.exit(0);
         stream.end();
       });
@@ -36,7 +37,7 @@ it("closes every SSH session after stored-key access and final verification", as
     if (path.endsWith("/claim")) return Response.json({
       job: { id: "job", companyId: "company" },
       server: { hostname: "127.0.0.1", port: address.port, username: "test", hostKeyFingerprint: null, accessKeySecretKey: "stored" },
-      steps: ["access", "verify"], options: { keepPassword: true }, secretValues: { bootstrapPassword: "test-password", accessKey: pair.privateKey },
+      steps: harden ? ["access", "harden", "verify"] : ["access", "verify"], options: { keepPassword: true }, secretValues: { bootstrapPassword: "test-password", accessKey: pair.privateKey },
     });
     if (path.endsWith("/host-key")) return Response.json({ accepted: true });
     if (path.endsWith("/report")) { reports.push(JSON.parse(String(init?.body))); return Response.json({}); }
