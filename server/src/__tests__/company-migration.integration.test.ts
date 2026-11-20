@@ -673,7 +673,7 @@ describe("company migration dry run", () => {
     expect(otherSource.run.containerRef).toMatchObject({ kind: "company_migration", sourceCompanyId: "source-two" });
     expect(await companyTransferRunService.claimApply(db, first.run.id)).toBe(true);
     await companyService(db).create({ name: "Ledger completion destination" }, { transferRunId: first.run.id });
-    await companyTransferRunService.complete(db, first.run.id);
+    expect(await companyTransferRunService.complete(db, first.run.id)).toBe(true);
     const retry = await companyTransferRunService.resumeOrCreateMigration(db, "source-one", key);
     expect(retry.alreadyCompleted).toBe(true);
     expect(retry.run.id).toBe(first.run.id);
@@ -695,7 +695,7 @@ describe("company migration dry run", () => {
       containerRef: { kind: "company_migration", sourceCompanyId: "completion-mismatch-source", destinationClaimed: true, destinationCompanyId: "different-destination" },
     }).where(eq(companyTransferRuns.id, run.id));
 
-    await companyTransferRunService.complete(db, run.id);
+    expect(await companyTransferRunService.complete(db, run.id)).toBe(false);
     const saved = await companyTransferRunService.getRun(db, run.id);
     expect(saved?.status).toBe("applying");
     expect(saved?.companyId).toBe(destination.id);
