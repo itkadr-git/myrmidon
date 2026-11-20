@@ -1056,6 +1056,25 @@ exit 1
     expect(mockSsh.hasExecuted(/ufw/)).toBe(false);
   });
 
+  it("rejects a malformed default policy before starting the rollback timer", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, {
+      exitCode: 0,
+      stdout: "Status: active\nDefault: allow (incoming), malformed\n",
+    });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-malformed-default-policy", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+    const result = await executor.execute(claim, createMockReporter().reporter);
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatch(/default policy unconfirmed/i);
+    expect(ssh.hasExecuted(/start-myrmidon-firewall-timer|sudo ufw (allow|default|delete)/)).toBe(false);
+  });
+
   it("rejects conflicting incoming default policies before starting the rollback timer", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
