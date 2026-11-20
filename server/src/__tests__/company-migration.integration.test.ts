@@ -702,6 +702,18 @@ describe("company migration dry run", () => {
     expect((await companyTransferRunService.resumeOrCreateMigration(db, "completion-mismatch-source", "completion-mismatch-key")).alreadyCompleted).toBe(false);
   });
 
+  it("does not complete a migration whose provenance identifies the source as destination", async () => {
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "completion-source", "completion-source-corruption");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Corrupt completion destination" }, { transferRunId: run.id });
+    await db.update(companyTransferRuns).set({
+      containerRef: { kind: "company_migration", sourceCompanyId: destination.id, destinationClaimed: true, destinationCompanyId: destination.id },
+    }).where(eq(companyTransferRuns.id, run.id));
+
+    await companyTransferRunService.complete(db, run.id);
+    expect((await companyTransferRunService.getRun(db, run.id))?.status).toBe("applying");
+  });
+
   it("does not reopen a completed migration when a late failure is recorded", async () => {
     const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "late-failure-source", "late-failure-key");
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
