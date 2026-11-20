@@ -21,8 +21,9 @@ with a single SQL statement, so the response always comes from one MVCC
 snapshot; the gateway issues exactly one upstream read per runner request.
 Upstream not-found is the identical `404` for foreign and unknown issues (no
 existence oracle); network failures, `5xx`, oversized or invalid payloads are
-a bare `502` that never carries a partial body. This contract has only been
-exercised against a fixture, not a live Myrmidon service.
+a bare `502` that never carries a partial body. The real-core integration test
+below exercises this contract against a PostgreSQL-backed core using synthetic
+credentials; it is not a production test.
 
 ## Pin and verify
 
@@ -154,11 +155,14 @@ config, audit and upstream are trusted operator assets; an operator or upstream
 compromise is outside this boundary. A shared filesystem must have coherent
 visibility for revocations.
 
-TLS alone does not establish network isolation: a runner must be prevented by
-network policy from reaching upstream directly. No such policy or live upstream
-integration has been demonstrated here. Do not deploy until these are verified,
-and until an independent security review and actual-credential negative checks
-are completed. No production credential has been issued by this component.
+Network isolation is NOT PROVEN: `unshare -n true` failed with `Operation not
+permitted`. TLS alone does not prevent a runner from reaching upstream directly.
+A separate runner/upstream namespace test must demonstrate that only the gateway
+is reachable before activation. The real-core integration test below exercises a
+PostgreSQL-backed core route with synthetic credentials, not production. This
+evidence does not constitute security PASS: keep privileged CI disabled until
+network isolation, independent security review, actual-credential negative
+checks, and the consumer-side revision enforcement above are complete.
 
 ## Verification
 
