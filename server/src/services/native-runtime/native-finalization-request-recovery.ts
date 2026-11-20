@@ -4,7 +4,7 @@ import { nativeFinalizationOutbox, nativeFinalizationRequests, type Db } from "@
 /** Claim pending work or reclaim a lease abandoned by a crashed worker. */
 export async function claimNativeFinalizationRequest(db: Db, worker: string, now: Date, leaseMs: number) {
   const leaseUntil = new Date(now.getTime() + leaseMs);
-  if (!worker || !Number.isFinite(now.getTime()) || !Number.isFinite(leaseMs) || leaseMs <= 0 ||
+  if (!worker.trim() || !Number.isFinite(now.getTime()) || !Number.isFinite(leaseMs) || leaseMs <= 0 ||
       !Number.isFinite(leaseUntil.getTime()) || leaseUntil <= now) {
     throw new Error("native_finalization_invalid_lease");
   }
