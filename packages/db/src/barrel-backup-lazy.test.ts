@@ -13,4 +13,12 @@ describe("database root backup graph", () => {
     await expect(db.diagnosePgDumpClient("pg_dump", 18)).resolves.toBeNull();
     expect(loaded).toHaveBeenCalledTimes(1);
   }, 30_000);
+
+  it("preserves the public backup error identity across entry points", async () => {
+    const root = await import("./index.js");
+    vi.doUnmock("./backup-lib.js");
+    const backup = await import("./backup-lib.js");
+    expect(backup.BackupVerificationError).toBe(root.BackupVerificationError);
+    expect(backup.BackupClientVersionError).toBe(root.BackupClientVersionError);
+  }, 30_000);
 });

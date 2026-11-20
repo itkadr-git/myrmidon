@@ -26,18 +26,24 @@ export {
   type EmbeddedPostgresTestSupport,
 } from "./test-embedded-postgres.js";
 export {
-  runDatabaseBackup,
-  runDatabaseRestore,
   formatDatabaseBackupResult,
   BackupVerificationError,
   BackupClientVersionError,
   parsePgMajorVersion,
-  diagnosePgDumpClient,
   type BackupRetentionPolicy,
   type RunDatabaseBackupOptions,
   type RunDatabaseBackupResult,
   type RunDatabaseRestoreOptions,
-} from "./backup-lib.js";
+} from "./backup-public.js";
+export async function runDatabaseBackup(...args: Parameters<typeof import("./backup-lib.js").runDatabaseBackup>) {
+  return (await import("./backup-lib.js")).runDatabaseBackup(...args);
+}
+export async function runDatabaseRestore(...args: Parameters<typeof import("./backup-lib.js").runDatabaseRestore>) {
+  return (await import("./backup-lib.js")).runDatabaseRestore(...args);
+}
+export async function diagnosePgDumpClient(...args: Parameters<typeof import("./backup-lib.js").diagnosePgDumpClient>) {
+  return (await import("./backup-lib.js")).diagnosePgDumpClient(...args);
+}
 export {
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
