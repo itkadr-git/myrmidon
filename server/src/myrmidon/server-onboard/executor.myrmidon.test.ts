@@ -1352,6 +1352,7 @@ exit 97
       return undefined;
     } });
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
     ssh.mockResponse(/check-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
@@ -1371,6 +1372,7 @@ exit 97
   it("does not overwrite concurrent UFW configuration changes when an allow command fails", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     ssh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     ssh.mockResponse(/sudo ufw allow/, { exitCode: 1, stderr: "rule partially applied" });
@@ -1392,6 +1394,7 @@ exit 97
   it("attempts firewall restoration when the SSH allow command loses its connection", async () => {
     const ssh = new MockSshExecutor({ timeoutCommands: [/sudo ufw allow/] });
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
     ssh.mockResponse(/check-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
