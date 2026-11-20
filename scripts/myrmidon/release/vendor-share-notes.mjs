@@ -51,7 +51,8 @@ export function parseShareLine(text) {
   if (!match) return null;
   const inherited = Number(match[1]);
   const totalFiles = Number(match[2]);
-  if (!Number.isFinite(inherited) || !Number.isFinite(totalFiles) || totalFiles <= 0) {
+  if (!Number.isSafeInteger(inherited) || !Number.isSafeInteger(totalFiles) ||
+      inherited < 0 || totalFiles <= 0 || inherited > totalFiles) {
     return null;
   }
   return { inherited, totalFiles, share: inherited / totalFiles };
