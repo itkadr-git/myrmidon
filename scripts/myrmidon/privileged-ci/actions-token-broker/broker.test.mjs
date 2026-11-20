@@ -133,6 +133,28 @@ test('unowned revocation does not fence later legitimate exchange', async () => 
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('competing exchange does not fence the winning exchange or later requests', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'broker-competing-exchange-'));
+  const store = createCredentialStore(join(dir, 'credentials.sqlite'), randomBytes(32));
+  let release, entered, issued = 0;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const barrier = new Promise(resolve => { release = resolve; });
+  const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
+    installation: { issue: async () => { issued++; if (issued === 1) { entered(); await barrier; } return { token: `fixture-${issued}` }; }, revoke: async () => {} },
+    audit: async () => {}, alert: async () => {}, anchoredIssuance: true });
+  try {
+    const first = broker.exchange(jwt('competing-first'));
+    await waiting;
+    await assert.rejects(broker.exchange(jwt('competing-second')));
+    release();
+    await first;
+    await broker.exchange(jwt('competing-third'));
+    assert.equal(issued, 2);
+    assert.deepEqual(await store.pendingIssuances(), []);
+    assert.deepEqual(await store.pendingAlerts(), []);
+  } finally { release(); store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('runtime replay anchor failure alerts and fences issuance after anchor recovers', async () => {
   let offline = true, issued = 0;
   const queued = [], alerts = [];
