@@ -151,6 +151,12 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
     try { await record('issuance_ambiguous'); } catch { /* Reservation remains pending. */ }
     try { if (typeof alert === 'function') await alert('issuance_ambiguous'); } catch { /* Recovery retries from the reservation. */ }
   }
+  let mutationActive = false;
+  function acquireMutation() {
+    if (mutationActive) throw new Error('broker mutation busy');
+    mutationActive = true;
+    return () => { mutationActive = false; };
+  }
   async function guarded(event, operation) {
     if (closed) throw new Error('broker closed');
     activeRequests++;
@@ -166,6 +172,8 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
     async exchange(jwt) {
       return guarded('exchange_failed', async () => {
         const { owner, exp } = await identity(jwt);
+        const releaseMutation = acquireMutation();
+        try {
         if (auditFailed || recoveryRequired) throw new Error('recovery required');
         const handle = randomUUID();
         const durable = typeof store.reserveIssuance === 'function';
@@ -267,11 +275,14 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
           throw new Error('audit failed');
         }
         return { handle, ...credential };
+        } finally { releaseMutation(); }
       });
     },
     async revoke(jwt, handle) {
       return guarded('revoke_failed', async () => {
         const { owner, exp } = await identity(jwt);
+        const releaseMutation = acquireMutation();
+        try {
         if (typeof handle !== 'string' || !/^[0-9a-f-]{36}$/.test(handle)) throw new Error('invalid handle');
         if (auditFailed) throw new Error('audit unavailable');
         // Reject known non-owners before establishing the durable recovery fence.
@@ -308,6 +319,7 @@ export function createBroker({ policy, loadKeys, claimOnce, installation, store,
           try { if (typeof alert === 'function') await alert('credential_recovery_failed'); } catch { /* Recovery retries the alert. */ }
           throw error;
         }
+        } finally { releaseMutation(); }
       });
     },
   };
