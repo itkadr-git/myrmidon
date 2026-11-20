@@ -1328,6 +1328,8 @@ const BOARD_ONLY_PREFIXES = [
 const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/acceptance-service-credentials",
   "DELETE /api/companies/{companyId}/acceptance-service-credentials/{id}",
+  "POST /api/companies/{companyId}/native-finalization-service-credentials",
+  "DELETE /api/companies/{companyId}/native-finalization-service-credentials/{id}",
   "GET /api/issues/{id}/acceptance-scenarios-snapshot",
   "GET /api/companies/{companyId}/ai-connections",
   "POST /api/companies/{companyId}/ai-connections",
@@ -8222,6 +8224,24 @@ registry.registerPath({
   path: "/api/companies/{companyId}/acceptance-service-credentials/{id}",
   tags: ["companies"],
   summary: "Revoke an acceptance service credential",
+  request: { params: z.object({ companyId: z.string(), id: z.string() }) },
+  responses: { 204: { description: "Credential revoked" }, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/native-finalization-service-credentials",
+  tags: ["companies"],
+  summary: "Issue a certificate-bound native finalization service credential",
+  request: { params: z.object({ companyId: z.string() }), body: jsonBody(z.object({ certificateSha256: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.string().datetime({ offset: true }) }).strict()) },
+  responses: { 201: { description: "Credential ID and one-time bearer token" }, 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/native-finalization-service-credentials/{id}",
+  tags: ["companies"],
+  summary: "Revoke a native finalization service credential",
   request: { params: z.object({ companyId: z.string(), id: z.string() }) },
   responses: { 204: { description: "Credential revoked" }, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
