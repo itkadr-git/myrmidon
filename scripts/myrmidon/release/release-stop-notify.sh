@@ -12,17 +12,13 @@
 # Concurrency and deduplication:
 #   1. Lookup: gh api --paginate scans existing issues (state=all). If an
 #      entry already exists for this exact stop event, it deduplicates and exits 0.
-#   2. Atomic lock: before creating an issue, the script acquires an atomic
-#      lock by creating a unique repo label "release-stop-lock-<event id>".
-#      If another execution holds the lock, this runner waits and polls for the
-#      issue to be published, suppressing concurrent duplicate creation.
-#   3. Lock rescan: immediately upon acquiring the lock, the script rescans
-#      for existing entries to ensure no concurrent run created the issue
-#      and released the lock before this run acquired it.
-#   4. Post-creation verification: if concurrent creations ever race past the
-#      lock, any duplicate is immediately closed in favor of the canonical lowest
-#      issue number.
-#   5. Cleanup: the temporary lock label is released on exit.
+#   2. Atomic durable reservation: create the unique repository label
+#      "release-stop-lock-<event id>". Never delete it automatically: a list
+#      replica may lag a completed issue create, and a failed create may have
+#      succeeded remotely despite an ambiguous response.
+#   3. Rescan after reservation. A contender polls for the issue and fails
+#      closed on timeout. An operator must reconcile an orphaned reservation
+#      before manually removing it and retrying.
 #
 # Failure posture (fail closed): if the responsible login is missing, the
 # duplicate scan cannot complete, or the issue create fails, the script
@@ -78,20 +74,9 @@ export GH_TOKEN="$token"
 
 title="release-stop: $tag ($event_id)"
 lock_label="release-stop-lock-$event_id"
-lock_acquired=0
-
-release_lock() {
-  if [[ "$lock_acquired" -eq 1 ]]; then
-    lock_acquired=0
-    gh label delete "$lock_label" --repo "$repo" --yes >/dev/null 2>&1 || true
-  fi
-}
-trap release_lock EXIT
-
 acquire_lock() {
   local out
   if out="$(gh label create "$lock_label" --repo "$repo" --description "Deduplication lock for stop event $event_id" --color "ededed" 2>&1)"; then
-    lock_acquired=1
     return 0
   fi
   if [[ "$out" == *"already exists"* ]]; then
@@ -134,15 +119,12 @@ while true; do
   acquire_rc=0
   acquire_lock || acquire_rc=$?
   if [[ "$acquire_rc" -eq 0 ]]; then
-    # Rescan after acquiring the lock to guarantee no prior run created the issue
-    # and released the lock before this run acquired it.
+    # Rescan for entries created before this reservation protocol existed.
     existing="$(scan_for_existing | head -1)" || {
-      release_lock
       die "the duplicate scan failed; refusing to create a possibly-duplicate stop entry"
     }
     if [[ -n "$existing" ]]; then
       log "stop entry already exists for event $event_id (issue #$existing) — deduplicated"
-      release_lock
       printf 'stop=deduplicated issue=%s event=%s\n' "$existing" "$event_id"
       exit 0
     fi
@@ -175,7 +157,6 @@ printf -v body 'Release workflow stopped.\n\n- Tag: `%s`\n- Step: `%s`\n- Reason
 
 create_out=""
 if ! create_out="$(gh issue create --repo "$repo" --title "$title" --label release-stop --body "$body" --assignee "$responsible" 2>&1)"; then
-  release_lock
   die "could not create the stop notification issue (assignment to $responsible included): $create_out"
 fi
 url="$create_out"
@@ -188,12 +169,10 @@ if [[ -n "$all_existing" ]]; then
   if [[ -n "$canonical_num" && -n "$created_num" && "$created_num" -gt "$canonical_num" ]]; then
     log "duplicate issue #$created_num created concurrently with canonical #$canonical_num; closing duplicate"
     gh issue close "$created_num" --repo "$repo" --comment "Duplicate notification for stop event $event_id (canonical issue is #$canonical_num) — closing." >/dev/null 2>&1 || true
-    release_lock
     printf 'stop=deduplicated issue=%s event=%s\n' "$canonical_num" "$event_id"
     exit 0
   fi
 fi
 
-release_lock
 log "opened stop entry for $tag (event $event_id), assigned to $responsible"
 printf 'stop=created issue=%s event=%s\n' "${url:-unknown}" "$event_id"
