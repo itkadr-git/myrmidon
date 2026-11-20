@@ -1333,6 +1333,30 @@ exit 97
     expect(launch).not.toMatch(/systemd-run[^\n]*\/bin\/true/);
   });
 
+  it("arms the rollback timer with a prepared, operation-specific restore script", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
+    ssh.mockResponse(/check-myrmidon-firewall-prerequisites/, { exitCode: 0, stdout: "" });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
+    ssh.mockResponse(/check-myrmidon-firewall-timer/, { exitCode: 0, stdout: "timer-confirmed\n" });
+    ssh.mockResponse(/sudo ufw allow/, { exitCode: 1, stderr: "allow failed" });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-timer-restore-script", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+
+    await executor.execute(claim, createMockReporter().reporter);
+    const commands = ssh.executedCommands.map(({ command }) => command);
+    const launchIndex = commands.findIndex((command) => command.includes("start-myrmidon-firewall-timer"));
+    const launch = commands[launchIndex] ?? "";
+    const restorePath = launch.match(/\/var\/tmp\/myrmidon-firewall-[a-f0-9-]+\/restore\.sh/)?.[0];
+    expect(restorePath).toBeDefined();
+    expect(commands.slice(0, launchIndex).some((command) => command.includes(restorePath ?? "<missing>") && command.includes("ufw"))).toBe(true);
+  });
+
   it("succeeds without rewriting an already-deny incoming policy", async () => {
     const ssh = new MockSshExecutor();
     const fresh = new MockSshExecutor();
