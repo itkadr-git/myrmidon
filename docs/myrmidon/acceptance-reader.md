@@ -52,15 +52,14 @@ accepted as matches. A changed snapshot returns 412, an ambiguous snapshot 409,
 and a missing or cross-company issue 404. Invalid service authentication returns
 401; an untrusted client certificate can instead fail the TLS handshake.
 
-This service is distinct from the experimental gateway and its older upstream
-`/api/issues/{id}/acceptance-scenarios-snapshot` below. It provides a
+This service is the experimental gateway's dedicated upstream. It provides a
 point-in-time read, not atomic authorization at an external privileged use
 boundary. Do not use it to enable privileged CI or issue privileged verdicts.
 
-### Existing gateway and upstream
+### Gateway and upstream
 
-- The board serves one MVCC snapshot per request:
-  `GET /api/issues/{id}/acceptance-scenarios-snapshot` returns the minimal
+- The service serves one MVCC snapshot per request:
+  `GET /api/service/issues/{id}/acceptance-scenarios` returns the internal
   issue identity (`id`, `identifier`, `companyId`, `version`) and the
   `acceptance-scenarios` document (`id`, `latestRevisionId`,
   `latestRevisionNumber`, `body`) from a single joined SELECT; cross-tenant
@@ -70,20 +69,24 @@ boundary. Do not use it to enable privileged CI or issue privileged verdicts.
   mutation (issue row, acceptance link row both sides of a transfer, bound
   document, revision rows). Direct resets, row deletes and TRUNCATE fail
   closed; the epoch crosses the wire as a decimal bigint string.
-- The gateway exposes one pin route and one server-side conditional verify.
-  Verify validates the bounded request body before a fresh upstream read and
-  answers 200/409/400/401/502.
+- The gateway exposes only `GET /api/issues/{id}/acceptance-snapshot`. Its
+  public issue projection is exactly `identifier` and `companyId`; its document
+  projection is exactly `id`, `latestRevisionId`, and `body` (or null). A strong
+  `ETag` can be supplied as `If-Match`; a changed snapshot returns 412.
 
 ## Operator surface
 
 Run and provision exactly as documented in the experimental README
 (configuration JSON, persistent credential records, rotation, audit file,
-mTLS upstream files). Do not place secrets in the repository, command
+mTLS upstream files). `upstream.tokenFile` contains a dedicated certificate-bound
+service bearer, separate from the runner-facing gateway bearer. Do not place secrets in the repository, command
 arguments, logs, or the runner; do not use a regular board agent key.
 
 ## Prerequisites before any real use
 
 - Network policy that prevents the runner from reaching the board directly.
+  OPE-15287 passed a disposable HTTP network topology test: gateway reachable,
+  direct core DNS failed and direct IP timed out. This is not production or mTLS proof.
 - A live mTLS upstream acceptance run and negative checks with real
   credentials.
 - A run-scoped single-job credential path (tracked separately; the shared

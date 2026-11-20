@@ -29,7 +29,7 @@ import { createListener } from './listener.mjs';
   });
   const result = await call();
   assert.equal(result.status, 200);
-  assert.deepEqual(JSON.parse(result.body), { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: '1' }, document: null });
+  assert.deepEqual(JSON.parse(result.body), { issue: { identifier: 'OPE-123', companyId: 'company-a' }, document: null });
   assert.equal((await call({ method: 'POST' })).status, 404);
   await assert.rejects(call({ ca: undefined }));
   assert.ok(!JSON.stringify(events).includes(token));

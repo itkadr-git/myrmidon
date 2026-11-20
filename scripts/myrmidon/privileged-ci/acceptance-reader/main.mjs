@@ -9,7 +9,7 @@ export function start(config) {
   if (!config || typeof config.host !== 'string' || !config.host || !Number.isInteger(config.port) || config.port < 1 || config.port > 65535 || typeof config.credentialDirectory !== 'string' || !config.credentialDirectory || typeof config.auditFile !== 'string' || !config.auditFile) throw new TypeError('invalid listener configuration');
   const read = (file) => readFileSync(file);
   const credentialStore = createPersistentCredentialStore(config.credentialDirectory);
-  const upstream = createUpstream({ origin: config.upstream.origin, ca: read(config.upstream.ca), cert: read(config.upstream.cert), key: read(config.upstream.key) });
+  const upstream = createUpstream({ origin: config.upstream.origin, ca: read(config.upstream.ca), cert: read(config.upstream.cert), key: read(config.upstream.key), token: read(config.upstream.tokenFile).toString('utf8').trim() });
   const server = createListener({
     tls: { cert: read(config.listener.cert), key: read(config.listener.key) },
     credentialStore,
