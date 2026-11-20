@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 export async function createAnchoredReplayStore(path, key, anchor) {
   if (typeof path !== 'string' || !path || path === ':memory:' || path.startsWith('file:') || !Buffer.isBuffer(key) || key.length !== 32 || typeof anchor?.read !== 'function' || typeof anchor?.compareAndSet !== 'function') throw new Error('invalid replay configuration');
   const secret = Buffer.from(key), db = new DatabaseSync(path);
-  let busy = false;
+  let pending = 0, tail = Promise.resolve();
   const digest = (seq, jti, expires, previous) => createHmac('sha256', secret).update(JSON.stringify([seq, jti, expires, previous])).digest('hex');
   const equal = (a, b) => a?.seq === b.seq && a?.mac === b.mac;
   function verify() {
@@ -24,8 +24,12 @@ export async function createAnchoredReplayStore(path, key, anchor) {
   } catch (error) { db.close(); secret.fill(0); throw error; }
   return {
     async claimOnce(jti, expires, now = Math.floor(Date.now() / 1000)) {
-      if (typeof jti !== 'string' || !jti || jti.length > 256 || !Number.isSafeInteger(expires) || !Number.isSafeInteger(now) || expires <= now || busy) throw new Error('invalid or concurrent replay claim');
-      busy = true;
+      if (typeof jti !== 'string' || !jti || jti.length > 256 || !Number.isSafeInteger(expires) || !Number.isSafeInteger(now) || expires <= now) throw new Error('invalid replay claim');
+      pending++;
+      const previousClaim = tail;
+      let release;
+      tail = new Promise(resolve => { release = resolve; });
+      await previousClaim;
       let transaction = false;
       try {
         db.exec('BEGIN IMMEDIATE'); transaction = true;
@@ -37,8 +41,8 @@ export async function createAnchoredReplayStore(path, key, anchor) {
         if (await anchor.compareAndSet(previous, next) !== true) throw new Error('replay anchor update failed');
         db.exec('COMMIT'); transaction = false;
         return true;
-      } finally { try { if (transaction) db.exec('ROLLBACK'); } finally { busy = false; } }
+      } finally { try { if (transaction) db.exec('ROLLBACK'); } finally { pending--; release(); } }
     },
-    close() { if (busy) throw new Error('replay busy'); db.close(); secret.fill(0); },
+    close() { if (pending) throw new Error('replay busy'); db.close(); secret.fill(0); },
   };
 }
