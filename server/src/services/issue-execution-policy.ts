@@ -1644,7 +1644,12 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       return { patch };
     }
 
-    if (attemptedStageAdvance) {
+    // Preserve drift repair for an idempotent update of the existing status and
+    // assignee, but never silently replace a requested transition with review.
+    const isDriftedNoOp = stageStateDrifted &&
+      (requestedStatus === undefined || (requestedStatus === "in_progress" && input.issue.status === "in_progress")) &&
+      (!requestedAssigneePatchProvided || principalsEqual(explicitAssignee, currentAssignee));
+    if (attemptedStageAdvance && !isDriftedNoOp) {
       throw unprocessable("Only the active reviewer or approver can advance the current execution stage");
     }
 
