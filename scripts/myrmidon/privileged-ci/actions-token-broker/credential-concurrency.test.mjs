@@ -40,6 +40,24 @@ test('lost committed fence prevents a competing owner revoke and restart preserv
   } finally { first?.close(); second?.close(); anchor.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('a rejected owner lookup does not poison the credential checkpoint', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'credential-owner-rejected-'));
+  const path = join(dir, 'credentials.sqlite'), anchorPath = join(dir, 'anchor.sqlite');
+  const key = randomBytes(32);
+  provisionSqliteAnchor(anchorPath);
+  const anchor = createSqliteAnchor(anchorPath);
+  let store = createCredentialStore(path, key);
+  try {
+    const wrapped = checkpointCredentialStore(store, await createCredentialCheckpoint(store, anchor, { provision: true }));
+    await wrapped.put('handle', { token: 'fixture' }, 'owner');
+    await assert.rejects(wrapped.withOwned('handle', 'other', async () => assert.fail('not owner')), /credential not found/);
+    await wrapped.withOwned('handle', 'owner', async credential => assert.equal(credential.token, 'fixture'));
+    store.close(); store = undefined;
+    store = createCredentialStore(path, key);
+    await createCredentialCheckpoint(store, anchor);
+  } finally { store?.close(); anchor.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('concurrent checkpoint writers fence owner revoke while another revoke is in flight', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'credential-concurrent-'));
   const path = join(dir, 'credentials.sqlite'), anchorPath = join(dir, 'anchor.sqlite');
