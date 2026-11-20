@@ -519,17 +519,14 @@ current_sha="$(jq -r '.object.sha // empty' <<<"$current_ref")"
 [[ "$current_type" == "$object_type" && "$current_sha" == "$object_sha" ]] \
   || die "tag $tag changed since verification — NOT publishing"
 if ((release_exists)); then
-  log "release $tag already exists — updating (idempotent re-run, never --latest)"
-  gh release edit "$tag" --repo "$repo" --title "$title" "${prerelease_args[@]}" \
-    --notes-file release-body.md
+  die "release $tag already exists — conflict requires manual resolution; NOT overwriting"
 else
   gh release create "$tag" --verify-tag --repo "$repo" --title "$title" "${prerelease_args[@]}" \
     --notes-file release-body.md
 fi
 
-# The manifest asset: replaced on a re-run (--clobber), so it always matches
-# the body of the same publish.
-gh release upload "$tag" release-components.json --repo "$repo" --clobber
+# Assets are uploaded only to the release just created; never replace existing assets.
+gh release upload "$tag" release-components.json --repo "$repo"
 log "uploaded the component manifest asset release-components.json"
 
 # ONE-COMMAND-INSTALL (1.6.6): the installer of a fresh installation rides with
@@ -539,7 +536,7 @@ log "uploaded the component manifest asset release-components.json"
 # scripts/myrmidon/install/install.sh (the single source of truth).
 installer="$here/../install/install.sh"
 [[ -f "$installer" ]] || die "the installer script $installer is missing"
-gh release upload "$tag" "$installer#install.sh" --repo "$repo" --clobber
+gh release upload "$tag" "$installer#install.sh" --repo "$repo"
 log "uploaded the installer asset install.sh"
 
 # ----------------------------------------------- 5. supersede the previous --
