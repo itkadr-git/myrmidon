@@ -48,8 +48,8 @@ export function acceptanceServiceCredentialsService(db: Db) {
       const [coordinator] = await tx.select().from(nativeRunFinalizations).where(and(
         eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.issueId), eq(nativeRunFinalizations.runId, input.runId),
       )).for("update");
-      if (!coordinator || coordinator.authorizationMode !== "internal" || coordinator.decisionId ||
-          coordinator.phase === "committed" || coordinator.phase === "terminal_failure" ||
+      if (!coordinator || coordinator.authorizationMode !== "internal" || coordinator.decisionId || coordinator.assessmentId ||
+          !["awaiting_result", "workspace_finalizing"].includes(coordinator.phase) ||
           (coordinator.leaseOwner && (!coordinator.leaseExpiresAt || coordinator.leaseExpiresAt > new Date()))) {
         throw new Error("native_finalization_grant_not_available");
       }
