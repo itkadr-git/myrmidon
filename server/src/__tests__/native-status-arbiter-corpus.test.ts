@@ -2029,6 +2029,34 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     expect(await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.issueId, seeded.issueId))).toEqual([]);
   });
 
+  it("does not replay or supersede a committed decision through the service gate without authorization", async () => {
+    const template = corpus.fixtures.find((candidate) => candidate.mode === "native")!;
+    const seeded = await seedFixture({
+      ...template, id: `service-gate-replay-${randomUUID()}`,
+      given: { ...template.given, priorIssueStatus: "in_progress", completionState: "policy_review_cleanup" },
+    });
+    const input = {
+      db, companyId, issueId: seeded.issueId, runId: seeded.runId,
+      assessmentId: seeded.assessmentId, priorStatus: "in_progress", priorStatusVersion: 0, priorDecisionId: null,
+      decision: {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "in_review" as const, toStatus: "in_review" as const, reasonCode: "completion_review_required",
+        unblockDescriptor: null, effects: [],
+      },
+    };
+    const committed = await commitNativeStatusDecision(input);
+    const originalEffects = await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.issueId, seeded.issueId));
+    await db.update(nativeRunFinalizations).set({ authorizationMode: "service_required" })
+      .where(eq(nativeRunFinalizations.runId, seeded.runId));
+
+    await expect(commitNativeStatusDecision(input)).rejects.toThrow("native_service_authorization_required");
+    await expect(commitNativeStatusDecision({ ...input, supersedesCommittedDecisionId: committed.decision.id }))
+      .rejects.toThrow("native_service_authorization_required");
+    const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, seeded.runId));
+    expect(decisions.map((decision) => decision.id)).toEqual([committed.decision.id]);
+    expect(await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.issueId, seeded.issueId))).toEqual(originalEffects);
+  });
+
   async function seedPolicyReview(options: { genuine?: boolean; priorStatus?: "in_progress" | "blocked" | "in_review" } = {}) {
     const template = corpus.fixtures.find((candidate) => candidate.mode === "native")!;
     const priorStatus = options.priorStatus ?? "in_progress";
