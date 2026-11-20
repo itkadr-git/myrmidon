@@ -13,6 +13,7 @@ import {
   agentWakeupRequests,
   agentTaskSessions,
   issueComments,
+  issueExecutionDecisions,
   issueWorkProducts,
   issues,
 } from "@myrmidon/db";
@@ -378,8 +379,16 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     const [updated] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
     expect(updated?.status).toBe("in_progress");
     expect({ status: updated?.status, assignee: updated?.assigneeAgentId, state: updated?.executionState }).toMatchObject({ status: "in_progress", assignee: authorId, state: { status: "changes_requested", currentStageId: stageId, changesRequestedCount: 3, returnAssignee: { agentId: authorId } } });
-    const decisions = await ctx.db.select().from(activityLog).where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.execution_decision")));
-    expect(decisions.length).toBeLessThanOrEqual(1);
+    const decisions = await ctx.db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, issueId));
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({ outcome: "changes_requested" });
+    const replay = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: fix the missing verification." });
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+    const decisionsAfterReplay = await ctx.db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, issueId));
+    expect(decisionsAfterReplay).toHaveLength(1);
+    const [afterReplay] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
+    expect(afterReplay?.status).toBe("in_progress");
+    expect(afterReplay?.assigneeAgentId).toBe(authorId);
   });
 
   // myrmidon(REVIEW-CHANGES-LOST-STAGE): when the review stage is missing from
