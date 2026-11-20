@@ -193,8 +193,12 @@ async function main() {
     // myrmidon(P6): walk up to six broker candidates instead of one URL.
     // myrmidon(GITHUB-SHARED-IDENTITY): and name the repository this command
     // targets, so an App identity serves it.
-      const candidateEnv = { ...env, MYRMIDON_BOT_BOARD_URL: env.MYRMIDON_BOT_BOARD_URL || 'http://paperclip-server-1:3100' };
-      const brokerBaseUrls = paperclipBrokerCandidateUrls(candidateEnv);
+    // OPE-12669: candidates come only from this run's environment. The bot
+    // container always sets MYRMIDON_BOT_BOARD_URL (the profile input requires
+    // it); inventing a default board host here made every launcher invocation
+    // on a machine without that DNS name stall on a doomed first candidate —
+    // the intermittent 5s timeout of the non-container credentials test.
+    const brokerBaseUrls = paperclipBrokerCandidateUrls(env);
     try {
     let response;
     if (brokerBaseUrls.length > 0 && env.PAPERCLIP_GITHUB_BROKER_TOKEN) {
