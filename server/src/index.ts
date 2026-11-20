@@ -39,7 +39,6 @@ import {
 } from "@myrmidon/db/client";
 import { formatEmbeddedPostgresError, createEmbeddedPostgresLogBuffer } from "@myrmidon/db/embedded-postgres-error";
 import { prepareEmbeddedPostgresNativeRuntime } from "@myrmidon/db/embedded-postgres-native";
-import { formatDatabaseBackupResult, runDatabaseBackup } from "@myrmidon/db/backup-lib";
 import {
   authUsers,
   companies,
@@ -1101,6 +1100,7 @@ async function startServerWithDatabaseTeardown(
       const generalSettings = await backupSettingsSvc.getGeneral();
       const retention = generalSettings.backupRetention;
 
+      const { formatDatabaseBackupResult, runDatabaseBackup } = await import("@myrmidon/db/backup-lib");
       const result = await runDatabaseBackup({
         connectionString: activeDatabaseConnectionString,
         backupDir: config.databaseBackupDir,

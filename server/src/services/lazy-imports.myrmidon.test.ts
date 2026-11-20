@@ -14,6 +14,12 @@ const TARGET_FILES = [
 ];
 
 describe("lazy imports for jsdom and @chat-adapter/discord", () => {
+  it("defers loading the database backup implementation until a backup runs", () => {
+    const content = fs.readFileSync(path.join(SERVER_SRC, "index.ts"), "utf8");
+    expect(/^import\s+(?!type\b)[^;]*?from\s+["']@myrmidon\/db\/backup-lib["']/m.test(content)).toBe(false);
+    expect(content).toMatch(/await\s+import\(["']@myrmidon\/db\/backup-lib["']\)/);
+  });
+
   it("does not eagerly import Discord when loading the chat runtime", () => {
     const content = fs.readFileSync(path.join(HERE, "chat-sdk-runtime.ts"), "utf8");
     expect(content).not.toMatch(
