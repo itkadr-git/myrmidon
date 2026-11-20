@@ -70,6 +70,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     mockSsh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
     mockSsh.mockResponse(/snapshot-myrmidon-firewall/, { stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n", exitCode: 0 });
     mockSsh.mockResponse(/check-myrmidon-firewall-prerequisites/, { stdout: "", exitCode: 0 });
+    mockSsh.mockResponse(/prepare-myrmidon-firewall-restore/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     mockSsh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     mockSsh.mockResponse(/sudo ufw allow/, { stdout: "", exitCode: 0 });
@@ -124,6 +125,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
 
     const result = await executor.execute(claim, mockReporter.reporter);
 
+    expect(mockSsh.hasExecuted(/check-myrmidon-firewall-timer/)).toBe(true);
     expect(result.status).toBe("succeeded");
     expect(result.hostKeyFingerprint).toBe("SHA256:testfingerprint123456789");
     expect(mockReporter.completion?.status).toBe("succeeded");
