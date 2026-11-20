@@ -58,15 +58,12 @@ function snapshotEtag(snapshot) {
 function project(snapshot) {
   return {
     issue: {
-      id: snapshot.issue.id,
       identifier: snapshot.issue.identifier,
       companyId: snapshot.issue.companyId,
-      version: snapshot.issue.version,
     },
     document: snapshot.document == null ? null : {
       id: snapshot.document.id,
       latestRevisionId: snapshot.document.latestRevisionId,
-      latestRevisionNumber: snapshot.document.latestRevisionNumber,
       body: snapshot.document.body,
     },
   };

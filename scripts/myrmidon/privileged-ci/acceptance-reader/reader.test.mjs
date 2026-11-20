@@ -59,8 +59,8 @@ test('pin route returns the full single-snapshot projection', async (t) => {
   assert.equal(result.status, 200);
   const body = JSON.parse(result.body);
   assert.deepEqual(body, {
-    issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: '3' },
-    document: { id: 'doc-id', latestRevisionId: 'rev-1', latestRevisionNumber: 2, body: 'criteria' },
+    issue: { identifier: 'OPE-123', companyId: 'company-a' },
+    document: { id: 'doc-id', latestRevisionId: 'rev-1', body: 'criteria' },
   });
   // Runner-facing projection must not leak upstream-only fields.
   assert.ok(!JSON.stringify(body).includes('hidden'));
@@ -151,10 +151,14 @@ test('an invalid upstream payload fails as 502, never as a partial snapshot', as
   }
 });
 
-test('bigint generations and explicit null document survive projection', async (t) => {
+test('bigint generations produce distinct conditional tags without leaking internal fields', async (t) => {
   const current = { issue: { id: 'issue-id', identifier: 'OPE-123', companyId: 'company-a', version: '9007199254740993' }, document: null };
   const request = await serve(t, { records: records(), readSnapshot: async () => current });
-  assert.deepEqual(JSON.parse((await request('/api/issues/OPE-123/acceptance-snapshot')).body), current);
+  const first = await request('/api/issues/OPE-123/acceptance-snapshot');
+  assert.deepEqual(JSON.parse(first.body), { issue: { identifier: 'OPE-123', companyId: 'company-a' }, document: null });
+  current.issue.version = '9007199254740992';
+  const second = await request('/api/issues/OPE-123/acceptance-snapshot');
+  assert.notEqual(first.headers.etag, second.headers.etag);
 });
 
 test('read errors never return a partial mixed snapshot', async (t) => {

@@ -52,15 +52,14 @@ Myrmidon, построенный для проверки acceptance-сценар
 отсутствующая или чужая задача — 404. Ошибка service-аутентификации даёт 401;
 недоверенный сертификат может привести к ошибке TLS handshake.
 
-Этот сервис отличается от экспериментального шлюза и его старого upstream
-`/api/issues/{id}/acceptance-scenarios-snapshot`, описанных ниже. Это чтение
+Этот сервис — выделенный upstream экспериментального шлюза. Это чтение
 на момент запроса, а не атомарная авторизация на внешней границе privileged use.
 Нельзя использовать его для включения privileged CI или privileged verdicts.
 
-### Существующий шлюз и upstream
+### Шлюз и upstream
 
-- Доска отдаёт один MVCC-снимок на запрос:
-  `GET /api/issues/{id}/acceptance-scenarios-snapshot` возвращает минимальную
+- Сервис отдаёт один MVCC-снимок на запрос:
+  `GET /api/service/issues/{id}/acceptance-scenarios` возвращает внутреннюю
   идентичность issue (`id`, `identifier`, `companyId`, `version`) и документ
   `acceptance-scenarios` (`id`, `latestRevisionId`,
   `latestRevisionNumber`, `body`) одним соединённым SELECT; чужой и
@@ -70,20 +69,24 @@ Myrmidon, построенный для проверки acceptance-сценар
   issue, строка acceptance-link с обеих сторон переноса, привязанный
   документ, строки revision). Прямой сброс, удаление строки и TRUNCATE
   отклоняются; эпоха передаётся десятичной строкой bigint.
-- Шлюз отдаёт один pin-route и одну серверную условную проверку (verify).
-  Verify валидирует ограниченное тело запроса до свежего upstream-чтения и
-  отвечает 200/409/400/401/502.
+- Шлюз предоставляет только `GET /api/issues/{id}/acceptance-snapshot`.
+  Публичная проекция issue содержит ровно `identifier` и `companyId`, документа —
+  ровно `id`, `latestRevisionId`, `body` (или null). Сильный `ETag` передаётся
+  в `If-Match`; изменившийся снимок возвращает 412.
 
 ## Операторская поверхность
 
 Запуск и выдача записей — строго по экспериментальному README
 (JSON-конфигурация, персистентные записи credential, ротация, audit-файл,
-mTLS-файлы upstream). Секреты не размещать в репозитории, аргументах
+mTLS-файлы upstream). `upstream.tokenFile` содержит отдельный привязанный к
+сертификату service bearer, отличный от bearer runner. Секреты не размещать в репозитории, аргументах
 команд, логах и runner; обычный board agent key не использовать.
 
 ## Предпосылки до любого реального использования
 
-- Сетевая политика, запрещающая runner прямой доступ к доске.
+- Сетевая политика, запрещающая runner прямой доступ к доске. В OPE-15287
+  пройден тест временной HTTP-топологии: шлюз доступен, прямой DNS к core не
+  разрешается, прямой IP даёт timeout. Это не доказательство production или mTLS.
 - Живой прогон acceptance через mTLS-upstream и negative-проверки с
   реальными credentials.
 - Путь выдачи run-scoped credential на одну CI-job (ведётся отдельно;

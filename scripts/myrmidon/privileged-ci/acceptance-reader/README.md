@@ -32,12 +32,12 @@ regression coverage, but it and the consumer's check-and-use transaction still
 require independent review. Do not enable privileged CI on this basis.
 
 `GET /api/issues/{ref}/acceptance-snapshot` returns the minimal projection of
-that single snapshot — the full pin:
+that single snapshot:
 
 ```json
 {
-  "issue": { "id": "…", "identifier": "OPE-123", "companyId": "…", "version": "7" },
-  "document": { "id": "…", "latestRevisionId": "…", "latestRevisionNumber": 7, "body": "…" }
+  "issue": { "identifier": "OPE-123", "companyId": "…" },
+  "document": { "id": "…", "latestRevisionId": "…", "body": "…" }
 }
 ```
 
@@ -149,10 +149,10 @@ config, audit and upstream are trusted operator assets; an operator or upstream
 compromise is outside this boundary. A shared filesystem must have coherent
 visibility for revocations.
 
-Network isolation is NOT PROVEN: `unshare -n true` failed with `Operation not
-permitted`. TLS alone does not prevent a runner from reaching upstream directly.
-A separate runner/upstream namespace test must demonstrate that only the gateway
-is reachable before activation. The real-core integration test below exercises a
+The disposable network topology in OPE-15287 passed: a client on the edge network
+reached a dual-homed gateway, while direct core DNS failed and direct core IP
+timed out. That HTTP-only topology test does not establish mTLS or production
+network policy; TLS alone does not prevent direct upstream access. The real-core test exercises a
 PostgreSQL-backed core route with synthetic credentials, not production. This
 evidence does not constitute security PASS: keep privileged CI disabled until
 network isolation, independent security review, actual-credential negative
@@ -166,11 +166,11 @@ OIDC exchange, a production test, or proof of network isolation. The fixture
 exercises conditional GET, content ABA, rejected write methods, tenant isolation,
 credential lifecycle and failure classes.
 
-The real-core integration test is `real-core.test.ts` in this directory. The
-server Vitest configuration only discovers tests under `server/src`. Run:
+The real-core integration test is discovered by server Vitest at
+`server/src/__tests__/reader-real-core.test.ts`. Run:
 
 ```sh
-devbuild 'cp scripts/myrmidon/privileged-ci/acceptance-reader/real-core.test.ts server/src/__tests__/reader-real-core.test.ts && python3 -c '\''p="server/src/__tests__/reader-real-core.test.ts";s=open(p).read().replace("../../../../server/src/", "../").replace("./main.mjs", "../../../scripts/myrmidon/privileged-ci/acceptance-reader/main.mjs").replace("./persistent-credentials.mjs", "../../../scripts/myrmidon/privileged-ci/acceptance-reader/persistent-credentials.mjs");open(p,"w").write(s)'\'' && pnpm --filter @myrmidon/server exec vitest run src/__tests__/reader-real-core.test.ts'
+devbuild 'pnpm --filter @myrmidon/server exec vitest run src/__tests__/reader-real-core.test.ts'
 ```
 
 It starts a real PostgreSQL-backed core route and TLS gateway with synthetic

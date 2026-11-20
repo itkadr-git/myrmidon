@@ -99,8 +99,8 @@ test('gateway to separate mTLS upstream: conditional GET path, tenant boundaries
 
   // Every allowed request is exactly one upstream read of the snapshot path.
   const projected = (entry) => ({
-    issue: entry.issue,
-    document: entry.document == null ? null : { id: entry.document.id, latestRevisionId: entry.document.latestRevisionId, latestRevisionNumber: entry.document.latestRevisionNumber, body: entry.document.body },
+    issue: { identifier: entry.issue.identifier, companyId: entry.issue.companyId },
+    document: entry.document == null ? null : { id: entry.document.id, latestRevisionId: entry.document.latestRevisionId, body: entry.document.body },
   });
   for (const ref of ['OPE-1', id]) {
     assert.deepEqual(JSON.parse((await call(`/api/issues/${ref}/acceptance-snapshot`)).body), projected(state['OPE-1']));

@@ -9,11 +9,11 @@ import express from "express";
 import { expect, it } from "vitest";
 import { acceptanceServiceCredentials, companies, createDb, issues } from "@myrmidon/db";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, startEmbeddedPostgresTestDatabase } from "@myrmidon/db/test-embedded-postgres";
-import { acceptanceServiceCredentialsService } from "../../../../server/src/services/acceptance-service-credentials.js";
-import { acceptanceServiceRoutes } from "../../../../server/src/routes/acceptance-service.js";
-import { errorHandler } from "../../../../server/src/middleware/index.js";
-import { start } from "./main.mjs";
-import { createPersistentCredentialStore } from "./persistent-credentials.mjs";
+import { acceptanceServiceCredentialsService } from "../services/acceptance-service-credentials.js";
+import { acceptanceServiceRoutes } from "../routes/acceptance-service.js";
+import { errorHandler } from "../middleware/index.js";
+import { start } from "../../../scripts/myrmidon/privileged-ci/acceptance-reader/main.mjs";
+import { createPersistentCredentialStore } from "../../../scripts/myrmidon/privileged-ci/acceptance-reader/persistent-credentials.mjs";
 
 it("gateway HTTPS reaches real core with company, lifecycle and revision enforcement", async () => {
   const dir = mkdtempSync(join(process.env.PAPERCLIP_SCRATCH_DIR ?? process.env.TMPDIR ?? process.cwd(), "reader-core-"));
@@ -57,7 +57,7 @@ it("gateway HTTPS reaches real core with company, lifecycle and revision enforce
       req.on("error", reject); req.end();
     });
     const first = await call("AAA-1"); expect(first.status).toBe(200);
-    const pin = JSON.parse(first.body); expect(pin.issue.id).toBe(issueId); expect(pin.document).toBeNull();
+    const pin = JSON.parse(first.body); expect(pin).toEqual({ issue: { identifier: "AAA-1", companyId }, document: null });
     expect((await call(issueId)).status).toBe(200);
     expect((await call("BBB-1")).status).toBe(404); expect((await call(foreignIssue)).status).toBe(404);
     expect((await call(issueId, first.etag)).status).toBe(200);
