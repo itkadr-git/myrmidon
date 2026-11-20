@@ -272,9 +272,13 @@ function planCommand(args) {
     // never get the flag.
     let selection = null;
     let directSelection = null;
-    if (plan.tier === "fast" || (opts.releaseFast && !opts.forceFull && plan.tier === "full" && !plan.keepFull)) {
+    // An export-driven selection (OPE-12838) already lists exactly the tests
+    // that reach the change; re-running plain selectTests would throw it away.
+    if (!plan.selection && (plan.tier === "fast" || (opts.releaseFast && !opts.forceFull && plan.tier === "full" && !plan.keepFull))) {
       selection = selectTests(changed, packages, tests);
       if (opts.prLight && !opts.forceFull) directSelection = selectDirectTests(changed, packages, tests);
+    } else {
+      selection = plan.selection;
     }
     plan = applyReleaseFast(plan, selection, {
       releaseFast: opts.releaseFast,
