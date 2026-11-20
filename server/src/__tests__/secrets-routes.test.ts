@@ -1,8 +1,11 @@
+import { Writable } from "node:stream";
 import express from "express";
+import pino from "pino";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { secretRoutes } from "../routes/secrets.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import { createHttpLogger } from "../middleware/logger.js";
 import { HttpError, unprocessable } from "../errors.js";
 
 const mockSecretService = vi.hoisted(() => ({
@@ -131,6 +134,21 @@ describe("secret routes", () => {
     expect(response.status).toBe(status);
     expect(JSON.stringify(response.body)).not.toContain("sentinel-secret");
     expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it.each([400, 500])("redacts diagnostic errors from HTTP logs for status %i", async (status) => {
+    const chunks: string[] = [];
+    const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+    const app = express();
+    app.use(createHttpLogger(pino({ level: "debug" }, stream)));
+    app.get("/api/companies/:companyId/preflight/secrets/:id/probe", () => {
+      throw new HttpError(status, "sentinel-secret");
+    });
+    app.use(errorHandler);
+    const response = await request(app).get("/api/companies/company-1/preflight/secrets/binding-1/probe");
+    expect(response.status).toBe(status);
+    expect(chunks.join("")).not.toContain("sentinel-secret");
+    expect(JSON.stringify(response.body)).not.toContain("sentinel-secret");
   });
 
   it("returns an opaque secretRef in agent secret metadata without internal binding details", async () => {

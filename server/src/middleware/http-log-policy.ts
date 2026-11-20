@@ -37,10 +37,16 @@ function normalizePath(url: string): string {
   return pathname.length > 0 ? pathname : "/";
 }
 
+const PREFLIGHT_PROBE_PATH = /^\/api\/companies\/[^/]+\/preflight\/(?:secrets\/[^/]+|agents\/[^/]+\/memory)\/probe(?:\/|$)/;
+
+export function isPreflightProbeHttpRequest(url: string | undefined): boolean {
+  return !!url && PREFLIGHT_PROBE_PATH.test(normalizePath(url));
+}
+
 const ALL_METHOD_SECRET_SENSITIVE_PATHS = [
   // myrmidon(OPE-11891): invite routes carrying tokens in path (/api/invites/:token, /invites/:token, etc.)
   /^\/(?:api\/)?invites?(?:\/|$)/,
-  /^\/api\/companies\/[^/]+\/preflight\/(?:secrets\/[^/]+|agents\/[^/]+\/memory)\/probe(?:\/|$)/,
+  PREFLIGHT_PROBE_PATH,
 ];
 
 const SECRET_SENSITIVE_HTTP_PATHS = [
