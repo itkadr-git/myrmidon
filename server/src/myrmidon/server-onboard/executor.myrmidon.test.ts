@@ -1632,12 +1632,12 @@ exit 97
     mockSsh.mockResponse(/test -d/, { stdout: "", exitCode: 1 });
     mockSsh.mockResponse(/mkdir -p ~\/\.ssh/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse('echo "myrmidon-key-verify"', { stdout: "myrmidon-key-verify\n", exitCode: 0 });
+    mockSsh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    mockSsh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    mockSsh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     mockSsh.mockResponse(/sudo ufw allow/, { stdout: "", exitCode: 0 });
-    mockSsh.mockResponse(/nohup sh -c 'sleep 300/, { stdout: "", exitCode: 0 });
     mockSsh.mockResponse(/sudo ufw default deny incoming/, { stdout: "", exitCode: 0 });
-    // Simulate connectivity failure after ufw enable:
     mockSsh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "", exitCode: 1 });
-    mockSsh.mockResponse("sudo ufw disable", { stdout: "Firewall stopped and disabled on system startup", exitCode: 0 });
 
     const executor = new FleetOnboardExecutor({
       createSshExecutor: () => mockSsh,
@@ -1654,10 +1654,12 @@ exit 97
 
     const result = await executor.execute(claim, mockReporter.reporter);
     expect(result.status).toBe("failed");
-    expect(result.error).toContain("Firewall allow-before-deny verification failed; rolled back");
+    expect(mockSsh.hasExecuted(/sudo ufw allow/)).toBe(true);
+    expect(mockSsh.hasExecuted(/sudo ufw default deny incoming/)).toBe(true);
+    expect(mockSsh.hasExecuted('echo "ufw-connectivity-ok"')).toBe(true);
+    expect(mockSsh.hasExecuted(/restore-myrmidon-firewall/)).toBe(true);
+    expect(mockSsh.hasExecuted("sudo ufw disable")).toBe(false);
     expect(mockReporter.completion?.status).toBe("failed");
-    // Verify rollback command was executed
-    expect(mockSsh.hasExecuted("sudo ufw disable")).toBe(true);
   });
 
   it("fails TOFU check when host key fingerprint does not match pinned value", async () => {
