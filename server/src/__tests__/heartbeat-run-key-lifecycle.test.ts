@@ -87,6 +87,28 @@ describeDb("heartbeat run credential lifecycle", () => {
     expect(gateway.issued.has(run.id)).toBe(true);
   }, 45_000);
 
+  it("does not dispatch a Hermes run when gateway key management is unavailable", async () => {
+    const adminKey = process.env.MYRMIDON_LITELLM_ADMIN_KEY_SECRET;
+    delete process.env.MYRMIDON_LITELLM_ADMIN_KEY_SECRET;
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    try {
+      const { agentId } = await setup("console.log('unused')");
+      await db.update(agents).set({
+        adapterType: "hermes_gateway",
+        adapterConfig: { apiBaseUrl: "http://127.0.0.1:1", apiKey: "test-...th", timeoutSec: 1 },
+      }).where(eq(agents.id, agentId));
+      const run = (await heartbeat.invoke(agentId, "on_demand", {}, "manual"))!;
+      await heartbeat.drainActiveRunExecutions();
+      expect(gateway.issued.has(run.id)).toBe(false);
+      expect((await heartbeat.getRun(run.id))?.status).toBe("failed");
+      expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/v1/runs"))).toBe(false);
+    } finally {
+      if (adminKey === undefined) delete process.env.MYRMIDON_LITELLM_ADMIN_KEY_SECRET;
+      else process.env.MYRMIDON_LITELLM_ADMIN_KEY_SECRET = adminKey;
+      fetchMock.mockRestore();
+    }
+  }, 45_000);
+
   it("does not dispatch an Hermes run when its minted credential is expired", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch");
     try {
