@@ -268,6 +268,22 @@ export class FleetOnboardExecutor {
                   const cause = error instanceof Error ? error.message : String(error);
                   throw new Error(`Password hardening failed: ${cause}; configuration restoration failed`);
                 }
+                try {
+                  const checkSsh = await this.getSsh(keyConnOptions);
+                  try {
+                    await checkSsh.connect(keyConnOptions);
+                    const check = await checkSsh.execute('echo "myrmidon-key-verify"');
+                    if (check.exitCode !== 0 || check.stdout.trim() !== "myrmidon-key-verify") {
+                      throw new Error("unexpected SSH verification response");
+                    }
+                  } finally {
+                    await checkSsh.disconnect().catch(() => {});
+                  }
+                } catch (verifyError) {
+                  const cause = error instanceof Error ? error.message : String(error);
+                  const detail = verifyError instanceof Error ? verifyError.message : String(verifyError);
+                  throw new Error(`Password hardening failed: ${cause}; restoration SSH verification failed: ${detail}`);
+                }
                 throw error;
               }
               await activeSsh.execute(`sudo rm -rf ${backup}`);
