@@ -803,6 +803,9 @@ function buildRunBody(
   // to inject launcher content is deleted (`undefined` drops the key); only
   // this builder decides (see buildGitHubLauncherField).
   const githubLauncher = buildGitHubLauncherField(githubBroker);
+  const runKeyEnv = nonEmpty(ctx.context.runScopedGatewayKeyEnv);
+  const modelCredential = runKeyEnv ? nonEmpty(parseObject(ctx.config.env)[runKeyEnv]) : null;
+  if (runKeyEnv && !modelCredential) throw new Error("Run gateway credential is unavailable");
   const body: Record<string, unknown> = {
     ...payloadTemplate,
     input,
@@ -816,6 +819,7 @@ function buildRunBody(
     github_broker: githubBroker,
     workspace: workspaceField,
     github_launcher: githubLauncher,
+    model_credential: modelCredential ? { api_key: modelCredential } : undefined,
     // myrmidon(1.6.6-HERMES-SKILLS-A): Myrmidon-managed skills for the run's
     // profile (see the buildRunBody signature note); the gateway image's
     // run-scoped-skills patch materializes them before the agent starts.

@@ -27989,6 +27989,10 @@ export function heartbeatService(
       )) {
         throw new Error("Run gateway credential does not match its valid binding");
       }
+      // Never accept this marker from a wake payload; it identifies only the
+      // run credential that was just minted and verified by the control plane.
+      delete context.runScopedGatewayKeyEnv;
+      if (runScopedGatewayKeyRef) context.runScopedGatewayKeyEnv = runScopedGatewayKeyRef.envKey;
       if (runScopedAiBinding) {
         try {
           managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: runScopedAiBinding, config: { ...resolvedConfig, ...(typeof externalSession.model === "string" ? { model: externalSession.model } : {}) } });
