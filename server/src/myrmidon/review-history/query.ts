@@ -119,8 +119,11 @@ export function extractReviewFeedback(
  * replaced in place so the surrounding sentence (and its lesson) survives.
  * Order matters: multi-line key/certificate blocks first, then structured key
  * shapes, then labelled key/value forms, then emails.
+ *
+ * Exported so the SQL query boundary (approved-outcomes.ts, OPE-13159) applies
+ * the identical redaction to rows loaded from `issue_execution_decisions`.
  */
-function redactSensitiveText(body: string): string {
+export function redactSensitiveText(body: string): string {
   return body
     // PEM private-key and certificate blocks. A block without its END marker
     // (truncated paste) redacts to the end of the text: fail closed.

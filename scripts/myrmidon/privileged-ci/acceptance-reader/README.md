@@ -3,10 +3,10 @@
 Operator documentation (EN/RU): [docs/myrmidon/acceptance-reader.md](../../../../docs/myrmidon/acceptance-reader.md)
 and [acceptance-reader.ru.md](../../../../docs/myrmidon/acceptance-reader.ru.md).
 
-This standalone gateway is not a production deployment. It exposes exactly two
-runner-facing operations for one company-bound acceptance snapshot. The
-upstream must implement `GET /api/issues/{id}/acceptance-scenarios-snapshot`
-(OPE-15134) returning one JSON object:
+This standalone gateway is not a production deployment. It exposes exactly one read-only
+runner-facing operation for one company-bound acceptance snapshot. The
+upstream is the dedicated service listener's `GET /api/service/issues/{id}/acceptance-scenarios`
+(OPE-15134), authenticated with a certificate-bound service bearer, returning one JSON object:
 
 ```json
 {
@@ -21,22 +21,23 @@ with a single SQL statement, so the response always comes from one MVCC
 snapshot; the gateway issues exactly one upstream read per runner request.
 Upstream not-found is the identical `404` for foreign and unknown issues (no
 existence oracle); network failures, `5xx`, oversized or invalid payloads are
-a bare `502` that never carries a partial body. This contract has only been
-exercised against a fixture, not a live Myrmidon service.
+a bare `502` that never carries a partial body. The real-core integration test
+below exercises this contract against a PostgreSQL-backed core using synthetic
+credentials; it is not a production test.
 
-## Pin and verify
+## Conditional snapshot reads
 
 Security limitation: the database writer protocol has targeted PostgreSQL
 regression coverage, but it and the consumer's check-and-use transaction still
 require independent review. Do not enable privileged CI on this basis.
 
 `GET /api/issues/{ref}/acceptance-snapshot` returns the minimal projection of
-that single snapshot — the full pin:
+that single snapshot:
 
 ```json
 {
-  "issue": { "id": "…", "identifier": "OPE-123", "companyId": "…", "version": "7" },
-  "document": { "id": "…", "latestRevisionId": "…", "latestRevisionNumber": 7, "body": "…" }
+  "issue": { "identifier": "OPE-123", "companyId": "…" },
+  "document": { "id": "…", "latestRevisionId": "…", "body": "…" }
 }
 ```
 
@@ -62,24 +63,18 @@ is missing. The counter
 is a decimal string, exact beyond 2^53 where JavaScript numbers collapse
 adjacent generations.
 
-`POST /api/issues/{ref}/acceptance-snapshot/verify` takes a previously pinned
-snapshot as its JSON body and performs the conditional assertion server-side.
-The gateway reads and validates the bounded request body **first**, then
-reads the fresh snapshot, then compares the whole pin — a slow client cannot
-pin the comparison to a moment older than its own evidence. The response is
-`200 { "ok": true }` when no relevant mutation committed between the pin and
-this verify, `409` when anything moved, `400` for a malformed pin, `401` on
-expiry/revocation, and `502` on upstream failures. A tenant move makes the
-fresh read foreign, so every request fails closed with the identical `404`.
-The pin schema is strict: a missing `document` property is a corrupted
-payload, never silently "no document".
+The response includes a strong `ETag`. Repeat the GET with that exact value in
+`If-Match`: a matching snapshot returns 200, a changed snapshot returns 412,
+malformed or weak conditions return 400, and a foreign or unknown issue returns
+404. All write methods and the former verify route are rejected. The gateway
+forwards the condition to upstream and also checks the returned snapshot locally.
 
 ## Result semantics (read this before trusting a result)
 
-A verify proves the pinned snapshot still equals the current state **as of
-that verify** — nothing more. Check and use are separate operations, and no
+A successful conditional GET proves the pinned snapshot still equals the current state **as of
+that read** — nothing more. Check and use are separate operations, and no
 read-only gateway can see a write that lands after its last read. Even an
-immediate verify followed by publication leaves a race; repeating it cannot
+immediate conditional read followed by publication leaves a race; repeating it cannot
 make the privileged action atomic. The pin is diagnostic evidence only, not
 an authorization to publish or consume a privileged CI verdict.
 
@@ -109,7 +104,7 @@ as a dedicated unprivileged service account. Configuration is operator-owned JSO
   "credentialDirectory": "/private/reader-credentials",
   "auditFile": "/private/reader-audit.jsonl",
   "listener": { "cert": "/private/listener.crt", "key": "/private/listener.key" },
-  "upstream": { "origin": "https://upstream.example:8443", "ca": "/private/upstream-ca.crt", "cert": "/private/client.crt", "key": "/private/client.key" }
+  "upstream": { "origin": "https://upstream.example:8443", "ca": "/private/upstream-ca.crt", "cert": "/private/client.crt", "key": "/private/client.key", "tokenFile": "/private/service-token" }
 }
 ```
 
@@ -122,15 +117,26 @@ expiry in Unix milliseconds. `revoke(hash)` writes a persistent revocation marke
 Do not delete or rewrite records/markers; protect the directory from other writers.
 All gateway instances need the same durable, coherently shared directory. Revocation
 is checked before serving responses; storage errors deny access.
-Rotate by issuing a new token and revoking the old one. Do not use a regular
-board agent key.
+Rotate by issuing a new token and revoking the old one. The upstream token file
+must contain the dedicated service bearer bound to the configured client
+certificate and company; provision and revoke it as described in the linked
+operator guide. It is separate from the runner-facing gateway credential. Do not
+use a regular board agent key.
+
+Upstream conditional reads send the pin-derived strong `If-Match`; a changed
+snapshot returns 412 upstream and to the gateway client. This detects
+changes at read time only, not atomic authorization of a later action.
 
 Настройка и ключи принадлежат оператору; runner получает только отдельный
 bearer gateway. Запись содержит SHA-256 токена, неизменяемый companyId и срок
 действия в миллисекундах; отзыв сохраняется отдельным маркером. Запрещено менять
 записи или давать runner доступ к каталогу, ключам TLS и upstream. Fixture не
-является проверкой production. Реальная сетевая изоляция требует отдельного
-подтверждения инфраструктуры до развёртывания.
+является проверкой production. Файл `upstream.tokenFile` содержит отдельный
+service bearer, привязанный к компании и клиентскому сертификату; это не bearer
+runner. Условное чтение отправляет сильный `If-Match`: изменение даёт 412 от
+upstream и 412 клиенту шлюза. Проверка не делает последующее действие атомарным.
+Реальная сетевая изоляция требует отдельного подтверждения инфраструктуры до
+развёртывания.
 
 ## Threat model and limitations
 
@@ -143,17 +149,29 @@ config, audit and upstream are trusted operator assets; an operator or upstream
 compromise is outside this boundary. A shared filesystem must have coherent
 visibility for revocations.
 
-TLS alone does not establish network isolation: a runner must be prevented by
-network policy from reaching upstream directly. No such policy or live upstream
-integration has been demonstrated here. Do not deploy until these are verified,
-and until an independent security review and actual-credential negative checks
-are completed. No production credential has been issued by this component.
+The disposable network topology in OPE-15287 passed: a client on the edge network
+reached a dual-homed gateway, while direct core DNS failed and direct core IP
+timed out. That HTTP-only topology test does not establish mTLS or production
+network policy; TLS alone does not prevent direct upstream access. The real-core test exercises a
+PostgreSQL-backed core route with synthetic credentials, not production. This
+evidence does not constitute security PASS: keep privileged CI disabled until
+network isolation, independent security review, actual-credential negative
+checks, and the consumer-side revision enforcement above are complete.
 
 ## Verification
 
 `devbuild 'node --test scripts/myrmidon/privileged-ci/acceptance-reader/*.test.mjs'`
 uses a separate local TLS fixture with synthetic credentials. It is not a GitHub
 OIDC exchange, a production test, or proof of network isolation. The fixture
-executes the full production path — pin, verify, content/link/company/identifier
-ABA (each detected), mutation after verify (detected at the next verify) — plus
-the tenant, credential-lifecycle and failure-class regressions.
+exercises conditional GET, content ABA, rejected write methods, tenant isolation,
+credential lifecycle and failure classes.
+
+The real-core integration test is discovered by server Vitest at
+`server/src/__tests__/reader-real-core.test.ts`. Run:
+
+```sh
+devbuild 'pnpm --filter @myrmidon/server exec vitest run src/__tests__/reader-real-core.test.ts'
+```
+
+It starts a real PostgreSQL-backed core route and TLS gateway with synthetic
+credentials; it is not evidence of network isolation or a live GitHub exchange.

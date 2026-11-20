@@ -1,5 +1,5 @@
 {
-  "id": "9f0683df-b669-419e-9b80-73842e72ca8c",
+  "id": "73f1cbb1-5542-44be-93aa-e736ebdea5de",
   "prevId": "40744bcc-a022-437f-a500-a3afd4cea525",
   "version": "7",
   "dialect": "postgresql",
@@ -39078,12 +39078,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "recommendation": {
-          "name": "recommendation",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "source_kind": {
           "name": "source_kind",
           "type": "text",
@@ -42176,6 +42170,471 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.native_finalization_grants": {
+      "name": "native_finalization_grants",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issue_id": {
+          "name": "issue_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "credential_id": {
+          "name": "credential_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "certificate_sha256": {
+          "name": "certificate_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "generation": {
+          "name": "generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "not_after": {
+          "name": "not_after",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by_operator_id": {
+          "name": "created_by_operator_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "native_finalization_grants_company_id_companies_id_fk": {
+          "name": "native_finalization_grants_company_id_companies_id_fk",
+          "tableFrom": "native_finalization_grants",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "native_finalization_grants_credential_id_acceptance_service_credentials_id_fk": {
+          "name": "native_finalization_grants_credential_id_acceptance_service_credentials_id_fk",
+          "tableFrom": "native_finalization_grants",
+          "tableTo": "acceptance_service_credentials",
+          "columnsFrom": [
+            "credential_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "native_finalization_grants_run_owner_fk": {
+          "name": "native_finalization_grants_run_owner_fk",
+          "tableFrom": "native_finalization_grants",
+          "tableTo": "heartbeat_runs",
+          "columnsFrom": [
+            "company_id",
+            "issue_id",
+            "run_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "native_issue_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "native_finalization_grants_issue_owner_fk": {
+          "name": "native_finalization_grants_issue_owner_fk",
+          "tableFrom": "native_finalization_grants",
+          "tableTo": "issues",
+          "columnsFrom": [
+            "company_id",
+            "issue_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "native_finalization_grants_run_uq": {
+          "name": "native_finalization_grants_run_uq",
+          "nullsNotDistinct": false,
+          "columns": [
+            "run_id"
+          ]
+        },
+        "native_finalization_grants_owner_uq": {
+          "name": "native_finalization_grants_owner_uq",
+          "nullsNotDistinct": false,
+          "columns": [
+            "company_id",
+            "issue_id",
+            "run_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "native_finalization_grants_generation_check": {
+          "name": "native_finalization_grants_generation_check",
+          "value": "\"native_finalization_grants\".\"generation\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.native_finalization_outbox": {
+      "name": "native_finalization_outbox",
+      "schema": "",
+      "columns": {
+        "request_id": {
+          "name": "request_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "dispatched_at": {
+          "name": "dispatched_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "native_finalization_outbox_pending_idx": {
+          "name": "native_finalization_outbox_pending_idx",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"native_finalization_outbox\".\"dispatched_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "native_finalization_outbox_request_id_native_finalization_requests_id_fk": {
+          "name": "native_finalization_outbox_request_id_native_finalization_requests_id_fk",
+          "tableFrom": "native_finalization_outbox",
+          "tableTo": "native_finalization_requests",
+          "columnsFrom": [
+            "request_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.native_finalization_requests": {
+      "name": "native_finalization_requests",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issue_id": {
+          "name": "issue_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "grant_generation": {
+          "name": "grant_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "credential_id": {
+          "name": "credential_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "verified_peer_sha256": {
+          "name": "verified_peer_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "authenticated_at": {
+          "name": "authenticated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "document_id": {
+          "name": "document_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expected_revision_id": {
+          "name": "expected_revision_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expected_issue_epoch": {
+          "name": "expected_issue_epoch",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "strong_etag": {
+          "name": "strong_etag",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "canonical_payload_hash": {
+          "name": "canonical_payload_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'accepted'"
+        },
+        "lease_owner": {
+          "name": "lease_owner",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_until": {
+          "name": "lease_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "result_decision_id": {
+          "name": "result_decision_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error_code": {
+          "name": "error_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "native_finalization_requests_active_run_uq": {
+          "name": "native_finalization_requests_active_run_uq",
+          "columns": [
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"native_finalization_requests\".\"state\" in ('accepted', 'processing')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "native_finalization_requests_company_id_companies_id_fk": {
+          "name": "native_finalization_requests_company_id_companies_id_fk",
+          "tableFrom": "native_finalization_requests",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "native_finalization_requests_credential_id_acceptance_service_credentials_id_fk": {
+          "name": "native_finalization_requests_credential_id_acceptance_service_credentials_id_fk",
+          "tableFrom": "native_finalization_requests",
+          "tableTo": "acceptance_service_credentials",
+          "columnsFrom": [
+            "credential_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "native_finalization_requests_grant_owner_fk": {
+          "name": "native_finalization_requests_grant_owner_fk",
+          "tableFrom": "native_finalization_requests",
+          "tableTo": "native_finalization_grants",
+          "columnsFrom": [
+            "company_id",
+            "issue_id",
+            "run_id",
+            "grant_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "issue_id",
+            "run_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "native_finalization_requests_replay_uq": {
+          "name": "native_finalization_requests_replay_uq",
+          "nullsNotDistinct": false,
+          "columns": [
+            "credential_id",
+            "run_id",
+            "idempotency_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "native_finalization_requests_state_check": {
+          "name": "native_finalization_requests_state_check",
+          "value": "\"native_finalization_requests\".\"state\" in ('accepted', 'processing', 'committed', 'rejected')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.native_run_finalizations": {
