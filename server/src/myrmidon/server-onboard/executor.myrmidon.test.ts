@@ -1487,6 +1487,8 @@ exit 97
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
     ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
+    ssh.mockResponse(/check-myrmidon-firewall-prerequisites/, { exitCode: 0, stdout: "" });
+    ssh.mockResponse(/prepare-myrmidon-firewall-restore/, { exitCode: 0, stdout: "" });
     ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 1 });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
