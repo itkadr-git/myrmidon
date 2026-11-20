@@ -61,6 +61,40 @@ describe("TeamLivenessHealthCardView", () => {
     expect(container.textContent).toContain("last 24 h");
   });
 
+  it("renders positive per-agent counts in deterministic order without changing the input or total", () => {
+    const rows = [
+      { agentId: "agent-b", count: 2 },
+      { agentId: "agent-a", count: 2 },
+      { agentId: "agent-c", count: 0 },
+      { agentId: "agent-d", count: 3 },
+    ];
+    const original = rows.map((row) => ({ ...row }));
+    render({ metrics: { ...metrics, emptyRunsByAgent: rows }, loading: false, error: null });
+
+    expect(container.textContent).toContain("Empty runs by agent");
+    expect(Array.from(container.querySelectorAll('[data-testid="myrmidon-team-liveness-agent-row"]'), (row) => row.textContent))
+      .toEqual(["agent-d3", "agent-a2", "agent-b2"]);
+    expect(value("emptyRuns")).toBe("7");
+    expect(container.textContent).toContain("last 24 h");
+    expect(rows).toEqual(original);
+  });
+
+  it.each([{ rows: [] }, { rows: [{ agentId: "agent-zero", count: 0 }] }])("shows an empty state when no counts are positive", ({ rows }) => {
+    render({ metrics: { ...metrics, emptyRunsByAgent: rows }, loading: false, error: null });
+    expect(container.textContent).toContain("No empty runs");
+    expect(container.querySelector('[data-testid="myrmidon-team-liveness-agent-row"]')).toBeNull();
+  });
+
+  it.each([
+    { metrics, loading: true, error: null },
+    { metrics, loading: false, error: "Request failed" },
+    { metrics: null, loading: false, error: null },
+  ])("hides the agent list and empty state outside successful metrics", (props) => {
+    render(props);
+    expect(container.querySelector('[data-testid="myrmidon-team-liveness-agents"]')).toBeNull();
+    expect(container.textContent).not.toContain("No empty runs");
+  });
+
   it("shows the loading line before the first read lands", () => {
     render({ metrics: null, loading: true, error: null });
 

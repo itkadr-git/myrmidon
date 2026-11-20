@@ -248,6 +248,12 @@ reads as the default — the same fallback the feed itself applies.
 
 ## Also in the interface
 
+- **Team liveness health** — the company health card displays the existing
+  `emptyRunsByAgent` metrics for the `windowHours` window as a read-only list
+  of full `agentId` and `count` values. Only positive counts are shown, sorted
+  by count descending and agent ID ascending. With no positive counts it shows
+  an empty-state message; loading, errors or null metrics hide both the list
+  and the message. This does not change execution or automatic pauses.
 - **Host disk threshold** — Instance → General, "Host disk" (default 85 %);
   the board measures the host disk fill on every scheduler tick and raises
   an attention signal.

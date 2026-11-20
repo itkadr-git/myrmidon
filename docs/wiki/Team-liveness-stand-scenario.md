@@ -91,3 +91,9 @@ The ticket's acceptance is 24 hours of production observation with
 none idle with a ready task for more than 10 minutes. That is read from the
 "Team liveness" card on the company page (auto-resumes / resumes given up / wakes
 / stalled runs over 24 h) — the daily equivalent of this scenario.
+
+The card also shows empty runs by full agent ID for the displayed window. Only
+positive counts appear, ordered by count descending and then agent ID ascending;
+when none are positive, the card says there are no empty runs. The breakdown is
+read-only and does not pause agents or change run execution. Loading and error
+states do not show the breakdown.
