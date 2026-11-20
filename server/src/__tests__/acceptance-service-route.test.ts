@@ -247,6 +247,9 @@ const support = await getEmbeddedPostgresTestSupport();
       const [stillProcessing] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, recoveryRequestId));
       expect(stillProcessing.state).toBe("processing");
       expect(stillProcessing.resultDecisionId).toBeNull();
+      // The default recovery path must invoke the real finalizer, not merely claim work.
+      await expect(processNativeFinalizationRequest({ db, worker: "recovery-real", now: new Date(finalTime.getTime() + 1001), leaseMs: 60_000 }))
+        .rejects.toThrow("native_finalization_run_missing");
       const first = await call(issued.token);
       expect(first.status).toBe(200);
       expect(first.etag).toMatch(/^"[a-f0-9]{64}"$/);
