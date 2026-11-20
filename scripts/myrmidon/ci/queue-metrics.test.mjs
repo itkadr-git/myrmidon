@@ -335,8 +335,10 @@ function runVerifyLatency(jobs, workflow = 'ci', attempt = 1) {
 
 test('--verify-latency: rerun-only CI result ignores predecessor from attempt 1', () => {
   const r = runVerifyLatency([
-    { name: 'checks', run_attempt: 1, completed_at: '2026-11-16T02:42:00Z' },
-    { name: 'CI result', run_attempt: 2, created_at: '2026-11-20T04:40:00Z', started_at: '2026-11-20T04:40:05Z' },
+    { name: 'checks', run_attempt: 1, created_at: '2026-11-16T02:24:27Z', started_at: '2026-11-16T02:24:28Z', completed_at: '2026-11-16T02:35:46Z' },
+    // GitHub's attempt endpoint also returns carried-over jobs under attempt 2.
+    { name: 'checks', run_attempt: 2, created_at: '2026-11-20T04:40:12Z', started_at: '2026-11-16T02:24:28Z', completed_at: '2026-11-16T02:35:46Z' },
+    { name: 'CI result', run_attempt: 2, created_at: '2026-11-20T04:40:12Z', started_at: '2026-11-20T04:40:14Z' },
   ], 'ci', 2);
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /NOT_APPLICABLE/);
