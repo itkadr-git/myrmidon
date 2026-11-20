@@ -1462,7 +1462,7 @@ exit 97
       server: { hostname: "1.2.3.4", port: 22, username: "root" },
       steps: ["harden"],
       options: { keepPassword: true },
-      secretValues: { bootstrapPassword: "pass" },
+      secretValues: { accessKey: "key" },
     };
 
     const result = await executor.execute(claim, createMockReporter().reporter);
