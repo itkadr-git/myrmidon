@@ -118,6 +118,7 @@ const support = await getEmbeddedPostgresTestSupport();
         });
         req.on("error", reject); req.end(JSON.stringify(requestBody));
       });
+      expect((await admit("untrusted-identity", { ...payload, companyId: foreignId, principalId: randomUUID() })).status).toBe(400);
       const [admitted, concurrentReplay] = await Promise.all([admit(), admit()]);
       expect(admitted.status).toBe(202);
       expect(concurrentReplay.status).toBe(202);
