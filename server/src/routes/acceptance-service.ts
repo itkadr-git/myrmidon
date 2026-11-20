@@ -53,7 +53,9 @@ export function acceptanceServiceRoutes(db: Db) {
     }
     const body = req.body;
     const key = req.headers["idempotency-key"];
-    if (!body || typeof body !== "object" || typeof body.documentId !== "string" || !isUuidLike(body.documentId) ||
+    if (!body || typeof body !== "object" || Array.isArray(body) ||
+        Object.keys(body).some((field) => !["documentId", "expectedRevisionId", "expectedIssueEpoch"].includes(field)) ||
+        typeof body.documentId !== "string" || !isUuidLike(body.documentId) ||
         typeof body.expectedRevisionId !== "string" || !isUuidLike(body.expectedRevisionId) || typeof body.expectedIssueEpoch !== "string" ||
         !/^(0|[1-9][0-9]*)$/.test(body.expectedIssueEpoch) || typeof key !== "string" ||
         !/^[\x21-\x7e]{1,128}$/.test(key)) {
