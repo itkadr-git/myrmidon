@@ -56,6 +56,10 @@ import {
   readLastMonitorObservation,
 } from "../myrmidon/issue-monitor-idle/store.js"; // myrmidon(MONITOR-IDLE-LOOP, OPE-13141)
 import { loadRunPullRequest } from "../myrmidon/run-pull-request.js";
+// myrmidon(1.8 KEY-TTL / OPE-12931): run-scoped LiteLLM credential minted at
+// run prep, revoked at every terminal run outcome.
+import { mintRunGatewayKey, revokeRunGatewayKey } from "../myrmidon/litellm-keys/run-keys.js";
+import { defaultAgentGatewayKeyDeps } from "../myrmidon/litellm-keys/agent-keys.js";
 import {
   claimGatewayRemoteClose,
   deriveTerminalCloseProvenance,
@@ -181,15 +185,16 @@ import {
   listOwnerChatTurnRunIds,
 } from "../myrmidon/chat-holds/chat-backed.js";
 // myrmidon(1.6.5 F-26 T5): taskless-wake gate + cooling (design §3.7, §4.3).
-import { tasklessGateReason, readSwarmSettings } from "../myrmidon/wake-task-guard.js";
+import { tasklessGateReason, readSwarmSettings, issueWaitsForOwnPrCi } from "../myrmidon/wake-task-guard.js";
 import {
-  CONTINUATION_CAP_COMMENT,
-  MAX_CONTINUATIONS_WITHOUT_EXTERNAL_INPUT,
-  buildContinuationCapBlockedPatch,
+  decideWakeCiGate,
+  isWakeCiGatedReason,
+  readWakeCiUnreadyGateEnabled,
+} from "../myrmidon/wake-ci-unready-gate.js";
+import {
   continuationStatusesFor,
   isContinuationActionable,
   readContinuationCap,
-  type ContinuationCapStop,
 } from "../myrmidon/continuation-cap.js"; // myrmidon(OPE-11948)
 import {
   readRunCapNoCommitHistory,
@@ -245,6 +250,7 @@ import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBinding
 import { listAdapterModels } from "../adapters/registry.js";
 import { resolveAdminAssistantAdapterConfig } from "../myrmidon/admin-assistant/router.js";
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
+import { readGatewayKeySettings } from "@myrmidon/shared";
 import {
   aiConnectionBindingSchema,
   applyDeveloperRunIsolation,
@@ -904,7 +910,7 @@ import {
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
-import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
+import { createRunSecretRedactionRegistry, redactRegisteredSecretValues } from "./run-secret-redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolvePaperclipRunnerIdleTimeoutMs,
@@ -1158,6 +1164,11 @@ import {
   appendOwnerViaBotBlock,
   buildOwnerViaBotPromptBlock,
 } from "../myrmidon/owner-delivery/owner-message.js";
+import {
+  interactionWakeBypassesDailyRunLimit,
+  readInteractionPendingWakeCardId,
+  resolveInteractionWakeBypassCap,
+} from "../myrmidon/interaction-wake-daily-limit.js";
 import {
   looksLikeOwnerExplainWake,
   looksLikePendingInteractionAddresseeWake,
@@ -4395,6 +4406,8 @@ export interface WakeupOptions {
     assigneeAgentId: string;
     statusVersion?: number;
   };
+  /** Internal monitor claim checked under the issue admission lock. */
+  monitorClaimGuard?: { issueId: string; scheduledAt: Date; claimedAt: Date; invalidated: boolean; completed: boolean; patch: ReturnType<typeof buildIssueMonitorTriggeredPatch> };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;
 }
@@ -12660,18 +12673,28 @@ export function heartbeatService(
     runId: string | null;
     activitySource: "manual" | "scheduled";
   }) {
-    await db
+    if (!input.claimed.monitorNextCheckAt) return { outcome: "skipped" as const, reason: "monitor_changed" };
+    const clearedPatch = buildIssueMonitorClearedPatch({
+      issue: input.claimed,
+      policy: input.policy,
+      clearReason: input.clearReason,
+      clearedAt: input.now,
+    });
+    const [cleared] = await db
       .update(issues)
       .set({
-        ...buildIssueMonitorClearedPatch({
-          issue: input.claimed,
-          policy: input.policy,
-          clearReason: input.clearReason,
-          clearedAt: input.now,
-        }),
+        ...clearedPatch,
+        executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(clearedPatch.executionState?.monitor ?? null)}::jsonb, true)`,
+        executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
         updatedAt: input.now,
       })
-      .where(eq(issues.id, input.claimed.id));
+      .where(and(
+        eq(issues.id, input.claimed.id),
+        eq(issues.monitorNextCheckAt, input.claimed.monitorNextCheckAt),
+        eq(issues.monitorWakeRequestedAt, input.now),
+      ))
+      .returning({ id: issues.id });
+    if (!cleared) return { outcome: "skipped" as const, reason: "monitor_changed" };
 
     await logActivity(db, {
       companyId: input.claimed.companyId,
@@ -12771,9 +12794,7 @@ export function heartbeatService(
       Boolean(reviewParticipantAgentId);
     const isReviewRecoveryMonitor =
       isProviderQuotaReviewMonitor || isReviewCiWaitMonitor;
-    const targetAgentId = isReviewRecoveryMonitor
-      ? reviewParticipantAgentId
-      : claimed.assigneeAgentId;
+    const targetAgentId = reviewParticipantAgentId ?? claimed.assigneeAgentId;
     if (!targetAgentId) {
       throw conflict("Issue monitor has no agent target");
     }
@@ -12830,18 +12851,26 @@ export function heartbeatService(
       limitMonitor?.serviceName === REVIEW_CI_WAIT_MONITOR_SERVICE_NAME &&
       !reviewParticipantAgentId
     ) {
-      await db
+      const clearedPatch = buildIssueMonitorClearedPatch({
+        issue: claimed,
+        policy,
+        clearReason: "dispatch_skipped",
+        clearedAt: input.now,
+      });
+      const [cleared] = await db
         .update(issues)
         .set({
-          ...buildIssueMonitorClearedPatch({
-            issue: claimed,
-            policy,
-            clearReason: "dispatch_skipped",
-            clearedAt: input.now,
-          }),
+          ...clearedPatch,
+          executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(clearedPatch.executionState?.monitor ?? null)}::jsonb, true)`,
+          executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
           updatedAt: input.now,
         })
-        .where(eq(issues.id, claimed.id));
+        .where(and(
+          eq(issues.id, claimed.id),
+          eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+          eq(issues.monitorWakeRequestedAt, input.now),
+        )).returning({ id: issues.id });
+      if (!cleared) return { outcome: "skipped" as const, reason: "monitor_changed" };
       await logActivity(db, {
         companyId: claimed.companyId,
         actorType: input.actorType,
@@ -12864,6 +12893,7 @@ export function heartbeatService(
 
     // myrmidon(MONITOR-IDLE-LOOP, OPE-13141): the snapshot this wake is based on.
     let idleSnapshotHash: string | null = null;
+    let monitorCompletedInAdmission = false;
 
     try {
       if (monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME) {
@@ -12904,11 +12934,17 @@ export function heartbeatService(
           const targetAgent = await getAgent(targetAgentId);
           if (!targetAgent)
             throw conflict("The quota recovery agent is unavailable.");
+          const monitorClaimGuard = {
+            issueId: claimed.id, scheduledAt: claimed.monitorNextCheckAt, claimedAt: input.now,
+            invalidated: false, completed: false,
+            patch: buildIssueMonitorTriggeredPatch({ issue: claimed, policy, triggeredAt: input.now }),
+          };
           const scheduled = await scheduleBoundedRetryForRun(
             sourceRun,
             targetAgent,
             {
               now: input.now,
+              monitorClaimGuard,
               ...(isProviderQuotaReviewMonitor
                 ? {
                     retryReason:
@@ -12929,6 +12965,8 @@ export function heartbeatService(
                   : {}),
             },
           );
+          if (monitorClaimGuard.invalidated) return { outcome: "skipped" as const, reason: "monitor_changed" };
+          monitorCompletedInAdmission = monitorClaimGuard.completed;
           if (scheduled.outcome === "not_scheduled")
             throw conflict(scheduled.reason);
         }
@@ -12941,6 +12979,11 @@ export function heartbeatService(
           const { createReviewPullRequestCiResolver, createReviewHeadFailedChecksResolver } = await import(
             "../myrmidon/review-stage-recovery/github-ci.js"
           );
+          // OPE-15004: the monitor tick is a non-admission reader and shares the
+          // resolver's process read cache; its job is only to decide when the
+          // reviewer's own decision happens, and that decision meets the fresh
+          // write gate. A fresh read on every tick is what drained the shared
+          // review budget (OPE-12397 kept these reads cached).
           const ci = await createReviewPullRequestCiResolver({ db })({
             companyId: claimed.companyId,
             issueId: claimed.id,
@@ -12985,7 +13028,7 @@ export function heartbeatService(
               noAccess.count + 1 >= CI_NO_ACCESS_MAX_FAILURES &&
               input.now.getTime() - (noAccess.firstAt ?? input.now).getTime() >= CI_NO_ACCESS_MIN_WINDOW_MS
             ) {
-              await db
+              const [cleared] = await db
                 .update(issues)
                 .set({
                   ...buildIssueMonitorClearedPatch({
@@ -12996,7 +13039,12 @@ export function heartbeatService(
                   }),
                   updatedAt: input.now,
                 })
-                .where(eq(issues.id, claimed.id));
+                .where(and(
+                  eq(issues.id, claimed.id),
+                  eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+                  eq(issues.monitorWakeRequestedAt, input.now),
+                )).returning({ id: issues.id });
+              if (!cleared) return { outcome: "skipped" as const, reason: "monitor_changed" };
               if (
                 !(await issueHasCommentBody(db, {
                   companyId: claimed.companyId,
@@ -13030,12 +13078,17 @@ export function heartbeatService(
               return { outcome: "skipped" as const, reason: CI_NO_ACCESS_DEFER_REASON };
             }
             const noAccessNextCheckAt = new Date(input.now.getTime() + CI_NO_ACCESS_PAUSE_MS);
-            await db.update(issues).set({
+            const [deferred] = await db.update(issues).set({
               monitorNextCheckAt: noAccessNextCheckAt,
               monitorAttemptCount: nextAttemptCount,
               monitorWakeRequestedAt: null,
               updatedAt: input.now,
-            }).where(eq(issues.id, claimed.id));
+            }).where(and(
+              eq(issues.id, claimed.id),
+              eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+              eq(issues.monitorWakeRequestedAt, input.now),
+            )).returning({ id: issues.id });
+            if (!deferred) return { outcome: "skipped" as const, reason: "monitor_changed" };
             await logActivity(db, {
               companyId: claimed.companyId,
               actorType: input.actorType,
@@ -13080,11 +13133,16 @@ export function heartbeatService(
             ) === "quota_reached"
           ) {
             const quotaNextCheckAt = new Date(input.now.getTime() + REVIEW_WAKE_QUOTA_DEFER_MS);
-            await db.update(issues).set({
+            const [deferred] = await db.update(issues).set({
               monitorNextCheckAt: quotaNextCheckAt,
               monitorWakeRequestedAt: null,
               updatedAt: input.now,
-            }).where(eq(issues.id, claimed.id));
+            }).where(and(
+              eq(issues.id, claimed.id),
+              eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+              eq(issues.monitorWakeRequestedAt, input.now),
+            )).returning({ id: issues.id });
+            if (!deferred) return { outcome: "skipped" as const, reason: "monitor_changed" };
             await logActivity(db, {
               companyId: claimed.companyId,
               actorType: input.actorType,
@@ -13112,12 +13170,17 @@ export function heartbeatService(
               ? REVIEW_CI_WAIT_INTERVAL_MS
               : Math.min(10 * 60_000, 30_000 * Math.pow(2, Math.min(nextAttemptCount - 1, 4)));
             const nextCheckAt = new Date(input.now.getTime() + backoffMs);
-            await db.update(issues).set({
+            const [deferred] = await db.update(issues).set({
               monitorNextCheckAt: nextCheckAt,
               monitorAttemptCount: nextAttemptCount,
               monitorWakeRequestedAt: null,
               updatedAt: input.now,
-            }).where(eq(issues.id, claimed.id));
+            }).where(and(
+              eq(issues.id, claimed.id),
+              eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+              eq(issues.monitorWakeRequestedAt, input.now),
+            )).returning({ id: issues.id });
+            if (!deferred) return { outcome: "skipped" as const, reason: "monitor_changed" };
             await logActivity(db, {
               companyId: claimed.companyId,
               actorType: input.actorType,
@@ -13171,12 +13234,17 @@ export function heartbeatService(
             }),
           });
           if (prWait.action === "defer") {
-            await db.update(issues).set({
+            const [deferred] = await db.update(issues).set({
               monitorNextCheckAt: prWait.nextCheckAt,
               monitorAttemptCount: nextAttemptCount,
               monitorWakeRequestedAt: null,
               updatedAt: input.now,
-            }).where(eq(issues.id, claimed.id));
+            }).where(and(
+              eq(issues.id, claimed.id),
+              eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+              eq(issues.monitorWakeRequestedAt, input.now),
+            )).returning({ id: issues.id });
+            if (!deferred) return { outcome: "skipped" as const, reason: "monitor_changed" };
             await logActivity(db, {
               companyId: claimed.companyId,
               actorType: input.actorType,
@@ -13216,12 +13284,17 @@ export function heartbeatService(
           const backoffMs = Math.min(10 * 60_000, 30_000 * Math.pow(2, Math.min(attempt, 4)));
           const nextCheckAt = new Date(input.now.getTime() + backoffMs);
 
-          await db.update(issues).set({
+          const [deferred] = await db.update(issues).set({
             monitorNextCheckAt: nextCheckAt,
             monitorAttemptCount: nextAttemptCount,
             monitorWakeRequestedAt: null,
             updatedAt: input.now,
-          }).where(eq(issues.id, claimed.id));
+          }).where(and(
+            eq(issues.id, claimed.id),
+            eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+            eq(issues.monitorWakeRequestedAt, input.now),
+          )).returning({ id: issues.id });
+          if (!deferred) return { outcome: "skipped" as const, reason: "monitor_changed" };
 
           await logActivity(db, {
             companyId: claimed.companyId,
@@ -13267,12 +13340,17 @@ export function heartbeatService(
               limit: await loadMonitorUnchangedWakeLimit(db),
             });
             if (idleDecision.action === "defer") {
-              await db.update(issues).set({
+              const [deferred] = await db.update(issues).set({
                 monitorNextCheckAt: idleDecision.nextCheckAt,
                 monitorAttemptCount: nextAttemptCount,
                 monitorWakeRequestedAt: null,
                 updatedAt: input.now,
-              }).where(eq(issues.id, claimed.id));
+              }).where(and(
+                eq(issues.id, claimed.id),
+                eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+                eq(issues.monitorWakeRequestedAt, input.now),
+              )).returning({ id: issues.id });
+              if (!deferred) return { outcome: "skipped" as const, reason: "monitor_changed" };
               await logActivity(db, {
                 companyId: claimed.companyId,
                 actorType: input.actorType,
@@ -13295,7 +13373,7 @@ export function heartbeatService(
               return { outcome: "skipped" as const, reason: MONITOR_UNCHANGED_DEFER_REASON };
             }
             if (idleDecision.action === "clear") {
-              await db.update(issues).set({
+              const [cleared] = await db.update(issues).set({
                 ...buildIssueMonitorClearedPatch({
                   issue: claimed,
                   policy,
@@ -13303,7 +13381,12 @@ export function heartbeatService(
                   clearedAt: input.now,
                 }),
                 updatedAt: input.now,
-              }).where(eq(issues.id, claimed.id));
+              }).where(and(
+                eq(issues.id, claimed.id),
+                eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+                eq(issues.monitorWakeRequestedAt, input.now),
+              )).returning({ id: issues.id });
+              if (!cleared) return { outcome: "skipped" as const, reason: "monitor_changed" };
               await logActivity(db, {
                 companyId: claimed.companyId,
                 actorType: input.actorType,
@@ -13357,12 +13440,17 @@ export function heartbeatService(
                 }),
               });
               if (leafDecision.action === "defer") {
-                await db.update(issues).set({
+                const [deferred] = await db.update(issues).set({
                   monitorNextCheckAt: leafDecision.nextCheckAt,
                   monitorAttemptCount: nextAttemptCount,
                   monitorWakeRequestedAt: null,
                   updatedAt: input.now,
-                }).where(eq(issues.id, claimed.id));
+                }).where(and(
+                  eq(issues.id, claimed.id),
+                  eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+                  eq(issues.monitorWakeRequestedAt, input.now),
+                )).returning({ id: issues.id });
+                if (!deferred) return { outcome: "skipped" as const, reason: "monitor_changed" };
                 await logActivity(db, {
                   companyId: claimed.companyId,
                   actorType: input.actorType,
@@ -13388,7 +13476,16 @@ export function heartbeatService(
           }
         }
 
+        const monitorClaimGuard = {
+          issueId: claimed.id,
+          scheduledAt: claimed.monitorNextCheckAt,
+          claimedAt: input.now,
+          invalidated: false,
+          completed: false,
+          patch: buildIssueMonitorTriggeredPatch({ issue: claimed, policy, triggeredAt: input.now }),
+        };
         await enqueueWakeup(targetAgentId, {
+          monitorClaimGuard,
           source: input.source,
           triggerDetail: input.triggerDetail,
           reason: wakeReason,
@@ -13420,19 +13517,29 @@ export function heartbeatService(
             manualTrigger: input.activitySource === "manual",
           },
         });
+        if (monitorClaimGuard.invalidated) return { outcome: "skipped" as const, reason: "monitor_changed" };
+        monitorCompletedInAdmission = monitorClaimGuard.completed;
       }
 
-      await db
+      const triggeredPatch = buildIssueMonitorTriggeredPatch({
+        issue: claimed,
+        policy,
+        triggeredAt: input.now,
+      });
+      if (!monitorCompletedInAdmission) await db
         .update(issues)
         .set({
-          ...buildIssueMonitorTriggeredPatch({
-            issue: claimed,
-            policy,
-            triggeredAt: input.now,
-          }),
+          ...triggeredPatch,
+          // A reassignment may have changed the review participant since claim.
+          executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(triggeredPatch.executionState?.monitor ?? null)}::jsonb, true)`,
+          executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
           updatedAt: new Date(),
         })
-        .where(eq(issues.id, claimed.id));
+        .where(and(
+          eq(issues.id, claimed.id),
+          eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+          eq(issues.monitorWakeRequestedAt, input.now),
+        ));
 
       await logActivity(db, {
         companyId: claimed.companyId,
@@ -13459,18 +13566,26 @@ export function heartbeatService(
     } catch (err) {
       if (err instanceof HttpError && err.status >= 400 && err.status < 500) {
         if (input.clearOnClientError) {
-          await db
+          const clearedPatch = buildIssueMonitorClearedPatch({
+            issue: claimed,
+            policy,
+            clearReason: "dispatch_skipped",
+            clearedAt: input.now,
+          });
+          const [cleared] = await db
             .update(issues)
             .set({
-              ...buildIssueMonitorClearedPatch({
-                issue: claimed,
-                policy,
-                clearReason: "dispatch_skipped",
-                clearedAt: input.now,
-              }),
+              ...clearedPatch,
+              executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(clearedPatch.executionState?.monitor ?? null)}::jsonb, true)`,
+              executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
               updatedAt: new Date(),
             })
-            .where(eq(issues.id, claimed.id));
+            .where(and(
+              eq(issues.id, claimed.id),
+              eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+              eq(issues.monitorWakeRequestedAt, input.now),
+            )).returning({ id: issues.id });
+          if (!cleared) return { outcome: "skipped" as const, reason: "monitor_changed" };
 
           await logActivity(db, {
             companyId: claimed.companyId,
@@ -13500,7 +13615,11 @@ export function heartbeatService(
             monitorWakeRequestedAt: null,
             updatedAt: new Date(),
           })
-          .where(eq(issues.id, claimed.id));
+          .where(and(
+            eq(issues.id, claimed.id),
+            eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+            eq(issues.monitorWakeRequestedAt, input.now),
+          ));
       } else {
         await db
           .update(issues)
@@ -13508,7 +13627,11 @@ export function heartbeatService(
             monitorWakeRequestedAt: null,
             updatedAt: new Date(),
           })
-          .where(eq(issues.id, claimed.id));
+          .where(and(
+            eq(issues.id, claimed.id),
+            eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt),
+            eq(issues.monitorWakeRequestedAt, input.now),
+          ));
       }
 
       throw err;
@@ -13892,15 +14015,21 @@ export function heartbeatService(
           isNull(issues.assigneeUserId),
           sql`${issues.assigneeAgentId} is not null`,
           inArray(issues.status, ["in_progress", "in_review", "blocked"]),
-          // A review-stage monitor belongs to the active review participant;
-          // monitors on other statuses must not wake the returned assignee.
+          // A human review participant must not be replaced by the assignee.
+          // A provider-quota monitor kept only in execution_state names no
+          // persisted source run; the server-owned quota recovery cannot
+          // dispatch it, so the due set leaves it alone instead of waking the
+          // reviewer as an ordinary monitor.
           sql`not (
             ${issues.status} = 'in_review'
             and ${issues.executionState} ->> 'status' = 'pending'
             and ${issues.executionState} ->> 'currentStageType' = 'review'
-            and coalesce(${issues.executionPolicy} -> 'monitor' ->> 'serviceName', case when ${issues.executionState} -> 'monitor' ->> 'serviceName' = ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME} then ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME} end, '') not in (
-              ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME},
-              ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+            and (
+              coalesce(${issues.executionState} -> 'currentParticipant' ->> 'type', '') = 'user'
+              or (
+                coalesce(${issues.executionState} -> 'monitor' ->> 'serviceName', '') = ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+                and ${issues.executionPolicy} -> 'monitor' ->> 'serviceName' is distinct from ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+              )
             )
           )`,
           or(
@@ -13931,13 +14060,21 @@ export function heartbeatService(
               isNull(issues.assigneeUserId),
               sql`${issues.assigneeAgentId} is not null`,
               inArray(issues.status, ["in_progress", "in_review", "blocked"]),
+              // A human review participant must not be replaced by the assignee.
+              // A provider-quota monitor kept only in execution_state names no
+              // persisted source run; the server-owned quota recovery cannot
+              // dispatch it, so the due set leaves it alone instead of waking the
+              // reviewer as an ordinary monitor.
               sql`not (
                 ${issues.status} = 'in_review'
                 and ${issues.executionState} ->> 'status' = 'pending'
                 and ${issues.executionState} ->> 'currentStageType' = 'review'
-                and coalesce(${issues.executionPolicy} -> 'monitor' ->> 'serviceName', case when ${issues.executionState} -> 'monitor' ->> 'serviceName' = ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME} then ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME} end, '') not in (
-                  ${REVIEW_CI_WAIT_MONITOR_SERVICE_NAME},
-                  ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+                and (
+                  coalesce(${issues.executionState} -> 'currentParticipant' ->> 'type', '') = 'user'
+                  or (
+                    coalesce(${issues.executionState} -> 'monitor' ->> 'serviceName', '') = ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+                    and ${issues.executionPolicy} -> 'monitor' ->> 'serviceName' is distinct from ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}
+                  )
                 )
               )`,
               or(
@@ -14948,6 +15085,27 @@ export function heartbeatService(
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null);
       await closeWakeupOfTerminalRun(updated);
       scheduleRemoteGatewayCloseOfTerminalRun(updated, previousStatus?.status ?? null);
+      // myrmidon(1.8 KEY-TTL / OPE-12931): a genuine transition to a terminal
+      // status kills the run's LLM gateway key. setRunStatusFromLive can name
+      // a terminal status as its own source (idempotent "still failed"
+      // patches), so only a real status change revokes. Idempotent beside the
+      // dispatch-finally revoke: a second call deletes nothing.
+      if (
+        isHeartbeatRunTerminalStatus(updated.status) &&
+        (previousStatus?.status ?? null) !== updated.status
+      ) {
+        try {
+          await revokeRunGatewayKey(defaultAgentGatewayKeyDeps(db), {
+            companyId: updated.companyId,
+            runId: updated.id,
+          });
+        } catch (runKeyRevokeErr) {
+          logger.warn(
+            { err: runKeyRevokeErr, runId: updated.id, companyId: updated.companyId },
+            "failed to revoke heartbeat-run LLM gateway key",
+          );
+        }
+      }
     }
 
     return updated;
@@ -15043,6 +15201,27 @@ export function heartbeatService(
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null);
       await closeWakeupOfTerminalRun(updated);
       scheduleRemoteGatewayCloseOfTerminalRun(updated, previousStatus?.status ?? null);
+      // myrmidon(1.8 KEY-TTL / OPE-12931): a genuine transition to a terminal
+      // status kills the run's LLM gateway key. setRunStatusFromLive can name
+      // a terminal status as its own source (idempotent "still failed"
+      // patches), so only a real status change revokes. Idempotent beside the
+      // dispatch-finally revoke: a second call deletes nothing.
+      if (
+        isHeartbeatRunTerminalStatus(updated.status) &&
+        (previousStatus?.status ?? null) !== updated.status
+      ) {
+        try {
+          await revokeRunGatewayKey(defaultAgentGatewayKeyDeps(db), {
+            companyId: updated.companyId,
+            runId: updated.id,
+          });
+        } catch (runKeyRevokeErr) {
+          logger.warn(
+            { err: runKeyRevokeErr, runId: updated.id, companyId: updated.companyId },
+            "failed to revoke heartbeat-run LLM gateway key",
+          );
+        }
+      }
       return { run: updated, updated: true as const };
     }
 
@@ -17948,6 +18127,7 @@ export function heartbeatService(
       runGuardContinuation?: boolean;
       livenessContinuationInstruction?: string;
       livenessContinuationState?: string;
+      monitorClaimGuard?: NonNullable<WakeupOptions["monitorClaimGuard"]>;
     },
   ) {
     const now = opts?.now ?? new Date();
@@ -18513,6 +18693,19 @@ export function heartbeatService(
 
     const scheduleResult = await db.transaction(
       async (tx): Promise<ScheduledRetryTransactionResult> => {
+        const guard = opts?.monitorClaimGuard;
+        if (guard) {
+          await tx.execute(sql`select id from issues where company_id = ${run.companyId} and id = ${guard.issueId} for update`);
+          const [current] = await tx.select({ id: issues.id }).from(issues).where(and(
+            eq(issues.companyId, run.companyId), eq(issues.id, guard.issueId),
+            eq(issues.monitorNextCheckAt, guard.scheduledAt), eq(issues.monitorWakeRequestedAt, guard.claimedAt),
+          )).limit(1);
+          if (!current || issueId !== guard.issueId) {
+            guard.invalidated = true;
+            return { outcome: "not_scheduled", reason: "monitor_changed", errorCode: "issue_execution_lock_changed", issueId, details: {} };
+          }
+        }
+        const result = await (async (): Promise<ScheduledRetryTransactionResult> => {
         // All automatic failure paths share the same predecessor claim. A
         // duplicate monitor, restart sweep or wake must reuse its successor.
         if (
@@ -19090,6 +19283,20 @@ export function heartbeatService(
           }
           throw error;
         }
+        })();
+        if (guard && result.outcome === "scheduled") {
+          const [completed] = await tx.update(issues).set({
+            ...guard.patch,
+            executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(guard.patch.executionState?.monitor ?? null)}::jsonb, true)`,
+            executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
+            updatedAt: new Date(),
+          }).where(and(
+            eq(issues.id, guard.issueId), eq(issues.monitorNextCheckAt, guard.scheduledAt),
+            eq(issues.monitorWakeRequestedAt, guard.claimedAt),
+          )).returning({ id: issues.id });
+          guard.completed = Boolean(completed);
+        }
+        return result;
       },
     );
 
@@ -19919,6 +20126,37 @@ export function heartbeatService(
     }
 
     return null;
+  }
+
+  // myrmidon(INTERACTION-WAKES-DAILY-LIMIT): the daily cap verdict for one wake.
+  // A wake that announces a pending question card to its addressee passes the
+  // daily RUN limit (bounded per day, see interaction-wake-daily-limit.ts); every
+  // other wake, and the cost limit, are judged exactly as before.
+  async function getDailyCapBlockForWake(
+    agent: typeof agents.$inferSelect,
+    policy: ReturnType<typeof parseHeartbeatPolicy>,
+    wake: {
+      reason?: string | null;
+      contextSnapshot?: Record<string, unknown> | null;
+      payload?: Record<string, unknown> | null;
+    },
+    client: Pick<Db, "select"> = db,
+    excludeRunId: string | null = null,
+  ) {
+    const block = await getHeartbeatDailyCapBlock(agent, policy, { excludeRunId }, client);
+    if (!block || block.reason !== DAILY_RUN_LIMIT_RETRY_REASON) return block;
+    const cardId = readInteractionPendingWakeCardId(wake);
+    if (!cardId) return block;
+    const bypass = await interactionWakeBypassesDailyRunLimit(client, {
+      companyId: agent.companyId,
+      agentId: agent.id,
+      cardId,
+      cap: resolveInteractionWakeBypassCap(parseObject(parseObject(agent.runtimeConfig).heartbeat)),
+      window: currentUtcDayWindow(),
+      excludeRunId,
+    });
+    if (!bypass) return block;
+    return getHeartbeatDailyCapBlock(agent, policy, { checkRunCap: false, excludeRunId }, client);
   }
 
   // myrmidon(OPE-11947): idle pickup asks for the cap verdict of one agent before it
@@ -20952,14 +21190,12 @@ export function heartbeatService(
       return null;
     }
 
-    const dailyCapBlock = await getHeartbeatDailyCapBlock(
+    const dailyCapBlock = await getDailyCapBlockForWake(
       agent,
       parseHeartbeatPolicy(agent),
-      {
-        excludeRunId: run.id,
-        checkRunCap: true,
-        checkCostCap: true,
-      },
+      { contextSnapshot: context },
+      db,
+      run.id,
     );
     if (dailyCapBlock) {
       // myrmidon(OPE-11718): the daily run limit defers the run to the reset.
@@ -21063,6 +21299,12 @@ export function heartbeatService(
       });
       if (staleness.outcome === "cancelled") {
         applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
+        if (staleness.errorCode === "issue_review_participant_changed" &&
+            readNonEmptyString(context.wakeReason) === "issue_monitor_due") {
+          // The cancellation transaction parked the handoff; drain that same
+          // durable intent instead of creating a second post-commit wake.
+          await releaseIssueExecutionAndPromote(run, { suppressImmediateRecovery: true });
+        }
         logger.info(
           { runId: run.id, issueId, errorCode: staleness.errorCode },
           "claimQueuedRun: cancelled stale queued run",
@@ -26414,6 +26656,7 @@ export function heartbeatService(
       }
       const runtime = await ensureRuntimeState(agent);
       const context = parseObject(run.contextSnapshot);
+      let issuedRunGatewayKey: string | null = null;
       const externalSessionOverride = parseObject(context.externalSession);
       const authorizeFailedChatRetryExecution = () =>
         db.transaction((tx) =>
@@ -28970,6 +29213,43 @@ export function heartbeatService(
         };
         secretKeys.add("PAPERCLIP_GITHUB_BROKER_TOKEN");
       }
+        // myrmidon(1.8 KEY-TTL / OPE-12931): the run talks to the LLM gateway
+        // under its own run-scoped virtual key: minted here for this runId
+        // only, projected into the adapter config env, and revoked at every
+        // terminal run outcome. Key management off (no gateway address or
+        // admin key secret) and hermes_gateway runs are skipped: the hermes
+        // lane gets its gateway credential from the bot-container profile
+        // compiler, which does not read adapter config env. Any failure here
+        // downgrades the run to "no run key" — run prep never fails for key
+        // management.
+        const runKeySettings = readGatewayKeySettings(process.env);
+        if (runKeySettings.canManageKeys && agent.adapterType !== "hermes_gateway") {
+          try {
+            const minted = await mintRunGatewayKey(defaultAgentGatewayKeyDeps(db), {
+              companyId: agent.companyId,
+              runId: run.id,
+            });
+            await createRunSecretRedactionRegistry(db).register(agent.companyId, run.id, minted.value);
+            const registeredRun = await getRun(run.id);
+            context.paperclipSecretRedactions = parseObject(registeredRun?.contextSnapshot).paperclipSecretRedactions;
+            issuedRunGatewayKey = minted.value;
+            const runKeyEnvName = runKeySettings.agentKeyEnv ?? "MYRMIDON_LLM_API_KEY";
+            runtimeConfig = {
+              ...runtimeConfig,
+              env: {
+                ...parseObject(runtimeConfig.env),
+                [runKeyEnvName]: minted.value,
+                ...(runKeySettings.baseUrl ? { MYRMIDON_LITELLM_BASE_URL: runKeySettings.baseUrl } : {}),
+              },
+            };
+            secretKeys.add(runKeyEnvName);
+          } catch (mintErr) {
+            logger.warn(
+              { err: mintErr, runId: run.id, companyId: agent.companyId },
+              "failed to mint heartbeat-run LLM gateway key; the run continues without one",
+            );
+          }
+        }
       context.paperclipEnvironment = {
         id: selectedEnvironment.id,
         name: selectedEnvironment.name,
@@ -29068,6 +29348,9 @@ export function heartbeatService(
         })(),
       };
       context.paperclipWorkspaces = buildRunWorkspaceHints(resolvedWorkspace);
+      // myrmidon(1.6.9 NO-COPIES-FOR-REVIEWERS-LEADS): the agent's role (its caste key) for the
+      // gateway adapter, whose execution context carries only id, name and adapter config of the agent.
+      context.paperclipAgentRole = agent.role ?? "";
       // myrmidon(1.6.5-BOT-DISK-H4b): the instance default repository, the gateway
       // adapter's last-resort source of the run's `workspace.repo` (after the
       // project workspace). Best effort: a settings read failure leaves it unset.
@@ -29550,7 +29833,10 @@ export function heartbeatService(
           await getCurrentUserRedactionOptions();
         const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
           const sanitizedChunk = compactRunLogChunk(
-            redactCurrentUserText(chunk, currentUserRedactionOptions),
+            redactRegisteredSecretValues(
+              redactCurrentUserText(chunk, currentUserRedactionOptions),
+              issuedRunGatewayKey ? [issuedRunGatewayKey] : [],
+            ),
           );
           if (sanitizedChunk) runGuard.event();
           // myrmidon(DM-PROGRESS): Hermes tool lines feed the step history of
@@ -31401,6 +31687,17 @@ export function heartbeatService(
             logger.warn(
               { err: revokeErr, runId: run.id, companyId: agent.companyId },
               "failed to revoke heartbeat-run MCP gateway tokens",
+            );
+          }
+          try {
+            await revokeRunGatewayKey(defaultAgentGatewayKeyDeps(db), {
+              companyId: agent.companyId,
+              runId: run.id,
+            });
+          } catch (runKeyRevokeErr) {
+            logger.warn(
+              { err: runKeyRevokeErr, runId: run.id, companyId: agent.companyId },
+              "failed to revoke heartbeat-run LLM gateway key",
             );
           }
         }
@@ -33613,54 +33910,6 @@ export function heartbeatService(
     }
   }
 
-  // myrmidon(OPE-11948): parks an issue whose automatic continuation cap was
-  // reached. Runs after the wake admission committed, in its own transaction:
-  // a failure here must never fail the (already skipped) wake, and the issue is
-  // re-read under its lock so a concurrent status change or reassignment wins.
-  async function applyContinuationCapStop(stop: ContinuationCapStop) {
-    try {
-      await db.transaction(async (tx) => {
-        const [current] = await tx
-          .select()
-          .from(issues)
-          .where(and(eq(issues.id, stop.issueId), eq(issues.companyId, stop.companyId)))
-          .for("update")
-          .limit(1);
-        if (!current || !isContinuationActionable(current, stop.agentId)) return;
-        await issuesSvc.update(
-          current.id,
-          buildContinuationCapBlockedPatch({
-            issueId: current.id,
-            assigneeAgentId: stop.agentId,
-            ownerUserId: current.createdByUserId ?? current.responsibleUserId ?? null,
-          }) as Partial<typeof issues.$inferInsert>,
-          tx,
-        );
-        await issuesSvc.addComment(current.id, CONTINUATION_CAP_COMMENT, {}, { authorType: "system" }, tx);
-        await logActivity(tx as unknown as Db, {
-          companyId: current.companyId,
-          actorType: "system",
-          actorId: "heartbeat",
-          agentId: stop.agentId,
-          runId: null,
-          action: "issue.continuation_cap_reached",
-          entityType: "issue",
-          entityId: current.id,
-          details: {
-            identifier: current.identifier,
-            previousStatus: current.status,
-            consecutiveContinuations: stop.consecutiveContinuations,
-            maxContinuations: MAX_CONTINUATIONS_WITHOUT_EXTERNAL_INPUT,
-          },
-        });
-      });
-    } catch (err) {
-      logger.warn(
-        { err: err instanceof Error ? err.message : String(err), issueId: stop.issueId, agentId: stop.agentId },
-        "continuation cap: could not park the issue as blocked",
-      );
-    }
-  }
 
   // myrmidon(OPE-13080): parks an issue whose run cap without commit was reached.
   async function applyRunCapNoCommitStop(stop: RunCapNoCommitStop) {
@@ -33955,6 +34204,71 @@ export function heartbeatService(
           });
           return null;
         }
+      }
+    }
+
+
+    // myrmidon(EMPTY-WAKES-CI-UNREADY): the one point where every automatic wake of a
+    // review participant or of an executor waiting for its own CI is decided. While the CI
+    // of the head is pending or cannot be read (GitHub limit), no wake row and no run is
+    // created; the sources ask again and `ci_completed` (not gated) wakes the task when
+    // the CI is final. A person's manual wake always passes.
+    if (
+      issueId &&
+      !opts.manualUserWake &&
+      opts.requestedByActorType !== "user" &&
+      readWakeCiUnreadyGateEnabled() &&
+      isWakeCiGatedReason(readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason)
+    ) {
+      const gatedReason = (readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason)!;
+      try {
+        const [gatedIssue] = await db
+          .select({
+            id: issues.id,
+            status: issues.status,
+            priority: issues.priority,
+            assigneeAgentId: issues.assigneeAgentId,
+            executionState: issues.executionState,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+          .limit(1);
+        if (gatedIssue) {
+          const { createReviewPullRequestCiResolver } = await import(
+            "../myrmidon/review-stage-recovery/github-ci.js"
+          );
+          const rateLimit = await import("./github-rate-limit.js");
+          // OPE-15004: the wake gate is a non-admission reader and shares the
+          // resolver's process read cache; it only defers a wake, it never
+          // decides the verdict (the fresh write gate does).
+          const decision = await decideWakeCiGate(
+            { agentId, companyId: agent.companyId, reason: gatedReason, issue: gatedIssue },
+            {
+              resolveCi: createReviewPullRequestCiResolver({ db }),
+              engineerWaitsForOwnPrCi: (companyId, id) => issueWaitsForOwnPrCi(db, companyId, id),
+              isRateLimited: rateLimit.isGitHubRateLimited,
+              rateLimitResetEpochSeconds: rateLimit.getGitHubRateLimitResetEpochSeconds,
+            },
+          );
+          if (decision.action === "defer") {
+            logger.info(
+              {
+                agentId,
+                issueId,
+                reason: gatedReason,
+                role: decision.role,
+                cause: decision.cause,
+                resumeAt: decision.resumeAt?.toISOString() ?? null,
+                counter: "myrmidon.heartbeat.wakes_deferred_ci_unready",
+              },
+              "myrmidon.wake_ci_unready: wake not created, the head CI is unfinished or unreadable",
+            );
+            return null;
+          }
+        }
+      } catch (err) {
+        // The gate must never kill a wake: an unexpected failure admits it as before.
+        logger.warn({ err, agentId, issueId }, "myrmidon.wake_ci_unready: gate failed, wake admitted");
       }
     }
 
@@ -34656,9 +34970,6 @@ export function heartbeatService(
       // admission cancelled under a bypassed hold. Applied only once the
       // transaction has committed; emptied if it is rolled back.
       const doomedWaitingRunEffects: PostCommitEffect[] = [];
-      // myrmidon(OPE-11948): issues whose continuation cap was reached inside
-      // this admission. Parked as blocked only after the transaction committed.
-      const continuationCapStops: ContinuationCapStop[] = [];
       const runCapNoCommitStops: RunCapNoCommitStop[] = [];
 
       const outcome = await db
@@ -34666,6 +34977,20 @@ export function heartbeatService(
           await tx.execute(
             sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
           );
+          if (opts.monitorClaimGuard) {
+            const guard = opts.monitorClaimGuard;
+            const [current] = await tx.select({ id: issues.id }).from(issues).where(and(
+              eq(issues.id, issueId),
+              eq(issues.companyId, agent.companyId),
+              eq(issues.id, guard.issueId),
+              eq(issues.monitorNextCheckAt, guard.scheduledAt),
+              eq(issues.monitorWakeRequestedAt, guard.claimedAt),
+            )).limit(1);
+            if (!current) {
+              guard.invalidated = true;
+              return { kind: "skipped" as const };
+            }
+          }
 
           if (executionWaitRequestId) {
             const [pending] = await tx.select().from(agentWakeupRequests).where(and(
@@ -36056,8 +36381,7 @@ export function heartbeatService(
             // myrmidon(OPE-11948): the real attempt counter. Succeeded
             // continuation runs of this (agent, issue) with no external input
             // between them; the agent's own comments and updates do not reset
-            // it. At the cap no further continuation is enqueued and the issue
-            // is parked as blocked once this transaction has committed.
+            // it. At the cap, defer admission for a bounded cooldown.
             const continuationCap = interactionContinuation
               ? null
               : await readContinuationCap(tx as unknown as Db, {
@@ -36090,12 +36414,6 @@ export function heartbeatService(
                 requestedByActorId: opts.requestedByActorId ?? null,
                 idempotencyKey: opts.idempotencyKey ?? null,
                 finishedAt: new Date(),
-              });
-              continuationCapStops.push({
-                companyId: issue.companyId,
-                issueId: issue.id,
-                agentId,
-                consecutiveContinuations: continuationCap.count,
               });
               return { kind: "skipped" as const };
             }
@@ -36365,6 +36683,22 @@ export function heartbeatService(
             }
           }
 
+          const completeMonitorAdmission = async () => {
+            const guard = opts.monitorClaimGuard;
+            if (!guard) return;
+            const [completed] = await tx.update(issues).set({
+              ...guard.patch,
+              executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}', ${JSON.stringify(guard.patch.executionState?.monitor ?? null)}::jsonb, true)`,
+              executionPolicy: sql`case when ${issues.executionPolicy} is null then null else ${issues.executionPolicy} - 'monitor' end`,
+              updatedAt: new Date(),
+            }).where(and(
+              eq(issues.id, guard.issueId),
+              eq(issues.monitorNextCheckAt, guard.scheduledAt),
+              eq(issues.monitorWakeRequestedAt, guard.claimedAt),
+            )).returning({ id: issues.id });
+            guard.completed = Boolean(completed);
+          };
+
           if (activeExecutionRun) {
             // The resolved action is already a durable retry outbox. Do not merge
             // its fresh-session contract into unrelated work or create a second
@@ -36413,12 +36747,14 @@ export function heartbeatService(
             );
 
             if (admission.kind === "coalesced") {
+              await completeMonitorAdmission();
               return {
                 kind: "coalesced" as const,
                 run: admission.run as typeof heartbeatRuns.$inferSelect,
               };
             }
             if (admission.kind === "deferred") {
+              await completeMonitorAdmission();
               return { kind: "deferred" as const };
             }
             // admission.kind === "proceed": no active run absorbed this wake,
@@ -36641,6 +36977,25 @@ export function heartbeatService(
               )) {
                 runIdsWithIssueProgress.add(runId);
               }
+              // myrmidon(OPE-14746): the streak the rewake throttle counts is
+              // streaks of runs that left nothing but their own words. A run
+              // whose only trace is its own comment ("waiting for ADM to
+              // restart CI", "disk quota") parked the task in place; it must
+              // not reset the throttle, or automatic continuations re-run the
+              // same parked task every minute. Everything the full progress
+              // read counts except `issue.comment_added` is substantive.
+              const runIdsWithNonCommentProgress = collectRunIdsWithIssueProgress(
+                progressActivityRows.filter((row) => row.action !== "issue.comment_added"),
+                () => agentId,
+              );
+              for (const runId of await readRunIdsWithPrHeadChange(
+                tx,
+                agent.companyId,
+                issue.id,
+                recentTerminalRuns,
+              )) {
+                runIdsWithNonCommentProgress.add(runId);
+              }
               const lastRunFinishedAt =
                 recentTerminalRuns[0]?.finishedAt ?? null;
               const latestRevision = readNonEmptyString(
@@ -36677,6 +37032,7 @@ export function heartbeatService(
                 freezeThreshold,
                 recentTerminalRuns,
                 runIdsWithIssueProgress,
+                runIdsWithNonCommentProgress,
                 // For an agent comment wake, the query excludes agent-authored
                 // activity while preserving genuinely new user/system input.
                 // Presentation/author metadata therefore cannot smuggle human
@@ -36836,10 +37192,10 @@ export function heartbeatService(
 
           const dailyCapBlock = opts.manualUserWake
             ? null
-            : await getHeartbeatDailyCapBlock(
+            : await getDailyCapBlockForWake(
               agent,
               policy,
-              {},
+              { reason, contextSnapshot: enrichedContextSnapshot, payload },
               tx,
             );
           if (dailyCapBlock) {
@@ -36997,6 +37353,8 @@ export function heartbeatService(
             return { kind: "skipped" as const };
           }
 
+          await completeMonitorAdmission();
+
           // A handoff changes the executor, not the owner of saved user input.
           // Validate its exact stopped source while the issue row is locked;
           // unrelated agents and dedicated continuations keep their own wakes.
@@ -37143,16 +37501,13 @@ export function heartbeatService(
             // The transaction rolled back, and so did any waiting run it
             // cancelled: there is nothing to publish for it.
             doomedWaitingRunEffects.length = 0;
-            continuationCapStops.length = 0;
+
             runCapNoCommitStops.length = 0;
             return { kind: "deferred" as const };
           }
           throw error;
         });
 
-      for (const stop of continuationCapStops) {
-        await applyContinuationCapStop(stop);
-      }
 
       for (const stop of runCapNoCommitStops) {
         await applyRunCapNoCommitStop(stop);
@@ -37347,10 +37702,10 @@ export function heartbeatService(
 
       const dailyCapBlock = opts.manualUserWake
         ? null
-        : await getHeartbeatDailyCapBlock(
+        : await getDailyCapBlockForWake(
           agent,
           policy,
-          {},
+          { reason, contextSnapshot: enrichedContextSnapshot, payload },
           tx,
         );
       if (dailyCapBlock) {

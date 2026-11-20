@@ -12,7 +12,7 @@ import {
   toolConnections,
   type Db,
 } from "@myrmidon/db";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import { invalidateCiCacheForHead } from "./github-pull-request-ci.js";
 import {
   logActivity,
@@ -1119,6 +1119,12 @@ export function githubConnectionEventService(
     invalidateCiCacheForHead(companyId, repository.toLowerCase(), headSha);
     // A rerequest carries no status: the cache is already dropped, nothing to deliver.
     if (!status) return;
+    // A completed check of the head may release a pull request the board parked after
+    // GitHub refused its merge ("... is queued"); the merger ignores every other one.
+    if (status === "completed") {
+      await sendOrDeferAction(afterCommit, companyId, "board merge check notice", () =>
+        notifyBoardMergeTrigger({ companyId, repository, number: pullRequestNumber, headSha, source: "check_completed" }));
+    }
 
     const active = status === "queued" || status === "in_progress";
     if (!active && !conclusion) return;
@@ -1371,6 +1377,27 @@ export function githubConnectionEventService(
     await db.update(issueWorkProducts).set({ metadata: sql`(${issueWorkProducts.metadata} - 'activeCi') || ${JSON.stringify({ repository: snapshot.repository, number: snapshot.number, headSha: snapshot.data.headSha })}::jsonb`, updatedAt: appliedAt })
       .where(prWorkProductWhere);
     await recordPrHeadChanges(companyId, headBefore, stringValue(snapshot.data.headSha), event.id, stringValue(event.payload.senderLogin), afterCommit);
+    const newHead = stringValue(snapshot.data.headSha);
+    if (newHead) {
+      for (const product of headBefore) {
+        if (product.headSha === newHead) continue;
+        // Only release a budget-specific deferral; unrelated monitors keep their deadline.
+        await database.update(issues).set({
+          monitorNextCheckAt: appliedAt,
+          monitorWakeRequestedAt: null,
+          executionState: sql`${issues.executionState} - 'reviewCiBudgetDeferred'`,
+          updatedAt: appliedAt,
+        }).where(and(
+          eq(issues.id, product.issueId),
+          eq(issues.companyId, companyId),
+          eq(issues.status, "in_review"),
+          gt(issues.monitorNextCheckAt, appliedAt),
+          sql`${issues.executionState} ->> 'reviewCiBudgetDeferred' = 'true'`,
+          sql`${issues.executionState} -> 'monitor' ->> 'status' = 'triggered'`,
+          sql`${issues.executionState} -> 'monitor' ->> 'serviceName' = 'Review CI wait'`,
+        ));
+      }
+    }
     if (snapshot.merged && event.action === "closed") {
       const products = await database.select({ product: issueWorkProducts, issue: issues })
         .from(issueWorkProducts)

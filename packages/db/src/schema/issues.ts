@@ -121,6 +121,7 @@ export const issues = pgTable(
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    idCompanyAcceptanceUq: uniqueIndex("issues_id_company_acceptance_uq").on(table.id, table.companyId),
     conversationIdentityIdx: uniqueIndex("issues_conversation_identity_idx").on(table.companyId, table.conversationAgentId, table.conversationUserId),
     conversationIdentityCheck: check("issues_conversation_identity_check", sql`(
       ${table.conversationAgentId} is null and ${table.conversationUserId} is null and ${table.conversationState} is null

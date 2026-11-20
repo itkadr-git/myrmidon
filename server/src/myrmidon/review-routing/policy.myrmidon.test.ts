@@ -314,6 +314,19 @@ describe("buildReviewRoutingAssignPatch", () => {
     expect(state.currentStageId).toBe((policy.stages[0] as any).id);
   });
 
+  it("preserves the confirmed return assignee when routing a recovered review", () => {
+    const patch = buildReviewRoutingAssignPatch({
+      issue: issue({
+        assigneeAgentId: REV_A,
+        executionState: { returnAssignee: { type: "agent", agentId: ASSIGNEE, userId: null } },
+      }),
+      reviewerAgentId: REV_B,
+    });
+    expect((patch.executionState as Record<string, any>).returnAssignee).toMatchObject({
+      type: "agent", agentId: ASSIGNEE,
+    });
+  });
+
   it("keeps the fields of an existing stage-less policy", () => {
     const patch = buildReviewRoutingAssignPatch({
       issue: issue({ executionPolicy: { mode: "normal", commentRequired: true, stages: [], maxReviewRounds: 7 } }),

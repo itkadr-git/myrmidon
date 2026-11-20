@@ -5,7 +5,7 @@ import { eq } from "drizzle-orm";
 import { idlePickupCandidateRows } from "../myrmidon/idle-pickup.js";
 import { runViolatesReleaseFocus } from "../myrmidon/release-focus.js";
 import { readSwarmQueueCounters } from "../myrmidon/swarm-claim/matcher.js";
-import { applyRunPrioritySettings, currentRunPrioritySettings, resetRunPriorityForTests } from "../myrmidon/run-priority/state.js";
+import { applyCompanyReleaseFocus, resetRunPriorityForTests } from "../myrmidon/run-priority/state.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -30,8 +30,8 @@ suite("release focus candidate queries", () => {
   });
 
   it("matches the entire release label rather than overlapping versions in both queries", async () => {
-    applyRunPrioritySettings({ ...currentRunPrioritySettings({}), currentRelease: "1.6.9" });
     const companyId = randomUUID();
+    applyCompanyReleaseFocus(new Map([[companyId, { currentRelease: "1.6.9", strictReleaseFocus: true }]]));
     const agentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "company-collisions", issuePrefix: "RC" });
     await db.insert(agents).values({ id: agentId, companyId, name: "engineer", role: "engineer", adapterType: "process" });
@@ -61,8 +61,8 @@ suite("release focus candidate queries", () => {
   });
 
   it("rejects automatic assignments but accepts the owner's latest explicit assignment", async () => {
-    applyRunPrioritySettings({ ...currentRunPrioritySettings({}), currentRelease: "1.6.9" });
     const companyId = randomUUID();
+    applyCompanyReleaseFocus(new Map([[companyId, { currentRelease: "1.6.9", strictReleaseFocus: true }]]));
     const agentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "company-a", issuePrefix: "RF" });
     await db.insert(agents).values({ id: agentId, companyId, name: "engineer-a", role: "engineer", adapterType: "process" });
@@ -107,9 +107,9 @@ suite("release focus candidate queries", () => {
   });
 
   it("strictReleaseFocus=false hands out other-release tasks in both queries; true restricts again", async () => {
-    const focused = { ...currentRunPrioritySettings({}), currentRelease: "1.6.9", strictReleaseFocus: true };
-    applyRunPrioritySettings(focused);
+    const focused = { currentRelease: "1.6.9", strictReleaseFocus: true };
     const companyId = randomUUID();
+    applyCompanyReleaseFocus(new Map([[companyId, focused]]));
     const agentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "company-flag", issuePrefix: "RG" });
     await db.insert(agents).values({ id: agentId, companyId, name: "engineer-flag", role: "engineer", adapterType: "process" });
@@ -135,16 +135,16 @@ suite("release focus candidate queries", () => {
     const queued = async () => (await readSwarmQueueCounters(db, { companyIds: [companyId], now: new Date() })).queuedUnassigned;
     expect(await idlePickupCandidateRows(db, companyId, agentId)).toHaveLength(0);
     expect(await queued()).toBe(1);
-    applyRunPrioritySettings({ ...focused, strictReleaseFocus: false });
+    applyCompanyReleaseFocus(new Map([[companyId, { ...focused, strictReleaseFocus: false }]]));
     expect((await idlePickupCandidateRows(db, companyId, agentId)).map((row) => row.id)).toEqual([assigned18]);
     expect(await queued()).toBe(2);
-    applyRunPrioritySettings(focused);
+    applyCompanyReleaseFocus(new Map([[companyId, focused]]));
     expect(await idlePickupCandidateRows(db, companyId, agentId)).toHaveLength(0);
     expect(await queued()).toBe(1);
   });
   it("blocks only tasks of another release: unlabeled and non-release labels pass, mixed labels with the current one pass", async () => {
-    applyRunPrioritySettings({ ...currentRunPrioritySettings({}), currentRelease: "1.7", strictReleaseFocus: true });
     const companyId = randomUUID();
+    applyCompanyReleaseFocus(new Map([[companyId, { currentRelease: "1.7", strictReleaseFocus: true }]]));
     const agentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "company-unlabeled", issuePrefix: "RU" });
     await db.insert(agents).values({ id: agentId, companyId, name: "engineer-u", role: "engineer", adapterType: "process" });

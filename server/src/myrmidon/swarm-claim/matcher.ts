@@ -102,8 +102,8 @@ import {
 } from "./effective-pheromone.js";
 import { projectMemberAgentIds, projectMembershipByProject, projectScopedClaimGate } from "../project-membership.js";
 import { issueService } from "../../services/issues.js";
-import { currentRunPrioritySettings } from "../run-priority/state.js";
-import { createAutoSlicePolicy, projectQueueShortages, releaseEpicCandidates, runAutoSlicePass } from "./auto-slice-policy.js";
+import { currentCompanyReleaseFocus } from "../run-priority/state.js";
+import { AUTO_SLICE_DEDUPE_STATUSES, AUTO_SLICE_TITLE, createAutoSlicePolicy, projectQueueShortages, releaseEpicCandidates, runAutoSlicePass } from "./auto-slice-policy.js";
 import { unassignedTaskRoutedToRole } from "./queue.js";
 import { insertClaim, releaseClaimsForIssue, revertIdleClaimAssignment } from "./store.js";
 
@@ -734,10 +734,9 @@ async function casteDirectoryOf(
  * that no task was found for, and a closed host field matches nothing at all.
  */
 const autoSlicePolicies = new WeakMap<object, ReturnType<typeof createAutoSlicePolicy>>();
-const AUTO_SLICE_TITLE = "[AUTO-SLICE] Пополнить очередь инженеров";
 
 async function autoSliceCompany(deps: SwarmMatcherDeps, companyId: string, castes: Map<string, SwarmMatcherCaste>): Promise<void> {
-  const release = currentRunPrioritySettings().currentRelease;
+  const release = currentCompanyReleaseFocus(companyId).currentRelease;
   if (!release) return;
   const [pools, members, projectRows, issueRows] = await Promise.all([
     listIdleRolePairs(deps.db, companyId, { roles: ["engineer", "lead"], order: queueOrderOf(deps) }),
@@ -772,7 +771,7 @@ async function autoSliceCompany(deps: SwarmMatcherDeps, companyId: string, caste
         await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${companyId}), hashtext(${projectId}))`);
         const [existing] = await tx.select({ id: issues.id }).from(issues).where(and(
           eq(issues.companyId, companyId), eq(issues.projectId, projectId), eq(issues.title, AUTO_SLICE_TITLE),
-          isNull(issues.hiddenAt), inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
+          isNull(issues.hiddenAt), inArray(issues.status, [...AUTO_SLICE_DEDUPE_STATUSES]),
         )).limit(1);
         if (existing) return null;
         return issueService(deps.db).create(companyId, {

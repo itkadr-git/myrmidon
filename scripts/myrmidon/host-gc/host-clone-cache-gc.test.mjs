@@ -51,6 +51,8 @@ const {
   scanRunnerUnrecognizedWorkspaceFolders,
   scanIdleOpenClones,
   pruneIdleOpenClones,
+  scanTaskClones,
+  assessClone,
   scanReviewerClones,
   pruneReviewerClones,
   isReviewerAgent,
@@ -58,6 +60,7 @@ const {
   fetchRunAgentId,
   fetchIssueOpenState,
   volumeFreePercent,
+  runnerFolderKeepReason,
 } = await import(
   path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs")
 );
@@ -1577,9 +1580,9 @@ describe("runner task folders", () => {
     assert.deepEqual(items.map((i) => [i.path, i.action, i.reason]), [[folder, "remove", "no-git-repos"]]);
   });
 
-  it("a fresh folder is not even asked to the board", async () => {
+  it("a folder younger than the idle gate is not even asked to the board", async () => {
     const runners = path.join(tmpDir, "runners");
-    makeTaskFolder(runners, "eng21", "OPE-12855", { ageHours: 1 });
+    makeTaskFolder(runners, "eng21", "OPE-12855", { ageHours: 0.1 });
     let calls = 0;
     const items = await scanRunnerTaskFolders(runners, Date.now(), 24, {
       fetchStatus: async () => { calls++; return { ok: true, status: "done" }; },
@@ -1628,6 +1631,194 @@ describe("runner task folders", () => {
     const bad = items.find((i) => i.identifier === "OPE-1");
     assert.equal(bad.reason, "scan-failed");
     assert.equal(bad.action, "keep");
+  });
+
+  // --- Folders of tasks under review (idle-open rule) ---------------------------
+  const MIN = 60 * 1000;
+  // Ages a folder as the idle rule sees it: the folder, its top-level entries, those of `repo/`
+  // and the HEAD files of the git directory (`.git` itself is not looked at).
+  const ageFolder = (dir, hours) => {
+    const t = new Date(Date.now() - hours * HOUR);
+    const touch = (p) => { try { fs.utimesSync(p, t, t); } catch { /* absent */ } };
+    for (const d of [dir, path.join(dir, "repo")]) {
+      touch(d);
+      try { for (const e of fs.readdirSync(d)) if (e !== ".git") touch(path.join(d, e)); } catch { /* none */ }
+      touch(path.join(d, ".git", "HEAD"));
+      touch(path.join(d, ".git", "logs", "HEAD"));
+    }
+    touch(dir);
+  };
+  const scanOpen = (runnersRoot, state) =>
+    scanRunnerTaskFolders(runnersRoot, Date.now(), 24, { fetchStatus: async () => state, onEvent: () => {} });
+  const idleFolder = (runners, name = "OPE-5001", opts = {}) => {
+    const folder = makeTaskFolder(runners, "eng10", name, { ageHours: 1, ...opts });
+    ageFolder(folder, 1);
+    return folder;
+  };
+
+  for (const status of ["in_review", "blocked", "backlog"]) {
+    it(`a clean pushed ${status} folder, idle for an hour and with no live run, is removed before the clone TTL`, async () => {
+      const runners = path.join(tmpDir, "runners");
+      const folder = idleFolder(runners);
+      const items = await scanOpen(runners, { ok: true, status, liveRunIds: [] });
+      assert.deepEqual(items.map((i) => [i.path, i.action, i.reason, i.idleOpen]), [[folder, "remove", "clean-pushed", true]]);
+    });
+  }
+
+  it("a folder of a task under review with a live run is kept", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = idleFolder(runners);
+    const items = await scanOpen(runners, { ok: true, status: "in_review", liveRunIds: ["run-1"] });
+    assert.deepEqual(items.map((i) => [i.path, i.action, i.reason]), [[folder, "keep", "live-run"]]);
+  });
+
+  it("a folder of a task under review younger than 30 minutes is kept", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeTaskFolder(runners, "eng10", "OPE-5001", { ageHours: 0.25 });
+    const items = await scanOpen(runners, { ok: true, status: "in_review", liveRunIds: [] });
+    assert.deepEqual(items.map((i) => [i.path, i.action]), [[folder, "keep"]]);
+  });
+
+  it("a folder whose own mtime is old but whose files changed a minute ago is kept as fresh", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = idleFolder(runners);
+    const t = new Date(Date.now() - MIN);
+    fs.utimesSync(path.join(folder, "repo", "f.txt"), t, t);
+    const items = await scanOpen(runners, { ok: true, status: "in_review", liveRunIds: [] });
+    assert.deepEqual(items.map((i) => [i.path, i.action, i.reason]), [[folder, "keep", "fresh"]]);
+  });
+
+  for (const status of ["in_progress", "todo"]) {
+    it(`a ${status} folder is never touched, old or not`, async () => {
+      const runners = path.join(tmpDir, "runners");
+      const folder = idleFolder(runners);
+      const young = await scanOpen(runners, { ok: true, status, liveRunIds: [] });
+      assert.deepEqual(young.map((i) => [i.path, i.action]), [[folder, "keep"]]);
+      ageFolder(folder, 48);
+      const old = await scanOpen(runners, { ok: true, status, liveRunIds: [] });
+      assert.deepEqual(old.map((i) => [i.path, i.action, i.reason]), [[folder, "keep", `issue-status:${status}`]]);
+    });
+  }
+
+  it("an unreachable board keeps a young folder and does not fail the scan", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = idleFolder(runners);
+    const items = await scanOpen(runners, { ok: false, reason: "board-unavailable" });
+    assert.deepEqual(items.map((i) => [i.path, i.action, i.reason]), [[folder, "keep", "retention"]]);
+  });
+
+  it("unpushed or dirty work of a task under review goes to the archive, not away", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const unpushed = idleFolder(runners, "OPE-5001", { ahead: true });
+    const dirty = idleFolder(runners, "OPE-5002", { dirty: true });
+    ageFolder(dirty, 1);
+    const items = await scanOpen(runners, { ok: true, status: "in_review", liveRunIds: [] });
+    const byPath = Object.fromEntries(items.map((i) => [i.path, [i.action, i.reason]]));
+    assert.deepEqual(byPath[unpushed], ["archive-remove", "unsafe-archive"]);
+    assert.deepEqual(byPath[dirty], ["archive-remove", "unsafe-archive"]);
+  });
+
+  // A worktree of a run copy: `.git` says `gitdir: /workspace/...`, a path inside the runner container.
+  const makeContainerWorktree = (runners, name, { ahead = false, dropRun = false } = {}) => {
+    const ws = path.join(runners, "eng10", "workspace");
+    const run = path.join(ws, ".paperclip-runtime", "runs", "r1", "workspace");
+    makeRepo(run);
+    const folder = path.join(ws, name);
+    const g = (args, cwd2) => {
+      const r = subprocess.spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: cwd2, encoding: "utf8", env: GIT_ENV });
+      if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+    };
+    g(["worktree", "add", "-q", "--detach", folder], run);
+    if (ahead) {
+      fs.writeFileSync(path.join(folder, "f.txt"), "one\ntwo\n");
+      g(["commit", "-qam", "two"], folder);
+    }
+    fs.writeFileSync(path.join(folder, ".git"), `gitdir: /workspace/.paperclip-runtime/runs/r1/workspace/.git/worktrees/${path.basename(folder)}\n`);
+    const admin = path.join(run, ".git", "worktrees", path.basename(folder));
+    const old = new Date(Date.now() - HOUR);
+    for (const f of ["HEAD", path.join("logs", "HEAD")]) { try { fs.utimesSync(path.join(admin, f), old, old); } catch { /* none */ } }
+    if (dropRun) fs.rmSync(path.join(ws, ".paperclip-runtime"), { recursive: true, force: true });
+    ageFolder(folder, 1);
+    return folder;
+  };
+
+  it("a worktree whose .git names a container path is mapped to the runner root and checked for real", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeContainerWorktree(runners, "OPE-5001");
+    const items = await scanOpen(runners, { ok: true, status: "in_review", liveRunIds: [] });
+    assert.deepEqual(items.map((i) => [i.path, i.action, i.reason]), [[folder, "remove", "clean-pushed"]]);
+  });
+
+  it("a mapped worktree with an unpushed commit is archived, not removed", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeContainerWorktree(runners, "OPE-5001", { ahead: true });
+    const items = await scanOpen(runners, { ok: true, status: "in_review", liveRunIds: [] });
+    assert.deepEqual(items.map((i) => [i.path, i.action, i.reason]), [[folder, "archive-remove", "unsafe-archive"]]);
+  });
+
+  it("a worktree whose container path no longer exists on the host is archived", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeContainerWorktree(runners, "OPE-5001", { dropRun: true });
+    const items = await scanOpen(runners, { ok: true, status: "in_review", liveRunIds: [] });
+    assert.deepEqual(items.map((i) => [i.path, i.action, i.reason]), [[folder, "archive-remove", "unsafe-archive"]]);
+  });
+
+  it("a done task's container worktree is mapped too", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeContainerWorktree(runners, "OPE-5001");
+    ageFolder(folder, 48);
+    const items = await scanRunnerTaskFolders(runners, Date.now(), 24, { fetchStatus: async () => ({ ok: true, status: "done" }), onEvent: () => {} });
+    assert.deepEqual(items.map((i) => [i.path, i.action, i.reason]), [[folder, "remove", "clean-pushed"]]);
+  });
+
+  describe("runnerFolderKeepReason (the check just before a removal)", () => {
+    const item = (runners, folder) => ({ idleOpen: true, identifier: "OPE-5001", path: folder, runnerWorkspace: path.join(runners, "eng10", "workspace") });
+    it("lets an idle folder go and keeps it once the task moved on, a run started or a file changed", async () => {
+      const runners = path.join(tmpDir, "runners");
+      const folder = idleFolder(runners);
+      const it1 = item(runners, folder);
+      const ask = (state) => runnerFolderKeepReason(it1, Date.now(), { fetchStatus: async () => state });
+      assert.equal(await ask({ ok: true, status: "in_review", liveRunIds: [] }), null);
+      assert.equal(await ask({ ok: true, status: "in_progress", liveRunIds: [] }), "issue-status:in_progress");
+      assert.equal(await ask({ ok: true, status: "in_review", liveRunIds: ["r"] }), "live-run");
+      assert.equal(await ask({ ok: false, reason: "board-unavailable" }), "board-unavailable");
+      fs.writeFileSync(path.join(folder, "repo", "new.txt"), "x\n");
+      assert.equal(await ask({ ok: true, status: "in_review", liveRunIds: [] }), "fresh");
+    });
+    it("does not ask about a closed-task item", async () => {
+      assert.equal(await runnerFolderKeepReason({ identifier: "OPE-1", path: "/x" }, Date.now(), { fetchStatus: async () => { throw new Error("no"); } }), null);
+    });
+  });
+
+  it("e2e: --apply removes the idle folder of a task under review and keeps the one with a live run", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const idle = idleFolder(runners, "OPE-9101");
+    const live = idleFolder(runners, "OPE-9102");
+    const working = idleFolder(runners, "OPE-9103");
+    const http = await import("node:http");
+    const issues = {
+      "OPE-9101": { status: "in_review" },
+      "OPE-9102": { status: "in_review", executionRunId: "run-live" },
+      "OPE-9103": { status: "in_progress" },
+    };
+    const fake = http.createServer((req, res) => {
+      const m = /\/api\/issues\/([^/?]+)/.exec(req.url || "");
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify((m && issues[decodeURIComponent(m[1])]) || { status: "todo" }));
+    });
+    await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
+    try {
+      const { res, events } = await runGcTask(["--apply", "--runner-root", runners], { PAPERCLIP_API_URL: `http://127.0.0.1:${fake.address().port}` });
+      assert.equal(res.status, 0, res.stderr);
+      assert.equal(fs.existsSync(idle), false, "idle folder of a task under review must be removed");
+      assert.equal(fs.existsSync(live), true, "a live run keeps the folder");
+      assert.equal(fs.existsSync(working), true, "in_progress keeps the folder");
+      const removed = events.find((e) => e.event === "runner-task-folder-removed" && e.path === idle);
+      assert.equal(removed?.idleOpenStatus, "in_review");
+      assert.ok(events.some((e) => e.event === "runner-task-folder-skipped" && e.path === live && e.reason === "live-run"));
+    } finally {
+      await new Promise((resolve) => fake.close(resolve));
+    }
   });
 
   // Async spawn: the fake-board e2e runs the HTTP server in this same process, and
@@ -2309,6 +2500,32 @@ describe("idle clones of open tasks (OPE-13411)", () => {
       assert.equal(rec.reason, "nonassignee-copy-idle");
     });
 
+    it("frees a reviewer's copy in_review older than 10 minutes even while the reviewer is the assignee", async () => {
+      const bot = makeBot();
+      const clone = addClone(bot, "OPE-1", { ageHours: 15 / 60 });
+      const inReview = () => todo({ status: "in_review", assigneeAgentId: "agent-rev" });
+      const r = await reviewScan(bot, { "OPE-1": inReview() });
+      assert.deepEqual(verdicts(r), { "OPE-1": "remove:nonassignee-copy-idle" });
+      const gone = await pruneReviewerClones(r.items, bot.workspace, path.join(tmpDir, "j.jsonl"), { fetchState: async () => inReview(), fetchRun: async () => ({ ok: false }) });
+      assert.deepEqual(gone, [clone]);
+      assert.equal(fs.existsSync(clone), false);
+    });
+
+    it("keeps a reviewer-assignee's copy while its own run is live", async () => {
+      const bot = makeBot();
+      addClone(bot, "OPE-1", { ageHours: 15 / 60 });
+      const live = todo({ status: "in_review", assigneeAgentId: "agent-rev", liveRunIds: ["run-1"] });
+      const r = await reviewScan(bot, { "OPE-1": live }, { runs: { "run-1": { ok: true, agentId: "agent-rev" } } });
+      assert.deepEqual(verdicts(r), { "OPE-1": "keep:live-run" });
+    });
+
+    it("keeps a lead-assignee's copy", async () => {
+      const bot = makeBot();
+      addClone(bot, "OPE-1", { ageHours: 15 / 60 });
+      const r = await reviewScan(bot, { "OPE-1": todo({ assigneeAgentId: "agent-lead" }) }, { agent: LEAD });
+      assert.deepEqual(verdicts(r), { "OPE-1": "keep:assignee" });
+    });
+
     it("does not touch the assignee's own copy", async () => {
       const bot = makeBot();
       const clone = addClone(bot, "OPE-1", { ageHours: 24 });
@@ -2452,5 +2669,185 @@ describe("idle clones of open tasks (OPE-13411)", () => {
       const r = await run(["--dry-run", "--root", path.join(tmpDir, "ws"), "--idle-open-hours", "0"]);
       assert.equal(r.status, 2);
     });
+  });
+});
+describe("closed-task scan: bot linked worktrees with container gitdirs (OPE-14907)", () => {
+  const HOUR = 60 * 60 * 1000;
+  const git = (args, cwd) => {
+    const r = subprocess.spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8", env: GIT_ENV });
+    if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+    return r.stdout;
+  };
+
+  // <tmp>/agent/{workspace, hermes/.myrmidon/git-base/o/r.git}; the git-base's origin is the
+  // git:// "server" (the daemon rewrite), so a pushed branch proves against the server.
+  const makeBot = () => {
+    const server = path.join(tmpDir, "server.git");
+    git(["init", "-q", "--bare", "-b", "main", server]);
+    const seed = path.join(tmpDir, "seed");
+    git(["init", "-q", "-b", "main", seed]);
+    fs.writeFileSync(path.join(seed, "f.txt"), "one\n");
+    git(["add", "."], seed);
+    git(["commit", "-q", "-m", "one"], seed);
+    git(["push", "-q", server, "main"], seed);
+    const agent = path.join(tmpDir, "agent");
+    const base = path.join(agent, "hermes/.myrmidon/git-base/o/r.git");
+    fs.mkdirSync(path.dirname(base), { recursive: true });
+    git(["clone", "-q", "--bare", server, base]);
+    const workspace = path.join(agent, "workspace");
+    fs.mkdirSync(workspace, { recursive: true });
+    return { server, agent, base, workspace };
+  };
+
+  // A linked worktree of the git-base on its own pushed-or-not branch; then the `.git` file and
+  // the admin dir's `gitdir` record the CONTAINER paths, as on the bots volume: the host cannot
+  // read the clone without the /bot -> agent-root mapping (direct `git status` dies with
+  // "not a git repository", and the old closed scan returned clones=[] for it).
+  const addLinkedClone = (bot, name, { pushed = true, dirty = false, ageHours = 10 } = {}) => {
+    const dir = path.join(bot.workspace, name);
+    const branch = `task-${name}`;
+    git(["--git-dir", bot.base, "worktree", "add", "-q", "-b", branch, dir, "main"]);
+    fs.writeFileSync(path.join(dir, `${name}.txt`), "work\n");
+    git(["add", "."], dir);
+    git(["commit", "-q", "-m", `work ${name}`], dir);
+    if (pushed) git(["push", "-q", "origin", `${branch}:${branch}`], dir);
+    if (dirty) fs.writeFileSync(path.join(dir, "f.txt"), "changed\n");
+    fs.writeFileSync(path.join(dir, ".git"), `gitdir: /bot/hermes/.myrmidon/git-base/o/r.git/worktrees/${name}\n`);
+    fs.writeFileSync(path.join(bot.base, "worktrees", name, "gitdir"), `/bot/workspace/${name}/.git\n`);
+    age(bot, name, ageHours);
+    return dir;
+  };
+
+  // The clone looks untouched for `hours`: directory, its top-level entries and the worktree's
+  // own HEAD and reflog (the same clock the idle rule ages).
+  const age = (bot, name, hours) => {
+    const dir = path.join(bot.workspace, name);
+    const admin = path.join(bot.base, "worktrees", name);
+    const t = new Date(Date.now() - hours * HOUR);
+    for (const f of [...fs.readdirSync(dir).filter((e) => e !== ".git").map((e) => path.join(dir, e)), path.join(admin, "HEAD"), path.join(admin, "index"), path.join(admin, "logs", "HEAD")]) {
+      try { fs.utimesSync(f, t, t); } catch { /* absent */ }
+    }
+    fs.utimesSync(dir, t, t);
+  };
+
+  const scanClosed = (bot, ttlHours = 6) => scanTaskClones(bot.workspace, Date.now(), ttlHours);
+
+  it("scan and assess a clean pushed linked worktree whose gitdir is a container path", () => {
+    const bot = makeBot();
+    const dir = addLinkedClone(bot, "OPE-1");
+    const clones = scanClosed(bot);
+    assert.equal(clones.length, 1);
+    assert.equal(clones[0].path, dir);
+    const c = assessClone(clones[0]);
+    assert.equal(c.clean, true);
+    assert.equal(c.stash, false);
+    assert.equal(c.alternates, false);
+    assert.equal(c.pushed, true);
+    assert.equal(c.safeToRemove, true);
+    assert.equal(c.reason, "clean-pushed");
+    // Mapped: the removal can free the clone and exactly its own admin dir (removeWorktreeClone).
+    assert.equal(c.adminDir, path.join(bot.base, "worktrees", "OPE-1"));
+    assert.equal(c.commonDir, bot.base);
+  });
+
+  it("still scans an ordinary .git-directory clone, unchanged", () => {
+    const bot = makeBot();
+    const dir = path.join(bot.workspace, "OPE-2");
+    git(["clone", "-q", bot.server, dir]);
+    const t = new Date(Date.now() - 10 * HOUR);
+    fs.utimesSync(dir, t, t);
+    const clones = scanClosed(bot);
+    assert.equal(clones.length, 1);
+    assert.equal(clones[0].path, dir);
+    assert.equal(clones[0].adminDir, undefined);
+    const c = assessClone(clones[0]);
+    assert.equal(c.safeToRemove, true);
+    assert.equal(c.reason, "clean-pushed");
+  });
+
+  it("a dirty linked worktree is scanned but held for archive, not removal", () => {
+    const bot = makeBot();
+    addLinkedClone(bot, "OPE-3", { dirty: true });
+    const clones = scanClosed(bot);
+    assert.equal(clones.length, 1);
+    const c = assessClone(clones[0]);
+    assert.equal(c.clean, false);
+    assert.equal(c.pushed, false);
+    assert.equal(c.safeToRemove, false);
+    assert.equal(c.reason, "unsafe-archive");
+  });
+
+  it("an unpushed linked worktree is scanned but held for archive, not removal", () => {
+    const bot = makeBot();
+    addLinkedClone(bot, "OPE-4", { pushed: false });
+    const clones = scanClosed(bot);
+    assert.equal(clones.length, 1);
+    const c = assessClone(clones[0]);
+    assert.equal(c.clean, true);
+    assert.equal(c.pushed, false);
+    assert.equal(c.safeToRemove, false);
+    assert.equal(c.reason, "unsafe-archive");
+  });
+
+  it("keeps mapped paths through the production-like git wrapper, plan, archive and removal", async () => {
+    const bot = makeBot();
+    const clean = addLinkedClone(bot, "OPE-1");
+    const dirty = addLinkedClone(bot, "OPE-2", { dirty: true });
+    const bin = path.join(tmpDir, "bin");
+    fs.mkdirSync(bin);
+    // Like the deployed launcher, map the cwd's container gitfile even without caller env.
+    fs.writeFileSync(path.join(bin, "git"), `#!/bin/sh\nif [ -z "$GIT_DIR" ] && [ -f "$PWD/.git" ]; then\n  IFS= read -r pointer < "$PWD/.git"\n  case "$pointer" in 'gitdir: /bot/'*) export GIT_DIR="$TEST_AGENT_ROOT/\${pointer#gitdir: /bot/}" GIT_WORK_TREE="$PWD";; esac\nfi\nexec /usr/bin/git "$@"\n`, { mode: 0o755 });
+    const board = createServer((req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ status: "done" }));
+    });
+    await new Promise((resolve) => board.listen(0, "127.0.0.1", resolve));
+    const run = (mode) => new Promise((resolve, reject) => {
+      const child = subprocess.spawn(process.execPath, [path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs"), mode, "--root", bot.workspace, "--lock", path.join(tmpDir, "lock"), "--journal", path.join(tmpDir, "journal"), "--env", path.join(tmpDir, "none"), "--archive-root", path.join(tmpDir, "archives")], {
+        env: { ...GIT_ENV, PATH: `${bin}:${process.env.PATH}`, TEST_AGENT_ROOT: bot.agent, BOARD_API_URL: `http://127.0.0.1:${board.address().port}`, PAPERCLIP_API_KEY: "", MYRMIDON_HOST_GC_DOCKER: "/nonexistent-docker" },
+      });
+      let stdout = "", stderr = "";
+      child.stdout.on("data", (s) => { stdout += s; });
+      child.stderr.on("data", (s) => { stderr += s; });
+      child.on("error", reject);
+      child.on("close", (status) => resolve({ status, stdout, stderr }));
+    });
+    try {
+      const dry = await run("--dry-run");
+      assert.equal(dry.status, 0, dry.stderr);
+      const clones = JSON.parse(dry.stdout).plan.clones;
+      for (const [name, action] of [["OPE-1", "remove"], ["OPE-2", "archive-remove"]]) {
+        const item = clones.find((c) => c.name === name);
+        assert.ok(item, `missing ${name}`);
+        assert.equal(item.adminDir, path.join(bot.base, "worktrees", name));
+        assert.equal(item.commonDir, bot.base);
+        assert.equal(item.action, action);
+      }
+      assert.ok(fs.existsSync(clean) && fs.existsSync(dirty));
+      const apply = await run("--apply");
+      assert.equal(apply.status, 0, apply.stderr);
+      const events = fs.readFileSync(path.join(tmpDir, "journal"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      assert.ok(events.some((item) => item.event === "clone-archived" && item.path === dirty), JSON.stringify(events));
+      assert.equal(fs.existsSync(clean), false);
+      assert.equal(fs.existsSync(dirty), false);
+      assert.equal(fs.existsSync(path.join(bot.base, "worktrees", "OPE-1")), false);
+      assert.equal(fs.existsSync(path.join(bot.base, "worktrees", "OPE-2")), false);
+    } finally {
+      await new Promise((resolve) => board.close(resolve));
+    }
+  });
+
+  it("enters the closed-task pipeline for done and cancelled issues", async () => {
+    const bot = makeBot();
+    addLinkedClone(bot, "OPE-1");
+    for (const status of ["done", "cancelled"]) {
+      const { candidates } = await filterClosedTaskClones(scanClosed(bot), {
+        baseUrl: "http://board",
+        fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ status }) }),
+      });
+      assert.equal(candidates.length, 1);
+      assert.equal(candidates[0].identifier, "OPE-1");
+      assert.equal(candidates[0].issueStatus, status);
+    }
   });
 });

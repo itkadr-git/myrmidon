@@ -1,43 +1,54 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { findExistingComment } from '../run-quality-gates.mjs';
+import { updateReviewComment } from '../run-quality-gates.mjs';
 
-test('findExistingComment: paginates until it finds the commitperclip comment', async () => {
-  const seenPaths = [];
-  const comment = await findExistingComment(async (path) => {
-    seenPaths.push(path);
-    if (path.endsWith('page=1')) {
-      return Array.from({ length: 100 }, (_, index) => ({
-        id: index + 1,
-        user: { login: 'someone-else' },
-        body: 'unrelated',
-      }));
+function github(initial = []) {
+  const comments = structuredClone(initial);
+  const writes = [];
+  const fetch = async (path, token, options = {}) => {
+    if (!options.method) {
+      const page = Number(new URL(`https://example.com${path}`).searchParams.get('page'));
+      return comments.slice((page - 1) * 100, page * 100);
     }
-    if (path.endsWith('page=2')) {
-      return [{
-        id: 200,
-        user: { login: 'commitperclip[bot]' },
-        body: 'Looks good.\n\n— commitperclip',
-      }];
+    const body = JSON.parse(options.body).body;
+    writes.push({ method: options.method, path });
+    if (options.method === 'POST') {
+      comments.push({ id: 1000 + comments.length, user: { login: 'github-actions[bot]' }, body });
+    } else {
+      const id = Number(path.split('/').pop());
+      const comment = comments.find(c => c.id === id);
+      assert.equal(comment.user.login, 'github-actions[bot]', 'must not edit legacy or user comments');
+      comment.body = body;
     }
-    return [];
-  }, 'token', 'paperclipai/paperclip', 6469);
+  };
+  return { comments, writes, fetch };
+}
 
-  assert.equal(comment.id, 200);
-  assert.deepEqual(seenPaths, [
-    '/repos/paperclipai/paperclip/issues/6469/comments?per_page=100&page=1',
-    '/repos/paperclipai/paperclip/issues/6469/comments?per_page=100&page=2',
-  ]);
+const legacy = { id: 4, user: { login: 'commitperclip[bot]' }, body: 'Old failure\n\n— commitperclip' };
+
+test('repeated runs update one actions comment and replace failure with success without editing legacy', async () => {
+  const api = github([legacy]);
+  for (const failures of [['Missing test'], ['Missing test'], []]) {
+    await updateReviewComment(api.fetch, 'token', 'owner/repo', 42, 'author', failures, []);
+  }
+  assert.deepEqual(api.writes.map(w => w.method), ['POST', 'PATCH', 'PATCH']);
+  assert.equal(api.comments.length, 2);
+  assert.deepEqual(api.comments[0], legacy);
+  assert.match(api.comments[1].body, /All checks passing/);
+  assert.doesNotMatch(api.comments[1].body, /Missing test/);
+  assert.match(api.comments[1].body, /legacy/i);
 });
 
-test('findExistingComment: returns null when no signed comment exists', async () => {
-  const comment = await findExistingComment(async () => ([
-    {
-      id: 1,
-      user: { login: 'commitperclip[bot]' },
-      body: 'Unsigned status update',
-    },
-  ]), 'token', 'paperclipai/paperclip', 6469);
+test('finds actions comment on later pages and ignores forged signatures', async () => {
+  const filler = Array.from({ length: 100 }, (_, i) => ({ id: i, user: { login: 'someone' }, body: '— commitperclip' }));
+  const api = github([...filler, { id: 500, user: { login: 'github-actions[bot]' }, body: 'Old failure\n\n— commitperclip' }]);
+  await updateReviewComment(api.fetch, 'token', 'owner/repo', 42, 'author', [], []);
+  assert.deepEqual(api.writes, [{ method: 'PATCH', path: '/repos/owner/repo/issues/comments/500' }]);
+  assert.match(api.comments[100].body, /All checks passing/);
+});
 
-  assert.equal(comment, null);
+test('passing run without a previous review does not create a comment', async () => {
+  const api = github();
+  await updateReviewComment(api.fetch, 'token', 'owner/repo', 42, 'author', [], []);
+  assert.deepEqual(api.writes, []);
 });

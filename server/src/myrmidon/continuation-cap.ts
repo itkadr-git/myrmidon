@@ -20,9 +20,8 @@
 //      `in_review`, and the cap does not count it.
 //   2. Real cap: after MAX_CONTINUATIONS_WITHOUT_EXTERNAL_INPUT succeeded
 //      continuation runs of the same (agent, issue) with no external input
-//      between them, no further continuation is enqueued and the issue is
-//      moved to `blocked` with a system comment until an external event
-//      arrives.
+//      between them, further continuations are deferred for a cooldown; the
+//      issue stays actionable and external evidence resets the count.
 //
 // "External input" reuses the movement notion of the cooling guard
 // (wake-task-guard.ts `isRealTaskMovement`): a comment or a movement activity
@@ -55,6 +54,7 @@ export const CONTINUATION_INTERACTION_STATUSES = ["todo", "in_progress", "in_rev
 
 /** Succeeded continuation runs in a row, without external input, before the stop. */
 export const MAX_CONTINUATIONS_WITHOUT_EXTERNAL_INPUT = 3;
+export const CONTINUATION_CAP_COOLDOWN_MS = 60 * 60 * 1000;
 
 /** How long the stop block holds before the board janitor may look at it again. */
 export const CONTINUATION_CAP_BLOCK_TIMEOUT_MS = 7 * 24 * 60 * 60 * 1000;
@@ -148,7 +148,7 @@ export interface ContinuationCapReading {
  */
 async function loadExternalMovements(
   db: Db,
-  input: { companyId: string; issueId: string; agentId: string; since: Date },
+  input: { companyId: string; issueId: string; agentId: string; since: Date; ignoreActions?: readonly string[] },
 ): Promise<TaskMovement[]> {
   const comments = await db
     .select({
@@ -190,7 +190,15 @@ async function loadExternalMovements(
         eq(activityLog.entityType, "issue"),
         eq(activityLog.entityId, input.issueId),
         gt(activityLog.createdAt, input.since),
-        inArray(activityLog.action, EXTERNAL_INPUT_ACTIVITY_ACTIONS),
+        // The system actions of the list below must pass this filter too: a
+        // row the filter drops never reaches the `or` branch (the PR head
+        // change was dropped here, so a push did not reset the count).
+        inArray(
+          activityLog.action,
+          [...new Set([...EXTERNAL_INPUT_ACTIVITY_ACTIONS, ...EXTERNAL_INPUT_SYSTEM_ACTIONS])].filter(
+            (action) => !input.ignoreActions?.includes(action),
+          ),
+        ),
         or(
           eq(activityLog.actorType, "user"),
           and(eq(activityLog.actorType, "agent"), ne(activityLog.actorId, input.agentId)),
@@ -250,7 +258,52 @@ export async function readContinuationCap(
     since: runs[runs.length - 1]!.createdAt,
   });
   const count = countContinuationsWithoutExternalInput({ agentId: input.agentId, runs, moves });
-  return { count, max, capped: count >= max };
+  return {
+    count,
+    max,
+    capped: count >= max && Date.now() < runs[0]!.createdAt.getTime() + CONTINUATION_CAP_COOLDOWN_MS,
+  };
+}
+
+/** Activity the stop writes when it parks an issue. */
+export const CONTINUATION_CAP_STOP_ACTIVITY_ACTION = "issue.continuation_cap_reached";
+
+/**
+ * True while the issue sits in a continuation stop: the latest stop record is
+ * for this agent and no external input came after it. External input is the
+ * same notion the cap counts (a comment or movement by a user or another
+ * agent, a PR/CI sync event, a PR head change), plus a blocker closed after
+ * the stop (`blockersResolvedAt`). The wake the dependency backstop emitted
+ * itself is not input: it is the producer of the loop, so it is ignored here.
+ * A change of assignee leaves the stop at once (the stop belongs to one agent).
+ */
+export async function isIssueInContinuationStop(
+  db: Db,
+  input: { companyId: string; issueId: string; agentId: string; blockersResolvedAt?: Date | null },
+): Promise<boolean> {
+  const [stop] = await db
+    .select({ at: activityLog.createdAt, agentId: activityLog.agentId })
+    .from(activityLog)
+    .where(
+      and(
+        eq(activityLog.companyId, input.companyId),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, input.issueId),
+        eq(activityLog.action, CONTINUATION_CAP_STOP_ACTIVITY_ACTION),
+      ),
+    )
+    .orderBy(desc(activityLog.createdAt))
+    .limit(1);
+  if (!stop || stop.agentId !== input.agentId) return false;
+  if (input.blockersResolvedAt && input.blockersResolvedAt.getTime() > stop.at.getTime()) return false;
+  const moves = await loadExternalMovements(db, {
+    companyId: input.companyId,
+    issueId: input.issueId,
+    agentId: input.agentId,
+    since: stop.at,
+    ignoreActions: ["issue.blockers_resolved_wake_emitted"],
+  });
+  return !moves.some((move) => isExternalInput(move, input.agentId));
 }
 
 /**

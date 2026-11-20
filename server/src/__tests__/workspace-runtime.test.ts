@@ -1,4 +1,4 @@
-import { execFile, spawn } from "node:child_process";
+import { ChildProcess, execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
@@ -45,6 +45,7 @@ import {
   resolveShell,
   sanitizeRuntimeServiceBaseEnv,
   setWorkspaceRuntimeExposureDepsForTests,
+  setWorkspaceRuntimeExitCleanupHookForTests,
   setWorkspaceRuntimePortAllocationAttemptsForTests,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
@@ -8094,7 +8095,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     }
   }, 40_000);
 
-  it("re-adopts a request-logging service on the same auto port after supervisor stdio closes", async () => {
+  it.each(["adoption", "in-flight exit cleanup"])("re-adopts a request-logging service: %s", async (scenario) => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-reconcile-"));
     const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));
     process.env.PAPERCLIP_HOME = paperclipHome;
@@ -8163,7 +8164,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
           services: [
             {
               name: "web",
-              command: "node request-logger.cjs",
+              command: `${JSON.stringify(process.execPath)} request-logger.cjs`,
               port: { type: "auto" },
               readiness: {
                 type: "http",
@@ -8189,6 +8190,37 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     await expect(fetch(service!.url!)).resolves.toMatchObject({ ok: true });
     const originalPort = service!.port;
     const originalProviderRef = service!.providerRef;
+    const handles = (process as unknown as { _getActiveHandles(): unknown[] })._getActiveHandles();
+    const originalChild = handles.find((handle): handle is ChildProcess =>
+      handle instanceof ChildProcess && handle.pid === Number(originalProviderRef),
+    );
+    expect(originalChild).toBeDefined();
+
+    if (scenario === "in-flight exit cleanup") {
+      let resume!: () => void;
+      let started!: () => void;
+      const blocked = new Promise<void>((resolve) => { resume = resolve; });
+      const entered = new Promise<void>((resolve) => { started = resolve; });
+      setWorkspaceRuntimeExitCleanupHookForTests(async () => { started(); await blocked; });
+      originalChild!.kill("SIGTERM");
+      await entered;
+      let resetFinished = false;
+      const reset = resetRuntimeServicesForTests({ terminateProcesses: true }).then(() => { resetFinished = true; });
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(resetFinished).toBe(false);
+      } finally {
+        resume();
+        await reset;
+        setWorkspaceRuntimeExitCleanupHookForTests(null);
+      }
+      await db.delete(workspaceRuntimeServices).where(eq(workspaceRuntimeServices.companyId, companyId));
+      expect(await db.select().from(workspaceRuntimeServices).where(eq(workspaceRuntimeServices.companyId, companyId))).toHaveLength(0);
+      leasedRunIds.delete(runId);
+      await fs.rm(paperclipHome, { recursive: true, force: true });
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+      return;
+    }
 
     // Closing the parent's pipe endpoints reproduces a real control-plane exit.
     // A service whose per-request logger still targets those pipes wedges (or
@@ -8207,6 +8239,10 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     expect(persisted?.port).toBe(originalPort);
     expect(persisted?.providerRef).toBe(originalProviderRef);
     await expect(fetch(service!.url!)).resolves.toMatchObject({ ok: true });
+
+    // A late exit from the pre-restart child must not unregister its adopted
+    // replacement, even though both records have the same runtime service ID.
+    originalChild!.emit("exit", 0, null);
 
     await resetRuntimeServicesForTests({ terminateProcesses: true });
     leasedRunIds.delete(runId);

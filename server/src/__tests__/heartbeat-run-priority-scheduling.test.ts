@@ -50,6 +50,7 @@ import {
   type RunAdmissionLimits,
 } from "../myrmidon/run-admission.js";
 import {
+  applyCompanyReleaseFocus,
   applyRunPrioritySettings,
   currentRunPrioritySettings,
   resetRunPriorityForTests,
@@ -559,8 +560,8 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
   // myrmidon(OPE-13231): strict release focus at the run-start gate.
   async function seedFocusScenario(strict: boolean) {
     pinAdmission({ maxConcurrentRuns: 0 });
-    applyRunPrioritySettings({ ...defaultSettings(), currentRelease: "1.6.9", strictReleaseFocus: strict });
     const { companyId, agentId } = await seedCompanyAndAgent({ name: "Engineer", role: "engineer" });
+    applyCompanyReleaseFocus(new Map([[companyId, { currentRelease: "1.6.9", strictReleaseFocus: strict }]]));
     const colleague = randomUUID();
     await db.insert(agents).values({
       id: colleague, companyId, name: "Colleague", role: "engineer", status: "active",
@@ -620,11 +621,11 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
   });
 
   it("strict focus: the deferred run starts after the flag is switched off, without a restart", async () => {
-    const { agentId, otherIssueId } = await seedFocusScenario(true);
+    const { companyId, agentId, otherIssueId } = await seedFocusScenario(true);
     const run = await commentWake(agentId, otherIssueId);
     await sweep();
     expect((await runRow(run.id))?.status).toBe("scheduled_retry");
-    applyRunPrioritySettings({ ...defaultSettings(), currentRelease: "1.6.9", strictReleaseFocus: false });
+    applyCompanyReleaseFocus(new Map([[companyId, { currentRelease: "1.6.9", strictReleaseFocus: false }]]));
     await db.update(heartbeatRuns).set({ scheduledRetryAt: new Date(Date.now() - 1000) }).where(eq(heartbeatRuns.id, run.id));
     await heartbeat.promoteDueScheduledRetries();
     await sweep();
@@ -635,7 +636,7 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
   const actorUser = { actorType: "user" as const, actorId: "responsible-user", agentId: null, runId: null, agentApiKeyId: null };
 
   it("strict focus: lifting the focus makes the deferred runs due at once, no waiting for the recheck ladder", async () => {
-    const { agentId, otherIssueId } = await seedFocusScenario(true);
+    const { companyId, agentId, otherIssueId } = await seedFocusScenario(true);
     const run = await commentWake(agentId, otherIssueId);
     await sweep();
     const parked = await runRow(run.id);
@@ -647,7 +648,7 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
       env: {},
       advanceDeferredRuns: () => advanceFocusDeferredRuns(db),
     });
-    await service.update({ strictReleaseFocus: false }, actorUser);
+    await service.updateCompany(companyId, { currentRelease: "1.6.9", strictReleaseFocus: false }, actorUser);
     expect((await runRow(run.id))!.scheduledRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
 
     await heartbeat.promoteDueScheduledRetries();
@@ -683,7 +684,7 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
   }, 30_000);
 
   it("strict focus: a change of the current release advances the deferred runs too; an unrelated change does not", async () => {
-    const { agentId, otherIssueId } = await seedFocusScenario(true);
+    const { companyId, agentId, otherIssueId } = await seedFocusScenario(true);
     const run = await commentWake(agentId, otherIssueId);
     await sweep();
     const parkedAt = (await runRow(run.id))!.scheduledRetryAt!.getTime();
@@ -693,7 +694,7 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
     });
     await service.update({ roleWeights: { ...defaultSettings().roleWeights, engineer: 123 } }, actorUser);
     expect((await runRow(run.id))!.scheduledRetryAt!.getTime()).toBe(parkedAt);
-    await service.update({ currentRelease: "1.7" }, actorUser);
+    await service.updateCompany(companyId, { currentRelease: "1.7", strictReleaseFocus: true }, actorUser);
     expect((await runRow(run.id))!.scheduledRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
   }, 30_000);
 
@@ -710,8 +711,8 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
     };
     // The "other process": it listens on the bus and keeps its own memory.
     registerSettingsAppliers(bus, { db: db as never });
-    applyRunPrioritySettings({ ...defaultSettings(), currentRelease: "1.6.9", strictReleaseFocus: true });
-    expect(strictReleaseFocusRelease()).toBe("1.6.9");
+    const { companyId } = await seedFocusScenario(true);
+    expect(strictReleaseFocusRelease(companyId)).toBe("1.6.9");
 
     // The writing process: its own apply never touches this memory.
     const writer = runPriorityService(db, {
@@ -720,12 +721,11 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
       applyStored: async () => ({ ...defaultSettings(), currentRelease: "1.6.9", strictReleaseFocus: false }),
       publishChanged: () => bus.publish("settings_changed", { changedKeys: ["runPriority"] }),
     });
-    await writer.update({ strictReleaseFocus: false }, actorUser);
-    await vi.waitFor(() => expect(strictReleaseFocusRelease()).toBeNull());
-    expect(currentRunPrioritySettings().strictReleaseFocus).toBe(false);
+    await writer.updateCompany(companyId, { currentRelease: "1.6.9", strictReleaseFocus: false }, actorUser);
+    await vi.waitFor(() => expect(strictReleaseFocusRelease(companyId)).toBeNull());
 
-    await writer.update({ strictReleaseFocus: true, currentRelease: "1.7" }, actorUser);
-    await vi.waitFor(() => expect(strictReleaseFocusRelease()).toBe("1.7"));
+    await writer.updateCompany(companyId, { strictReleaseFocus: true, currentRelease: "1.7" }, actorUser);
+    await vi.waitFor(() => expect(strictReleaseFocusRelease(companyId)).toBe("1.7"));
   }, 30_000);
 
   it("strict focus: the deferred run starts once no open current-release task is left", async () => {
@@ -806,7 +806,7 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
     await dueCycle(run.id);
     expect((await runRow(run.id))?.status).toBe("scheduled_retry");
     expect(mockAdapterExecute).not.toHaveBeenCalled();
-    applyRunPrioritySettings({ ...defaultSettings(), currentRelease: "1.6.9", strictReleaseFocus: false });
+    applyCompanyReleaseFocus(new Map([[companyId, { currentRelease: "1.6.9", strictReleaseFocus: false }]]));
     await dueCycle(run.id);
     // The queued-run staleness gate must not cancel the non-assignee run as a reassignment.
     const finalRow = await runRow(run.id);

@@ -107,7 +107,7 @@ function parseCopySources(depsStage) {
 
   for (const rawLine of depsStage.split("\n")) {
     const line = rawLine.trim();
-    if (!line.startsWith("COPY ")) continue;
+    if (!/^COPY[ \t]/.test(line)) continue;
 
     const tokens = line.split(/\s+/);
     let index = 1;
