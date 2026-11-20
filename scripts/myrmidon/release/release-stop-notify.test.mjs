@@ -358,6 +358,19 @@ describe("release-stop-notify.sh (fake gh)", () => {
     assert.equal(issues.length, 0, "no issue must be stored on create failure");
   });
 
+  it("retains the reservation after an ambiguous create failure", () => {
+    const sb = makeSandbox();
+    const first = runScript(sb, { GH_CREATE_FAIL: "y" });
+    assert.equal(first.status, 1);
+    const retry = runScript(sb, { RELEASE_STOP_LOCK_TIMEOUT: "1", RELEASE_STOP_LOCK_POLL_DELAY: "0" });
+    assert.equal(retry.status, 1, retry.stderr);
+    assert.match(retry.stderr, /timed out waiting/);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(sb.dir, "issues.json"), "utf8")).length, 0);
+    const calls = fs.readFileSync(path.join(sb.dir, "calls.log"), "utf8");
+    assert.equal((calls.match(/gh issue create/g) || []).length, 1);
+    assert.doesNotMatch(calls, /gh label delete/);
+  });
+
   it("deduplicates concurrent executions for the same stop event without duplicate issue creation (overlap)", async () => {
     const sb = makeSandbox();
     const [r1, r2] = await Promise.all([
