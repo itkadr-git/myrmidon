@@ -207,6 +207,28 @@ describe("parseSseFramesForTest", () => {
 });
 
 describe("execute", () => {
+  it("forwards the run-scoped model credential in the run request without logging it", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(
+      String(input).endsWith("/v1/runs")
+        ? { run_id: "run-model-key", status: "started" }
+        : { status: "completed", output: "done" },
+    ), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const credential = "test-run-model-credential";
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "test-gateway-key",
+      timeoutSec: 5,
+      env: { MYRMIDON_LLM_API_KEY: credential },
+    });
+    ctx.context.runScopedGatewayKeyEnv = "MYRMIDON_LLM_API_KEY";
+    expect((await execute(ctx)).exitCode).toBe(0);
+    const call = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/v1/runs"));
+    expect(JSON.parse(String(call?.[1]?.body)).model_credential).toEqual({ api_key: credential });
+    expect(JSON.stringify(vi.mocked(ctx.onLog).mock.calls)).not.toContain(credential);
+    expect(JSON.stringify(vi.mocked(ctx.onMeta).mock.calls)).not.toContain(credential);
+  });
+
   it("gives a developer an issue-scoped session while a non-developer keeps its configured session", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(
       String(input).endsWith("/v1/runs")
