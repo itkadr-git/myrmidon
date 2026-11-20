@@ -40,6 +40,27 @@ function createMockReporter(): {
 }
 
 describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
+  it("redacts claim credentials from transport failures and reports", async () => {
+    const password = "bootstrap-sensitive-value";
+    const key = "private-sensitive-value";
+    class FailingSsh extends MockSshExecutor {
+      override async connect() { throw new Error(`failure ${password} ${key}`); }
+    }
+    const reporter = createMockReporter();
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => new FailingSsh() });
+    const claim = {
+      job: { id: "job", companyId: "c1", serverId: "s1" },
+      server: { hostname: "example.com", port: 22, username: "root" },
+      steps: ["connect"], options: { keepPassword: true },
+      secretValues: { bootstrapPassword: password, accessKey: key },
+    } as unknown as OnboardJobClaim & { secretValues: Record<string, string> };
+    const result = await executor.execute(claim, reporter.reporter);
+    const exposed = JSON.stringify({ result, steps: reporter.steps, completion: reporter.completion });
+    expect(result.status).toBe("failed");
+    expect(exposed).not.toContain(password);
+    expect(exposed).not.toContain(key);
+  });
+
   it("rejects a changed host key during handshake before authenticating", async () => {
     const events: string[] = [];
     class HandshakeSsh extends MockSshExecutor {
