@@ -81,7 +81,7 @@ export function acceptanceServiceRoutes(db: Db) {
         eq(nativeFinalizationRequests.idempotencyKey, key),
       ));
       if (existing) return existing.canonicalPayloadHash === payloadHash
-        ? { status: 202, id: existing.id } : { status: 409, error: "Idempotency key conflict" };
+        ? { status: 202, request: existing } : { status: 409, error: "Idempotency key conflict" };
       const [active] = await tx.select({ id: nativeFinalizationRequests.id }).from(nativeFinalizationRequests).where(and(
         eq(nativeFinalizationRequests.runId, runId),
       ));
@@ -97,11 +97,18 @@ export function acceptanceServiceRoutes(db: Db) {
         principalId: grant.principalId, credentialId: credential.credentialId, verifiedPeerSha256: fingerprint,
         authenticatedAt: new Date(), documentId: body.documentId, expectedRevisionId: body.expectedRevisionId,
         expectedIssueEpoch: body.expectedIssueEpoch, strongEtag: match, canonicalPayloadHash: payloadHash, idempotencyKey: key,
-      }).returning({ id: nativeFinalizationRequests.id });
+      }).returning();
       await tx.insert(nativeFinalizationOutbox).values({ requestId: request.id });
-      return { status: 202, id: request.id };
+      return { status: 202, request };
     });
-    res.status(outcome.status).json(outcome.id ? { id: outcome.id } : { error: outcome.error });
+    if (outcome.request) {
+      res.status(202).json({
+        requestId: outcome.request.id, runId, state: outcome.request.state,
+        statusUrl: `/api/service/native-runs/${runId}/finalization-requests/${outcome.request.id}`,
+      });
+      return;
+    }
+    res.status(outcome.status).json({ error: outcome.error });
   });
   router.get("/service/native-runs/:runId/finalization-requests/:requestId", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
