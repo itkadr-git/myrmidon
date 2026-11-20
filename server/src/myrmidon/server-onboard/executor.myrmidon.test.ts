@@ -1483,6 +1483,39 @@ exit 97
     }
   });
 
+  it("restores only a uniquely owned SSH rule while preserving an operator rule", async () => {
+    const ssh = new MockSshExecutor();
+    ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 1 });
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim: any = {
+      job: { id: "job-restore-owned-rule", companyId: "c1", serverId: "s1" },
+      server: { hostname: "1.2.3.4", port: 22, username: "root" },
+      steps: ["harden"], options: { keepPassword: true }, secretValues: { accessKey: "key" },
+    };
+    await executor.execute(claim, createMockReporter().reporter);
+    const command = ssh.executedCommands.find(({ command }) => command.includes("prepare-myrmidon-firewall-restore"))?.command ?? "";
+    const script = /printf '%s' '([^']+)'/.exec(command)?.[1] ?? "";
+    const owner = /myrmidon-firewall-[a-f0-9-]+/.exec(command)?.[0] ?? "";
+    expect(script).not.toBe("");
+    expect(owner).not.toBe("");
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "myrmidon-owned-restore-"));
+    try {
+      const rules = join(dir, "rules");
+      writeFileSync(rules, `operator-ssh\n${owner}\n`);
+      writeFileSync(join(dir, "rule-changed"), "");
+      writeFileSync(join(dir, "ufw"), `#!/bin/sh\ncase "$*" in\n  "status numbered") printf 'Status: active\\n[ 1] 22/tcp ALLOW IN Anywhere # operator-ssh\\n'; if grep -q '${owner}' "$RULES"; then printf '[ 2] 22/tcp ALLOW IN Anywhere # ${owner}\\n'; fi ;;\n  "--force delete 2") printf 'operator-ssh\\n' > "$RULES" ;;\n  *) exit 1 ;;\nesac\n`);
+      chmodSync(join(dir, "ufw"), 0o700);
+      const localScript = script.replace(/\/var\/tmp\/myrmidon-firewall-[a-f0-9-]+/g, dir);
+      const restored = spawnSync("sh", ["-c", localScript], { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, RULES: rules } });
+      expect(restored.status).toBe(0);
+      expect(readFileSync(rules, "utf8")).toBe("operator-ssh\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("prepares a rollback script that can delete an operation-owned SSH rule", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
