@@ -1,4 +1,5 @@
 import { aiConnectionRoutes } from "./routes/ai-connections.js";
+import { startNativeFinalizationRequestScheduler } from "./services/native-runtime/native-finalization-request-scheduler.js";
 import { projectToolRoutes } from "./routes/project-tools.js";
 import { emailChannelService } from "./services/email-channels.js";
 import { emailRoutes, emailWebhookRoutes } from "./routes/email.js";
@@ -1812,6 +1813,9 @@ export async function createApp(
   // myrmidon(OPE-9084): the client installation pulls the issuer's signed
   // deny-list itself. API-only processes do not own periodic work.
   const denyListPuller = backgroundWorkEnabled ? startDenyListPuller() : null;
+  const nativeFinalizationScheduler = backgroundWorkEnabled
+    ? startNativeFinalizationRequestScheduler({ db, onError: (err) => logger.warn({ err }, "native finalization recovery failed") })
+    : null;
   let feedbackExportShuttingDown = false;
   let feedbackExportTimer: ReturnType<typeof setInterval> | null = null;
   const disableFeedbackExportFlushes = () => {
@@ -2047,6 +2051,7 @@ export async function createApp(
       // awaited teardown, so no tick runs after the caller ends the pool.
       scheduler.stop();
       jobCoordinator.stop();
+      await nativeFinalizationScheduler?.stop();
       modelProviderPluginBridge.teardown();
       disableFeedbackExportFlushes();
       unsubscribeChatPublicationSignals();
