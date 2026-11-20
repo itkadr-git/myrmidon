@@ -2229,6 +2229,29 @@ async function fetchBoardProjectIssue(identifier) {
   } catch { return { ok: false }; }
 }
 
+async function assessBoardProjectItem(item, now, { fetchState = fetchBoardProjectIssue, gitActive = boardGitActive } = {}) {
+  const { path: target, kind, identifier } = item;
+  const st = lstatSafe(target).st;
+  if (!st || (kind === "pack" ? !st.isFile() : !st.isDirectory())) return null;
+  const result = { ...item, action: "keep", reason: "fresh" };
+  const tree = newestMtimeInTree(target, st.dev, now - DAY_MS);
+  if (tree.error || tree.crossesFs) result.reason = "unsafe-tree";
+  else if (tree.maxMtimeMs >= now - DAY_MS) result.reason = "fresh";
+  else if (kind === "pack" && gitActive()) result.reason = "live-git";
+  else if (kind === "scratch") {
+    const state = await fetchState(identifier);
+    const closed = Date.parse(state?.closedAt);
+    if (!state?.ok || !["done", "cancelled"].includes(state.status) || state.liveRunId || !Number.isFinite(closed) || now - closed <= DAY_MS) result.reason = "issue-not-old-closed";
+    else {
+      // Retain every nonempty scratch until all unpublished and ignored data can be verified.
+      const safe = fs.readdirSync(target).length === 0;
+      if (safe) { result.action = "remove"; result.reason = "ttl"; }
+      else result.reason = "unpublished-or-unknown-work";
+    }
+  } else { result.action = "remove"; result.reason = "ttl"; }
+  return result;
+}
+
 export async function scanBoardProjectWorkspaces(home, now, { fetchState = fetchBoardProjectIssue, gitActive = boardGitActive, onEvent = () => {} } = {}) {
   const items = [];
   if (!home) return items;
@@ -2245,20 +2268,8 @@ export async function scanBoardProjectWorkspaces(home, now, { fetchState = fetch
     if (!lstatSafe(component).st?.isDirectory()) return items;
   }
   const add = async (repo, target, kind, identifier) => {
-    const st = lstatSafe(target).st;
-    if (!st || (kind === "pack" ? !st.isFile() : !st.isDirectory())) return;
-    const item = { path: target, root: projects, repo, kind, identifier, action: "keep", reason: "fresh" };
-    const tree = newestMtimeInTree(target, st.dev, now - DAY_MS);
-    if (tree.error || tree.crossesFs) item.reason = "unsafe-tree";
-    else if (tree.maxMtimeMs >= now - DAY_MS) item.reason = "fresh";
-    else if (kind === "pack" && gitActive()) item.reason = "live-git";
-    else if (kind === "scratch") {
-      const state = await fetchState(identifier);
-      const closed = Date.parse(state.closedAt);
-      if (!state.ok || !["done", "cancelled"].includes(state.status) || state.liveRunId || !Number.isFinite(closed) || now - closed <= DAY_MS) item.reason = "issue-not-old-closed";
-      else { item.action = "remove"; item.reason = "ttl"; }
-    } else { item.action = "remove"; item.reason = "ttl"; }
-    items.push(item);
+    const item = await assessBoardProjectItem({ path: target, root: projects, repo, kind, identifier }, now, { fetchState, gitActive });
+    if (item) items.push(item);
   };
   for (const company of dirs(projects)) for (const project of dirs(company)) for (const repo of dirs(project)) {
     const packDir = path.join(repo, ".git", "objects", "pack");
@@ -2278,8 +2289,16 @@ export async function scanBoardProjectWorkspaces(home, now, { fetchState = fetch
 export async function pruneBoardProjectWorkspaces(items, journal, options = {}) {
   for (const item of items.filter((x) => x.action === "remove")) {
     try {
-      const home = path.resolve(item.root, "../../..");
-      const current = (await scanBoardProjectWorkspaces(home, Date.now(), options)).find((x) => x.path === item.path);
+      const root = path.resolve(item.root);
+      const relative = path.relative(root, item.path);
+      if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error("unsafe target");
+      let ancestor = root;
+      for (const part of path.dirname(relative).split(path.sep)) {
+        if (!lstatSafe(ancestor).st?.isDirectory()) throw new Error("unsafe ancestor");
+        ancestor = path.join(ancestor, part);
+      }
+      if (!lstatSafe(ancestor).st?.isDirectory()) throw new Error("unsafe ancestor");
+      const current = await assessBoardProjectItem(item, Date.now(), options);
       if (!current || current.action !== "remove") { journalRecord(journal, { event: "board-project-kept", path: item.path, reason: current?.reason || "gone-or-unsafe" }); continue; }
       atomicDrop(item.path, item.root);
       journalRecord(journal, { event: "board-project-removed", path: item.path, kind: item.kind, identifier: item.identifier });

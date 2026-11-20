@@ -63,6 +63,7 @@ const {
   runnerFolderKeepReason,
   scanBoardProjectWorkspaces,
   pruneBoardProjectWorkspaces,
+  boardGitActive,
 } = await import(
   path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs")
 );
@@ -70,6 +71,44 @@ const {
 let tmpDir;
 
 describe("board project workspace GC", () => {
+  it("uses the real proc detector to retain packs when git is live or proc unavailable", async () => {
+    const home = path.join(tmpDir, "home");
+    const pack = path.join(home, "instances/default/projects/c/p/repo/.git/objects/pack");
+    const proc = path.join(tmpDir, "proc");
+    fs.mkdirSync(pack, { recursive: true });
+    fs.mkdirSync(path.join(proc, "123"), { recursive: true });
+    fs.writeFileSync(path.join(proc, "123/comm"), "git-fetch\n");
+    const old = new Date(Date.now() - 30 * 3600000);
+    for (const name of ["tmp_pack_old", "tmp_idx_old"]) {
+      fs.writeFileSync(path.join(pack, name), "x");
+      fs.utimesSync(path.join(pack, name), old, old);
+    }
+    for (const procDir of [proc, path.join(tmpDir, "missing")]) {
+      const options = { gitActive: () => boardGitActive(procDir) };
+      const plan = await scanBoardProjectWorkspaces(home, Date.now(), options);
+      assert.equal(plan.length, 2);
+      assert.ok(plan.every((item) => item.reason === "live-git"));
+      await pruneBoardProjectWorkspaces(plan, path.join(tmpDir, "proc.jsonl"), options);
+      assert.ok(fs.existsSync(path.join(pack, "tmp_pack_old")));
+      assert.ok(fs.existsSync(path.join(pack, "tmp_idx_old")));
+    }
+  });
+
+  it("rechecks only each candidate across multiple projects", async () => {
+    const home = path.join(tmpDir, "home");
+    const old = new Date(Date.now() - 30 * 3600000);
+    for (const n of [100, 101, 102]) {
+      const scratch = path.join(home, `instances/default/projects/c/p${n}/repo/.scratch/ope${n}`);
+      fs.mkdirSync(scratch, { recursive: true });
+      fs.utimesSync(scratch, old, old);
+    }
+    let calls = 0;
+    const options = { fetchState: async () => { calls++; return { ok: true, status: "done", closedAt: old.toISOString() }; } };
+    const plan = await scanBoardProjectWorkspaces(home, Date.now(), options);
+    assert.equal(calls, 3);
+    await pruneBoardProjectWorkspaces(plan, path.join(tmpDir, "linear.jsonl"), options);
+    assert.equal(calls, 6);
+  });
   it("keeps an old closed scratch containing unpublished non-git work", async () => {
     const home = path.join(tmpDir, "home");
     const scratch = path.join(home, "instances/default/projects/company/project/repo/.scratch/ope900");
