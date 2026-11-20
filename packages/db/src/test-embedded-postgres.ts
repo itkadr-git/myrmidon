@@ -2,7 +2,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import postgres from "postgres";
+import type postgres from "postgres";
 import {
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
@@ -348,6 +348,7 @@ export async function startEmbeddedPostgresTestCluster(
   const templateConnectionString = `${baseUrl}/${EMBEDDED_POSTGRES_TEMPLATE_DATABASE}`;
 
   const withAdminSql = async <T>(run: (sql: ReturnType<typeof postgres>) => Promise<T>): Promise<T> => {
+    const { default: postgres } = await import("postgres");
     const sql = postgres(adminConnectionString, { max: 1, onnotice: () => {} });
     try {
       return await run(sql);
