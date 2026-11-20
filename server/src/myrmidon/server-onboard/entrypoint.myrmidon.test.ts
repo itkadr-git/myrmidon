@@ -1,7 +1,35 @@
+import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { runOnboardFromEnvironment, runOnboardWorker } from "./entrypoint.js";
 
 describe("onboarding production entrypoint", () => {
+  it("starts the compiled worker process and claims from the configured board", async () => {
+    let claimed!: () => void;
+    const received = new Promise<void>((resolve) => { claimed = resolve; });
+    const board = createServer((req, res) => {
+      if (req.url === "/api/myrmidon/fleet/onboard-jobs/claim" && req.headers["x-onboard-token"] === "test-token") claimed();
+      res.writeHead(204).end();
+    });
+    await new Promise<void>((resolve) => board.listen(0, "127.0.0.1", resolve));
+    const address = board.address();
+    if (!address || typeof address === "string") throw new Error("missing board address");
+    const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(new URL("./worker.ts", import.meta.url))], {
+      env: { ...process.env, MYRMIDON_FLEET_ONBOARD_BASE_URL: `http://127.0.0.1:${address.port}`, MYRMIDON_FLEET_ONBOARD_COMPANY_ID: "company", MYRMIDON_FLEET_ONBOARD_EXECUTOR_TOKEN: "test-token" },
+      stdio: "ignore",
+    });
+    try {
+      await Promise.race([
+        received,
+        new Promise<never>((_, reject) => child.once("exit", (code) => reject(new Error(`worker exited before claiming: ${code}`))),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("worker did not claim")), 5000)),
+      ]);
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise<void>((resolve) => board.close(() => resolve()));
+    }
+  });
   it("continues polling after an empty queue and stops when aborted", async () => {
     const controller = new AbortController();
     let claims = 0;
