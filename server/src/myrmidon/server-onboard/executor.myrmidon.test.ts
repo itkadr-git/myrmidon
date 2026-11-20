@@ -1749,6 +1749,9 @@ exit 97
 
   it("rejects a forged firewall connectivity marker", async () => {
     const mockSsh = new MockSshExecutor();
+    mockSsh.mockResponse("sudo ufw status", { stdout: "Status: active\n", exitCode: 0 });
+    mockSsh.mockResponse(/start-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
+    mockSsh.mockResponse(/check-myrmidon-firewall-timer/, { stdout: "timer-confirmed\n", exitCode: 0 });
     mockSsh.mockResponse('echo "ufw-connectivity-ok"', { stdout: "not-ufw-connectivity-ok\n", exitCode: 0 });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => mockSsh });
     const mockReporter = createMockReporter();
@@ -1759,6 +1762,8 @@ exit 97
     };
     const result = await executor.execute(claim, mockReporter.reporter);
     expect(result.status).toBe("failed");
+    expect(mockSsh.hasExecuted('echo "ufw-connectivity-ok"')).toBe(true);
+    expect(result.error).toMatch(/connectivity|verification/i);
     expect(mockReporter.completion?.status).toBe("failed");
   });
 
