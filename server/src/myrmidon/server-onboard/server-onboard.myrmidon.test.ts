@@ -81,7 +81,7 @@ function createMocks() {
     },
     async createJob(input) { return createJob(input); },
     async claimNext(companyId: string) {
-      const job = store.jobs.find((j: any) => (j.status === "pending" || (j.status === "claimed" && j.secretConsumed)) && j.companyId === companyId);
+      const job = store.jobs.find((j: any) => j.status === "pending" && j.companyId === companyId);
       if (!job) return null;
       job.status = "claimed";
       if (!job.startedAt) job.startedAt = new Date().toISOString();
@@ -436,13 +436,13 @@ describe("SERVER-ONBOARD logic", () => {
     expect(store.servers[0].onboardState).toBe("onboarding");
   });
 
-  it("throws 409 when claiming secrets twice", async () => {
+  it("does not hand out secrets twice", async () => {
     const { mockStore, mockSecrets, mockGetServer } = createMocks();
     const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
     await service.addServer({ companyId: "company-1", slug: "claim-twice", name: "Claim Twice", hostname: "192.0.2.6", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password", password: "pwd-1" }, createdBy: null });
     const firstClaim = await service.claim("company-1", "valid-executor-token");
     expect(firstClaim).not.toBeNull();
-    await expect(service.claim("company-1", "valid-executor-token")).rejects.toThrow(OnboardServiceError);
+    expect(await service.claim("company-1", "valid-executor-token")).toBeNull();
   });
 
   it("cleans up secrets if server/job creation fails", async () => {
