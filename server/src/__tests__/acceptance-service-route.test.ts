@@ -222,7 +222,7 @@ const support = await getEmbeddedPostgresTestSupport();
       const [dispatched] = await db.select().from(nativeFinalizationOutbox).where(eq(nativeFinalizationOutbox.requestId, requests[0].id));
       expect(dispatched.dispatchedAt).not.toBeNull();
       // Permanent errors settle against the claim clock, even when it predates wall time.
-      await db.insert(workspaceOperations).values({ companyId, issueId, heartbeatRunId: runId, phase: "workspace_finalize", status: "succeeded", createdAt: new Date("2000-01-01T00:00:00Z") });
+      const [clockWorkspace] = await db.insert(workspaceOperations).values({ companyId, issueId, heartbeatRunId: runId, phase: "workspace_finalize", status: "succeeded", createdAt: new Date("2000-01-01T00:00:00Z") }).returning();
       const fixedTime = new Date("2001-01-01T00:00:00Z");
       for (const errorCode of ["native_service_snapshot_changed", "native_service_authorization_expired_or_revoked"]) {
         const admittedAtFixedTime = await admit(`clock-${errorCode}`);
@@ -240,6 +240,7 @@ const support = await getEmbeddedPostgresTestSupport();
         expect(rejected).toMatchObject({ state: "rejected", errorCode, completedAt: fixedTime, leaseOwner: null, leaseUntil: null });
         expect(outbox.dispatchedAt).toEqual(fixedTime);
       }
+      await db.delete(workspaceOperations).where(eq(workspaceOperations.id, clockWorkspace.id));
       // A terminal rejection must not prevent a fresh request with a new key.
       const resubmission = await admit("request-after-rejection");
       expect(resubmission.status).toBe(202);

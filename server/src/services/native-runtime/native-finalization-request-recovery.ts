@@ -64,7 +64,7 @@ export async function processNativeFinalizationRequest(input: {
     });
   } catch (error) {
     if (!(error instanceof Error) || !["native_service_snapshot_changed", "native_service_authorization_expired_or_revoked"].includes(error.message)) throw error;
-    const settled = await settleNativeFinalizationRequest(input.db, request.id, request.leaseOwner, new Date(), { errorCode: error.message }, request.leaseUntil);
+    const settled = await settleNativeFinalizationRequest(input.db, request.id, request.leaseOwner, input.now, { errorCode: error.message }, request.leaseUntil);
     if (!settled) throw error;
   }
   return "processed";
