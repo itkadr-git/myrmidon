@@ -1424,7 +1424,7 @@ exit 97
   it("does not add an SSH rule when the rollback timer cannot start", async () => {
     const ssh = new MockSshExecutor();
     ssh.mockResponse("sudo ufw status", { exitCode: 0, stdout: "Status: active\n" });
-    ssh.mockResponse(/nohup sh -c 'sleep 300/, { exitCode: 1, stderr: "timer unavailable" });
+    ssh.mockResponse(/start-myrmidon-firewall-timer/, { exitCode: 1, stderr: "timer unavailable" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
       job: { id: "job-firewall-timer-before-rule", companyId: "c1", serverId: "s1" },
@@ -1434,6 +1434,8 @@ exit 97
 
     const result = await executor.execute(claim, createMockReporter().reporter);
     expect(result.status).toBe("failed");
+    expect(ssh.hasExecuted(/start-myrmidon-firewall-timer/)).toBe(true);
+    expect(result.error).toMatch(/timer.*(start|confirm)/i);
     expect(ssh.hasExecuted(/sudo ufw allow/)).toBe(false);
   });
 
