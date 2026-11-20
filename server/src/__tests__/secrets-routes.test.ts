@@ -125,10 +125,10 @@ describe("secret routes", () => {
     expect(mockSecretService.probeBinding).not.toHaveBeenCalled();
   });
 
-  it("does not expose diagnostic backend error details", async () => {
-    mockSecretService.probeBinding.mockRejectedValue(new HttpError(500, "sentinel-secret"));
+  it.each([400, 500])("does not expose diagnostic backend error details for status %i", async (status) => {
+    mockSecretService.probeBinding.mockRejectedValue(new HttpError(status, "sentinel-secret"));
     const response = await request(createApp()).get("/api/companies/company-1/preflight/secrets/11111111-1111-4111-8111-111111111111/probe");
-    expect(response.status).toBe(500);
+    expect(response.status).toBe(status);
     expect(JSON.stringify(response.body)).not.toContain("sentinel-secret");
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
