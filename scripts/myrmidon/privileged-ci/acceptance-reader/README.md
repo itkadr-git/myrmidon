@@ -168,3 +168,13 @@ OIDC exchange, a production test, or proof of network isolation. The fixture
 executes the full production path — pin, verify, content/link/company/identifier
 ABA (each detected), mutation after verify (detected at the next verify) — plus
 the tenant, credential-lifecycle and failure-class regressions.
+
+The real-core integration test is `real-core.test.ts` in this directory. The
+server Vitest configuration only discovers tests under `server/src`. Run:
+
+```sh
+devbuild 'cp scripts/myrmidon/privileged-ci/acceptance-reader/real-core.test.ts server/src/__tests__/reader-real-core.test.ts && python3 -c '\''p="server/src/__tests__/reader-real-core.test.ts";s=open(p).read().replace("../../../../server/src/", "../").replace("./main.mjs", "../../../scripts/myrmidon/privileged-ci/acceptance-reader/main.mjs").replace("./persistent-credentials.mjs", "../../../scripts/myrmidon/privileged-ci/acceptance-reader/persistent-credentials.mjs");open(p,"w").write(s)'\'' && pnpm --filter @myrmidon/server exec vitest run src/__tests__/reader-real-core.test.ts'
+```
+
+It starts a real PostgreSQL-backed core route and TLS gateway with synthetic
+credentials; it is not evidence of network isolation or a live GitHub exchange.
