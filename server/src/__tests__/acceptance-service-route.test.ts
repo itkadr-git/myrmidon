@@ -203,6 +203,10 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(settled).toMatchObject({ state: "rejected", errorCode: "denied", leaseOwner: null, leaseUntil: null });
       const [dispatched] = await db.select().from(nativeFinalizationOutbox).where(eq(nativeFinalizationOutbox.requestId, requests[0].id));
       expect(dispatched.dispatchedAt).not.toBeNull();
+      // A terminal rejection must not prevent a fresh request with a new key.
+      const resubmission = await admit("request-after-rejection");
+      expect(resubmission.status).toBe(202);
+      expect(JSON.parse(resubmission.body).requestId).not.toBe(requests[0].id);
       const first = await call(issued.token);
       expect(first.status).toBe(200);
       expect(first.etag).toMatch(/^"[a-f0-9]{64}"$/);
