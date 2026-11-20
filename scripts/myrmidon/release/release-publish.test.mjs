@@ -316,6 +316,36 @@ describe("publish-github-release.sh: checkout binding", () => {
     assert.equal(mutations(sb), "");
   });
 
+  it("preserves a conflicting release and requires a newly verified target after manual resolution", () => {
+    const tag = "myr-v1.6.0";
+    const existing = { [tag]: { name: "Existing", body: "do not overwrite" } };
+    const sb = sandbox({ runs: GREEN_RUNS, releases: existing });
+    fs.writeFileSync(path.join(sb.dir, "ref-after.json"), JSON.stringify({ object: { sha: TAG_OBJECT, type: "commit" } }));
+    const moved = runScript(sb, tag);
+    assert.notEqual(moved.code, 0, moved.out);
+    assert.deepEqual(JSON.parse(read(path.join(sb.dir, "releases.json"))), existing);
+    assert.equal(mutations(sb), "");
+
+    // A stable but conflicting release is not permission to overwrite it.
+    fs.rmSync(path.join(sb.dir, "ref-after.json"));
+    const conflict = runScript(sb, tag);
+    assert.notEqual(conflict.code, 0, conflict.out);
+    assert.deepEqual(JSON.parse(read(path.join(sb.dir, "releases.json"))), existing);
+    assert.equal(mutations(sb), "");
+
+    // Only manual conflict resolution and a new checkout/verdict permit retry.
+    fs.writeFileSync(path.join(sb.dir, "releases.json"), "{}");
+    fs.writeFileSync(path.join(sb.dir, "ref-tag.json"), JSON.stringify({ object: { sha: TAG_OBJECT, type: "commit" } }));
+    const stale = runScript(sb, tag);
+    assert.notEqual(stale.code, 0, stale.out);
+    assert.equal(mutations(sb), "");
+    const verdict = { verdict: "confirmed", deployedVersion: TAG_OBJECT, checkedAt: "2026-11-13T16:00:00Z", issueId: "5f38f2aa-381b-476c-97a8-d8ba190c099b", reason: "all members present" };
+    fs.writeFileSync(path.join(sb.dir, "verification.json"), JSON.stringify({ ...verdict, signature: signVerdict(verdict) }));
+    const retry = runScript(sb, tag, { extraEnv: { CHECKOUT_SHA: TAG_OBJECT } });
+    assert.equal(retry.code, 0, retry.out);
+    assert.match(mutations(sb), /create tag=myr-v1\.6\.0/);
+  });
+
   it("refuses all writes when the tag moves after initial resolution", () => {
     const sb = sandbox({ runs: GREEN_RUNS });
     fs.writeFileSync(path.join(sb.dir, "ref-after.json"), JSON.stringify({ object: { sha: TAG_OBJECT, type: "commit" } }));
