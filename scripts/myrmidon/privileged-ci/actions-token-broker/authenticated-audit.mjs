@@ -9,7 +9,8 @@ export class PendingIssuanceError extends Error {}
 export async function createAsyncAuthenticatedAudit(path, key, anchor) {
   if (typeof path !== 'string' || !path || path === ':memory:' || path.startsWith('file:') || !Buffer.isBuffer(key) || key.length !== 32 || typeof anchor?.read !== 'function' || typeof anchor?.compareAndSet !== 'function') throw new Error('invalid audit configuration');
   const secret = Buffer.from(key), db = new DatabaseSync(path);
-  let busy = false;
+  let pendingWrites = 0, failed = false, closed = false;
+  let queue = Promise.resolve();
   function digest(seq, event, previous) {
     return createHmac('sha256', secret).update(JSON.stringify([seq, event, previous])).digest('hex');
   }
@@ -38,27 +39,35 @@ export async function createAsyncAuthenticatedAudit(path, key, anchor) {
   } catch (error) { db.close(); secret.fill(0); throw error; }
   return {
     async record(event) {
-      if (!events.has(event) || busy) throw new Error('invalid or concurrent audit event');
-      busy = true;
-      let transaction = false;
-      try {
-        db.exec('BEGIN IMMEDIATE');
-        transaction = true;
-        const verified = verify();
-        if ((event === 'issuance_pending' && verified.pending) || (event === 'issuance_resolved' && !verified.pending)) throw new Error('invalid issuance audit transition');
-        const oldHead = { seq: verified.seq, mac: verified.mac };
-        if (!equal(await anchor.read(), oldHead)) throw new Error('audit integrity failure: anchor mismatch');
-        const next = { seq: oldHead.seq + 1, mac: digest(oldHead.seq + 1, event, oldHead.mac) };
-        db.prepare('INSERT INTO audit_events VALUES (?, ?, ?)').run(next.seq, event, next.mac);
-        // CAS before commit: a lost response or crash leaves a mismatch, never silent rollback.
-        if (await anchor.compareAndSet(oldHead, next) !== true) throw new Error('audit anchor update failed');
-        db.exec('COMMIT');
-        transaction = false;
-      } finally {
-        try { if (transaction) db.exec('ROLLBACK'); } finally { busy = false; }
-      }
+      if (!events.has(event) || closed) throw new Error('invalid audit event');
+      pendingWrites++;
+      const write = queue.then(async () => {
+        if (failed) throw new Error('audit unavailable');
+        let transaction = false;
+        try {
+          db.exec('BEGIN IMMEDIATE');
+          transaction = true;
+          const verified = verify();
+          if ((event === 'issuance_pending' && verified.pending) || (event === 'issuance_resolved' && !verified.pending)) throw new Error('invalid issuance audit transition');
+          const oldHead = { seq: verified.seq, mac: verified.mac };
+          if (!equal(await anchor.read(), oldHead)) throw new Error('audit integrity failure: anchor mismatch');
+          const next = { seq: oldHead.seq + 1, mac: digest(oldHead.seq + 1, event, oldHead.mac) };
+          db.prepare('INSERT INTO audit_events VALUES (?, ?, ?)').run(next.seq, event, next.mac);
+          // CAS before commit: a lost response or crash leaves a mismatch, never silent rollback.
+          if (await anchor.compareAndSet(oldHead, next) !== true) throw new Error('audit anchor update failed');
+          db.exec('COMMIT');
+          transaction = false;
+        } catch (error) {
+          failed = true;
+          throw error;
+        } finally {
+          if (transaction) db.exec('ROLLBACK');
+        }
+      });
+      queue = write.catch(() => {});
+      try { await write; } finally { pendingWrites--; }
     },
-    close() { if (busy) throw new Error('audit busy'); db.close(); secret.fill(0); },
+    close() { if (pendingWrites) throw new Error('audit busy'); closed = true; db.close(); secret.fill(0); },
   };
 }
 
