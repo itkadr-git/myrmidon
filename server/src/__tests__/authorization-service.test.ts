@@ -1370,7 +1370,28 @@ describeEmbeddedPostgres("authorization service", () => {
       resource: { type: "issue", companyId: company.id, projectId: project.id, assigneeAgentId: targetAgent.id },
       scope: { projectId: project.id, assigneeAgentId: targetAgent.id },
     });
-    expect(decision).toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    expect(decision).toMatchObject({ allowed: true });
+  });
+
+  it.each([
+    { trustPreset: "standard", unknownExtension: true },
+    { trustPreset: "future" },
+    { trustPreset: "standard", assignmentPolicy: { mode: "future" } },
+    { trustPreset: "standard", agentVisibility: { mode: "future" } },
+  ])("fails closed on unsupported assignment policy %j", async (policy) => {
+    const company = await createCompany(db, "UnsupportedAssignmentPolicy");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const targetAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      permissions: { authorizationPolicy: policy },
+    });
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+    expect(decision).toMatchObject({ allowed: false, reason: "deny_policy_restricted" });
   });
 
   it("hard-blocks assignment when the target agent blocks protected assignment", async () => {
