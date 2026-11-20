@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-const cli = fileURLToPath(new URL("./release-registry-versions.mjs", import.meta.url));
+const cli = fileURLToPath(new URL("../../release-registry-versions.mjs", import.meta.url));
 const fixtures = {
   "@myrmidon/array": { stdout: '["1.0.0","2.0.0"]', expected: ["1.0.0", "2.0.0"] },
   "@myrmidon/scalar": { stdout: '"3.1.0"', expected: ["3.1.0"] },
