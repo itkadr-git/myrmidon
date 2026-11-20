@@ -1136,6 +1136,20 @@ describe("company migration dry run", () => {
     expect((await companyTransferRunService.getRun(db, run.id))?.completedParts).toEqual([]);
   });
 
+  it("rejects storage reservations if provenance identifies the destination as the source", async () => {
+    const [source] = await db.insert(companies).values({ name: "Reservation source", issuePrefix: "MRS" }).returning();
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, source!.id, "reservation-source-corruption");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Reservation destination" }, { transferRunId: run.id });
+    await db.update(companyTransferRuns).set({
+      containerRef: { kind: "company_migration", sourceCompanyId: destination.id, destinationClaimed: true, destinationCompanyId: destination.id },
+    }).where(eq(companyTransferRuns.id, run.id));
+    const key = `${destination.id}/assets/general/2026/11/16/550e8400-e29b-41d4-a716-446655440000-file`;
+
+    await expect(companyTransferRunService.reserveMigrationObject(db, run.id, destination.id, key)).rejects.toThrow();
+    expect((await companyTransferRunService.getRun(db, run.id))?.completedParts).toEqual([]);
+  });
+
   it("rejects storage reservations that are not generated migration object keys", async () => {
     const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "reservation-validation-source", "reservation-validation");
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
