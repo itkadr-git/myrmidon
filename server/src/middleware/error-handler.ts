@@ -7,7 +7,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import { captureException } from "../sentry.js";
 import { COMPANY_IMPORT_API_PATH } from "../routes/company-import-paths.js";
 import { logger } from "./logger.js";
-import { isSecretSensitiveHttpRequest } from "./http-log-policy.js";
+import { isPreflightProbeHttpRequest, isSecretSensitiveHttpRequest } from "./http-log-policy.js";
 import {
   collectSensitiveStringValues,
   redactSensitiveValueOccurrences,
@@ -191,8 +191,8 @@ export function errorHandler(
       err.status >= 500 &&
       isSecretSensitiveHttpRequest(req.method, req.originalUrl);
     res.status(err.status).json(
-      secretSensitiveServerError
-        ? { error: "Internal server error" }
+      secretSensitiveServerError || isPreflightProbeHttpRequest(req.originalUrl)
+        ? { error: err.status >= 500 ? "Internal server error" : "Preflight probe failed" }
         : {
             error: sanitizeSecretSensitiveResponse(req, err.message),
             ...(typeof responseDetails?.code === "string"

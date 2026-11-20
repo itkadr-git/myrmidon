@@ -656,6 +656,14 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     res.json(health);
   });
 
+  router.get("/companies/:companyId/preflight/secrets/:bindingId/probe", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.set("Cache-Control", "no-store");
+    res.json(await svc.probeBinding(companyId, req.params.bindingId as string));
+  });
+
   // Agent-readable catalog: returns only non-sensitive metadata (id, name, key, status).
   // Agents need this to resolve a secret name to its UUID when wiring env bindings,
   // without requiring board access or exposing any secret values.

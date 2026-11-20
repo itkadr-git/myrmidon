@@ -117,6 +117,16 @@ function httpError(status: number, message: string): Error & { status: number } 
 }
 
 describe("agent memory routes", () => {
+  it("reports unverified access only to an authorized board actor", async () => {
+    const path = `/api/companies/${COMPANY}/preflight/agents/${AGENT}/memory/probe`;
+    const res = await request(app(board)).get(path).expect(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(res.body).toMatchObject({ ready: false, checks: [{ capability: "authenticatedBankAccess", status: "UNSUPPORTED", reason: "credential_resolution_required" }] });
+    await request(app(agentActor)).get(path).expect(403);
+    await request(app(otherBoard)).get(path).expect(404);
+    await request(app(board)).get(`/api/companies/99999999-9999-4999-8999-999999999999/preflight/agents/${AGENT}/memory/probe`).expect(404);
+  });
+
   it("serves status to a board actor of the company", async () => {
     const res = await request(app(board)).get(`/api/myrmidon/agents/${AGENT}/memory`).expect(200);
     expect(res.body).toMatchObject({ enabled: true, bank: { bankId: "adm", source: "agent-card" } });

@@ -1,8 +1,11 @@
+import { Writable } from "node:stream";
 import express from "express";
+import pino from "pino";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { secretRoutes } from "../routes/secrets.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import { createHttpLogger } from "../middleware/logger.js";
 import { HttpError, unprocessable } from "../errors.js";
 
 const mockSecretService = vi.hoisted(() => ({
@@ -37,6 +40,7 @@ const mockSecretService = vi.hoisted(() => ({
   previewRemoteImport: vi.fn(),
   importRemoteSecrets: vi.fn(),
   listBindingReferences: vi.fn(),
+  probeBinding: vi.fn(),
   listAccessEvents: vi.fn(),
   listAgentSecretAccess: vi.fn(),
   listAgentSecretAccessOffRun: vi.fn(),
@@ -104,6 +108,47 @@ describe("secret routes", () => {
       reason: "deny_missing_grant",
       explanation: "Missing permission: secrets:read_off_run.",
     });
+  });
+
+  it("exposes strict binding diagnostics only to the company board without activity writes", async () => {
+    const result = { ready: false, checks: [{ capability: "valueResolvable", status: "UNSUPPORTED" }] };
+    mockSecretService.probeBinding.mockResolvedValue(result);
+    const url = "/api/companies/company-1/preflight/secrets/11111111-1111-4111-8111-111111111111/probe";
+    const response = await request(createApp()).get(url);
+    expect(response.status).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.body).toEqual(result);
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    mockSecretService.probeBinding.mockClear();
+    const denied = await request(createApp({ type: "agent", companyId: "company-1", agentId: "agent-1" })).get(url);
+    expect(denied.status).toBe(403);
+    expect(mockSecretService.probeBinding).not.toHaveBeenCalled();
+    const other = await request(createApp()).get(url.replace("company-1", "company-2"));
+    expect(other.status).toBe(403);
+    expect(mockSecretService.probeBinding).not.toHaveBeenCalled();
+  });
+
+  it.each([400, 500])("does not expose diagnostic backend error details for status %i", async (status) => {
+    mockSecretService.probeBinding.mockRejectedValue(new HttpError(status, "sentinel-secret"));
+    const response = await request(createApp()).get("/api/companies/company-1/preflight/secrets/11111111-1111-4111-8111-111111111111/probe");
+    expect(response.status).toBe(status);
+    expect(JSON.stringify(response.body)).not.toContain("sentinel-secret");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it.each([400, 500])("redacts diagnostic errors from HTTP logs for status %i", async (status) => {
+    const chunks: string[] = [];
+    const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+    const app = express();
+    app.use(createHttpLogger(pino({ level: "debug" }, stream)));
+    app.get("/api/companies/:companyId/preflight/secrets/:id/probe", () => {
+      throw new HttpError(status, "sentinel-secret");
+    });
+    app.use(errorHandler);
+    const response = await request(app).get("/api/companies/company-1/preflight/secrets/binding-1/probe");
+    expect(response.status).toBe(status);
+    expect(chunks.join("")).not.toContain("sentinel-secret");
+    expect(JSON.stringify(response.body)).not.toContain("sentinel-secret");
   });
 
   it("returns an opaque secretRef in agent secret metadata without internal binding details", async () => {
