@@ -354,12 +354,13 @@ function CompanyKnowledgeSettings({ selectedCompanyId }: { selectedCompanyId: st
             <Button
               type="button"
               variant="outline"
-              onClick={() =>
+              onClick={() => {
                 setDraft({
                   ...draft,
                   sectionReviewers: draft.sectionReviewers.filter((_, i) => i !== index),
-                })
-              }
+                });
+                setSaved(false);
+              }}
             >
               {t("knowledgeSettings.removeReviewer")}
             </Button>
@@ -369,7 +370,10 @@ function CompanyKnowledgeSettings({ selectedCompanyId }: { selectedCompanyId: st
           type="button"
           variant="outline"
           disabled={draft.sectionReviewers.length >= KNOWLEDGE_SECTION_REVIEWERS_MAX}
-          onClick={() => setDraft({ ...draft, sectionReviewers: [...draft.sectionReviewers, emptyReviewer()] })}
+          onClick={() => {
+            setDraft({ ...draft, sectionReviewers: [...draft.sectionReviewers, emptyReviewer()] });
+            setSaved(false);
+          }}
         >
           {t("knowledgeSettings.addReviewer")}
         </Button>

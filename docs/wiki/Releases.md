@@ -37,6 +37,19 @@ new version heading and deletes the fragments — so two pull requests with
 changelog entries never conflict with each other, and the changelog in a
 release is complete by construction.
 
+## Release-stop notification recovery
+
+The notifier retains the `release-stop-lock-<event id>` repository label as
+a durable reservation, including after a failed create: GitHub may have saved
+the issue even if the response was lost. A stale listing can cause retries to
+fail closed. Check the stopped Actions run ID and tag, then search all open and
+closed issues for the exact title `release-stop: <tag> (<event id>)` and verify
+the issue body and run link. If found, keep the reservation; retries will
+deduplicate once the issue is visible. An empty listing alone is not proof of
+absence. Only after confirming no issue was created and no notifier for the
+event is still running may an operator delete the orphan label and retry.
+When uncertain, retain it and escalate. See the [operator runbook](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/release-stop-notification.md).
+
 The release procedure itself, including the CI pipeline and the deploy flow,
 is documented for operators in
 [ci.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/ci.md)

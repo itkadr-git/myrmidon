@@ -370,6 +370,12 @@ export function buildReviewRoutingAssignPatch(input: {
   // A task with no assignee has no return assignee, and "request changes"
   // would then have nowhere to send it back: fall back to the task's author.
   const state = asRecord(patch.executionState);
+  const previousState = asRecord(input.issue.executionState);
+  const savedReturnAssignee = asRecord(previousState?.returnAssignee);
+  if (state && savedReturnAssignee &&
+      !(savedReturnAssignee.type === "agent" && savedReturnAssignee.agentId === input.reviewerAgentId)) {
+    state.returnAssignee = savedReturnAssignee;
+  }
   if (state && !state.returnAssignee) {
     if (input.issue.createdByAgentId) {
       state.returnAssignee = { type: "agent", agentId: input.issue.createdByAgentId, userId: null };

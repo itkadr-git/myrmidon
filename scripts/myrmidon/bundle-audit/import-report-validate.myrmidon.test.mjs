@@ -55,7 +55,8 @@ test('rejects inconsistent counts, byte totals, unknown edges, and ranking', () 
 test('checks top ten and path tie ordering', () => {
   const r = report();
   r.modules = Array.from({ length: 12 }, (_, i) => ({ path: `m${String(i).padStart(2, '0')}`, bytes: 1, eager: true }));
-  r.entry = 'm00'; r.edges = []; r.unknown = []; r.counts = { modules: 12, eagerModules: 12, edges: 0 }; r.bytes = { total: 12, eager: 12 };
+  r.entry = 'm00'; r.edges = r.modules.slice(1).map(m => ({ from: r.entry, specifier: m.path, kind: 'eager', to: m.path }));
+  r.unknown = []; r.counts = { modules: 12, eagerModules: 12, edges: 11 }; r.bytes = { total: 12, eager: 12 };
   r.heaviestEager = r.modules.slice(0, 10).map(m => ({ ...m })); pass(run(JSON.stringify(r)));
   [r.heaviestEager[0], r.heaviestEager[1]] = [r.heaviestEager[1], r.heaviestEager[0]]; fail(run(JSON.stringify(r)), 'inconsistent');
 });
@@ -96,8 +97,8 @@ test('ranks the ten heaviest eager modules by bytes then path', () => {
     { path: 'i', bytes: 1, eager: true }, { path: 'j', bytes: 10, eager: true },
     { path: 'k', bytes: 11, eager: true }, { path: 'l', bytes: 9, eager: true },
   ];
-  r.entry = 'a'; r.edges = []; r.unknown = [];
-  r.counts = { modules: 12, eagerModules: 12, edges: 0 }; r.bytes = { total: 75, eager: 75 };
+  r.entry = 'a'; r.edges = r.modules.slice(1).map(m => ({ from: r.entry, specifier: m.path, kind: 'eager', to: m.path })); r.unknown = [];
+  r.counts = { modules: 12, eagerModules: 12, edges: 11 }; r.bytes = { total: 75, eager: 75 };
   r.heaviestEager = [
     { path: 'k', bytes: 11, eager: true }, { path: 'j', bytes: 10, eager: true },
     { path: 'b', bytes: 9, eager: true }, { path: 'l', bytes: 9, eager: true },
