@@ -682,7 +682,7 @@ export function createReviewPullRequestCiResolver(input: {
   /**
    * Review-admission reads GitHub fresh, rejecting a moved head before CI.
    * When the review budget is exhausted only, a recent authoritative board
-   * snapshot for the same PR and stored head can supply a successful verdict.
+   * snapshot for the same PR and stored head can supply a completed verdict.
    * Everything else — monitor ticks, sweeps, wake gates — shares the process
    * read cache (OPE-12397); it never decides the verdict, so a cached answer
    * cannot admit a review decision.
@@ -755,8 +755,8 @@ export function createReviewPullRequestCiResolver(input: {
       }
       if (fresh && head.reason?.includes("budget_exhausted")) {
         const snapshot = readFreshReviewCiSnapshot(companyId, reference, target.knownHeadSha);
-        if (snapshot?.finalCheckConclusion === "success") {
-          return { ...snapshot, pullRequestUrl, reason: "budget_exhausted_cached_success" };
+        if (snapshot && ["success", "failure"].includes(snapshot.finalCheckConclusion)) {
+          return { ...snapshot, pullRequestUrl, reason: `budget_exhausted_cached_${snapshot.finalCheckConclusion}` };
         }
       }
       return {

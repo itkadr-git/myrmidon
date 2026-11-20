@@ -400,7 +400,7 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     }
   });
 
-  it("rejects a verdict on stored wake evidence alone when the review budget is exhausted (OPE-15114)", async () => {
+  it("admits only a return on matching authoritative failure when the review budget is exhausted", async () => {
     const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Shared wake evidence");
     const author = randomUUID(), reviewer = randomUUID(), issueId = randomUUID(), runId = randomUUID(), stageId = randomUUID();
     const headSha = "c".repeat(40);

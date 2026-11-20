@@ -15802,9 +15802,9 @@ export function issueRoutes(
           issueId: existing.id,
         });
         logReviewWriteCi({ issueId: existing.id, runId: actor.runId, ci, diagnostic });
-        reviewCiAudit = ci.reason === "budget_exhausted_cached_success" && transition.decision?.outcome === "changes_requested"
-          ? { source: "budget_exhausted_cached_success", headSha: ci.headSha } : null;
-        if (ci.state === "pending" || ci.state === "unknown" || (ci.state === "complete" && (ci.finalCheckConclusion !== "success" || (transition.decision?.outcome === "approved" && ci.reason === "budget_exhausted_cached_success")))) {
+        reviewCiAudit = (ci.reason === "budget_exhausted_cached_success" || ci.reason === "budget_exhausted_cached_failure") && transition.decision?.outcome === "changes_requested"
+          ? { source: ci.reason, headSha: ci.headSha } : null;
+        if (ci.state === "pending" || ci.state === "unknown" || (ci.state === "complete" && ((ci.finalCheckConclusion !== "success" && !(ci.reason === "budget_exhausted_cached_failure" && transition.decision?.outcome === "changes_requested")) || (transition.decision?.outcome === "approved" && ci.reason?.startsWith("budget_exhausted_cached_"))))) {
           if (ci.reason?.includes("budget_exhausted")) {
             // A triggered CI-wait monitor otherwise gets rearmed by the stale
             // monitor sweep and repeatedly wakes a reviewer who cannot decide.
@@ -17122,9 +17122,9 @@ export function issueRoutes(
                 issueId: lockedExisting.id,
               });
               logReviewWriteCi({ issueId: lockedExisting.id, runId: actor.runId, ci, diagnostic });
-              reviewCiAudit = ci.reason === "budget_exhausted_cached_success" && lockedTransition.decision?.outcome === "changes_requested"
-                ? { source: "budget_exhausted_cached_success", headSha: ci.headSha } : null;
-              if (ci.state === "pending" || ci.state === "unknown" || (ci.state === "complete" && (ci.finalCheckConclusion !== "success" || (lockedTransition.decision?.outcome === "approved" && ci.reason === "budget_exhausted_cached_success")))) {
+              reviewCiAudit = (ci.reason === "budget_exhausted_cached_success" || ci.reason === "budget_exhausted_cached_failure") && lockedTransition.decision?.outcome === "changes_requested"
+                ? { source: ci.reason, headSha: ci.headSha } : null;
+              if (ci.state === "pending" || ci.state === "unknown" || (ci.state === "complete" && ((ci.finalCheckConclusion !== "success" && !(ci.reason === "budget_exhausted_cached_failure" && lockedTransition.decision?.outcome === "changes_requested")) || (lockedTransition.decision?.outcome === "approved" && ci.reason?.startsWith("budget_exhausted_cached_"))))) {
                 throw unprocessable(
                   ci.state === "pending"
                     ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
