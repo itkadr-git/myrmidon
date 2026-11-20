@@ -6,10 +6,10 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import express from "express";
 import { describe, expect, it } from "vitest";
-import { acceptanceServiceCredentials, agents, companies, createDb, documentRevisions, documents, heartbeatRuns, issueDocuments, issues, nativeFinalizationGrants, nativeFinalizationOutbox, nativeFinalizationRequests, nativeRunFinalizations } from "@myrmidon/db";
+import { acceptanceServiceCredentials, agents, companies, completionContracts, createDb, documentRevisions, documents, heartbeatRuns, issueDocuments, issues, nativeFinalizationGrants, nativeFinalizationOutbox, nativeFinalizationRequests, nativeRunFinalizations, nativeRunResults, statusDecisions, workspaceOperations } from "@myrmidon/db";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "@myrmidon/db/test-embedded-postgres";
 import { acceptanceServiceCredentialsService } from "../services/acceptance-service-credentials.js";
-import { claimNativeFinalizationRequest, settleNativeFinalizationRequest } from "../services/native-runtime/native-finalization-request-recovery.js";
+import { claimNativeFinalizationRequest, processNativeFinalizationRequest, settleNativeFinalizationRequest } from "../services/native-runtime/native-finalization-request-recovery.js";
 import { acceptanceServiceRoutes } from "../routes/acceptance-service.js";
 import { errorHandler } from "../middleware/index.js";
 
@@ -74,6 +74,7 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(await post(submit.token, client, `"${"a".repeat(64)}"`)).toBe(404);
       const agentId = randomUUID(), runId = randomUUID();
       await db.insert(agents).values({ id: agentId, companyId, name: "Agent", role: "engineer" });
+      await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, issueId));
       await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issueId });
       await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "awaiting_result" });
       const ungranted = await new Promise<number>((resolve, reject) => {
@@ -223,7 +224,53 @@ const support = await getEmbeddedPostgresTestSupport();
       // A terminal rejection must not prevent a fresh request with a new key.
       const resubmission = await admit("request-after-rejection");
       expect(resubmission.status).toBe(202);
-      expect(JSON.parse(resubmission.body).requestId).not.toBe(requests[0].id);
+      const recoveryRequestId = JSON.parse(resubmission.body).requestId;
+      expect(recoveryRequestId).not.toBe(requests[0].id);
+      const calls: Array<{ runId: string; workspaceFinalizeStatus: "succeeded"; serviceRequest: { requestId: string; leaseOwner: string; leaseUntil: Date } }> = [];
+      const execute = async (input: typeof calls[number]) => { calls.push(input); };
+      const workerTime = new Date();
+      expect(await processNativeFinalizationRequest({ db, worker: "recovery-a", now: workerTime, leaseMs: 1000, execute })).toBe("waiting_workspace");
+      expect(calls).toHaveLength(0);
+      await db.insert(workspaceOperations).values({ companyId, issueId, heartbeatRunId: runId, phase: "workspace_finalize", status: "succeeded", createdAt: new Date(workerTime.getTime() - 2000) });
+      await db.insert(workspaceOperations).values({ companyId, issueId, heartbeatRunId: runId, phase: "workspace_finalize", status: "failed", createdAt: new Date(workerTime.getTime() - 1000) });
+      const staleCheckTime = new Date(workerTime.getTime() + 1001);
+      expect(await processNativeFinalizationRequest({ db, worker: "recovery-stale", now: staleCheckTime, leaseMs: 1000, execute })).toBe("waiting_workspace");
+      expect(calls).toHaveLength(0);
+      await db.insert(workspaceOperations).values({ companyId, issueId, heartbeatRunId: runId, phase: "workspace_finalize", status: "succeeded", createdAt: new Date(workerTime.getTime()) });
+      const restartTime = new Date(staleCheckTime.getTime() + 1001);
+      await expect(processNativeFinalizationRequest({ db, worker: "recovery-b", now: restartTime, leaseMs: 1000, execute: async () => { throw new Error("crash"); } })).rejects.toThrow("crash");
+      const finalTime = new Date(restartTime.getTime() + 1001);
+      const results = await Promise.all([
+        processNativeFinalizationRequest({ db, worker: "recovery-c", now: finalTime, leaseMs: 1000, execute }),
+        processNativeFinalizationRequest({ db, worker: "recovery-d", now: finalTime, leaseMs: 1000, execute }),
+      ]);
+      expect(results.sort()).toEqual(["idle", "processed"]);
+      expect(calls).toEqual([{ runId, workspaceFinalizeStatus: "succeeded", serviceRequest: { requestId: recoveryRequestId, leaseOwner: expect.stringMatching(/^recovery-[cd]$/), leaseUntil: new Date(finalTime.getTime() + 1000) } }]);
+      const [stillProcessing] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, recoveryRequestId));
+      expect(stillProcessing.state).toBe("processing");
+      expect(stillProcessing.resultDecisionId).toBeNull();
+      // The default recovery path must invoke the real finalizer, not merely claim work.
+      await expect(processNativeFinalizationRequest({ db, worker: "recovery-real", now: new Date(finalTime.getTime() + 1001), leaseMs: 60_000 }))
+        .rejects.toThrow("native_finalization_run_missing");
+      const contractId = randomUUID(), resultId = randomUUID();
+      await db.update(heartbeatRuns).set({ runtimeMode: "native", completionContractId: contractId, completionContractSha256: "contract" }).where(eq(heartbeatRuns.id, runId));
+      await db.insert(completionContracts).values({ id: contractId, companyId, issueId, revision: 1, schemaVersion: "paperclip.completion-contract.v1", policyVersion: "phase6-v1", risk: "standard", completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal", contractJson: { revision: "v1", criteria: [{ id: "objective", requirement: "test" }] }, canonicalSha256: "contract", createdByActorType: "system", createdByActorId: "test" });
+      await db.insert(nativeRunResults).values({ id: resultId, companyId, issueId, runId, completionContractId: contractId, serverFingerprint: "test", schemaStatus: "accepted", canonicalSha256: "result", resultJson: { result: { reportedWorkDisposition: "done", summary: "test", completionClaim: { contractRevision: "v1", objectiveSatisfied: true, criteria: [], remainingWork: [] }, verification: [] }, terminal: { runTerminalState: "succeeded" } } });
+      await db.update(nativeRunFinalizations).set({ resultId, phase: "awaiting_result" }).where(eq(nativeRunFinalizations.runId, runId));
+      await db.update(nativeFinalizationRequests).set({ leaseUntil: new Date(Date.now() - 1000) }).where(eq(nativeFinalizationRequests.id, recoveryRequestId));
+      const resumed = await Promise.all([
+        processNativeFinalizationRequest({ db, worker: "restart-a", now: new Date(), leaseMs: 60_000 }),
+        processNativeFinalizationRequest({ db, worker: "restart-b", now: new Date(), leaseMs: 60_000 }),
+      ]);
+      expect(resumed.sort()).toEqual(["idle", "processed"]);
+      const [committed] = await db.select().from(nativeFinalizationRequests).where(eq(nativeFinalizationRequests.id, recoveryRequestId));
+      const [outboxAfterCommit] = await db.select().from(nativeFinalizationOutbox).where(eq(nativeFinalizationOutbox.requestId, recoveryRequestId));
+      expect(committed.state).toBe("committed");
+      expect(committed.resultDecisionId).toBeTruthy();
+      expect(outboxAfterCommit.dispatchedAt).not.toBeNull();
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId))).toHaveLength(1);
+      expect(JSON.parse((await result(submit.token, recoveryRequestId)).body)).toMatchObject({ state: "committed", decisionId: committed.resultDecisionId });
+      expect(await processNativeFinalizationRequest({ db, worker: "restart-c", now: new Date(), leaseMs: 60_000 })).toBe("idle");
       const first = await call(issued.token);
       expect(first.status).toBe(200);
       expect(first.etag).toMatch(/^"[a-f0-9]{64}"$/);

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@myrmidon/db";
-import { processNativeFinalizationRequest } from "./native-finalization-request-worker.js";
+import { processNativeFinalizationRequest } from "./native-finalization-request-recovery.js";
 
 /** Periodically recover durable requests without overlapping passes in this process. */
 export function startNativeFinalizationRequestScheduler(input: {
@@ -18,7 +18,8 @@ export function startNativeFinalizationRequestScheduler(input: {
     active = (async () => {
       // Bound each pass so a busy outbox cannot monopolize the worker.
       for (let i = 0; i < 20 && !stopped; i++) {
-        if (!(await processRequest(input.db, worker, new Date(), 60_000))) break;
+        const outcome = await processRequest({ db: input.db, worker, now: new Date(), leaseMs: 60_000 });
+        if (outcome === "idle") break;
       }
     })().catch(input.onError).finally(() => { active = null; });
   };
