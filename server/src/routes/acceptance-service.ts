@@ -103,6 +103,43 @@ export function acceptanceServiceRoutes(db: Db) {
     });
     res.status(outcome.status).json(outcome.id ? { id: outcome.id } : { error: outcome.error });
   });
+  router.get("/service/native-runs/:runId/finalization-requests/:requestId", async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    const socket = req.socket;
+    const authorization = req.headers.authorization;
+    if (!(socket instanceof TLSSocket) || !socket.authorized || !authorization?.startsWith("Bearer ")) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const certificate = socket.getPeerCertificate();
+    if (!certificate.raw) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const fingerprint = createHash("sha256").update(certificate.raw).digest("hex");
+    const credential = await credentials.authenticateFinalization(authorization.slice(7), fingerprint);
+    if (!credential) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const runId = String(req.params.runId), requestId = String(req.params.requestId);
+    if (!isUuidLike(runId) || !isUuidLike(requestId)) {
+      res.status(404).json({ error: "Request not found" });
+      return;
+    }
+    const [request] = await db.select().from(nativeFinalizationRequests).where(and(
+      eq(nativeFinalizationRequests.id, requestId), eq(nativeFinalizationRequests.runId, runId),
+      eq(nativeFinalizationRequests.companyId, credential.companyId), eq(nativeFinalizationRequests.credentialId, credential.credentialId),
+      eq(nativeFinalizationRequests.verifiedPeerSha256, fingerprint),
+    )).limit(1);
+    if (!request) {
+      res.status(404).json({ error: "Request not found" });
+      return;
+    }
+    res.json({ requestId: request.id, runId: request.runId, state: request.state,
+      ...(request.resultDecisionId ? { decisionId: request.resultDecisionId } : {}),
+      ...(request.errorCode ? { errorCode: request.errorCode } : {}) });
+  });
   router.get("/service/issues/:id/acceptance-scenarios", async (req, res) => {
     if (req.method !== "GET") {
       res.sendStatus(404);
