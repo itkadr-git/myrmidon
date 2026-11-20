@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
-import { companyTransferRuns } from "@myrmidon/db";
+import { companies, companyTransferRuns } from "@myrmidon/db";
 
 // Durable run ledger for chunked company transfers. A run tracks one export
 // publish or import apply of a transfer container. Progress is recorded per
@@ -303,6 +303,8 @@ export const companyTransferRunService = {
         sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
         // Cleanup must remove the owned company and every reserved object first.
         sql`${companyTransferRuns.companyId} is null`,
+        sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' is not null`,
+        sql`not exists (select 1 from ${companies} where ${companies.id}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId')`,
         sql`jsonb_array_length(${companyTransferRuns.completedParts}) = 0`,
       ))
       .returning({ id: companyTransferRuns.id });
