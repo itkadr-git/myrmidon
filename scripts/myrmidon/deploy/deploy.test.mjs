@@ -512,7 +512,7 @@ describe("deploy.sh", () => {
     assert.equal(maintenance(sb), "");
   });
 
-  it("keeps RC deployment fail-closed even when nightly PBS succeeds", () => {
+  it("deploys an RC with nightly PBS and records the actual rollback digest without a database copy", () => {
     const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
     fs.writeFileSync(path.join(sb.dir, "repo-digests"), JSON.stringify([`${CI_IMAGE}@${OLD}`]));
     const start = Math.floor(Date.now() / 1000) - 600;
@@ -522,10 +522,11 @@ describe("deploy.sh", () => {
     const { code, out } = run(sb, "deploy.sh", ["--digest", NEW], undefined, {
       ARCHIVE: `pbs-offsite:backup/vm/100/${stamp}`, TASKS: tasks,
     });
-    assert.notEqual(code, 0, out);
-    assert.match(out, /RC deploy guard incomplete/);
-    assert.doesNotMatch(calls(sb), /docker pull|up -d --no-deps server/);
-    assert.equal(maintenance(sb), "");
+    assert.equal(code, 0, out);
+    assert.match(calls(sb), /docker pull/);
+    assert.equal(read(path.join(sb.dir, "state/previous-image")).trim(), `${CI_IMAGE}@${OLD}`);
+    assert.equal(maintenance(sb), "enter\nexit\n");
+    assert.doesNotMatch(calls(sb), /myr-predeploy-/);
     assert.equal(fs.existsSync(path.join(sb.dir, "dumps")), false);
   });
 
