@@ -962,6 +962,7 @@ exit 1
       }
       return undefined;
     } });
+    ssh.mockResponse(/snapshot-myrmidon-firewall/, { exitCode: 0, stdout: "Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)\n" });
     const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
     const claim: any = {
       job: { id: "job-firewall-concurrent-fail-closed", companyId: "c1", serverId: "s1" },
