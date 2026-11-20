@@ -124,6 +124,36 @@ it("disables the editor until the draft write resolves and accepts only afterwar
   expect(http.post.mock.calls[1]).toEqual(["/myrmidon/companies/c1/knowledge/suggestions/s1/accept", {}]);
 });
 
+it("disables every new-item field while its draft is pending", async () => {
+  pending[0].targetItemId = null;
+  const draft = deferred<never>();
+  http.post.mockImplementationOnce(() => draft.promise);
+  await render();
+  await click("Edit", 0);
+
+  const inputs = Array.from(host.querySelectorAll("input"));
+  expect(inputs).toHaveLength(2);
+  for (const [input, value] of inputs.map((field, index) => [field, index === 0 ? "New title" : "new-slug"] as const)) {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+  await click("Save and accept");
+
+  expect(inputs.every((input) => input.disabled)).toBe(true);
+  expect(host.querySelector("textarea")!.disabled).toBe(true);
+  expect(button("Save and accept").disabled).toBe(true);
+  expect(button("Cancel").disabled).toBe(true);
+  expect(http.post).toHaveBeenCalledTimes(1);
+  expect(http.post.mock.calls[0]).toEqual(["/myrmidon/companies/c1/knowledge/items", { title: "New title", slug: "new-slug", content: "First proposed text" }]);
+
+  draft.reject(new Error("Draft failed"));
+  await settle();
+  expect(inputs.every((input) => !input.disabled)).toBe(true);
+  expect(http.post).toHaveBeenCalledTimes(1);
+});
+
 it("keeps a rejected draft editable without accepting and permits a retry", async () => {
   const draft = deferred<never>();
   http.post.mockImplementationOnce(() => draft.promise);
