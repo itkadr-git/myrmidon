@@ -3,9 +3,7 @@ import { and, eq, gt, isNull } from "drizzle-orm";
 import { acceptanceServiceCredentials, type Db } from "@myrmidon/db";
 
 export const ACCEPTANCE_SERVICE_AUDIENCE = "acceptance-scenarios";
-export const NATIVE_FINALIZATION_AUDIENCE = "native-finalization-submit";
-
-type ServiceAudience = typeof ACCEPTANCE_SERVICE_AUDIENCE | typeof NATIVE_FINALIZATION_AUDIENCE;
+type ServiceAudience = typeof ACCEPTANCE_SERVICE_AUDIENCE;
 
 function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -50,8 +48,5 @@ export function acceptanceServiceCredentialsService(db: Db) {
       const credential = await authenticate(token, fingerprint, ACCEPTANCE_SERVICE_AUDIENCE);
       return credential ? { companyId: credential.companyId } : null;
     },
-    issueFinalization: (companyId: string, fingerprint: string, expiresAt: Date) => issue(companyId, fingerprint, expiresAt, NATIVE_FINALIZATION_AUDIENCE),
-    revokeFinalization: (companyId: string, id: string) => revoke(companyId, id, NATIVE_FINALIZATION_AUDIENCE),
-    authenticateFinalization: (token: string, fingerprint: string) => authenticate(token, fingerprint, NATIVE_FINALIZATION_AUDIENCE),
   };
 }

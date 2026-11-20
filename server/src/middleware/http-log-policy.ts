@@ -44,7 +44,6 @@ const ALL_METHOD_SECRET_SENSITIVE_PATHS = [
 
 const SECRET_SENSITIVE_HTTP_PATHS = [
   /^\/api\/companies\/[^/]+\/acceptance-service-credentials(?:\/|$)/,
-  /^\/api\/companies\/[^/]+\/native-finalization-service-credentials(?:\/|$)/,
   /^\/api\/chat-endpoints\/[^/]+\/setup(?:-secret)?(?:\/|$)/,
   // myrmidon(OPE-8985): carries the one-time token and the new password.
   /^\/api\/myrmidon\/users-admin-a\/password-set(?:\/|$)/,
