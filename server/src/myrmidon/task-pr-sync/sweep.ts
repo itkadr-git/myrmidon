@@ -461,6 +461,7 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
     const facts: TaskPrSyncResolvedPr[] = [];
     const productsService = products.length > 0 ? await workProducts() : null;
     for (const product of products) {
+      if (product.status === "archived") continue;
       const { repo, number } = readPullRequestMetadata(product);
       const reference = await referenceFor(product);
       let details: PullRequestMergeDetails | null = null;
@@ -485,6 +486,7 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
       facts.push({
         workProductId: product.id,
         state,
+        isPrimary: product.isPrimary,
         repo: repo ?? (reference ? `${reference.owner}/${reference.repo}` : null),
         number: number ?? reference?.number ?? null,
         mergedSha: details?.headSha ?? null,

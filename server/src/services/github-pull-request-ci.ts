@@ -1,4 +1,5 @@
 import type { Db } from "@myrmidon/db";
+import { OPEN_PULL_REQUEST_WORK_PRODUCT_STATUSES } from "../myrmidon/review-stage-recovery/policy.js";
 import { and, eq, isNull } from "drizzle-orm";
 import { issueWorkProducts, issues, issueComments } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
@@ -82,6 +83,8 @@ export type PullRequestCiConclusion =
 export interface PullRequestCiResult {
   repository: string;
   pullNumber: number;
+  /** Other PRs remain visible but do not supply task-level CI evidence. */
+  secondary?: boolean;
   headSha: string | null;
   headRef: string | null;
   status: PullRequestCiStatus;
@@ -1459,15 +1462,32 @@ export function createPullRequestCiResolver(
               eq(issueWorkProducts.issueId, issueId),
             ),
           )
-      ).filter((product) => {
-        if (product.type !== "pull_request") return false;
+      ).filter((product) => product.type === "pull_request");
+      const primary = products.find((product) =>
+        product.isPrimary && OPEN_PULL_REQUEST_WORK_PRODUCT_STATUSES.has(product.status));
+      const liveProducts = products.filter((product) => {
+        if (product === primary) return true;
         const status = typeof product.status === "string" ? product.status.toLowerCase() : "";
-        if (TERMINAL_PULL_REQUEST_PRODUCT_STATUSES.has(status)) return false;
+        if (status === "archived" || TERMINAL_PULL_REQUEST_PRODUCT_STATUSES.has(status)) return false;
         const metaState = (product.metadata as Record<string, unknown> | null)?.state;
         return !(typeof metaState === "string" && TERMINAL_PULL_REQUEST_PRODUCT_STATUSES.has(metaState.toLowerCase()));
       });
 
-      for (const product of products) {
+      // Use the same canonical coordinates as review admission, not incidental
+      // references in the product title or metadata.
+      if (primary) {
+        const meta = primary.metadata as Record<string, unknown> | null;
+        const repo = typeof meta?.repo === "string" ? meta.repo : meta?.repository;
+        const primaryRef = extractGitHubPullRequestReferences([
+          primary.url || meta?.url,
+          typeof repo === "string" && typeof meta?.number === "number" ? `${repo}#${meta.number}` : null,
+        ])[0];
+        // An unreadable primary must not fall through to another PR's verdict.
+        if (!primaryRef) return [];
+        addRef(primaryRef);
+      }
+
+      for (const product of liveProducts) {
         const candidateTexts: unknown[] = [product.url, product.title];
         if (product.metadata && typeof product.metadata === "object") {
           const meta = product.metadata as Record<string, unknown>;
@@ -1560,12 +1580,14 @@ export function createPullRequestCiResolver(
       // description, comments and children; beyond the cap, older references
       // (duplicates aside) are dropped.
       const cappedReferences = [...references.values()].slice(0, CI_RESOLVE_FOR_ISSUE_MAX_REFS);
-      for (const reference of cappedReferences) {
+      for (const [index, reference] of cappedReferences.entries()) {
+        const secondary = Boolean(primary && index > 0);
         try {
           const result = await this.resolveForPullRequest(companyId, reference);
-          results.push(result);
+          results.push(secondary ? { ...result, secondary } : result);
         } catch (err) {
           results.push({
+            ...(secondary ? { secondary } : {}),
             repository: `${reference.owner}/${reference.repo}`,
             pullNumber: reference.number,
             headSha: null,
@@ -1727,6 +1749,7 @@ export function formatAuthoritativeCiOutput(
   if (!ciResults || ciResults.length === 0) return null;
   const sections: string[] = [];
   for (const ci of ciResults) {
+    if (ci.secondary) continue;
     const lines: string[] = [];
     lines.push(`PR #${ci.pullNumber} (${ci.repository}):`);
     if (ci.headSha) lines.push(`Head SHA: ${ci.headSha}`);
@@ -1756,5 +1779,5 @@ export function formatAuthoritativeCiOutput(
     }
     sections.push(lines.join("\n"));
   }
-  return sections.join("\n\n");
+  return sections.length > 0 ? sections.join("\n\n") : null;
 }

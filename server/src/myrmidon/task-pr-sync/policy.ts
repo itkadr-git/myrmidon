@@ -31,6 +31,7 @@ export interface TaskPrSyncPrFact {
   workProductId: string;
   /** The state the sweep acts on. `superseded` rows are ignored (a duplicate a newer PR replaced). */
   state: TaskPrSyncPrState;
+  isPrimary?: boolean;
   repo: string | null;
   number: number | null;
   /** Head (post-merge) sha the resolver reported; the settle-comment dedup marker. `null` when unknown. */
@@ -191,9 +192,9 @@ export function decideTaskPrSync(facts: TaskPrSyncFacts): TaskPrSyncDecision {
   if (active.length === 0) return noop("no_pr_products");
 
   if (facts.issueStatus === "in_review") {
-    const conflicting = active.filter(
-      (pr) => (pr.state === "open" || pr.state === "draft") && pr.mergeable === "CONFLICTING",
-    );
+    const open = active.filter((pr) => pr.state === "open" || pr.state === "draft");
+    const primary = open.find((pr) => pr.isPrimary);
+    const conflicting = (primary ? [primary] : open).filter((pr) => pr.mergeable === "CONFLICTING");
     if (conflicting.length > 0) {
       return { kind: "return_conflict", conflictPrRefs: conflicting.map(taskPrReference) };
     }

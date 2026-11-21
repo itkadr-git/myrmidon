@@ -31,6 +31,7 @@ import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logger } from "../middleware/logger.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
+import { OPEN_PULL_REQUEST_WORK_PRODUCT_STATUSES } from "../myrmidon/review-stage-recovery/policy.js";
 import { notifyBoardMergeTrigger } from "../myrmidon/review-routing/merge-trigger.js";
 // myrmidon(EMPTY-RUNS-3): a CI delivery is handled by the final result of the head.
 import {
@@ -491,6 +492,23 @@ export async function linkPullRequestToIssue(
  */
 const CI_RETURN_FACTS_TIMEOUT_MS = 10_000;
 
+type PrProduct = typeof issueWorkProducts.$inferSelect;
+
+function canRoutePullRequest(product: PrProduct, products: readonly PrProduct[]): boolean {
+  return product.status !== "archived" && !products.some((other) =>
+    other.issueId === product.issueId && other.id !== product.id && other.type === "pull_request"
+    && other.isPrimary && OPEN_PULL_REQUEST_WORK_PRODUCT_STATUSES.has(other.status));
+}
+
+async function canRoutePullRequestById(database: Db, companyId: string, issueId: string, productId: string) {
+  const products = await database.select().from(issueWorkProducts).where(and(
+    eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.issueId, issueId),
+    eq(issueWorkProducts.type, "pull_request"),
+  ));
+  const product = products.find((row) => row.id === productId);
+  return !!product && canRoutePullRequest(product, products);
+}
+
 export function githubConnectionEventService(
   db: Db,
   options: {
@@ -898,8 +916,9 @@ export function githubConnectionEventService(
       .from(issues)
       .where(and(eq(issues.id, primary.issueId), eq(issues.companyId, companyId)))
       .limit(1);
+    const routesIssue = issue && await canRoutePullRequestById(database, companyId, issue.id, primary.id);
     const reviewStagePending = (() => {
-      if (!issue || issue.status !== "in_review" || issue.workMode !== "standard") return false;
+      if (!routesIssue || !issue || issue.status !== "in_review" || issue.workMode !== "standard") return false;
       const state = parseIssueExecutionState(issue.executionState);
       return !state || (state.status === "pending" && state.currentStageType === "review");
     })();
@@ -1039,7 +1058,7 @@ export function githubConnectionEventService(
       }
     }
     if (repeated && !hold) return;
-    if (!assignmentWakeup || !issue || !issue.assigneeAgentId) return;
+    if (!routesIssue || !assignmentWakeup || !issue || !issue.assigneeAgentId) return;
 
     let wakeAgentId = issue.assigneeAgentId;
     let returned = false;
@@ -1212,7 +1231,9 @@ export function githubConnectionEventService(
         ?? (product.externalId ? Number(product.externalId.match(/#pull\/(\d+)$/)?.[1]) : null);
       return repo?.toLowerCase() === repository.toLowerCase() && number === pullRequestNumber;
     });
-    if (!matching?.issue.assigneeAgentId) return;
+    if (!matching?.issue.assigneeAgentId || !await canRoutePullRequestById(
+      database, companyId, matching.issue.id, matching.product.id,
+    )) return;
 
     // A PR work product is the opt-in boundary: unrelated task types keep their
     // existing routing. Never let an old head failure undo a newer PR review.
@@ -1380,7 +1401,9 @@ export function githubConnectionEventService(
     const newHead = stringValue(snapshot.data.headSha);
     if (newHead) {
       for (const product of headBefore) {
-        if (product.headSha === newHead) continue;
+        if (product.headSha === newHead || !await canRoutePullRequestById(
+          database, companyId, product.issueId, product.id,
+        )) continue;
         // Only release a budget-specific deferral; unrelated monitors keep their deadline.
         await database.update(issues).set({
           monitorNextCheckAt: appliedAt,
@@ -1416,7 +1439,8 @@ export function githubConnectionEventService(
         return repository?.toLowerCase() === `${snapshot.owner}/${snapshot.repo}`.toLowerCase()
           && (number === snapshot.number || externalId?.toLowerCase() === snapshot.externalId.toLowerCase());
       });
-      if (matching && matching.issue.status !== "done" && matching.issue.status !== "cancelled") {
+      if (matching && matching.product.status !== "archived" && matching.issue.status !== "done" && matching.issue.status !== "cancelled") {
+        const routesIssue = await canRoutePullRequestById(database, companyId, matching.issue.id, matching.product.id);
         await database.update(issueWorkProducts).set({
           status: "merged",
           updatedAt: appliedAt,
@@ -1424,7 +1448,7 @@ export function githubConnectionEventService(
           eq(issueWorkProducts.id, matching.product.id),
           eq(issueWorkProducts.companyId, companyId),
         ));
-        await issueService(db).update(matching.issue.id, {
+        if (routesIssue) await issueService(db).update(matching.issue.id, {
           status: "done",
           completedAt: now(),
           actorAgentId: null,
@@ -1478,6 +1502,7 @@ export function githubConnectionEventService(
             eq(issues.id, matching.issue.id), eq(issues.companyId, companyId),
           )).for("update");
           if (!current || current.status !== "in_review" || current.workMode !== "standard") return;
+          if (!await canRoutePullRequestById(tx as unknown as Db, companyId, current.id, matching.product.id)) return;
           const state = parseIssueExecutionState(current.executionState);
           if (state && (state.status !== "pending" || state.currentStageType !== "review")) return;
           const executor = state?.returnAssignee;
