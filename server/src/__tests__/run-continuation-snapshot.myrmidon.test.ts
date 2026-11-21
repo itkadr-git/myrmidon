@@ -17,10 +17,14 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { agentRoutes } from "../routes/agents.js";
 import { getConversationOwnershipBlocker } from "../services/conversation-continuation.js";
-import { buildPaperclipWakePayload } from "../services/heartbeat.js";
+import { buildPaperclipTaskMarkdown, buildPaperclipWakePayload, taskMarkdownContextForDispatch } from "../services/heartbeat.js";
+import type { PullRequestCiResult } from "../services/github-pull-request-ci.js";
+import { redactRegisteredSecretValues } from "../services/run-secret-redaction.js";
 import {
   EXECUTION_CONTINUATION_KEY,
   PAPERCLIP_WAKE_PAYLOAD_KEY,
+  runContextForPersistence,
+  WAKE_CI_PROJECTION_KEY,
   wakePayloadForDispatch,
   withoutDuplicateExecutionContinuation,
 } from "../services/run-continuation-snapshot.js";
@@ -183,6 +187,90 @@ describePostgres("run continuation snapshot single copy", () => {
       .returning({ id: heartbeatRuns.id });
     return { companyId, agentId, issueId, runId: rows[0]!.id };
   }
+
+  async function storeSnapshot(context: Record<string, unknown>) {
+    const [row] = await db.insert(heartbeatRuns).values({
+      companyId: single.companyId,
+      agentId: single.agentId,
+      status: "failed",
+      contextSnapshot: runContextForPersistence(context),
+    }).returning({ id: heartbeatRuns.id });
+    const [stored] = await db.select({
+      snapshot: heartbeatRuns.contextSnapshot,
+      chars: sql<number>`length(${heartbeatRuns.contextSnapshot}::text)`,
+      bytes: sql<number>`octet_length(${heartbeatRuns.contextSnapshot}::text)`,
+    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, row!.id));
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, row!.id));
+    expect(stored!.chars).toBeLessThanOrEqual(120_000);
+    expect(stored!.bytes).toBeGreaterThan(stored!.chars);
+    console.info("synthetic snapshot size", { chars: stored!.chars, bytes: stored!.bytes });
+    return stored!.snapshot!;
+  }
+
+  it("stores CI once and restores both Markdown variants from the persisted verdicts", async () => {
+    const issue = { ...wakePayload(single.issueId).issue, description: "Описание 🎯" };
+    const secret = "fixture-ci-secret";
+    const pullRequestsCi: PullRequestCiResult[] = Array.from({ length: 10 }, (_, i) => ({
+      repository: "example/repo", pullNumber: i + 1, headSha: String(i).repeat(40), headRef: "test",
+      status: "completed", conclusion: "failure", summary: "Ошибка 🧪", authoritative: true,
+      checkedAt: "2026-11-21T00:00:00Z", completedAt: null,
+      totalRuns: 1, successfulRuns: 0, failedRuns: 1, failedJobs: [], runs: [],
+      ciFailureTails: [{ jobId: i, jobName: "тест", logTail: `${secret}: ${"ж🧪".repeat(4_000)}` }],
+    }));
+    const safeWake = redactRegisteredSecretValues({ issue, pullRequestsCi, ciResult: pullRequestsCi[0] }, [secret]);
+    const context = {
+      [WAKE_CI_PROJECTION_KEY]: true,
+      paperclipWake: safeWake,
+      paperclipTaskMarkdown: buildPaperclipTaskMarkdown({ issue }),
+      paperclipTaskMarkdownCompact: buildPaperclipTaskMarkdown({ issue, includeDescription: false }),
+    };
+    const stored = await storeSnapshot(context);
+    expect(stored.paperclipWake).not.toHaveProperty("ciResult");
+    expect(stored.paperclipTaskMarkdown).not.toContain("CI Result:");
+    expect(stored.paperclipTaskMarkdownCompact).not.toContain("CI Result:");
+    const wake = wakePayloadForDispatch(stored);
+    expect(wake).toMatchObject({
+      ciResult: { headSha: pullRequestsCi[0]!.headSha, conclusion: "failure" },
+      pullRequestsCi: pullRequestsCi.map(({ headSha, conclusion }) => ({ headSha, conclusion })),
+    });
+    expect(JSON.stringify(wake)).not.toContain(secret);
+    const delivered = taskMarkdownContextForDispatch(stored);
+    for (const markdown of [delivered.paperclipTaskMarkdown, delivered.paperclipTaskMarkdownCompact]) {
+      expect(markdown).toContain("FAILURE (Ошибка 🧪)");
+      expect(markdown).toContain("CI details truncated");
+      expect(markdown).toContain("https://github.com/example/repo/pull/10/checks");
+      expect(markdown).not.toContain(secret);
+      for (const ci of pullRequestsCi) expect(markdown).toContain(ci.headSha);
+    }
+    expect(delivered.paperclipTaskMarkdown).toContain(issue.description);
+    expect(delivered.paperclipTaskMarkdownCompact).not.toContain(issue.description);
+    const legacy = { ...context, [WAKE_CI_PROJECTION_KEY]: undefined, paperclipTaskMarkdown: "legacy CI Markdown" };
+    expect(taskMarkdownContextForDispatch(legacy)).toEqual(legacy);
+    expect(wakePayloadForDispatch(legacy)).toEqual(safeWake);
+  });
+
+  it.each([29, 30])("deduplicates %i equivalent events after persistence and preserves redacted differences", async (count) => {
+    const eventDigest = {
+      eventCount: count, omittedEventCount: 0,
+      events: Array.from({ length: count }, (_, i) => ({
+        id: `event-${i}`, issueId: single.issueId, type: "progress",
+        payload: { note: `fixture-event-secret ${"ю🎯".repeat(410)}` },
+      })),
+    };
+    const sameDigest = { ...eventDigest, events: eventDigest.events.map(({ payload, ...event }) => ({ payload, ...event })) };
+    const stored = await storeSnapshot({ eventDigest, paperclipWake: { eventDigest: sameDigest } });
+    expect(stored.paperclipWake).not.toHaveProperty("eventDigest");
+    expect(wakePayloadForDispatch(stored)).toEqual({ eventDigest });
+
+    const safeDigest = redactRegisteredSecretValues(eventDigest, ["fixture-event-secret"]);
+    const different = await storeSnapshot({ eventDigest, paperclipWake: { eventDigest: safeDigest } });
+    expect(different.paperclipWake).toHaveProperty("eventDigest");
+    const wake = wakePayloadForDispatch(different);
+    expect(wake).toEqual({ eventDigest: safeDigest });
+    expect(JSON.stringify(wake)).not.toContain("fixture-event-secret");
+    expect(wakePayloadForDispatch({ eventDigest, paperclipWake: { eventDigest: null } })).toEqual({ eventDigest: null });
+    expect(wakePayloadForDispatch({ eventDigest, paperclipWake: {} })).toEqual({});
+  });
 
   it("writes the wake payload without a second copy of the continuation", async () => {
     const context: Record<string, unknown> = {
