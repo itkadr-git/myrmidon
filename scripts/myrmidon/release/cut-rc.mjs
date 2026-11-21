@@ -106,11 +106,16 @@ export async function compositionViolationsOfIssue(
     const status = String(wp.status || "").toLowerCase();
     if (status !== "merged") continue;
     const key = prKeyOf(wp);
-    const num = Number((wp.metadata || {}).number ?? (wp.metadata || {}).pullRequestNumber);
-    const prNum = Number.isFinite(num) && num > 0 ? `#${num}` : key;
+    const raw = wp.metadata?.number ?? wp.metadata?.pullRequestNumber;
+    const num = typeof raw === "string" && /^[0-9]+$/.test(raw) ? Number(raw) : raw;
+    if (!Number.isSafeInteger(num) || num <= 0) {
+      violations.push(`${issue.identifier}: merged PR ${key} has an invalid board PR number`);
+      continue;
+    }
+    const prNum = `#${num}`;
     let pr;
     try {
-      pr = gh(repo, num, {});
+      pr = gh(repo, num, { env });
     } catch (err) {
       violations.push(`${issue.identifier}: merged PR ${prNum} cannot be verified: ${err.message}`);
       continue;
@@ -443,7 +448,7 @@ export function ghAvailable(opts = {}) {
 }
 
 export function ghRunJson(repo, extraArgs, opts = {}) {
-  const out = execFileSync("gh", ["run", "list", ...extraArgs, "--repo", repo, "--json", ...opts.fields], {
+  const out = execFileSync("gh", ["run", "list", ...extraArgs, "--repo", repo, "--json", opts.fields.join(",")], {
     encoding: "utf8",
     ...(opts.env ? { env: opts.env } : {}),
   });
