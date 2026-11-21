@@ -49,6 +49,9 @@ const gatesSchema = z.object({
 
 const signSchema = z.object({
   artifactId: z.string().min(1).max(300),
+  tag: z.string().min(1).max(200),
+  version: z.string().min(1).max(100),
+  composition: z.array(z.string().min(1).max(200)).min(1).max(1000),
   digest: z.string().min(1).max(512),
   verificationUrl: z.string().url().max(2000),
 });
@@ -189,6 +192,9 @@ export function releaseStageRoutes(deps: ReleaseStageRoutesDeps): Router {
         companyId,
         releaseId: String(req.params.releaseId ?? ""),
         artifactId: body.artifactId,
+        tag: body.tag,
+        version: body.version,
+        composition: body.composition,
         digest: body.digest,
         verificationUrl: body.verificationUrl,
         actor,
@@ -226,20 +232,22 @@ export function releaseStageRoutes(deps: ReleaseStageRoutesDeps): Router {
         publicationUrl: body.publicationUrl,
         actor,
       });
-      await deps.logActivity({
-        companyId,
-        actorType: actor.type === "agent" ? "agent" : "user",
-        actorId: actor.id,
-        action: "release_published",
-        entityType: "release_stage",
-        entityId: stage.releaseId,
-        details: {
-          publicationUrl: stage.publicationUrl,
-          publishedBy: stage.publishedBy,
-          signedBy: stage.artifact?.signedBy ?? null,
-          verificationUrl: stage.artifact?.verificationUrl ?? null,
-        },
-      });
+      if (stage.publicationCreated) {
+        await deps.logActivity({
+          companyId,
+          actorType: actor.type === "agent" ? "agent" : "user",
+          actorId: actor.id,
+          action: "release_published",
+          entityType: "release_stage",
+          entityId: stage.releaseId,
+          details: {
+            publicationUrl: stage.publicationUrl,
+            publishedBy: stage.publishedBy,
+            signedBy: stage.artifact?.signedBy ?? null,
+            verificationUrl: stage.artifact?.verificationUrl ?? null,
+          },
+        });
+      }
       res.json({ stage });
     },
   );
