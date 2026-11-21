@@ -2865,6 +2865,13 @@
       "when": 1795154729375,
       "tag": "0494_overrated_doomsday",
       "breakpoints": true
+    },
+    {
+      "idx": 495,
+      "version": "7",
+      "when": 1795200784872,
+      "tag": "0495_fleet_ownership_inventory",
+      "breakpoints": true
     }
   ]
 }

@@ -81,11 +81,31 @@ export const reportSchema = z
     status: z.enum(["running", "succeeded", "failed"]).optional(),
     error: z.string().max(2000).nullable().optional(),
     hostKeyFingerprint: z.string().max(256).nullable().optional(),
+    verifiedAccessPublicKey: z.string().max(256).optional(),
+    ownedFirewallRule: z.object({ kind: z.literal("firewall_rule"), backend: z.literal("ufw"), rule: z.string().max(32), marker: z.string().max(128) }).strict().optional(),
   })
   .strict();
 
 export function onboardRoutes(deps: { service: OnboardService }) {
   const router = Router();
+
+  router.post("/myrmidon/fleet/onboard-jobs/:id/host-key", validate(z.object({ companyId: UUID, fingerprint: z.string().regex(/^SHA256:[A-Za-z0-9+/]{43}$/) }).strict()), async (req, res) => {
+    const jobId = UUID.safeParse(req.params.id);
+    if (!jobId.success) throw new HttpError(400, "job id must be a uuid");
+    try {
+      const accepted = await deps.service.pinHostKey(executorToken(req), req.body.companyId, jobId.data, req.body.fingerprint);
+      if (!accepted) throw conflict("Host key does not match the stored pin");
+      res.json({ accepted: true });
+    } catch (err) { throw toHttpError(err); }
+  });
+
+  router.post("/myrmidon/fleet/onboard-jobs/:id/owned-resources", validate(z.object({ companyId: UUID, resource: z.unknown() }).strict()), async (req, res) => {
+    const jobId = UUID.safeParse(req.params.id);
+    if (!jobId.success) throw new HttpError(400, "job id must be a uuid");
+    try {
+      res.json(await deps.service.recordOwnedResource(executorToken(req), req.body.companyId, jobId.data, req.body.resource));
+    } catch (err) { throw toHttpError(err); }
+  });
 
   router.post("/myrmidon/fleet/servers", validate(fleetServerAddSchema), async (req, res) => {
     const body = req.body as z.infer<typeof fleetServerAddSchema>;
@@ -198,6 +218,8 @@ export function onboardRoutes(deps: { service: OnboardService }) {
         status: body.status,
         error: body.error ?? null,
         hostKeyFingerprint: body.hostKeyFingerprint ?? null,
+        verifiedAccessPublicKey: body.verifiedAccessPublicKey,
+        ownedFirewallRule: body.ownedFirewallRule,
       });
       if (!job) throw notFound("Job not found");
       res.json(job);
