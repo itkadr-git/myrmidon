@@ -10,6 +10,21 @@ settings-section: Track 5 — operations
 - `scripts/myrmidon/release/publish-github-release.sh` enforces the verification gate on the production publish path: without a confirmed verdict for the exact tag SHA (or with a signature that does not verify) the publish refuses — fail closed. An explicit `MYRMIDON_RELEASE_SKIP_VERIFICATION=1` rehearsal escape only dry-runs the pipeline and never creates or edits a GitHub Release.
 - New CLI `scripts/myrmidon/release/fetch-release-verdict.mjs` fetches the signed verdict from the board into a file for the publish workflow; `.github/workflows/myrmidon-release.yml` runs it before the publish step and passes the verdict file to the publisher.
 
+### Fetching a release verdict
+
+[`fetch-release-verdict.mjs`](../../../scripts/myrmidon/release/fetch-release-verdict.mjs) requires `--version X.Y.Z`. Without `--issue`, it uses `--board-label` if supplied, otherwise the major/minor label (for example, `1.7` for `1.7.0`). The lookup resolves the first company label named exactly as the chosen label or with a `release:` prefix (for example, `1.7` or `release:1.7`), then reads all pages of issues carrying that label. Exactly one issue must match.
+
+If lookup fails (including a missing label), or returns zero or multiple issues, the command exits with code 1. It does not POST to `release-verify` and leaves an existing `--out` file unchanged. Resolve the label or pass the intended issue UUID explicitly with `--issue`; this bypasses label lookup. A successful selection POSTs to the selected issue. Only a valid response is written to `--out` (or stdout if omitted); a valid `failed` verdict is still written and is not a confirmation to publish.
+
+Configure board credentials in the environment through your approved secret mechanism; do not put keys in command arguments or examples. For example:
+
+```sh
+node scripts/myrmidon/release/fetch-release-verdict.mjs --version 1.7.0 --out verification.json
+node scripts/myrmidon/release/fetch-release-verdict.mjs --version 1.7.0 --issue ISSUE_UUID --out verification.json
+```
+
+The [release workflow](../../../.github/workflows/myrmidon-release.yml) derives the version from the tag and calls the CLI without `--issue`, so it uses label lookup. It passes the resulting file to the publish step.
+
 ## changelog-ru
 
 ### RELEASE-STAGE: подписанный вердикт проверки версии привязывает публикацию GitHub release к проверенному SHA кандидата (OPE-13017)
@@ -17,6 +32,21 @@ settings-section: Track 5 — operations
 - Роут `POST /issues/:id/release-verify` теперь подписывает вердикт HMAC-SHA256 по канонической строке `verdict|deployedVersion|checkedAt|issueId` на ключе `MYRMIDON_RELEASE_VERIFICATION_KEY` (устаревший псевдоним `PAPERCLIP_RELEASE_VERIFICATION_KEY`) и возвращает `deployedVersion` как SHA коммита сборки.
 - `scripts/myrmidon/release/publish-github-release.sh` делает проверку обязательной на боевом пути публикации: без подтверждённого вердикта для точного SHA тега (или с неподтвердившейся подписью) публикация отказывает — fail closed. Явный rehearsal-обход `MYRMIDON_RELEASE_SKIP_VERIFICATION=1` только прогоняет пайплайн как dry run и не создаёт и не редактирует GitHub Release.
 - Новый CLI `scripts/myrmidon/release/fetch-release-verdict.mjs` забирает подписанный вердикт с доски в файл для публикационного workflow; `.github/workflows/myrmidon-release.yml` запускает его перед шагом публикации и передаёт файл вердикта публикатору.
+
+### Получение вердикта релиза
+
+[`fetch-release-verdict.mjs`](../../../scripts/myrmidon/release/fetch-release-verdict.mjs) требует `--version X.Y.Z`. Без `--issue` он выбирает метку из `--board-label`, а при отсутствии этого параметра — major/minor версии (например, `1.7` для `1.7.0`). Поиск выбирает первую метку компании с точным именем выбранной метки или с префиксом `release:` (например, `1.7` или `release:1.7`) и читает все страницы задач с этой меткой. Совпасть должна ровно одна задача.
+
+При ошибке поиска (включая отсутствие метки), нуле или нескольких задачах команда возвращает код 1, не отправляет POST в `release-verify` и не изменяет существующий файл `--out`. Исправьте метку или явно передайте UUID нужной задачи через `--issue`: этот параметр обходит поиск по метке. После выбора команда отправляет POST для выбранной задачи. Только корректный ответ записывается в `--out` (или stdout, если `--out` не задан); корректный вердикт `failed` тоже записывается и не подтверждает публикацию.
+
+Настройте учётные данные доски в окружении утверждённым способом; не передавайте ключи в аргументах команд. Примеры без ключей:
+
+```sh
+node scripts/myrmidon/release/fetch-release-verdict.mjs --version 1.7.0 --out verification.json
+node scripts/myrmidon/release/fetch-release-verdict.mjs --version 1.7.0 --issue ISSUE_UUID --out verification.json
+```
+
+[Workflow релиза](../../../.github/workflows/myrmidon-release.yml) получает версию из тега и запускает CLI без `--issue`, поэтому используется поиск по метке. Полученный файл передаётся шагу публикации.
 
 ## settings-en
 
