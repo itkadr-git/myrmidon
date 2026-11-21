@@ -128,7 +128,7 @@ new file mode 100644
 index 0000000..360e518
 --- /dev/null
 +++ b/tools/run_workspace.py
-@@ -0,0 +1,297 @@
+@@ -0,0 +1,321 @@
 +"""Run-scoped task workspace resolution via ``myr-ws open`` (myrmidon BOT-DISK-H5b).
 +
 +The board's hermes_gateway adapter may attach a ``workspace`` field to a
@@ -268,6 +268,26 @@ index 0000000..360e518
 +        raise ValueError("Offline workspace contains a nested mount")
 +
 +
++def _require_local_git_checkout(cwd):
++    # Do not inherit Git overrides or allow transports (including promisor fetches).
++    env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "GIT_CONFIG_NOSYSTEM": "1",
++           "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_ALLOW_PROTOCOL": "",
++           "GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1",
++           "GIT_CEILING_DIRECTORIES": str(cwd.parent)}
++
++    def local_git(*args):
++        return subprocess.run(["/usr/bin/git", "-C", str(cwd), *args],
++                              env=env, check=True, capture_output=True, timeout=3).stdout
++
++    try:
++        if (local_git("rev-parse", "--is-inside-work-tree", "--show-toplevel", "--absolute-git-dir").splitlines()
++                != [b"true", os.fsencode(cwd), os.fsencode(cwd / ".git")]):
++            raise ValueError("Offline workspace is not the root of a standalone working tree")
++        local_git("rev-parse", "--verify", "HEAD^{commit}")
++    except (OSError, subprocess.SubprocessError) as exc:
++        raise ValueError("Offline workspace requires a locally available HEAD commit") from exc
++
++
 +def offline_workspace_identity(company, issue):
 +    import hashlib
 +    import stat
@@ -288,6 +308,7 @@ index 0000000..360e518
 +    if (stat.S_IMODE(cwd.stat().st_mode) != 0o700 or not stat.S_ISREG((git / "HEAD").lstat().st_mode)
 +            or any(os.path.lexists(git / ref) for ref in ("commondir", "objects/info/alternates", "objects/info/http-alternates"))):
 +        raise ValueError("Offline workspace requires a private standalone Git directory")
++    _require_local_git_checkout(cwd)
 +    fingerprint = hashlib.sha256(json.dumps([str(cwd), volume[:2], facts]).encode()).hexdigest()
 +    return {"cwd": str(cwd), "fingerprint": fingerprint, "physicalId": f"{facts[3][0]}:{facts[3][1]}"}
 +
@@ -309,11 +330,15 @@ index 0000000..360e518
 +
 +    if not isinstance(field, dict):
 +        raise ValueError("workspace must be an object with key/repo[/baseRef]")
-+    offline = {"offlineCompanyId", "offlineIssueId", "offlineBotId", "offlineFingerprint"}
++    offline = {"offlineCompanyId", "offlineIssueId", "offlineBotId", "offlineFingerprint", "offlineWorkspaceId", "offlineCwd"}
 +    if offline.intersection(field):
 +        if set(field) != offline:
 +            raise ValueError("Invalid offline workspace fields")
 +        for key in offline:
++            if key == "offlineCwd":
++                if not isinstance(field[key], str) or not field[key].startswith("/"):
++                    raise ValueError("Invalid offline workspace cwd")
++                continue
 +            pattern = r"[a-f0-9]{64}" if key == "offlineFingerprint" else r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
 +            if not isinstance(field[key], str) or not re.fullmatch(pattern, field[key]):
 +                raise ValueError("Invalid offline workspace identity")
@@ -372,7 +397,7 @@ index 0000000..360e518
 +            raise ValueError("Offline workspace belongs to a different bot")
 +        company, issue = ws["offlineCompanyId"], ws["offlineIssueId"]
 +        identity = offline_workspace_identity(company, issue)
-+        if identity["fingerprint"] != ws["offlineFingerprint"]:
++        if identity["fingerprint"] != ws["offlineFingerprint"] or identity["cwd"] != ws["offlineCwd"]:
 +            raise ValueError("Offline workspace identity changed")
 +        return {"path": identity["cwd"],
 +                "fallback": False, "exit_code": 0, "error": "", "recovered": []}

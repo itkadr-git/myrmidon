@@ -47,7 +47,7 @@ async function probeRuntime(db: Db, companyId: string, issueId: string, botId: s
   const ref = z.object({ type: z.literal("secret_ref"), secretId: uuid, version: z.number().int().positive() }).safeParse(config.apiKey);
   if (!ref.success || config.apiBaseUrl !== url) throw conflict("Target gateway card is not synchronized");
   const key = await secretService(db).resolveSecretValue(companyId, ref.data.secretId, ref.data.version,
-    { consumerType: "agent", consumerId: botId });
+    { consumerType: "agent", consumerId: botId, configPath: "apiKey" });
   const response = await fetch(new URL("/v1/offline-workspace", url), {
     method: "POST", redirect: "error", signal: AbortSignal.timeout(5_000),
     headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
@@ -173,5 +173,6 @@ export async function resolveOfflineBotWorkspace(db: Db, input: {
   return { id: row.id, cwd: saved.data.cwd, field: {
     offlineCompanyId: input.companyId, offlineIssueId: input.issueId,
     offlineBotId: input.botId, offlineFingerprint: saved.data.fingerprint,
+    offlineWorkspaceId: row.id, offlineCwd: saved.data.cwd,
   } };
 }

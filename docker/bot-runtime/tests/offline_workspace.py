@@ -1,6 +1,7 @@
-"""Behavior check for registered workspaces; no Git executable is needed."""
+"""Behavior check for registered workspaces using local Git fixtures only."""
 import os
 from pathlib import Path
+import subprocess
 import sys
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -21,6 +22,11 @@ def rejects(field):
     raise AssertionError("invalid offline workspace accepted")
 
 
+def git(cwd, *args):
+    subprocess.run(["/usr/bin/git", "-C", str(cwd), *args], check=True, capture_output=True,
+                   env={"PATH": "/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"})
+
+
 with TemporaryDirectory() as tmp:
     home = Path(tmp).resolve()
     cwd = home / "offline-workspaces" / company / issue
@@ -30,14 +36,26 @@ with TemporaryDirectory() as tmp:
     (cwd / ".git/HEAD").write_text("ref: refs/heads/main\n")
     with patch.object(ws, "_offline_volume", return_value=(home, ["mount", "fixture-volume", []])), \
          patch.dict(os.environ, {"MYRMIDON_BOT_KEY": bot}), \
-         patch.object(ws.subprocess, "run", side_effect=AssertionError("must not spawn Git")):
+         patch.object(ws, "_myr_ws_bin", side_effect=AssertionError("must not open a managed checkout")):
+        try:
+            ws.offline_workspace_identity(company, issue)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("registration attested an unborn HEAD")
+        git(cwd, "init", "--quiet")
+        (cwd / "tracked.txt").write_text("offline checkout\n")
+        git(cwd, "add", "tracked.txt")
+        git(cwd, "-c", "user.name=Offline test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture")
         fingerprint = ws.offline_workspace_fingerprint(company, issue)
         field = {"offlineCompanyId": company, "offlineIssueId": issue, "offlineBotId": bot,
-                 "offlineFingerprint": fingerprint}
+                 "offlineFingerprint": fingerprint, "offlineCwd": str(cwd),
+                 "offlineWorkspaceId": "44444444-4444-4444-8444-444444444444"}
         for _ in range(2):
             assert ws.open_task_workspace(field)["path"] == str(cwd)
         rejects({**field, "offlineBotId": company})
         rejects({**field, "offlineIssueId": company})
+        rejects({**field, "offlineCwd": str(cwd.parent)})
         with patch.object(ws, "_offline_volume", return_value=(home, ["mount", "other-volume", []])):
             rejects(field)
         with patch.object(ws, "_offline_volume", return_value=(home, ["mount", "fixture-volume", [str(cwd)]])):
@@ -48,10 +66,16 @@ with TemporaryDirectory() as tmp:
         cwd.chmod(0o755)
         rejects(field)
         cwd.chmod(0o700)
-        (cwd / ".git/objects/info").mkdir()
+        (cwd / ".git/objects/info").mkdir(exist_ok=True)
         (cwd / ".git/objects/info/alternates").write_text("/other/objects\n")
         rejects(field)
         (cwd / ".git/objects/info/alternates").unlink()
+        git(cwd, "config", "core.bare", "true")
+        rejects(field)
+        git(cwd, "config", "core.bare", "false")
+        git(cwd, "config", "core.worktree", str(cwd.parent))
+        rejects(field)
+        git(cwd, "config", "--unset", "core.worktree")
         replacement = cwd.with_name("replacement")
         cwd.rename(replacement)
         cwd.symlink_to(replacement, target_is_directory=True)
