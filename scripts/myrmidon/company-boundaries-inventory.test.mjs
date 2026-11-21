@@ -325,6 +325,61 @@ test("an object without owner or dependency fields is unknown, not unresolved", 
   assert.equal(summary.noOwnerDependencyFields, 2);
 });
 
+test("a known owner does not resolve an incomplete dependency", () => {
+  const { rows: [row], summary } = formatOwnerAttribution(
+    [{ ownerCompanyId: "c1", dependency: { type: "issue" } }],
+    { currentCompanyId: "c1", knownCompanyIds: ["c1"] },
+  );
+  assert.equal(row.ownerCompanyId, "c1");
+  assert.deepEqual(row.dependency, { type: "issue", id: null, companyId: null });
+  assert.equal(row.dependencyStatus, null);
+  assert.equal(row.reason, OWNER_ATTRIBUTION_REASONS.dependencyRefInvalid);
+  assert.equal(row.attribution, "unresolved");
+  assert.equal(summary.unresolved, 1);
+  assert.equal(summary.resolved, 0);
+  assert.equal(summary.crossCompanyLinks, 0);
+});
+
+test("a verified cross-company dependency does not resolve an unknown owner", () => {
+  const dependency = { type: "issue", id: "issue-77", companyId: "c2" };
+  const { rows: [row], summary } = formatOwnerAttribution(
+    [{ ownerCompanyId: "unknown-company", dependency }],
+    { currentCompanyId: "c1", knownCompanyIds: ["c1", "c2"] },
+  );
+  assert.equal(row.ownerCompanyId, null);
+  assert.deepEqual(row.dependency, dependency);
+  assert.equal(row.dependencyStatus, "cross-company");
+  assert.equal(row.reason, OWNER_ATTRIBUTION_REASONS.ownerCompanyUnknown);
+  assert.equal(row.attribution, "unresolved");
+  assert.equal(summary.unresolved, 1);
+  assert.equal(summary.resolved, 0);
+  assert.equal(summary.crossCompanyLinks, 1);
+});
+
+test("an explicitly empty owner is unresolved rather than unknown", () => {
+  for (const ownerCompanyId of [null, undefined]) {
+    const { rows: [row], summary } = formatOwnerAttribution([{ ownerCompanyId }]);
+    assert.equal(row.attribution, "unresolved");
+    assert.equal(row.reason, OWNER_ATTRIBUTION_REASONS.missingOwnerRef);
+    assert.equal(summary.unresolved, 1);
+    assert.equal(summary.unknown, 0);
+    assert.equal(summary.noOwnerDependencyFields, 0);
+  }
+});
+
+test("a GitHub token prefix is not an exact dependency identifier", () => {
+  const fakeToken = "ghp_" + "syntheticfixture123";
+  const formatted = formatOwnerAttribution(
+    [{ dependency: { type: "issue", id: fakeToken, companyId: "c2" } }],
+    { currentCompanyId: "c1" },
+  );
+  assert.ok(!JSON.stringify(formatted).includes(fakeToken));
+  assert.deepEqual(formatted.rows[0].dependency, { type: "issue", id: null, companyId: "c2" });
+  assert.equal(formatted.rows[0].reason, OWNER_ATTRIBUTION_REASONS.dependencyRefInvalid);
+  assert.equal(formatted.summary.unresolved, 1);
+  assert.equal(formatted.summary.crossCompanyLinks, 0);
+});
+
 test("present but unverifiable fields stay unresolved with an exact safe reason", () => {
   const { rows, summary } = formatOwnerAttribution(OPE_12910_UNRESOLVED_FIXTURE, { currentCompanyId: "c1", knownCompanyIds: ["c1"] });
   const byReason = Object.groupBy(rows, (row) => row.reason);
