@@ -69,7 +69,7 @@ const SAFE_IDENTIFIER_RE = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-
 /** Secret-shaped values never echo verbatim even if they fit an id shape.
  * Mirrors the token-prefix rules of scripts/myrmidon/scan-text.mjs so the
  * formatter and the publication scanner agree on what is secret-like. */
-const SECRET_SHAPED_RE = /(?:^|[^A-Za-z0-9])(?:pcp_[A-Za-z0-9_-]*|sk-[A-Za-z0-9_-]+|gh[ousr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+)/;
+const SECRET_SHAPED_RE = /(?:^|[^A-Za-z0-9])(?:pcp_[A-Za-z0-9_-]*|sk-[A-Za-z0-9_-]+|gh[pousr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+)/;
 
 /** True when a string is safe to serialize verbatim as an identifier. */
 function isSafeIdentifier(value) {
@@ -132,9 +132,8 @@ function safeDependencyRef(ref) {
  * "the link cannot be verified":
  * - an object with NEITHER an owner field NOR a dependency field is reported
  *   `attribution: "unknown"` with reason `no-owner-dependency-fields`;
- * - an object whose owner/dependency fields are present but unusable (owner not
- *   in the known company set, malformed dependency ref, missing comparison
- *   context) is reported `attribution: "unresolved"` with the cause;
+ * - if any declared field is unusable, the row is `unresolved` with the
+ *   cause, but verified identifiers and dependency status remain visible;
  * - only exact, safe identifiers are serialized: a resolved owner company id is
  *   echoed verbatim; a dependency ref contributes only its `type`/`id`/
  *   `companyId` strings; unverifiable refs are pseudonymized (truncated sha256).
@@ -142,15 +141,13 @@ function safeDependencyRef(ref) {
  *   dependency ref key that is not a safe identifier shape (UUID or short
  *   slug — this includes secret-shaped strings like token prefixes) is never
  *   echoed; it is pseudonymized (owner) or dropped from the ref (dependency)
- *   and the row reports `unresolved` with `identifier-not-safe-to-echo`.
+ *   and the row reports `unresolved` with the applicable field's reason.
  *
  * Sensitive values never enter the output — neither from payload fields
  * beyond the identifier keys nor from the identifier slots themselves.
  *
  * When both halves are present but unusable, the row's single `reason` names
- * the owner cause (owner field is the attribution field); with no owner field
- * at all, the dependency cause explains the row. The other half stays visible
- * through `dependencyStatus`/`dependency`.
+ * the owner cause. Otherwise the failing field supplies the reason.
  *
  * @param {Array<unknown>} entities inventory rows in payload order
  * @param {{currentCompanyId?: string, knownCompanyIds?: Iterable<string>}} [options]
@@ -166,10 +163,8 @@ export function formatOwnerAttribution(entities, { currentCompanyId, knownCompan
     if (!isObject) {
       return { entityRef, attribution: "unknown", reason: OWNER_ATTRIBUTION_REASONS.noFields, ownerCompanyId: null, ownerRefHash: null, dependencyStatus: null, dependency: null };
     }
-    const ownerRaw = entity[OWNER_FIELD];
-    const dependencyRaw = entity[DEPENDENCY_FIELD];
-    const hasOwnerField = ownerRaw !== undefined && ownerRaw !== null;
-    const hasDependencyField = dependencyRaw !== undefined;
+    const hasOwnerField = Object.hasOwn(entity, OWNER_FIELD);
+    const hasDependencyField = Object.hasOwn(entity, DEPENDENCY_FIELD);
     if (!hasOwnerField && !hasDependencyField) {
       return { entityRef, attribution: "unknown", reason: OWNER_ATTRIBUTION_REASONS.noFields, ownerCompanyId: null, ownerRefHash: null, dependencyStatus: null, dependency: null };
     }
@@ -177,33 +172,29 @@ export function formatOwnerAttribution(entities, { currentCompanyId, knownCompan
     let ownerCompanyId = null;
     let ownerRefHash = null;
     let ownerReason = null;
-    let ownerResolved = false;
-    if (!hasOwnerField || (typeof ownerRaw === "string" && !ownerRaw.trim())) {
-      ownerReason = OWNER_ATTRIBUTION_REASONS.missingOwnerRef;
-    } else if (typeof ownerRaw !== "string") {
-      ownerReason = OWNER_ATTRIBUTION_REASONS.ownerRefNotString;
-      ownerRefHash = shortHash(JSON.stringify(ownerRaw) ?? String(ownerRaw));
-    } else if (!isSafeIdentifier(ownerRaw)) {
-      // Secret-shaped or otherwise non-identifier values in the owner slot are
-      // never echoed verbatim: they are pseudonymized and the row stays
-      // unresolved even when the value is in the known set — "exact safe
-      // identifiers" is a property of the output, not of the lookup.
-      ownerReason = OWNER_ATTRIBUTION_REASONS.unsafeIdentifier;
-      ownerRefHash = shortHash(ownerRaw);
-    } else if (known.size > 0 && !known.has(ownerRaw)) {
-      ownerReason = OWNER_ATTRIBUTION_REASONS.ownerCompanyUnknown;
-      ownerRefHash = shortHash(ownerRaw);
-    } else {
-      ownerCompanyId = ownerRaw;
-      ownerResolved = true;
+    if (hasOwnerField) {
+      const ownerRaw = entity[OWNER_FIELD];
+      if (ownerRaw === null || ownerRaw === undefined || (typeof ownerRaw === "string" && !ownerRaw.trim())) {
+        ownerReason = OWNER_ATTRIBUTION_REASONS.missingOwnerRef;
+      } else if (typeof ownerRaw !== "string") {
+        ownerReason = OWNER_ATTRIBUTION_REASONS.ownerRefNotString;
+        ownerRefHash = shortHash(JSON.stringify(ownerRaw) ?? String(ownerRaw));
+      } else if (!isSafeIdentifier(ownerRaw)) {
+        ownerReason = OWNER_ATTRIBUTION_REASONS.unsafeIdentifier;
+        ownerRefHash = shortHash(ownerRaw);
+      } else if (known.size > 0 && !known.has(ownerRaw)) {
+        ownerReason = OWNER_ATTRIBUTION_REASONS.ownerCompanyUnknown;
+        ownerRefHash = shortHash(ownerRaw);
+      } else {
+        ownerCompanyId = ownerRaw;
+      }
     }
 
     let dependencyStatus = null;
     let dependency = null;
     let dependencyReason = null;
-    let dependencyResolved = false;
     if (hasDependencyField) {
-      const safe = safeDependencyRef(dependencyRaw);
+      const safe = safeDependencyRef(entity[DEPENDENCY_FIELD]);
       const complete = safe !== null && DEPENDENCY_REF_KEYS.every((key) => safe[key] !== null);
       if (safe !== null) dependency = safe;
       if (!complete) {
@@ -212,16 +203,12 @@ export function formatOwnerAttribution(entities, { currentCompanyId, knownCompan
         dependencyReason = OWNER_ATTRIBUTION_REASONS.currentCompanyUnknown;
       } else {
         dependencyStatus = safe.companyId === currentCompanyId ? "same-company" : "cross-company";
-        dependencyResolved = true;
       }
     }
 
-    const attribution = ownerResolved || dependencyResolved ? "resolved" : "unresolved";
-    // The reason names the present-but-unusable half: an unusable owner field
-    // wins because it is the attribution field; with no owner field at all the
-    // dependency cause explains the row.
-    const reason = hasOwnerField ? ownerReason : dependencyReason ?? ownerReason;
-    const row = { entityRef, attribution, ownerCompanyId: ownerCompanyId, ownerRefHash, dependencyStatus, dependency };
+    const reason = ownerReason ?? dependencyReason;
+    const attribution = reason === null ? "resolved" : "unresolved";
+    const row = { entityRef, attribution, ownerCompanyId, ownerRefHash, dependencyStatus, dependency };
     if (reason) row.reason = reason;
     return row;
   });
