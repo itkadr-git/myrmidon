@@ -39,6 +39,7 @@ import { assertCompanyAccess, assertBoard, getActorInfo } from "../../routes/aut
 import { logActivity } from "../../services/activity-log.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { listGuardrailEvents } from "./events.js";
+import { detectEntities } from "./entities/index.js";
 import {
   redactText,
   restoreText,
@@ -71,6 +72,15 @@ export function myrmidonGuardrailsRoutes(db: Db, deps: Partial<GuardrailRoutesDe
   const settings = instanceSettingsService(db);
 
   // --- redaction (1.7-REDACT, OPE-8659) -------------------------------------
+
+  router.post("/myrmidon/guardrails/entities", (req, res) => {
+    assertBoard(req);
+    if (typeof req.body?.text !== "string") {
+      res.status(400).json({ error: "text is required" });
+      return;
+    }
+    res.json({ entities: detectEntities(req.body.text) });
+  });
 
   router.post("/myrmidon/guardrails/redact", async (req, res) => {
     const { text, entities, mode, ttlMs } = req.body as {
