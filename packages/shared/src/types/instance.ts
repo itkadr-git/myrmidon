@@ -148,6 +148,16 @@ export interface InstanceGeneralSettings {
    */
   dateFormat?: InstanceDateFormat;
   /**
+   * myrmidon(1.7-AUTO-UPDATE-CANARY, OPE-12123): the flat canary settings for
+   * the auto-update service — the on/off switch and the share of the fleet
+   * that switches first (0–100).  Changed from the instance settings page and
+   * `GET`/`PATCH /api/myrmidon/instance/settings/general`; absent means the
+   * defaults (on, 25).  Kept in sync with the validator of the same fields
+   * (packages/shared/src/validators/instance.ts).
+   */
+  updateCanary?: boolean;
+  updateCanaryPercent?: number;
+  /**
    * Execution policy. Absent/`"any"` = unrestricted; `"kubernetes"` forces the
    * Kubernetes sandbox provider and denies local/ssh execution.
    */
