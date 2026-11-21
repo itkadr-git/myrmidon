@@ -16,7 +16,10 @@ import { sshPublicKey } from "./ssh-key.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 
-it.skipIf(!support.supported)("retires bootstrap only after real stored-key login and reuses the key in a new runner", async () => {
+it.skipIf(!support.supported).each([
+  { name: "retires bootstrap only after real stored-key login and reuses the key in a new runner", rejectStoredKey: false },
+  { name: "keeps bootstrap and password access when stored-key login is rejected", rejectStoredKey: true },
+])("$name", async ({ rejectStoredKey }) => {
   const directory = await mkdtemp(join(tmpdir(), "onboard-keys-"));
   const database = await startEmbeddedPostgresTestDatabase("onboard-keys-");
   const db = createDb(database.connectionString);
@@ -41,6 +44,16 @@ it.skipIf(!support.supported)("retires bootstrap only after real stored-key logi
       if (ctx.method === "password" && passwordEnabled && ctx.password === password) {
         events.push("password-login");
         ctx.accept();
+        return;
+      }
+      if (rejectStoredKey && installed && ctx.method === "none") {
+        events.push("unexpected-none-attempt");
+        ctx.reject(["publickey"]);
+        return;
+      }
+      if (ctx.method === "publickey" && installed && rejectStoredKey) {
+        events.push("key-rejected");
+        ctx.reject(["publickey"]);
         return;
       }
       if (ctx.method === "publickey" && installed) {
@@ -122,6 +135,14 @@ it.skipIf(!support.supported)("retires bootstrap only after real stored-key logi
       }
     };
     await runFreshWorker();
+    if (rejectStoredKey) {
+      expect(events).toEqual(["password-login", "key-rejected"]);
+      expect((await store.getJob(companyId, job.id))?.status).toBe("failed");
+      expect((await store.getServerById(companyId, serverId))?.onboardState).toBe("needs_attention");
+      expect(passwordEnabled).toBe(true);
+      expect(await panelSecretPort(db).readSecret(companyId, passwordName)).toBe(password);
+      return;
+    }
     expect((await store.getJob(companyId, job.id))?.status).toBe("succeeded");
     expect(await panelSecretPort(db).readSecret(companyId, passwordName)).toBeNull();
     const key = await panelSecretPort(db).readSecret(companyId, keyName);
