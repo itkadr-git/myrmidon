@@ -36,7 +36,7 @@ awaits evidence and review. Live OIDC and privileged finalization are not comple
 for the evidence boundaries.
 
 Work lands on `main` all the time; a release cut freezes it into a version.
-RC pre-releases (`myr-vX.Y.Z-rcN`) are published for testing before the
+RC pre-releases (`myr-vX.Y.Z-rc.N`) are published for testing before the
 final tag. Updating to either is the same operation — re-running the
 installer — covered in [Upgrading and rollback](Upgrading-and-rollback).
 
