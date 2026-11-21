@@ -448,12 +448,13 @@ describeEmbeddedPostgres("task PR sync sweep", () => {
     await db.update(issueWorkProducts).set({ isPrimary: true }).where(and(
       eq(issueWorkProducts.issueId, seeded.issueId), eq(issueWorkProducts.title, "PR 2824"),
     ));
-    const sweep = sweepFor(fakeResolver({ 3320: "open", 2824: "open", 2000: "open" }, { 3320: "CONFLICTING" }));
+    const sweep = sweepFor(fakeResolver({ 3320: "draft", 2824: "open", 2000: "open" }, { 3320: "CONFLICTING" }));
     expect(await sweep.sweep({ settings: SETTINGS, force: true })).toMatchObject({ returned: 0, failed: 0 });
     const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
     expect(issue.status).toBe("in_review");
     const products = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, seeded.issueId));
     expect(products).toHaveLength(3);
+    expect(products.find((product) => product.title === "PR 3320")?.status).toBe("draft");
     expect(products.find((product) => product.title === "PR 2000")?.status).toBe("archived");
   });
 

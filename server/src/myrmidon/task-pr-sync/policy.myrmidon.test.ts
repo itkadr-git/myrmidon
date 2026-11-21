@@ -61,7 +61,7 @@ describe("task PR sync policy", () => {
   it.each([false, true])("routes conflicts by the active primary (primary conflicting: %s)", (primaryConflicting) => {
     const decision = decideTaskPrSync(facts({ issueStatus: "in_review", prs: [
       pr({ number: 3320, state: "draft", mergeable: "CONFLICTING" }),
-      pr({ number: 2824, state: "open", mergeable: primaryConflicting ? "CONFLICTING" : "MERGEABLE", ...{ isPrimary: true } }),
+      pr({ number: 2824, state: "open", mergeable: primaryConflicting ? "CONFLICTING" : "MERGEABLE", isPrimary: true }),
     ] }));
     expect(decision).toEqual(primaryConflicting
       ? { kind: "return_conflict", conflictPrRefs: ["company-a/example.com#2824"] }

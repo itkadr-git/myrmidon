@@ -3,6 +3,7 @@ import { getTableName } from "drizzle-orm";
 import { issueWorkProducts, issues, issueComments } from "@myrmidon/db";
 import {
   fetchCommitCheckRuns,
+  formatAuthoritativeCiOutput,
   summarizeCheckRuns,
   createPullRequestCiResolver,
   withCiResolveDeadline,
@@ -1197,7 +1198,9 @@ describe("createPullRequestCiResolver", () => {
     });
     const unavailable = await resolver.resolveForIssue("comp-1", "issue-1");
     expect(unavailable[0]).toMatchObject({ pullNumber: 2024, status: "unavailable", authoritative: false });
-    expect(unavailable[1]).toMatchObject({ pullNumber: 57, conclusion: "success" });
+    expect(unavailable[1]).toMatchObject({ pullNumber: 57, conclusion: "success", secondary: true });
+    expect(formatAuthoritativeCiOutput(unavailable)).toContain("PR #2024");
+    expect(formatAuthoritativeCiOutput(unavailable)).not.toContain("PR #57");
 
     const deployCi = results.find((r) => r.repository === "itkadr-git/myrmidon-deploy");
     expect(deployCi).toBeDefined();

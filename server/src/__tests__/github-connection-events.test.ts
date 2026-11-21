@@ -624,11 +624,13 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
       expect(comments[0].body).toContain(headSha);
       expect(comments[0].body).toContain("https://github.com/paperclipai/paperclip/actions/runs/456");
     }
-    expect(wakeup.mock.calls[0]?.[1].idempotencyKey).toContain(headSha);
-    expect(wakeup.mock.calls[0]?.[1].payload).not.toHaveProperty("accessToken");
+    if (!secondary) {
+      expect(wakeup.mock.calls[0]?.[1].idempotencyKey).toContain(headSha);
+      expect(wakeup.mock.calls[0]?.[1].payload).not.toHaveProperty("accessToken");
+    }
     currentTime = new Date(currentTime.getTime() + 5_000);
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 0, duplicate: 3, failed: 0 });
-    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(wakeup).toHaveBeenCalledTimes(secondary ? 0 : 1);
   });
 
   it.each([

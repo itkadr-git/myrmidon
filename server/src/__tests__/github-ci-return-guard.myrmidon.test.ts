@@ -241,7 +241,9 @@ describeEmbeddedPostgres.sequential("CI deliveries by the final result of the he
   }
 
   async function productMetadataOf(seeded: Seeded) {
-    const [product] = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, seeded.issueId));
+    const [product] = await db.select().from(issueWorkProducts).where(and(
+      eq(issueWorkProducts.issueId, seeded.issueId), eq(issueWorkProducts.externalId, `${REPO}#pull/123`),
+    ));
     return (product?.metadata ?? {}) as Record<string, unknown>;
   }
 
@@ -551,6 +553,24 @@ describeEmbeddedPostgres.sequential("CI deliveries by the final result of the he
   });
 
   describe("the return of a task from review", () => {
+    it("records a secondary final failure without returning review or disarming its monitor", async () => {
+      const seeded = await seedTask();
+      await db.insert(issueWorkProducts).values({
+        companyId: seeded.companyId, issueId: seeded.issueId, type: "pull_request", provider: "github",
+        externalId: `${REPO}#pull/124`, title: "Primary", status: "open", isPrimary: true,
+        metadata: { repository: REPO, number: 124 },
+      });
+      const service = startService({ readHead: () => redHead(["tests (server 3/6)", "CI result"]) });
+      await expect(service.deliver([ciEvent(seeded, "check_run", "failure", "CI result")]))
+        .resolves.toMatchObject({ processed: 1, failed: 0 });
+      const task = await taskOf(seeded);
+      expect(task).toMatchObject({ status: "in_review", assigneeAgentId: seeded.reviewerId });
+      expect(task.monitorNextCheckAt).not.toBeNull();
+      expect(await productMetadataOf(seeded)).toMatchObject({ lastCompletedCi: { conclusion: "failure", final: true } });
+      expect(await commentsOf(seeded)).toHaveLength(0);
+      expect(service.wakeup).not.toHaveBeenCalled();
+    });
+
     it("keeps the task in review on a failed lane and returns it once on the final failure", async () => {
       const seeded = await seedTask();
       const service = startService({ readHead: () => redHead(["tests (server 3/6)", "CI result"]) });
