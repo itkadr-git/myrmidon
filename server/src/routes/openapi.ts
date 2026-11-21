@@ -1,6 +1,7 @@
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
 // myrmidon(B1): product name in the OpenAPI document; see product.ts.
 import { PRODUCT_ATTRIBUTION, PRODUCT_NAME } from "../myrmidon/product.js";
+import { offlineWorkspaceRequest } from "../services/offline-bot-workspace.js";
 import {
   experimentalApiPaths,
   experimentalApiQueries,
@@ -8776,6 +8777,27 @@ registry.registerPath({
 });
 
 // ─── Execution workspaces ─────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/issues/{issueId}/offline-bot-workspace",
+  tags: ["execution-workspaces"],
+  summary: "Reserve or register an offline bot workspace for an issue",
+  description: "Requires a board operator with company runtime management access. Reserve returns a directory without binding it to the issue. Register binds an existing standalone checkout; repeating registration of the same binding returns the existing workspace ID.",
+  request: {
+    params: z.object({ companyId: z.string().uuid(), issueId: z.string().uuid() }),
+    body: jsonBody(offlineWorkspaceRequest),
+  },
+  responses: {
+    200: r.ok(z.object({ id: z.string().uuid().nullable(), cwd: z.string() })),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
 
 registry.registerPath({
   method: "get",

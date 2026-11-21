@@ -446,6 +446,7 @@ import {
   runContextPersistenceFields,
   heartbeatRunListContextColumnProjections,
 } from "@myrmidon/db";
+import { resolveOfflineBotWorkspace } from "./offline-bot-workspace.js";
 import { conflict, HttpError, notFound } from "../errors.js";
 import {
   getStartupTraceContext,
@@ -27165,7 +27166,14 @@ export function heartbeatService(
       // myrmidon(1.6.9, OPE-13213): an agent that works in its own container
       // gets the task directory of the bot as its isolated workspace; the board
       // makes no worktree and hands out no shared checkout for it.
-      const botContainerWorkspace = resolveBotContainerWorkspace({
+      const offlineWorkspace = issueRef && await resolveOfflineBotWorkspace(db, {
+        companyId: agent.companyId, issueId: issueRef.id, projectId: issueRef.projectId,
+        requestedId: issueRef.executionWorkspaceId, botId: agent.id,
+        adapterType: agent.adapterType, adapterConfig: agent.adapterConfig,
+        mode: requestedExecutionWorkspaceMode,
+        wakeReason: run.contextWakeReason ?? readNonEmptyString(context.wakeReason),
+      });
+      const botContainerWorkspace = offlineWorkspace || resolveBotContainerWorkspace({
         adapterType: agent.adapterType,
         mode: requestedExecutionWorkspaceMode,
         issueIdentifier: issueRef?.identifier ?? null,
@@ -28537,11 +28545,19 @@ export function heartbeatService(
           agentId: agent.id,
         },
       );
+      const offlineRealization = offlineWorkspace
+        ? realizeBotContainerWorkspace(executionWorkspaceBase, offlineWorkspace)
+        : null;
       const {
         executionWorkspace,
         reusedExecutionWorkspace,
         policy: resolvedWorkspaceReusePolicy,
-      } = await provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>(
+      } = offlineRealization ? {
+        executionWorkspace: offlineRealization,
+        reusedExecutionWorkspace: offlineRealization,
+        policy: { shouldRestoreExistingWorkspace: true, shouldRefreshWorkspaceConfigSnapshot: false,
+          shouldPersistLatestWorkspaceConfigMetadata: false },
+      } : await provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>(
         {
           requestedShouldReuseExisting,
           existingExecutionWorkspaceId:
@@ -28666,7 +28682,7 @@ export function heartbeatService(
       const bindIssueToPersistedExecutionWorkspace = async (
         workspace: ExecutionWorkspace | null,
       ) => {
-        if (!issueId || !workspace || nativeRecoveryExecutionWorkspaceId) {
+        if (!issueId || !workspace || nativeRecoveryExecutionWorkspaceId || offlineWorkspace) {
           return;
         }
         const nextIssueWorkspaceMode =
@@ -28802,7 +28818,12 @@ export function heartbeatService(
         pendingForwardBranchReconcile?.recordedBranchName ??
         executionWorkspace.branchName;
       try {
-        persistedExecutionWorkspace =
+        if (offlineWorkspace && (safelyBoundExecutionWorkspace?.id !== offlineWorkspace.id ||
+            safelyBoundExecutionWorkspace.status !== "active" ||
+            safelyBoundExecutionWorkspace.cwd !== offlineWorkspace.cwd)) {
+          throw conflict("Offline workspace disappeared during preparation");
+        }
+        persistedExecutionWorkspace = offlineWorkspace ? safelyBoundExecutionWorkspace :
           resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace &&
           reusableExistingExecutionWorkspace
             ? await executionWorkspacesSvc.update(
@@ -29395,6 +29416,7 @@ export function heartbeatService(
             ]
           : []),
       ];
+      context.paperclipOfflineBotWorkspace = offlineWorkspace ? offlineWorkspace.field : undefined;
       context.paperclipWorkspace = {
         cwd: executionWorkspace.cwd,
         source: executionWorkspace.source,
