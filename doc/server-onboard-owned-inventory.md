@@ -50,6 +50,24 @@ Migration 0488 adds a nullable column without backfilling ownership for existing
 servers. During integration, regenerate/rebase the migration index if main gained
 another migration. The snapshot is derived from 0487 with only this column added.
 
+## OPE-13269 executor follow-up
+
+The worker supports deliberate opt-outs for monitoring and specialized role
+bootstrap. It reports `skipped`, not `ok`; an unset opt-out fails the step.
+
+The cleanup executor validates company/server scope and requires an existing
+SSH host pin before mutating remote resources. It processes exact container IDs,
+marked UFW rules, and exact key lines for the login account, in that order.
+It fails on command errors and does not attempt later mutations after a failure.
+Deleting the final access rule or key can prevent another connection; reconcile
+any ambiguous result through an independent admin channel, never by re-pinning.
+
+This does not expose decommission via the job-start API. The current onboarding
+flow does not produce complete ownership receipts for SSH keys, so existing
+inventories must not be interpreted as proof that all onboarding effects are
+accounted for. Production enablement requires a completeness/reconciliation
+policy and a verified recovery path for the final access removal.
+
 ## Verification
 
 Dependency-free contract tests: `node --test packages/shared/src/myrmidon-owned-resources.test.mjs`.

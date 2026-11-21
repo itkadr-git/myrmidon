@@ -161,6 +161,7 @@ describe("FleetOnboardExecutor (OPE-8840 contract tests)", () => {
     const durablePair = defaultGenerateKeyPair();
     const executor = new FleetOnboardExecutor({
       createSshExecutor: () => mockSsh,
+      skipMonitoring: true,
     });
 
     const mockReporter = createMockReporter();
@@ -745,30 +746,50 @@ esac
     expect(mockReporter.completion?.status).toBe("failed");
   });
 
-  it("handles decommission job cleanup step", async () => {
-    const mockSsh = new VerifiedMockSsh();
-    mockSsh.mockResponse(/docker stop/, { stdout: "", exitCode: 0 });
-    mockSsh.mockResponse(/sed -i/, { stdout: "", exitCode: 0 });
-    mockSsh.mockResponse(/sudo ufw delete allow/, { stdout: "", exitCode: 0 });
-
-    const executor = new FleetOnboardExecutor({
-      createSshExecutor: () => mockSsh,
-    });
+  it.each(["monitoring", "role"])("fails %s rather than claiming unconfigured bootstrap succeeded", async (step) => {
+    const ssh = new VerifiedMockSsh();
     const mockReporter = createMockReporter();
-    const claim: any = {
-      job: { id: "job-5", companyId: "c1", serverId: "s5", kind: "decommission" },
-      server: { hostname: "1.2.3.4", port: 22, username: "root" },
-      steps: ["cleanup"],
-      options: { keepPassword: true },
+    const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+    const claim = {
+      job: { id: "bootstrap-job", companyId, serverId, kind: "onboard" },
+      server: { hostname: "example.com", port: 22, username: "root" },
+      steps: [step], options: { keepPassword: true, role: "build-runner" },
       secretValues: { accessKey: "key" },
-    };
-
+    } as OnboardJobClaim & { secretValues: Record<string, string> };
     const result = await executor.execute(claim, mockReporter.reporter);
     expect(result.status).toBe("failed");
-    // Without an ownership inventory, cleanup must fail without touching workloads.
-    expect(mockSsh.hasExecuted("docker stop $(docker ps -q) 2>/dev/null || true")).toBe(false);
-    expect(mockReporter.steps).toEqual([
-      { step: "cleanup", result: "failed", detail: expect.stringContaining("ownership inventory") },
-    ]);
+    expect(mockReporter.steps).toEqual([{ step, result: "failed", detail: expect.stringContaining("not configured") }]);
+    expect(mockReporter.completion?.status).toBe("failed");
+  });
+
+  describe("decommission inventory contract", () => {
+    const resource = { kind: "role_container" as const, containerId: "a".repeat(64) };
+    const inventory = { version: 1 as const, companyId, serverId, resources: [{ jobId: serverId, resource }] };
+    const claim = {
+      job: { id: "decommission", companyId, serverId, kind: "decommission" },
+      server: { id: serverId, hostname: "example.com", port: 22, username: "root", hostKeyFingerprint: "SHA256:testfingerprint123456789" },
+      steps: ["cleanup"], options: { keepPassword: true },
+      secretValues: { accessKey: "test-key" }, ownershipInventory: inventory,
+    } as OnboardJobClaim & { secretValues: Record<string, string> };
+
+    it.each([null, { ...inventory, serverId: companyId }])("rejects missing or foreign inventory before SSH", async (ownershipInventory) => {
+      const reporter = createMockReporter();
+      const executor = new FleetOnboardExecutor({ createSshExecutor: () => { throw new Error("Unexpected SSH"); } });
+      const result = await executor.execute({ ...claim, ownershipInventory }, reporter.reporter);
+      expect(result.status).toBe("failed");
+      expect(result.error).toMatch(/ownership inventory/i);
+    });
+
+    it.each([0, 1])("reports cleanup command exit %s and stops on failure", async (exitCode) => {
+      const ssh = new VerifiedMockSsh();
+      ssh.mockResponse(/docker container rm/, { stdout: "", exitCode });
+      const reporter = createMockReporter();
+      const executor = new FleetOnboardExecutor({ createSshExecutor: () => ssh });
+      const result = await executor.execute(claim, reporter.reporter);
+      expect(ssh.getExecutedCommands()).toHaveLength(1);
+      expect(ssh.hasExecuted(resource.containerId)).toBe(true);
+      expect(result.status).toBe(exitCode === 0 ? "succeeded" : "failed");
+      expect(reporter.steps.map(({ result }) => result)).toEqual([exitCode === 0 ? "ok" : "failed"]);
+    });
   });
 });
