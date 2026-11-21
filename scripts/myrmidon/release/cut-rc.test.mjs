@@ -378,6 +378,36 @@ test("run: merged PR whose merge commit is not on the branch refuses hard (compo
   assert.equal(runGit(root, ["tag", "-l", "myr-v1.7.0-rc.26"]), "");
 });
 
+test("run: invalid merged PR numbers refuse before gh even with an override", async () => {
+  const run = await importRun();
+  const root = makeRepo();
+  const invalid = [undefined, "NaN", "3e2", 0, -1, 1.5, true, [123], "9007199254740993"];
+  const board = fakeBoard({
+    labels: [LABEL_17],
+    issues: [issue("i1", "OPE-100", "done")],
+    workProductsByIssue: { i1: invalid.map((number, i) => ({
+      type: "pull_request", status: "merged", title: `Bad reference ${i}`, metadata: { number },
+    })) },
+  });
+  let prCalls = 0;
+  const errors = [];
+  const code = await run(
+    { version: "1.7.0", rc: "25", root, dryRun: true, override: "stale board", journal: "OPE-12408" },
+    {
+      api: API, fetchBoard: board.fetchBoard, log: () => {}, err: (m) => errors.push(m),
+      ciStatus: () => ({ ok: true }), commitWithTaskSubject: () => true,
+      prDetails: () => { prCalls += 1; return { mergeCommit: { oid: runGit(root, ["rev-parse", "HEAD"]) } }; },
+    },
+  );
+  assert.equal(prCalls, 0);
+  assert.equal(code, 1);
+  const text = errors.join("\n");
+  for (let i = 0; i < invalid.length; i += 1) {
+    assert.match(text, new RegExp(`composition: OPE-100: merged PR Bad reference ${i} has an invalid board PR number`));
+  }
+  assert.match(text, /Not bypassable/);
+});
+
 test("run: done task with no delivery anywhere refuses hard (composition)", async () => {
   const run = await importRun();
   const root = makeRepo();
@@ -619,12 +649,18 @@ test("ciStatusForCommit treats a failing gh as not ok", () => {
   assert.match(res.reason, /gh run list failed/);
 });
 
-test("ciStatusForCommit is green only when every run for the sha succeeded", () => {
+test("ciStatusForCommit passes the JSON fields as one gh argument", () => {
   const sha = "1".repeat(40);
   const runs = JSON.stringify([
     { databaseId: 1, headSha: sha, status: "completed", conclusion: "success", workflowName: "CI", event: "push" },
   ]);
-  const bin = ghShim(null, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "gh 2.0"; exit 0; fi\necho '${runs}'\n`);
+  const bin = ghShim(null, `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "gh 2.0"; exit 0; fi
+[ "$#" -eq 10 ] || exit 2
+[ "$1 $2 $3 $4 $5 $6 $7 $8 $9" = "run list --branch main --limit 30 --repo itkadr-git/myrmidon --json" ] || exit 2
+[ "\${10}" = "databaseId,headSha,status,conclusion,workflowName,event" ] || exit 2
+echo '${runs}'
+`);
   const res = ciStatusForCommit(null, {
     repo: "itkadr-git/myrmidon", branch: "main", sha,
     env: { PATH: `${bin}:/usr/bin:/bin` },
