@@ -165,13 +165,20 @@ export function withoutDuplicateExecutionContinuation<T>(value: T): T {
  * the top-level copy instead of storing it a second time. The in-memory context
  * keeps the key: dispatch and the prompt still read it from there.
  */
-export function runContextForPersistence<T extends Record<string, unknown>>(context: T): T {
-  const { [EXECUTION_CONTINUATION_KEY]: _moved, ...snapshot }: Record<string, unknown> = context;
-  const rawWake = snapshot[PAPERCLIP_WAKE_PAYLOAD_KEY];
-  const topDigest = snapshot.eventDigest;
-  if (topDigest != null) snapshot.eventDigest = compactDigest(topDigest);
-  if (!rawWake || typeof rawWake !== "object" || Array.isArray(rawWake)) return snapshot as T;
-  const wake = { ...record(rawWake) };
+export function runContextForPersistence(context: Record<string, unknown>): Record<string, unknown> {
+  const storedWake = record(context[PAPERCLIP_WAKE_PAYLOAD_KEY]);
+  const topDigest = context.eventDigest;
+  const compactedDigest = topDigest == null ? topDigest : compactDigest(topDigest);
+  const projectCi = context[WAKE_CI_PROJECTION_KEY] === true && Array.isArray(storedWake.pullRequestsCi);
+  const projectWake = storedWake.eventDigest != null || projectCi;
+  if (!Object.hasOwn(context, EXECUTION_CONTINUATION_KEY) && compactedDigest === topDigest && !projectWake) {
+    return context;
+  }
+
+  const { [EXECUTION_CONTINUATION_KEY]: _moved, ...snapshot } = context;
+  if (compactedDigest !== topDigest) snapshot.eventDigest = compactedDigest;
+  if (!projectWake) return snapshot;
+  const wake = { ...storedWake };
   if (wake.eventDigest != null) {
     // Compare the already-redacted wake digest before applying the size cap.
     if (topDigest != null && sameJson(topDigest, wake.eventDigest)) {
@@ -193,7 +200,7 @@ export function runContextForPersistence<T extends Record<string, unknown>>(cont
       wake.ciFailureTailsTruncated = true;
     }
   }
-  return { ...snapshot, [PAPERCLIP_WAKE_PAYLOAD_KEY]: wake } as T;
+  return { ...snapshot, [PAPERCLIP_WAKE_PAYLOAD_KEY]: wake };
 }
 
 export interface RunContinuationPersistInput {

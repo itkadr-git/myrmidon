@@ -9426,7 +9426,7 @@ function fenceTaskText(value: string) {
 }
 
 function renderTaskCiMarkdown(
-  issueStatus: string,
+  issueStatus: string | null | undefined,
   input: Pick<Parameters<typeof buildPaperclipTaskMarkdown>[0], "wakePayload" | "pullRequestsCi">,
 ): string[] {
   const lines: string[] = [];
