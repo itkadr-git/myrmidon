@@ -1,5 +1,4 @@
 import type { Db } from "@myrmidon/db";
-import { listAdapterModels } from "../adapters/registry.js";
 import { unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { effortForModel } from "./effort-policy/effort-policy.js";
@@ -164,7 +163,7 @@ export async function assertAgentModelsKnown(input: {
   try {
     const baseKnown = input.listModels
       ? await input.listModels(input.adapterType)
-      : await listAdapterModels(input.adapterType, input.companyId, input.db);
+      : await (await import("../adapters/registry.js")).listAdapterModels(input.adapterType, input.companyId, input.db);
     known = input.companyId && input.db
       ? await enrichWithPoolModels(input.db, input.companyId, baseKnown as any)
       : baseKnown;

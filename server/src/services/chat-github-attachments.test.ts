@@ -153,9 +153,9 @@ describe("GitHub exact-comment private image resolution", () => {
     "denies ambiguous or untrusted live signed mapping %s",
     async (_name, body_html) => {
       const canonical = canonicalComment({ body_html });
-      expect(
-        await resolveGitHubCommentAttachmentTarget(attachment(), canonical),
-      ).toBeNull();
+      await expect(
+        resolveGitHubCommentAttachmentTarget(attachment(), canonical),
+      ).resolves.toBeNull();
       request.mockResolvedValueOnce(new Response("private", { status: 404 }));
       await expect(
         prepareGitHubPublicAttachment(
@@ -176,7 +176,9 @@ describe("GitHub exact-comment private image resolution", () => {
       body: raw.comment.body,
       body_html: `<a href="${signedImageUrl}"><img src="${signedImageUrl}"></a>`,
     });
-    expect(await resolveGitHubCommentAttachmentTarget(image, canonical)).toBeNull();
+    await expect(
+      resolveGitHubCommentAttachmentTarget(image, canonical),
+    ).resolves.toBeNull();
     request.mockResolvedValueOnce(new Response("private", { status: 404 }));
     await expect(
       prepareGitHubPublicAttachment(image, undefined, async () => canonical),
@@ -233,9 +235,9 @@ describe("GitHub exact-comment private image resolution", () => {
         /https:|jwt|token|body_html|privatepayload/,
       );
       expect(request).toHaveBeenCalledTimes(1);
-      expect(
-        await resolveGitHubCommentAttachmentTarget(attachment(), value),
-      ).toBeNull();
+      await expect(
+        resolveGitHubCommentAttachmentTarget(attachment(), value),
+      ).resolves.toBeNull();
     },
   );
   it("preserves only exact closed SDK cause codes with bounded traversal", () => {
@@ -359,12 +361,12 @@ describe("GitHub exact-comment private image resolution", () => {
       body_html: `<a href="${imageUrl}"><img src="${signedImageUrl}&amp;token=extra"></a>`,
     },
   ])("denies mismatched or ambiguous canonical response %j", async (override) => {
-    expect(
-      await resolveGitHubCommentAttachmentTarget(
+    await expect(
+      resolveGitHubCommentAttachmentTarget(
         attachment(),
         canonicalComment(override),
       ),
-    ).toBeNull();
+    ).resolves.toBeNull();
     expect(request).not.toHaveBeenCalled();
   });
   it("does not treat a private generic-file anchor as downloadable", async () => {
@@ -396,15 +398,15 @@ describe("GitHub exact-comment private image resolution", () => {
         "https://api.github.com/repos/paperclipai/chat-e2e/pulls/42",
       in_reply_to_id: 4000,
     });
-    expect((await resolveGitHubCommentAttachmentTarget(image, response))?.href).toBe(
-      signedImageUrl,
-    );
-    expect(
-      await resolveGitHubCommentAttachmentTarget(image, {
+    await expect(
+      resolveGitHubCommentAttachmentTarget(image, response),
+    ).resolves.toMatchObject({ href: signedImageUrl });
+    await expect(
+      resolveGitHubCommentAttachmentTarget(image, {
         ...response,
         in_reply_to_id: 3999,
       }),
-    ).toBeNull();
+    ).resolves.toBeNull();
   });
   it("closes the authenticated fetch to one API route and never follows its redirects", async () => {
     const expected = githubAttachmentCommentRequest(attachment())!;
@@ -534,9 +536,9 @@ describe("GitHub exact-comment private image resolution", () => {
           new AbortController().signal,
         );
         expect(result).toEqual(canonical);
-        expect(
-          (await resolveGitHubCommentAttachmentTarget(attachment(), result))?.href,
-        ).toBe(signedImageUrl);
+        await expect(
+          resolveGitHubCommentAttachmentTarget(attachment(), result),
+        ).resolves.toMatchObject({ href: signedImageUrl });
         expect(providerFetch).toHaveBeenCalledTimes(1);
         expect(String(providerFetch.mock.calls[0]?.[0])).toBe(
           "https://api.github.com/app/installations/2468/access_tokens",

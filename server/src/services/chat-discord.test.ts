@@ -29,15 +29,15 @@ function fetchFixture(
 
 describe("Discord bot validation and inventory", () => {
   it("measures the final Discord Markdown instead of raw source length", async () => {
-    expect(await discordMarkdownRequiresAttachment("x".repeat(2_000))).toBe(false);
-    expect(await discordMarkdownRequiresAttachment("🙂".repeat(1_001))).toBe(true);
+    await expect(discordMarkdownRequiresAttachment("x".repeat(2_000))).resolves.toBe(false);
+    await expect(discordMarkdownRequiresAttachment("🙂".repeat(1_001))).resolves.toBe(true);
     // The Discord formatter expands each bare mention by two characters.
-    expect(await discordMarkdownRequiresAttachment("@a ".repeat(500))).toBe(true);
-    expect(
-      await discordMarkdownRequiresAttachment(
+    await expect(discordMarkdownRequiresAttachment("@a ".repeat(500))).resolves.toBe(true);
+    await expect(
+      discordMarkdownRequiresAttachment(
         `\`\`\`ts\n${"const value = 1;\n".repeat(120)}\`\`\``,
       ),
-    ).toBe(true);
+    ).resolves.toBe(true);
   });
 
   it("binds the token, application, privileged intent, and server", async () => {

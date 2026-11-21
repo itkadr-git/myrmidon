@@ -2,13 +2,11 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import postgres from "postgres";
-import { applyPendingMigrations, closeRegisteredClients, ensurePostgresDatabase } from "./client.js";
+import type postgres from "postgres";
 import {
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
 } from "./embedded-postgres-error.js";
-import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
 import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 // Time budget (ms) for a vitest test in the embedded-Postgres cost class: a
@@ -65,6 +63,7 @@ type EmbeddedPostgresCtorProvider = () => Promise<EmbeddedPostgresCtor>;
 
 async function loadEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
   const mod = await import("embedded-postgres");
+  const { prepareEmbeddedPostgresNativeRuntime } = await import("./embedded-postgres-native.js");
   await prepareEmbeddedPostgresNativeRuntime();
   return mod.default as EmbeddedPostgresCtor;
 }
@@ -286,6 +285,7 @@ export async function getEmbeddedPostgresTestSupport(): Promise<EmbeddedPostgres
 export async function startEmbeddedPostgresTestDatabase(
   tempDirPrefix: string,
 ): Promise<EmbeddedPostgresTestDatabase> {
+  const { applyPendingMigrations, closeRegisteredClients, ensurePostgresDatabase } = await import("./client.js");
   // The bounded retry hardens the cluster start against the port race. It throws
   // with the real Postgres output if every attempt fails.
   const { port, dataDir, instance } = await startEmbeddedPostgresWithRetry(tempDirPrefix);
@@ -341,12 +341,14 @@ const EMBEDDED_POSTGRES_TEMPLATE_DATABASE = "paperclip_template";
 export async function startEmbeddedPostgresTestCluster(
   tempDirPrefix: string,
 ): Promise<EmbeddedPostgresTestCluster> {
+  const { applyPendingMigrations, closeRegisteredClients, ensurePostgresDatabase } = await import("./client.js");
   const { port, dataDir, instance } = await startEmbeddedPostgresWithRetry(tempDirPrefix);
   const baseUrl = `postgres://paperclip:paperclip@127.0.0.1:${port}`;
   const adminConnectionString = `${baseUrl}/postgres`;
   const templateConnectionString = `${baseUrl}/${EMBEDDED_POSTGRES_TEMPLATE_DATABASE}`;
 
   const withAdminSql = async <T>(run: (sql: ReturnType<typeof postgres>) => Promise<T>): Promise<T> => {
+    const { default: postgres } = await import("postgres");
     const sql = postgres(adminConnectionString, { max: 1, onnotice: () => {} });
     try {
       return await run(sql);
