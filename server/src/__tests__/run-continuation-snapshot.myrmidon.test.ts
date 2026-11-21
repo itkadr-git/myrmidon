@@ -279,7 +279,7 @@ describePostgres("run continuation snapshot single copy", () => {
       eventCount: count, omittedEventCount: 0,
       events: Array.from({ length: count }, (_, i) => ({
         id: `event-${i}`, issueId: single.issueId, type: "progress",
-        payload: { issueId: single.issueId, note: i === 0 ? "Короткое событие 🎯" : `${secret} ${"ю".repeat(1_600)}🎯` },
+        payload: { issueId: single.issueId, note: i === 0 ? `Короткое событие 🎯 ${secret}` : `${secret} ${"ю".repeat(1_600)}🎯` },
       })),
     };
     const buildWake = async (digest: typeof eventDigest) => buildPaperclipWakePayload({
@@ -302,8 +302,11 @@ describePostgres("run continuation snapshot single copy", () => {
 
     const safeDigest = redactRegisteredSecretValues(eventDigest, [secret]);
     const different = await storeSnapshot({ eventDigest, ...prepareWakeContext(await buildWake(safeDigest)) });
-    expect(different.paperclipWake).toHaveProperty("eventDigest", expected);
-    expect(wakePayloadForDispatch(different)).toMatchObject({ eventDigest: expected });
+    const safeExpected = redactRegisteredSecretValues(expected, [secret]);
+    expect(different.paperclipWake).toHaveProperty("eventDigest", safeExpected);
+    const delivered = wakePayloadForDispatch(different);
+    expect(delivered).toMatchObject({ eventDigest: safeExpected });
+    expect(JSON.stringify(delivered)).not.toContain(secret);
   });
 
   it("writes the wake payload without a second copy of the continuation", async () => {

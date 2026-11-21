@@ -109,6 +109,10 @@ export function wakePayloadForDispatch(
   if (stored[EVENT_DIGEST_REFERENCE] === true) {
     const { [EVENT_DIGEST_REFERENCE]: _reference, ...rest } = stored;
     payload = { ...rest, eventDigest: snapshot.eventDigest ?? null };
+  } else if (snapshot[WAKE_CI_PROJECTION_KEY] === true && stored.eventDigest != null) {
+    // Live dispatch gets the same size cap as delivery restored from storage.
+    const digest = compactDigest(stored.eventDigest);
+    if (digest !== stored.eventDigest) payload = { ...stored, eventDigest: digest };
   }
   if (snapshot[WAKE_CI_PROJECTION_KEY] === true && !Object.hasOwn(payload, "ciResult") && Array.isArray(payload.pullRequestsCi)) {
     payload = { ...payload, ciResult: payload.pullRequestsCi[0] ?? null };
@@ -132,7 +136,8 @@ export function wakePayloadForDispatch(
 export function prepareWakeContext(payload: unknown): Record<string, unknown> {
   return {
     [WAKE_CI_PROJECTION_KEY]: true,
-    [PAPERCLIP_WAKE_PAYLOAD_KEY]: runContextForPersistence({ [WAKE_CI_PROJECTION_KEY]: true, [PAPERCLIP_WAKE_PAYLOAD_KEY]: payload })[PAPERCLIP_WAKE_PAYLOAD_KEY],
+    // Leave the redacted digest intact for the pre-cap comparison at persistence.
+    [PAPERCLIP_WAKE_PAYLOAD_KEY]: projectWakeCi(record(payload)),
   };
 }
 
