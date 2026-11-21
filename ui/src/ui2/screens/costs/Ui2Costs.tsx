@@ -9,6 +9,7 @@
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useDateRange } from "@/hooks/useDateRange";
 import { costsApi } from "@/api/costs";
 import { budgetsApi } from "@/api/budgets";
 import { queryKeys } from "@/lib/queryKeys";
@@ -46,6 +47,7 @@ function scopeTypeLabel(scopeType: string, t: (key: never) => string): string {
 export function Ui2Costs() {
   const { t } = useUi2I18n();
   const { selectedCompanyId } = useCompany();
+  const { preset, setPreset, customFrom, setCustomFrom, customTo, setCustomTo, from, to, customReady } = useDateRange();
   const queryClient = useQueryClient();
   const [incidentError, setIncidentError] = useState<string | null>(null);
   // myrmidon(1.6.3 PROMPT-BUDGET D): the by-agent table can be ordered by spend
@@ -54,9 +56,9 @@ export function Ui2Costs() {
   const companyId = selectedCompanyId ?? "";
 
   const summaryQuery = useQuery({
-    queryKey: queryKeys.costs(companyId),
-    queryFn: () => costsApi.summary(companyId),
-    enabled: !!selectedCompanyId,
+    queryKey: queryKeys.costs(companyId, from || undefined, to || undefined),
+    queryFn: () => costsApi.summary(companyId, from || undefined, to || undefined),
+    enabled: !!selectedCompanyId && customReady,
     refetchInterval: 30_000,
   });
 
@@ -68,9 +70,23 @@ export function Ui2Costs() {
   });
 
   const byAgentQuery = useQuery({
-    queryKey: [...queryKeys.costs(companyId), "by-agent"],
-    queryFn: () => costsApi.byAgent(companyId),
-    enabled: !!selectedCompanyId,
+    queryKey: [...queryKeys.costs(companyId, from || undefined, to || undefined), "by-agent"],
+    queryFn: () => costsApi.byAgent(companyId, from || undefined, to || undefined),
+    enabled: !!selectedCompanyId && customReady,
+    staleTime: 30_000,
+  });
+
+  const byDayQuery = useQuery({
+    queryKey: [...queryKeys.costs(companyId, from || undefined, to || undefined), "by-day"],
+    queryFn: () => costsApi.byDay(companyId, from || undefined, to || undefined),
+    enabled: !!selectedCompanyId && customReady,
+    staleTime: 30_000,
+  });
+
+  const byIssueQuery = useQuery({
+    queryKey: [...queryKeys.costs(companyId, from || undefined, to || undefined), "by-issue", 10],
+    queryFn: () => costsApi.byIssue(companyId, from || undefined, to || undefined, 10),
+    enabled: !!selectedCompanyId && customReady,
     staleTime: 30_000,
   });
 
@@ -102,6 +118,15 @@ export function Ui2Costs() {
   if (summaryQuery.isLoading || budgetsQuery.isLoading) {
     return (
       <Ui2Page title={t("ui2.costs.title")}>
+        <div className="ui2-costs-period flex flex-wrap items-center gap-2">
+        {(["mtd", "7d", "30d", "ytd", "all", "custom"] as const).map((key) => (
+            <button key={key} type="button" aria-pressed={preset === key} onClick={() => setPreset(key)}>{t(`ui2.costs.range.preset.${key}`)}</button>
+          ))}
+          {preset === "custom" ? <>
+            <input type="date" value={customFrom} aria-label={t("ui2.costs.range.from")} onChange={(event) => setCustomFrom(event.target.value)} />
+            <input type="date" value={customTo} aria-label={t("ui2.costs.range.to")} onChange={(event) => setCustomTo(event.target.value)} />
+          </> : null}
+        </div>
         <Ui2SkeletonRows rows={4} />
       </Ui2Page>
     );
@@ -134,13 +159,40 @@ export function Ui2Costs() {
   const overview = budgetsQuery.data;
   const utilizationPercent = summary ? Math.round(summary.utilizationPercent) : 0;
   const utilizationTone = utilizationPercent >= 90 ? "danger" : utilizationPercent >= 70 ? "warning" : "ok";
-  const hasSpend = (byAgentQuery.data ?? []).some((row) => row.costCents > 0);
+  const hasSpend = (byDayQuery.data ?? []).some((row) => row.costCents > 0);
+  const dailySpend = (() => {
+    let running = 0;
+    return [...(byDayQuery.data ?? [])]
+      .sort((left, right) => left.day.localeCompare(right.day))
+      .map((row) => {
+        running += row.costCents;
+        return { ...row, cumulativeCostCents: running };
+      });
+  })();
+  const dailyTotal = dailySpend.at(-1)?.cumulativeCostCents ?? 0;
+  const costDataError = byDayQuery.isError || byIssueQuery.isError;
+  const costDataErrorDetail = byDayQuery.error instanceof Error
+    ? byDayQuery.error.message
+    : byIssueQuery.error instanceof Error
+      ? byIssueQuery.error.message
+      : null;
   const budgetHint = summary && summary.budgetCents > 0
     ? t("ui2.costs.tile.remaining", { amount: formatCents(Math.max(0, summary.budgetCents - summary.spendCents)) })
     : undefined;
 
   return (
     <Ui2Page title={t("ui2.costs.title")}>
+      <div className="ui2-costs-period flex flex-wrap items-center gap-2">
+        {(["mtd", "7d", "30d", "ytd", "all", "custom"] as const).map((key) => (
+          <button key={key} type="button" className="rounded-md border border-border px-3 py-1 text-xs hover:bg-accent" aria-pressed={preset === key} onClick={() => setPreset(key)}>
+            {t(`ui2.costs.range.preset.${key}`)}
+          </button>
+        ))}
+        {preset === "custom" ? <>
+          <input type="date" value={customFrom} aria-label={t("ui2.costs.range.from")} onChange={(event) => setCustomFrom(event.target.value)} />
+          <input type="date" value={customTo} aria-label={t("ui2.costs.range.to")} onChange={(event) => setCustomTo(event.target.value)} />
+        </> : null}
+      </div>
       <Ui2Tiles>
         <Ui2Tile
           label={t("ui2.costs.tile.spent")}
@@ -226,25 +278,49 @@ export function Ui2Costs() {
         </Ui2Section>
       ) : null}
 
+      {costDataError ? (
+        <Ui2ErrorState
+          message={t("ui2.common.error")}
+          detail={costDataErrorDetail}
+          retryLabel={t("ui2.common.retry")}
+          onRetry={() => {
+            void byDayQuery.refetch();
+            void byIssueQuery.refetch();
+          }}
+          withCache={byDayQuery.isSuccess || byIssueQuery.isSuccess}
+        />
+      ) : null}
       <Ui2Section title={t("ui2.costs.chart.title")}>
-        {!hasSpend ? (
+        {byDayQuery.isLoading ? <Ui2SkeletonRows rows={3} dense /> : byDayQuery.isError ? (
+          <Ui2ErrorState message={t("ui2.common.error")} retryLabel={t("ui2.common.retry")} onRetry={() => void byDayQuery.refetch()} withCache={byDayQuery.isSuccess} />
+        ) : !hasSpend ? (
           <Ui2EmptyStateView variant="done" title={t("ui2.costs.chart.empty")} />
         ) : (
-          <div className="ui2-costs-chart flex flex-col gap-2">
-            {(byAgentQuery.data ?? []).slice().sort((a, b) => b.costCents - a.costCents).slice(0, 8).map((row) => {
-              const maximum = Math.max(...(byAgentQuery.data ?? []).map((item) => item.costCents), 1);
-              const width = `${Math.max(2, Math.round((row.costCents / maximum) * 100))}%`;
+          <div className="ui2-costs-chart flex flex-col gap-2" data-total-cents={dailyTotal}>
+            {dailySpend.map((row) => {
+              const width = `${Math.max(2, Math.round((row.cumulativeCostCents / Math.max(dailyTotal, 1)) * 100))}%`;
               return (
-                <div key={row.agentId} className="ui2-costs-chart-row grid grid-cols-[minmax(6rem,12rem)_1fr_auto] items-center gap-3 text-xs">
-                  <span className="truncate">{row.agentName ?? t("ui2.costs.agents.unnamed")}</span>
-                  <span className="h-2 rounded-full bg-muted" aria-hidden="true">
-                    <span className="block h-2 rounded-full bg-primary" style={{ width }} />
-                  </span>
-                  <span className="font-mono tabular-nums">{formatCents(row.costCents)}</span>
+                <div key={row.day} className="ui2-costs-chart-row grid grid-cols-[minmax(5rem,8rem)_1fr_auto] items-center gap-3 text-xs">
+                  <span>{row.day}</span>
+                  <span className="h-2 rounded-full bg-muted" aria-hidden="true"><span className="block h-2 rounded-full bg-primary" style={{ width }} /></span>
+                  <span className="font-mono tabular-nums">{formatCents(row.cumulativeCostCents)}</span>
                 </div>
               );
             })}
           </div>
+        )}
+      </Ui2Section>
+
+      <Ui2Section title={t("ui2.costs.issues.title")}>
+        {byIssueQuery.isLoading ? <Ui2SkeletonRows rows={3} dense /> : byIssueQuery.isError ? (
+          <Ui2ErrorState message={t("ui2.common.error")} retryLabel={t("ui2.common.retry")} onRetry={() => void byIssueQuery.refetch()} withCache={byIssueQuery.isSuccess} />
+        ) : (byIssueQuery.data ?? []).length === 0 ? (
+          <Ui2EmptyStateView variant="done" title={t("ui2.costs.issues.empty")} />
+        ) : (
+          <table className="ui2-costs-issues w-full text-sm">
+            <thead><tr className="text-left text-xs text-muted-foreground"><th className="py-1 font-medium">{t("ui2.costs.issues.issue")}</th><th className="py-1 text-right font-medium">{t("ui2.costs.issues.cost")}</th><th className="py-1 text-right font-medium">{t("ui2.costs.issues.runs")}</th></tr></thead>
+            <tbody>{byIssueQuery.data!.map((row) => <tr key={row.issueId} className="border-t border-border"><td className="py-1.5"><a className="hover:underline" href={`/${row.identifier}`}>{row.identifier} · {row.title}</a></td><td className="py-1.5 text-right font-mono tabular-nums">{formatCents(row.costCents)}</td><td className="py-1.5 text-right font-mono tabular-nums">{row.runs}</td></tr>)}</tbody>
+          </table>
         )}
       </Ui2Section>
 

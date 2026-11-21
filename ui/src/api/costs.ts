@@ -16,10 +16,22 @@ import type {
 } from "@myrmidon/shared";
 import { api } from "./client";
 
-function dateParams(from?: string, to?: string): string {
+export interface CostByIssue {
+  issueId: string;
+  identifier: string;
+  title: string;
+  costCents: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  runs: number;
+}
+
+function dateParams(from?: string, to?: string, limit?: number): string {
   const params = new URLSearchParams();
   if (from) params.set("from", from);
   if (to) params.set("to", to);
+  if (limit != null) params.set("limit", String(limit));
   const qs = params.toString();
   return qs ? `?${qs}` : "";
 }
@@ -40,6 +52,8 @@ export const costsApi = {
     api.get<CostByProject[]>(`/companies/${companyId}/costs/by-project${dateParams(from, to)}`),
   byDay: (companyId: string, from?: string, to?: string) =>
     api.get<CostByDay[]>(`/companies/${companyId}/costs/by-day${dateParams(from, to)}`),
+  byIssue: (companyId: string, from?: string, to?: string, limit = 10) =>
+    api.get<CostByIssue[]>(`/companies/${companyId}/costs/by-issue${dateParams(from, to, limit)}`),
   byProvider: (companyId: string, from?: string, to?: string) =>
     api.get<CostByProviderModel[]>(`/companies/${companyId}/costs/by-provider${dateParams(from, to)}`),
   byBiller: (companyId: string, from?: string, to?: string) =>
@@ -51,18 +65,9 @@ export const costsApi = {
   financeByKind: (companyId: string, from?: string, to?: string) =>
     api.get<FinanceByKind[]>(`/companies/${companyId}/costs/finance-by-kind${dateParams(from, to)}`),
   financeEvents: (companyId: string, from?: string, to?: string, limit: number = 100) =>
-    api.get<FinanceEvent[]>(`/companies/${companyId}/costs/finance-events${dateParamsWithLimit(from, to, limit)}`),
+    api.get<FinanceEvent[]>(`/companies/${companyId}/costs/finance-events${dateParams(from, to, limit)}`),
   windowSpend: (companyId: string) =>
     api.get<CostWindowSpendRow[]>(`/companies/${companyId}/costs/window-spend`),
   quotaWindows: (companyId: string) =>
     api.get<ProviderQuotaResult[]>(`/companies/${companyId}/costs/quota-windows`),
 };
-
-function dateParamsWithLimit(from?: string, to?: string, limit?: number): string {
-  const params = new URLSearchParams();
-  if (from) params.set("from", from);
-  if (to) params.set("to", to);
-  if (limit) params.set("limit", String(limit));
-  const qs = params.toString();
-  return qs ? `?${qs}` : "";
-}
