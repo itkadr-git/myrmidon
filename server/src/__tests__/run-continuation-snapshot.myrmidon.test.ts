@@ -23,6 +23,7 @@ import { redactRegisteredSecretValues } from "../services/run-secret-redaction.j
 import {
   EXECUTION_CONTINUATION_KEY,
   PAPERCLIP_WAKE_PAYLOAD_KEY,
+  prepareWakeContext,
   runContextForPersistence,
   WAKE_CI_PROJECTION_KEY,
   wakePayloadForDispatch,
@@ -270,6 +271,39 @@ describePostgres("run continuation snapshot single copy", () => {
     expect(JSON.stringify(wake)).not.toContain("fixture-event-secret");
     expect(wakePayloadForDispatch({ eventDigest, paperclipWake: { eventDigest: null } })).toEqual({ eventDigest: null });
     expect(wakePayloadForDispatch({ eventDigest, paperclipWake: {} })).toEqual({});
+  });
+
+  it.each([29, 30])("compares %i large events before the snapshot size cap", async (count) => {
+    const secret = "fixture-event-secret";
+    const eventDigest = {
+      eventCount: count, omittedEventCount: 0,
+      events: Array.from({ length: count }, (_, i) => ({
+        id: `event-${i}`, issueId: single.issueId, type: "progress",
+        payload: { issueId: single.issueId, note: i === 0 ? "Короткое событие 🎯" : `${secret} ${"ю".repeat(1_600)}🎯` },
+      })),
+    };
+    const buildWake = async (digest: typeof eventDigest) => buildPaperclipWakePayload({
+      db, companyId: single.companyId, agentId: single.agentId, runId: single.runId,
+      contextSnapshot: { issueId: single.issueId, wakeReason: "issue_assigned", eventDigest: digest },
+    });
+    const wake = await buildWake(eventDigest);
+    expect(wake?.eventDigest).toEqual(eventDigest);
+    const context = { eventDigest, ...prepareWakeContext(wake) };
+    const stored = await storeSnapshot(context);
+    expect(stored.paperclipWake).not.toHaveProperty("eventDigest");
+    const expected = {
+      ...eventDigest,
+      events: eventDigest.events.map((event, i) => i === 0 ? event : ({
+        ...event, payload: { issueId: single.issueId, truncated: true },
+      })),
+    };
+    expect(wakePayloadForDispatch(stored)).toMatchObject({ eventDigest: expected });
+    expect(wakePayloadForDispatch(stored)).toEqual(JSON.parse(JSON.stringify(wakePayloadForDispatch(context))));
+
+    const safeDigest = redactRegisteredSecretValues(eventDigest, [secret]);
+    const different = await storeSnapshot({ eventDigest, ...prepareWakeContext(await buildWake(safeDigest)) });
+    expect(different.paperclipWake).toHaveProperty("eventDigest", expected);
+    expect(wakePayloadForDispatch(different)).toMatchObject({ eventDigest: expected });
   });
 
   it("writes the wake payload without a second copy of the continuation", async () => {

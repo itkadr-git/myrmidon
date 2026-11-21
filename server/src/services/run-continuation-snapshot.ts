@@ -129,6 +129,29 @@ export function wakePayloadForDispatch(
     : rest;
 }
 
+export function prepareWakeContext(payload: unknown): Record<string, unknown> {
+  return {
+    [WAKE_CI_PROJECTION_KEY]: true,
+    [PAPERCLIP_WAKE_PAYLOAD_KEY]: runContextForPersistence({ [WAKE_CI_PROJECTION_KEY]: true, [PAPERCLIP_WAKE_PAYLOAD_KEY]: payload })[PAPERCLIP_WAKE_PAYLOAD_KEY],
+  };
+}
+
+function projectWakeCi(wake: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(wake.pullRequestsCi)) return wake;
+  const projected = { ...wake };
+  if (!Object.hasOwn(wake, "ciResult") || sameJson(wake.ciResult ?? null, wake.pullRequestsCi[0] ?? null)) {
+    delete projected.ciResult;
+  } else if (wake.ciResult != null) {
+    projected.ciResult = compactCi(wake.ciResult as PullRequestCiResult);
+  }
+  projected.pullRequestsCi = (wake.pullRequestsCi as PullRequestCiResult[]).map(compactCi);
+  if (Array.isArray(wake.ciFailureTails) && jsonBytes(wake.ciFailureTails) > 12_000) {
+    projected.ciFailureTails = compactCiTails(wake.ciFailureTails as CiTails, 12_000);
+    projected.ciFailureTailsTruncated = true;
+  }
+  return projected;
+}
+
 /**
  * Drop the nested continuation copy from a run snapshot bound for a response.
  *
@@ -188,19 +211,7 @@ export function runContextForPersistence(context: Record<string, unknown>): Reco
       wake.eventDigest = compactDigest(wake.eventDigest);
     }
   }
-  if (snapshot[WAKE_CI_PROJECTION_KEY] === true && Array.isArray(wake.pullRequestsCi)) {
-    if (!Object.hasOwn(wake, "ciResult") || sameJson(wake.ciResult ?? null, wake.pullRequestsCi[0] ?? null)) {
-      delete wake.ciResult;
-    } else if (wake.ciResult != null) {
-      wake.ciResult = compactCi(wake.ciResult as PullRequestCiResult);
-    }
-    wake.pullRequestsCi = (wake.pullRequestsCi as PullRequestCiResult[]).map(compactCi);
-    if (Array.isArray(wake.ciFailureTails) && jsonBytes(wake.ciFailureTails) > 12_000) {
-      wake.ciFailureTails = compactCiTails(wake.ciFailureTails as CiTails, 12_000);
-      wake.ciFailureTailsTruncated = true;
-    }
-  }
-  return { ...snapshot, [PAPERCLIP_WAKE_PAYLOAD_KEY]: wake };
+  return { ...snapshot, [PAPERCLIP_WAKE_PAYLOAD_KEY]: projectCi ? projectWakeCi(wake) : wake };
 }
 
 export interface RunContinuationPersistInput {

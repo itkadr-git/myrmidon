@@ -309,6 +309,7 @@ import { buildExecutionContinuation } from "./execution-continuation.js";
 // myrmidon(RUN-SNAPSHOT-DEDUP): the single-copy continuation invariant.
 import {
   persistRunContinuation,
+  prepareWakeContext,
   runContextForPersistence,
   WAKE_CI_PROJECTION_KEY,
   wakePayloadForDispatch,
@@ -27462,11 +27463,7 @@ export function heartbeatService(
             }).catch(() => null)
           : null;
       if (paperclipWakePayload) {
-        context[WAKE_CI_PROJECTION_KEY] = true;
-        context[PAPERCLIP_WAKE_PAYLOAD_KEY] = runContextForPersistence({
-          [WAKE_CI_PROJECTION_KEY]: true,
-          [PAPERCLIP_WAKE_PAYLOAD_KEY]: paperclipWakePayload,
-        })[PAPERCLIP_WAKE_PAYLOAD_KEY];
+        Object.assign(context, prepareWakeContext(paperclipWakePayload));
       } else {
         delete context[PAPERCLIP_WAKE_PAYLOAD_KEY];
         delete context[WAKE_CI_PROJECTION_KEY];
