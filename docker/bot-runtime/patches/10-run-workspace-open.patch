@@ -128,7 +128,7 @@ new file mode 100644
 index 0000000..360e518
 --- /dev/null
 +++ b/tools/run_workspace.py
-@@ -0,0 +1,321 @@
+@@ -0,0 +1,322 @@
 +"""Run-scoped task workspace resolution via ``myr-ws open`` (myrmidon BOT-DISK-H5b).
 +
 +The board's hermes_gateway adapter may attach a ``workspace`` field to a
