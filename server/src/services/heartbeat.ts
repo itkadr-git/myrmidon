@@ -16109,6 +16109,10 @@ export function heartbeatService(
         await db.insert(agentWakeupRequests).values({
           companyId: issue.companyId,
           agentId: run.agentId,
+          // myrmidon(OPE-12941): link the skip receipt to the run whose
+          // settlement completed the streak so operators can trace the
+          // per-run SKIPPED reason without correlating timestamps.
+          runId: run.id,
           source: "automation",
           triggerDetail: "system",
           reason: escalation.skippedSignal.reason,
@@ -22486,11 +22490,26 @@ export function heartbeatService(
     const classification = classifyRunLiveness(
       await buildRunLivenessInput(run, resultJson),
     );
+    const adapterOutcome = resultJson
+      ? [resultJson.summary, resultJson.result, resultJson.message, resultJson.text].some(
+          (value) => typeof value === "string" && value.trim().length > 0,
+        )
+        ? "non_empty"
+        : "empty"
+      : "unknown";
+    const livenessState =
+      run.invocationSource === "timer" && adapterOutcome === "empty" && classification.livenessState === "needs_followup"
+        ? "empty_response"
+        : classification.livenessState;
+    const livenessReason =
+      livenessState === "empty_response" && adapterOutcome === "empty"
+        ? "Run succeeded without useful output"
+        : classification.livenessReason;
     return db
       .update(heartbeatRuns)
       .set({
-        livenessState: classification.livenessState,
-        livenessReason: classification.livenessReason,
+        livenessState,
+        livenessReason,
         continuationAttempt: classification.continuationAttempt,
         lastUsefulActionAt: classification.lastUsefulActionAt,
         nextAction: classification.nextAction,

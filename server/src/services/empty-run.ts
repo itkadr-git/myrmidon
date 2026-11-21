@@ -308,7 +308,7 @@ export async function checkAndHandleEmptyRunEscalation(
       ),
     )
     .orderBy(desc(heartbeatRuns.createdAt))
-    .limit(10);
+    .limit(threshold); // OPE-12941: window scales with the configured streak threshold (2..20); counter always converges within it — first non-empty run breaks the loop.
 
   // Считаем серию пустых прогонов подряд
   let consecutiveEmptyRuns = 1; // Текущий прогон уже признан пустым
