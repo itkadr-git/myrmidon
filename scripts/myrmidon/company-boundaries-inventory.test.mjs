@@ -479,6 +479,37 @@ test("collected reports distinguish known, missing and unresolved ownership with
   assert.equal(inventoryReportHash(report), inventoryReportHash(normalizeInventoryReport(report)));
 });
 
+test("rendered inventory keeps a GitLab token-shaped dependency unresolved", async () => {
+  const fakeToken = "glpat-" + "syntheticfixture1234";
+  const transport = makeGetOnlyTransport(({ path }) => ({
+    status: 200,
+    ok: true,
+    json: async () => path === "/issues" ? [
+      { ownerCompanyId: "c1", dependency: { type: "issue", id: fakeToken, companyId: "c2" } },
+      { ownerCompanyId: "c1", dependency: { type: "issue", id: "issue-77", companyId: "c2" } },
+    ] : [],
+  }));
+  const rendered = renderInventory(await collectInventory(transport, {
+    currentCompanyId: "c1",
+    knownCompanyIds: ["c1", "c2"],
+  }));
+  const output = JSON.parse(rendered);
+
+  assert.equal(rendered.includes(fakeToken), false, "the synthetic token must not be echoed");
+  assert.deepEqual(output.summary.attribution, {
+    total: 2, resolved: 1, unknown: 0, unresolved: 1, crossCompanyLinks: 1, noOwnerDependencyFields: 0,
+  });
+  const unresolved = output.attribution.find((row) => row.attribution === "unresolved");
+  assert.ok(unresolved);
+  assert.equal(unresolved.reason, OWNER_ATTRIBUTION_REASONS.dependencyRefInvalid);
+  assert.equal(unresolved.ownerCompanyId, "c1");
+  assert.equal(unresolved.dependencyStatus, null);
+  assert.deepEqual(unresolved.dependency, { type: "issue", id: null, companyId: "c2" });
+  const resolved = output.attribution.find((row) => row.attribution === "resolved");
+  assert.equal(resolved.dependencyStatus, "cross-company");
+  assert.deepEqual(resolved.dependency, { type: "issue", id: "issue-77", companyId: "c2" });
+});
+
 test("an explicitly empty known-company set does not verify an owner", () => {
   const { rows: [row], summary } = formatOwnerAttribution([{ ownerCompanyId: "ghost" }], { knownCompanyIds: [] });
   assert.equal(row.ownerCompanyId, null);
