@@ -445,16 +445,51 @@ test("same-company dependency links stay distinct from unknown company context",
   assert.deepEqual(noContext[0].dependency, { type: "issue", id: "issue-88", companyId: "c1" });
 });
 
-test("formatter output integrates with the report hash pipeline without leaking secrets", () => {
-  const report = {
-    sections: [],
-    summary: { total: 0, covered: 0, counts: { data: 0, empty: 0, denied: 0, "not-found": 0, error: 0 } },
-    attribution: formatOwnerAttribution(OPE_12910_KNOWN_FIXTURE, { currentCompanyId: "c1", knownCompanyIds: ["c1"] }).rows,
-  };
+test("collected reports distinguish known, missing and unresolved ownership without leaking payloads", async () => {
+  const transport = makeGetOnlyTransport(({ path }) => {
+    if (path === "/agents") {
+      return { status: 200, ok: true, json: async () => ({ items: OPE_12910_KNOWN_FIXTURE }) };
+    }
+    if (path === "/issues") {
+      return { status: 200, ok: true, json: async () => [{ id: "obj-no-fields" }, { id: "obj-partial", ownerCompanyId: "c1", dependency: { type: "issue" } }] };
+    }
+    if (path === "/secrets-bindings") return { status: 403, ok: false };
+    return { status: 200, ok: true, json: async () => [] };
+  });
+  const report = await collectInventory(transport, { currentCompanyId: "c1", knownCompanyIds: ["c1"] });
   const rendered = renderInventory(report);
-  assert.ok(rendered.includes("c1"));
+  const output = JSON.parse(rendered);
+  assert.deepEqual(output.summary.attribution, {
+    total: 3, resolved: 1, unknown: 1, unresolved: 1, crossCompanyLinks: 0, noOwnerDependencyFields: 1,
+  });
+  const rows = Object.fromEntries(output.attribution.map((row) => [row.attribution, row]));
+  assert.equal(rows.resolved.ownerCompanyId, "c1");
+  assert.equal(rows.unknown.reason, OWNER_ATTRIBUTION_REASONS.noFields);
+  assert.equal(rows.unresolved.reason, OWNER_ATTRIBUTION_REASONS.dependencyRefInvalid);
+  assert.equal(rows.unresolved.ownerCompanyId, "c1");
   assert.ok(!rendered.includes("pcp_SUPER_SECRET_VALUE"));
   assert.ok(!rendered.includes("never-leak"));
+  assert.ok(!rendered.includes("obj-known"));
+  assert.deepEqual(transport.seenPaths, INVENTORY_SECTIONS.map((section) => section.path));
+  assert.ok(transport.methods.every((method) => method === "GET"));
   assert.equal(inventoryReportHash(report), inventoryReportHash(normalizeInventoryReport(report)));
-  assert.match(inventoryReportHash(report), /^[0-9a-f]{64}$/);
+});
+
+test("an explicitly empty known-company set does not verify an owner", () => {
+  const { rows: [row], summary } = formatOwnerAttribution([{ ownerCompanyId: "ghost" }], { knownCompanyIds: [] });
+  assert.equal(row.ownerCompanyId, null);
+  assert.equal(row.reason, OWNER_ATTRIBUTION_REASONS.ownerCompanyUnknown);
+  assert.equal(summary.unresolved, 1);
+  assert.equal(summary.resolved, 0);
+});
+
+test("blank company context does not count a cross-company dependency", () => {
+  const { rows: [row], summary } = formatOwnerAttribution(
+    [{ dependency: { type: "issue", id: "issue-77", companyId: "c2" } }],
+    { currentCompanyId: " " },
+  );
+  assert.equal(row.reason, OWNER_ATTRIBUTION_REASONS.currentCompanyUnknown);
+  assert.equal(row.dependencyStatus, null);
+  assert.equal(summary.unresolved, 1);
+  assert.equal(summary.crossCompanyLinks, 0);
 });
