@@ -31,7 +31,10 @@ The script checks, in order:
    mentions the task id in the subject (`OPE-NNNN` as a whole token). Any
    composition gap (a merged PR missing from the branch, or a `done` task
    with no delivery on the branch) is a **hard** refusal naming the task and
-   the missing delivery — it is never bypassable.
+   the missing delivery — it is never bypassable. A merged PR must have a
+   positive safe-integer board PR number (or a decimal-digit string). An
+   invalid or missing number is a composition violation; the script does not
+   query that PR, and `--override` cannot bypass the refusal.
 4. **Changelog.** `## X.Y.Z` exists and is non-empty in both
    `docs/myrmidon/CHANGELOG.md` and `CHANGELOG.ru.md`, and the unreleased
    section (`Unreleased` / `Без выпуска`) is empty — the same contract as
@@ -48,6 +51,11 @@ The script checks, in order:
 
 On any violation the script prints the full list and exits 1 without
 tagging.
+
+Composition validation checks delivery evidence; it does not authorize the
+run's GitHub launcher or decide the release composition for ADM. Launcher
+access must be confirmed separately for the release run identity. A successful
+composition check is not release approval or evidence of deployment.
 
 ## Bypass (override) — always on the board
 
