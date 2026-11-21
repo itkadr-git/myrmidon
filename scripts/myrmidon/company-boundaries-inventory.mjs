@@ -66,10 +66,8 @@ const IDENTIFIER_MAX_LENGTH = 100;
  * slugs ("c1") or UUIDs; anything longer, uppercase, or otherwise shaped is
  * payload masquerading in an id slot and must never be serialized. */
 const SAFE_IDENTIFIER_RE = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z][a-z0-9_-]{0,49})$/;
-/** Secret-shaped values never echo verbatim even if they fit an id shape.
- * Mirrors the token-prefix rules of scripts/myrmidon/scan-text.mjs so the
- * formatter and the publication scanner agree on what is secret-like. */
-const SECRET_SHAPED_RE = /(?:^|[^A-Za-z0-9])(?:pcp_[A-Za-z0-9_-]*|sk-[A-Za-z0-9_-]+|gh[pousr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+)/;
+/** Reject recognized token prefixes even when they fit the identifier shape. */
+const SECRET_SHAPED_RE = /(?:^|[^A-Za-z0-9])(?:pcp_[A-Za-z0-9_-]*|sk-[A-Za-z0-9_-]+|gh[pousr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+|glpat-[A-Za-z0-9_-]+)/;
 
 /** True when a string is safe to serialize verbatim as an identifier. */
 function isSafeIdentifier(value) {
