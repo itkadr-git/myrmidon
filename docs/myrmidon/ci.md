@@ -14,6 +14,58 @@ Workflow использует GitHub-hosted runner и Node 24, проверяе�
 Зелёный общий CI не заменяет проверку TAP: нужны успешные assertions без
 fail, skip и todo.
 
+## Два прогона acceptance для PR #3537 (OPE-13891)
+
+Запускайте только после штатного ревью и слияния инфраструктурного PR #4636,
+когда `myrmidon-acceptance-suite-evidence.yml` доступен на `main` и release
+freeze не действует. Workflow сам проверяет freeze до checkout тестируемого SHA.
+При запрете или неясном результате проверки остановитесь: не меняйте ветку
+запуска, не закрывайте freeze вручную и не запускайте тесты локально.
+
+Запуск выполняет уполномоченный ADM оператор: для GitHub UI нужен write access
+к репозиторию, для REST/CLI с токеном GitHub App или fine-grained PAT нужен
+`Actions: write` для этого репозитория. Чтение списка workflow и логов не
+подтверждает право dispatch. Runtime-права самого workflow только на чтение.
+
+1. Получите актуальную голову открытого PR #3537: `gh pr view 3537 -R itkadr-git/myrmidon --json headRefOid --jq .headRefOid`.
+   Сохраните полный SHA в `sha`. Workflow сверяет его с актуальной головой PR,
+   затем отдельно проверяет фактический `git rev-parse HEAD` после checkout.
+2. Выполните команду ниже дважды с тем же `sha`, повторно сверяя голову перед
+   вторым dispatch. Сохраните два разных run ID; rerun старого ID не заменяет
+   второй dispatch. Если голова изменилась, соберите новую пару на новом SHA.
+
+   ```sh
+   gh workflow run myrmidon-acceptance-suite-evidence.yml -R itkadr-git/myrmidon --ref main -f head_sha="$sha"
+   ```
+
+3. Для каждого завершённого запуска откройте job `acceptance` в Actions или
+   получите лог через `gh run view <run-id> -R itkadr-git/myrmidon --log`.
+   `headSha` в карточке Actions относится к конфигурации на `main`; точный
+   тестовый SHA подтверждает строка `PR #3537 test SHA` в логе. Зафиксируйте
+   URL/ID, attempt, оба SHA, статус прогона и вывод следующих команд:
+
+   ```sh
+   node --test --test-reporter=tap scripts/myrmidon/ci/acceptance-document-shape.myrmidon.test.mjs
+   node --test --test-reporter=tap scripts/check-acceptance-scenarios.test.mjs
+   ```
+
+4. Для каждой команды сохраните отдельные строки TAP `# tests`, `# pass`,
+   `# fail`, `# skipped` и `# todo`, плюс `Suite exit` и общий `Combined exit`
+   для каждого прогона. Для текущей матрицы ожидаются 21/0 для document shape
+   и 20/0 для baseline, без пропусков и TODO, с обоими `Suite exit = 0` и
+   `Combined exit = 0`. Сверьте именованные строки TAP: у document shape
+   положительные контроли `bare scenario array`, `version 2`, `allowed metadata`,
+   отрицательные `version zero`, `string version`, `missing scenarios`,
+   `unknown field`; у baseline положительный `valid document with one full
+   scenario and one existing testRef passes`, отрицательные `scenario without
+   falsifiedWhen is reported (the falsifiedWhen criterion)` и `broken testRef
+   (no candidate file exists) is reported, not silent`. `ok` на отрицательном
+   контроле означает, что проверена ожидаемая ошибка входных данных.
+
+Перед сдачей ещё раз сверьте голову #3537. Приложите обе записи в OPE-13891.
+Общий `CI result`, очередь, пропущенный job или лог без отдельного TAP baseline
+не подтверждают приёмку.
+
 ## Два уровня CI
 
 Workflow [`myrmidon-ci.yml`](../../.github/workflows/myrmidon-ci.yml) реагирует на
