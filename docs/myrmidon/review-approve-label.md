@@ -15,12 +15,16 @@ The script puts the label on a pull request only when all of this is true:
    does not stall the pipeline. The `review-approved` label continues to be applied to approved PRs with green CI,
    holding only the auto-merge step. Once `main` turns green, auto-merging automatically resumes and the backoff
    failure counter resets.
-2. The newest verdict line about the PR, written by a reviewer agent, is an approval. A later
-   `RETURN`, `DEFERRED` or an unclear line (an approval and a refusal in one line, or two PR numbers in one
-   line) cancels it.
+2. The PR head is approved: check run `Board review` on the head commit is `success` (a `failure`
+   conclusion is a return/refusal and the PR is skipped). When the `Board review` check run is absent
+   on the head commit, the script falls back to the newest verdict line about the PR written by a
+   reviewer agent: an approval labels the PR, a later `RETURN`, `DEFERRED` or an unclear line
+   (an approval and a refusal in one line, or two PR numbers in one line) cancels it.
 3. The PR is open and not a draft.
-4. The head did not move after the verdict. A verdict that names a head (`head <sha>`) must match the
-   current head. A verdict without a head must be newer than the head commit.
+4. When the decision comes from the verdict-text fallback, the head did not move after the verdict:
+   a verdict that names a head (`head <sha>`) must match the current head, and a verdict without a
+   head must be newer than the head commit. A native `Board review` check run is attached to the head
+   commit directly, so no head comparison is needed for it.
 5. The check run `CI result` of the head commit is `success`.
 
 A PR whose head moved after an approval is reported as `needs-rereview`: the reviewer must look at the
