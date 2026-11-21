@@ -2,10 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   collectInventory,
+  formatOwnerAttribution,
   INVENTORY_METHOD,
   INVENTORY_SECTIONS,
   inventoryReportHash,
+  isUnresolvedAttribution,
   normalizeInventoryReport,
+  OWNER_ATTRIBUTION_REASONS,
   renderInventory,
   sectionForPath,
 } from "./company-boundaries-inventory.mjs";
@@ -102,7 +105,8 @@ test("two consecutive probe runs on the same stable fixture produce the same nor
   // Deterministic ordering: normalization sorts object keys, so an equivalently
   // re-keyed report still normalizes and hashes identically.
   const reordered = {
-    summary: { counts: second.summary.counts, covered: second.summary.covered, total: second.summary.total },
+    attribution: second.attribution,
+    summary: { attribution: second.summary.attribution, counts: second.summary.counts, covered: second.summary.covered, total: second.summary.total },
     sections: second.sections.map(({ path, ...rest }) => ({ ...rest, path })),
   };
   assert.deepEqual(normalizeInventoryReport(reordered), normalizeInventoryReport(second));
@@ -131,6 +135,7 @@ test("stable fixture resolves each section to its expected state and count", asy
     total: 10,
     covered: 6,
     counts: { data: 4, empty: 2, denied: 1, "not-found": 1, error: 2 },
+    attribution: { total: 5, resolved: 2, unknown: 3, unresolved: 0, crossCompanyLinks: 0, noOwnerDependencyFields: 3 },
   });
   // missingAttribution is computed from the observed fixture rows, not copied
   // from the section registry: a declared field is listed only when at least
@@ -212,7 +217,9 @@ test("missing attribution fields are computed from observed rows", async () => {
   assert.deepEqual(byKey["skills-policies"].missingAttribution, ["ownerCompanyId"]);
 
   const rendered = renderInventory(report);
-  assert.ok(!rendered.includes("c1"));
+  const output = JSON.parse(rendered);
+  assert.equal(output.summary.attribution.resolved, 1);
+  assert.ok(output.attribution.some((row) => row.ownerCompanyId === "c1"));
   assert.ok(!rendered.includes("dep-1"));
   assert.ok(!rendered.includes("a1"));
 });
@@ -220,4 +227,304 @@ test("missing attribution fields are computed from observed rows", async () => {
 test("unknown sections are absent from the registry and cannot be covered", () => {
   assert.equal(sectionForPath("/not-a-section"), undefined);
   assert.ok(INVENTORY_SECTIONS.every((section) => sectionForPath(section.path)));
+});
+
+/* --- Owner attribution formatter: unresolved vs unknown (OPE-12910) --- */
+
+/**
+ * Fixture rows with secret-shaped payload values: the formatter must never
+ * serialize anything beyond exact safe identifiers.
+ */
+const OPE_12910_KNOWN_FIXTURE = [
+  { id: "obj-known", ownerCompanyId: "c1", secretToken: "pcp_SUPER_SECRET_VALUE", webhookUrl: "https://hooks.internal/never-leak" },
+];
+
+const OPE_12910_MISSING_FIXTURE = [
+  { id: "obj-no-fields" }, // no owner, no dependency field at all
+  "not-an-object", // not even an object
+];
+
+const OPE_12910_UNRESOLVED_FIXTURE = [
+  { id: "obj-unresolved-owner", ownerCompanyId: "ghost-company" },
+  { id: "obj-nonstring-owner", ownerCompanyId: { leaked: "value" } },
+  { id: "obj-blank-owner", ownerCompanyId: "   " },
+  { id: "obj-bad-dep", dependency: { junk: "payload" } },
+  { id: "obj-partial-dep", dependency: { type: "issue" } },
+  { id: "obj-null-dep", dependency: null },
+];
+/**
+ * Secret-shaped values placed directly in the identifier slots (review gap:
+ * the slots themselves must be gated, not just unrelated payload fields).
+ * The owner value below IS in the known set — the gate must still not echo it.
+ */
+const OPE_12910_SECRET_SLOT_FIXTURE = [
+  { id: "obj-secret-owner", ownerCompanyId: "pcp_SECRET_SLOT_OWNER" },
+  { id: "obj-secret-dep-id", dependency: { type: "issue", id: "pcp_SECRET_REF_ID", companyId: "c2" } },
+  { id: "obj-secret-dep-company", dependency: { type: "issue", id: "issue-9", companyId: "sk-SECRETREFVALUE" } },
+  { id: "obj-oversize-owner", ownerCompanyId: `x${"y".repeat(200)}` },
+];
+
+test("secret-shaped values in identifier slots are never echoed, even when known", () => {
+  const knownWithSecret = ["c1", "pcp_SECRET_SLOT_OWNER"];
+  const { rows, summary } = formatOwnerAttribution(OPE_12910_SECRET_SLOT_FIXTURE, {
+    currentCompanyId: "c1",
+    knownCompanyIds: knownWithSecret,
+  });
+
+  const rendered = JSON.stringify(rows);
+  assert.ok(!rendered.includes("pcp_SECRET_SLOT_OWNER"), "owner slot must not echo a secret-shaped value");
+  assert.ok(!rendered.includes("pcp_SECRET_REF_ID"), "dependency id slot must not echo a secret-shaped value");
+  assert.ok(!rendered.includes("sk-SECRETREFVALUE"), "dependency companyId slot must not echo a secret-shaped value");
+  assert.ok(!rendered.includes("yyyy"), "oversize owner slot must not echo verbatim");
+  assert.equal(summary.resolved, 0, "no secret-slot row may count as resolved");
+  assert.equal(summary.unresolved, OPE_12910_SECRET_SLOT_FIXTURE.length);
+
+  const secretOwner = rows.find((row) => row.reason === OWNER_ATTRIBUTION_REASONS.unsafeIdentifier);
+  assert.ok(secretOwner, "secret-shaped owner must surface identifier-not-safe-to-echo");
+  assert.equal(secretOwner.ownerCompanyId, null, "unsafe owner must never populate ownerCompanyId");
+  assert.match(secretOwner.ownerRefHash, /^[0-9a-f]{12}$/, "unsafe owner is pseudonymized, not dropped");
+
+  const secretDepId = rows.find((row) => row.entityRef === formatOwnerAttribution([{ id: "obj-secret-dep-id" }]).rows[0].entityRef);
+  assert.ok(secretDepId, "the secret dependency-id fixture must produce a row");
+  assert.equal(secretDepId.attribution, "unresolved");
+  assert.deepEqual(secretDepId.dependency, { type: "issue", id: null, companyId: "c2" }, "unsafe ref value is dropped from the ref, safe ones stay");
+});
+
+test("exact safe identifiers still resolve after the identifier gate", () => {
+  const entities = [
+    { id: "obj-slug-owner", ownerCompanyId: "c1" },
+    { id: "obj-uuid-owner", ownerCompanyId: "9f8d1111-2222-4333-8444-555566667777" },
+    { id: "obj-mixed-dep", dependency: { type: "issue", id: "issue-77", companyId: "c2" } },
+  ];
+  const { rows, summary } = formatOwnerAttribution(entities, {
+    currentCompanyId: "c1",
+    knownCompanyIds: ["c1", "9f8d1111-2222-4333-8444-555566667777"],
+  });
+  const byEntity = new Map(rows.map((row) => [row.entityRef, row]));
+  const refOf = (id) => byEntity.get(formatOwnerAttribution([{ id }]).rows[0].entityRef);
+
+  assert.equal(refOf("obj-slug-owner").ownerCompanyId, "c1");
+  assert.equal(refOf("obj-uuid-owner").ownerCompanyId, "9f8d1111-2222-4333-8444-555566667777");
+  assert.deepEqual(refOf("obj-mixed-dep").dependency, { type: "issue", id: "issue-77", companyId: "c2" });
+  assert.equal(refOf("obj-mixed-dep").dependencyStatus, "cross-company");
+  assert.equal(summary.resolved, 3, "every exact safe identifier must still resolve");
+});
+
+test("an object without owner or dependency fields is unknown, not unresolved", () => {
+  const { rows, summary } = formatOwnerAttribution(OPE_12910_MISSING_FIXTURE);
+
+  const noFields = rows.find((row) => row.entityRef !== null);
+  assert.ok(noFields, "the object fixture must produce an entity row");
+  assert.equal(noFields.attribution, "unknown");
+  assert.equal(noFields.reason, OWNER_ATTRIBUTION_REASONS.noFields);
+  assert.equal(noFields.ownerCompanyId, null);
+  assert.ok(isUnresolvedAttribution(noFields.attribution));
+
+  const nonObject = rows.find((row) => row.entityRef === null);
+  assert.equal(nonObject.attribution, "unknown");
+  assert.equal(nonObject.reason, OWNER_ATTRIBUTION_REASONS.noFields);
+
+  assert.equal(summary.unknown, 2);
+  assert.equal(summary.unresolved, 0);
+  assert.equal(summary.noOwnerDependencyFields, 2);
+});
+
+test("a known owner does not resolve an incomplete dependency", () => {
+  const { rows: [row], summary } = formatOwnerAttribution(
+    [{ ownerCompanyId: "c1", dependency: { type: "issue" } }],
+    { currentCompanyId: "c1", knownCompanyIds: ["c1"] },
+  );
+  assert.equal(row.ownerCompanyId, "c1");
+  assert.deepEqual(row.dependency, { type: "issue", id: null, companyId: null });
+  assert.equal(row.dependencyStatus, null);
+  assert.equal(row.reason, OWNER_ATTRIBUTION_REASONS.dependencyRefInvalid);
+  assert.equal(row.attribution, "unresolved");
+  assert.equal(summary.unresolved, 1);
+  assert.equal(summary.resolved, 0);
+  assert.equal(summary.crossCompanyLinks, 0);
+});
+
+test("a verified cross-company dependency does not resolve an unknown owner", () => {
+  const dependency = { type: "issue", id: "issue-77", companyId: "c2" };
+  const { rows: [row], summary } = formatOwnerAttribution(
+    [{ ownerCompanyId: "unknown-company", dependency }],
+    { currentCompanyId: "c1", knownCompanyIds: ["c1", "c2"] },
+  );
+  assert.equal(row.ownerCompanyId, null);
+  assert.deepEqual(row.dependency, dependency);
+  assert.equal(row.dependencyStatus, "cross-company");
+  assert.equal(row.reason, OWNER_ATTRIBUTION_REASONS.ownerCompanyUnknown);
+  assert.equal(row.attribution, "unresolved");
+  assert.equal(summary.unresolved, 1);
+  assert.equal(summary.resolved, 0);
+  assert.equal(summary.crossCompanyLinks, 1);
+});
+
+test("an explicitly empty owner is unresolved rather than unknown", () => {
+  for (const ownerCompanyId of [null, undefined]) {
+    const { rows: [row], summary } = formatOwnerAttribution([{ ownerCompanyId }]);
+    assert.equal(row.attribution, "unresolved");
+    assert.equal(row.reason, OWNER_ATTRIBUTION_REASONS.missingOwnerRef);
+    assert.equal(summary.unresolved, 1);
+    assert.equal(summary.unknown, 0);
+    assert.equal(summary.noOwnerDependencyFields, 0);
+  }
+});
+
+test("a GitHub token prefix is not an exact dependency identifier", () => {
+  const fakeToken = "ghp_" + "syntheticfixture123";
+  const formatted = formatOwnerAttribution(
+    [{ dependency: { type: "issue", id: fakeToken, companyId: "c2" } }],
+    { currentCompanyId: "c1" },
+  );
+  assert.ok(!JSON.stringify(formatted).includes(fakeToken));
+  assert.deepEqual(formatted.rows[0].dependency, { type: "issue", id: null, companyId: "c2" });
+  assert.equal(formatted.rows[0].reason, OWNER_ATTRIBUTION_REASONS.dependencyRefInvalid);
+  assert.equal(formatted.summary.unresolved, 1);
+  assert.equal(formatted.summary.crossCompanyLinks, 0);
+});
+
+test("present but unverifiable fields stay unresolved with an exact safe reason", () => {
+  const { rows, summary } = formatOwnerAttribution(OPE_12910_UNRESOLVED_FIXTURE, { currentCompanyId: "c1", knownCompanyIds: ["c1"] });
+  const byReason = Object.groupBy(rows, (row) => row.reason);
+
+  const unknownCompany = byReason[OWNER_ATTRIBUTION_REASONS.ownerCompanyUnknown][0];
+  assert.equal(unknownCompany.attribution, "unresolved");
+  assert.equal(unknownCompany.ownerCompanyId, null, "unresolved owner must never fold into a real company id");
+  assert.match(unknownCompany.ownerRefHash, /^[0-9a-f]{12}$/);
+
+  assert.equal(byReason[OWNER_ATTRIBUTION_REASONS.ownerRefNotString][0].attribution, "unresolved");
+  // Reason precedence is owner-first: obj-bad-dep has no owner field AND a
+  // junk dependency ref, so it reports the dependency cause; the other
+  // missing-owner rows keep the owner cause.
+  const depCauseRow = byReason[OWNER_ATTRIBUTION_REASONS.dependencyRefInvalid]?.[0];
+  assert.ok(depCauseRow, "bad dependency ref must surface the dependency cause");
+  assert.equal(depCauseRow.attribution, "unresolved");
+
+  const rendered = JSON.stringify(rows);
+  assert.ok(!rendered.includes("leaked"), "non-string owner payload must not leak");
+  assert.ok(!rendered.includes("junk"), "dependency junk payload must not leak");
+  assert.equal(summary.unresolved, OPE_12910_UNRESOLVED_FIXTURE.length);
+  assert.equal(summary.resolved, 0);
+  for (const row of rows) assert.ok(isUnresolvedAttribution(row.attribution));
+});
+
+test("present verifiable fields resolve to exact safe identifiers only", () => {
+  const owner = formatOwnerAttribution(OPE_12910_KNOWN_FIXTURE, { currentCompanyId: "c1", knownCompanyIds: ["c1"] });
+  assert.equal(owner.rows[0].attribution, "resolved");
+  assert.equal(owner.rows[0].ownerCompanyId, "c1");
+  assert.equal(owner.rows[0].dependency, null);
+  assert.ok(!isUnresolvedAttribution(owner.rows[0].attribution));
+
+  const dependency = formatOwnerAttribution(
+    [{ id: "obj-dep", dependency: { type: "issue", id: "issue-77", companyId: "c2" }, title: "payload", secretToken: "pcp_SUPER_SECRET_VALUE" }],
+    { currentCompanyId: "c1" },
+  );
+  const depRow = dependency.rows[0];
+  assert.equal(depRow.dependencyStatus, "cross-company");
+  assert.deepEqual(depRow.dependency, { type: "issue", id: "issue-77", companyId: "c2" });
+
+  const rendered = JSON.stringify(owner.rows) + JSON.stringify(dependency.rows);
+  assert.ok(rendered.includes("issue-77"));
+  assert.ok(!rendered.includes("pcp_SUPER_SECRET_VALUE"), "secret token must never enter the output");
+  assert.ok(!rendered.includes("never-leak"), "webhook url must never enter the output");
+  assert.ok(!rendered.includes("payload"), "unrelated payload fields must never enter the output");
+});
+
+test("formatter output is deterministic regardless of input order", () => {
+  const entities = [...OPE_12910_KNOWN_FIXTURE, ...OPE_12910_MISSING_FIXTURE, ...OPE_12910_UNRESOLVED_FIXTURE];
+  const first = formatOwnerAttribution(entities, { currentCompanyId: "c1", knownCompanyIds: ["c1"] });
+  const reversed = formatOwnerAttribution([...entities].reverse(), { currentCompanyId: "c1", knownCompanyIds: ["c1"] });
+  assert.deepEqual(first, reversed);
+});
+
+test("same-company dependency links stay distinct from unknown company context", () => {
+  const rows = formatOwnerAttribution([{ id: "obj-same", dependency: { type: "issue", id: "issue-88", companyId: "c1" } }], { currentCompanyId: "c1" }).rows;
+  assert.equal(rows[0].dependencyStatus, "same-company");
+  assert.equal(rows[0].attribution, "resolved");
+
+  const noContext = formatOwnerAttribution([{ id: "obj-same", dependency: { type: "issue", id: "issue-88", companyId: "c1" } }]).rows;
+  assert.equal(noContext[0].attribution, "unresolved");
+  assert.equal(noContext[0].reason, OWNER_ATTRIBUTION_REASONS.currentCompanyUnknown);
+  assert.deepEqual(noContext[0].dependency, { type: "issue", id: "issue-88", companyId: "c1" });
+});
+
+test("collected reports distinguish known, missing and unresolved ownership without leaking payloads", async () => {
+  const transport = makeGetOnlyTransport(({ path }) => {
+    if (path === "/agents") {
+      return { status: 200, ok: true, json: async () => ({ items: OPE_12910_KNOWN_FIXTURE }) };
+    }
+    if (path === "/issues") {
+      return { status: 200, ok: true, json: async () => [{ id: "obj-no-fields" }, { id: "obj-partial", ownerCompanyId: "c1", dependency: { type: "issue" } }] };
+    }
+    if (path === "/secrets-bindings") return { status: 403, ok: false };
+    return { status: 200, ok: true, json: async () => [] };
+  });
+  const report = await collectInventory(transport, { currentCompanyId: "c1", knownCompanyIds: ["c1"] });
+  const rendered = renderInventory(report);
+  const output = JSON.parse(rendered);
+  assert.deepEqual(output.summary.attribution, {
+    total: 3, resolved: 1, unknown: 1, unresolved: 1, crossCompanyLinks: 0, noOwnerDependencyFields: 1,
+  });
+  const rows = Object.fromEntries(output.attribution.map((row) => [row.attribution, row]));
+  assert.equal(rows.resolved.ownerCompanyId, "c1");
+  assert.equal(rows.unknown.reason, OWNER_ATTRIBUTION_REASONS.noFields);
+  assert.equal(rows.unresolved.reason, OWNER_ATTRIBUTION_REASONS.dependencyRefInvalid);
+  assert.equal(rows.unresolved.ownerCompanyId, "c1");
+  assert.ok(!rendered.includes("pcp_SUPER_SECRET_VALUE"));
+  assert.ok(!rendered.includes("never-leak"));
+  assert.ok(!rendered.includes("obj-known"));
+  assert.deepEqual(transport.seenPaths, INVENTORY_SECTIONS.map((section) => section.path));
+  assert.ok(transport.methods.every((method) => method === "GET"));
+  assert.equal(inventoryReportHash(report), inventoryReportHash(normalizeInventoryReport(report)));
+});
+
+test("rendered inventory keeps a GitLab token-shaped dependency unresolved", async () => {
+  const fakeToken = "glpat-" + "syntheticfixture1234";
+  const transport = makeGetOnlyTransport(({ path }) => ({
+    status: 200,
+    ok: true,
+    json: async () => path === "/issues" ? [
+      { ownerCompanyId: "c1", dependency: { type: "issue", id: fakeToken, companyId: "c2" } },
+      { ownerCompanyId: "c1", dependency: { type: "issue", id: "issue-77", companyId: "c2" } },
+    ] : [],
+  }));
+  const rendered = renderInventory(await collectInventory(transport, {
+    currentCompanyId: "c1",
+    knownCompanyIds: ["c1", "c2"],
+  }));
+  const output = JSON.parse(rendered);
+
+  assert.equal(rendered.includes(fakeToken), false, "the synthetic token must not be echoed");
+  assert.deepEqual(output.summary.attribution, {
+    total: 2, resolved: 1, unknown: 0, unresolved: 1, crossCompanyLinks: 1, noOwnerDependencyFields: 0,
+  });
+  const unresolved = output.attribution.find((row) => row.attribution === "unresolved");
+  assert.ok(unresolved);
+  assert.equal(unresolved.reason, OWNER_ATTRIBUTION_REASONS.dependencyRefInvalid);
+  assert.equal(unresolved.ownerCompanyId, "c1");
+  assert.equal(unresolved.dependencyStatus, null);
+  assert.deepEqual(unresolved.dependency, { type: "issue", id: null, companyId: "c2" });
+  const resolved = output.attribution.find((row) => row.attribution === "resolved");
+  assert.equal(resolved.dependencyStatus, "cross-company");
+  assert.deepEqual(resolved.dependency, { type: "issue", id: "issue-77", companyId: "c2" });
+});
+
+test("an explicitly empty known-company set does not verify an owner", () => {
+  const { rows: [row], summary } = formatOwnerAttribution([{ ownerCompanyId: "ghost" }], { knownCompanyIds: [] });
+  assert.equal(row.ownerCompanyId, null);
+  assert.equal(row.reason, OWNER_ATTRIBUTION_REASONS.ownerCompanyUnknown);
+  assert.equal(summary.unresolved, 1);
+  assert.equal(summary.resolved, 0);
+});
+
+test("blank company context does not count a cross-company dependency", () => {
+  const { rows: [row], summary } = formatOwnerAttribution(
+    [{ dependency: { type: "issue", id: "issue-77", companyId: "c2" } }],
+    { currentCompanyId: " " },
+  );
+  assert.equal(row.reason, OWNER_ATTRIBUTION_REASONS.currentCompanyUnknown);
+  assert.equal(row.dependencyStatus, null);
+  assert.equal(summary.unresolved, 1);
+  assert.equal(summary.crossCompanyLinks, 0);
 });
