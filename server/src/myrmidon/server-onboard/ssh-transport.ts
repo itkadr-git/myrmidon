@@ -24,6 +24,8 @@ export class OnboardSshTransport implements SshExecutor {
       client.connect({
         host: options.host, port: options.port ?? 22, username: options.username,
         password: options.password, privateKey: options.privateKey ? sshTransportPrivateKey(options.privateKey) : undefined, passphrase: options.passphrase,
+        // A ready session must prove possession of the configured key, not accept SSH2's default `none` probe.
+        authHandler: options.privateKey ? ["publickey"] : undefined,
         readyTimeout: options.timeoutMs ?? 20000,
         keepaliveInterval: 5000,
         keepaliveCountMax: 3,
