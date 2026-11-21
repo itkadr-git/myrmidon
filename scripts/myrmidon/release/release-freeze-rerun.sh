@@ -71,7 +71,7 @@ window_days="${RERUN_WINDOW_DAYS:-3}"
 
 # The gate must be open: while a newer tag is frozen (or its state cannot be
 # read) a re-run would only turn red again.
-if ! "$check" --check; then
+if ! "$check" --check-state; then
   log "the freeze is active or its state is unreadable — nothing to re-run"
   exit 0
 fi

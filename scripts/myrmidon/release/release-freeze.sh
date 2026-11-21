@@ -31,12 +31,9 @@
 #      durable state that survives the tag's CI run being cancelled by newer
 #      pushes to main (exactly what broke 1.6.4).
 #      Prints one line: freeze=active | freeze=inactive
-#   --check        (pull_request gate; read-only, no token required)
-#      Exit 1 (red check) while the freeze is active: the freeze issue is
-#      still open AND the newest tag's CI is not green yet. The closed-issue
-#      check comes first so a green tag unblocks main even when --set-state
-#      has not run yet; a still-red/in-progress tag keeps the freeze even if
-#      the issue was closed by hand (the publish gate would refuse anyway).
+#   --check        PR advisory: report an active freeze without failing the check.
+#   --check-state  Machine-readable exit status: 1 while the freeze is active,
+#                  0 when inactive; errors also exit nonzero.
 #
 # Environment:
 #   GITHUB_REPOSITORY  owner/repo (the workflow sets it; tests override)
@@ -72,12 +69,12 @@ freeze_active_decision() {
 mode=""
 while (($#)); do
   case "$1" in
-    --set-state|--check) mode="${1#--}"; shift ;;
+    --set-state|--check|--check-state) mode="${1#--}"; shift ;;
     -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
-[[ -n "$mode" ]] || die "one of --set-state / --check is required"
+[[ -n "$mode" ]] || die "one of --set-state / --check / --check-state is required"
 
 # -------------------------------------------------------------- live modes --
 command -v gh >/dev/null 2>&1 || die "gh is not installed"
@@ -211,12 +208,14 @@ if [[ "$mode" == "set-state" ]]; then
   exit 0
 fi
 
-# --check: the PR gate. Red while frozen.
+# --check is advisory; --check-state retains the machine-readable freeze signal.
 issue_state="absent"; [[ -n "$issue" ]] && issue_state="open"
 if freeze_active_decision "$issue_state" "$verdict"; then
   printf '[release-freeze] RELEASE FREEZE ACTIVE for %s (tag CI: %s, freeze issue: %s).\n' "$tag" "$verdict" "$issue_state" >&2
-  printf '[release-freeze] Merges into main wait until Myrmidon CI is green on %s. See docs/myrmidon/deploy.md (release mode).\n' "$tag" >&2
-  exit 1
+  printf '[release-freeze] Release CI is not green for %s; see docs/myrmidon/deploy.md (release mode).\n' "$tag" >&2
+  if [[ "$mode" == "check-state" ]]; then exit 1; fi
+  log "Advisory only: the release freeze does not fail this PR check."
+  exit 0
 fi
 log "no freeze (tag CI: $verdict, freeze issue: $issue_state) — merges open"
 exit 0
