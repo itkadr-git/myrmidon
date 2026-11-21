@@ -2131,6 +2131,45 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/companies/{companyId}/migrations",
+  tags: ["companies"],
+  summary: "Preview a company migration without writing",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(z.object({
+      target: z.object({ mode: z.literal("new_company"), newCompanyName: z.string().trim().min(1) }).strict(),
+      export: companyPortabilityExportSchema.optional().default({}),
+      dryRun: z.literal(true).optional().default(true),
+      apply: z.literal(false).optional().default(false),
+      collisionStrategy: z.enum(["rename", "skip", "replace"]).optional().default("rename"),
+    }).strict()),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/migrations/{runId}",
+  tags: ["companies"],
+  summary: "Get the status of a company migration",
+  request: { params: z.object({ companyId: z.string(), runId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/migrations/{runId}/rollback",
+  tags: ["companies"],
+  summary: "Request a company migration rollback (currently unavailable)",
+  request: {
+    params: z.object({ companyId: z.string(), runId: z.string() }),
+    body: jsonBody(z.object({ confirm: z.string().trim().min(1) }).strict()),
+  },
+  responses: { 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/companies/{companyId}/exports",
   tags: ["companies"],
   summary: "Export company data",

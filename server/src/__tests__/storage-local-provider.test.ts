@@ -42,6 +42,35 @@ describe("local disk storage provider", () => {
     expect(stored.sha256).toHaveLength(64);
   });
 
+  it("records the generated key before writing and stops if reservation fails", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-storage-"));
+    tempRoots.push(root);
+    const service = createStorageService(createLocalDiskStorageProvider(root));
+    let reservedKey = "";
+    const input = {
+      companyId: "company-1",
+      namespace: "migration",
+      originalFilename: "demo.txt",
+      contentType: "text/plain",
+      body: Buffer.from("content"),
+    };
+
+    await expect(service.putFile({ ...input, beforeWrite: async (key) => {
+      reservedKey = key;
+      throw new Error("reservation failed");
+    } })).rejects.toThrow("reservation failed");
+    expect(reservedKey).toMatch(/^company-1\/migration\//);
+    expect(reservedKey).not.toContain("demo");
+    expect((await service.headObject("company-1", reservedKey)).exists).toBe(false);
+
+    const stored = await service.putFile({ ...input, beforeWrite: async (key) => {
+      reservedKey = key;
+      expect((await service.headObject("company-1", key)).exists).toBe(false);
+    } });
+    expect(stored.objectKey).toBe(reservedKey);
+    expect((await service.headObject("company-1", reservedKey)).exists).toBe(true);
+  });
+
   it("streams only requested byte ranges", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-storage-"));
     tempRoots.push(root);
@@ -76,6 +105,16 @@ describe("local disk storage provider", () => {
     });
 
     await expect(service.getObject("company-b", stored.objectKey)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("reports storage deletion failures instead of treating them as missing objects", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-storage-"));
+    tempRoots.push(root);
+    await fs.mkdir(path.join(root, "company-1", "not-a-file"), { recursive: true });
+
+    const service = createStorageService(createLocalDiskStorageProvider(root));
+    await expect(service.deleteObject("company-1", "company-1/not-a-file"))
+      .rejects.toMatchObject({ code: "EISDIR" });
   });
 
   it("delete is idempotent", async () => {

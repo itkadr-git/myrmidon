@@ -2,6 +2,7 @@ import { and, count, eq, gte, inArray, isNull, lt, notInArray, sql } from "drizz
 import type { Db } from "@myrmidon/db";
 import {
   companies,
+  companyTransferRuns,
   companyLogos,
   assets,
   agents,
@@ -274,17 +275,38 @@ export function companyService(db: Db) {
     return { fromPrefix: locked.issuePrefix, toPrefix: candidate };
   }
 
-  async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
+  async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert, transferRunId?: string) {
     const base = deriveIssuePrefixBase(data.name);
     let suffix = 1;
     while (suffix <= MAX_ISSUE_PREFIX_ATTEMPTS) {
       const candidate = `${base}${issuePrefixSuffixForAttempt(suffix)}`;
       try {
-        const rows = await db
-          .insert(companies)
-          .values({ ...data, issuePrefix: candidate })
-          .returning();
-        return rows[0];
+        if (!transferRunId) {
+          const rows = await db.insert(companies).values({ ...data, issuePrefix: candidate }).returning();
+          return rows[0];
+        }
+        return await db.transaction(async (tx) => {
+          const [created] = await tx.insert(companies).values({ ...data, issuePrefix: candidate }).returning();
+          const attached = await tx.update(companyTransferRuns)
+            .set({
+              companyId: created!.id,
+              containerRef: sql`case when ${companyTransferRuns.containerRef}->>'kind' = 'company_migration' then jsonb_set(jsonb_set(${companyTransferRuns.containerRef}, '{destinationClaimed}', 'true'::jsonb), '{destinationCompanyId}', to_jsonb(${created!.id}::text)) else ${companyTransferRuns.containerRef} end`,
+              updatedAt: new Date(),
+            })
+            .where(and(
+              eq(companyTransferRuns.id, transferRunId),
+              eq(companyTransferRuns.direction, "import"),
+              eq(companyTransferRuns.status, "applying"),
+              isNull(companyTransferRuns.companyId),
+              // A migration without a source cannot authorize later recovery.
+              sql`(coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration' or nullif(${companyTransferRuns.containerRef}->>'sourceCompanyId', '') is not null)`,
+              // A deleted destination clears the foreign key, not its ownership history.
+              sql`not (coalesce(${companyTransferRuns.containerRef}->>'kind' = 'company_migration', false) and coalesce(${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true', false))`,
+            ))
+            .returning({ id: companyTransferRuns.id });
+          if (attached.length !== 1) throw new Error("Transfer run cannot claim a new company");
+          return created;
+        });
       } catch (error) {
         if (!isIssuePrefixConflict(error)) throw error;
       }
@@ -314,8 +336,8 @@ export function companyService(db: Db) {
       return enrichCompany(hydrated);
     },
 
-    create: async (data: typeof companies.$inferInsert) => {
-      const created = await createCompanyWithUniquePrefix(data);
+    create: async (data: typeof companies.$inferInsert, options?: { transferRunId?: string }) => {
+      const created = await createCompanyWithUniquePrefix(data, options?.transferRunId);
       await environmentsSvc.ensureLocalEnvironment(created.id);
       await builtInAgents.autoProvisionBundledAgents(created.id);
       const row = await getCompanyQuery(db)

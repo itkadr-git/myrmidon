@@ -86,6 +86,7 @@ import { generateReadme } from "./company-export-readme.js";
 import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
 import { companySkillService } from "./company-skills.js";
 import { companyService } from "./companies.js";
+import { companyTransferRunService } from "./company-transfer-runs.js";
 import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
 import { issueService } from "./issues.js";
@@ -759,6 +760,7 @@ type ImportBehaviorOptions = {
   mode?: ImportMode;
   sourceCompanyId?: string | null;
   pauseAutomations?: boolean;
+  transferRunId?: string;
 };
 
 type AgentLike = {
@@ -3842,7 +3844,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   async function exportBundle(
     companyId: string,
     input: CompanyPortabilityExport,
-    options: { preview?: boolean; allowExternalInstructions?: boolean } = {},
+    options: { preview?: boolean; allowExternalInstructions?: boolean; rejectUnknownAgentPermissions?: boolean } = {},
   ): Promise<CompanyPortabilityExportResult> {
     const include = normalizeInclude({
       ...input.include,
@@ -3920,7 +3922,13 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       : [];
     const permissionGrantsByAgentId = new Map<string, PortableAgentPermissionGrant[]>();
     for (const row of agentPermissionGrantRows) {
-      if (!VALID_PERMISSION_KEYS.has(row.permissionKey as PermissionKey)) continue;
+      if (!VALID_PERMISSION_KEYS.has(row.permissionKey as PermissionKey)) {
+        if (options.rejectUnknownAgentPermissions) throw unprocessable("Source contains an unsupported agent permission.");
+        continue;
+      }
+      if (options.rejectUnknownAgentPermissions && row.scope != null && !isPlainRecord(row.scope)) {
+        throw unprocessable("Source contains an invalid agent permission scope.");
+      }
       const grants = permissionGrantsByAgentId.get(row.principalId) ?? [];
       grants.push({
         permissionKey: row.permissionKey as PermissionKey,
@@ -4839,6 +4847,15 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const warnings = [...source.warnings];
     const errors: string[] = [];
 
+    // Validate content-addressed blobs during preview as well as before apply.
+    for (const [filePath, fileEntry] of Object.entries(source.files)) {
+      if (!filePath.startsWith("blobs/")) continue;
+      const body = portableFileToBuffer(fileEntry, filePath);
+      if (sha256HexOfBytes(body) !== filePath.slice("blobs/".length)) {
+        errors.push(`Bundle blob ${filePath} does not match its declared sha256; the package is corrupted or was tampered with.`);
+      }
+    }
+
     if (include.company && !manifest.company) {
       errors.push("Manifest does not include company metadata.");
     }
@@ -5222,6 +5239,16 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     // deliberately small bundle. Reject the fragment rather than importing it.
     assertInlineSourceComplete(input.source);
     const mode = resolveImportMode(options);
+    // A migration run owns only a newly created destination. Refuse tracked
+    // updates before preview or any importer side effect can occur.
+    if (options?.transferRunId && input.target.mode !== "new_company") {
+      throw unprocessable("Tracked imports require a new company destination.");
+    }
+    // Destination ownership alone cannot recover the import's other side effects.
+    // Keep tracked imports closed until entity and storage provenance is complete.
+    if (options?.transferRunId) {
+      throw unprocessable("Tracked imports are unavailable until recovery is implemented.");
+    }
     const plan = await buildPreview(input, options);
     if (plan.preview.errors.length > 0) {
       throw unprocessable(`Import preview has errors: ${plan.preview.errors.join("; ")}`);
@@ -5309,7 +5336,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               manifestCompanyName,
               (await companies.list()).map((company) => company.name),
             ));
-      const created = await companies.create({
+      const companyInput = {
         name: companyName,
         description: include.company ? (sourceManifest.company?.description ?? null) : null,
         requireBoardApprovalForNewAgents: include.company
@@ -5327,7 +5354,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         feedbackDataSharingTermsVersion: include.company
           ? (sourceManifest.company?.feedbackDataSharingTermsVersion ?? null)
           : null,
-      });
+      };
+      const created = options?.transferRunId
+        ? await companies.create(companyInput, { transferRunId: options.transferRunId })
+        : await companies.create(companyInput);
       if (mode === "agent_safe" && options?.sourceCompanyId) {
         await access.copyActiveUserMemberships(options.sourceCompanyId, created.id);
       } else {
@@ -5363,6 +5393,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     if (!targetCompany) throw notFound("Target company not found");
+
+    const migrationRunId = options?.transferRunId;
+    const destinationCompanyId = targetCompany.id;
+    const migrationStorageReservation = migrationRunId
+      ? (objectKey: string) => companyTransferRunService.reserveMigrationObject(db, migrationRunId, destinationCompanyId, objectKey)
+      : undefined;
 
     const importedAgentEnvSlugs = new Set(
       plan.preview.plan.agentPlans
@@ -5420,6 +5456,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                   originalFilename: path.posix.basename(logoPath),
                   contentType,
                   body,
+                  beforeWrite: migrationStorageReservation,
                 });
                 const createdAsset = await assetRecords.create(targetCompany.id, {
                   provider: stored.provider,
@@ -5436,6 +5473,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 });
                 targetCompany = updated ?? targetCompany;
               } catch (err) {
+                if (migrationStorageReservation) throw err;
                 warnings.push(`Failed to import company logo ${logoPath}: ${err instanceof Error ? err.message : String(err)}`);
               }
             }
@@ -5472,6 +5510,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 originalFilename: embeddedAsset.originalFilename,
                 contentType: embeddedAsset.contentType,
                 body,
+                beforeWrite: migrationStorageReservation,
               });
               const createdAsset = await assetRecords.create(targetCompany.id, {
                 provider: stored.provider,
@@ -5485,6 +5524,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               });
               embeddedAssetIdMap.set(embeddedAsset.assetId, createdAsset.id);
             } catch (error) {
+              if (migrationStorageReservation) throw error;
               warnings.push(`Embedded image asset ${embeddedAssetLabel} could not be imported: ${error instanceof Error ? error.message : String(error)}; its references were left unchanged.`);
             }
           }
@@ -6218,6 +6258,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 originalFilename: attachmentEntry.originalFilename,
                 contentType: attachmentEntry.contentType,
                 body,
+                beforeWrite: migrationStorageReservation,
               });
               attachmentRows.push({
                 companyId: targetCompany.id,
@@ -6233,6 +6274,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 createdByUserId: actorUserId ?? null,
               });
             } catch (error) {
+              if (migrationStorageReservation) throw error;
               warnings.push(`Task ${manifestIssue.slug} attachment ${attachmentLabel} could not be imported: ${error instanceof Error ? error.message : String(error)}`);
             }
           }
