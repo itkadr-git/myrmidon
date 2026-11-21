@@ -105,7 +105,8 @@ test("two consecutive probe runs on the same stable fixture produce the same nor
   // Deterministic ordering: normalization sorts object keys, so an equivalently
   // re-keyed report still normalizes and hashes identically.
   const reordered = {
-    summary: { counts: second.summary.counts, covered: second.summary.covered, total: second.summary.total },
+    attribution: second.attribution,
+    summary: { attribution: second.summary.attribution, counts: second.summary.counts, covered: second.summary.covered, total: second.summary.total },
     sections: second.sections.map(({ path, ...rest }) => ({ ...rest, path })),
   };
   assert.deepEqual(normalizeInventoryReport(reordered), normalizeInventoryReport(second));
@@ -134,6 +135,7 @@ test("stable fixture resolves each section to its expected state and count", asy
     total: 10,
     covered: 6,
     counts: { data: 4, empty: 2, denied: 1, "not-found": 1, error: 2 },
+    attribution: { total: 5, resolved: 2, unknown: 3, unresolved: 0, crossCompanyLinks: 0, noOwnerDependencyFields: 3 },
   });
   // missingAttribution is computed from the observed fixture rows, not copied
   // from the section registry: a declared field is listed only when at least
@@ -215,7 +217,9 @@ test("missing attribution fields are computed from observed rows", async () => {
   assert.deepEqual(byKey["skills-policies"].missingAttribution, ["ownerCompanyId"]);
 
   const rendered = renderInventory(report);
-  assert.ok(!rendered.includes("c1"));
+  const output = JSON.parse(rendered);
+  assert.equal(output.summary.attribution.resolved, 1);
+  assert.ok(output.attribution.some((row) => row.ownerCompanyId === "c1"));
   assert.ok(!rendered.includes("dep-1"));
   assert.ok(!rendered.includes("a1"));
 });

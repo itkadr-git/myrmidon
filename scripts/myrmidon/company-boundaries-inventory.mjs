@@ -41,7 +41,7 @@ function stateFor(response, payload) {
 /**
  * Attribution fields are reported from observed rows only: a declared field is
  * missing when at least one returned row lacks it (absent key, null, or
- * undefined). Field names only — row contents never enter the report.
+ * undefined). This coverage field reports field names only.
  */
 function missingAttribution(attribution, rows) {
   if (!rows || !rows.length) return [...attribution];
@@ -155,7 +155,7 @@ function safeDependencyRef(ref) {
  *   input-order-independent output, plus a status summary
  */
 export function formatOwnerAttribution(entities, { currentCompanyId, knownCompanyIds } = {}) {
-  const known = knownCompanyIds instanceof Set ? knownCompanyIds : new Set(knownCompanyIds ?? []);
+  const known = knownCompanyIds == null || knownCompanyIds instanceof Set ? knownCompanyIds : new Set(knownCompanyIds);
   const sourceRows = Array.isArray(entities) ? entities : [];
   const rows = sourceRows.map((entity) => {
     const isObject = entity !== null && typeof entity === "object" && !Array.isArray(entity);
@@ -182,7 +182,7 @@ export function formatOwnerAttribution(entities, { currentCompanyId, knownCompan
       } else if (!isSafeIdentifier(ownerRaw)) {
         ownerReason = OWNER_ATTRIBUTION_REASONS.unsafeIdentifier;
         ownerRefHash = shortHash(ownerRaw);
-      } else if (known.size > 0 && !known.has(ownerRaw)) {
+      } else if (known && !known.has(ownerRaw)) {
         ownerReason = OWNER_ATTRIBUTION_REASONS.ownerCompanyUnknown;
         ownerRefHash = shortHash(ownerRaw);
       } else {
@@ -199,7 +199,7 @@ export function formatOwnerAttribution(entities, { currentCompanyId, knownCompan
       if (safe !== null) dependency = safe;
       if (!complete) {
         dependencyReason = OWNER_ATTRIBUTION_REASONS.dependencyRefInvalid;
-      } else if (typeof currentCompanyId !== "string" || !currentCompanyId) {
+      } else if (!isSafeIdentifier(currentCompanyId)) {
         dependencyReason = OWNER_ATTRIBUTION_REASONS.currentCompanyUnknown;
       } else {
         dependencyStatus = safe.companyId === currentCompanyId ? "same-company" : "cross-company";
@@ -227,10 +227,12 @@ export function formatOwnerAttribution(entities, { currentCompanyId, knownCompan
 /**
  * Run the read-only inventory probe against an injected transport.
  * @param {{request: (opts: {method: string, path: string}) => Promise<{status:number, ok:boolean, json?:() => Promise<unknown>}>}} transport
- * @returns {Promise<{sections: Array<object>, summary: object}>}
+ * @param {{currentCompanyId?: string, knownCompanyIds?: Iterable<string>}} [attributionOptions]
+ * @returns {Promise<{sections: Array<object>, summary: object, attribution: Array<object>}>}
  */
-export async function collectInventory(transport) {
+export async function collectInventory(transport, attributionOptions) {
   const sections = [];
+  const observedRows = [];
   for (const definition of INVENTORY_SECTIONS) {
     let response;
     let payload = null;
@@ -241,6 +243,9 @@ export async function collectInventory(transport) {
       response = null;
     }
     const state = stateFor(response, payload);
+    if (state === "data") {
+      for (const row of payload) observedRows.push(row);
+    }
     sections.push({
       key: definition.key,
       path: definition.path,
@@ -253,9 +258,11 @@ export async function collectInventory(transport) {
   const counts = Object.fromEntries(
     ["data", "empty", "denied", "not-found", "error"].map((state) => [state, sections.filter((s) => s.state === state).length]),
   );
+  const { rows, summary: attribution } = formatOwnerAttribution(observedRows, attributionOptions);
   return {
     sections,
-    summary: { total: sections.length, covered: sections.filter((s) => s.covered).length, counts },
+    summary: { total: sections.length, covered: sections.filter((s) => s.covered).length, counts, attribution },
+    attribution: rows,
   };
 }
 
@@ -273,9 +280,8 @@ function canonicalize(value) {
 
 /**
  * Deterministic normalized form of a probe report (sorted object keys, section
- * order preserved). An optional per-object `attribution` block (OPE-12910
- * formatter output) is carried through only when the caller provided one, so
- * reports without it keep their pre-existing normalized shape.
+ * order preserved). New reports carry per-object attribution; older reports
+ * without it keep their original normalized shape.
  */
 export function normalizeInventoryReport(report) {
   const normalized = { sections: report.sections, summary: report.summary };
