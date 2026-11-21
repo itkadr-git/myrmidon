@@ -129,7 +129,7 @@ it.skipIf(!support.supported).each([
           }
           return fetch(input, init);
         };
-        expect(await runOnboardFromEnvironment({ ...env, MYRMIDON_FLEET_ONBOARD_BASE_URL: `http://127.0.0.1:${address.port}` }, fetcher)).toBe(true);
+        expect(await runOnboardFromEnvironment({ ...env, MYRMIDON_FLEET_ONBOARD_SKIP_MONITORING: "true", MYRMIDON_FLEET_ONBOARD_BASE_URL: `http://127.0.0.1:${address.port}` }, fetcher)).toBe(true);
       } finally {
         await new Promise<void>((resolve) => board.close(() => resolve()));
       }

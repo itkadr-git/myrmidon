@@ -64,4 +64,32 @@ describe("onboarding production entrypoint", () => {
     await expect(runOnboardFromEnvironment({}, fetcher)).rejects.toThrow("Missing fleet onboarding configuration");
     expect(contacted).toBe(false);
   });
+
+  it.each([undefined, "false", "true"])("requires explicit bootstrap opt-out (%s)", async (flag) => {
+    const reports: unknown[] = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      if (String(input).endsWith("/claim")) return Response.json({
+        job: { id: "job", companyId: "company", kind: "onboard" },
+        server: { username: "test" }, steps: ["monitoring", "role"],
+        options: { role: "build-runner" }, secretValues: { accessKey: "unused" },
+      });
+      reports.push(JSON.parse(String(init?.body)));
+      return new Response(null, { status: 204 });
+    };
+    await runOnboardFromEnvironment({
+      MYRMIDON_FLEET_ONBOARD_BASE_URL: "https://board.example",
+      MYRMIDON_FLEET_ONBOARD_COMPANY_ID: "company",
+      MYRMIDON_FLEET_ONBOARD_EXECUTOR_TOKEN: "test-token",
+      MYRMIDON_FLEET_ONBOARD_SKIP_MONITORING: flag,
+      MYRMIDON_FLEET_ONBOARD_SKIP_ROLE_BOOTSTRAP: flag,
+    }, fetcher);
+    expect(reports).toEqual(flag === "true" ? [
+      expect.objectContaining({ step: "monitoring", result: "skipped" }),
+      expect.objectContaining({ step: "role", result: "skipped" }),
+      expect.objectContaining({ status: "succeeded" }),
+    ] : [
+      expect.objectContaining({ step: "monitoring", result: "failed" }),
+      expect.objectContaining({ status: "failed" }),
+    ]);
+  });
 });

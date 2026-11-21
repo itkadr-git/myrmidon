@@ -7,7 +7,10 @@ export async function runOnboardFromEnvironment(env: NodeJS.ProcessEnv, fetcher:
   const companyId = env.MYRMIDON_FLEET_ONBOARD_COMPANY_ID?.trim();
   const token = env.MYRMIDON_FLEET_ONBOARD_EXECUTOR_TOKEN?.trim();
   if (!baseUrl || !companyId || !token) throw new Error("Missing fleet onboarding configuration");
-  return runOnboardOnce({ baseUrl, companyId, token, fetcher });
+  return runOnboardOnce({ baseUrl, companyId, token, fetcher, bootstrap: {
+    skipMonitoring: env.MYRMIDON_FLEET_ONBOARD_SKIP_MONITORING === "true",
+    skipRoleBootstrap: env.MYRMIDON_FLEET_ONBOARD_SKIP_ROLE_BOOTSTRAP === "true",
+  } });
 }
 
 export async function runOnboardWorker(env: NodeJS.ProcessEnv, options: { fetcher?: typeof fetch; signal: AbortSignal; pollMs?: number }): Promise<void> {
