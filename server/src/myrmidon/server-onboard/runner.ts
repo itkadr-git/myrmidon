@@ -1,7 +1,10 @@
-import { FleetOnboardExecutor } from "./executor.js";
+import { FleetOnboardExecutor, type OnboardExecutorDeps } from "./executor.js";
 import type { OnboardJobClaim } from "./store.js";
 
-type RunnerOptions = { baseUrl: string; companyId: string; token: string; fetcher?: typeof fetch };
+type RunnerOptions = {
+  baseUrl: string; companyId: string; token: string; fetcher?: typeof fetch;
+  bootstrap?: Pick<OnboardExecutorDeps, "skipMonitoring" | "skipRoleBootstrap">;
+};
 
 /** Claim and execute one job; the transport verifies host identity before authentication. */
 export async function runOnboardOnce(options: RunnerOptions): Promise<boolean> {
@@ -20,8 +23,9 @@ export async function runOnboardOnce(options: RunnerOptions): Promise<boolean> {
   const response = await post("/claim", { companyId: options.companyId });
   if (response.status === 204) return false;
   const claim = await response.json() as OnboardJobClaim & { secretValues: Record<string, string> };
+  if (claim.job.companyId !== options.companyId) throw new Error("Onboarding claim company scope mismatch");
   const jobPath = `/${encodeURIComponent(claim.job.id)}`;
-  const executor = new FleetOnboardExecutor();
+  const executor = new FleetOnboardExecutor(options.bootstrap);
   await executor.execute(claim, {
     async pinHostKey(fingerprint) {
       try {
