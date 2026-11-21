@@ -2202,6 +2202,111 @@ export async function filterClosedTaskClones(clones, options = {}) {
   return { candidates, skipped };
 }
 
+// --- Board project workspace cleanup ----------------------------------------
+
+// Conservative across container mount namespaces: any live git blocks pack cleanup.
+export function boardGitActive(procDir = "/proc") {
+  let pids;
+  try { pids = fs.readdirSync(procDir).filter((n) => /^\d+$/.test(n)); } catch { return true; }
+  for (const pid of pids) {
+    try {
+      if (/^git(?:$|-)/.test(fs.readFileSync(path.join(procDir, pid, "comm"), "utf8").trim())) return true;
+    } catch (err) { if (!isAbsent(err)) return true; }
+  }
+  return false;
+}
+
+async function fetchBoardProjectIssue(identifier) {
+  try {
+    const base = boardApiBase(process.env.BOARD_API_URL || process.env.MYRMIDON_API_URL || process.env.PAPERCLIP_API_URL);
+    const key = process.env.MYRMIDON_API_KEY || process.env.PAPERCLIP_API_KEY;
+    const response = await fetch(`${base}/issues/${encodeURIComponent(identifier)}`, {
+      headers: key ? { Authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) return { ok: false };
+    const issue = await response.json();
+    return { ok: true, status: issue.status, closedAt: issue.status === "done" ? issue.completedAt : issue.cancelledAt, liveRunId: issue.executionRunId || issue.checkoutRunId };
+  } catch { return { ok: false }; }
+}
+
+async function assessBoardProjectItem(item, now, { fetchState = fetchBoardProjectIssue, gitActive = boardGitActive } = {}) {
+  const { path: target, kind, identifier } = item;
+  const st = lstatSafe(target).st;
+  if (!st || (kind === "pack" ? !st.isFile() : !st.isDirectory())) return null;
+  const result = { ...item, action: "keep", reason: "fresh" };
+  const tree = newestMtimeInTree(target, st.dev, now - DAY_MS);
+  if (tree.error || tree.crossesFs) result.reason = "unsafe-tree";
+  else if (tree.maxMtimeMs >= now - DAY_MS) result.reason = "fresh";
+  else if (kind === "pack" && gitActive()) result.reason = "live-git";
+  else if (kind === "scratch") {
+    const state = await fetchState(identifier);
+    const closed = Date.parse(state?.closedAt);
+    if (!state?.ok || !["done", "cancelled"].includes(state.status) || state.liveRunId || !Number.isFinite(closed) || now - closed <= DAY_MS) result.reason = "issue-not-old-closed";
+    else {
+      // Retain every nonempty scratch until all unpublished and ignored data can be verified.
+      const safe = fs.readdirSync(target).length === 0;
+      if (safe) { result.action = "remove"; result.reason = "ttl"; }
+      else result.reason = "unpublished-or-unknown-work";
+    }
+  } else { result.action = "remove"; result.reason = "ttl"; }
+  return result;
+}
+
+export async function scanBoardProjectWorkspaces(home, now, { fetchState = fetchBoardProjectIssue, gitActive = boardGitActive, onEvent = () => {} } = {}) {
+  const items = [];
+  if (!home) return items;
+  const projects = path.join(home, "instances", "default", "projects");
+  const dirs = (dir) => {
+    try {
+      if (!fs.lstatSync(dir).isDirectory()) return [];
+      return fs.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => path.join(dir, e.name));
+    } catch (err) { if (!isAbsent(err)) onEvent({ event: "board-project-scan-failed", path: dir, error: err.message }); return []; }
+  };
+  let component = path.resolve(home);
+  for (const part of [null, "instances", "default", "projects"]) {
+    if (part) component = path.join(component, part);
+    if (!lstatSafe(component).st?.isDirectory()) return items;
+  }
+  const add = async (repo, target, kind, identifier) => {
+    const item = await assessBoardProjectItem({ path: target, root: projects, repo, kind, identifier }, now, { fetchState, gitActive });
+    if (item) items.push(item);
+  };
+  for (const company of dirs(projects)) for (const project of dirs(company)) for (const repo of dirs(project)) {
+    const packDir = path.join(repo, ".git", "objects", "pack");
+    if ([".git", ".git/objects", ".git/objects/pack"].every((p) => lstatSafe(path.join(repo, p)).st?.isDirectory())) {
+      try { for (const e of fs.readdirSync(packDir, { withFileTypes: true })) if (e.isFile() && /^tmp_(?:pack|idx)_/.test(e.name)) await add(repo, path.join(packDir, e.name), "pack"); }
+      catch (err) { onEvent({ event: "board-project-scan-failed", path: packDir, error: err.message }); }
+    }
+    for (const folder of dirs(path.join(repo, ".scratch"))) {
+      const match = /^ope-?(\d+)(?:-wt)?$/i.exec(path.basename(folder));
+      if (match) await add(repo, folder, "scratch", `OPE-${match[1]}`);
+    }
+    if (lstatSafe(path.join(repo, ".paperclip")).st?.isDirectory()) await add(repo, path.join(repo, ".paperclip", "pnpm-store"), "store");
+  }
+  return items;
+}
+
+export async function pruneBoardProjectWorkspaces(items, journal, options = {}) {
+  for (const item of items.filter((x) => x.action === "remove")) {
+    try {
+      const root = path.resolve(item.root);
+      const relative = path.relative(root, item.path);
+      if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error("unsafe target");
+      let ancestor = root;
+      for (const part of path.dirname(relative).split(path.sep)) {
+        if (!lstatSafe(ancestor).st?.isDirectory()) throw new Error("unsafe ancestor");
+        ancestor = path.join(ancestor, part);
+      }
+      if (!lstatSafe(ancestor).st?.isDirectory()) throw new Error("unsafe ancestor");
+      const current = await assessBoardProjectItem(item, Date.now(), options);
+      if (!current || current.action !== "remove") { journalRecord(journal, { event: "board-project-kept", path: item.path, reason: current?.reason || "gone-or-unsafe" }); continue; }
+      if (item.kind === "scratch") fs.rmdirSync(item.path);
+      else atomicDrop(item.path, item.root);
+      journalRecord(journal, { event: "board-project-removed", path: item.path, kind: item.kind, identifier: item.identifier });
+    } catch (err) { journalRecord(journal, { event: "board-project-remove-failed", path: item.path, error: err.message }); }
+  }
+}
+
 // --- Atomic deletion --------------------------------------------------------
 
 export function atomicDrop(filePath, expectedRoot) {
@@ -2837,7 +2942,14 @@ async function main() {
       }
     }
 
-    const plan = { clones: [], caches: [], scratch: [], botData: [], runCopies: [], staleOmpRunners: [], runnerTaskFolders: [], runnerNpmCaches: [], runnerTmp: [], runnerUnrecognized: [], idleOpenClones: [], reviewClones: [], kept: [], removed: [], archived: [] };
+    const plan = { clones: [], caches: [], scratch: [], botData: [], runCopies: [], staleOmpRunners: [], runnerTaskFolders: [], runnerNpmCaches: [], runnerTmp: [], runnerUnrecognized: [], idleOpenClones: [], reviewClones: [], kept: [], removed: [], archived: [], boardProjects: [] };
+
+    const boardHome = process.env.PAPERCLIP_HOME || process.env.MYRMIDON_HOME;
+    if (!boardHome) journalRecord(args.journal, { event: "board-project-home-missing", reason: "PAPERCLIP_HOME is not configured on the host" });
+    plan.boardProjects = await scanBoardProjectWorkspaces(boardHome, now, {
+      gitActive: () => boardGitActive(args.procDir),
+      onEvent: (event) => journalRecord(args.journal, event),
+    });
 
     // 1. Scan task clones
     const clones = scanTaskClones(root, now, args.cloneTtlHours);
@@ -3124,6 +3236,7 @@ async function main() {
       });
       console.log(JSON.stringify({ ok: true, dryRun: true, plan }, null, 2));
     } else {
+      await pruneBoardProjectWorkspaces(plan.boardProjects, args.journal, { gitActive: () => boardGitActive(args.procDir) });
       let staleOmpRunnersStopped = 0;
       for (const archive of plan.expiredArchives) {
         try {
