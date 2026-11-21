@@ -54,7 +54,8 @@ async function rejectRequest(index: number) {
   expect(requests[index]).toBeDefined();
   await act(async () => requests[index].reject(new Error("Forbidden")));
   await settle();
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Forbidden");
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Could not complete the action");
+  expect(host.textContent).not.toContain("Forbidden");
 }
 
 beforeEach(() => {
