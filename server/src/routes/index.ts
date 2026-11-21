@@ -45,5 +45,6 @@ export { managedAgentProfileRoutes } from "./managed-agent-profiles.js";
 export { remoteAgentProfileRoutes } from "./remote-agent-profiles.js";
 export { adminAssistantRoutes, collectClusterHealth, collectDryRunDiagnostics } from "./admin-assistant.js";
 export { guardrailsRoutes } from "./guardrails.js";
+export { redactRoutes } from "./redact.js";
 export { usersRoutes, userRoutes } from "./users.js";
 export { auditRoutes } from "./audit.js";

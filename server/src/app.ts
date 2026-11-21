@@ -341,6 +341,7 @@ import { adapterRoutes } from "./routes/adapters.js";
 import { managedAgentProfileRoutes } from "./routes/managed-agent-profiles.js";
 import { remoteAgentProfileRoutes } from "./routes/remote-agent-profiles.js";
 import { guardrailsRoutes } from "./routes/guardrails.js";
+import { redactRoutes } from "./routes/redact.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { injectCloudUiSnippet } from "./cloud-ui-snippet.js";
 import { readBrandedStaticIndexHtml, readVersionedWebManifest } from "./static-index-html.js";
@@ -1249,6 +1250,7 @@ export async function createApp(
   api.use(managedAgentProfileRoutes(db));
   api.use(remoteAgentProfileRoutes(db));
   api.use(guardrailsRoutes(db));
+  api.use(redactRoutes(db));
   api.use(
     chatChannelRoutes(db, {
       heartbeat: connectionIntentHeartbeat,
