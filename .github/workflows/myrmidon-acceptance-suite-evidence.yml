@@ -1,0 +1,82 @@
+name: Myrmidon Acceptance Suite Evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      head_sha:
+        description: Current 40-character head SHA of PR #3537
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  acceptance:
+    if: github.repository == 'itkadr-git/myrmidon' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout approved CI configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check release freeze
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/myrmidon/release/release-freeze.sh --check
+      - name: Verify current same-repository PR head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ inputs.head_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/pulls/3537" |
+            jq -e --arg sha "$TARGET_SHA" --arg repo "$GITHUB_REPOSITORY" '
+              .state == "open" and .base.ref == "main" and
+              .head.repo.full_name == $repo and .head.sha == $sha
+            '
+      - name: Checkout exact test SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.head_sha }}
+          path: acceptance-source
+          persist-credentials: false
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Run both acceptance suites and record individual results
+        working-directory: acceptance-source
+        env:
+          TARGET_SHA: ${{ inputs.head_sha }}
+        run: |
+          set -euo pipefail
+          actual_sha=$(git rev-parse HEAD)
+          [[ "$actual_sha" == "$TARGET_SHA" ]]
+          printf 'PR #3537 test SHA: %s; workflow SHA: %s; run: %s attempt: %s\n' \
+            "$actual_sha" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+          node --version
+          export TMPDIR
+          TMPDIR=$(mktemp -d "$RUNNER_TEMP/acceptance.XXXXXXXX")
+          trap 'rm -rf -- "$TMPDIR"' EXIT
+
+          run_suite() {
+            local file=$1 status=0
+            printf '\nCommand: node --test --test-reporter=tap %s\n' "$file"
+            node --test --test-reporter=tap "$file" || status=$?
+            printf 'Suite exit: %s = %d\n' "$file" "$status"
+            return "$status"
+          }
+
+          result=0
+          run_suite scripts/myrmidon/ci/acceptance-document-shape.myrmidon.test.mjs || result=1
+          run_suite scripts/check-acceptance-scenarios.test.mjs || result=1
+          printf 'Combined exit: %d\n' "$result"
+          exit "$result"
