@@ -10,6 +10,59 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+## 1.6.9
+
+### CI Go tool checks no longer leave root-owned files that break the next checkout
+
+The Go checks (`tools/dockergate`, `tools/fleetd`) ran in a Docker container as
+root with the workspace mounted, so files they created in the reused
+self-hosted runner workspace were owned by root. The next job's checkout could
+not clean the workspace and failed (`fatal: --local can only be used inside a
+git repository`), taking down every job on that runner. These containers now
+run as the runner user (`--user "$(id -u):$(id -g)"`, `HOME=/tmp`). The Go
+jobs on the self-hosted lane also start with a step, before checkout, that
+detects files owned by another user, prints their paths, hands them back to the
+runner user with a throwaway container and fails with a clear error if that
+does not help.
+
+Also, every `pnpm/action-setup` step now installs pnpm into the runner's own
+tool cache (`dest: ${{ runner.tool_cache }}/setup-pnpm`) instead of the shared
+`$HOME/setup-pnpm`; parallel runners on one host no longer race on that
+directory (`ENOTEMPTY ... setup-pnpm/node_modules/.bin/store`).
+
+### CI: CI result start latency caused by the runner queue is a warning, not a failure (OPE-13479)
+
+- The `CI result` job checks how long it started after the last predecessor job finished (fail-closed gate, OPE-10065, PR #2063). On 2026-11-16 10:46 (UTC+8) PR #3306, run 43789711787, had all 20 test and build jobs green, but `CI result` failed: `CI result start latency exceeded threshold: 249s > 120s`. The runner queue was full of bot PRs and the job waited for a free runner. A rerun did not help, because the delay only grew.
+- The check now splits the delay. The time the `CI result` job spent in `queued` (job `created_at` to `started_at`) is reported as `::warning::` with the numbers (latency, queue wait, runner name). It does not fail the run.
+- The check still fails when the part that the runner queue does not explain (last predecessor end to job `created_at`) is more than 120 s, and when timestamps are missing. A job that is stuck after it got a runner is still stopped by `timeout-minutes: 5`.
+- The inline bash and jq in `myrmidon-ci.yml` and `myrmidon-ci-tag.yml` moved to `scripts/myrmidon/ci/queue-metrics.mjs --verify-latency`. Tests are in `scripts/myrmidon/ci/queue-metrics.test.mjs` (queue delay 300 s with green jobs gives success and a warning; a delay not caused by the queue gives failure).
+
+### Reviewers read the PR diff and head instead of a full task copy
+
+A wake of a reviewer or verifier (execution stage) no longer makes the hermes
+gateway adapter send the `workspace` field, so the bot gateway does not open a
+full task worktree (about 0.5 GB) before the model starts. On 16.11 the
+reviewers opened one roughly every 3 minutes and the bot volume lost 11 GB in
+6 minutes. The review skill now tells the reviewer to read the change through
+`gh pr diff`, `gh pr view` and `gh api repos/<repo>/contents/<path>?ref=<sha>`,
+to open a copy only when it really needs files (`myr-ws open <KEY> <repo>
+--review`, or a full copy to run a test) and to close it after the verdict
+(`myr-ws close <KEY>`). Executor runs are unchanged.
+
+### Task copies check out only the latest drizzle snapshot
+
+`myr-ws open` now creates a new task copy with a non-cone sparse checkout. In
+`packages/db/src/migrations/meta` the copy holds `_journal.json` and the latest
+snapshot named by the journal (highest `idx`, not a hard-coded file name); the
+rest of the tree is checked out in full. The 263 snapshots of about 1.1 MB each
+were 57% of a 500 MB copy, and `drizzle-kit generate` reads only the journal
+and the last snapshot. Existing copies, scratch copies and review copies are
+not changed, and a repository without a drizzle journal gets a full checkout.
+A new snapshot is added with `git add --sparse`; checks that read every
+snapshot (`check-migration-snapshots`, `pnpm db:renumber`) need
+`git sparse-checkout disable` first. This changes the bot image (`myr-ws`), so
+it reaches bots with the next bot image roll.
+
 ## 1.6.7
 
 ### Corpus: the full-text ranking starts after the embedding again (1.6.7 CORPUS-LATENCY, OPE-12272)
