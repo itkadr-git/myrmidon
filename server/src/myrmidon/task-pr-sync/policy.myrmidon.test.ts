@@ -58,6 +58,16 @@ describe("task PR sync policy", () => {
     expect(decideTaskPrSync(facts({ issueStatus, openPostDeployGate: true }))).toEqual({ kind: "noop", reason: "post_deploy_gate_open" });
   });
 
+  it.each([false, true])("routes conflicts by the active primary (primary conflicting: %s)", (primaryConflicting) => {
+    const decision = decideTaskPrSync(facts({ issueStatus: "in_review", prs: [
+      pr({ number: 3320, state: "draft", mergeable: "CONFLICTING" }),
+      pr({ number: 2824, state: "open", mergeable: primaryConflicting ? "CONFLICTING" : "MERGEABLE", ...{ isPrimary: true } }),
+    ] }));
+    expect(decision).toEqual(primaryConflicting
+      ? { kind: "return_conflict", conflictPrRefs: ["company-a/example.com#2824"] }
+      : { kind: "noop", reason: "pr_still_open" });
+  });
+
   it("does nothing while a PR is still open", () => {
     const decision = decideTaskPrSync(facts({ prs: [pr({ state: "open" })] }));
     expect(decision).toEqual({ kind: "noop", reason: "pr_still_open" });
