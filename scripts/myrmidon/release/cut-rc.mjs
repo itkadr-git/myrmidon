@@ -44,6 +44,7 @@
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -124,7 +125,7 @@ export async function compositionViolationsOfIssue(
       violations.push(`${issue.identifier}: merged PR ${prNum} has no merge commit on record`);
       continue;
     }
-    if (!commitOnBranch(root, pr.mergeCommit.oid, "HEAD")) {
+    if (!commitOnBranch(root, pr.mergeCommit.oid, "HEAD", { env })) {
       const head = pr.headRefName ? ` (branch ${pr.headRefName})` : "";
       violations.push(
         `${issue.identifier}: merged PR ${prNum} is missing from the release commit${head}`,
@@ -406,30 +407,30 @@ export function changelogVersionOk(root, version) {
 
 // --- git -------------------------------------------------------------------
 
-function git(root, args) {
-  return execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
+function git(root, args, { env } = {}) {
+  return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", env }).trim();
 }
 
-export function resolveRef(root, ref) {
+export function resolveRef(root, ref, opts) {
   try {
-    return git(root, ["rev-parse", "--verify", `${ref}^{commit}`]);
+    return git(root, ["rev-parse", "--verify", `${ref}^{commit}`], opts);
   } catch {
     return null;
   }
 }
 
-export function defaultBranch(root) {
+export function defaultBranch(root, opts) {
   try {
-    const sym = git(root, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
+    const sym = git(root, ["symbolic-ref", "refs/remotes/origin/HEAD"], opts);
     return sym.replace("refs/remotes/origin/", "");
   } catch {
     return "main";
   }
 }
 
-export function commitOnBranch(root, sha, branch) {
+export function commitOnBranch(root, sha, branch, opts) {
   try {
-    git(root, ["merge-base", "--is-ancestor", sha, branch]);
+    git(root, ["merge-base", "--is-ancestor", sha, branch], opts);
     return true;
   } catch {
     return false;
@@ -544,6 +545,27 @@ export function formatRefusal({ tag, violations, ciProblem, overridable = true }
 }
 
 export async function run(args, deps = {}) {
+  const scope = fs.mkdtempSync(path.join(os.tmpdir(), "cut-rc-broker-"));
+  try {
+    return await runScoped(args, {
+      ...deps,
+      env: {
+        ...(deps.env || process.env),
+        MYRMIDON_GITHUB_BROKER_SCOPE_DIR: scope,
+        GH_REPO: GITHUB_REPO,
+        GIT_NO_LAZY_FETCH: "1",
+      },
+    });
+  } finally {
+    // Remove the scope name before deleting the claim, so a late descendant
+    // cannot acquire a second claim during cleanup.
+    const closed = `${scope}.closed`;
+    fs.renameSync(scope, closed);
+    fs.rmSync(closed, { recursive: true, force: true });
+  }
+}
+
+async function runScoped(args, deps) {
   const log = deps.log || ((m) => console.log(m));
   const err = deps.err || ((m) => console.error(m));
   const api = deps.api || boardFromEnv();
@@ -551,7 +573,8 @@ export async function run(args, deps = {}) {
   const ghImpl = deps.ciStatus || ciStatusForCommit;
   const gitRoot = args.root || deps.root || process.cwd();
   const tag = tagName(args);
-  const branch = args.branch || defaultBranch(gitRoot);
+  const gitOpts = { env: deps.env };
+  const branch = args.branch || defaultBranch(gitRoot, gitOpts);
   const label = args.boardLabel || args.version.split(".").slice(0, 2).join(".");
 
   log(`cut-rc: ${tag} on ${branch} (release label: ${label})`);
@@ -592,18 +615,18 @@ export async function run(args, deps = {}) {
   // 4. git
   let sha = null;
   if (args.sha) {
-    sha = resolveRef(gitRoot, args.sha);
+    sha = resolveRef(gitRoot, args.sha, gitOpts);
     if (!sha) hardProblems.push(`git: cannot resolve --sha ${args.sha} to a commit`);
   } else {
-    sha = resolveRef(gitRoot, `origin/${branch}`) || resolveRef(gitRoot, branch);
+    sha = resolveRef(gitRoot, `origin/${branch}`, gitOpts) || resolveRef(gitRoot, branch, gitOpts);
     if (!sha) hardProblems.push(`git: cannot resolve ${`origin/${branch}`} to a commit`);
   }
   if (sha) {
     log(`cut-rc: tagging ${sha.slice(0, 12)} (${branch})`);
-    if (!commitOnBranch(gitRoot, sha, branch)) {
+    if (!commitOnBranch(gitRoot, sha, branch, gitOpts)) {
       hardProblems.push(`git: ${sha.slice(0, 12)} is not on ${branch}`);
     }
-    const existing = resolveRef(gitRoot, `refs/tags/${tag}`);
+    const existing = resolveRef(gitRoot, `refs/tags/${tag}`, gitOpts);
     if (existing) {
       hardProblems.push(`git: tag ${tag} already exists (at ${existing.slice(0, 12)})`);
     }
@@ -622,7 +645,7 @@ export async function run(args, deps = {}) {
   if (ciProblem && args.flakyWaiverVerify) {
     const waiver = deps.verifyFlakyWaiver || (() => {
       try {
-        execFileSync("node", [path.join(gitRoot, "scripts/myrmidon/release/release-flaky-waiver.mjs"), "verify", "--tag", tag], { encoding: "utf8", env: deps.env ? { ...process.env, ...deps.env } : process.env });
+        execFileSync("node", [path.join(gitRoot, "scripts/myrmidon/release/release-flaky-waiver.mjs"), "verify", "--tag", tag], { encoding: "utf8", env: deps.env });
         return true;
       } catch { return false; }
     });
@@ -643,7 +666,7 @@ export async function run(args, deps = {}) {
       return 0;
     }
     log(`cut-rc: creating ${tag} at ${sha.slice(0, 12)}`);
-    execFileSync("git", ["-C", gitRoot, "tag", tag, sha], { stdio: "inherit" });
+    execFileSync("git", ["-C", gitRoot, "tag", tag, sha], { stdio: "inherit", env: deps.env });
     log(`cut-rc: done. Push it: git push origin ${tag}`);
     return 0;
   }
@@ -665,7 +688,7 @@ export async function run(args, deps = {}) {
       return 0;
     }
     log(`cut-rc: creating ${tag} at ${sha.slice(0, 12)}`);
-    execFileSync("git", ["-C", gitRoot, "tag", tag, sha], { stdio: "inherit" });
+    execFileSync("git", ["-C", gitRoot, "tag", tag, sha], { stdio: "inherit", env: deps.env });
     log(`cut-rc: done. Push it: git push origin ${tag}`);
     return 0;
   }

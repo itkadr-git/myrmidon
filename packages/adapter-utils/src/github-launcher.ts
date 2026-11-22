@@ -156,7 +156,8 @@ async function main() {
     configReady = true;
     process.once('exit', () => { try { fs.rmSync(configDirectory, { recursive: true, force: true }); } catch {} });
   } catch { diagnostic('configuration_directory_unavailable'); }
-  const requireManagedCredential = program === 'gh' && env.MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST === '1';
+  const scoped = Boolean(env.MYRMIDON_GITHUB_BROKER_SCOPE_DIR);
+  const requireManagedCredential = program === 'gh' && (scoped || env.MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST === '1');
   let brokerStatus;
   {
     for (const key of Object.keys(env)) {
@@ -199,7 +200,10 @@ async function main() {
       const brokerBaseUrls = paperclipBrokerCandidateUrls(candidateEnv);
     try {
     let response;
-    if (brokerBaseUrls.length > 0 && env.PAPERCLIP_GITHUB_BROKER_TOKEN) {
+    // In a scoped operation, only a real Git authentication challenge should
+    // reach the credential helper; local commands never acquire credentials.
+    const acquireEagerly = !scoped || program !== 'git';
+    if (acquireEagerly && brokerBaseUrls.length > 0 && env.PAPERCLIP_GITHUB_BROKER_TOKEN) {
       const repository = paperclipTargetRepository(program, process.argv.slice(2), env, originalPath);
       const brokerAttempt = await paperclipRequestBrokerCredentials(env, brokerBaseUrls, undefined, repository);
       response = brokerAttempt.response;
@@ -228,7 +232,7 @@ async function main() {
         }
       }
       }
-    } else if (!requireManagedCredential) { diagnostic('capability_missing'); }
+    } else if (acquireEagerly && !requireManagedCredential) { diagnostic('capability_missing'); }
     } catch { if (!requireManagedCredential) diagnostic('broker_transport_unavailable'); }
   }
   if (requireManagedCredential && !env.GH_TOKEN) {
