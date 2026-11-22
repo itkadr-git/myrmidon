@@ -12,6 +12,30 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.9
 
+### Manual CI timeout smoke
+
+- Added an isolated manual workflow for testing a self-hosted CI job timeout and a runbook for coordinated, single-dispatch evidence collection. A merged workflow alone does not establish that timeout or runner cleanup passed.
+
+### Smaller persisted wake context
+
+The board stores a matching wake event digest once and reconstructs it on replay, reducing duplicated run context without changing the wake payload. See [PR #4642](https://github.com/itkadr-git/myrmidon/pull/4642).
+
+### Documentation review returns to the original editor
+
+A reviewer can return requested changes on a documentation issue to its original editor without changing the techwriter caste or bypassing the PR-head CI gate. See [PR #4647](https://github.com/itkadr-git/myrmidon/pull/4647) and the [guide update #4649](https://github.com/itkadr-git/myrmidon/pull/4649).
+
+### New reviews wait for current CI evidence
+
+When the current CI result cannot be verified, the board postpones a new review even if the same commit passed earlier. See [PR #4654](https://github.com/itkadr-git/myrmidon/pull/4654).
+
+### One credential request budget when preparing an RC
+
+With a compatible managed launcher, a release preflight shares one broker request budget across its GitHub subprocesses. A fresh scoped cache hit needs no request; on a miss the first endpoint is tried once, with no retry or fallback. If credentials are unavailable, the preflight cannot pass the GitHub gates. See [PR #4650](https://github.com/itkadr-git/myrmidon/pull/4650) and [PR #4652](https://github.com/itkadr-git/myrmidon/pull/4652).
+
+### Review gate CI evidence and diagnostics
+
+- The review gate can reuse fresh, server-fetched authoritative terminal CI evidence for the matching company, PR and exact head. Stale, pending, ambiguous or changed-head evidence does not prove a green result. Budget denial and network errors remain distinguishable. See [PR #4547](https://github.com/itkadr-git/myrmidon/pull/4547).
+
 ### CI Go tool checks no longer leave root-owned files that break the next checkout
 
 The Go checks (`tools/dockergate`, `tools/fleetd`) ran in a Docker container as
