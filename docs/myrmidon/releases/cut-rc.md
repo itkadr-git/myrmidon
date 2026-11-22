@@ -106,12 +106,25 @@ PATH="${PAPERCLIP_GITHUB_LAUNCHER_DIR:?managed launcher required}:$PATH" \
   node scripts/myrmidon/release/cut-rc.mjs --version 1.6.9 --rc 23 --board-label 1.6.9 --dry-run
 ```
 
-A fresh run-scoped cache hit makes no broker request. On a miss, each
-managed launcher/helper process tries only the first configured candidate,
-once, without retry or fallback. If managed credentials are unavailable, the
-managed `gh` launcher exits nonzero without starting `gh`. Local Git remains
-usable. This is not a request limit for the entire dry-run; it can spawn
-multiple processes. Leaving the variable unset preserves the default.
+`MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST=1` limits each managed launcher or
+helper process to the first configured candidate, once, with no retry or
+fallback. On its own, this per-process mode is not a limit across processes.
+
+Separately, `cut-rc` creates a shared broker scope for the whole invocation,
+including its child processes, even when that variable is unset. In the
+verified managed-launcher mode, at most one actual broker POST is made per
+invocation, including on refusal, transport failure, or redirect; there is no
+retry, fallback, or redirect request. A fresh scoped credential cache hit makes
+no broker request. Local-only Git operations do not spend the budget; Git
+credential acquisition is deferred until an authentication challenge. If
+managed credentials are unavailable, the managed `gh` launcher exits nonzero
+without starting `gh`.
+
+The offline E2E used cold HOME and cache with loopback fixtures: the 200 case
+verified two PRs and CI, while 409, 429, 503 with an available secondary, and
+307 failed closed. Each case made one primary POST and zero secondary POSTs.
+This offline result and the merged change do not establish release-environment
+readiness; live preflight remains a separate, explicitly authorized check.
 
 Tests: `scripts/myrmidon/release/cut-rc.test.mjs` (the board API and `gh`
 are faked, `git` is a throwaway repo per test: open task → refusal; done
