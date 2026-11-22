@@ -106,12 +106,25 @@ PATH="${PAPERCLIP_GITHUB_LAUNCHER_DIR:?managed launcher required}:$PATH" \
   node scripts/myrmidon/release/cut-rc.mjs --version 1.6.9 --rc 23 --board-label 1.6.9 --dry-run
 ```
 
-A fresh run-scoped cache hit makes no broker request. On a miss, each
-managed launcher/helper process tries only the first configured candidate,
-once, without retry or fallback. If managed credentials are unavailable, the
-managed `gh` launcher exits nonzero without starting `gh`. Local Git remains
-usable. This is not a request limit for the entire dry-run; it can spawn
-multiple processes. Leaving the variable unset preserves the default.
+`MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST=1` limits each managed launcher or
+helper process to the first configured candidate, once, with no retry or
+fallback. On its own, this per-process mode is not a limit across processes.
+
+Separately, `cut-rc` creates a shared broker scope for the whole invocation,
+including its child processes, even when that variable is unset. In the
+verified managed-launcher mode, at most one actual broker POST is made per
+invocation, including on refusal, transport failure, or redirect; there is no
+retry, fallback, or redirect request. A fresh scoped credential cache hit makes
+no broker request. Local-only Git operations do not spend the budget; Git
+credential acquisition is deferred until an authentication challenge. If
+managed credentials are unavailable, the managed `gh` launcher exits nonzero
+without starting `gh`.
+
+The offline E2E used cold HOME and cache with loopback fixtures: the 200 case
+verified two PRs and CI, while 409, 429, 503 with an available secondary, and
+307 failed closed. Each case made one primary POST and zero secondary POSTs.
+This offline result and the merged change do not establish release-environment
+readiness; live preflight remains a separate, explicitly authorized check.
 
 Tests: `scripts/myrmidon/release/cut-rc.test.mjs` (the board API and `gh`
 are faked, `git` is a throwaway repo per test: open task → refusal; done
@@ -228,12 +241,27 @@ PATH="${PAPERCLIP_GITHUB_LAUNCHER_DIR:?managed launcher required}:$PATH" \
   node scripts/myrmidon/release/cut-rc.mjs --version 1.6.9 --rc 23 --board-label 1.6.9 --dry-run
 ```
 
-Свежий кэш прогона даёт 0 запросов. При промахе каждый процесс штатного
-launcher или helper обращается только к первому настроенному адресу, один раз,
-без повтора и перехода на резервный. Если управляемых учётных данных нет,
-launcher завершает `gh` ненулевым кодом, не запуская CLI. Локальный Git остаётся
-доступен. Это не лимит на весь dry-run: он может создать несколько процессов.
-Без переменной поведение не меняется.
+`MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST=1` ограничивает каждый процесс
+штатного launcher или helper одним обращением к первому настроенному адресу,
+без повтора и перехода на резервный. Сам по себе этот режим не ограничивает
+сумму запросов нескольких процессов.
+
+Отдельно `cut-rc` создаёт общую область broker для всего вызова и его
+дочерних процессов, даже если переменная не задана. В проверенном режиме
+штатного launcher на весь вызов приходится не более одного фактического
+broker POST, в том числе при отказе, ошибке транспорта или перенаправлении:
+повтора, перехода на резервный адрес и запроса по перенаправлению нет. При
+попадании в свежий кэш общей области запроса к broker нет. Локальные
+операции Git не расходуют бюджет; получение Git credentials откладывается до
+запроса аутентификации. Если управляемых учётных данных нет, launcher
+завершает `gh` ненулевым кодом, не запуская CLI.
+
+Offline E2E с холодными HOME и кэшем использовал локальные fixtures: при 200
+проверены два PR и CI; 409, 429, 503 при доступном резервном адресе и 307
+завершились отказом. В каждом случае был один POST на основной адрес и ноль
+на резервный. Offline-результат и слияние не подтверждают готовность
+релизного окружения; live preflight остаётся отдельной проверкой, требующей
+явного разрешения.
 
 Тесты: `scripts/myrmidon/release/cut-rc.test.mjs` (API доски и `gh`
 подменены, `git` — одноразовый репозиторий на тест: открытая задача →
