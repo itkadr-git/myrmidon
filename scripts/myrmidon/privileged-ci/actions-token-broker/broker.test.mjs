@@ -288,17 +288,31 @@ test('identity expiring during reservation never contacts installation API', asy
   assert.equal(calls, 0);
 });
 
-test('identity expiring during anchored intent alerts while leaving issuance fenced', async () => {
-  let calls = 0;
-  const alerts = [], queued = [];
-  const store = { reserveIssuance: async () => {}, queueAlert: async event => queued.push(event) };
+test('identity expiring during anchored intent alerts while leaving issuance fenced', async t => {
+  const now = 1_700_000_000;
+  const exp = now + 1;
+  let clockMs = now * 1000;
+  t.mock.method(Date, 'now', () => clockMs);
+
+  let calls = 0, pending = false;
+  const intentTimes = [], alerts = [], queued = [];
+  const store = { reserveIssuance: async () => { pending = true; },
+    resolveIssuance: async () => { pending = false; }, queueAlert: async event => queued.push(event) };
   const broker = createBroker({ policy, loadKeys: async () => [key], claimOnce: async () => true, store,
     anchoredIssuance: true, installation: { issue: async () => { calls++; } },
-    audit: async event => { if (event === 'issuance_pending') await new Promise(resolve => setTimeout(resolve, 2100)); },
+    audit: async event => {
+      if (event === 'issuance_pending') {
+        const startedAt = Date.now();
+        // Expire the identity before acknowledging the intent write.
+        clockMs = exp * 1000;
+        intentTimes.push([startedAt, Date.now()]);
+      }
+    },
     alert: async event => alerts.push(event) });
-  const now = Math.floor(Date.now() / 1000);
-  await assert.rejects(broker.exchange(jwt('expires-during-intent', { iat: now, nbf: now, exp: now + 1 })));
+  await assert.rejects(broker.exchange(jwt('expires-during-intent', { iat: now, nbf: now, exp })));
+  assert.deepEqual(intentTimes, [[now * 1000, exp * 1000]]);
   assert.equal(calls, 0);
+  assert.equal(pending, true);
   assert.ok(queued.includes('issuance_ambiguous'));
   assert.ok(alerts.includes('issuance_ambiguous'));
 });
