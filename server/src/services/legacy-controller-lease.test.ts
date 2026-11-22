@@ -4,8 +4,81 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, heartbeatRuns } from "@myrmidon/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { heartbeatService } from "./heartbeat.js";
-import { hasLiveLegacyController, LEGACY_CONTROLLER_DEADLINE_CONFIRM_MS, legacyControllerBootId, legacyControllerClaim,
+import { hasLiveLegacyController, LEGACY_CONTROLLER_DEADLINE_CONFIRM_MS, LEGACY_CONTROLLER_LEASE_MS, legacyControllerBootId, legacyControllerClaim,
   renewLegacyControllerLease, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
+
+describe("legacy controller confirmation deadline", () => {
+  const localDeadlineMs = 100;
+  const confirmAt = localDeadlineMs + LEGACY_CONTROLLER_DEADLINE_CONFIRM_MS;
+
+  it.each([
+    { state: "live owner", aborts: false },
+    { state: "different owner", aborts: true },
+    { state: "terminal run", aborts: true },
+  ])("checks the committed $state before the renewal response arrives", async ({ state, aborts }) => {
+    vi.useFakeTimers();
+    const run = {
+      id: randomUUID(), companyId: randomUUID(), runtimeMode: "legacy",
+      status: "running", controllerBootId: legacyControllerBootId,
+      controllerLeaseExpiresAt: new Date(Date.now() + localDeadlineMs),
+    } as typeof heartbeatRuns.$inferSelect;
+    const row = { ...run };
+    const response = Promise.withResolvers<{ id: string }[]>();
+    const returning = vi.fn(() => response.promise);
+    const db = {
+      update: () => ({ set: () => ({ where: () => ({ returning }) }) }),
+      select: () => ({ from: () => ({ where: async () => [{ ...row }] }) }),
+    } as unknown as ReturnType<typeof createDb>;
+    const controller = new AbortController();
+    const watch = watchLegacyControllerLease(db, run, controller);
+    try {
+      await vi.advanceTimersByTimeAsync(localDeadlineMs);
+      expect(returning).toHaveBeenCalledTimes(1);
+
+      // Commit the write while its response is still withheld from the watcher.
+      row.controllerLeaseExpiresAt = new Date(Date.now() + LEGACY_CONTROLLER_LEASE_MS);
+      if (state === "different owner") row.controllerBootId = randomUUID();
+      if (state === "terminal run") row.status = "succeeded";
+
+      await vi.advanceTimersByTimeAsync(LEGACY_CONTROLLER_DEADLINE_CONFIRM_MS + 1);
+      expect(controller.signal.aborted).toBe(aborts);
+      if (aborts) expect(controller.signal.reason).toMatchObject({ name: "ControllerLeaseLost" });
+
+      response.resolve([{ id: run.id }]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(controller.signal.aborted).toBe(aborts);
+    } finally {
+      watch.stop();
+      response.resolve([{ id: run.id }]);
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops within a second confirm window when the database read does not settle", async () => {
+    vi.useFakeTimers();
+    const run = {
+      id: randomUUID(), companyId: randomUUID(), runtimeMode: "legacy",
+      status: "running", controllerBootId: legacyControllerBootId,
+      controllerLeaseExpiresAt: new Date(Date.now() + localDeadlineMs),
+    } as typeof heartbeatRuns.$inferSelect;
+    const never = new Promise(() => {});
+    const db = {
+      update: () => ({ set: () => ({ where: () => ({ returning: () => never }) }) }),
+      select: () => ({ from: () => ({ where: () => never }) }),
+    } as unknown as ReturnType<typeof createDb>;
+    const controller = new AbortController();
+    const watch = watchLegacyControllerLease(db, run, controller);
+    try {
+      await vi.advanceTimersByTimeAsync(confirmAt + 1);
+      expect(controller.signal.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(LEGACY_CONTROLLER_DEADLINE_CONFIRM_MS);
+      expect(controller.signal.reason).toMatchObject({ name: "ControllerLeaseLost" });
+    } finally {
+      watch.stop();
+      vi.useRealTimers();
+    }
+  });
+});
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("durable legacy controller ownership", () => {
