@@ -9,6 +9,8 @@ open release tasks, and six closed tasks later turned out to carry unmerged
 PRs. Every candidate tag now goes through the same checks, and every bypass
 lands on the board.
 
+For obtaining and verifying the manifest before deployment, see [RC candidate before GitHub Release](../deploy.md#rc-candidate-before-github-release).
+
 ## The command
 
 ```bash
@@ -143,6 +145,8 @@ refusal even with an override).
 задачах выпуска, а позже выяснилось, что у шести закрытых задач PR не
 влиты. Каждый кандидат теперь проходит одни и те же проверки, и каждый
 обход попадает на доску.
+
+Получение и проверка манифеста до выката описаны в разделе [«Кандидат RC до GitHub Release»](../deploy.ru.md#кандидат-rc-до-github-release).
 
 ## Команда
 
