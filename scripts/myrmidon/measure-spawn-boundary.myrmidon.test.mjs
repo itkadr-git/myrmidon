@@ -24,7 +24,7 @@ describe("measureRun spawn boundary", () => {
       const result = measureRun({
         command, cwd, port: 43219, timeoutMs: 1000, extraEnv,
         spawnImpl: (...args) => { captured = args; return child; },
-        fetchImpl: async () => { setImmediate(() => child.emit("close", 0, null)); return { status: 200 }; },
+        fetchImpl: async () => { setImmediate(() => child.emit("close", 0, null)); return { status: 200, json: async () => ({ status: "ok" }) }; },
       });
       const measured = await result;
       assert.equal(typeof measured.elapsedMs, "number");
@@ -61,7 +61,7 @@ describe("measureRun spawn boundary", () => {
       fetchImpl: async (url) => {
         probeUrl = url;
         setImmediate(() => child.emit("close", 0, null));
-        return { status: 200 };
+        return { status: 200, json: async () => ({ status: "ok" }) };
       },
     });
     assert.ok((await result).elapsedMs >= 0);
@@ -77,7 +77,7 @@ describe("measureRun spawn boundary", () => {
     const result = measureRun({
       command: "missing", cwd: ".", port: 43221, timeoutMs: 1000,
       spawnImpl: () => child,
-      fetchImpl: async () => { calls += 1; return { status: 200 }; },
+      fetchImpl: async () => { calls += 1; return { status: 200, json: async () => ({ status: "ok" }) }; },
     });
     child.emit("error", error);
     await assert.rejects(result, (failure) => {
@@ -97,7 +97,7 @@ describe("measureRun spawn boundary", () => {
     const result = measureRun({
       command: "fake", cwd: ".", port: 43222, timeoutMs: 1000, pollIntervalMs: 10,
       spawnImpl: () => child,
-      fetchImpl: async () => { calls += 1; return { status: 200 }; },
+      fetchImpl: async () => { calls += 1; return { status: 200, json: async () => ({ status: "ok" }) }; },
     });
     child.emit("close", 7, null);
     await assert.rejects(result, (failure) => {

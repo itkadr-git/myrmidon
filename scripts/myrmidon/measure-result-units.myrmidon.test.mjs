@@ -11,9 +11,9 @@ it("serializes fractional run times and the supplied summary without mutation or
     envPairs: Object.freeze(["EMPTY=", "TOKEN=value-sentinel=second-sentinel"]),
   });
   const runs = Object.freeze([
-    Object.freeze({ index: 7, elapsedMs: 1234.5678, cold: true }),
-    Object.freeze({ index: 3, elapsedMs: 2345.6789, cold: false }),
-    Object.freeze({ index: 9, elapsedMs: 3456.7891, cold: false }),
+    Object.freeze({ index: 7, firstHttp200Ms: 1000, elapsedMs: 1234.5678, cold: true }),
+    Object.freeze({ index: 3, firstHttp200Ms: 2000, elapsedMs: 2345.6789, cold: false }),
+    Object.freeze({ index: 9, firstHttp200Ms: 3000, elapsedMs: 3456.7891, cold: false }),
   ]);
   // Deliberately different from the samples, so recomputing the summary fails.
   const summary = Object.freeze({ min: 4567.1234, median: 5678.4567, max: 6789.9876 });
@@ -26,12 +26,13 @@ it("serializes fractional run times and the supplied summary without mutation or
     port: 4567,
     timeoutSec: 12,
     envKeys: ["EMPTY", "TOKEN"],
+    readiness: "http_200_status_ok",
     runs: [
-      { run: 7, seconds: 1.235, cold: true },
-      { run: 3, seconds: 2.346, cold: false },
-      { run: 9, seconds: 3.457, cold: false },
+      { run: 7, firstHttp200Seconds: 1, seconds: 1.235, cold: true },
+      { run: 3, firstHttp200Seconds: 2, seconds: 2.346, cold: false },
+      { run: 9, firstHttp200Seconds: 3, seconds: 3.457, cold: false },
     ],
-    summary: { minSeconds: 4.567, medianSeconds: 5.678, maxSeconds: 6.79 },
+    summary: { minSeconds: 4.567, medianSeconds: 5.678, maxSeconds: 6.79, firstHttp200MinSeconds: 1, firstHttp200MedianSeconds: 2, firstHttp200MaxSeconds: 3 },
   });
   assert.ok(!json.includes("value-sentinel"));
   assert.ok(!json.includes("second-sentinel"));
