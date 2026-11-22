@@ -9,6 +9,8 @@ open release tasks, and six closed tasks later turned out to carry unmerged
 PRs. Every candidate tag now goes through the same checks, and every bypass
 lands on the board.
 
+For obtaining and verifying the manifest before deployment, see [RC candidate before GitHub Release](../deploy.md#rc-candidate-before-github-release).
+
 ## The command
 
 ```bash
