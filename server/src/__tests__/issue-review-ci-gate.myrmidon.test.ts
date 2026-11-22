@@ -131,7 +131,9 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     const [clock] = await ctx.db.execute(sql`select floor(extract(epoch from clock_timestamp()) / 60)::bigint as minute`);
     const minute = Number(clock?.minute);
     const start = new Date(minute * 60_000);
-    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
+    // The installation-wide budget lives on the oldest company, not the issue's company.
+    const [carrier] = await ctx.db.select({ id: companies.id }).from(companies).orderBy(companies.createdAt).limit(1);
+    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: carrier.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
     const actor = { type: "agent", agentId: reviewer, companyId, source: "agent_key", runId };
     const app = routeApp(ctx.db, actor as never, issueRoutes);
     const diagnostic = vi.spyOn(logger, "info");
@@ -150,7 +152,7 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     const [unchanged] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
     expect(unchanged?.status).toBe("in_review");
 
-    await ctx.db.update(toolGatewayRateLimitCounters).set({ count: 1999 }).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
+    await ctx.db.update(toolGatewayRateLimitCounters).set({ count: 1999 }).where(sql`${toolGatewayRateLimitCounters.companyId} = ${carrier.id}`);
     transport.mockImplementationOnce(async () => {
       throw new Error(`synthetic transport failure ${canary}`);
     });
@@ -167,8 +169,8 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     // One reservation can read the PR head, but cannot complete the subsequent CI reads.
     transport.mockClear();
     diagnostic.mockClear();
-    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
-    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 1999, resetAt: new Date(start.getTime() + 3_600_000) });
+    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${carrier.id}`);
+    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: carrier.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 1999, resetAt: new Date(start.getTime() + 3_600_000) });
     transport.mockImplementationOnce(async () => {
       return Response.json({ state: "open", head: { sha: headSha } });
     });
@@ -222,7 +224,7 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     const workflowUrl = "https://api.github.com/repos/acme/app/contents/.github/workflows";
     const checkUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?check_name=CI%20result&filter=all&per_page=100`;
     const latestChecksUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?filter=latest&per_page=100`;
-    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
+    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${carrier.id}`);
     transport.mockImplementation(async (url) => {
       if (url === pullUrl) return Response.json({ state: "open", head: { sha: headSha } });
       if (url === workflowUrl) return Response.json([{ name: "ci.yml" }]);
@@ -251,7 +253,7 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     transport.mockReset();
     diagnostic.mockClear();
     resetReviewCiCacheForTests();
-    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
+    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${carrier.id}`);
     const workflowRunsUrl = `https://api.github.com/repos/acme/app/actions/runs?head_sha=${headSha}&per_page=100`;
     transport.mockImplementation(async (url) => {
       if (url === pullUrl) return Response.json({ state: "open", head: { sha: headSha } });
