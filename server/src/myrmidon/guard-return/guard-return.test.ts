@@ -351,6 +351,27 @@ describe("1.6.6 GUARD-RETURN: domain logic", () => {
     expect(decideGuardReturn(candidate, agentMap).action).toBe("return");
   });
 
+  it("preserves a recorded documentation hand-back in an engineer-default project", () => {
+    const editor = { id: "editor", name: "Editor", role: "editor" };
+    const candidate: GuardReturnCandidate = {
+      issueId: "docs", identifier: null, title: "Document preflight", companyId: "comp-1",
+      status: "in_progress", assigneeAgentId: editor.id, assigneeRole: editor.role,
+      projectId: "proj-1", projectDefaultCasteKey: "engineer", casteKey: "techwriter", labels: [],
+      executionState: {
+        status: "changes_requested", currentStageType: "review", lastDecisionId: "decision",
+        lastDecisionOutcome: "changes_requested", returnAssignee: { type: "agent", agentId: editor.id },
+      },
+      prWorkProducts: [{ id: "docs-pr", type: "pull_request", status: "open", creatorAgentId: editor.id }],
+      comments: [], createdAt: new Date(), updatedAt: new Date(),
+    };
+    const agents = new Map([[editor.id, editor], [engineerAgent.id, engineerAgent]]);
+    const decide = (value: GuardReturnCandidate) => decideGuardReturn(value, agents, undefined, [engineerAgent]);
+    expect(decide(candidate).action).toBe("skip");
+    expect(decide({ ...candidate, labels: ["needs-engineer"] }).action).toBe("return");
+    expect(decide({ ...candidate, prWorkProducts: [{ ...candidate.prWorkProducts[0]!, creatorAgentId: engineerAgent.id }] }).action).toBe("return");
+    expect(decide({ ...candidate, executionState: { ...candidate.executionState, lastDecisionId: null } }).action).toBe("return");
+  });
+
   it("skips return when task is already assigned to an engineer", () => {
     const agentMap = new Map<string, AgentSummary>([
       [engineerAgent.id, engineerAgent],

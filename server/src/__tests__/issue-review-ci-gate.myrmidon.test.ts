@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
-import { activityLog, agentWakeupRequests, agents, companies, connectionEventDeliveries, heartbeatRuns, issueComments, issueWorkProducts, issues, toolGatewayRateLimitCounters } from "@myrmidon/db";
+import { activityLog, agentWakeupRequests, agents, companies, connectionEventDeliveries, heartbeatRuns, issueComments, issueExecutionDecisions, issueWorkProducts, issues, toolGatewayRateLimitCounters } from "@myrmidon/db";
 import { describeEmbeddedPostgres, routeApp, seedCompanyWithBoardAccess, useEmbeddedPostgres } from "./helpers/route-test-harness.js";
 import { issueRoutes } from "../routes/issues.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
@@ -48,6 +48,65 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     await ctx.db.delete(toolGatewayRateLimitCounters);
   });
 
+  it.each([
+    { casteKey: "techwriter", harnessKind: null, allowed: true },
+    { casteKey: "engineer", harnessKind: null, allowed: false },
+    { casteKey: "techwriter", harnessKind: "skill_test", allowed: false },
+    { casteKey: null, harnessKind: null, allowed: false },
+  ])("returns to an editor only for a documentation review ($casteKey / $harnessKind)", async ({ casteKey, harnessKind, allowed }) => {
+    const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Documentation review return");
+    const author = randomUUID(), reviewer = randomUUID(), issueId = randomUUID(), runId = randomUUID(), stageId = randomUUID();
+    const headSha = "a".repeat(40);
+    const url = "https://github.com/acme/app/pull/7";
+    const comment = "REQUEST CHANGES: docs/preflight.md:42 must explain the skip condition";
+    const base = { companyId, status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} };
+    await ctx.db.insert(agents).values([
+      { ...base, id: author, name: "Author", role: "editor" },
+      { ...base, id: reviewer, name: "Reviewer", role: "reviewer" },
+    ]);
+    const currentParticipant = { type: "agent", agentId: reviewer, userId: null };
+    const returnAssignee = { type: "agent", agentId: author, userId: null };
+    await ctx.db.insert(issues).values({
+      id: issueId, companyId, title: "Documentation review return", status: "in_review", priority: "medium",
+      casteKey, harnessKind, createdByAgentId: author, assigneeAgentId: reviewer,
+      executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), ...currentParticipant }] }] },
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant, returnAssignee, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null },
+    });
+    await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewer, status: "succeeded", contextSnapshot: { issueId } });
+    await ctx.db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", title: "Synthetic PR", url, status: "open", isPrimary: true, metadata: { repo: "acme/app", number: 7, headSha } });
+    let ciReady = false;
+    const app = routeApp(ctx.db, { type: "agent", agentId: reviewer, companyId, source: "agent_key", runId } as never, (db, storage) => issueRoutes(db, storage, {
+      resolveReviewPullRequestCi: async () => ciReady
+        ? { state: "complete", finalCheckConclusion: "success", pullRequestUrl: url, headSha }
+        : { state: "pending", pullRequestUrl: url, headSha },
+    }));
+    const submit = (extra = {}) => request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment, ...extra });
+    if (allowed) {
+      const explicit = await submit({ assigneeAgentId: author });
+      expect(explicit.body.details?.code).toBe("issue_requires_engineer");
+      const pending = await submit();
+      expect(pending.status, JSON.stringify(pending.body)).toBe(422);
+      expect(pending.body.error).toContain("CI result for the current pull request head is not complete");
+      const [unchanged] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+      expect(unchanged).toMatchObject({ status: "in_review", assigneeAgentId: reviewer, executionState: { status: "pending" } });
+    }
+    ciReady = true;
+    const result = await submit();
+    const comments = await ctx.db.select().from(issueComments).where(sql`${issueComments.issueId} = ${issueId}`);
+    const decisions = await ctx.db.select().from(issueExecutionDecisions).where(sql`${issueExecutionDecisions.issueId} = ${issueId}`);
+    if (allowed) {
+      expect(result.status, JSON.stringify(result.body)).toBe(200);
+      expect(result.body).toMatchObject({ status: "in_progress", casteKey, assigneeAgentId: author, executionState: { lastDecisionOutcome: "changes_requested", returnAssignee } });
+      expect(comments).toEqual(expect.arrayContaining([expect.objectContaining({ authorAgentId: reviewer, body: comment })]));
+      expect(decisions).toMatchObject([{ outcome: "changes_requested", actorAgentId: reviewer, body: comment }]);
+    } else {
+      expect(result.status, JSON.stringify(result.body)).toBe(422);
+      expect(result.body.details?.code).toBe("issue_requires_engineer");
+      expect(comments).toHaveLength(0);
+      expect(decisions).toHaveLength(0);
+    }
+  });
+
   it("rejects unavailable CI at 2000 without a GitHub call and accepts matching fresh success", async () => {
     const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Isolated CI write gate");
     const author = randomUUID();
@@ -72,7 +131,9 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     const [clock] = await ctx.db.execute(sql`select floor(extract(epoch from clock_timestamp()) / 60)::bigint as minute`);
     const minute = Number(clock?.minute);
     const start = new Date(minute * 60_000);
-    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
+    // The installation-wide budget lives on the oldest company, not the issue's company.
+    const [carrier] = await ctx.db.select({ id: companies.id }).from(companies).orderBy(companies.createdAt).limit(1);
+    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: carrier.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
     const actor = { type: "agent", agentId: reviewer, companyId, source: "agent_key", runId };
     const app = routeApp(ctx.db, actor as never, issueRoutes);
     const diagnostic = vi.spyOn(logger, "info");
@@ -91,7 +152,7 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     const [unchanged] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
     expect(unchanged?.status).toBe("in_review");
 
-    await ctx.db.update(toolGatewayRateLimitCounters).set({ count: 1999 }).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
+    await ctx.db.update(toolGatewayRateLimitCounters).set({ count: 1999 }).where(sql`${toolGatewayRateLimitCounters.companyId} = ${carrier.id}`);
     transport.mockImplementationOnce(async () => {
       throw new Error(`synthetic transport failure ${canary}`);
     });
@@ -108,8 +169,8 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     // One reservation can read the PR head, but cannot complete the subsequent CI reads.
     transport.mockClear();
     diagnostic.mockClear();
-    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
-    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 1999, resetAt: new Date(start.getTime() + 3_600_000) });
+    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${carrier.id}`);
+    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: carrier.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 1999, resetAt: new Date(start.getTime() + 3_600_000) });
     transport.mockImplementationOnce(async () => {
       return Response.json({ state: "open", head: { sha: headSha } });
     });
@@ -163,7 +224,7 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     const workflowUrl = "https://api.github.com/repos/acme/app/contents/.github/workflows";
     const checkUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?check_name=CI%20result&filter=all&per_page=100`;
     const latestChecksUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?filter=latest&per_page=100`;
-    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
+    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${carrier.id}`);
     transport.mockImplementation(async (url) => {
       if (url === pullUrl) return Response.json({ state: "open", head: { sha: headSha } });
       if (url === workflowUrl) return Response.json([{ name: "ci.yml" }]);
@@ -192,7 +253,7 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     transport.mockReset();
     diagnostic.mockClear();
     resetReviewCiCacheForTests();
-    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${companyId}`);
+    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${carrier.id}`);
     const workflowRunsUrl = `https://api.github.com/repos/acme/app/actions/runs?head_sha=${headSha}&per_page=100`;
     transport.mockImplementation(async (url) => {
       if (url === pullUrl) return Response.json({ state: "open", head: { sha: headSha } });
