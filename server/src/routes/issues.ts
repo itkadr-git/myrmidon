@@ -4119,6 +4119,7 @@ export function issueRoutes(
     casteKey?: string | null;
     harnessKind?: string | null;
     executionWorkspacePreference?: string | null;
+    returningToOriginalEditor?: boolean;
   }): Promise<void> {
     if (!input.assigneeAgentId) return;
     if (input.status && ENGINEER_GATE_EXEMPT_STATUSES.has(input.status)) return;
@@ -4158,6 +4159,14 @@ export function issueRoutes(
       executionWorkspacePreference:
         input.executionWorkspacePreference ?? input.issue?.executionWorkspacePreference ?? null,
     });
+
+    // A documentation PR alone is not an engineering signal on a policy-driven
+    // return to the original editor. Explicit engineering signals still win.
+    if (
+      !isCode && input.returningToOriginalEditor && agent?.role === "editor" &&
+      input.issue?.casteKey === "techwriter" &&
+      !(input.issue.executionState as { stages?: unknown } | null)?.stages
+    ) return;
 
     if (!isCode && input.issue?.id) {
       try {
@@ -15163,7 +15172,15 @@ export function issueRoutes(
       const movingToOrKeptInCodeInProgress =
         typeof req.body.status === "string" && targetStatus === "in_progress" && targetAssigneeAgentId != null;
 
-      if (isAssigneeChange || movingToOrKeptInCodeInProgress) {
+      // Only the policy transition can confirm a return; also recheck it on the locked row.
+      const documentationReturnCandidate =
+        existing.status === "in_review" && existing.casteKey === "techwriter" &&
+        stageState?.currentStageType === "review" && stageHandBackAssigneeId !== null &&
+        stageParticipant?.agentId === actor.agentId &&
+        ["assigneeAgentId", "assigneeUserId", "executionPolicy", "projectId", "casteKey", "labelIds",
+          "harnessKind", "executionWorkspacePreference"].every((key) => req.body[key] === undefined);
+
+      if (!documentationReturnCandidate && (isAssigneeChange || movingToOrKeptInCodeInProgress)) {
         await assertEngineerForCodeIssue({
           companyId: existing.companyId,
           issue: existing,
@@ -15746,6 +15763,17 @@ export function issueRoutes(
         candidateLoads,
         restartPreferredParticipant: handoffPreferredReviewer,
       });
+      if (documentationReturnCandidate) {
+        await assertEngineerForCodeIssue({
+          companyId: existing.companyId,
+          issue: existing,
+          status: targetStatus,
+          assigneeAgentId: stageHandBackAssigneeId,
+          projectId: existing.projectId,
+          returningToOriginalEditor: transition.decision?.outcome === "changes_requested" &&
+            transition.patch.status === "in_progress" && transition.patch.assigneeAgentId === stageHandBackAssigneeId,
+        });
+      }
       // myrmidon(MON-RESTORE): capture and strip transient notice before persistence.
       const monitorClearNotice = transition.patch.monitorClearNotice as
         | { reason?: string | null; notes?: string | null }
@@ -17101,6 +17129,26 @@ export function issueRoutes(
               monitorExplicitlyUpdated:
                 req.body.executionPolicy !== undefined && monitorChanged,
             });
+            if (documentationReturnCandidate && lockedTransition.patch.status === "in_progress") {
+              const lockedState = parseIssueExecutionState(lockedExisting.executionState);
+              const currentLabels = await tx.select({ name: labels.name }).from(issueLabels)
+                .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+                .where(eq(issueLabels.issueId, lockedExisting.id));
+              await assertEngineerForCodeIssue({
+                companyId: lockedExisting.companyId,
+                issue: { ...lockedExisting, labels: currentLabels },
+                status: "in_progress",
+                assigneeAgentId: typeof lockedTransition.patch.assigneeAgentId === "string"
+                  ? lockedTransition.patch.assigneeAgentId : lockedExisting.assigneeAgentId,
+                projectId: lockedExisting.projectId,
+                returningToOriginalEditor: lockedTransition.decision?.outcome === "changes_requested" &&
+                  lockedExisting.status === "in_review" && lockedState?.status === "pending" &&
+                  lockedState.currentStageType === "review" && lockedState.currentParticipant?.type === "agent" &&
+                  lockedState.currentParticipant.agentId === actor.agentId && lockedState.returnAssignee?.type === "agent" &&
+                  lockedState.returnAssignee.agentId === stageHandBackAssigneeId &&
+                  lockedTransition.patch.assigneeAgentId === stageHandBackAssigneeId,
+              });
+            }
             if (
               reviewApprovalPendingMerge &&
               lockedTransition.decision?.outcome !== "approved"
