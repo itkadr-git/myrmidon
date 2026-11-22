@@ -15834,7 +15834,7 @@ export function issueRoutes(
         let diagnostic: Parameters<NonNullable<Parameters<typeof createReviewPullRequestCiResolver>[0]["onDiagnostic"]>>[0] | null = null;
         // OPE-15004: the write verdict gate is review admission — its reads are
         // always fresh, never served from the read cache.
-        const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, admission: true, onDiagnostic: (value) => { diagnostic = value; } }))({
+        const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, admission: true, allowCachedReviewReturn: transition.decision.outcome === "changes_requested", onDiagnostic: (value) => { diagnostic = value; } }))({
           companyId: existing.companyId,
           issueId: existing.id,
         });
@@ -17175,7 +17175,7 @@ export function issueRoutes(
               let diagnostic: Parameters<NonNullable<Parameters<typeof createReviewPullRequestCiResolver>[0]["onDiagnostic"]>>[0] | null = null;
               // OPE-15004: the write verdict gate is review admission — its reads are
               // always fresh, never served from the read cache.
-              const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, admission: true, onDiagnostic: (value) => { diagnostic = value; } }))({
+              const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, admission: true, allowCachedReviewReturn: lockedTransition.decision.outcome === "changes_requested", onDiagnostic: (value) => { diagnostic = value; } }))({
                 companyId: lockedExisting.companyId,
                 issueId: lockedExisting.id,
               });
@@ -17453,6 +17453,7 @@ export function issueRoutes(
                   }
                   const admissionDecision = decideReviewAdmission({
                     ci: ci.state,
+                    ciReason: ci.reason,
                     headFinalCheck:
                       ci.state !== "complete" ? "unknown" :
                       ci.finalCheckConclusion === "failure" ? "red" :
@@ -18736,6 +18737,7 @@ export function issueRoutes(
         deferExecutionReviewWakeForCi =
           decideReviewAdmission({
             ci: reviewCi.state,
+            ciReason: reviewCi.reason,
             headFinalCheck:
               reviewCi.state !== "complete" ? "unknown" :
               reviewCi.finalCheckConclusion === "failure" ? "red" :

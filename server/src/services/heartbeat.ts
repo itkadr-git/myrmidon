@@ -13045,7 +13045,12 @@ export function heartbeatService(
           // reviewer's own decision happens, and that decision meets the fresh
           // write gate. A fresh read on every tick is what drained the shared
           // review budget (OPE-12397 kept these reads cached).
-          const ci = await createReviewPullRequestCiResolver({ db })({
+          // A handoff deferred by the fresh-read gate needs fresh evidence on
+          // retry too; ordinary recovery monitors retain their cached reads.
+          const ci = await createReviewPullRequestCiResolver({
+            db,
+            admission: limitMonitor?.notes?.startsWith("Review waits for CI on the head of ") === true,
+          })({
             companyId: claimed.companyId,
             issueId: claimed.id,
           });
