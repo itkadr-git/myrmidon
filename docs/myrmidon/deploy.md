@@ -268,7 +268,8 @@ scripts/myrmidon/deploy/deploy.sh --config deploy.env --release myr-v1.6.2
 
 1. Once all four tag-push image workflows succeed, dispatch **Myrmidon release publish**
    from `main` with the exact RC `tag` and `prepare_rc=true`. This mode checks the
-   tag's commit and GHCR images, but does not request a verdict or publish a Release.
+   tag's commit and GHCR images, then saves the checked manifest as an Actions
+   artifact. It does not fetch a verdict or publish a GitHub Release asset.
 2. Download `release-components-<tag>-attempt-<n>` from that successful `prepare-rc`
    run. Use only that run's `release-components.json`. Resolve the expected full
    commit independently from the trusted release tag (peel annotated tags to the commit).
@@ -293,12 +294,13 @@ GitHub **Latest** release (the owner's requirement of 05.10):
 1. **Cut the candidate.** The release-cut PR lands on `main`, then the tag
    `myr-vX.Y.Z-rc.1` (next trial: `-rc.2`, …) is pushed on the release commit. CI builds
    every component image with the tag `X.Y.Z-rc.N` and the version `/api/health` reports is
-   exactly `X.Y.Z-rc.N`. The publish workflow creates the GitHub Release as a
-   **pre-release** titled `Myrmidon X.Y.Z-rc.N (RC N)` — it never touches `latest`.
-2. **Deploy the candidate.** `deploy.sh --release myr-vX.Y.Z-rc.N` works exactly like a
-   final release (the manifest asset, the component gate, the bot rollout): the digests
-   resolve from the rc's own image tags. `--expect-version X.Y.Z-rc.N` matches what the
-   board reports.
+   exactly `X.Y.Z-rc.N`. Prepare the Actions artifact as described above; publication
+   requires the signed verdict and creates a **pre-release** titled
+   `Myrmidon X.Y.Z-rc.N (RC N)` without moving `latest`.
+2. **Deploy the candidate.** Before publication, use the prepared manifest as described
+   above. After publication, `deploy.sh --release myr-vX.Y.Z-rc.N` can use the Release
+   manifest asset; the component gate and bot rollout apply. The digests resolve from
+   the RC image tags. `--expect-version X.Y.Z-rc.N` matches what the board reports.
 3. **Verify on production.** Health (`/api/health` status ok at `X.Y.Z-rc.N`), the
    attention list empty of new deploy damage, the fleet taking tasks, the bot images
    applied. The deploy itself already proved the bot re-apply smoke.
