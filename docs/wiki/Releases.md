@@ -25,13 +25,12 @@ always fetches exactly the files that passed the release checks.
 
 ### 1.6.9 candidate status
 
-The next RC is pending PREDEPLOY and green main; its number awaits Alex's decision. The historical
+The next RC is pending PREDEPLOY and green main; Alex has already approved the number rc.23. The historical
 `myr-v1.6.9-rc.22` was published at
 `2d5174055299f6e1959ac95740333788798712b2`. The later main review gate fix
 #4604 is not in that tag. The final candidate SHA, image digests, CI, rollout,
 database audit and two-hour evidence remain pending; this is not a stable
-release announcement. Privileged work remains required for 1.6.9; activation
-awaits evidence and review. Live OIDC and privileged finalization are not complete. See the
+release announcement. The normal release launcher must be verified for 1.6.9. Privileged activation and live OIDC belong to 1.7. Alex decides on the stable tag after the exact commit is verified. See the
 [candidate operator notes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/releases/1.6.9.md)
 for the evidence boundaries.
 
