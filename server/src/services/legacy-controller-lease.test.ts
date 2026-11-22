@@ -206,15 +206,19 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await renewLegacyControllerLease(db, run)).toBe(false);
     expect(await revokeExpiredLegacyController(db, run)).toBe(false);
   });
-  it("rejects dispatch at the lease deadline even if the database query never settles", async () => {
+  it("rejects dispatch within the bounded lease confirmation windows when the database hangs", async () => {
     const run = await seed();
-    const hungDb = { update: () => ({ set: () => ({ where: () => ({ returning: () => new Promise(() => {}) }) }) }) } as unknown as typeof db;
+    const never = new Promise(() => {});
+    const hungDb = {
+      update: () => ({ set: () => ({ where: () => ({ returning: () => never }) }) }),
+      select: () => ({ from: () => ({ where: () => never }) }),
+    } as unknown as typeof db;
     vi.useFakeTimers();
     const controller = new AbortController();
     const watch = watchLegacyControllerLease(hungDb, { ...run, controllerLeaseExpiresAt: new Date(Date.now() + 100) }, controller);
     try {
       const checked = expect(watch.assertOwned("dispatching")).rejects.toThrow("lease lost");
-      await vi.advanceTimersByTimeAsync(101 + LEGACY_CONTROLLER_DEADLINE_CONFIRM_MS);
+      await vi.advanceTimersByTimeAsync(100 + 2 * LEGACY_CONTROLLER_DEADLINE_CONFIRM_MS);
       await checked;
       expect(controller.signal.aborted).toBe(true);
     } finally { watch.stop(); vi.useRealTimers(); }
