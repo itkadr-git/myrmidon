@@ -450,6 +450,24 @@ const callsWithoutVersionStamp = (sb) =>
 const maintenance = (sb) => read(path.join(sb.dir, "maintenance.log"));
 
 describe("deploy.sh", () => {
+  it("requires an independently supplied commit and rejects a wrong RC file before registry or deploy calls", () => {
+    const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
+    const args = ["--release", "myr-v1.6.9-rc.22", "--dry-run"];
+    const noCommit = run(sb, "deploy.sh", args);
+    assert.notEqual(noCommit.code, 0, noCommit.out);
+    assert.match(noCommit.out, /requires --expect-commit/);
+    const file = path.join(sb.dir, "release-components.json");
+    const manifest = JSON.parse(read(file));
+    fs.writeFileSync(file, JSON.stringify({ ...manifest,
+      tag: "myr-v1.6.9-rc.21", version: "1.6.9-rc.21", commit: COMMIT,
+    }));
+    const wrongTag = run(sb, "deploy.sh", [...args, "--expect-commit", COMMIT]);
+    assert.notEqual(wrongTag.code, 0, wrongTag.out);
+    assert.match(wrongTag.out, /manifest tag or commit/);
+    assert.doesNotMatch(calls(sb), /imagetools inspect|docker pull|up -d/);
+    assert.equal(maintenance(sb), "");
+  });
+
   it("refuses an RC deploy when release components are disabled", () => {
     const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
     fs.appendFileSync(sb.config, "MYRMIDON_RELEASE_COMPONENTS=none\n");

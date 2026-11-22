@@ -1093,6 +1093,18 @@ describe("myrmidon-release.yml: the tag input wins over ref_name", () => {
     assert.match(workflow, /tag:\s*\n\s+description:[^\n]+\n\s+required: true/);
   });
 
+  it("isolates RC artifact preparation from verdict fetch, publication and freeze writes", () => {
+    const prepare = workflow.split("\n  prepare-rc:\n")[1]?.split("\n  publish:\n")[0];
+    assert.ok(prepare);
+    assert.match(prepare, /github\.event_name == 'workflow_dispatch' && inputs\.prepare_rc/);
+    assert.match(prepare, /\.head_sha == \$sha and \.head_branch == \$tag/);
+    assert.match(prepare, /\.conclusion == "success"/);
+    assert.match(prepare, /release-manifest\.sh .*--expect-tag .*--expect-commit[\s\S]*upload-artifact@/);
+    assert.doesNotMatch(prepare, /:\s*write|secrets\.|fetch-release-verdict|publish-github-release\.sh/);
+    assert.match(workflow, /\n  publish:\n[\s\S]*?if: [^\n]+!inputs\.prepare_rc/);
+    assert.match(workflow, /\n  freeze:\n[\s\S]*?if: [^\n]+!inputs\.prepare_rc/);
+  });
+
   // RELEASE-GATE-POLL-BUDGET: the publish job raises the gate's
   // poll budget so a tag CI run delayed by the tag-push runner queue
   // (rc.13: ~50 min against the 40-min default) is waited out instead of
@@ -1358,6 +1370,84 @@ describe("release-body.mjs: digest resolution (injected fetch)", () => {
 });
 
 describe("release manifest (release-components.json)", () => {
+  it("prepares an RC without notes or a Release; installer checks identity, completeness and provenance before the publish gate", () => {
+    const sb = sandbox();
+    const version = "99.0.0-rc.23";
+    const tag = `myr-v${version}`;
+    const file = path.join(sb.dir, MANIFEST_NAME);
+    const statePath = path.join(sb.dir, "registry-state.json");
+    const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    const prep = () => spawnSync(process.execPath, [BUILDER, "--prepare-rc", version,
+      "--commit", COMMIT, "--manifest-out", file, "--registry-state", statePath],
+    { cwd: sb.dir, encoding: "utf8" });
+    const prepared = prep();
+    assert.equal(prepared.status, 0, prepared.stderr);
+    const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+    fs.writeFileSync(path.join(sb.bin, "docker"), `#!/usr/bin/env node
+const fs = require('node:fs');
+const [buildx, imagetools, inspect, ref, format, template] = process.argv.slice(2);
+if (buildx !== 'buildx' || imagetools !== 'imagetools' || inspect !== 'inspect' || format !== '--format') process.exit(1);
+const state = JSON.parse(fs.readFileSync(${JSON.stringify(statePath)}));
+const m = /^ghcr\\.io\\/itkadr-git\\/([^:@]+)(?::${version.replaceAll(".", "\\.")}|@(.+))$/.exec(ref);
+if (!m || !state[m[1]] || (m[2] && m[2] !== state[m[1]])) process.exit(1);
+if (!m[2] && template === '{{json .Manifest.Digest}}') console.log(JSON.stringify(state[m[1]]));
+else if (m[2] && template === '{{json .Image}}') console.log(JSON.stringify({ config: { Labels: {
+  'org.opencontainers.image.revision': process.env.TEST_REVISION || ${JSON.stringify(COMMIT)},
+  'org.opencontainers.image.source': process.env.TEST_SOURCE || 'https://github.com/itkadr-git/myrmidon'
+} } }));
+else process.exit(1);
+`, { mode: 0o755 });
+    const reader = path.join(HERE, "../deploy/release-manifest.sh");
+    const read = ({ expectedTag = tag, commit = COMMIT, env = {} } = {}) =>
+      spawnSync("bash", [reader, "--from-file", file, "--expect-tag", expectedTag, "--expect-commit", commit], {
+        cwd: sb.dir, encoding: "utf8", env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, ...env },
+      });
+    const accepted = read();
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.deepEqual(accepted.stdout.trim().split("\n"), COMPONENTS.map(({ label, repository }) =>
+      `${label === "bot" ? "hermes" : label}=${state[repository]}`));
+    for (const [options, reason] of [
+      [{ expectedTag: "myr-v99.0.0-rc.24" }, /tag or commit/],
+      [{ commit: TAG_OBJECT }, /tag or commit/],
+      [{ env: { TEST_REVISION: TAG_OBJECT } }, /provenance/],
+      [{ env: { TEST_SOURCE: "https://github.com/untrusted/repo" } }, /provenance/],
+    ]) {
+      const refused = read(options);
+      assert.notEqual(refused.status, 0);
+      assert.match(refused.stderr, reason);
+      assert.equal(refused.stdout, "");
+    }
+    const publish = runScript(sb, tag, { extraEnv: {
+      MYRMIDON_RELEASE_VERIFICATION_RESULT: "", MYRMIDON_RELEASE_VERIFICATION_KEY: "",
+      MYRMIDON_RELEASE_SKIP_VERIFICATION: "",
+    } });
+    assert.notEqual(publish.code, 0);
+    assert.match(publish.out, /no release verification result.*NOT publishing/s);
+    assert.equal(mutations(sb), "");
+
+    const changed = structuredClone(manifest);
+    changed.components.board.digest = `sha256:${"f".repeat(64)}`;
+    fs.writeFileSync(file, JSON.stringify(changed));
+    const mismatchedDigest = read();
+    assert.notEqual(mismatchedDigest.status, 0);
+    assert.match(mismatchedDigest.stderr, /tag digest does not match/);
+    assert.equal(mismatchedDigest.stdout, "");
+
+    const { hermes, ...incomplete } = manifest.components;
+    fs.writeFileSync(file, JSON.stringify({ ...manifest, components: incomplete }));
+    const incompleteRead = read();
+    assert.notEqual(incompleteRead.status, 0);
+    assert.match(incompleteRead.stderr, /missing.*hermes/);
+    assert.equal(incompleteRead.stdout, "");
+    fs.rmSync(file);
+    delete state["myrmidon-hermes"];
+    fs.writeFileSync(statePath, JSON.stringify(state));
+    const incompletePrep = prep();
+    assert.notEqual(incompletePrep.status, 0);
+    assert.match(incompletePrep.stderr, /missing.*bot/);
+    assert.equal(fs.existsSync(file), false);
+  });
+
   it("buildManifest names every component by repository and digest, the bot image as hermes", () => {
     const digests = {
       board: { repository: "ghcr.io/itkadr-git/myrmidon", digest: `sha256:${"1".repeat(64)}` },
