@@ -41,9 +41,9 @@
     "Динамически собираемые имена не перечисляются поимённо, а описаны шаблонами в dynamic_patterns (префикс, допустимый набор значений, класс, источник); скрипт проверки находит в коде все динамические сборки имён и требует шаблон на каждую. Фактический набор имён в рантайме (по ботам/провайдерам экземпляра) определяется данными экземпляра и этим реестром не фиксируется."
   ],
   "counts": {
-    "unique_names": 910,
+    "unique_names": 911,
     "secret": 109,
-    "infra": 375,
+    "infra": 376,
     "product": 426
   },
   "entries": [
@@ -6506,6 +6506,21 @@
       "secret_ref_or_instance_setup": "нужен secret-ref в хранилище секретов доски и выбор секрета в UI (правка оператора 08.10: секрет только в env = пробел)",
       "ticket_or_pr": "OPE-8822",
       "decision": "перенести в хранилище секретов доски + secret-ref + UI (OPE-8822)"
+    },
+    {
+      "name": "MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": false,
+      "consumer": "packages/adapter-utils/src/myrmidon-github-broker.ts",
+      "classification": "infra",
+      "class_basis": "runtime request policy",
+      "scope": "process",
+      "ui_or_store": "No UI; opt-in command environment",
+      "secret_ref_or_instance_setup": "Non-secret; set to 1 for an authorized dry-run only",
+      "ticket_or_pr": "OPE-15385",
+      "decision": "Leave unset by default; limit the managed launcher and helper to one broker request per process"
     },
     {
       "name": "MYRMIDON_GITHUB_BROKER_TOKEN",
