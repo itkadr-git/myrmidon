@@ -380,6 +380,76 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
     expect(JSON.stringify(comments.body)).toContain("REQUEST CHANGES: preserve this finding");
   });
 
+  it.each(["medium", "critical"] as const)("defers a new %s reviewer wake when a same-head rerun cannot be checked", async (priority) => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Cached CI handoff");
+    const reviewer = randomUUID(), issueId = randomUUID(), stageId = randomUUID();
+    const headSha = "f".repeat(40);
+    const movedSha = "b".repeat(40);
+    const ref = { host: "github.com", owner: "acme", repo: "app", number: 7 };
+    await ctx.db.insert(agents).values({ id: reviewer, companyId, name: "Reviewer", role: "reviewer", status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    const executionPolicy = { stages: [{ id: stageId, type: "review", participants: [{ type: "agent", agentId: reviewer }] }] };
+    await ctx.db.insert(issues).values({ id: issueId, companyId, title: "Cached CI handoff", status: "todo", priority, executionPolicy });
+    await ctx.db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", title: "Synthetic PR", url: "https://github.com/acme/app/pull/7", status: "open", isPrimary: true, metadata: { repo: "acme/app", number: 7, headSha } });
+    const liveHead = headSha;
+    let liveStatus = "completed";
+    const workflowUrl = "https://api.github.com/repos/acme/app/contents/.github/workflows";
+    const checkUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?check_name=CI%20result&filter=all&per_page=100`;
+    const latestUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?filter=latest&per_page=100`;
+    const check = () => ({ id: 1, name: "CI result", status: liveStatus, conclusion: liveStatus === "completed" ? "success" : null, head_sha: headSha, html_url: "https://github.com/acme/app/actions/runs/1", started_at: new Date().toISOString(), completed_at: new Date().toISOString() });
+    const display = createPullRequestCiResolver(ctx.db, { source: "run-context", tokenProvider: async () => canary, fetch: async (url) => {
+      if (url === pullUrl) return Response.json({ state: "open", head: { sha: liveHead, ref: "branch" } });
+      if (url.includes("/check-runs")) return Response.json({ total_count: 1, check_runs: [check()] });
+      throw new Error("Unexpected display transport");
+    } });
+    expect(await display.resolveForPullRequest(companyId, ref)).toMatchObject({ authoritative: true, status: "completed", conclusion: "success", headSha });
+    liveStatus = "queued"; // The rerun webhook has not reached the board yet.
+    transport.mockImplementation(async (url) => {
+      if (url === pullUrl) return Response.json({ state: "open", head: { sha: liveHead } });
+      if (url === workflowUrl) return Response.json([{ name: "ci.yml" }]);
+      if (url === checkUrl || url === latestUrl) return Response.json({ total_count: 1, check_runs: [check()] });
+      throw new Error("Unexpected admission transport");
+    });
+    const [clock] = await ctx.db.execute(sql`select floor(extract(epoch from clock_timestamp()) / 60)::bigint as minute`);
+    const minute = Number(clock?.minute), start = new Date(minute * 60_000);
+    const [carrier] = await ctx.db.select({ id: companies.id }).from(companies).orderBy(companies.createdAt).limit(1);
+    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: carrier.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
+    const app = routeApp(ctx.db, actor, issueRoutes);
+    const transition = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_review", executionPolicy });
+    expect(transition.status, JSON.stringify(transition.body)).toBe(200);
+    const reviewerWakes = () => ctx.db.select().from(agentWakeupRequests).where(sql`${agentWakeupRequests.agentId} = ${reviewer}`);
+    expect(transport).not.toHaveBeenCalled();
+    expect(await reviewerWakes()).toHaveLength(0);
+    const [deferred] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+    expect(deferred.monitorNextCheckAt).not.toBeNull();
+    const heartbeat = heartbeatService(ctx.db);
+    await heartbeat.tickTimers(new Date(deferred.monitorNextCheckAt!.getTime() + 1_000));
+    expect(transport).not.toHaveBeenCalled();
+    expect(await reviewerWakes()).toHaveLength(0);
+    const [stillDeferred] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+
+    // Age out the fixture's exhausted window, then retry via the real timer.
+    const expiredMinute = minute - 61;
+    const expiredStart = new Date(expiredMinute * 60_000);
+    await ctx.db.update(toolGatewayRateLimitCounters).set({ counterKey: `github-budget:review-rework:${expiredMinute}`, windowStartAt: expiredStart, resetAt: new Date(expiredStart.getTime() + 3_600_000) }).where(sql`${toolGatewayRateLimitCounters.companyId} = ${carrier.id}`);
+    await heartbeat.tickTimers(new Date(stillDeferred.monitorNextCheckAt!.getTime() + 1_000));
+    expect(await reviewerWakes()).toHaveLength(0);
+    expect(transport.mock.calls.some(([url]) => url === checkUrl)).toBe(true);
+    const [waiting] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+    expect(waiting.monitorNextCheckAt).not.toBeNull();
+    await ctx.db.update(issueWorkProducts).set({ metadata: { repo: "acme/app", number: 7, headSha: movedSha } }).where(sql`${issueWorkProducts.issueId} = ${issueId}`);
+    liveStatus = "completed";
+    transport.mockClear();
+    await heartbeat.tickTimers(new Date(waiting.monitorNextCheckAt!.getTime() + 1_000));
+    expect(transport.mock.calls.map(([url]) => url)).toContain(pullUrl);
+    expect(await reviewerWakes()).toHaveLength(0);
+    const [moved] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+    await ctx.db.update(issueWorkProducts).set({ metadata: { repo: "acme/app", number: 7, headSha } }).where(sql`${issueWorkProducts.issueId} = ${issueId}`);
+    transport.mockClear();
+    await heartbeat.tickTimers(new Date(moved.monitorNextCheckAt!.getTime() + 1_000));
+    expect(transport.mock.calls.some(([url]) => url === checkUrl)).toBe(true);
+    expect(await reviewerWakes()).toHaveLength(1);
+  });
+
   it.each(["approve", "changes"] as const)("applies fail-closed %s policy to an authoritative cached SUCCESS when review budget is exhausted", async (verdict) => {
     const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Cached success admission");
     const author = randomUUID(), reviewer = randomUUID(), issueId = randomUUID(), runId = randomUUID(), stageId = randomUUID();
