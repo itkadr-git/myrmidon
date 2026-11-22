@@ -30,7 +30,7 @@ The next RC is pending PREDEPLOY and green main; Alex has already approved the n
 `2d5174055299f6e1959ac95740333788798712b2`. The later main review gate fix
 #4604 is not in that tag. The final candidate SHA, image digests, CI, rollout,
 database audit and two-hour evidence remain pending; this is not a stable
-release announcement. The normal release launcher must be verified for 1.6.9. Privileged activation and live OIDC belong to 1.7. Alex decides on the stable tag after the exact commit is verified. See the
+release announcement. For 1.6.9, verify the standard managed launcher. Privileged activation and live OIDC belong to 1.7. Alex decides on the stable tag after the exact commit is verified. See the
 [candidate operator notes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/releases/1.6.9.md)
 for the evidence boundaries.
 
