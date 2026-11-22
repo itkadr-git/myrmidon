@@ -23,7 +23,15 @@ describe("legacy controller confirmation deadline", () => {
       controllerLeaseExpiresAt: new Date(Date.now() + localDeadlineMs),
     } as typeof heartbeatRuns.$inferSelect;
     const row = { ...run };
-    const response = Promise.withResolvers<{ id: string }[]>();
+    type RenewalRows = { id: string }[];
+    let resolve: ((rows: RenewalRows | PromiseLike<RenewalRows>) => void) | undefined;
+    let reject: ((reason?: unknown) => void) | undefined;
+    const promise = new Promise<RenewalRows>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    if (!resolve || !reject) throw new Error("Renewal response was not initialized");
+    const response = { promise, resolve, reject };
     const returning = vi.fn(() => response.promise);
     const db = {
       update: () => ({ set: () => ({ where: () => ({ returning }) }) }),
