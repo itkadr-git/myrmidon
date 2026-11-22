@@ -28,7 +28,7 @@ function silentLog() {
 
 /** Inline stub-server source served by a real `node -e` child: 503 for `delayMs`, then 200. */
 function stubServerSource(delayMs) {
-  return `const http=require("node:http");const s=Date.now();const srv=http.createServer((q,r)=>{if(Date.now()-s<${delayMs}){r.writeHead(503);r.end()}else{r.writeHead(200);r.end()}});srv.listen(Number(process.env.PORT)||4599,"127.0.0.1");process.on("SIGTERM",()=>process.exit(0));`;
+  return `const http=require("node:http");const s=Date.now();const srv=http.createServer((q,r)=>{if(Date.now()-s<${delayMs}){r.writeHead(503);r.end()}else{r.writeHead(200);r.end('{"status":"ok"}')}});srv.listen(Number(process.env.PORT)||4599,"127.0.0.1");process.on("SIGTERM",()=>process.exit(0));`;
 }
 
 async function isAlive(pid) {
@@ -105,21 +105,27 @@ describe("summarize", () => {
 describe("formatMarkdown", () => {
   it("renders per-run rows with a cold marker and min/median/max rows", () => {
     const table = formatMarkdown([
-      { index: 1, elapsedMs: 1234, cold: true },
-      { index: 2, elapsedMs: 2345, cold: false },
+      { index: 1, firstHttp200Ms: 1000, elapsedMs: 1234, cold: true },
+      { index: 2, firstHttp200Ms: 2000, elapsedMs: 2345, cold: false },
     ]);
-    assert.match(table, /\| 1 \| 1\.234 \| cold \|/);
-    assert.match(table, /\| 2 \| 2\.345 \|  \|/);
-    assert.match(table, /\| min \| 1\.234 \|/);
-    assert.match(table, /\| median \| 1\.790 \|/);
-    assert.match(table, /\| max \| 2\.345 \|/);
+    assert.match(table, /\| 1 \| 1\.000 \| 1\.234 \| cold \|/);
+    assert.match(table, /\| 2 \| 2\.000 \| 2\.345 \|  \|/);
+    assert.match(table, /\| min \| 1\.000 \| 1\.234 \|/);
+    assert.match(table, /\| median \| 1\.500 \| 1\.790 \|/);
+    assert.match(table, /\| max \| 2\.000 \| 2\.345 \|/);
   });
 });
 
 describe("buildResult", () => {
   it("includes env key names but never values", () => {
     const opts = parseArgs(["--cwd", "/repo", "--cmd", "run", "--env", "SECRET_TOKEN=super-secret-value"]);
-    const result = JSON.stringify(buildResult(opts, [{ index: 1, elapsedMs: 1500, cold: true }], { min: 1500, median: 1500, max: 1500 }));
+    const data = buildResult(opts, [{ index: 1, firstHttp200Ms: 1000, elapsedMs: 1500, cold: true }], { min: 1500, median: 1500, max: 1500 });
+    assert.equal(data.readiness, "http_200_status_ok");
+    assert.equal(data.runs[0].firstHttp200Seconds, 1);
+    assert.equal(data.runs[0].seconds, 1.5);
+    assert.equal(data.summary.firstHttp200MedianSeconds, 1);
+    assert.equal(data.summary.medianSeconds, 1.5);
+    const result = JSON.stringify(data);
     assert.ok(result.includes("SECRET_TOKEN"));
     assert.ok(!result.includes("super-secret-value"));
   });
@@ -165,20 +171,36 @@ describe("measureRun poll lifecycle", () => {
     assert.equal(signal.aborted, true);
   });
 
-  it("stops polling immediately on success while awaiting child close", async () => {
+  it("records 200/starting separately and stops only at 200/ok", async () => {
     const child = new EventEmitter();
     let calls = 0;
     let signal;
     const result = measureRun({
       command: "fake", cwd: HERE, port: 1, timeoutMs: 80, pollIntervalMs: 10,
       spawnImpl: () => child,
-      fetchImpl: async (_url, opts) => { calls += 1; signal = opts.signal; return { status: 200 }; },
+      fetchImpl: async (_url, opts) => {
+        signal = opts.signal;
+        return Response.json({ status: ["unhealthy", "starting", "ok"][calls++] }, { status: calls === 1 ? 503 : 200 });
+      },
     });
     await new Promise((resolve) => setTimeout(resolve, 120));
     child.emit("close", 0, null);
-    assert.ok((await result).elapsedMs >= 0);
-    assert.equal(calls, 1);
+    const { elapsedMs, firstHttp200Ms } = await result;
+    assert.ok(firstHttp200Ms >= 0 && elapsedMs > firstHttp200Ms);
+    assert.equal(calls, 3);
     assert.equal(signal.aborted, true);
+  });
+
+  it("times out when HTTP 200 never reports ok", async () => {
+    const child = new EventEmitter();
+    const result = measureRun({
+      command: "fake", cwd: HERE, port: 1, timeoutMs: 80, pollIntervalMs: 10,
+      spawnImpl: () => child,
+      fetchImpl: async () => Response.json({ status: "starting" }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    child.emit("close", null, "SIGTERM");
+    await assert.rejects(result, (error) => error.kind === "timeout" && error.firstHttp200Ms >= 0);
   });
 });
 
