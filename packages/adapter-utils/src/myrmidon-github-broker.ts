@@ -63,6 +63,7 @@ function paperclipBrokerCandidateUrls(env) {
   return urls;
 }
 async function paperclipRequestBrokerCredentials(env, candidateUrls, limits, repository) {
+  const singleRequest = env.MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST === '1';
   const requestTimeoutMs = (limits && limits.requestTimeoutMs) || ${GITHUB_BROKER_REQUEST_TIMEOUT_MS};
   const totalTimeoutMs = (limits && limits.totalTimeoutMs) || ${GITHUB_BROKER_TOTAL_TIMEOUT_MS};
   const retryDelayMs = (limits && limits.retryDelayMs) || ${GITHUB_BROKER_CONFLICT_RETRY_DELAY_MS};
@@ -77,7 +78,7 @@ async function paperclipRequestBrokerCredentials(env, candidateUrls, limits, rep
   const deadline = now + totalTimeoutMs;
   const tried = [];
   let lastResponse = null;
-  for (const base of candidateUrls) {
+  for (const base of singleRequest ? candidateUrls.slice(0, 1) : candidateUrls) {
     const url = base + '/runtime-tools/github/credentials';
     let response = null;
     let outcome = 'no_response';
@@ -100,7 +101,7 @@ async function paperclipRequestBrokerCredentials(env, candidateUrls, limits, rep
           body,
         });
         outcome = String(response.status);
-        if (response.status !== 409 && ![400, 495, 496].includes(response.status)) break;
+        if (singleRequest || (response.status !== 409 && ![400, 495, 496].includes(response.status))) break;
         await response.arrayBuffer().catch(() => undefined);
         if ([400, 495, 496].includes(response.status)) break;
       }

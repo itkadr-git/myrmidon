@@ -96,6 +96,23 @@ run `git push origin myr-vX.Y.Z-rc.N` yourself after checking the output.
 
 Exit codes: `0` tagged (or dry-run clean), `1` refusal, `2` usage error.
 
+For a separately authorized dry-run in Hermes, use the run whose managed
+launcher includes this change. From the release checkout, put the staged
+launcher first on `PATH` and set the opt-in for that command only:
+
+```bash
+PATH="${PAPERCLIP_GITHUB_LAUNCHER_DIR:?managed launcher required}:$PATH" \
+  GH_REPO=itkadr-git/myrmidon MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST=1 \
+  node scripts/myrmidon/release/cut-rc.mjs --version 1.6.9 --rc 23 --board-label 1.6.9 --dry-run
+```
+
+A fresh run-scoped cache hit makes no broker request. On a miss, each
+managed launcher/helper process tries only the first configured candidate,
+once, without retry or fallback. If managed credentials are unavailable, the
+managed `gh` launcher exits nonzero without starting `gh`. Local Git remains
+usable. This is not a request limit for the entire dry-run; it can spawn
+multiple processes. Leaving the variable unset preserves the default.
+
 Tests: `scripts/myrmidon/release/cut-rc.test.mjs` (the board API and `gh`
 are faked, `git` is a throwaway repo per test: open task → refusal; done
 task with an unmerged PR → refusal; merged PR missing from the branch →
@@ -200,6 +217,23 @@ node scripts/myrmidon/release/cut-rc.mjs --version 1.7.0 --rc 25 \
 
 Коды выхода: `0` — тег поставлен (или dry-run чист), `1` — отказ,
 `2` — ошибка использования.
+
+Для отдельно разрешённого dry-run в Hermes нужен прогон со штатным launcher,
+в котором уже есть эта правка. Из release checkout укажите его первым в `PATH`
+и включите режим только на время команды:
+
+```bash
+PATH="${PAPERCLIP_GITHUB_LAUNCHER_DIR:?managed launcher required}:$PATH" \
+  GH_REPO=itkadr-git/myrmidon MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST=1 \
+  node scripts/myrmidon/release/cut-rc.mjs --version 1.6.9 --rc 23 --board-label 1.6.9 --dry-run
+```
+
+Свежий кэш прогона даёт 0 запросов. При промахе каждый процесс штатного
+launcher или helper обращается только к первому настроенному адресу, один раз,
+без повтора и перехода на резервный. Если управляемых учётных данных нет,
+launcher завершает `gh` ненулевым кодом, не запуская CLI. Локальный Git остаётся
+доступен. Это не лимит на весь dry-run: он может создать несколько процессов.
+Без переменной поведение не меняется.
 
 Тесты: `scripts/myrmidon/release/cut-rc.test.mjs` (API доски и `gh`
 подменены, `git` — одноразовый репозиторий на тест: открытая задача →

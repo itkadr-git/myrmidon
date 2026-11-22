@@ -156,6 +156,8 @@ async function main() {
     configReady = true;
     process.once('exit', () => { try { fs.rmSync(configDirectory, { recursive: true, force: true }); } catch {} });
   } catch { diagnostic('configuration_directory_unavailable'); }
+  const requireManagedCredential = program === 'gh' && env.MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST === '1';
+  let brokerStatus;
   {
     for (const key of Object.keys(env)) {
       if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_AUTHOR_.*|GIT_COMMITTER_.*|GIT_CONFIG_.*|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH.*)$/.test(key)) delete env[key];
@@ -201,13 +203,16 @@ async function main() {
       const repository = paperclipTargetRepository(program, process.argv.slice(2), env, originalPath);
       const brokerAttempt = await paperclipRequestBrokerCredentials(env, brokerBaseUrls, undefined, repository);
       response = brokerAttempt.response;
+      brokerStatus = response?.status;
       if (!response || !response.ok) {
         if (brokerAttempt.tried.length > 0) process.stderr.write(PRODUCT + ': GitHub broker candidates tried: ' + brokerAttempt.tried.join(', ') + '.\n');
-        if (!response) diagnostic('broker_transport_unavailable');
-        else diagnostic(response.status === 401 || response.status === 403 ? 'capability_rejected' : 'broker_response_unavailable');
+        if (!requireManagedCredential) {
+          if (!response) diagnostic('broker_transport_unavailable');
+          else diagnostic(response.status === 401 || response.status === 403 ? 'capability_rejected' : 'broker_response_unavailable');
+        }
       } else {
       const result = await response.json();
-      if (result.status === 'unavailable') {
+      if (result.status === 'unavailable' && !requireManagedCredential) {
         const reason = typeof result.reason === 'string'
           ? result.reason.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 500)
           : 'Check the GitHub connection in ' + PRODUCT;
@@ -223,8 +228,14 @@ async function main() {
         }
       }
       }
-    } else { diagnostic('capability_missing'); }
-    } catch { diagnostic('broker_transport_unavailable'); }
+    } else if (!requireManagedCredential) { diagnostic('capability_missing'); }
+    } catch { if (!requireManagedCredential) diagnostic('broker_transport_unavailable'); }
+  }
+  if (requireManagedCredential && !env.GH_TOKEN) {
+    const reason = brokerStatus && brokerStatus !== 200 ? 'HTTP ' + brokerStatus : 'no managed credential';
+    process.stderr.write(PRODUCT + ': GitHub broker single-request mode refused (' + reason + '); gh not started.\n');
+    process.exitCode = 1;
+    return;
   }
   // Only this invocation and its children inherit the captured credential.
   // Its Git children use the real binary, so steering cannot split a gh operation.
