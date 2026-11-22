@@ -268,7 +268,8 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # cwd + MYRMIDON_TASK_WORKSPACE per run, fall back to /scratch with a warning on
 # exit codes 3/4/5, and be a no-op — never an inherited stale value — without
 # the field.
-RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_workspace_open.py /opt/hermes-src
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_workspace_open.py /opt/hermes-src \
+ && PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/offline_workspace.py /opt/hermes-src
 # myrmidon(G1): behaviour regression for 11-run-scoped-github-launcher.patch
 # (NONCONTAINER-GITHUB-LAUNCHER): the github_launcher body field stages the
 # managed git/gh wrappers and the credential helper under the run's own

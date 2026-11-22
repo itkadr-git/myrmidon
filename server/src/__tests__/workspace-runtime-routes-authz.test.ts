@@ -39,6 +39,7 @@ const mockAccessService = vi.hoisted(() => ({
 }));
 const mockAssertCanManageProjectWorkspaceRuntimeServices = vi.hoisted(() => vi.fn());
 const mockAssertCanManageExecutionWorkspaceRuntimeServices = vi.hoisted(() => vi.fn());
+const mockRegisterOfflineBotWorkspace = vi.hoisted(() => vi.fn());
 
 vi.mock("../telemetry.js", () => ({
   getTelemetryClient: mockGetTelemetryClient,
@@ -70,6 +71,10 @@ vi.mock("../routes/workspace-runtime-service-authz.js", () => ({
 }));
 
 function registerWorkspaceRouteMocks() {
+  vi.doMock("../services/offline-bot-workspace.js", async (importOriginal) => ({
+    ...await importOriginal<typeof import("../services/offline-bot-workspace.js")>(),
+    registerOfflineBotWorkspace: mockRegisterOfflineBotWorkspace,
+  }));
   vi.doMock("../telemetry.js", () => ({
     getTelemetryClient: mockGetTelemetryClient,
   }));
@@ -306,6 +311,33 @@ describe.sequential("workspace runtime service route authorization", () => {
     mockExecutionWorkspaceService.update.mockResolvedValue(buildExecutionWorkspace());
     mockAssertCanManageProjectWorkspaceRuntimeServices.mockResolvedValue(undefined);
     mockAssertCanManageExecutionWorkspaceRuntimeServices.mockResolvedValue(undefined);
+  });
+
+  it("requires board access and company runtime:manage to register an offline workspace", async () => {
+    const companyId = projectId;
+    const issueId = workspaceId;
+    const botId = executionWorkspaceId;
+    const url = `/api/companies/${companyId}/issues/${issueId}/offline-bot-workspace`;
+    const payload = { action: "register", botId };
+    const agentApp = await createExecutionWorkspaceApp({ type: "agent", agentId: botId, companyId, source: "agent_key" });
+    expect((await request(agentApp).post(url).send(payload)).status).toBe(403);
+
+    const boardApp = await createExecutionWorkspaceApp({
+      type: "board", userId: "board-1", companyIds: [companyId], source: "session", isInstanceAdmin: false,
+    });
+    mockAccessService.decide.mockResolvedValueOnce({ allowed: false });
+    expect((await request(boardApp).post(url).send(payload)).status).toBe(403);
+    expect(mockRegisterOfflineBotWorkspace).not.toHaveBeenCalled();
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "runtime:manage", resource: { type: "company", companyId },
+    }));
+
+    const registered = { id: executionWorkspaceId, cwd: `/data/hermes/offline-workspaces/${companyId}/${issueId}` };
+    mockRegisterOfflineBotWorkspace.mockResolvedValueOnce(registered);
+    const res = await request(boardApp).post(url).send(payload);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(registered);
+    expect(mockRegisterOfflineBotWorkspace).toHaveBeenCalledWith(expect.anything(), companyId, issueId, payload);
   });
 
   it("rejects agent callers for project workspace runtime service mutations when workspace auth denies access", async () => {

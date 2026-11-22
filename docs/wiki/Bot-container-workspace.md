@@ -16,7 +16,7 @@ and keeps no copy of the repository for them.
   `repoUrl` and `repoRef` are read from the project workspace row.
 - It records one `execution_workspaces` row per task: mode
   `isolated_workspace`, strategy `bot_container`, provider `adapter_managed`,
-  cwd `/workspace/<ISSUE>`. The run context (`paperclipWorkspace`) points at
+  default cwd `/workspace/<ISSUE>`. The run context (`paperclipWorkspace`) points at
   that directory.
 - Two tasks of one agent get two rows. They do not conflict, and the message
   "the copy is held by another run" cannot appear for them.
@@ -34,6 +34,16 @@ After the task is `done` or `cancelled`, the terminal sweep archives the row
 without any git inspection. There is nothing on the board to delete. The task
 directory on the bot disk follows the bot-disk policy (`general.botDisk`:
 thresholds, scratch TTL, idle TTL).
+
+## Offline checkout on a persistent volume
+
+A board operator with `runtime:manage` can reserve and register an existing
+standalone checkout for an unassigned standard project issue on a running
+managed `hermes_gateway`. The checkout must be on an eligible managed persistent
+bot volume. Re-registration with the same bot and unchanged directory identity
+preserves the workspace UUID and cwd. A changed identity or incompatible runtime
+stops the run without fallback. See the [operator guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/bot-container-workspace.md#offline-checkout-on-a-persistent-volume)
+for the API, volume checks and post-deployment verification.
 
 ## Bare bases with extensions.worktreeConfig
 

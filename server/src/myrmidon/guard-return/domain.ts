@@ -319,6 +319,21 @@ export function decideGuardReturn(
   const { hasPr, authorAgentId: prAuthorId } = findEngineerPr(candidate.prWorkProducts, agentMap, runAgentMap);
   const isChangesRequested = hasChangesRequestedVerdict(candidate.executionState);
 
+  // A completed review hand-back to the original editor must not be undone
+  // merely because the project's default caste is engineer.
+  const state = candidate.executionState;
+  const returnAssignee = state?.returnAssignee as { type?: string; agentId?: string } | null | undefined;
+  if (
+    candidate.status === "in_progress" && candidate.casteKey === "techwriter" &&
+    candidate.assigneeRole === "editor" && state?.status === "changes_requested" &&
+    state.currentStageType === "review" && state.lastDecisionOutcome === "changes_requested" &&
+    typeof state.lastDecisionId === "string" && state.lastDecisionId.length > 0 &&
+    returnAssignee?.type === "agent" && returnAssignee.agentId === candidate.assigneeAgentId &&
+    !state.stages && !hasPr && !requiresEngineer({ ...candidate, labels: normalizeLabels(candidate.labels) })
+  ) {
+    return { action: "skip", reason: "Documentation review already returned to its original editor" };
+  }
+
   // Check if issue is a dev-project code issue
   const isCode = isDevProjectCodeIssue({
     labels: candidate.labels,

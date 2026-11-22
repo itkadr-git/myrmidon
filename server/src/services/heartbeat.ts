@@ -309,7 +309,9 @@ import { buildExecutionContinuation } from "./execution-continuation.js";
 // myrmidon(RUN-SNAPSHOT-DEDUP): the single-copy continuation invariant.
 import {
   persistRunContinuation,
+  prepareWakeContext,
   runContextForPersistence,
+  WAKE_CI_PROJECTION_KEY,
   wakePayloadForDispatch,
 } from "./run-continuation-snapshot.js";
 import { renderPaperclipWakePrompt } from "@myrmidon/adapter-utils/server-utils";
@@ -446,6 +448,7 @@ import {
   runContextPersistenceFields,
   heartbeatRunListContextColumnProjections,
 } from "@myrmidon/db";
+import { resolveOfflineBotWorkspace } from "./offline-bot-workspace.js";
 import { conflict, HttpError, notFound } from "../errors.js";
 import {
   getStartupTraceContext,
@@ -9415,6 +9418,127 @@ function buildRunEventRuntimeProgress(input: {
   };
 }
 
+function fenceTaskText(value: string) {
+  const longestBacktickRun = Math.max(
+    2,
+    ...Array.from(value.matchAll(/`+/g), (match) => match[0].length),
+  );
+  const fence = "`".repeat(longestBacktickRun + 1);
+  return [fence + "text", value, fence].join("\n");
+}
+
+function renderTaskCiMarkdown(
+  issueStatus: string | null | undefined,
+  input: Pick<Parameters<typeof buildPaperclipTaskMarkdown>[0], "wakePayload" | "pullRequestsCi">,
+): string[] {
+  const lines: string[] = [];
+  const wakePayload = input.wakePayload;
+  const prsCi = (
+    Array.isArray(input.pullRequestsCi) && input.pullRequestsCi.length > 0
+      ? input.pullRequestsCi
+      : Array.isArray(wakePayload?.pullRequestsCi) && wakePayload.pullRequestsCi.length > 0
+        ? wakePayload.pullRequestsCi
+        : wakePayload?.ciResult
+          ? [wakePayload.ciResult]
+          : []
+  ) as Array<PullRequestCiResult & { detailsTruncated?: boolean; checksUrl?: string }>;
+
+  if (prsCi.length > 0) {
+    lines.push("", "Pull Request CI Status (board-verified on exact head SHA):");
+    for (const ci of prsCi) {
+      lines.push(
+        `- Repository: ${ci.repository} (PR #${ci.pullNumber})`,
+        `  - Head SHA: ${ci.headSha ?? "unknown"}`,
+        `  - CI Result: ${ci.conclusion.toUpperCase()} (${ci.summary})`,
+        `  - Authoritative: ${ci.authoritative ? "true" : "false"}`,
+        `  - Status: ${ci.status}`,
+        `  - Checked at: ${ci.checkedAt}`,
+      );
+      if (ci.detailsTruncated) {
+        lines.push(`  - CI details truncated.${ci.checksUrl ? ` Checks: ${ci.checksUrl}` : ""}`);
+      }
+      if (wakePayload?.ciFailureTailsTruncated === true && !ci.ciFailureTails) {
+        lines.push(`  - CI log tails truncated; see https://github.com/${ci.repository}/pull/${ci.pullNumber}/checks for full logs.`);
+      }
+      if (ci.completedAt) {
+        lines.push(`  - Completed at: ${ci.completedAt}`);
+      }
+      if (ci.failedJobs && ci.failedJobs.length > 0) {
+        lines.push("  - Failed jobs:");
+        for (const job of ci.failedJobs) {
+          const runId = job.url ? parseInt(job.url.match(/\/actions\/runs\/(\d+)/)?.[1] ?? "", 10) || null : null;
+          const runStr = runId ? String(runId) : "<run>";
+          lines.push(`    - ${job.name} (id: ${job.id}): ${job.conclusion} (${job.url})`);
+          lines.push(`      Investigate log: \`gh run view ${runStr} --job ${job.id} --log-failed | tail -80\``);
+        }
+      }
+      const effectiveFailureTails = ci.ciFailureTails ?? (wakePayload?.ciFailureTails as PullRequestCiResult["ciFailureTails"]);
+      if (effectiveFailureTails && effectiveFailureTails.length > 0) {
+        lines.push("  - Failing step log output (board-retrieved):");
+        if (effectiveFailureTails.some((tail) => Boolean(tail.logTail))) {
+          lines.push("    Do not poll CI: the failing output is below.");
+        }
+        for (const tail of effectiveFailureTails) {
+          if (tail.logTail) {
+            lines.push(`    --- Job ${tail.jobName} (id: ${tail.jobId}) log tail ---`);
+            lines.push(fenceTaskText(tail.logTail));
+          } else if (tail.unavailableReason) {
+            lines.push(`    --- Job ${tail.jobName} (id: ${tail.jobId}) log unavailable: ${tail.unavailableReason} ---`);
+          }
+        }
+      }
+      if (ci.cancelledJobs && ci.cancelledJobs.length > 0) {
+        lines.push("  - Cancelled jobs (cancelled, not a test failure; no newer run of the check exists):");
+        for (const job of ci.cancelledJobs) {
+          lines.push(`    - ${job.name}: ${job.conclusion} (${job.url})`);
+        }
+      }
+      if (ci.optionalFailedJobs && ci.optionalFailedJobs.length > 0) {
+        lines.push("  - Optional failed jobs (не влияет на вердикт):");
+        for (const job of ci.optionalFailedJobs) {
+          lines.push(`    - ${job.name}: ${job.conclusion} (${job.url})`);
+        }
+      }
+    }
+
+    const allAuthoritative = prsCi.every((ci) => ci.authoritative);
+    if (issueStatus === "in_review") {
+      const anyRateLimited = prsCi.some((ci) => ci.conclusion === "rate_limited");
+      lines.push(
+        "",
+        "Reviewer directive:",
+        anyRateLimited
+          ? "CI status is rate-limited by GitHub. Do not spend this run on a verdict or comment. Defer the CI verdict until the rate limit resets by setting executionPolicy.monitor.nextCheckAt."
+          : allAuthoritative
+          ? "Base your review verdict strictly on this board-provided CI status for the exact head SHA. Do not call `gh pr checks`."
+          : "Some or all PR check runs are non-authoritative (missing, denied, or incomplete). Do not assume unverified checks passed.",
+      );
+    } else {
+      lines.push(
+        "",
+        "CI directive:",
+        "The board automatically tracks CI on the exact head SHA of the PR. Do not call `gh pr checks`.",
+      );
+    }
+  }
+  return lines;
+}
+
+export function taskMarkdownContextForDispatch(context: Record<string, unknown>): Record<string, unknown> {
+  if (context[WAKE_CI_PROJECTION_KEY] !== true) return context;
+  const wake = parseObject(wakePayloadForDispatch(context));
+  const status = readNonEmptyString(parseObject(wake.issue).status);
+  if (!status) return context;
+  const ci = renderTaskCiMarkdown(status, { wakePayload: wake });
+  if (!ci.length) return context;
+  const append = (markdown: unknown) => typeof markdown === "string" ? `${markdown}\n${ci.join("\n")}` : markdown;
+  return {
+    ...context,
+    paperclipTaskMarkdown: append(context.paperclipTaskMarkdown),
+    paperclipTaskMarkdownCompact: append(context.paperclipTaskMarkdownCompact),
+  };
+}
+
 export function buildPaperclipTaskMarkdown(input: {
   issue: {
     id: string;
@@ -9483,16 +9607,9 @@ export function buildPaperclipTaskMarkdown(input: {
   // false builds the compact variant used for resume deltas, where the session
   // already received the description with the assignment.
   includeDescription?: boolean;
+  deferCiMarkdown?: boolean;
 }) {
   const quoteTaskScalar = (value: string) => JSON.stringify(value);
-  const fenceTaskText = (value: string) => {
-    const longestBacktickRun = Math.max(
-      2,
-      ...Array.from(value.matchAll(/`+/g), (match) => match[0].length),
-    );
-    const fence = "`".repeat(longestBacktickRun + 1);
-    return [fence + "text", value, fence].join("\n");
-  };
   const issue = input.issue;
   const ancestors = (input.ancestors ?? []).slice(0, 6);
   const wakeComments = (input.wakeComments ?? [])
@@ -9686,89 +9803,7 @@ export function buildPaperclipTaskMarkdown(input: {
         );
       }
     }
-    const wakePayload = input.wakePayload;
-    const prsCi = (
-      Array.isArray(input.pullRequestsCi) && input.pullRequestsCi.length > 0
-        ? input.pullRequestsCi
-        : Array.isArray(wakePayload?.pullRequestsCi) && wakePayload.pullRequestsCi.length > 0
-          ? wakePayload.pullRequestsCi
-          : wakePayload?.ciResult
-            ? [wakePayload.ciResult]
-            : []
-    ) as PullRequestCiResult[];
-
-    if (prsCi.length > 0) {
-      lines.push("", "Pull Request CI Status (board-verified on exact head SHA):");
-      for (const ci of prsCi) {
-        lines.push(
-          `- Repository: ${ci.repository} (PR #${ci.pullNumber})`,
-          `  - Head SHA: ${ci.headSha ?? "unknown"}`,
-          `  - CI Result: ${ci.conclusion.toUpperCase()} (${ci.summary})`,
-          `  - Authoritative: ${ci.authoritative ? "true" : "false"}`,
-          `  - Status: ${ci.status}`,
-          `  - Checked at: ${ci.checkedAt}`,
-        );
-        if (ci.completedAt) {
-          lines.push(`  - Completed at: ${ci.completedAt}`);
-        }
-        if (ci.failedJobs && ci.failedJobs.length > 0) {
-          lines.push("  - Failed jobs:");
-          for (const job of ci.failedJobs) {
-            const runId = job.url ? parseInt(job.url.match(/\/actions\/runs\/(\d+)/)?.[1] ?? "", 10) || null : null;
-            const runStr = runId ? String(runId) : "<run>";
-            lines.push(`    - ${job.name} (id: ${job.id}): ${job.conclusion} (${job.url})`);
-            lines.push(`      Investigate log: \`gh run view ${runStr} --job ${job.id} --log-failed | tail -80\``);
-          }
-        }
-        const effectiveFailureTails = ci.ciFailureTails ?? (wakePayload?.ciFailureTails as PullRequestCiResult["ciFailureTails"]);
-        if (effectiveFailureTails && effectiveFailureTails.length > 0) {
-          lines.push("  - Failing step log output (board-retrieved):");
-          if (effectiveFailureTails.some((tail) => Boolean(tail.logTail))) {
-            lines.push("    Do not poll CI: the failing output is below.");
-          }
-          for (const tail of effectiveFailureTails) {
-            if (tail.logTail) {
-              lines.push(`    --- Job ${tail.jobName} (id: ${tail.jobId}) log tail ---`);
-              lines.push(fenceTaskText(tail.logTail));
-            } else if (tail.unavailableReason) {
-              lines.push(`    --- Job ${tail.jobName} (id: ${tail.jobId}) log unavailable: ${tail.unavailableReason} ---`);
-            }
-          }
-        }
-        if (ci.cancelledJobs && ci.cancelledJobs.length > 0) {
-          lines.push("  - Cancelled jobs (cancelled, not a test failure; no newer run of the check exists):");
-          for (const job of ci.cancelledJobs) {
-            lines.push(`    - ${job.name}: ${job.conclusion} (${job.url})`);
-          }
-        }
-        if (ci.optionalFailedJobs && ci.optionalFailedJobs.length > 0) {
-          lines.push("  - Optional failed jobs (не влияет на вердикт):");
-          for (const job of ci.optionalFailedJobs) {
-            lines.push(`    - ${job.name}: ${job.conclusion} (${job.url})`);
-          }
-        }
-      }
-
-      const allAuthoritative = prsCi.every((ci) => ci.authoritative);
-      if (issue.status === "in_review") {
-        const anyRateLimited = prsCi.some((ci) => ci.conclusion === "rate_limited");
-        lines.push(
-          "",
-          "Reviewer directive:",
-          anyRateLimited
-            ? "CI status is rate-limited by GitHub. Do not spend this run on a verdict or comment. Defer the CI verdict until the rate limit resets by setting executionPolicy.monitor.nextCheckAt."
-            : allAuthoritative
-            ? "Base your review verdict strictly on this board-provided CI status for the exact head SHA. Do not call `gh pr checks`."
-            : "Some or all PR check runs are non-authoritative (missing, denied, or incomplete). Do not assume unverified checks passed.",
-        );
-      } else {
-        lines.push(
-          "",
-          "CI directive:",
-          "The board automatically tracks CI on the exact head SHA of the PR. Do not call `gh pr checks`.",
-        );
-      }
-    }
+    if (!input.deferCiMarkdown) lines.push(...renderTaskCiMarkdown(issue.status, input));
   }
   if (ancestors.length > 0) {
     lines.push("", "Authoritative parent / ancestor context:");
@@ -13010,7 +13045,12 @@ export function heartbeatService(
           // reviewer's own decision happens, and that decision meets the fresh
           // write gate. A fresh read on every tick is what drained the shared
           // review budget (OPE-12397 kept these reads cached).
-          const ci = await createReviewPullRequestCiResolver({ db })({
+          // A handoff deferred by the fresh-read gate needs fresh evidence on
+          // retry too; ordinary recovery monitors retain their cached reads.
+          const ci = await createReviewPullRequestCiResolver({
+            db,
+            admission: limitMonitor?.notes?.startsWith("Review waits for CI on the head of ") === true,
+          })({
             companyId: claimed.companyId,
             issueId: claimed.id,
           });
@@ -27165,7 +27205,14 @@ export function heartbeatService(
       // myrmidon(1.6.9, OPE-13213): an agent that works in its own container
       // gets the task directory of the bot as its isolated workspace; the board
       // makes no worktree and hands out no shared checkout for it.
-      const botContainerWorkspace = resolveBotContainerWorkspace({
+      const offlineWorkspace = issueRef && await resolveOfflineBotWorkspace(db, {
+        companyId: agent.companyId, issueId: issueRef.id, projectId: issueRef.projectId,
+        requestedId: issueRef.executionWorkspaceId, botId: agent.id,
+        adapterType: agent.adapterType, adapterConfig: agent.adapterConfig,
+        mode: requestedExecutionWorkspaceMode,
+        wakeReason: run.contextWakeReason ?? readNonEmptyString(context.wakeReason),
+      });
+      const botContainerWorkspace = offlineWorkspace || resolveBotContainerWorkspace({
         adapterType: agent.adapterType,
         mode: requestedExecutionWorkspaceMode,
         issueIdentifier: issueRef?.identifier ?? null,
@@ -27413,19 +27460,6 @@ export function heartbeatService(
           true,
         isolateReviewerWake: isolatedReviewerRun,
       });
-      let reviewerLiveCi: PullRequestCiResult[] | null = null;
-      if (isolatedReviewerRun && issueRef) {
-        try {
-          const ciResolver = createPullRequestCiResolver(db, { source: "run-context" });
-          reviewerLiveCi = await withCiResolveDeadline(
-            ciResolver.resolveForIssue(agent.companyId, issueRef.id),
-            [],
-          );
-        } catch {
-          reviewerLiveCi = null;
-        }
-      }
-
       // Database reads only; the reviewer fetches the diff itself.
       const reviewerInput =
         isolatedReviewerRun && issueRef
@@ -27438,13 +27472,14 @@ export function heartbeatService(
                 title: issueRef.title,
                 description: issueContext?.description ?? null,
               },
-              pullRequestsCi: reviewerLiveCi ?? paperclipWakePayload?.pullRequestsCi ?? [],
+              pullRequestsCi: paperclipWakePayload?.pullRequestsCi ?? [],
             }).catch(() => null)
           : null;
       if (paperclipWakePayload) {
-        context[PAPERCLIP_WAKE_PAYLOAD_KEY] = paperclipWakePayload;
+        Object.assign(context, prepareWakeContext(paperclipWakePayload));
       } else {
         delete context[PAPERCLIP_WAKE_PAYLOAD_KEY];
+        delete context[WAKE_CI_PROJECTION_KEY];
       }
       const safeWakeComments = (paperclipWakePayload?.comments ?? []).flatMap(
         (comment) =>
@@ -27506,8 +27541,7 @@ export function heartbeatService(
         attachmentOmissions: paperclipWakePayload?.attachmentOmissions,
         externalChatProvider: paperclipWakePayload?.externalChatProvider,
         nativeRunner: agent.adapterType === "paperclip_runner",
-        wakePayload: paperclipWakePayload,
-        pullRequestsCi: reviewerLiveCi ?? paperclipWakePayload?.pullRequestsCi ?? null,
+        deferCiMarkdown: true,
         reviewerInput,
         interaction: {
           kind: readNonEmptyString(context.interactionKind),
@@ -28537,11 +28571,19 @@ export function heartbeatService(
           agentId: agent.id,
         },
       );
+      const offlineRealization = offlineWorkspace
+        ? realizeBotContainerWorkspace(executionWorkspaceBase, offlineWorkspace)
+        : null;
       const {
         executionWorkspace,
         reusedExecutionWorkspace,
         policy: resolvedWorkspaceReusePolicy,
-      } = await provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>(
+      } = offlineRealization ? {
+        executionWorkspace: offlineRealization,
+        reusedExecutionWorkspace: offlineRealization,
+        policy: { shouldRestoreExistingWorkspace: true, shouldRefreshWorkspaceConfigSnapshot: false,
+          shouldPersistLatestWorkspaceConfigMetadata: false },
+      } : await provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>(
         {
           requestedShouldReuseExisting,
           existingExecutionWorkspaceId:
@@ -28666,7 +28708,7 @@ export function heartbeatService(
       const bindIssueToPersistedExecutionWorkspace = async (
         workspace: ExecutionWorkspace | null,
       ) => {
-        if (!issueId || !workspace || nativeRecoveryExecutionWorkspaceId) {
+        if (!issueId || !workspace || nativeRecoveryExecutionWorkspaceId || offlineWorkspace) {
           return;
         }
         const nextIssueWorkspaceMode =
@@ -28802,7 +28844,12 @@ export function heartbeatService(
         pendingForwardBranchReconcile?.recordedBranchName ??
         executionWorkspace.branchName;
       try {
-        persistedExecutionWorkspace =
+        if (offlineWorkspace && (safelyBoundExecutionWorkspace?.id !== offlineWorkspace.id ||
+            safelyBoundExecutionWorkspace.status !== "active" ||
+            safelyBoundExecutionWorkspace.cwd !== offlineWorkspace.cwd)) {
+          throw conflict("Offline workspace disappeared during preparation");
+        }
+        persistedExecutionWorkspace = offlineWorkspace ? safelyBoundExecutionWorkspace :
           resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace &&
           reusableExistingExecutionWorkspace
             ? await executionWorkspacesSvc.update(
@@ -29395,6 +29442,7 @@ export function heartbeatService(
             ]
           : []),
       ];
+      context.paperclipOfflineBotWorkspace = offlineWorkspace ? offlineWorkspace.field : undefined;
       context.paperclipWorkspace = {
         cwd: executionWorkspace.cwd,
         source: executionWorkspace.source,
@@ -30547,7 +30595,7 @@ export function heartbeatService(
                     issue: issueRef,
                     taskPrompt: [
                       readNonEmptyString(
-                        selectPaperclipTaskMarkdown(context, {
+                        selectPaperclipTaskMarkdown(taskMarkdownContextForDispatch(context), {
                           resumedSession,
                         }),
                       ) ??
@@ -31354,7 +31402,7 @@ export function heartbeatService(
             // heartbeat run snapshot.
             const dispatchWakePayload = wakePayloadForDispatch(context);
             const adapterContext: Record<string, unknown> = {
-              ...context,
+              ...taskMarkdownContextForDispatch(context),
               // myrmidon(HERMES-RUN-REATTACH): the gateway run id this run
               // attached to before the restart; the hermes_gateway adapter
               // reattaches to it instead of creating a second run.

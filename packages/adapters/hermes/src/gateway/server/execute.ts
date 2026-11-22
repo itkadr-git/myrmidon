@@ -797,7 +797,7 @@ function buildRunBody(
   // myrmidon(1.6.5 BOT-DISK-H5a): same discipline for the `workspace` field —
   // derived from the run context only, set after the spread (a card cannot
   // forge it), `undefined` when the task has no repository.
-  const workspaceField = buildWorkspaceField(ctx.context, ctx.agent.name);
+  const workspaceField = ctx.context.paperclipOfflineBotWorkspace ?? buildWorkspaceField(ctx.context, ctx.agent.name);
   // myrmidon(GITHUB-SHARED-IDENTITY): same forgery rule as github_broker —
   // set unconditionally after the payloadTemplate spread, so a card's attempt
   // to inject launcher content is deleted (`undefined` drops the key); only

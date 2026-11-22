@@ -125,10 +125,10 @@ index 48607c0..9f32846 100644
  def _filter_secret_env(
 diff --git a/tools/run_workspace.py b/tools/run_workspace.py
 new file mode 100644
-index 0000000..360e518
+index 0000000..0edf92b
 --- /dev/null
 +++ b/tools/run_workspace.py
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,346 @@
 +"""Run-scoped task workspace resolution via ``myr-ws open`` (myrmidon BOT-DISK-H5b).
 +
 +The board's hermes_gateway adapter may attach a ``workspace`` field to a
@@ -213,6 +213,134 @@ index 0000000..360e518
 +    return _TASK_WORKSPACE_ENV
 +
 +
++def _offline_home_and_root():
++    from pathlib import Path
++
++    home = Path(os.path.realpath("/data/hermes"))
++    bot = os.environ.get("MYRMIDON_BOT_KEY", "")
++    roots = {Path("/data/hermes"): "/data/hermes", Path("/bot/hermes"): "/bot",
++             Path("/bot-scope") / bot / "hermes": "/bot-scope"}
++    if home not in roots:
++        raise ValueError("Offline workspace requires a managed bot volume")
++    return home, roots[home]
++
++
++def _offline_volume():
++    import re
++    from pathlib import Path
++
++    home, root = _offline_home_and_root()
++    root_path = Path(root)
++    root_mount = None
++    nested_mounts = []
++    with open("/proc/self/mountinfo", encoding="utf-8") as stream:
++        for line in stream:
++            before, after = line.strip().split(" - ", 1)
++            fields = before.split()
++            target = Path(re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), fields[4]))
++            if target == root_path:
++                if root_mount is not None:
++                    raise ValueError("Persistent bot volume has stacked mounts")
++                root_mount = [fields[2], fields[3], *after.split()[:2]]
++            elif target.is_relative_to(root_path) and home.is_relative_to(target):
++                # A bind mount can shadow the managed volume without changing st_dev.
++                raise ValueError("Offline workspace home is on a nested mount")
++            elif target.is_relative_to(home / "offline-workspaces"):
++                nested_mounts.append(str(target))
++    if root_mount is None:
++        raise ValueError("Persistent bot volume is not mounted")
++    return home, [root, root_mount, nested_mounts]
++
++
++def _offline_volume_device(volume):
++    return os.makedev(*map(int, volume[1][0].split(":")))
++
++
++def offline_workspace_path(home, company, issue):
++    import re
++
++    for value in (company, issue):
++        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value):
++            raise ValueError("Offline workspace requires canonical UUIDs")
++    return home / "offline-workspaces" / company / issue
++
++
++def reserve_offline_workspace(company, issue):
++    import stat
++
++    home, volume = _offline_volume()
++    device = _offline_volume_device(volume)
++    if home.stat().st_dev != device:
++        raise ValueError("Offline workspace home is not on the persistent bot volume")
++    cwd = offline_workspace_path(home, company, issue)
++    _reject_nested_mount(cwd, volume)
++    for directory in (cwd.parent.parent, cwd.parent, cwd):
++        directory.mkdir(mode=0o700, exist_ok=True)
++        st = directory.lstat()
++        if (not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or st.st_gid != os.getegid()
++                or st.st_dev != device or stat.S_IMODE(st.st_mode) != 0o700):
++            raise ValueError("Offline workspace reservation is not a private directory")
++    return cwd
++
++
++def _reject_nested_mount(cwd, volume):
++    from pathlib import Path
++
++    if any(cwd.is_relative_to(m) or m.is_relative_to(cwd)
++           for m in map(Path, volume[2])):
++        raise ValueError("Offline workspace contains a nested mount")
++
++
++def _require_local_git_checkout(cwd):
++    # Do not inherit Git overrides or allow transports (including promisor fetches).
++    env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "GIT_CONFIG_NOSYSTEM": "1",
++           "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_ALLOW_PROTOCOL": "",
++           "GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1",
++           "GIT_CEILING_DIRECTORIES": str(cwd.parent)}
++
++    def local_git(*args):
++        return subprocess.run(["/usr/bin/git", "-C", str(cwd), *args],
++                              env=env, check=True, capture_output=True, timeout=3).stdout
++
++    try:
++        if (local_git("rev-parse", "--is-inside-work-tree", "--show-toplevel", "--absolute-git-dir").splitlines()
++                != [b"true", os.fsencode(cwd), os.fsencode(cwd / ".git")]):
++            raise ValueError("Offline workspace is not the root of a standalone working tree")
++        local_git("rev-parse", "--verify", "HEAD^{commit}")
++    except (OSError, subprocess.SubprocessError) as exc:
++        raise ValueError("Offline workspace requires a locally available HEAD commit") from exc
++
++
++def offline_workspace_identity(company, issue):
++    import hashlib
++    import stat
++
++    home, volume = _offline_volume()
++    device = _offline_volume_device(volume)
++    cwd = offline_workspace_path(home, company, issue)
++    if cwd.resolve(strict=True) != cwd:
++        raise ValueError("Offline workspace path must be canonical")
++    _reject_nested_mount(cwd, volume)
++    facts = []
++    for directory in (home, cwd.parent.parent, cwd.parent, cwd, cwd / ".git", cwd / ".git/objects"):
++        st = directory.lstat()
++        if (not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or st.st_gid != os.getegid()
++                or st.st_dev != device or st.st_mode & 0o022):
++            raise ValueError("Offline workspace has an unexpected owner, mode or device")
++        facts.append([st.st_dev, st.st_ino, st.st_uid, st.st_gid, stat.S_IMODE(st.st_mode)])
++    git = cwd / ".git"
++    if (stat.S_IMODE(cwd.stat().st_mode) != 0o700 or not stat.S_ISREG((git / "HEAD").lstat().st_mode)
++            or any(os.path.lexists(git / ref) for ref in ("commondir", "objects/info/alternates", "objects/info/http-alternates"))):
++        raise ValueError("Offline workspace requires a private standalone Git directory")
++    _require_local_git_checkout(cwd)
++    fingerprint = hashlib.sha256(json.dumps([str(cwd), volume[:2], facts]).encode()).hexdigest()
++    return {"cwd": str(cwd), "fingerprint": fingerprint, "physicalId": f"{facts[3][0]}:{facts[3][1]}"}
++
++
++def offline_workspace_fingerprint(company, issue):
++    return offline_workspace_identity(company, issue)["fingerprint"]
++
++
 +def _validate_workspace_field(field: Any) -> Dict[str, str]:
 +    """Shape-check the ``workspace`` body field (C6 ``runWorkspaceFieldSchema``).
 +
@@ -226,6 +354,19 @@ index 0000000..360e518
 +
 +    if not isinstance(field, dict):
 +        raise ValueError("workspace must be an object with key/repo[/baseRef]")
++    offline = {"offlineCompanyId", "offlineIssueId", "offlineBotId", "offlineFingerprint", "offlineWorkspaceId", "offlineCwd"}
++    if offline.intersection(field):
++        if set(field) != offline:
++            raise ValueError("Invalid offline workspace fields")
++        for key in offline:
++            if key == "offlineCwd":
++                if not isinstance(field[key], str) or not field[key].startswith("/"):
++                    raise ValueError("Invalid offline workspace cwd")
++                continue
++            pattern = r"[a-f0-9]{64}" if key == "offlineFingerprint" else r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
++            if not isinstance(field[key], str) or not re.fullmatch(pattern, field[key]):
++                raise ValueError("Invalid offline workspace identity")
++        return dict(field)
 +    key = field.get("key")
 +    repo = field.get("repo")
 +    base_ref = field.get("baseRef")
@@ -275,6 +416,15 @@ index 0000000..360e518
 +    missing binary, undecodable output): the run starts in the fallback dir.
 +    """
 +    ws = _validate_workspace_field(field)
++    if "offlineCompanyId" in ws:
++        if os.environ.get("MYRMIDON_BOT_KEY") != ws["offlineBotId"]:
++            raise ValueError("Offline workspace belongs to a different bot")
++        company, issue = ws["offlineCompanyId"], ws["offlineIssueId"]
++        identity = offline_workspace_identity(company, issue)
++        if identity["fingerprint"] != ws["offlineFingerprint"] or identity["cwd"] != ws["offlineCwd"]:
++            raise ValueError("Offline workspace identity changed")
++        return {"path": identity["cwd"],
++                "fallback": False, "exit_code": 0, "error": "", "recovered": []}
 +    argv = [_myr_ws_bin(), "open", ws["key"], ws["repo"]]
 +    if ws.get("baseRef"):
 +        argv += ["--base", ws["baseRef"]]
@@ -325,3 +475,48 @@ index 0000000..360e518
 +    if not error_text:
 +        error_text = (proc.stderr or "").strip() or f"myr-ws open exited {proc.returncode}"
 +    return _fallback(proc.returncode, error_text[:300])
+diff --git a/gateway/platforms/api_server.py b/gateway/platforms/api_server.py
+index a418ee5..8955e36 100644
+--- a/gateway/platforms/api_server.py
++++ b/gateway/platforms/api_server.py
+@@ -1584,6 +1584,32 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
+                 _api_request_profile.reset(token)
+         return profile_prefix_middleware
+
++    async def _handle_offline_workspace(self, request):
++        # Only the gateway master key; run-scoped keys must not reserve paths.
++        if _api_request_profile.get() not in (None, "default") or not self._api_key:
++            return self._auth_failed_response()
++        auth_err = self._check_auth(request)
++        if auth_err is not None:
++            return auth_err
++        from tools.run_workspace import offline_workspace_identity, reserve_offline_workspace
++
++        try:
++            body = await request.json()
++            if not isinstance(body, dict) or set(body) != {"companyId", "issueId", "botId", "action"}:
++                raise ValueError("Invalid request")
++            if body["botId"] != os.environ.get("MYRMIDON_BOT_KEY"):
++                raise ValueError("Incorrect bot identity")
++            company, issue = body["companyId"], body["issueId"]
++            if body["action"] == "reserve":
++                result = {"cwd": str(reserve_offline_workspace(company, issue))}
++            elif body["action"] == "register":
++                result = offline_workspace_identity(company, issue)
++            else:
++                raise ValueError("Unknown action")
++        except (ValueError, OSError):
++            return web.json_response({"error": "Offline workspace validation failed"}, status=409)
++        return web.json_response(result)
++
+     def _http_route_table(self) -> List[tuple]:
+         """(method, path, handler) rows registered by ``connect()`` (a method so multiplex tests
+         can assert the /p/<profile>/ mirrors without a listener)."""
+@@ -1591,6 +1617,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
+             ("GET", "/health", self._handle_health),
+             ("GET", "/health/detailed", self._handle_health_detailed),
+             ("GET", "/v1/health", self._handle_health),
++            ("POST", "/v1/offline-workspace", self._handle_offline_workspace),
+             ("GET", "/v1/models", self._handle_models),
+             ("GET", "/api/model/options", self._handle_model_options),
+             ("GET", "/v1/capabilities", self._handle_capabilities),

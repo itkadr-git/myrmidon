@@ -1,3 +1,5 @@
+import { z } from "zod";
+import { offlineWorkspaceKey, offlineWorkspaceRequest, registerOfflineBotWorkspace } from "../services/offline-bot-workspace.js";
 import { spawn } from "node:child_process";
 import { accessSync, constants as fsConstants, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -146,6 +148,22 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     res.status(403).json({ error: "Runtime service control is outside this actor's authorization boundary" });
     return false;
   }
+
+  router.post("/companies/:companyId/issues/:issueId/offline-bot-workspace", validate(offlineWorkspaceRequest), async (req, res) => {
+    assertBoard(req);
+    const companyId = z.string().uuid().parse(req.params.companyId);
+    const issueId = z.string().uuid().parse(req.params.issueId);
+    assertCompanyAccess(req, companyId);
+    if (!(await assertRuntimeManageAllowed(req, res, companyId))) return;
+    const workspace = await registerOfflineBotWorkspace(db, companyId, issueId, req.body);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId, actorType: actor.actorType, actorId: actor.actorId,
+      action: req.body.action === "reserve" ? "execution_workspace.offline_reserved" : "execution_workspace.offline_registered",
+      entityType: workspace.id ? "execution_workspace" : "issue", entityId: workspace.id ?? issueId, details: { issueId, botId: req.body.botId },
+    });
+    res.json({ id: workspace.id, cwd: workspace.cwd });
+  });
 
   router.get("/companies/:companyId/execution-workspaces", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -1278,6 +1296,10 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!existing) return;
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
+    if (existing.metadata && offlineWorkspaceKey in existing.metadata ||
+        req.body.metadata && offlineWorkspaceKey in req.body.metadata) {
+      throw conflict("Offline registration cannot be modified through the generic workspace route");
+    }
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectExecutionWorkspaceCommandPaths({
