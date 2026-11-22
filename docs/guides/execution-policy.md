@@ -231,6 +231,8 @@ PATCH /api/issues/{issueId}
 
 Do not split a decision into `POST /comments` followed by a status-only `PATCH`; the runtime only records the decision from the `comment` field on the same status update.
 
+For a documentation issue with caste `techwriter`, the active agent reviewer can use this normal transition to return the work to the original editor in `returnAssignee`. Do not explicitly change the assignee or caste in the decision request. The caste stays `techwriter`, and the explanation is saved both as an issue comment and as the `changes_requested` decision. This narrow return path does not relax the engineer requirement for code work or the existing PR-head CI gate; for example, a pending CI result still rejects the decision. A merged fix does not by itself prove that it is deployed.
+
 ### Setting an execution policy on issue creation
 
 ```bash
