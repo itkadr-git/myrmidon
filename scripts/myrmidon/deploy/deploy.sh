@@ -223,7 +223,12 @@ manifest_lines=""
 MYR_MANIFEST_FILE="${MYRMIDON_RELEASE_MANIFEST_FILE:-}"
 read_manifest() {
   if [[ -n "$MYR_MANIFEST_FILE" ]]; then
-    "$MYR_SCRIPT_DIR/release-manifest.sh" --from-file "$MYR_MANIFEST_FILE"
+    local -a expected=()
+    if [[ "$1" == *-rc.* && ( -n "$release_tag" || -n "$expect_commit" ) ]]; then
+      [[ -n "$expect_commit" ]] || die "RC release with a local manifest requires --expect-commit (full SHA)"
+      expected=(--expect-tag "$1" --expect-commit "$expect_commit")
+    fi
+    "$MYR_SCRIPT_DIR/release-manifest.sh" --from-file "$MYR_MANIFEST_FILE" "${expected[@]}"
   else
     "$MYR_SCRIPT_DIR/release-manifest.sh" --tag "$1"
   fi

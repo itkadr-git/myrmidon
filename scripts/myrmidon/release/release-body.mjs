@@ -199,7 +199,7 @@ export function readChangelog(root = process.cwd()) {
 }
 
 function parseArgs(argv) {
-  const args = { version: null, notesVersion: null, registryStatePath: null, manifestOut: null };
+  const args = { version: null, notesVersion: null, registryStatePath: null, manifestOut: null, prepareRc: false, commit: null };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === "--previous") {
@@ -209,7 +209,11 @@ function parseArgs(argv) {
       if (previous) process.stdout.write(previous);
       process.exit(0);
     }
-    if (a === "--registry-state") {
+    if (a === "--prepare-rc") {
+      args.prepareRc = true;
+    } else if (a === "--commit") {
+      args.commit = argv[++i];
+    } else if (a === "--registry-state") {
       args.registryStatePath = argv[i + 1];
       i += 1;
     } else if (a === "--manifest-out") {
@@ -226,10 +230,24 @@ function parseArgs(argv) {
 }
 
 async function main() {
-  const { version, notesVersion, registryStatePath, manifestOut } = parseArgs(process.argv.slice(2));
+  const { version, notesVersion, registryStatePath, manifestOut, prepareRc, commit } = parseArgs(process.argv.slice(2));
   if (!version || !VERSION_RE.test(version)) {
     console.error("usage: release-body.mjs [--notes-version X.Y.Z] [--registry-state <file>] <X.Y.Z[-rc.N]>");
     process.exit(2);
+  }
+  if (prepareRc) {
+    if (!/-rc\.\d+$/.test(version) || !/^[0-9a-f]{40}$/.test(commit ?? "") || !manifestOut) {
+      console.error("--prepare-rc requires an RC version, --commit <full SHA>, and --manifest-out <file>");
+      process.exit(2);
+    }
+    const registryState = registryStatePath ? JSON.parse(fs.readFileSync(registryStatePath, "utf8")) : null;
+    const { missing, digests } = await componentDigests(version, { registryState });
+    if (missing.length) {
+      console.error(`component image digests missing for RC ${version}: ${missing.join(", ")}`);
+      process.exit(1);
+    }
+    fs.writeFileSync(manifestOut, `${JSON.stringify({ ...buildManifest({ version, digests }), commit }, null, 2)}\n`, { flag: "wx" });
+    return;
   }
   const notes = notesVersion ?? baseOf(version);
   const previous = previousMinorPatch(version);

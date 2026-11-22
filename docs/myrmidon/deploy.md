@@ -218,6 +218,7 @@ scripts/myrmidon/deploy/deploy.sh --config deploy.env --release myr-v1.6.2
   `MYRMIDON_COMPONENT_AUTO_ROLLBACK=0` restores the old manual contract. A release whose
   component or bot digests are missing, and a component that cannot roll out (registry, CI
   labels, compose service), is refused **before** the window.
+
 - **Bot cards.** After the window, bot cards that track the release image switch: a card
   whose image is a digest-pinned image of one of our bot repositories (hermes, hermes-dev,
   hermes-node) that is not the release's image of that repository tracks and moves to the
@@ -262,6 +263,29 @@ scripts/myrmidon/deploy/deploy.sh --config deploy.env --release myr-v1.6.2
  only after every bot moved. There is no board setting for a default bot image to update.
 
 ### Release candidates and the `latest` marker (RC-VERSIONS)
+
+#### RC candidate before GitHub Release
+
+1. Once all four tag-push image workflows succeed, dispatch **Myrmidon release publish**
+   from `main` with the exact RC `tag` and `prepare_rc=true`. This mode checks the
+   tag's commit and GHCR images, but does not request a verdict or publish a Release.
+2. Download `release-components-<tag>-attempt-<n>` from that successful `prepare-rc`
+   run. Use only that run's `release-components.json`. Resolve the expected full
+   commit independently from the trusted release tag (peel annotated tags to the commit).
+3. With the updated installer, point `MYRMIDON_RELEASE_MANIFEST_FILE` in `deploy.env`
+   at the extracted file. Preflight with:
+
+   ```bash
+   scripts/myrmidon/deploy/deploy.sh --config deploy.env --release "$tag" --expect-commit "$sha" --dry-run
+   ```
+
+   The installer checks the file against the expected tag and commit and verifies
+   each selected image against GHCR. Required: board, dockergate, fleetd and hermes.
+   Optional bot variants are checked if present. Stop on any mismatch or unavailable
+   provenance.
+4. Only after the operator deploys and verifies the exact commit, run the ordinary
+   publication workflow with `prepare_rc=false`. Publication still requires the
+   signed production verdict for the tag commit. The candidate artifact is not a verdict.
 
 Since 1.6.5 a release goes through a trial run on our own production before it becomes the
 GitHub **Latest** release (the owner's requirement of 05.10):
