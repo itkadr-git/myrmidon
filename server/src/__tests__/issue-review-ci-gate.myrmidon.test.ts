@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
-import { activityLog, agentWakeupRequests, agents, companies, connectionEventDeliveries, heartbeatRuns, issueComments, issueWorkProducts, issues, toolGatewayRateLimitCounters } from "@myrmidon/db";
+import { activityLog, agentWakeupRequests, agents, companies, connectionEventDeliveries, heartbeatRuns, issueComments, issueExecutionDecisions, issueWorkProducts, issues, toolGatewayRateLimitCounters } from "@myrmidon/db";
 import { describeEmbeddedPostgres, routeApp, seedCompanyWithBoardAccess, useEmbeddedPostgres } from "./helpers/route-test-harness.js";
 import { issueRoutes } from "../routes/issues.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
@@ -46,6 +46,65 @@ describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", ()
   afterEach(async () => {
     await drainHeartbeatRunsToQuiescence(ctx.db, heartbeatService(ctx.db));
     await ctx.db.delete(toolGatewayRateLimitCounters);
+  });
+
+  it.each([
+    { casteKey: "techwriter", harnessKind: null, allowed: true },
+    { casteKey: "engineer", harnessKind: null, allowed: false },
+    { casteKey: "techwriter", harnessKind: "skill_test", allowed: false },
+    { casteKey: null, harnessKind: null, allowed: false },
+  ])("returns to an editor only for a documentation review ($casteKey / $harnessKind)", async ({ casteKey, harnessKind, allowed }) => {
+    const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Documentation review return");
+    const author = randomUUID(), reviewer = randomUUID(), issueId = randomUUID(), runId = randomUUID(), stageId = randomUUID();
+    const headSha = "a".repeat(40);
+    const url = "https://github.com/acme/app/pull/7";
+    const comment = "REQUEST CHANGES: docs/preflight.md:42 must explain the skip condition";
+    const base = { companyId, status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} };
+    await ctx.db.insert(agents).values([
+      { ...base, id: author, name: "Author", role: "editor" },
+      { ...base, id: reviewer, name: "Reviewer", role: "reviewer" },
+    ]);
+    const currentParticipant = { type: "agent", agentId: reviewer, userId: null };
+    const returnAssignee = { type: "agent", agentId: author, userId: null };
+    await ctx.db.insert(issues).values({
+      id: issueId, companyId, title: "Documentation review return", status: "in_review", priority: "medium",
+      casteKey, harnessKind, createdByAgentId: author, assigneeAgentId: reviewer,
+      executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), ...currentParticipant }] }] },
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant, returnAssignee, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null },
+    });
+    await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewer, status: "succeeded", contextSnapshot: { issueId } });
+    await ctx.db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", title: "Synthetic PR", url, status: "open", isPrimary: true, metadata: { repo: "acme/app", number: 7, headSha } });
+    let ciReady = false;
+    const app = routeApp(ctx.db, { type: "agent", agentId: reviewer, companyId, source: "agent_key", runId } as never, (db, storage) => issueRoutes(db, storage, {
+      resolveReviewPullRequestCi: async () => ciReady
+        ? { state: "complete", finalCheckConclusion: "success", pullRequestUrl: url, headSha }
+        : { state: "pending", pullRequestUrl: url, headSha },
+    }));
+    const submit = (extra = {}) => request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment, ...extra });
+    if (allowed) {
+      const explicit = await submit({ assigneeAgentId: author });
+      expect(explicit.body.details?.code).toBe("issue_requires_engineer");
+      const pending = await submit();
+      expect(pending.status, JSON.stringify(pending.body)).toBe(422);
+      expect(pending.body.error).toContain("CI result for the current pull request head is not complete");
+      const [unchanged] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+      expect(unchanged).toMatchObject({ status: "in_review", assigneeAgentId: reviewer, executionState: { status: "pending" } });
+    }
+    ciReady = true;
+    const result = await submit();
+    const comments = await ctx.db.select().from(issueComments).where(sql`${issueComments.issueId} = ${issueId}`);
+    const decisions = await ctx.db.select().from(issueExecutionDecisions).where(sql`${issueExecutionDecisions.issueId} = ${issueId}`);
+    if (allowed) {
+      expect(result.status, JSON.stringify(result.body)).toBe(200);
+      expect(result.body).toMatchObject({ status: "in_progress", casteKey, assigneeAgentId: author, executionState: { lastDecisionOutcome: "changes_requested", returnAssignee } });
+      expect(comments).toEqual(expect.arrayContaining([expect.objectContaining({ authorAgentId: reviewer, body: comment })]));
+      expect(decisions).toMatchObject([{ outcome: "changes_requested", actorAgentId: reviewer, body: comment }]);
+    } else {
+      expect(result.status, JSON.stringify(result.body)).toBe(422);
+      expect(result.body.details?.code).toBe("issue_requires_engineer");
+      expect(comments).toHaveLength(0);
+      expect(decisions).toHaveLength(0);
+    }
   });
 
   it("rejects unavailable CI at 2000 without a GitHub call and accepts matching fresh success", async () => {
