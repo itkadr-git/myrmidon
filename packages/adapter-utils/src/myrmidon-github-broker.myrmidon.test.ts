@@ -312,6 +312,7 @@ describe("managed GitHub launcher with broker candidates (myrmidon P6)", () => {
     delete env.MYRMIDON_BOT_BOARD_URL;
     delete env.MYRMIDON_API_KEY;
     delete env.MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST;
+    delete env.MYRMIDON_GITHUB_BROKER_SCOPE_DIR;
     delete env.MYRMIDON_GITHUB_CREDENTIALS_CACHE_DIR;
     delete env.PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR;
     delete env.PAPERCLIP_RUN_SCRATCH_DIR;
@@ -339,6 +340,26 @@ describe("managed GitHub launcher with broker candidates (myrmidon P6)", () => {
     expect(urls).toEqual(["POST /runtime-tools/github/credentials"]);
     expect(JSON.parse((await invoke()).stdout)).toEqual({ token: "managed-credential" });
     expect(urls).toHaveLength(1);
+  });
+
+  it("shares a spent budget across competing launcher processes", async () => {
+    const { root, bin, realBin } = await stageGh();
+    let posts = 0;
+    const { port } = await startBroker((req, res) => {
+      if (req.method === "POST") posts++;
+      setTimeout(() => res.writeHead(409).end(), 200);
+    });
+    const brokerUrl = `http://127.0.0.1:${port}`;
+    const env = launcherEnv({ bin, realBin, brokerUrl, extra: {
+      MYRMIDON_BOT_BOARD_URL: brokerUrl,
+      MYRMIDON_GITHUB_BROKER_SCOPE_DIR: root,
+      MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST: "0",
+    } });
+    const invoke = () => exec(path.join(bin, "gh"), ["--version"], { env });
+    const results = await Promise.allSettled(Array.from({ length: 6 }, invoke));
+    for (const result of results) expect(result).toMatchObject({ status: "rejected", reason: { code: 1 } });
+    await expect(invoke()).rejects.toMatchObject({ code: 1 });
+    expect(posts).toBe(1);
   });
 
   it.each([400, 409, 429])("refuses HTTP %i after one request even when a fallback is live", async (status) => {
