@@ -78,6 +78,8 @@ stranded-work sweep skips the board escalation and keeps the task waiting for
 that participant. Only when the participant has no live run at all can the
 review task be moved to board-only `blocked` with a recovery card.
 
+For an engineering task blocked by an incompatible saved review return assignee, an authorized board operator can use the [guarded recovery runbook](https://github.com/itkadr-git/myrmidon/blob/main/doc/execution-semantics.md#repair-an-incompatible-review-return-assignee). Check that the deployed server advertises the request in OpenAPI; a merge alone does not prove deployment.
+
 ## Planning from a chat message
 
 The Commander chat is the board's planning entry: the owner writes what is
