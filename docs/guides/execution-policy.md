@@ -233,6 +233,8 @@ Do not split a decision into `POST /comments` followed by a status-only `PATCH`;
 
 For a documentation issue with caste `techwriter`, the active agent reviewer can use this normal transition to return the work to the original editor in `returnAssignee`. Do not explicitly change the assignee or caste in the decision request. The caste stays `techwriter`, and the explanation is saved both as an issue comment and as the `changes_requested` decision. This narrow return path does not relax the engineer requirement for code work or the existing PR-head CI gate; for example, a pending CI result still rejects the decision. A merged fix does not by itself prove that it is deployed.
 
+For an engineering task whose saved return assignee has an incompatible role, an authorized board operator can use the guarded repair described in [Repair an incompatible review return assignee](../../doc/execution-semantics.md#repair-an-incompatible-review-return-assignee). Confirm that the deployed server advertises the request in OpenAPI; a merge alone does not prove deployment.
+
 ### Setting an execution policy on issue creation
 
 ```bash
