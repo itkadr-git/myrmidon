@@ -27,6 +27,19 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
+const { wakeup } = vi.hoisted(() => ({ wakeup: vi.fn(async () => null) }));
+vi.mock(import("../services/heartbeat.js"), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    // Exercise API persistence without launching the next agent in this fixture.
+    heartbeatService: (...args: Parameters<typeof actual.heartbeatService>) => ({
+      ...actual.heartbeatService(...args),
+      wakeup,
+    }),
+  };
+});
+
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -48,6 +61,7 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
 
   afterEach(async () => {
     enqueueWakeup.mockClear();
+    wakeup.mockClear();
     await db.delete(issueThreadInteractions);
     await db.delete(issueApprovals);
     await db.delete(approvals);
@@ -258,7 +272,18 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).toEqual([priorComment]);
     const repairEvents = await db.select().from(activityLog).where(eq(activityLog.action, "issue.review_return_assignee_repaired"));
     expect(repairEvents).toMatchObject([{ actorId: memberUserId, entityId: issueId, details: { stageId: stage, previousAgentId: editor, agentId: engineer } }]);
-    expect(enqueueWakeup).not.toHaveBeenCalled();
+    expect(wakeup).not.toHaveBeenCalled();
+
+    const nextRunId = await seedRun(companyId, reviewer, issueId);
+    const returned = await request(app(agentActor(companyId, reviewer, nextRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_progress", comment: "Changes requested: fix the diff." });
+    expect(returned.status, JSON.stringify(returned.body)).toBe(200);
+    expect(returned.body).toMatchObject({ status: "in_progress", assigneeAgentId: engineer });
+    const decisions = await db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, issueId));
+    expect(decisions).toEqual(expect.arrayContaining([
+      priorDecision, expect.objectContaining({ stageId: stage, actorAgentId: reviewer, outcome: "changes_requested" }),
+    ]));
   });
 
   it("denies agents, viewers, and cross-company users without exposing issue existence", async () => {

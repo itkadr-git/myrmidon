@@ -15023,6 +15023,85 @@ export function issueRoutes(
         return;
       }
       const body = parsedBody.data;
+      if ("expectedStageId" in body) {
+        const actor = getActorInfo(req);
+        const publications: ActivityPublication[] = [];
+        const updated = await db.transaction(async (tx) => {
+          const locked = await svc.getByIdForUpdate(issue.id, tx);
+          if (!locked || locked.companyId !== issue.companyId) throw notFound("Issue not found");
+          const state = parseIssueExecutionState(locked.executionState);
+          const reviewer = state?.currentParticipant;
+          const policy = normalizeIssueExecutionPolicy(locked.executionPolicy);
+          const stage = policy?.stages.find((entry) => entry.id === body.expectedStageId);
+          if (
+            locked.status !== "in_review" || state?.status !== "pending" ||
+            state.currentStageType !== "review" || state.currentStageId !== body.expectedStageId ||
+            stage?.type !== "review" || reviewer?.type !== "agent" || !reviewer.agentId ||
+            reviewer.agentId !== locked.assigneeAgentId ||
+            state.returnAssignee?.type !== "agent" || state.returnAssignee.agentId !== body.expectedReturnAssigneeAgentId
+          ) {
+            throw conflict("Review or return assignee changed. Reload the issue before repairing it.", {
+              code: "review_return_repair_stale",
+            });
+          }
+          const hold = await treeControlSvc.getActivePauseHoldGate(locked.companyId, locked.id);
+          if (hold) throw conflict("Task is paused. Resume it before repairing the review return.");
+
+          const boundRunIds = [locked.executionRunId, locked.checkoutRunId].filter((id): id is string => id !== null);
+          const [active] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.companyId, locked.companyId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+            or(
+              inArray(heartbeatRuns.id, boundRunIds),
+              and(
+                eq(heartbeatRuns.agentId, reviewer.agentId),
+                sql`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${locked.id}`,
+              ),
+            ),
+          )).limit(1);
+          if (active) {
+            throw conflict("Wait for the review run to finish without interrupting it.", {
+              code: "review_return_repair_active_run", runId: active.id,
+            });
+          }
+
+          const agentId = body.returnAssignee.agentId;
+          if (agentId === body.expectedReturnAssigneeAgentId) {
+            throw unprocessable("Replacement must differ from the saved return assignee.");
+          }
+          const [target] = await tx.select({ role: agents.role, status: agents.status }).from(agents)
+            .where(and(eq(agents.companyId, locked.companyId), eq(agents.id, agentId)))
+            .for("share");
+          if (!target || !isAgentStatusInvokable(target.status)) {
+            throw conflict("Return assignee must be an active agent in the same company.");
+          }
+          if (target.role !== "engineer" || agentId === reviewer.agentId ||
+              policy?.stages.some((entry) => entry.type === "review" && entry.participants.some((participant) => participant.type === "agent" && participant.agentId === agentId))) {
+            throw unprocessable("Return assignee must be an engineer outside the review participants.");
+          }
+          // Preserve raw JSON fields not modeled by the execution-state parser.
+          const [repaired] = await tx.update(issueRows).set({
+            executionState: { ...locked.executionState, returnAssignee: body.returnAssignee },
+            updatedAt: new Date(),
+          }).where(and(eq(issueRows.id, locked.id), eq(issueRows.companyId, locked.companyId))).returning();
+          if (!repaired) throw notFound("Issue not found");
+          await logActivity(tx as unknown as Db, {
+            companyId: locked.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            runId: actor.runId,
+            action: "issue.review_return_assignee_repaired",
+            entityType: "issue",
+            entityId: locked.id,
+            issueId: locked.id,
+            details: { stageId: state.currentStageId, previousAgentId: body.expectedReturnAssigneeAgentId, agentId },
+          }, publications);
+          return repaired;
+        });
+        for (const publication of publications) publishActivity(publication);
+        res.json(updated);
+        return;
+      }
       const currentState = parseIssueExecutionState(issue.executionState);
       if (!currentState) {
         res.status(409).json({ error: "Issue has no valid execution state" });

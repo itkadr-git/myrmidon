@@ -1538,6 +1538,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/chat-endpoints/{endpointId}/conversations/{conversationId}/publications/{publicationId}/status",
   "GET /api/issues/{issueId}/chat-binding",
   "POST /api/issues/{id}/stalled-review-decision",
+  "PATCH /api/issues/{id}/execution-participants",
   // myrmidon(1.7 COMPANY-BOUNDARIES, OPE-12766): only ADM control-plane board
   // operators decide access requests; agent keys never act as ADM operators
   // (the route rejects non-board actors outright).
@@ -4010,9 +4011,10 @@ registry.registerPath({
   method: "patch",
   path: "/api/issues/{id}/execution-participants",
   tags: ["issues"],
-  summary: "Operator: replace the execution stage participant or return assignee (e.g. a terminated agent)",
+  summary: "Operator: repair an execution stage participant or return assignee",
+  description: "The legacy payload preserves the previous agent role. Supply both expectedStageId and expectedReturnAssigneeAgentId to replace only the saved return assignee of a pending agent review with a same-company invokable engineer outside the review participants. The guarded repair refuses paused tasks, stale state, and queued or running review runs. It does not record a verdict or wake or interrupt an agent.",
   request: { params: z.object({ id: z.string() }), body: jsonBody(executionParticipantsSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
 });
 
 registry.registerPath({
