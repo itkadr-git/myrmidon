@@ -11,11 +11,7 @@ import {
   type GitHubAdapter,
   type GitHubAdapterConfig,
 } from "@chat-adapter/github";
-import {
-  createDiscordAdapter,
-  type DiscordAdapter,
-  type DiscordAdapterConfig,
-} from "@chat-adapter/discord";
+import type { DiscordAdapter, DiscordAdapterConfig } from "@chat-adapter/discord";
 import {
   createSlackAdapter,
   type SlackAdapterConfig,
@@ -32,6 +28,7 @@ import {
   type TelegramRawMessage,
 } from "@chat-adapter/telegram";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createDiscordAdapterLazy, preloadDiscordAdapter } from "./discord-adapter-loader.js";
 import {
   Chat,
   type ActionEvent,
@@ -1470,7 +1467,7 @@ function createProviderAdapter(
         },
         userName: config.userName,
       };
-      return createDiscordAdapter(adapterConfig);
+      return createDiscordAdapterLazy(adapterConfig) as unknown as Adapter;
     }
     case "microsoft-teams": {
       const adapterConfig: TeamsAdapterConfig = {
@@ -3254,6 +3251,10 @@ export class ChatSdkRuntime {
       this.assertReplacementCurrent(options.endpointId, generation);
       await this.retireEndpoint(options.endpointId);
       this.assertReplacementCurrent(options.endpointId, generation);
+      if (options.providerConfig.provider === "discord") {
+        await preloadDiscordAdapter();
+        this.assertReplacementCurrent(options.endpointId, generation);
+      }
       const next = createChatSdkEndpointRuntime(options);
       this.endpoints.set(options.endpointId, next);
       // The service installs callback context before initialize() starts the
