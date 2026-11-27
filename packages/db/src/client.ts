@@ -261,7 +261,8 @@ export function createDb(url: string, options?: DatabaseClientOptions) {
   );
 }
 
-export type { MigrationState, MigrationHistoryReconcileResult, MigrationBootstrapResult } from "./migration-init.js";
+export type { MigrationState } from "./migration-inspection.js";
+export type { MigrationHistoryReconcileResult, MigrationBootstrapResult } from "./migration-init.js";
 
 export const getPostgresDataDirectory: typeof import("./postgres-maintenance.js").getPostgresDataDirectory = async (...args) =>
   (await import("./postgres-maintenance.js")).getPostgresDataDirectory(...args);
@@ -277,8 +278,8 @@ export const listMigrationChain: typeof import("./migration-metadata.js").listMi
 export const loadMigrationTargetSchema: typeof import("./migration-metadata.js").loadMigrationTargetSchema = async (...args) =>
   (await import("./migration-metadata.js")).loadMigrationTargetSchema(...args);
 
-export const inspectMigrations: typeof import("./migration-init.js").inspectMigrations = async (...args) =>
-  (await import("./migration-init.js")).inspectMigrations(...args);
+export const inspectMigrations: typeof import("./migration-inspection.js").inspectMigrations = async (...args) =>
+  (await import("./migration-inspection.js")).inspectMigrations(...args);
 
 export const applyPendingMigrations: typeof import("./migration-init.js").applyPendingMigrations = async (...args) =>
   (await import("./migration-init.js")).applyPendingMigrations(...args);
