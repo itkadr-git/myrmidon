@@ -95,7 +95,7 @@ async function ensureEmbeddedPostgresConnection(
     { createEmbeddedPostgresLogBuffer, formatEmbeddedPostgresError },
     { prepareEmbeddedPostgresNativeRuntime },
   ] = await Promise.all([
-    import("./client.js"),
+    import("./postgres-maintenance.js"),
     import("./embedded-postgres-error.js"),
     import("./embedded-postgres-native.js"),
   ]);
