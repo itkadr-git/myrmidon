@@ -1,11 +1,12 @@
 import { SlackFormatConverter } from "@chat-adapter/slack";
-import { TeamsFormatConverter } from "@chat-adapter/teams";
+import type { TeamsFormatConverter } from "@chat-adapter/teams";
 import {
   convertEmojiPlaceholders,
   parseMarkdown,
   stringifyMarkdown,
 } from "chat";
 import type { SafeChatPublicationPayload } from "@myrmidon/shared";
+import { getTeamsAdapterModule } from "./teams-adapter-loader.js";
 
 type NativeTextProvider = "slack" | "github" | "microsoft-teams";
 export interface NativePublicationTextPart {
@@ -14,7 +15,10 @@ export interface NativePublicationTextPart {
   suffix?: string;
 }
 const slack = new SlackFormatConverter();
-const teams = new TeamsFormatConverter();
+let teams: TeamsFormatConverter | undefined;
+function getTeamsFormatter(): TeamsFormatConverter {
+  return teams ??= new (getTeamsAdapterModule().TeamsFormatConverter)();
+}
 const MAX_WRAPPER_LENGTH = 292;
 const PREFIX = /^(`{3,256}|~{3,256})([A-Za-z0-9_+.-]{0,32})\n$/;
 const SUFFIX = /^\n(`{3,256}|~{3,256})\n?$/;
@@ -97,7 +101,7 @@ function nativePublicationTextSize(
             "github",
           )
         : convertEmojiPlaceholders(
-            teams.renderPostable({ markdown: text }),
+            getTeamsFormatter().renderPostable({ markdown: text }),
             "teams",
           );
   return provider === "slack"

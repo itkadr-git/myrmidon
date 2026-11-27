@@ -488,19 +488,13 @@ import { getTaskPlanContext } from "./task-plan-context.js";
 import { managedAgentProfileService } from "./managed-agent-profiles.js";
 import { remoteAgentProfileService } from "./remote-agent-profiles.js";
 import {
-  buildNativeProviderEnvironment,
   buildNativeExecutionInput,
   buildNativeExecutionWithCheckpoint,
   buildNativeRuntimeContext,
-  cancelNativeSession,
   claimNativeRestartRecoveries,
-  closeWarmNativeSessionsForEnvironment,
-  closeIdleWarmNativeSessionsForRestart,
   currentNativeControllerIdentity,
   dispatchNativeSessionResumptions,
-  detachNativeSessionsForRestart,
   ensureNativeCompletionContract,
-  executePaperclipNativeSession,
   finalizeNativeRun,
   findNativeSessionResumeRun,
   isNativeSessionId,
@@ -510,8 +504,6 @@ import {
   materializeLegacyQuestionResponseWakeProjection,
   materializeNativeInteractionResponses,
   nativeCompletionRequestsForComments,
-  NativeCancellationPendingRecoveryError,
-  NativeControllerDetachedForRestartError,
   nativeToolContractFingerprintForTarget,
   prepareNativeSessionBootstrapPersistence,
   prepareNativeWorkspaceSync,
@@ -520,10 +512,13 @@ import {
   type NativeRestartRecoveryClaim,
   rebindNativeSessionCheckpoint,
   reconcileNativeFinalizations,
-  reconcileRetainedNativeSessionCleanup,
   reconcileRetainedNativeSessionCleanups,
   resolveHeartbeatNativeRuntimeMode,
 } from "./native-runtime/index.js";
+import {
+  NativeCancellationPendingRecoveryError,
+  NativeControllerDetachedForRestartError,
+} from "./native-runtime/native-session-errors.js";
 import {
   assertAgentCoreProfileRecoveryBinding,
   assertManagedProfileRecoveryBinding,
@@ -946,7 +941,6 @@ import {
   classifyNotificationWakeReason,
   notificationWakeAllowed,
 } from "@myrmidon/shared";
-import { evaluateCodexCredentialReadiness } from "@myrmidon/adapter-codex-local/server";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
@@ -2549,6 +2543,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
     !input.managedAiCredentials && (input.adapterType ?? null) === "codex_local" &&
     (input.environmentDriver ?? null) !== "sandbox"
   ) {
+    const { evaluateCodexCredentialReadiness } = await import("@myrmidon/adapter-codex-local/server");
     const resolvedEnv = parseObject(resolvedConfig.env);
     const readiness = await evaluateCodexCredentialReadiness({
       env: process.env,
@@ -10345,15 +10340,12 @@ export async function cancelHeartbeatNativeRun(input: {
   if (input.runtimeMode !== "native") {
     return { decision: null, auditId: null };
   }
+  const options = { db: input.db, scope: "run" as const };
   const cancellation = input.cancel
-    ? await input.cancel(input.runId, input.reason, {
-        db: input.db,
-        scope: "run",
-      })
-    : await cancelNativeSession(input.runId, input.reason, {
-        db: input.db,
-        scope: "run",
-      });
+    ? await input.cancel(input.runId, input.reason, options)
+    : await (await import("./native-runtime/native-session-executor.js")).cancelNativeSession(
+        input.runId, input.reason, options,
+      );
   if (!cancellation.decision || !cancellation.auditId) {
     throw new Error("native_cancellation_outcome_not_audited");
   }
@@ -11358,6 +11350,7 @@ export function heartbeatService(
             );
           const aggregate = { closed: 0, busy: 0, failed: 0 };
           for (const environmentId of environmentIds) {
+            const { closeWarmNativeSessionsForEnvironment } = await import("./native-runtime/native-session-executor.js");
             const result = await closeWarmNativeSessionsForEnvironment({
               environmentId,
               reason,
@@ -17052,6 +17045,8 @@ export function heartbeatService(
     now = new Date(),
   ) {
     shutdownInProgress = true;
+    const { closeIdleWarmNativeSessionsForRestart, detachNativeSessionsForRestart } =
+      await import("./native-runtime/native-session-executor.js");
     const idleSessions = await closeIdleWarmNativeSessionsForRestart();
     if (idleSessions.failed > 0) {
       logger.warn({ idleSessions }, "idle native sessions could not checkpoint before controller shutdown");
@@ -17174,8 +17169,7 @@ export function heartbeatService(
           isNativeSessionId(run.nativeSessionId),
       )
       .map(({ run }) => run.id);
-    const detachedNativeSessions =
-      await detachNativeSessionsForRestart(nativeRunIds);
+    const detachedNativeSessions = await detachNativeSessionsForRestart(nativeRunIds);
 
     logger.info(
       {
@@ -17689,6 +17683,7 @@ export function heartbeatService(
         // hot restart. Leaving the old event consumer attached lets its
         // finalizer interrupt/suspend Claude while the next server is adopting
         // the same turn.
+        const { detachNativeSessionsForRestart } = await import("./native-runtime/native-session-executor.js");
         await detachNativeSessionsForRestart([run.id]);
         const recoveryHistoryEntry = JSON.stringify({
           at: now.toISOString(),
@@ -23217,7 +23212,10 @@ export function heartbeatService(
     // control-only repair must not hold up unrelated provider ingress or the
     // entire orphan reaper, but shutdown must still await its physical owner.
     const cleanup = reconcileRetainedNativeSessionCleanups(db, {
-      cleanup: (input) => reconcileRetainedNativeSessionCleanup(db, input),
+      cleanup: async (input) => {
+        const { reconcileRetainedNativeSessionCleanup } = await import("./native-runtime/native-session-executor.js");
+        return reconcileRetainedNativeSessionCleanup(db, input);
+      },
       onError: (error, runId) => {
         logger.warn(
           { err: error, runId },
@@ -31167,6 +31165,8 @@ export function heartbeatService(
               }
             }
             const nativeMcpServer = nativeMcpServers[0] ?? null;
+            const { buildNativeProviderEnvironment, executePaperclipNativeSession } =
+              await import("./native-runtime/native-session-executor.js");
             // myrmidon(E2.8): instance secret-ref for the ACPX Codex auth, resolved server-side.
             const runnerAcpxCodexAuthEnv = await resolveRunnerAcpxCodexAuthEnv(
               createInstanceSecretSettingService(db),

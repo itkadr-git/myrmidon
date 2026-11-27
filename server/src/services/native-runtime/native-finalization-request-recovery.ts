@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, gt, isNull, lte, or } from "drizzle-orm";
-import { nativeFinalizationOutbox, nativeFinalizationRequests, workspaceOperations, type Db } from "@myrmidon/db";
+import { nativeFinalizationOutbox, nativeFinalizationRequests, workspaceOperations } from "@myrmidon/db/schema";
+import type { Db } from "@myrmidon/db";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
 
 /** Claim pending work or reclaim a lease abandoned by a crashed worker. */

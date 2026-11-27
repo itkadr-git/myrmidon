@@ -1,4 +1,4 @@
-import { applyPendingMigrations, inspectMigrations } from "./client.js";
+import { inspectMigrations } from "./migration-inspection.js";
 import { resolveMigrationConnection } from "./migration-runtime.js";
 
 async function main(): Promise<void> {
@@ -14,6 +14,7 @@ async function main(): Promise<void> {
     }
 
     console.log(`Applying ${before.pendingMigrations.length} pending migration(s)...`);
+    const { applyPendingMigrations } = await import("./migration-init.js");
     await applyPendingMigrations(resolved.connectionString);
 
     const after = await inspectMigrations(resolved.connectionString);

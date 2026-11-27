@@ -18,34 +18,48 @@ export {
   type MigrationBootstrapResult,
   type Db,
 } from "./client.js";
-export {
-  getEmbeddedPostgresTestSupport,
-  startEmbeddedPostgresTestDatabase,
-  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
-  type EmbeddedPostgresTestDatabase,
-  type EmbeddedPostgresTestSupport,
+export { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "./embedded-postgres-test-timeout.js";
+export type {
+  EmbeddedPostgresTestDatabase,
+  EmbeddedPostgresTestSupport,
 } from "./test-embedded-postgres.js";
+export async function getEmbeddedPostgresTestSupport() {
+  return (await import("./test-embedded-postgres.js")).getEmbeddedPostgresTestSupport();
+}
+export async function startEmbeddedPostgresTestDatabase(tempDirPrefix: string) {
+  return (await import("./test-embedded-postgres.js")).startEmbeddedPostgresTestDatabase(tempDirPrefix);
+}
 export {
-  runDatabaseBackup,
-  runDatabaseRestore,
   formatDatabaseBackupResult,
   BackupVerificationError,
   BackupClientVersionError,
   parsePgMajorVersion,
-  diagnosePgDumpClient,
   type BackupRetentionPolicy,
   type RunDatabaseBackupOptions,
   type RunDatabaseBackupResult,
   type RunDatabaseRestoreOptions,
-} from "./backup-lib.js";
+} from "./backup-public.js";
+export async function runDatabaseBackup(...args: Parameters<typeof import("./backup-lib.js").runDatabaseBackup>) {
+  return (await import("./backup-lib.js")).runDatabaseBackup(...args);
+}
+export async function runDatabaseRestore(...args: Parameters<typeof import("./backup-lib.js").runDatabaseRestore>) {
+  return (await import("./backup-lib.js")).runDatabaseRestore(...args);
+}
+export async function diagnosePgDumpClient(...args: Parameters<typeof import("./backup-lib.js").diagnosePgDumpClient>) {
+  return (await import("./backup-lib.js")).diagnosePgDumpClient(...args);
+}
 export {
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
 } from "./embedded-postgres-error.js";
-export {
-  ensureLinuxSharedLibraryAliases,
-  prepareEmbeddedPostgresNativeRuntime,
-} from "./embedded-postgres-native.js";
+export async function ensureLinuxSharedLibraryAliases(libDir: string): Promise<string[]> {
+  const native = await import("./embedded-postgres-native.js");
+  return native.ensureLinuxSharedLibraryAliases(libDir);
+}
+export async function prepareEmbeddedPostgresNativeRuntime(): Promise<void> {
+  const native = await import("./embedded-postgres-native.js");
+  return native.prepareEmbeddedPostgresNativeRuntime();
+}
 export { loadWithoutEmbeddedPostgresExitHooks } from "./embedded-postgres-lifecycle.js";
 export {
   applyReaddress,

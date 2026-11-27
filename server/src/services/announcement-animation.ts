@@ -1,4 +1,3 @@
-import createDOMPurify from "dompurify";
 import { ANNOUNCEMENT_ANIMATION_MAX_BYTES } from "@myrmidon/shared";
 
 // A visual HTML/CSS document, never an application. JSDOM does not execute
@@ -9,7 +8,12 @@ export async function validateAnnouncementAnimation(bytes: Uint8Array): Promise<
     throw new Error("Invalid or oversized announcement animation");
   }
   const source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  const { JSDOM } = await import("jsdom");
+  // These optional sanitization dependencies are intentionally loaded only when
+  // an animation asset is requested; static imports add them to board startup.
+  const [{ default: createDOMPurify }, { JSDOM }] = await Promise.all([
+    import("dompurify"),
+    import("jsdom"),
+  ]);
   const dom = new JSDOM("");
   try {
     const purifier = createDOMPurify(dom.window as unknown as Parameters<typeof createDOMPurify>[0]);

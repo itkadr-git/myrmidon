@@ -14,6 +14,31 @@ const TARGET_FILES = [
 ];
 
 describe("lazy imports for jsdom and @chat-adapter/discord", () => {
+  it("loads finalization recovery schema without the database root barrel", () => {
+    const content = fs.readFileSync(path.join(HERE, "native-runtime/native-finalization-request-recovery.ts"), "utf8");
+    expect(content).not.toMatch(/^import\s+(?!type\b)[^;]*?from\s+["']@myrmidon\/db["']/m);
+    expect(content).toMatch(/from\s+["']@myrmidon\/db\/schema["']/);
+  });
+
+  it("defers the embedded Postgres native setup until embedded startup", () => {
+    const content = fs.readFileSync(path.join(SERVER_SRC, "index.ts"), "utf8");
+    expect(content).not.toMatch(/^import\s+(?!type\b)[^;]*?from\s+["']@myrmidon\/db\/embedded-postgres-native["']/m);
+    expect(content).toMatch(/await\s+import\(["']@myrmidon\/db\/embedded-postgres-native["']\)/);
+  });
+
+  it("defers loading the database backup implementation until a backup runs", () => {
+    const content = fs.readFileSync(path.join(SERVER_SRC, "index.ts"), "utf8");
+    expect(/^import\s+(?!type\b)[^;]*?from\s+["']@myrmidon\/db\/backup-lib["']/m.test(content)).toBe(false);
+    expect(content).toMatch(/await\s+import\(["']@myrmidon\/db\/backup-lib["']\)/);
+  });
+
+  it("does not eagerly import Discord when loading the chat runtime", () => {
+    const content = fs.readFileSync(path.join(HERE, "chat-sdk-runtime.ts"), "utf8");
+    expect(content).not.toMatch(
+      /^import\s+(?!type\b)[^;]*?from\s+["']@chat-adapter\/discord["']/m,
+    );
+  });
+
   it("has no top-level value imports of jsdom or @chat-adapter/discord in targeted files", () => {
     // Regex matches any top-level import from jsdom or @chat-adapter/discord that is NOT an 'import type'
     const topLevelValueImportRegex =
@@ -49,13 +74,13 @@ describe("lazy imports for jsdom and @chat-adapter/discord", () => {
 
   it("contains dynamic import() for jsdom or @chat-adapter/discord in the respective files", () => {
     const assetsContent = fs.readFileSync(path.join(SERVER_SRC, "routes/assets.ts"), "utf8");
-    expect(assetsContent).toMatch(/await\s+import\(["']jsdom["']\)/);
+    expect(assetsContent).toMatch(/await\s+Promise\.all\(\[[\s\S]*?import\(["']jsdom["']\)/);
 
     const announcementContent = fs.readFileSync(
       path.join(SERVER_SRC, "services/announcement-animation.ts"),
       "utf8",
     );
-    expect(announcementContent).toMatch(/await\s+import\(["']jsdom["']\)/);
+    expect(announcementContent).toMatch(/await\s+Promise\.all\(\[[\s\S]*?import\(["']jsdom["']\)/);
 
     const githubAttachmentsContent = fs.readFileSync(
       path.join(SERVER_SRC, "services/chat-github-attachments.ts"),

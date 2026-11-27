@@ -17,8 +17,9 @@ const captures = vi.hoisted(() => ({
   telegramConfigs: [] as Array<Record<string, unknown>>,
 }));
 
-vi.mock("@chat-adapter/discord", () => ({
-  createDiscordAdapter: (config: Record<string, unknown>) => {
+vi.mock("./discord-adapter-loader.js", () => ({
+  preloadDiscordAdapter: vi.fn(async () => {}),
+  createDiscordAdapterLazy: (config: Record<string, unknown>) => {
     captures.discordConfigs.push(config);
     return {
       name: "discord",
@@ -77,8 +78,9 @@ vi.mock("@chat-adapter/github", () => ({
   },
 }));
 
-vi.mock("@chat-adapter/teams", () => ({
-  createTeamsAdapter: (config: Record<string, unknown>) => {
+vi.mock("./teams-adapter-loader.js", () => ({
+  preloadTeamsAdapter: vi.fn(async () => {}),
+  createTeamsAdapterLazy: (config: Record<string, unknown>) => {
     captures.teamsConfigs.push(config);
     class MockTeamsApi {
       readonly _apiClientSettings: unknown;
@@ -438,6 +440,8 @@ describe("Chat SDK endpoint runtime", () => {
       expect(
         Object.keys((captures.chatConfigs[0]?.adapters ?? {}) as object),
       ).toEqual([expectedKey]);
+      const adapters = captures.chatConfigs[0]?.adapters as Record<string, { name?: string }>;
+      expect(adapters[expectedKey]?.name).toBe(expectedKey);
     },
   );
 

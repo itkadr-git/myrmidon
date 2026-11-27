@@ -5,8 +5,6 @@
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
-import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
-import { verifyStoppedNativeSessionForReplacement } from "./services/native-runtime/native-session-executor.js";
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
 import { getActiveFleetClientManager } from "./myrmidon/bot-containers/site-registry.js";
 import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
@@ -30,24 +28,14 @@ import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
 import { warnIfUnsupportedNodeVersion } from "@myrmidon/shared/node-version";
 import { and, eq, sql } from "drizzle-orm";
+import type { createDb } from "@myrmidon/db/client";
+import { formatEmbeddedPostgresError, createEmbeddedPostgresLogBuffer } from "@myrmidon/db/embedded-postgres-error";
 import {
-  createDb,
-  createPostgresJsClient,
-  ensurePostgresDatabase,
-  formatEmbeddedPostgresError,
-  getPostgresDataDirectory,
-  inspectMigrations,
-  applyPendingMigrations,
-  createEmbeddedPostgresLogBuffer,
-  prepareEmbeddedPostgresNativeRuntime,
-  reconcilePendingMigrationHistory,
-  formatDatabaseBackupResult,
-  runDatabaseBackup,
   authUsers,
   companies,
   companyMemberships,
   instanceUserRoles,
-} from "@myrmidon/db";
+} from "@myrmidon/db/schema";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
@@ -344,6 +332,7 @@ async function startServerWithDatabaseTeardown(
   // Error monitoring must be ready before the first request can fail — see
   // sentry.ts.
   await sentryReady;
+
   ensureDecisionSigningSecret();
   let config = loadConfig();
 
@@ -418,8 +407,10 @@ async function startServerWithDatabaseTeardown(
     opts?: EnsureMigrationsOptions,
   ): Promise<MigrationSummary> {
     const autoApply = opts?.autoApply === true;
+    const { inspectMigrations } = await import("@myrmidon/db/migration-inspection");
     let state = await inspectMigrations(connectionString);
     if (state.status === "needsMigrations" && state.reason === "pending-migrations") {
+      const { reconcilePendingMigrationHistory } = await import("@myrmidon/db/migration-init");
       const repair = await reconcilePendingMigrationHistory(connectionString);
       if (repair.repairedMigrations.length > 0) {
         logger.warn(
@@ -445,7 +436,7 @@ async function startServerWithDatabaseTeardown(
       }
   
       logger.info({ pendingMigrations: state.pendingMigrations }, `Applying ${state.pendingMigrations.length} pending migrations for ${label}`);
-      await applyPendingMigrations(connectionString);
+      await (await import("@myrmidon/db/migration-init")).applyPendingMigrations(connectionString);
       return "applied (pending migrations)";
     }
   
@@ -466,7 +457,7 @@ async function startServerWithDatabaseTeardown(
     }
 
     logger.info({ pendingMigrations: state.pendingMigrations }, `Applying ${state.pendingMigrations.length} pending migrations for ${label}`);
-    await applyPendingMigrations(connectionString);
+    await (await import("@myrmidon/db/migration-init")).applyPendingMigrations(connectionString);
     return "applied (pending migrations)";
   }
   
@@ -480,6 +471,7 @@ async function startServerWithDatabaseTeardown(
   const MIGRATION_WAIT_TIMEOUT_MS = 120_000;
   const MIGRATION_WAIT_POLL_MS = 1_000;
   async function awaitMigrationsApplied(connectionString: string): Promise<MigrationSummary> {
+    const { inspectMigrations } = await import("@myrmidon/db/migration-inspection");
     const deadline = Date.now() + MIGRATION_WAIT_TIMEOUT_MS;
     let state = await inspectMigrations(connectionString);
     while (state.status !== "upToDate") {
@@ -612,17 +604,19 @@ async function startServerWithDatabaseTeardown(
       ? await awaitMigrationsApplied(migrationUrl)
       : await ensureMigrations(migrationUrl, "PostgreSQL");
   
-    db = createDb(config.databaseUrl, {
+    const { createStartupDb } = await import("@myrmidon/db/client");
+    db = await createStartupDb(config.databaseUrl, {
       // myrmidon(PROCS-1.2): an api child serves HTTP only and shares the
       // database with its siblings — it gets a smaller pool than the worker.
       maxConnections: processRoleProfile.role === "api" ? 6 : undefined,
       onQuery: () => recordLaneDbQuery(),
     });
-    pluginMigrationDb = config.databaseMigrationUrl ? createDb(config.databaseMigrationUrl) : db;
+    pluginMigrationDb = config.databaseMigrationUrl ? await createStartupDb(config.databaseMigrationUrl) : db;
     logger.info("Using external PostgreSQL via DATABASE_URL/config");
     activeDatabaseConnectionString = config.databaseUrl;
     startupDbInfo = { mode: "external-postgres", connectionString: config.databaseUrl };
   } else {
+    const { ensurePostgresDatabase, getPostgresDataDirectory } = await import("@myrmidon/db/postgres-maintenance");
     const moduleName = "embedded-postgres";
     let EmbeddedPostgres: EmbeddedPostgresCtor;
     try {
@@ -639,6 +633,7 @@ async function startServerWithDatabaseTeardown(
         "Embedded PostgreSQL mode requires dependency `embedded-postgres`. Reinstall dependencies (without omitting required packages), or set DATABASE_URL for external Postgres.",
       );
     }
+    const { prepareEmbeddedPostgresNativeRuntime } = await import("@myrmidon/db/embedded-postgres-native");
     await prepareEmbeddedPostgresNativeRuntime();
   
     const dataDir = resolve(config.embeddedPostgresDataDir);
@@ -825,7 +820,8 @@ async function startServerWithDatabaseTeardown(
       autoApply: shouldAutoApplyFirstRunMigrations,
     });
   
-    db = createDb(embeddedConnectionString, { onQuery: () => recordLaneDbQuery() });
+    const { createStartupDb } = await import("@myrmidon/db/client");
+    db = await createStartupDb(embeddedConnectionString, { onQuery: () => recordLaneDbQuery() });
     pluginMigrationDb = db;
     logger.info("Embedded PostgreSQL ready");
     activeDatabaseConnectionString = embeddedConnectionString;
@@ -1103,6 +1099,7 @@ async function startServerWithDatabaseTeardown(
       const generalSettings = await backupSettingsSvc.getGeneral();
       const retention = generalSettings.backupRetention;
 
+      const { formatDatabaseBackupResult, runDatabaseBackup } = await import("@myrmidon/db/backup-lib");
       const result = await runDatabaseBackup({
         connectionString: activeDatabaseConnectionString,
         backupDir: config.databaseBackupDir,
@@ -1158,7 +1155,7 @@ async function startServerWithDatabaseTeardown(
     ? new ProcessBus(
         // The driver comes through @myrmidon/db: the server package has no
         // direct `postgres` dependency.
-        createPostgresJsClient(activeDatabaseConnectionString, { maxConnections: 1 }),
+        (await import("@myrmidon/db/client")).createPostgresJsClient(activeDatabaseConnectionString, { maxConnections: 1 }),
       )
     : null;
   const settingsApplierDeps = {
@@ -1797,7 +1794,10 @@ async function startServerWithDatabaseTeardown(
         });
       },
     })],
-    ["replacement", () => heartbeat ? reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }) : undefined],
+    ["replacement", () => heartbeat ? reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: async (run) => {
+      const { verifyStoppedNativeSessionForReplacement } = await import("./services/native-runtime/native-session-executor.js");
+      return verifyStoppedNativeSessionForReplacement(db, run);
+    } }) : undefined],
     ["reconciliation_delivery", () => heartbeat ? deliverReconciledExecutions(db, heartbeat.wakeup) : undefined],
     ["status_delivery", () => deliverExecutionStatuses(db)],
     ["automatic_disposition", () => settleUnrecoverableExecutions(db)],
@@ -3501,7 +3501,10 @@ async function startServerWithDatabaseTeardown(
       shutdownAppServices: appShutdown,
       closeHttpListener: () =>
         closeHttpListenerForShutdown({ server, signal, log: logger }),
-      drainPendingRunFailureReports: waitForPendingRunFailureReports,
+      drainPendingRunFailureReports: async () => {
+        const { waitForPendingRunFailureReports } = await import("./services/run-failure-report.js");
+        return waitForPendingRunFailureReports();
+      },
       closeDatabase: closeDatabaseClients,
       stopEmbeddedPostgres,
       shutdownInstrumentation,

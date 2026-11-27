@@ -516,11 +516,6 @@ import {
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
 import {
-  getNativeSessionSteeringState,
-  NativeSessionSteeringError,
-  steerNativeSession,
-} from "../services/native-runtime/native-session-executor.js";
-import {
   buildQueuedCommentQueueSnapshot,
   decideQueuedCommentQueueSteering,
   queuedCommentIdsFromWakePayload,
@@ -8101,7 +8096,8 @@ export function issueRoutes(
       input.issue.conversationAgentId ? "unsupported" : steering.kind !== "probe"
         ? steering.kind
         : input.steeringDisposition
-          ?? (await getNativeSessionSteeringState(steering.steeringRunId)
+          ?? (await import("../services/native-runtime/native-session-executor.js")
+            .then(({ getNativeSessionSteeringState }) => getNativeSessionSteeringState(steering.steeringRunId))
             .then((state) => state.disposition)
             .catch(() => "temporarily_unavailable" as const));
     const wait = queueState?.state === "deferred" ? readObject(readObject(wake?.payload).executionWait) : {};
@@ -20313,6 +20309,9 @@ export function issueRoutes(
       let acknowledgedTurnId: string | null = null;
       let duplicate = false;
       let queue: IssueQueuedCommentQueue;
+      const { NativeSessionSteeringError, steerNativeSession } = await import(
+        "../services/native-runtime/native-session-executor.js"
+      );
       try {
         queue = await db.transaction(async (tx) => {
           // A client can lose the successful response after the final queued

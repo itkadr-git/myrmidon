@@ -463,6 +463,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   const cleanupPids = new Set<number>();
 
   beforeAll(async () => {
+    // Initialize the executor mock before timing recovery operations.
+    await import("../services/native-runtime/native-session-executor.js");
     if (externalTestDatabaseUrl) {
       db = createDb(externalTestDatabaseUrl);
     } else {

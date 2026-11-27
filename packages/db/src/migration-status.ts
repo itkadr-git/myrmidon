@@ -1,4 +1,4 @@
-import { inspectMigrations } from "./client.js";
+import { inspectMigrations } from "./migration-inspection.js";
 import { resolveMigrationConnection } from "./migration-runtime.js";
 
 const jsonMode = process.argv.includes("--json");

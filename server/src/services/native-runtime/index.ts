@@ -2,7 +2,6 @@ export * from "./runtime-mode.js";
 export * from "./completion-contracts.js";
 export * from "./native-execution-input.js";
 export * from "./runtime-context.js";
-export * from "./native-session-executor.js";
 export * from "./native-session-resume.js";
 export * from "./native-interaction-bridge.js";
 export * from "./paperclip-control-plane-port.js";
