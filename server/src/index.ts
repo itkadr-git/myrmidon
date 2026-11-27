@@ -332,15 +332,7 @@ async function startServerWithDatabaseTeardown(
   // Error monitoring must be ready before the first request can fail — see
   // sentry.ts.
   await sentryReady;
-  const {
-    createDb,
-    createPostgresJsClient,
-    ensurePostgresDatabase,
-    getPostgresDataDirectory,
-    inspectMigrations,
-    applyPendingMigrations,
-    reconcilePendingMigrationHistory,
-  } = await import("@myrmidon/db/client");
+
   ensureDecisionSigningSecret();
   let config = loadConfig();
 
@@ -415,8 +407,10 @@ async function startServerWithDatabaseTeardown(
     opts?: EnsureMigrationsOptions,
   ): Promise<MigrationSummary> {
     const autoApply = opts?.autoApply === true;
+    const { inspectMigrations } = await import("@myrmidon/db/migration-inspection");
     let state = await inspectMigrations(connectionString);
     if (state.status === "needsMigrations" && state.reason === "pending-migrations") {
+      const { reconcilePendingMigrationHistory } = await import("@myrmidon/db/migration-init");
       const repair = await reconcilePendingMigrationHistory(connectionString);
       if (repair.repairedMigrations.length > 0) {
         logger.warn(
@@ -442,7 +436,7 @@ async function startServerWithDatabaseTeardown(
       }
   
       logger.info({ pendingMigrations: state.pendingMigrations }, `Applying ${state.pendingMigrations.length} pending migrations for ${label}`);
-      await applyPendingMigrations(connectionString);
+      await (await import("@myrmidon/db/migration-init")).applyPendingMigrations(connectionString);
       return "applied (pending migrations)";
     }
   
@@ -463,7 +457,7 @@ async function startServerWithDatabaseTeardown(
     }
 
     logger.info({ pendingMigrations: state.pendingMigrations }, `Applying ${state.pendingMigrations.length} pending migrations for ${label}`);
-    await applyPendingMigrations(connectionString);
+    await (await import("@myrmidon/db/migration-init")).applyPendingMigrations(connectionString);
     return "applied (pending migrations)";
   }
   
@@ -477,6 +471,7 @@ async function startServerWithDatabaseTeardown(
   const MIGRATION_WAIT_TIMEOUT_MS = 120_000;
   const MIGRATION_WAIT_POLL_MS = 1_000;
   async function awaitMigrationsApplied(connectionString: string): Promise<MigrationSummary> {
+    const { inspectMigrations } = await import("@myrmidon/db/migration-inspection");
     const deadline = Date.now() + MIGRATION_WAIT_TIMEOUT_MS;
     let state = await inspectMigrations(connectionString);
     while (state.status !== "upToDate") {
@@ -609,6 +604,7 @@ async function startServerWithDatabaseTeardown(
       ? await awaitMigrationsApplied(migrationUrl)
       : await ensureMigrations(migrationUrl, "PostgreSQL");
   
+    const { createDb } = await import("@myrmidon/db/client");
     db = createDb(config.databaseUrl, {
       // myrmidon(PROCS-1.2): an api child serves HTTP only and shares the
       // database with its siblings — it gets a smaller pool than the worker.
@@ -620,6 +616,7 @@ async function startServerWithDatabaseTeardown(
     activeDatabaseConnectionString = config.databaseUrl;
     startupDbInfo = { mode: "external-postgres", connectionString: config.databaseUrl };
   } else {
+    const { ensurePostgresDatabase, getPostgresDataDirectory } = await import("@myrmidon/db/postgres-maintenance");
     const moduleName = "embedded-postgres";
     let EmbeddedPostgres: EmbeddedPostgresCtor;
     try {
@@ -823,6 +820,7 @@ async function startServerWithDatabaseTeardown(
       autoApply: shouldAutoApplyFirstRunMigrations,
     });
   
+    const { createDb } = await import("@myrmidon/db/client");
     db = createDb(embeddedConnectionString, { onQuery: () => recordLaneDbQuery() });
     pluginMigrationDb = db;
     logger.info("Embedded PostgreSQL ready");
@@ -1157,7 +1155,7 @@ async function startServerWithDatabaseTeardown(
     ? new ProcessBus(
         // The driver comes through @myrmidon/db: the server package has no
         // direct `postgres` dependency.
-        createPostgresJsClient(activeDatabaseConnectionString, { maxConnections: 1 }),
+        (await import("@myrmidon/db/client")).createPostgresJsClient(activeDatabaseConnectionString, { maxConnections: 1 }),
       )
     : null;
   const settingsApplierDeps = {

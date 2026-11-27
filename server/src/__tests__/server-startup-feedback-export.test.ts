@@ -296,9 +296,18 @@ vi.mock("@myrmidon/db/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@myrmidon/db/client")>()),
   createPostgresJsClient: vi.fn(() => ({ listen: vi.fn(async () => ({ unlisten: vi.fn(async () => undefined) })), unsafe: vi.fn(async () => undefined) })),
   createDb: createDbMock,
+}));
+
+vi.mock("@myrmidon/db/postgres-maintenance", () => ({
   ensurePostgresDatabase: vi.fn(),
   getPostgresDataDirectory: vi.fn(),
+}));
+
+vi.mock("@myrmidon/db/migration-inspection", () => ({
   inspectMigrations: inspectMigrationsMock,
+}));
+
+vi.mock("@myrmidon/db/migration-init", () => ({
   applyPendingMigrations: vi.fn(),
   reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
 }));
