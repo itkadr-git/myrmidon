@@ -3252,7 +3252,7 @@ export class ChatSdkRuntime {
         await preloadDiscordAdapter();
         this.assertReplacementCurrent(options.endpointId, generation);
       }
-      if (options.providerConfig.provider === "microsoft-teams" && !options.adapterFactory) {
+      if (options.providerConfig.provider === "microsoft-teams") {
         await preloadTeamsAdapter();
         this.assertReplacementCurrent(options.endpointId, generation);
       }
