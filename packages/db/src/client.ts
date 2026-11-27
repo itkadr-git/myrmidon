@@ -257,7 +257,7 @@ export async function createStartupDb(url: string, options?: DatabaseClientOptio
 }
 
 function createDbWithDrivers(
-  postgres: typeof import("postgres").default,
+  postgres: ReturnType<typeof loadPostgres>,
   drizzle: typeof import("drizzle-orm/postgres-js").drizzle,
   url: string,
   options?: DatabaseClientOptions,
