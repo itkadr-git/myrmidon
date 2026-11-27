@@ -8,6 +8,8 @@ import { fetchRegistryJson } from "../verify-release-registry-state.mjs";
 
 const scriptPath = fileURLToPath(new URL("../verify-release-registry-state.mjs", import.meta.url));
 const accept = "application/vnd.npm.install-v1+json, application/json;q=0.9";
+const testOptions = { timeout: 10000 };
+const fixtureTimeoutMs = 8000;
 
 async function fixture(run) {
   const requests = [];
@@ -46,18 +48,25 @@ async function fixture(run) {
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const base = `http://127.0.0.1:${server.address().port}`;
+  let timer;
   try {
-    await run({ base, requests, heldRequest, releaseHeld });
+    // The node:test timeout does not unwind a pending fixture callback.
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`registry fixture exceeded ${fixtureTimeoutMs}ms at ${base}`)), fixtureTimeoutMs);
+    });
+    await Promise.race([deadline, run({ base, requests, heldRequest, releaseHeld })]);
   } finally {
+    clearTimeout(timer);
     releaseHeld();
+    const closed = once(server, "close");
     server.close();
     for (const socket of sockets) socket.destroy();
-    await once(server, "close");
+    await closed;
   }
 }
 
 for (const timeoutMs of [25, 50, 100]) {
-  test(`hung headers produce a ${timeoutMs}ms timeout diagnostic`, { timeout: 5000 }, async () => {
+  test(`hung headers produce a ${timeoutMs}ms timeout diagnostic`, testOptions, async () => {
     await fixture(async ({ base, requests }) => {
       const url = `${base}/hang`;
       await assert.rejects(fetchRegistryJson(url, { timeoutMs }), (error) => {
@@ -71,14 +80,14 @@ for (const timeoutMs of [25, 50, 100]) {
   });
 }
 
-test("fast JSON succeeds with a 1000ms timeout", { timeout: 5000 }, async () => {
+test("fast JSON succeeds with a 1000ms timeout", testOptions, async () => {
   await fixture(async ({ base, requests }) => {
     assert.deepEqual(await fetchRegistryJson(`${base}/fast`, { timeoutMs: 1000 }), { ok: true });
     assert.deepEqual(requests, [{ method: "GET", url: "/fast", accept, authorization: undefined }]);
   });
 });
 
-test("aborting one concurrent request does not cancel the other", { timeout: 10000 }, async () => {
+test("aborting one concurrent request does not cancel the other", testOptions, async () => {
   await fixture(async ({ base, requests, heldRequest, releaseHeld }) => {
     const held = fetchRegistryJson(`${base}/held`, { timeoutMs: 5000 });
     held.catch(() => {});
@@ -91,7 +100,7 @@ test("aborting one concurrent request does not cancel the other", { timeout: 100
   });
 });
 
-test("connection reset is not reported as a timeout", { timeout: 5000 }, async () => {
+test("connection reset is not reported as a timeout", testOptions, async () => {
   await fixture(async ({ base, requests }) => {
     await assert.rejects(fetchRegistryJson(`${base}/reset`, { timeoutMs: 1000 }), (error) => {
       assert.doesNotMatch(error.message, /timed out/i);
@@ -102,7 +111,7 @@ test("connection reset is not reported as a timeout", { timeout: 5000 }, async (
   });
 });
 
-test("a request after an abort succeeds", { timeout: 5000 }, async () => {
+test("a request after an abort succeeds", testOptions, async () => {
   await fixture(async ({ base, requests }) => {
     await assert.rejects(fetchRegistryJson(`${base}/hang`, { timeoutMs: 100 }), /timed out/);
     assert.deepEqual(await fetchRegistryJson(`${base}/fast`, { timeoutMs: 1000 }), { ok: true });
@@ -110,7 +119,7 @@ test("a request after an abort succeeds", { timeout: 5000 }, async () => {
   });
 });
 
-test("CLI reads only the expected loopback registry documents", { timeout: 10000 }, async () => {
+test("CLI reads only the expected loopback registry documents", testOptions, async () => {
   await fixture(async ({ base, requests }) => {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/npm|registry|token|auth/i.test(key)));
     env.npm_config_registry = base;
