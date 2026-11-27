@@ -12,6 +12,7 @@ describe("application startup import graph", () => {
       const loaded = new Set();
       const dbInit = new Set();
       const optional = new Set();
+      let nativeExecutorLoaded = false;
       const deferredDbFiles = new Set([
         "backup-lib.ts", "embedded-postgres-native.ts", "migration-init.ts",
         "migration-inspection.ts", "postgres-maintenance.ts", "test-embedded-postgres.ts",
@@ -21,6 +22,7 @@ describe("application startup import graph", () => {
         if (specifier === "postgres" || specifier.includes("/postgres/src/index.js")) loaded.add("postgres");
         if (specifier === "drizzle-orm/postgres-js" || specifier.includes("/drizzle-orm/postgres-js/index.js")) loaded.add("drizzle");
         const result = nextResolve(specifier, context);
+        if (result.url.endsWith("/native-runtime/native-session-executor.ts")) nativeExecutorLoaded = true;
         const dbFile = result.url.split("/packages/db/src/")[1];
         if (deferredDbFiles.has(dbFile)) dbInit.add(dbFile);
         return result;
@@ -28,6 +30,7 @@ describe("application startup import graph", () => {
       await import(${JSON.stringify(entryUrl)});
       if (loaded.size || dbInit.size) throw new Error("database initialization loaded during entry import: " + [...loaded, ...dbInit]);
       if (optional.size) throw new Error("optional dependencies loaded during entry import: " + [...optional]);
+      if (nativeExecutorLoaded) throw new Error("native session executor loaded during entry import");
       const { validateAnnouncementAnimation } = await import(${JSON.stringify(animationUrl)});
       await validateAnnouncementAnimation(new TextEncoder().encode("<p>Animation</p>"));
       if (!optional.has("jsdom")) throw new Error("animation validation did not load jsdom on demand");

@@ -1,4 +1,8 @@
 import { readVerifiedRemoteWorkspaceFile } from "./remote-deliverable-file.js";
+import {
+  NativeCancellationPendingRecoveryError,
+  NativeControllerDetachedForRestartError,
+} from "./native-session-errors.js";
 import { buildNativeFailureBlockedPatch } from "../../myrmidon/native-failure-block.js";
 import { copyBackCodexAuth } from "@myrmidon/adapter-codex-local/server";
 import { createTurnCheckpoint, listTurnCheckpoints, type CreateTurnCheckpointResult } from "../workspace-turn-checkpoints.js";
@@ -185,19 +189,7 @@ class NativeResultPendingFinalizationError extends Error {
   }
 }
 
-export class NativeCancellationPendingRecoveryError extends Error {
-  constructor() {
-    super("native_cancellation_pending_recovery");
-    this.name = "NativeCancellationPendingRecoveryError";
-  }
-}
-
-export class NativeControllerDetachedForRestartError extends Error {
-  constructor() {
-    super("native_controller_detached_for_restart");
-    this.name = "NativeControllerDetachedForRestartError";
-  }
-}
+export { NativeCancellationPendingRecoveryError, NativeControllerDetachedForRestartError };
 
 const activeNativeSessions = new Map<string, ActiveNativeSession>();
 // Shutdown can race provider startup before onSession publishes its handle.
