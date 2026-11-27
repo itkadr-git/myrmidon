@@ -18,13 +18,17 @@ export {
   type MigrationBootstrapResult,
   type Db,
 } from "./client.js";
-export {
-  getEmbeddedPostgresTestSupport,
-  startEmbeddedPostgresTestDatabase,
-  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
-  type EmbeddedPostgresTestDatabase,
-  type EmbeddedPostgresTestSupport,
+export { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "./embedded-postgres-test-timeout.js";
+export type {
+  EmbeddedPostgresTestDatabase,
+  EmbeddedPostgresTestSupport,
 } from "./test-embedded-postgres.js";
+export async function getEmbeddedPostgresTestSupport() {
+  return (await import("./test-embedded-postgres.js")).getEmbeddedPostgresTestSupport();
+}
+export async function startEmbeddedPostgresTestDatabase(tempDirPrefix: string) {
+  return (await import("./test-embedded-postgres.js")).startEmbeddedPostgresTestDatabase(tempDirPrefix);
+}
 export {
   formatDatabaseBackupResult,
   BackupVerificationError,

@@ -4,17 +4,28 @@ import { describe, expect, it } from "vitest";
 
 describe("application database driver loading", () => {
   it("loads the real PostgreSQL and Drizzle drivers only when a database is created", () => {
-    const appUrl = new URL("../app.ts", import.meta.url).href;
+    const entryUrl = new URL("../index.ts", import.meta.url).href;
     const source = `
       import { registerHooks } from "node:module";
       const loaded = new Set();
+      const dbInit = new Set();
+      const deferredDbFiles = new Set([
+        "backup-lib.ts", "embedded-postgres-native.ts", "migration-init.ts",
+        "migration-inspection.ts", "postgres-maintenance.ts", "test-embedded-postgres.ts",
+      ]);
       registerHooks({ resolve(specifier, context, nextResolve) {
         if (specifier === "postgres" || specifier.includes("/postgres/src/index.js")) loaded.add("postgres");
         if (specifier === "drizzle-orm/postgres-js" || specifier.includes("/drizzle-orm/postgres-js/index.js")) loaded.add("drizzle");
-        return nextResolve(specifier, context);
+        const result = nextResolve(specifier, context);
+        const dbFile = result.url.split("/packages/db/src/")[1];
+        if (deferredDbFiles.has(dbFile)) dbInit.add(dbFile);
+        return result;
       }});
-      await import(${JSON.stringify(appUrl)});
-      if (loaded.size) throw new Error("drivers loaded during app import: " + [...loaded]);
+      await import(${JSON.stringify(entryUrl)});
+      if (loaded.size || dbInit.size) throw new Error("database initialization loaded during entry import: " + [...loaded, ...dbInit]);
+      const { getEmbeddedPostgresTestSupport } = await import("@myrmidon/db");
+      await getEmbeddedPostgresTestSupport();
+      if (!dbInit.has("test-embedded-postgres.ts")) throw new Error("test helper did not load on demand");
       const { createStartupDb } = await import("@myrmidon/db/client");
       const db = await createStartupDb("postgres://localhost:5432/unused");
       try {
