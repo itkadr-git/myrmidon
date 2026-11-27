@@ -295,7 +295,7 @@ vi.mock("@myrmidon/db", async (importOriginal) => ({
 vi.mock("@myrmidon/db/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@myrmidon/db/client")>()),
   createPostgresJsClient: vi.fn(() => ({ listen: vi.fn(async () => ({ unlisten: vi.fn(async () => undefined) })), unsafe: vi.fn(async () => undefined) })),
-  createDb: createDbMock,
+  createStartupDb: async (...args: Parameters<typeof createDbMock>) => createDbMock(...args),
 }));
 
 vi.mock("@myrmidon/db/postgres-maintenance", () => ({

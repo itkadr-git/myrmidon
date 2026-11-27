@@ -604,14 +604,14 @@ async function startServerWithDatabaseTeardown(
       ? await awaitMigrationsApplied(migrationUrl)
       : await ensureMigrations(migrationUrl, "PostgreSQL");
   
-    const { createDb } = await import("@myrmidon/db/client");
-    db = createDb(config.databaseUrl, {
+    const { createStartupDb } = await import("@myrmidon/db/client");
+    db = await createStartupDb(config.databaseUrl, {
       // myrmidon(PROCS-1.2): an api child serves HTTP only and shares the
       // database with its siblings — it gets a smaller pool than the worker.
       maxConnections: processRoleProfile.role === "api" ? 6 : undefined,
       onQuery: () => recordLaneDbQuery(),
     });
-    pluginMigrationDb = config.databaseMigrationUrl ? createDb(config.databaseMigrationUrl) : db;
+    pluginMigrationDb = config.databaseMigrationUrl ? await createStartupDb(config.databaseMigrationUrl) : db;
     logger.info("Using external PostgreSQL via DATABASE_URL/config");
     activeDatabaseConnectionString = config.databaseUrl;
     startupDbInfo = { mode: "external-postgres", connectionString: config.databaseUrl };
@@ -820,8 +820,8 @@ async function startServerWithDatabaseTeardown(
       autoApply: shouldAutoApplyFirstRunMigrations,
     });
   
-    const { createDb } = await import("@myrmidon/db/client");
-    db = createDb(embeddedConnectionString, { onQuery: () => recordLaneDbQuery() });
+    const { createStartupDb } = await import("@myrmidon/db/client");
+    db = await createStartupDb(embeddedConnectionString, { onQuery: () => recordLaneDbQuery() });
     pluginMigrationDb = db;
     logger.info("Embedded PostgreSQL ready");
     activeDatabaseConnectionString = embeddedConnectionString;

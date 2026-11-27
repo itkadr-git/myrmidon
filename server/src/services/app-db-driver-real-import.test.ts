@@ -15,8 +15,8 @@ describe("application database driver loading", () => {
       }});
       await import(${JSON.stringify(appUrl)});
       if (loaded.size) throw new Error("drivers loaded during app import: " + [...loaded]);
-      const { createDb } = await import("@myrmidon/db/client");
-      const db = createDb("postgres://localhost:5432/unused");
+      const { createStartupDb } = await import("@myrmidon/db/client");
+      const db = await createStartupDb("postgres://localhost:5432/unused");
       try {
         if (!loaded.has("postgres") || !loaded.has("drizzle")) {
           throw new Error("database creation did not load both drivers: " + [...loaded]);

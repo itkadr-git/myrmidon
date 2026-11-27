@@ -243,8 +243,25 @@ export function createPostgresJsClient(url: string, options?: DatabaseClientOpti
 }
 
 export function createDb(url: string, options?: DatabaseClientOptions) {
-  const postgres = loadPostgres();
-  const drizzle = loadDrizzle();
+  return createDbWithDrivers(loadPostgres(), loadDrizzle(), url, options);
+}
+
+// Startup is already async. Use the ESM loader here so tsx does not compile
+// a second copy of Drizzle through its CommonJS require hook.
+export async function createStartupDb(url: string, options?: DatabaseClientOptions): Promise<Db> {
+  const [{ default: postgres }, { drizzle }] = await Promise.all([
+    import("postgres"),
+    import("drizzle-orm/postgres-js"),
+  ]);
+  return createDbWithDrivers(postgres, drizzle, url, options);
+}
+
+function createDbWithDrivers(
+  postgres: typeof import("postgres").default,
+  drizzle: typeof import("drizzle-orm/postgres-js").drizzle,
+  url: string,
+  options?: DatabaseClientOptions,
+) {
   const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
   const sql = postgres(url, postgresJsOptions(resolved));
   const key = hostPortKeyOrNull(url);
