@@ -78,8 +78,9 @@ vi.mock("@chat-adapter/github", () => ({
   },
 }));
 
-vi.mock("@chat-adapter/teams", () => ({
-  createTeamsAdapter: (config: Record<string, unknown>) => {
+vi.mock("./teams-adapter-loader.js", () => ({
+  preloadTeamsAdapter: vi.fn(async () => {}),
+  createTeamsAdapterLazy: (config: Record<string, unknown>) => {
     captures.teamsConfigs.push(config);
     class MockTeamsApi {
       readonly _apiClientSettings: unknown;

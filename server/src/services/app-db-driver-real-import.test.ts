@@ -9,11 +9,13 @@ describe("application database driver loading", () => {
       import { registerHooks } from "node:module";
       const loaded = new Set();
       const dbInit = new Set();
+      const teamsSdk = new Set();
       const deferredDbFiles = new Set([
         "backup-lib.ts", "embedded-postgres-native.ts", "migration-init.ts",
         "migration-inspection.ts", "postgres-maintenance.ts", "test-embedded-postgres.ts",
       ]);
       registerHooks({ resolve(specifier, context, nextResolve) {
+        if (specifier === "@chat-adapter/teams" || specifier.startsWith("@microsoft/teams.")) teamsSdk.add(specifier);
         if (specifier === "postgres" || specifier.includes("/postgres/src/index.js")) loaded.add("postgres");
         if (specifier === "drizzle-orm/postgres-js" || specifier.includes("/drizzle-orm/postgres-js/index.js")) loaded.add("drizzle");
         const result = nextResolve(specifier, context);
@@ -23,6 +25,7 @@ describe("application database driver loading", () => {
       }});
       await import(${JSON.stringify(entryUrl)});
       if (loaded.size || dbInit.size) throw new Error("database initialization loaded during entry import: " + [...loaded, ...dbInit]);
+      if (teamsSdk.size) throw new Error("Teams SDK loaded during entry import: " + [...teamsSdk]);
       const { getEmbeddedPostgresTestSupport } = await import("@myrmidon/db");
       await getEmbeddedPostgresTestSupport();
       if (!dbInit.has("test-embedded-postgres.ts")) throw new Error("test helper did not load on demand");

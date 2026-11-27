@@ -16,11 +16,7 @@ import {
   createSlackAdapter,
   type SlackAdapterConfig,
 } from "@chat-adapter/slack";
-import {
-  createTeamsAdapter,
-  type TeamsAdapter,
-  type TeamsAdapterConfig,
-} from "@chat-adapter/teams";
+import type { TeamsAdapter, TeamsAdapterConfig } from "@chat-adapter/teams";
 import {
   createTelegramAdapter,
   type TelegramAdapter,
@@ -29,6 +25,7 @@ import {
 } from "@chat-adapter/telegram";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createDiscordAdapterLazy, preloadDiscordAdapter } from "./discord-adapter-loader.js";
+import { createTeamsAdapterLazy, preloadTeamsAdapter } from "./teams-adapter-loader.js";
 import {
   Chat,
   type ActionEvent,
@@ -1476,7 +1473,7 @@ function createProviderAdapter(
         userName: config.userName,
       };
       return scopeMicrosoftTeamsEgress(
-        createTeamsAdapter(adapterConfig),
+        createTeamsAdapterLazy(adapterConfig),
         config.credentials.apiUrl,
         typeof callbacks.onTeamsFileConsent === "function",
       );
@@ -3253,6 +3250,10 @@ export class ChatSdkRuntime {
       this.assertReplacementCurrent(options.endpointId, generation);
       if (options.providerConfig.provider === "discord") {
         await preloadDiscordAdapter();
+        this.assertReplacementCurrent(options.endpointId, generation);
+      }
+      if (options.providerConfig.provider === "microsoft-teams" && !options.adapterFactory) {
+        await preloadTeamsAdapter();
         this.assertReplacementCurrent(options.endpointId, generation);
       }
       const next = createChatSdkEndpointRuntime(options);
