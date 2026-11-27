@@ -2,12 +2,14 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 
-it("reads the migration chain from disk without loading the postgres driver", () => {
+it("reads migration metadata without loading database migration execution", () => {
   const clientUrl = new URL("./client.ts", import.meta.url).href;
   const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
     import { registerHooks } from "node:module";
     const hooks = registerHooks({ resolve(specifier, context, nextResolve) {
-      if (specifier === "postgres") throw new Error("migration metadata loaded postgres");
+      if (specifier === "postgres" || specifier.endsWith("/migration-init.js")) {
+        throw new Error("migration metadata loaded " + specifier);
+      }
       return nextResolve(specifier, context);
     }});
     try {

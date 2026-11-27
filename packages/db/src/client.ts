@@ -261,7 +261,7 @@ export function createDb(url: string, options?: DatabaseClientOptions) {
   );
 }
 
-export type { MigrationState, MigrationHistoryReconcileResult, MigrationChainEntry, MigrationTargetSchema, MigrationBootstrapResult } from "./migration-init.js";
+export type { MigrationState, MigrationHistoryReconcileResult, MigrationBootstrapResult } from "./migration-init.js";
 
 export const getPostgresDataDirectory: typeof import("./postgres-maintenance.js").getPostgresDataDirectory = async (...args) =>
   (await import("./postgres-maintenance.js")).getPostgresDataDirectory(...args);
@@ -269,11 +269,13 @@ export const getPostgresDataDirectory: typeof import("./postgres-maintenance.js"
 export const reconcilePendingMigrationHistory: typeof import("./migration-init.js").reconcilePendingMigrationHistory = async (...args) =>
   (await import("./migration-init.js")).reconcilePendingMigrationHistory(...args);
 
-export const listMigrationChain: typeof import("./migration-init.js").listMigrationChain = async (...args) =>
-  (await import("./migration-init.js")).listMigrationChain(...args);
+export type { MigrationChainEntry, MigrationTargetSchema } from "./migration-metadata.js";
 
-export const loadMigrationTargetSchema: typeof import("./migration-init.js").loadMigrationTargetSchema = async (...args) =>
-  (await import("./migration-init.js")).loadMigrationTargetSchema(...args);
+export const listMigrationChain: typeof import("./migration-metadata.js").listMigrationChain = async (...args) =>
+  (await import("./migration-metadata.js")).listMigrationChain(...args);
+
+export const loadMigrationTargetSchema: typeof import("./migration-metadata.js").loadMigrationTargetSchema = async (...args) =>
+  (await import("./migration-metadata.js")).loadMigrationTargetSchema(...args);
 
 export const inspectMigrations: typeof import("./migration-init.js").inspectMigrations = async (...args) =>
   (await import("./migration-init.js")).inspectMigrations(...args);
