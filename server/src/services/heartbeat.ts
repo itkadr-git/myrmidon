@@ -10340,11 +10340,12 @@ export async function cancelHeartbeatNativeRun(input: {
   if (input.runtimeMode !== "native") {
     return { decision: null, auditId: null };
   }
-  const cancel = input.cancel ?? (await import("./native-runtime/native-session-executor.js")).cancelNativeSession;
-  const cancellation = await cancel(input.runId, input.reason, {
-    db: input.db,
-    scope: "run",
-  });
+  const options = { db: input.db, scope: "run" as const };
+  const cancellation = input.cancel
+    ? await input.cancel(input.runId, input.reason, options)
+    : await (await import("./native-runtime/native-session-executor.js")).cancelNativeSession(
+        input.runId, input.reason, options,
+      );
   if (!cancellation.decision || !cancellation.auditId) {
     throw new Error("native_cancellation_outcome_not_audited");
   }
