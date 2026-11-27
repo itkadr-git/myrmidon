@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import postgres from "postgres";
+import type postgres from "postgres";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 const MIGRATIONS_JOURNAL_JSON = fileURLToPath(new URL("./migrations/meta/_journal.json", import.meta.url));
 
-function createUtilitySql(url: string) {
+async function createUtilitySql(url: string) {
+  const { default: postgres } = await import("postgres");
   return postgres(url, { max: 1, onnotice: () => {} });
 }
 
@@ -56,7 +57,7 @@ export type MigrationState =
     };
 
 export async function getPostgresDataDirectory(url: string): Promise<string | null> {
-  const sql = createUtilitySql(url);
+  const sql = await createUtilitySql(url);
   try {
     const rows = await sql<{ data_directory: string | null }[]>`
       SELECT current_setting('data_directory', true) AS data_directory
@@ -247,7 +248,7 @@ async function applyPendingMigrationsManually(
     journalEntries.map((entry) => [entry.fileName, normalizeFolderMillis(entry.folderMillis)]),
   );
 
-  const sql = createUtilitySql(url);
+  const sql = await createUtilitySql(url);
   try {
     const { migrationTableSchema, columnNames } = await ensureMigrationJournalTable(sql);
     const qualifiedTable = `${quoteIdentifier(migrationTableSchema)}.${quoteIdentifier(DRIZZLE_MIGRATIONS_TABLE)}`;
@@ -636,7 +637,7 @@ export async function reconcilePendingMigrationHistory(
     return { repairedMigrations: [], remainingMigrations: [] };
   }
 
-  const sql = createUtilitySql(url);
+  const sql = await createUtilitySql(url);
   const repairedMigrations: string[] = [];
 
   try {
@@ -809,7 +810,7 @@ export async function loadMigrationTargetSchema(): Promise<MigrationTargetSchema
 }
 
 export async function inspectMigrations(url: string): Promise<MigrationState> {
-  const sql = createUtilitySql(url);
+  const sql = await createUtilitySql(url);
 
   try {
     const availableMigrations = await listMigrationFiles();
@@ -927,7 +928,7 @@ export type MigrationBootstrapResult =
   | { migrated: false; reason: "not-empty-no-migration-journal"; tableCount: number };
 
 export async function migratePostgresIfEmpty(url: string): Promise<MigrationBootstrapResult> {
-  const sql = createUtilitySql(url);
+  const sql = await createUtilitySql(url);
 
   try {
     const migrationTableSchema = await discoverMigrationTableSchema(sql);
@@ -966,7 +967,7 @@ export async function ensurePostgresDatabase(
     throw new Error(`Unsafe database name: ${databaseName}`);
   }
 
-  const sql = createUtilitySql(url);
+  const sql = await createUtilitySql(url);
   try {
     const existing = await sql<{ one: number }[]>`
       select 1 as one from pg_database where datname = ${databaseName} limit 1
@@ -985,7 +986,7 @@ export async function resetPostgresDatabase(
   databaseName: string,
 ): Promise<"reset"> {
   const quotedDatabaseName = quoteIdentifier(databaseName);
-  const sql = createUtilitySql(url);
+  const sql = await createUtilitySql(url);
   try {
     await sql`
       select pg_terminate_backend(pid)
