@@ -263,8 +263,8 @@ export function createDb(url: string, options?: DatabaseClientOptions) {
 
 export type { MigrationState, MigrationHistoryReconcileResult, MigrationChainEntry, MigrationTargetSchema, MigrationBootstrapResult } from "./migration-init.js";
 
-export const getPostgresDataDirectory: typeof import("./migration-init.js").getPostgresDataDirectory = async (...args) =>
-  (await import("./migration-init.js")).getPostgresDataDirectory(...args);
+export const getPostgresDataDirectory: typeof import("./postgres-maintenance.js").getPostgresDataDirectory = async (...args) =>
+  (await import("./postgres-maintenance.js")).getPostgresDataDirectory(...args);
 
 export const reconcilePendingMigrationHistory: typeof import("./migration-init.js").reconcilePendingMigrationHistory = async (...args) =>
   (await import("./migration-init.js")).reconcilePendingMigrationHistory(...args);
@@ -284,10 +284,10 @@ export const applyPendingMigrations: typeof import("./migration-init.js").applyP
 export const migratePostgresIfEmpty: typeof import("./migration-init.js").migratePostgresIfEmpty = async (...args) =>
   (await import("./migration-init.js")).migratePostgresIfEmpty(...args);
 
-export const ensurePostgresDatabase: typeof import("./migration-init.js").ensurePostgresDatabase = async (...args) =>
-  (await import("./migration-init.js")).ensurePostgresDatabase(...args);
+export const ensurePostgresDatabase: typeof import("./postgres-maintenance.js").ensurePostgresDatabase = async (...args) =>
+  (await import("./postgres-maintenance.js")).ensurePostgresDatabase(...args);
 
-export const resetPostgresDatabase: typeof import("./migration-init.js").resetPostgresDatabase = async (...args) =>
-  (await import("./migration-init.js")).resetPostgresDatabase(...args);
+export const resetPostgresDatabase: typeof import("./postgres-maintenance.js").resetPostgresDatabase = async (...args) =>
+  (await import("./postgres-maintenance.js")).resetPostgresDatabase(...args);
 
 export type Db = ReturnType<typeof createDb>;
