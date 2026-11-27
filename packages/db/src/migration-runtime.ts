@@ -1,9 +1,7 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
-import { ensurePostgresDatabase, getPostgresDataDirectory } from "./client.js";
-import { createEmbeddedPostgresLogBuffer, formatEmbeddedPostgresError } from "./embedded-postgres-error.js";
-import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
+
 import { resolveDatabaseTarget } from "./runtime-config.js";
 
 type EmbeddedPostgresInstance = {
@@ -92,6 +90,15 @@ async function ensureEmbeddedPostgresConnection(
   dataDir: string,
   preferredPort: number,
 ): Promise<MigrationConnection> {
+  const [
+    { ensurePostgresDatabase, getPostgresDataDirectory },
+    { createEmbeddedPostgresLogBuffer, formatEmbeddedPostgresError },
+    { prepareEmbeddedPostgresNativeRuntime },
+  ] = await Promise.all([
+    import("./client.js"),
+    import("./embedded-postgres-error.js"),
+    import("./embedded-postgres-native.js"),
+  ]);
   const EmbeddedPostgres = await loadEmbeddedPostgresCtor();
   await prepareEmbeddedPostgresNativeRuntime();
   const selectedPort = await findAvailablePort(preferredPort);
