@@ -85,6 +85,13 @@ export function agentMemoryRoutes(input: MemoryRoutesDeps) {
     };
   }
 
+  router.get("/companies/:companyId/preflight/agents/:id/memory/probe", async (req, res) => {
+    const agent = await loadAgent(req);
+    if (agent.companyId !== req.params.companyId) throw notFound("Agent not found");
+    res.set("Cache-Control", "no-store");
+    res.json(await service.probe(agent.id, agent.companyId));
+  });
+
   router.get("/myrmidon/agents/:id/memory", async (req, res) => {
     const agent = await loadAgent(req);
     res.json(await service.status(agent.id, agent.companyId));

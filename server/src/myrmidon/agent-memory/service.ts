@@ -155,6 +155,26 @@ export function agentMemoryService(deps: MemoryServiceDeps) {
     return { enabled: true, bank, reason: null };
   }
 
+  async function probe(agentId: string, companyId: string) {
+    const bank = await resolveAgentMemoryBank(deps.db, { agentId, companyId });
+    const current = bank ? await settings() : null;
+    const reason = !bank ? "target_unavailable" : !current?.enabled ? "memory_not_enabled" :
+      current.keySecret ? "credential_resolution_required" : "operation_unavailable";
+    return {
+      schemaVersion: 1,
+      mode: "strict_no_secret_reads",
+      checkedAt: new Date().toISOString(),
+      subjectId: agentId,
+      ready: false,
+      checks: [{
+        capability: "authenticatedBankAccess",
+        status: !bank || !current?.enabled ? "FAIL" : "UNSUPPORTED",
+        reason,
+        evidenceOperation: null,
+      }],
+    };
+  }
+
   async function list(
     agentId: string,
     companyId: string,
@@ -258,7 +278,7 @@ export function agentMemoryService(deps: MemoryServiceDeps) {
     }
   }
 
-  return { status, list, exportBank, invalidate, clearBank };
+  return { status, probe, list, exportBank, invalidate, clearBank };
 }
 
 /** The export row: no ids beyond the memory id, no metadata beyond tags. */

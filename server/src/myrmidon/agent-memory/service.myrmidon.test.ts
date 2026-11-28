@@ -231,6 +231,50 @@ describe("parseMemoryPage", () => {
 });
 
 describe("agentMemoryService", () => {
+  it("does not resolve credentials or contact a bank for strict diagnostics", async () => {
+    const { deps, calls, logActivity } = makeDeps();
+    const client = vi.fn(deps.client);
+    const result = await agentMemoryService({ ...deps, client }).probe(AGENT, COMPANY);
+    expect(result).toMatchObject({
+      ready: false,
+      checks: [{ capability: "authenticatedBankAccess", status: "UNSUPPORTED", reason: "credential_resolution_required" }],
+    });
+    expect(deps.readSecretValue).not.toHaveBeenCalled();
+    expect(client).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+    expect(logActivity).not.toHaveBeenCalled();
+  });
+
+  it("does not contact a bank anonymously when no credential is configured", async () => {
+    const { deps, calls, logActivity } = makeDeps();
+    const client = vi.fn(deps.client);
+    const result = await agentMemoryService({
+      ...deps,
+      env: { MYRMIDON_BOT_HINDSIGHT_API_URL: API_URL },
+      client,
+    }).probe(AGENT, COMPANY);
+    expect(result).toMatchObject({
+      ready: false,
+      checks: [{ capability: "authenticatedBankAccess", status: "UNSUPPORTED", reason: "operation_unavailable" }],
+    });
+    expect(deps.readSecretValue).not.toHaveBeenCalled();
+    expect(client).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+    expect(logActivity).not.toHaveBeenCalled();
+  });
+
+  it("does not read settings or contact services for a foreign agent", async () => {
+    const { deps, logActivity } = makeDeps();
+    const readStoredSettings = vi.fn().mockResolvedValue({ apiUrl: API_URL });
+    const client = vi.fn(deps.client);
+    const result = await agentMemoryService({ ...deps, readStoredSettings, client }).probe(AGENT_OTHER_COMPANY, COMPANY);
+    expect(result).toMatchObject({ ready: false, checks: [{ status: "FAIL", reason: "target_unavailable" }] });
+    expect(readStoredSettings).not.toHaveBeenCalled();
+    expect(deps.readSecretValue).not.toHaveBeenCalled();
+    expect(client).not.toHaveBeenCalled();
+    expect(logActivity).not.toHaveBeenCalled();
+  });
+
   it("status reports the bank and enabled flag", async () => {
     const { deps } = makeDeps();
     const service = agentMemoryService(deps);
