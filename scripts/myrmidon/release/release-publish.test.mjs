@@ -697,6 +697,21 @@ describe("publish-github-release.sh: the CI gate", () => {
     assert.equal(mutations(sb), "");
   });
 
+  it("publishes with a queue response over 128 KiB and no competing runs", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const workflow_runs = Array.from({ length: 100 }, (_, id) => ({
+      id, status: "completed", name: "Myrmidon CI", display_title: "x".repeat(2048),
+    }));
+    const response = JSON.stringify({ total_count: workflow_runs.length, workflow_runs });
+    assert.ok(Buffer.byteLength(response) > 128 * 1024);
+    fs.writeFileSync(path.join(sb.dir, "queue-runs.json"), response);
+
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.equal(code, 0, out);
+    assert.match(out, /queue priority holds/);
+    assert.match(mutations(sb), /create tag=myr-v1\.6\.0/);
+  });
+
   it("refuses to publish when the queue-priority runs API is unreadable (fail-closed)", () => {
     // An empty body from the runs listing must NOT be a silent pass: the
     // gate cannot distinguish "no competing runs" from "API failure", so an

@@ -44,6 +44,27 @@ test("queue step evaluates a non-empty competing set", () => {
   assert.match(result.stdout, /no factual dispatch inversion/);
 });
 
+test("queue step accepts a page over 128 KiB with no competing runs", () => {
+  const runs = Array.from({ length: 80 }, () => ({
+    status: "queued", name: "Unrelated CI", display_title: "x".repeat(2048),
+  }));
+  assert.ok(Buffer.byteLength(JSON.stringify(runs)) > 128 * 1024);
+  const result = runStep(runs);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /no pending runs competing/);
+});
+
+test("queue step accepts an aggregated response over 128 KiB even when each page fits", () => {
+  const runs = Array.from({ length: 250 }, () => ({
+    status: "queued", name: "Unrelated CI", display_title: "x".repeat(768),
+  }));
+  assert.ok(Buffer.byteLength(JSON.stringify(runs.slice(0, 100))) < 128 * 1024);
+  assert.ok(Buffer.byteLength(JSON.stringify(runs)) > 128 * 1024);
+  const result = runStep(runs);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /no pending runs competing/);
+});
+
 test("queue step refuses a truncated pending set", () => {
   const result = runStep(Array.from({ length: 301 }, () => ({ status: "queued", name: "Myrmidon CI" })));
   assert.notEqual(result.status, 0);
