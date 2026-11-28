@@ -21,7 +21,7 @@ Update notification settings belong to the company-level `telegramNotify` config
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | `boolean` | `false` | Master switch for update notifications. Disabled by default. |
-| `chatId` | `string \| null` | `null` | Telegram chat ID for direct delivery (used when no active owner-delivery channel exists). |
+| `chatId` | `string \| null` | `null` | Explicit Telegram chat ID for update notifications. |
 | `topicId` | `string \| null` | `null` | Forum topic thread ID inside a Telegram supergroup. |
 
 ### Reading settings without restart
@@ -30,11 +30,9 @@ Update notification settings belong to the company-level `telegramNotify` config
 
 ## Delivery routing
 
-Messages are routed according to the following sequence:
-1. **Active check**: if `updates.enabled === false`, no message is sent and the queue is untouched.
-2. **Owner-delivery (primary channel)**: checks for an active direct owner channel (Telegram DM via user binding or active session). If found, the notification is sent there.
-3. **Direct Telegram send (fallback channel)**: if no active owner-delivery exists, the message is posted to the chat/topic configured in `updates.chatId` and `updates.topicId` via the outbound message queue (`chat_publications`).
-4. If neither channel is configured, nothing is sent and `no_destination_channel` is logged.
+1. If `updates.enabled === false`, no message is queued.
+2. Otherwise, the board resolves only the explicitly configured `updates.chatId` and optional `updates.topicId`. It does not fall back to an active owner's direct conversation.
+3. If the configured destination resolves, the notification is queued in `chat_publications`. If the chat ID is missing or the destination cannot be resolved, nothing is queued and the notifier returns `no_destination_channel`. A missing chat ID is also logged.
 
 ## API management
 
