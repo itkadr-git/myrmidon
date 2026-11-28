@@ -470,16 +470,69 @@ describe("company migration dry run", () => {
     });
     app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
     app.use(errorHandler);
-    const applied = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+    const endpoint = `/api/companies/${source!.id}/migrations`;
+    const input = {
       target: { mode: "new_company", newCompanyName: `Collision destination ${collisionStrategy}` },
-      collisionStrategy, dryRun: false, apply: true, confirm: "exercise collision policy",
-    });
+      collisionStrategy,
+    };
+    const preview = await request(app).post(endpoint).send(input);
+    expect(preview.status).toBe(200);
+    expect(preview.body.sourceCounts.agents).toBe(2);
+    expect(preview.body.counts.agents).toBe(expected.length);
+    expect(preview.body.plannedCounts.agents).toBe(expected.length);
+    expect(preview.body.createdCounts).toBeUndefined();
+    const confirmed = { ...input, dryRun: false, apply: true, confirm: "exercise collision policy" };
+    const applied = await request(app).post(endpoint).send(confirmed);
     expect(applied.status, JSON.stringify(applied.body)).toBe(200);
+    expect(applied.body.sourceCounts).toEqual(preview.body.sourceCounts);
+    expect(applied.body.plannedCounts).toEqual(preview.body.plannedCounts);
+    expect(applied.body.createdCounts.agents).toBe(expected.length);
+    expect(applied.body.counts).toEqual(applied.body.createdCounts);
     const run = await companyTransferRunService.getRun(db, applied.body.runId);
     expect(run?.companyId).toBeTruthy();
     const imported = await db.select().from(agents).where(eq(agents.companyId, run!.companyId!));
     expect(imported.map((row) => row.name).sort()).toEqual(expected);
     expect(await db.select().from(agents).where(eq(agents.companyId, source!.id))).toHaveLength(2);
+    const retry = await request(app).post(endpoint).send(confirmed);
+    expect(retry.status).toBe(200);
+    expect(retry.body).toMatchObject({ runId: applied.body.runId, resume: "already_completed", createdCounts: applied.body.createdCounts });
+  });
+
+  it("rejects skip before writing when an imported agent would lose its manager", async () => {
+    const [source] = await db.insert(companies).values({ name: "Manager collision source", issuePrefix: "MCOLM" }).returning();
+    const managers = await db.insert(agents).values([
+      { companyId: source!.id, name: "Collision Manager" },
+      { companyId: source!.id, name: "Collision Manager" },
+    ]).returning();
+    // Give both colliding managers a report so the test doesn't depend on export ordering.
+    await db.insert(agents).values(managers.map((manager, index) => ({
+      companyId: source!.id, name: `Report ${index + 1}`, reportsTo: manager.id,
+    })));
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+    const endpoint = `/api/companies/${source!.id}/migrations`;
+    const input = { target: { mode: "new_company", newCompanyName: "Manager collision destination" }, collisionStrategy: "skip" };
+    const before = {
+      companies: await db.select().from(companies),
+      runs: await db.select().from(companyTransferRuns),
+      audit: await db.select().from(activityLog),
+      files: await readdir(root, { recursive: true }),
+    };
+    const preview = await request(app).post(endpoint).send(input);
+    expect(preview.status).toBe(200);
+    expect(preview.body.validation.errors).toContain("An agent would lose its reportsTo link because its manager is skipped.");
+    const applied = await request(app).post(endpoint).send({ ...input, dryRun: false, apply: true, confirm: "exercise collision policy" });
+    expect(applied.status).toBe(422);
+    expect(await db.select().from(companies)).toEqual(before.companies);
+    expect(await db.select().from(companyTransferRuns)).toEqual(before.runs);
+    expect(await db.select().from(activityLog)).toEqual(before.audit);
+    expect(await readdir(root, { recursive: true })).toEqual(before.files);
   });
 
   it("applies a confirmed migration once when the same request is retried", async () => {

@@ -2,6 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { companyMigrationService } from "../services/company-migration.js";
 import type { companyPortabilityService } from "../services/company-portability.js";
 
+const emptyPreview = {
+  plan: { agentPlans: [], projectPlans: [], issuePlans: [] },
+  include: { skills: false, agents: false },
+};
+
 describe("migration dry-run warnings", () => {
   it("changes the run key when secret binding metadata changes even if package files do not", async () => {
     const manifest = { agents: [], projects: [], issues: [], skills: [], envInputs: [
@@ -9,7 +14,7 @@ describe("migration dry-run warnings", () => {
     ] };
     const portability = {
       exportBundle: vi.fn().mockResolvedValue({ rootPath: "package", files: {}, manifest, warnings: [] }),
-      previewImport: vi.fn().mockResolvedValue({ errors: [], warnings: [] }),
+      previewImport: vi.fn().mockResolvedValue({ ...emptyPreview, errors: [], warnings: [] }),
     } as unknown as ReturnType<typeof companyPortabilityService>;
     const service = companyMigrationService(portability);
     const first = await service.dryRun("source", {}, "destination");
@@ -20,7 +25,7 @@ describe("migration dry-run warnings", () => {
 
   it("forwards the requested collision strategy to the import planner", async () => {
     const manifest = { agents: [], projects: [], issues: [], skills: [], envInputs: [] };
-    const previewImport = vi.fn().mockResolvedValue({ errors: [], warnings: [] });
+    const previewImport = vi.fn().mockResolvedValue({ ...emptyPreview, errors: [], warnings: [] });
     const portability = {
       exportBundle: vi.fn().mockResolvedValue({ rootPath: "package", files: {}, manifest, warnings: [] }),
       previewImport,
@@ -36,7 +41,7 @@ describe("migration dry-run warnings", () => {
     const portability = {
       exportBundle,
       importBundle,
-      previewImport: vi.fn().mockResolvedValue({ errors: [], warnings: [] }),
+      previewImport: vi.fn().mockResolvedValue({ ...emptyPreview, errors: [], warnings: [] }),
     } as unknown as ReturnType<typeof companyPortabilityService>;
     const input = { include: { projects: true } };
 
@@ -50,7 +55,7 @@ describe("migration dry-run warnings", () => {
     const manifest = { agents: [], projects: [], issues: [], skills: [], envInputs: [] };
     const portability = {
       exportBundle: vi.fn().mockResolvedValue({ rootPath: "package", files: {}, manifest, warnings: ["sensitive export detail"] }),
-      previewImport: vi.fn().mockResolvedValue({ errors: [], warnings: ["sensitive import detail", "another warning"] }),
+      previewImport: vi.fn().mockResolvedValue({ ...emptyPreview, errors: [], warnings: ["sensitive import detail", "another warning"] }),
     } as unknown as ReturnType<typeof companyPortabilityService>;
     const result = await companyMigrationService(portability).dryRun("source", {}, "destination");
     expect(result.validation.warningCounts).toEqual({ export: 1, import: 2 });
@@ -62,7 +67,7 @@ describe("migration dry-run warnings", () => {
     const manifest = { agents: [], projects: [], issues: [], skills: [], envInputs: [] };
     const portability = {
       exportBundle: vi.fn().mockResolvedValue({ rootPath: "package", files: {}, manifest, warnings: [] }),
-      previewImport: vi.fn().mockResolvedValue({ errors: ["sensitive planner detail"], warnings: [] }),
+      previewImport: vi.fn().mockResolvedValue({ ...emptyPreview, errors: ["sensitive planner detail"], warnings: [] }),
     } as unknown as ReturnType<typeof companyPortabilityService>;
     const result = await companyMigrationService(portability).dryRun("source", {}, "destination");
     expect(result.validation.importErrorCount).toBe(1);
@@ -74,7 +79,7 @@ describe("migration dry-run warnings", () => {
       agents: [], projects: [], issues: [], skills: [], envInputs: [],
       blobs: [{ sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", byteSize: 3, contentType: "application/octet-stream" }],
     };
-    const previewImport = vi.fn().mockResolvedValue({ errors: [], warnings: [] });
+    const previewImport = vi.fn().mockResolvedValue({ ...emptyPreview, errors: [], warnings: [] });
     const portability = {
       exportBundle: vi.fn().mockResolvedValue({
         rootPath: "package", manifest, warnings: [],
@@ -109,7 +114,7 @@ describe("migration dry-run warnings", () => {
   it("rejects an undeclared corrupted blob before import preview", async () => {
     const sha = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     const manifest = { agents: [], projects: [], issues: [], skills: [], envInputs: [], blobs: [] };
-    const previewImport = vi.fn().mockResolvedValue({ errors: [], warnings: [] });
+    const previewImport = vi.fn().mockResolvedValue({ ...emptyPreview, errors: [], warnings: [] });
     const portability = {
       exportBundle: vi.fn().mockResolvedValue({
         rootPath: "package", manifest, warnings: [],

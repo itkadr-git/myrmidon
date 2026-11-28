@@ -6,13 +6,13 @@ import type { Db } from "@myrmidon/db";
 import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companySecretBindings, companySkills, companyTransferRuns, documentRevisions, documents, folders, issueAttachments, issueComments, issueDocuments, issueInboxArchives, issueLabels, issueRelations, issues, issueWorkProducts, labels, principalPermissionGrants, projects, projectWorkspaces, routineRevisions, routines, routineTriggers, userSecretDeclarations } from "@myrmidon/db";
 import { and, eq, getTableColumns, getTableName, inArray, sql } from "drizzle-orm";
 import { conflict, notFound, unprocessable } from "../errors.js";
-import { matchesJournaledMigrationRows, archiveJournaledMigrationCompany } from "./company-migration-provenance.js";
+import { matchesJournaledMigrationRows, archiveJournaledMigrationCompany, countJournaledMigrationEntities } from "./company-migration-provenance.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import type { StorageService } from "../storage/types.js";
 import { resolveManagedInstructionsRoot } from "./agent-instructions.js";
 import { companySkillService, resolveManagedSkillsRoot } from "./company-skills.js";
 import type { companyPortabilityService } from "./company-portability.js";
-import { validateMigrationManifest } from "./company-migration-validation.js";
+import { MIGRATION_SKIPPED_MANAGER_ERROR, validateMigrationManifest } from "./company-migration-validation.js";
 import { companyTransferRunService, migrationCompanyFingerprint, migrationRowFingerprint, parseMigrationResource } from "./company-transfer-runs.js";
 import { migrationRunKey } from "./company-migration-key.js";
 import { grantsForHumanRole } from "./company-member-roles.js";
@@ -554,24 +554,38 @@ export function companyMigrationService(portability: Portability) {
       include: input.include,
       collisionStrategy,
     }, { mode: "board_full", planNewCompanyAgentNameCollisions: true }) : null;
+    const importErrors = preview?.errors ?? [];
+    const safeImportErrors = importErrors.includes(MIGRATION_SKIPPED_MANAGER_ERROR) ? [MIGRATION_SKIPPED_MANAGER_ERROR] : [];
+    if (importErrors.some((error) => error !== MIGRATION_SKIPPED_MANAGER_ERROR)) {
+      safeImportErrors.push("Import preview reported errors; inspect the source package.");
+    }
+    const sourceCounts = {
+      agents: exported.manifest.agents.length,
+      projects: exported.manifest.projects.length,
+      issues: exported.manifest.issues.length,
+      skills: exported.manifest.skills.length,
+    };
+    const plannedCounts = preview ? {
+      agents: preview.plan.agentPlans.filter((entry) => entry.action === "create").length,
+      projects: preview.plan.projectPlans.filter((entry) => entry.action === "create").length,
+      issues: preview.plan.issuePlans.filter((entry) => entry.action === "create").length,
+      skills: preview.include.skills || preview.include.agents ? preview.manifest.skills.length : 0,
+    } : null;
     const report = {
       dryRun: true as const,
       runKey: migrationRunKey({ sourceCompanyId: companyId, targetName: newCompanyName, collisionStrategy, exportOptions: input, files: exported.files, secretBindings: validation.secretBindings }),
       validation: {
         ...validation,
-        // Planner messages can contain paths or upstream error details; expose counts only.
-        errorCount: validation.errors.length + (preview?.errors.length ?? 0),
-        importErrorCount: preview?.errors.length ?? 0,
-        errors: [...validation.errors, ...((preview?.errors.length ?? 0) > 0 ? ["Import preview reported errors; inspect the source package."] : [])],
+        // Only expose explicitly allowlisted planner messages, not upstream details.
+        errorCount: validation.errors.length + importErrors.length,
+        importErrorCount: importErrors.length,
+        errors: [...validation.errors, ...safeImportErrors],
         warningCounts: { export: exported.warnings.length, import: preview?.warnings.length ?? 0 },
         importPreviewSkipped: preview === null,
       },
-      counts: {
-        agents: exported.manifest.agents.length,
-        projects: exported.manifest.projects.length,
-        issues: exported.manifest.issues.length,
-        skills: exported.manifest.skills.length,
-      },
+      sourceCounts,
+      plannedCounts,
+      counts: plannedCounts,
     };
     return { exported, report };
   }
@@ -586,15 +600,21 @@ export function companyMigrationService(portability: Portability) {
       const ledger = companyTransferRunService;
       const { run, alreadyCompleted } = await ledger.resumeOrCreateMigration(db, companyId, report.runKey);
       const response = { ...report, runId: run.id, dryRun: false as const };
-      if (alreadyCompleted) return { ...response, status: "completed", resume: "already_completed" };
+      if (alreadyCompleted) {
+        const createdCounts = countJournaledMigrationEntities(run.containerRef);
+        return { ...response, counts: createdCounts, createdCounts, status: "completed", resume: "already_completed" };
+      }
       if (!await ledger.claimApply(db, run.id)) throw conflict("Migration is active or requires recovery.", { runId: run.id });
       try {
         await portability.importBundle({
           source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
           target: { mode: "new_company", newCompanyName }, include: input.include, collisionStrategy,
         }, actorUserId, { mode: "board_full", pauseAutomations: true, transferRunId: run.id });
+        const recorded = await ledger.getRun(db, run.id);
+        if (!recorded) throw new Error("Migration provenance missing");
+        const createdCounts = countJournaledMigrationEntities(recorded.containerRef);
         if (!await ledger.complete(db, run.id)) throw new Error("Migration settlement rejected");
-        return { ...response, status: "completed" };
+        return { ...response, counts: createdCounts, createdCounts, status: "completed" };
       } catch {
         await ledger.releaseApplyClaim(db, run.id, "migration apply failed");
         throw conflict("Migration apply failed; inspect its status and recover the destination before retrying.", { runId: run.id });

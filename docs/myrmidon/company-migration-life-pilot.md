@@ -44,7 +44,7 @@ curl --fail-with-body --silent --show-error \
 
 Do not enable shell tracing or paste the token or full response into the issue.
 Check that `dryRun` is `true`, `validation.errorCount` is zero,
-`validation.importPreviewSkipped` is `false`, and `counts` match the approved
+`validation.importPreviewSkipped` is `false`, and `plannedCounts` match the approved
 inventory. Review `validation.warningCounts` and the identifiers in
 `validation.secretBindings` with their owners; the counts alone do not establish
 that omitted entities or inaccessible sources are empty. A nonzero error count,
@@ -68,7 +68,11 @@ so it is not a rollback ID or evidence that apply occurred.
    and unresolved required secret bindings. Record the `runId`, approved scope,
    entity counts and outcome, without secret values. On a partial failure the
    conflict response carries `details.runId`; do not confuse it with `runKey`.
-4. Compare actual counts and unresolved bindings with the dry-run report. Verify
+4. Compare apply `createdCounts` with dry-run `plannedCounts`, and review unresolved
+   bindings. `sourceCounts` describes the exported scope before collision handling;
+   `counts` mirrors `plannedCounts` on dry-run and `createdCounts` on successful
+   apply, including idempotent retries. A skipped manager blocks apply if any
+   retained agent reports to it. Verify
    that destination agents cannot access the source or other companies and that
    only intended roles and permissions were granted. Provision missing secrets
    through the destination's normal secret-management process.

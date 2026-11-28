@@ -32,6 +32,18 @@ function section(value: unknown): Entry[] {
   return value === undefined ? [] : Object.values(record(value)).map(record);
 }
 
+export function countJournaledMigrationEntities(provenance: unknown) {
+  const ref = record(provenance);
+  return {
+    agents: section(ref.agentProvenance).length,
+    projects: section(ref.projectProvenance).length,
+    // The report counts portable tasks, including recurring tasks imported as routines.
+    issues: (ref.issueProvenance === undefined ? 0 : rows(record(ref.issueProvenance).issues).length)
+      + section(ref.routineProvenance).length,
+    skills: ref.skillProvenance === undefined ? 0 : rows(record(ref.skillProvenance).skills).length,
+  };
+}
+
 // Verify that all imported rows are unchanged and no independent company-scoped
 // data has appeared before removing the imported rows and archiving the company.
 export async function matchesJournaledMigrationRows(tx: Tx, companyId: string, provenance: unknown): Promise<boolean> {

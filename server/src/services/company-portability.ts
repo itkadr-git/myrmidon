@@ -87,6 +87,7 @@ import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
 import { companySkillService } from "./company-skills.js";
 import { companyService } from "./companies.js";
 import { createMigrationAgent, createMigrationIssues, createMigrationLabel, createMigrationProject, createMigrationRoutine, importMigrationSkills, linkMigrationAgent, provisionMigrationOwner, recordMigrationAsset } from "./company-migration.js";
+import { MIGRATION_SKIPPED_MANAGER_ERROR } from "./company-migration-validation.js";
 import { companyTransferRunService } from "./company-transfer-runs.js";
 import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
@@ -5112,6 +5113,13 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         existingAgentId: existing.id,
         reason: "Existing slug matched; rename strategy.",
       });
+    }
+
+    if (input.target.mode === "new_company" && (options?.planNewCompanyAgentNameCollisions || options?.transferRunId)) {
+      const skipped = new Set(agentPlans.filter((entry) => entry.action === "skip").map((entry) => entry.slug));
+      if (selectedAgents.some((agent) => !skipped.has(agent.slug) && agent.reportsToSlug && skipped.has(agent.reportsToSlug))) {
+        errors.push(MIGRATION_SKIPPED_MANAGER_ERROR);
+      }
     }
 
     if (include.projects) {

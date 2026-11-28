@@ -193,3 +193,5 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
   }));
   return { errors, secretBindings };
 }
+
+export const MIGRATION_SKIPPED_MANAGER_ERROR = "An agent would lose its reportsTo link because its manager is skipped.";
