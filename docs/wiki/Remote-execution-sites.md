@@ -45,6 +45,14 @@ In Myrmidon, the board running on `vm-core` is the single management plane (`tar
 
 ---
 
+### 1.2 Site network profile and gateway HTTP
+
+An owner can update the registered site profile with `PATCH /api/myrmidon/fleet/sites/:name?companyId=<companyId>`. The JSON fields `privateNetwork` and `tunnel` are booleans; `gatewayPortStart` and `gatewayPortEnd` define the inclusive gateway port range; both endpoints must be integers from 1024 to 65535, with start no greater than end. The update preserves profile fields that are not supplied. If the site has no stored range, supply both endpoints. A range must also accommodate the site's `maxBots` capacity.
+
+Setting either network flag to `true` requires the site address to be a private IP literal (RFC 1918, RFC 6598 shared address space, or loopback) or `localhost`; otherwise the API returns 400. To change a flagged site to a different kind of address, clear both flags in the same request.
+
+For a bot gateway on a remote site, the Hermes adapter permits plain HTTP under the site-based rule only when the site is active and flagged private, the site and gateway hostnames match and are private IP literals or `localhost`, and the gateway port is inside the site's stored range. Without a stored range, this rule permits no plain-HTTP port. A card's `fleetSite` or `fleetSites` fields do not replace the site registry. This gateway rule is separate from the site-agent transport described below.
+
 ## 2. Site-Agent API Contract
 
 All calls use HTTPS with mutual TLS and a bearer authorization header:
