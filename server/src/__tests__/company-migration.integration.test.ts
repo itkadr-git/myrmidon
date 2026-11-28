@@ -536,6 +536,52 @@ describe("company migration dry run", () => {
     expect(await readdir(root, { recursive: true })).toEqual(before.files);
   });
 
+  it.each([
+    { reference: "project lead", prefix: "MCOLP", error: "A project would lose its lead because its lead agent is skipped." },
+    { reference: "task assignee", prefix: "MCOLT", error: "A task would lose its assignee because its assigned agent is skipped." },
+  ] as const)("rejects skip before writing when an imported $reference would be lost", async ({ reference, prefix, error }) => {
+    const [source] = await db.insert(companies).values({ name: `Collision source for ${reference}`, issuePrefix: prefix }).returning();
+    const workers = await db.insert(agents).values([
+      { companyId: source!.id, name: "Collision Worker" },
+      { companyId: source!.id, name: "Collision Worker" },
+    ]).returning();
+    // Reference both agents so the test is independent of which one the planner skips.
+    if (reference === "project lead") {
+      await db.insert(projects).values(workers.map((worker, index) => ({
+        companyId: source!.id, name: `Project ${index + 1}`, leadAgentId: worker.id,
+      })));
+    } else {
+      await db.insert(issues).values(workers.map((worker, index) => ({
+        companyId: source!.id, title: `Task ${index + 1}`, assigneeAgentId: worker.id,
+      })));
+    }
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+    const endpoint = `/api/companies/${source!.id}/migrations`;
+    const input = { target: { mode: "new_company", newCompanyName: `Collision destination for ${reference}` }, collisionStrategy: "skip" };
+    const before = {
+      companies: await db.select().from(companies),
+      runs: await db.select().from(companyTransferRuns),
+      audit: await db.select().from(activityLog),
+      files: await readdir(root, { recursive: true }),
+    };
+    const preview = await request(app).post(endpoint).send(input);
+    expect(preview.status, JSON.stringify(preview.body)).toBe(200);
+    expect(preview.body.validation.errors).toContain(error);
+    const applied = await request(app).post(endpoint).send({ ...input, dryRun: false, apply: true, confirm: "exercise collision policy" });
+    expect(applied.status, JSON.stringify(applied.body)).toBe(422);
+    expect(await db.select().from(companies)).toEqual(before.companies);
+    expect(await db.select().from(companyTransferRuns)).toEqual(before.runs);
+    expect(await db.select().from(activityLog)).toEqual(before.audit);
+    expect(await readdir(root, { recursive: true })).toEqual(before.files);
+  });
+
   it("applies a confirmed migration once when the same request is retried", async () => {
     const [source] = await db.insert(companies).values({ name: "Apply retry source", issuePrefix: "MRA" }).returning();
     await db.insert(agents).values({ companyId: source!.id, name: "Apply retry worker" });
