@@ -1703,8 +1703,13 @@ describe("company migration dry run", () => {
     expect((await ledger.getRun(db, run.id))?.containerRef).toMatchObject({
       skillProvenance: { skills: [{ id: rows[0]!.id, fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) }], folders: [] },
     });
+    const journal = await ledger.getRun(db, run.id);
     await expect(importMigrationSkills(db, run.id, destination.id, files)).rejects.toThrow("empty skill library");
+    await expect(importMigrationSkills(db, run.id, destination.id, {
+      "skills/other/SKILL.md": "---\nname: Another skill\nslug: other\n---\n\n# Another skill\n",
+    })).rejects.toThrow("empty skill library");
     expect(await db.select().from(companySkills).where(scope)).toEqual(rows);
+    expect(await ledger.getRun(db, run.id)).toEqual(journal);
   });
 
   it("does not leave a partially imported routine when a later trigger fails", async () => {

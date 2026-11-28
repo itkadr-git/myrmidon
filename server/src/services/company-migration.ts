@@ -365,7 +365,16 @@ export async function getMigrationStatus(db: Db, sourceCompanyId: string, runId:
   };
 }
 
+async function assertEmptyMigrationSkillLibrary(db: Pick<Db, "select">, companyId: string) {
+  const existingSkills = await db.select({ id: companySkills.id }).from(companySkills).where(eq(companySkills.companyId, companyId)).limit(1);
+  const existingFolders = await db.select({ id: folders.id }).from(folders).where(eq(folders.companyId, companyId)).limit(1);
+  if (existingSkills.length || existingFolders.length) throw conflict("Migration requires an empty skill library and folder tree.");
+}
+
 export async function importMigrationSkills(db: Db, runId: string, companyId: string, files: Record<string, string>) {
+  // Reject an existing library before reserving or publishing files. Recheck
+  // under lock before importing rows: the file journal must commit separately.
+  await assertEmptyMigrationSkillLibrary(db, companyId);
   await companyTransferRunService.reserveMigrationManagedDirectory(db, runId, companyId, { kind: "company_skills" });
   const migrationSkillLocations = await companySkillService(db).prepareMigrationSkillFiles(
     companyId, files, migrationManagedFileWriter(db, runId, companyId, { kind: "company_skills" }),
@@ -375,10 +384,8 @@ export async function importMigrationSkills(db: Db, runId: string, companyId: st
     const [claim] = await tx.select({ id: companyTransferRuns.id }).from(companyTransferRuns).where(ownedRun).for("update");
     if (!claim) throw new Error("Migration skill recording rejected");
     await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, companyId)).for("update");
-    const existingSkills = await tx.select({ id: companySkills.id }).from(companySkills).where(eq(companySkills.companyId, companyId)).limit(1);
+    await assertEmptyMigrationSkillLibrary(tx, companyId);
     const folderScope = eq(folders.companyId, companyId);
-    const existingFolders = await tx.select({ id: folders.id }).from(folders).where(folderScope).limit(1);
-    if (existingSkills.length || existingFolders.length) throw conflict("Migration requires an empty skill library and folder tree.");
 
     const imported = await companySkillService(tx as unknown as Db).importPackageFiles(companyId, files, { skipInventoryRefresh: true, migrationSkillLocations });
     const skills = await tx.select({ id: companySkills.id, fingerprint: migrationRowFingerprint(getTableName(companySkills)) })
