@@ -3,7 +3,7 @@ import { lstat, rm } from "node:fs/promises";
 import path from "node:path";
 import type { CompanyPortabilityExport } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
-import { assets, companyLogos, companyMemberships, companyTransferRuns, principalPermissionGrants } from "@myrmidon/db";
+import { assets, companyLogos, companyMemberships, companyTransferRuns, issueAttachments, issueComments, issues, principalPermissionGrants } from "@myrmidon/db";
 import { and, eq, getTableColumns, sql } from "drizzle-orm";
 import { conflict, notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
@@ -67,10 +67,13 @@ export async function recordMigrationAsset(
   runId: string,
   companyId: string,
   data: Omit<typeof assets.$inferInsert, "companyId">,
-  logo: boolean,
+  placement: boolean | { issueId: string; issueCommentId: string | null },
 ) {
+  const attachment = typeof placement === "object" ? placement : null;
+  const logo = placement === true;
+  const namespace = attachment ? `issues/${attachment.issueId}` : `assets/${logo ? "companies" : "general"}`;
   const resource = parseMigrationResource(companyId, data.objectKey);
-  if (resource?.kind !== "object" || !data.objectKey.startsWith(`${companyId}/assets/${logo ? "companies" : "general"}/`)) {
+  if (resource?.kind !== "object" || !data.objectKey.startsWith(`${companyId}/${namespace}/`)) {
     throw new Error("Invalid migration asset reservation");
   }
   return db.transaction(async (tx) => {
@@ -83,6 +86,17 @@ export async function recordMigrationAsset(
       .from(companyTransferRuns).where(ownedRun).for("update");
     if (!claim) throw new Error("Migration asset recording rejected");
 
+    if (attachment) {
+      const [issue] = await tx.select({ id: issues.id }).from(issues)
+        .where(and(eq(issues.id, attachment.issueId), eq(issues.companyId, companyId))).for("share");
+      if (!issue) throw new Error("Migration attachment issue does not belong to the destination");
+      if (attachment.issueCommentId !== null) {
+        const [comment] = await tx.select({ id: issueComments.id }).from(issueComments)
+          .where(and(eq(issueComments.id, attachment.issueCommentId), eq(issueComments.issueId, issue.id), eq(issueComments.companyId, companyId))).for("share");
+        if (!comment) throw new Error("Migration attachment comment does not belong to the issue");
+      }
+    }
+
     const [created] = await tx.insert(assets).values({ ...data, companyId }).returning({
       ...getTableColumns(assets), fingerprint: migrationRowFingerprint("assets"),
     });
@@ -93,7 +107,15 @@ export async function recordMigrationAsset(
     }) : [];
     if (logo && logoRows.length !== 1) throw new Error("Migration logo was not created");
 
-    const provenance = { [data.objectKey]: { id: asset.id, fingerprint, logo: logoRows[0] ?? null } };
+    const attachmentRows = attachment ? await tx.insert(issueAttachments).values({
+      companyId, assetId: asset.id, issueId: attachment.issueId, issueCommentId: attachment.issueCommentId,
+    }).returning({ id: issueAttachments.id, fingerprint: migrationRowFingerprint("issue_attachments") }) : [];
+    if (attachment && attachmentRows.length !== 1) throw new Error("Migration attachment was not created");
+
+    const provenance = { [data.objectKey]: {
+      id: asset.id, fingerprint, logo: logoRows[0] ?? null,
+      ...(attachment ? { attachment: attachmentRows[0] } : {}),
+    } };
     const [saved] = await tx.update(companyTransferRuns).set({
       containerRef: sql`${companyTransferRuns.containerRef} || jsonb_build_object('assetProvenance', coalesce(${companyTransferRuns.containerRef}->'assetProvenance', '{}'::jsonb) || ${JSON.stringify(provenance)}::jsonb)`,
       updatedAt: new Date(),

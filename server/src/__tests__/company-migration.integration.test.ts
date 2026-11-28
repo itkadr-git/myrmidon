@@ -2,7 +2,7 @@ import express from "express";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companyTransferRuns, createDb, issueComments, issues, principalPermissionGrants, projects } from "@myrmidon/db";
+import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companyTransferRuns, createDb, issueAttachments, issueComments, issues, principalPermissionGrants, projects } from "@myrmidon/db";
 
 import { companyRoutes } from "../routes/companies.js";
 import { companyService } from "../services/companies.js";
@@ -1540,6 +1540,47 @@ describe("company migration dry run", () => {
     expect(await ledger.getRun(db, run.id)).toEqual(before);
     expect(before?.completedParts).toContain(second.objectKey);
     expect((await storage.headObject(destination.id, second.objectKey)).exists).toBe(true);
+  });
+
+  it("records a reserved issue attachment and its asset together, rejecting a comment on a different issue", async () => {
+    const ledger = companyTransferRunService;
+    const { run } = await ledger.resumeOrCreateMigration(db, "attachment-source", "attachment-provenance");
+    expect(await ledger.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Attachment provenance destination" }, { transferRunId: run.id });
+    const [issue, otherIssue] = await db.insert(issues).values([
+      { companyId: destination.id, title: "Attachment task" },
+      { companyId: destination.id, title: "Other attachment task" },
+    ]).returning();
+    const [comment] = await db.insert(issueComments).values({
+      companyId: destination.id, issueId: otherIssue!.id, body: "Different task comment",
+    }).returning();
+    const storage = createStorageService(createLocalDiskStorageProvider(root));
+    const stored = await storage.putFile({
+      companyId: destination.id, namespace: `issues/${issue!.id}`, originalFilename: "fixture.txt",
+      contentType: "text/plain", body: Buffer.from("synthetic attachment"),
+      beforeWrite: (key) => ledger.reserveMigrationObject(db, run.id, destination.id, key),
+    });
+    const before = await ledger.getRun(db, run.id);
+    await expect(recordMigrationAsset(db, run.id, destination.id, stored, {
+      issueId: issue!.id, issueCommentId: comment!.id,
+    })).rejects.toThrow("Migration attachment comment does not belong to the issue");
+    expect(await db.select().from(assets).where(eq(assets.companyId, destination.id))).toEqual([]);
+    expect(await db.select().from(issueAttachments).where(eq(issueAttachments.companyId, destination.id))).toEqual([]);
+    expect(await ledger.getRun(db, run.id)).toEqual(before);
+    expect(before?.completedParts).toContain(stored.objectKey);
+    expect((await storage.headObject(destination.id, stored.objectKey)).exists).toBe(true);
+
+    const asset = await recordMigrationAsset(db, run.id, destination.id, stored, {
+      issueId: issue!.id, issueCommentId: null,
+    });
+    const [attachment] = await db.select().from(issueAttachments).where(eq(issueAttachments.companyId, destination.id));
+    expect(attachment).toMatchObject({ assetId: asset.id, issueId: issue!.id, issueCommentId: null });
+    expect((await ledger.getRun(db, run.id))?.containerRef).toMatchObject({
+      assetProvenance: { [stored.objectKey]: {
+        id: asset.id, fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+        attachment: { id: attachment!.id, fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      } },
+    });
   });
 
   it("records destination provenance before a failure creating its owner membership", async () => {

@@ -6408,7 +6408,13 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         if (commentRows.length > 0) await issues.addImportedComments(commentRows);
         if (documentRows.length > 0) await documentsSvc.createIssueDocumentsForImport(documentRows);
         if (workProductRows.length > 0) await workProductsSvc.createManyForImport(workProductRows);
-        if (attachmentRows.length > 0) await issues.addImportedAttachments(attachmentRows);
+        if (migrationRunId) {
+          for (const { companyId, issueId, issueCommentId, ...assetData } of attachmentRows) {
+            await recordMigrationAsset(db, migrationRunId, companyId, assetData, { issueId, issueCommentId });
+          }
+        } else if (attachmentRows.length > 0) {
+          await issues.addImportedAttachments(attachmentRows);
+        }
 
         if (blockedByBySlug.size > 0) {
           const acceptedAdjacency = new Map<string, string[]>();
