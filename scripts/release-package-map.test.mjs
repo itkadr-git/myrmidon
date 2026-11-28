@@ -24,6 +24,14 @@ test("release package list only contains CI-enrolled packages", () => {
   assert.ok(enabledPackages.every((pkg) => pkg.publishFromCi === true));
 });
 
+test("corpus is published between its database dependency and the server", () => {
+  const names = getReleasePackages().map((pkg) => pkg.name);
+  const corpus = names.indexOf("@myrmidon/corpus");
+  assert.ok(corpus > names.indexOf("@myrmidon/db"));
+  assert.ok(names.indexOf("@myrmidon/db") >= 0);
+  assert.ok(names.indexOf("@myrmidon/server") > corpus);
+});
+
 test("release package list publishes the installable channel entrypoint last", () => {
   const enabledPackages = getReleasePackages();
 
