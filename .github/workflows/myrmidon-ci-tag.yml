@@ -774,15 +774,15 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Load release gate logic from the build commit
+      - name: Load release gate logic from the workflow commit
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          BUILD_REF: ${{ inputs.tag || github.sha }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
-          gh api -H "Accept: application/vnd.github.raw" "repos/$REPO/contents/scripts/myrmidon/release/release-jobs.mjs?ref=$BUILD_REF" > "$RUNNER_TEMP/release-jobs.mjs"
+          gh api -H "Accept: application/vnd.github.raw" "repos/$REPO/contents/scripts/myrmidon/release/release-jobs.mjs?ref=$WORKFLOW_SHA" > "$RUNNER_TEMP/release-jobs.mjs"
 
       - name: Verify queue latency
         if: ${{ needs.reuse-check.outputs.mode == 'full' }}
@@ -791,7 +791,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
-          BUILD_REF: ${{ inputs.tag || github.sha }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
           echo "Checking CI result start latency relative to predecessor jobs (fail-closed gate; a runner-queue delay is only a warning)..."
@@ -807,10 +807,17 @@ jobs:
             echo "ERROR: Unable to fetch job data from GitHub API after retries" >&2
             exit 1
           fi
+          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ]; then
+            export CI_ATTEMPT_STARTED_AT
+            CI_ATTEMPT_STARTED_AT="$(gh api "repos/$REPO/actions/runs/$RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --jq '.run_started_at // empty')"
+            [ -n "$CI_ATTEMPT_STARTED_AT" ] || { echo 'ERROR: Missing attempt start timestamp' >&2; exit 1; }
+          fi
+          # No checkout: it fails on some self-hosted runners. Read the script of this commit through the API.
+          gh api -H "Accept: application/vnd.github.raw" "repos/$REPO/contents/scripts/myrmidon/ci/queue-metrics.mjs?ref=$WORKFLOW_SHA" > "$RUNNER_TEMP/queue-metrics.mjs"
 
           # OPE-13002: derive the predecessor set from THIS build's own
-          # workflow file (read at the release tag — never from the
-          # default branch, which may have drifted since the tag was cut)
+          # workflow file (read at the SHA that defines this workflow, even
+          # for manual dispatch against a different build target)
           # via release-jobs.mjs instead of hardcoding job names. The set is
           # the CI result gate job's transitive `needs:` closure — exactly
           # the jobs the gate waits for. A workflow job that is NOT in that
@@ -820,21 +827,23 @@ jobs:
           # or incomplete job set fails closed: if a lane the gate declares
           # is absent from this run, the workflow file is not the one this
           # build started from.
-          workflow_yaml="$(gh api -H "Accept: application/vnd.github.raw" "repos/$REPO/contents/.github/workflows/myrmidon-ci-tag.yml?ref=$BUILD_REF")"
+          workflow_yaml="$(gh api -H "Accept: application/vnd.github.raw" "repos/$REPO/contents/.github/workflows/myrmidon-ci-tag.yml?ref=$WORKFLOW_SHA")"
           if [ -z "$workflow_yaml" ]; then
-            echo "ERROR: could not read .github/workflows/myrmidon-ci-tag.yml from the tag commit to derive the build job set" >&2
+            echo "ERROR: could not read .github/workflows/myrmidon-ci-tag.yml from the workflow commit to derive the build job set" >&2
             exit 1
           fi
 
-          res="$(JOBS_JSON="$(cat "$jobs_file")" BUILD_JOBS_WORKFLOW_YAML="$workflow_yaml" node --input-type=module -e '
+          JOBS_FILE="$jobs_file" BUILD_JOBS_WORKFLOW_YAML="$workflow_yaml" node --input-type=module -e '
             const { gateDependencyJobs, matchesJob, gateState } = await import(`file://${process.env.RUNNER_TEMP}/release-jobs.mjs`);
+            const { readFileSync } = await import("node:fs");
+            const { calculateCiResultLatency } = await import(`file://${process.env.RUNNER_TEMP}/queue-metrics.mjs`);
             const yaml = process.env.BUILD_JOBS_WORKFLOW_YAML;
             const build = gateDependencyJobs(yaml, "ci-result");
             if (build.length === 0) {
               console.error("ERROR: the CI result gate has no dependency jobs (empty job set)");
               process.exit(1);
             }
-            const jobs = JSON.parse(process.env.JOBS_JSON).jobs;
+            const jobs = JSON.parse(readFileSync(process.env.JOBS_FILE, "utf8")).jobs;
             const observed = jobs
               .filter((j) => j.name !== "CI result")
               .map((j) => ({ name: j.name, conclusion: j.conclusion }));
@@ -850,33 +859,25 @@ jobs:
             if (state.foreign.length > 0) {
               console.error(`NOTE: foreign jobs observed and ignored: ${state.foreign.join(", ")}`);
             }
-            const ciStarts = jobs.filter((j) => j.name === "CI result" && j.started_at).map((j) => new Date(j.started_at).getTime());
-            const predEnds = jobs
-              .filter((j) => j.name !== "CI result" && j.completed_at && build.some((b) => matchesJob(j.name, b)))
-              .map((j) => new Date(j.completed_at).getTime());
-            if (ciStarts.length === 0 || predEnds.length === 0) {
-              console.error("ERROR: Could not compute start latency: missing start/completion timestamps");
+            const allowedPredecessors = [...new Set(jobs.map((j) => j.name))]
+              .filter((name) => build.some((expected) => matchesJob(name, expected)));
+            const result = calculateCiResultLatency(jobs, {
+              workflow: "tag",
+              allowedPredecessors,
+              attempt: Number(process.env.GITHUB_RUN_ATTEMPT || 1),
+              attemptStartedAt: process.env.CI_ATTEMPT_STARTED_AT,
+            });
+            if (result.notApplicable) {
+              console.log("NOT_APPLICABLE: no predecessor completed in the current workflow attempt.");
+            } else if (!result.passed) {
+              console.error(`ERROR: CI result had ${result.residualLatencySeconds}s of latency not explained by the queue (max ${result.maxLatencySec}s).`);
               process.exit(1);
+            } else if (result.queueDelayed) {
+              console.log(`::warning::CI result latency ${result.latencySeconds}s includes ${result.queueWaitSeconds}s waiting for a runner; residual ${result.residualLatencySeconds}s.`);
+            } else {
+              console.log(`PASS: CI result started ${result.latencySeconds}s after ${result.lastPredecessorJob} completed.`);
             }
-            const ciStart = Math.max(...ciStarts);
-            const lastPredEnd = Math.max(...predEnds);
-            console.log(Math.round((ciStart - lastPredEnd) / 1000));
-          ')" || {
-            echo "ERROR: failed to derive the build job set or latency from the workflow" >&2
-            exit 1
-          }
-
-          if [ -z "$res" ]; then
-            echo "ERROR: Could not compute start latency: missing start/completion timestamps" >&2
-            exit 1
-          fi
-
-          echo "CI result started ${res}s after the last predecessor job finished."
-          if [ "$res" -gt 120 ]; then
-            echo "ERROR: CI result start latency exceeded threshold: ${res}s > 120s" >&2
-            exit 1
-          fi
-          echo "PASS: CI result started within 2 minutes (${res}s <= 120s)."
+          '
 
       - name: Verify release build queue priority
         shell: bash

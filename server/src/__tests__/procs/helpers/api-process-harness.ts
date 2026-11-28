@@ -235,9 +235,8 @@ export async function startApiProcess(
   return handle;
 }
 
-/** Polls `/api/health` until it answers 200. Any other answer (or a refused
- * connection) means "not listening yet", which is the normal state during a
- * cold boot. */
+/** Polls `/api/health` until startup recovery reports ready. HTTP 200 alone
+ * is only liveness and can precede the registry write. */
 export async function waitForReady(
   handle: Pick<ApiProcessHandle, "baseUrl" | "alive" | "output">,
   timeoutMs: number,
@@ -252,8 +251,13 @@ export async function waitForReady(
     }
     try {
       const response = await fetch(`${handle.baseUrl}/api/health`);
-      if (response.status === 200) return;
-      lastError = `HTTP ${response.status}`;
+      if (response.status === 200) {
+        const body = await response.json() as { status?: string };
+        if (body.status === "ok") return;
+        lastError = `health status ${body.status ?? "missing"}`;
+      } else {
+        lastError = `HTTP ${response.status}`;
+      }
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
     }

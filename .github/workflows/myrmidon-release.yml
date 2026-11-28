@@ -18,20 +18,71 @@ on:
         description: Release tag to (re-)publish, e.g. myr-v1.5.0
         required: true
         type: string
+      prepare_rc:
+        description: Prepare an RC manifest artifact only (no verdict fetch or publication)
+        required: false
+        type: boolean
+        default: false
 
 permissions: {}
 
 concurrency:
   # One publish per tag: a re-run must never race the original run.
-  group: myrmidon-release-${{ inputs.tag || github.ref_name }}
+  group: myrmidon-release-${{ inputs.prepare_rc && 'prepare-' || '' }}${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
+  prepare-rc:
+    if: ${{ github.repository == 'itkadr-git/myrmidon' && github.event_name == 'workflow_dispatch' && inputs.prepare_rc }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Validate RC tag input
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: '[[ "$TAG" =~ ^myr-v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          path: rc-tag
+          persist-credentials: false
+      - name: Verify tag image builds and prepare the installer manifest
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha="$(git -C rc-tag rev-parse 'HEAD^{commit}')"
+          for workflow in myrmidon-image myrmidon-dockergate myrmidon-fleetd myrmidon-bot-image; do
+            gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow.yml/runs" \
+              -f head_sha="$sha" -f branch="$TAG" -f event=push -F per_page=1 \
+              | jq -e --arg sha "$sha" --arg tag "$TAG" --arg repo "$GITHUB_REPOSITORY" '
+                  .workflow_runs[0] | .head_sha == $sha and .head_branch == $tag
+                  and .head_repository.full_name == $repo and .event == "push"
+                  and .status == "completed" and .conclusion == "success"
+                ' >/dev/null || { echo "No successful image build for $workflow at $TAG ($sha)" >&2; exit 1; }
+          done
+          manifest="$RUNNER_TEMP/release-components.json"
+          node scripts/myrmidon/release/release-body.mjs --prepare-rc "${TAG#myr-v}" --commit "$sha" --manifest-out "$manifest"
+          scripts/myrmidon/deploy/release-manifest.sh --from-file "$manifest" --expect-tag "$TAG" --expect-commit "$sha"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-components-${{ inputs.tag || github.ref_name }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-components.json
+          if-no-files-found: error
+
   publish:
     name: publish
     # RELEASE-PUBLISH-WAIT: the tag input wins over ref_name, and the
     # release tag pattern accepts -rc.N suffixes (myr-v1.6.5-rc.1).
-    if: ${{ github.repository == 'itkadr-git/myrmidon' }}
+    if: ${{ github.repository == 'itkadr-git/myrmidon' && !inputs.prepare_rc }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -101,6 +152,7 @@ jobs:
   # is optional — github.token of THIS workflow already has it.
   freeze:
     name: release-freeze state
+    if: ${{ !inputs.prepare_rc }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

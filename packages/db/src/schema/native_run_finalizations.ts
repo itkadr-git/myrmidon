@@ -24,6 +24,7 @@ export const nativeRunFinalizations = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id),
     issueId: uuid("issue_id").notNull(),
     phase: text("phase").notNull(),
+    authorizationMode: text("authorization_mode").notNull().default("internal"),
     attempt: integer("attempt").notNull().default(0),
     leaseOwner: text("lease_owner"),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
@@ -99,6 +100,10 @@ export const nativeRunFinalizations = pgTable(
       ],
       name: "native_run_finalizations_decision_owner_fk",
     }),
+    authorizationModeCheck: check(
+      "native_run_finalizations_authorization_mode_check",
+      sql`${table.authorizationMode} in ('internal', 'service_required')`,
+    ),
     assessmentRequiresResultCheck: check(
       "native_run_finalizations_assessment_requires_result_check",
       sql`${table.assessmentId} is null or ${table.resultId} is not null`,

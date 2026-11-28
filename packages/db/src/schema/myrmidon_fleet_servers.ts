@@ -1,6 +1,7 @@
 import { pgTable, uuid, text, integer, boolean, timestamp, index, uniqueIndex, jsonb, check } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
+import type { FleetOwnershipInventory } from "@myrmidon/shared";
 
 /**
  * myrmidon(SC1): the fleet-server registry behind the panel's browser console.
@@ -37,6 +38,8 @@ export const myrmidonFleetServers = pgTable(
     bootstrapVersion: text("bootstrap_version"),
     lastCheckAt: timestamp("last_check_at", { withTimezone: true }),
     lastCheckOk: boolean("last_check_ok"),
+    /** Exact resources created by this company on this server; never selectors. */
+    ownershipInventory: jsonb("ownership_inventory").$type<FleetOwnershipInventory | null>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

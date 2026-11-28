@@ -9,11 +9,13 @@ import { myrmidonFleetOnboardJobs, myrmidonFleetServers, type Db } from "@myrmid
 import {
   ONBOARD_BOOTSTRAP_VERSION,
   appendStepLog,
+  stepsForJobKind,
   type OnboardJob,
   type OnboardJobKind,
   type OnboardJobStatus,
   type OnboardStepLogEntry,
 } from "./domain.js";
+import { appendOwnedFleetResource, type FleetOwnershipInventory, type OwnedFleetResource } from "@myrmidon/shared";
 
 /** Registry row shape the onboarding flow needs; fleet-console maps its own view. */
 export type OnboardServerRow = {
@@ -34,9 +36,11 @@ export type OnboardServerRow = {
   bootstrapVersion: string | null;
   lastCheckAt: Date | null;
   lastCheckOk: boolean | null;
+  ownershipInventory: FleetOwnershipInventory | null;
 };
 
 export interface OnboardJobClaim {
+  ownershipInventory?: FleetOwnershipInventory | null;
   job: OnboardJob;
   /** Server connection facts the executor needs; secret NAMES only. */
   server: {
@@ -69,10 +73,11 @@ export interface FleetOnboardStore {
   /** Atomically move pending→claimed and hand the executor its work. */
   claimNext(companyId: string): Promise<OnboardJobClaim | null>;
   consumeClaimSecrets(companyId: string, jobId: string): Promise<boolean>;
+  pinHostKey(companyId: string, serverId: string, jobId: string, fingerprint: string): Promise<boolean>;
   updateJob(
     companyId: string,
     jobId: string,
-    patch: { status?: OnboardJobStatus; step?: string | null; stepLogEntry?: OnboardStepLogEntry; error?: string | null },
+    patch: { status?: OnboardJobStatus; step?: string | null; stepLogEntry?: OnboardStepLogEntry; error?: string | null; requireClaimed?: boolean; ownedFirewallRule?: Extract<OwnedFleetResource, { kind: "firewall_rule" }> },
   ): Promise<OnboardJob | null>;
   expireStale(olderThanMs: number): Promise<number>;
   /** Registry rows the onboarding flow owns (fleet-console reads them too). */
@@ -106,6 +111,8 @@ export interface FleetOnboardStore {
       lastCheckOk?: boolean;
     },
   ): Promise<void>;
+  /** Persist one exact resource identity; null inventory is never treated as empty. */
+  recordOwnedResource(companyId: string, serverId: string, jobId: string, resource: OwnedFleetResource): Promise<FleetOwnershipInventory>;
 }
 
 type JobRow = typeof myrmidonFleetOnboardJobs.$inferSelect;
@@ -148,6 +155,7 @@ function toServer(row: ServerRow): OnboardServerRow {
     bootstrapVersion: row.bootstrapVersion,
     lastCheckAt: row.lastCheckAt,
     lastCheckOk: row.lastCheckOk,
+    ownershipInventory: row.ownershipInventory ?? null,
   };
 }
 
@@ -202,9 +210,9 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
       const rows = await db.execute(sql`
         WITH next_job AS (
           SELECT id FROM myrmidon_fleet_onboard_jobs
-          WHERE (status = 'pending' OR (status = 'claimed' AND secret_consumed_at IS NOT NULL))
+          WHERE status = 'pending'
             AND company_id = ${companyId}::uuid
-          ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, created_at ASC
+          ORDER BY created_at ASC
           LIMIT 1
           FOR UPDATE SKIP LOCKED
         )
@@ -229,6 +237,7 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
         .then((r) => r[0]);
       if (!server) return null;
       return {
+        ownershipInventory: server.ownershipInventory ?? null,
         job: toJob(job),
         server: {
           id: server.id,
@@ -242,7 +251,7 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
           accessKeySecretKey: server.accessKeySecretKey,
           hostKeyFingerprint: server.hostKeyFingerprint,
         },
-        steps: ["connect", "preflight", "access", "verify"],
+        steps: stepsForJobKind(job.kind as OnboardJobKind),
         options: { keepPassword: server.keepPassword, installDocker: false, role: server.role },
       };
     },
@@ -255,6 +264,20 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
       return rows.length === 1;
     },
 
+    async pinHostKey(companyId, serverId, jobId, fingerprint) {
+      const rows = await db.execute(sql`
+        UPDATE myrmidon_fleet_servers s
+        SET host_key_fingerprint = ${fingerprint}, updated_at = now()
+        WHERE s.company_id = ${companyId}::uuid AND s.id = ${serverId}::uuid
+          AND (s.host_key_fingerprint IS NULL OR s.host_key_fingerprint = ${fingerprint})
+          AND EXISTS (SELECT 1 FROM myrmidon_fleet_onboard_jobs j
+            WHERE j.id = ${jobId}::uuid AND j.company_id = s.company_id AND j.server_id = s.id
+              AND j.status IN ('claimed', 'running'))
+        RETURNING s.id
+      `);
+      return (rows as unknown as Array<{ id: string }>).length === 1;
+    },
+
     async updateJob(companyId, jobId, patch) {
       const current = await db
         .select()
@@ -265,7 +288,7 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
       const log: OnboardStepLogEntry[] = Array.isArray(current.stepLog) ? (current.stepLog as OnboardStepLogEntry[]) : [];
       const nextLog = patch.stepLogEntry ? appendStepLog(log, patch.stepLogEntry) : log;
       const finished = patch.status === "succeeded" || patch.status === "failed" || patch.status === "expired";
-      const [row] = await db
+      const update = (client: Pick<Db, "update">) => client
         .update(myrmidonFleetOnboardJobs)
         .set({
           ...(patch.status ? { status: patch.status } : {}),
@@ -275,9 +298,33 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
           ...(finished ? { finishedAt: new Date() } : {}),
           updatedAt: new Date(),
         })
-        .where(and(eq(myrmidonFleetOnboardJobs.companyId, companyId), eq(myrmidonFleetOnboardJobs.id, jobId)))
+        .where(and(
+          eq(myrmidonFleetOnboardJobs.companyId, companyId),
+          eq(myrmidonFleetOnboardJobs.id, jobId),
+          patch.requireClaimed ? sql`${myrmidonFleetOnboardJobs.status} IN ('claimed', 'running')` : undefined,
+        ))
         .returning();
-      return row ? toJob(row) : null;
+      const resource = patch.ownedFirewallRule;
+      if (!resource) {
+        const [row] = await update(db);
+        return row ? toJob(row) : null;
+      }
+      if (patch.status !== "succeeded" || !patch.requireClaimed || current.kind !== "onboard") {
+        throw new Error("Firewall ownership requires successful completion of an active onboard job");
+      }
+      return db.transaction(async (tx) => {
+        const serverScope = and(eq(myrmidonFleetServers.companyId, companyId), eq(myrmidonFleetServers.id, current.serverId));
+        // Match the ownership endpoint's server-before-job lock order.
+        const [server] = await tx.select({ inventory: myrmidonFleetServers.ownershipInventory })
+          .from(myrmidonFleetServers).where(serverScope).for("update");
+        if (!server) throw new Error("Fleet server not found");
+        const [row] = await update(tx);
+        if (!row) return null;
+        const ownershipInventory = appendOwnedFleetResource(server.inventory, companyId, current.serverId, jobId, resource);
+        const now = new Date();
+        await tx.update(myrmidonFleetServers).set({ ownershipInventory, onboardState: "ready", lastCheckOk: true, lastCheckAt: now, updatedAt: now }).where(serverScope);
+        return toJob(row);
+      });
     },
 
     async expireStale(olderThanMs) {
@@ -366,6 +413,29 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
           updatedAt: new Date(),
         })
         .where(and(eq(myrmidonFleetServers.companyId, companyId), eq(myrmidonFleetServers.id, serverId)));
+    },
+
+    async recordOwnedResource(companyId, serverId, jobId, resource) {
+      return db.transaction(async (tx) => {
+        // Serialize reports so concurrent resource creation cannot lose an identity.
+        const current = await tx
+          .select({ inventory: myrmidonFleetServers.ownershipInventory })
+          .from(myrmidonFleetServers)
+          .where(and(eq(myrmidonFleetServers.companyId, companyId), eq(myrmidonFleetServers.id, serverId)))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!current) throw new Error("Fleet server not found");
+        const job = await tx.select({ id: myrmidonFleetOnboardJobs.id }).from(myrmidonFleetOnboardJobs)
+          .where(and(eq(myrmidonFleetOnboardJobs.companyId, companyId), eq(myrmidonFleetOnboardJobs.serverId, serverId),
+            eq(myrmidonFleetOnboardJobs.id, jobId), inArray(myrmidonFleetOnboardJobs.status, ["claimed", "running"]),
+            eq(myrmidonFleetOnboardJobs.kind, "onboard")))
+          .for("update").then((rows) => rows[0] ?? null);
+        if (!job) throw new Error("Ownership requires an active onboard job for this server");
+        const next = appendOwnedFleetResource(current.inventory, companyId, serverId, jobId, resource);
+        await tx.update(myrmidonFleetServers).set({ ownershipInventory: next, updatedAt: new Date() })
+          .where(and(eq(myrmidonFleetServers.companyId, companyId), eq(myrmidonFleetServers.id, serverId)));
+        return next;
+      });
     },
   };
 }

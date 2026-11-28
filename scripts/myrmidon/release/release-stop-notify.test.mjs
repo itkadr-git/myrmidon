@@ -32,6 +32,8 @@ const FAKE_GH = `#!/usr/bin/env bash
 # of release-stop-notify.sh from files in $SANDBOX; records calls and mutations.
 echo "gh $*" >> "$SANDBOX/calls.log"
 set -euo pipefail
+trace() { printf '%s pid=%s %s\\n' "$(date +%s.%N)" "$$" "$*" >> "$SANDBOX/trace.log"; }
+trace "begin $*"
 sub="$1"; shift
 case "$sub" in
   api)
@@ -52,18 +54,39 @@ case "$sub" in
       echo 1 >> "$SANDBOX/api-failures"
       exit 1
     fi
+    # Listing-lag emulation (test-only, deterministic): while lag-listing.json
+    # exists, the listing endpoint serves that frozen snapshot instead of the
+    # live file. This emulates the real GitHub behavior the production script
+    # is designed around: a list query can be answered by a replica that has
+    # not yet absorbed a just-created issue. issue create clears the lag (the
+    # mutating write is fresh on the primary); see the self-heal test.
+    if [ -f "$SANDBOX/lag-listing.json" ]; then
+      if [ -n "$jq_filter" ]; then
+        result="$(jq -r "$jq_filter" "$SANDBOX/lag-listing.json")" || exit 1
+      else
+        result="$(jq -r '.[].title' "$SANDBOX/lag-listing.json")" || exit 1
+      fi
+      trace "scan result(lagged)=$result"
+      printf '%s\\n' "$result"
+      exit 0
+    fi
     # Serialize reads with the issue create/close writes below: a scan that
     # races a concurrent create must observe the fully written issue, never
-    # a transient state.
+    # a transient (pre-write) state. Without this lock a listing read whose
+    # open() lands before a concurrent create's rename reads the pre-write
+    # inode (a stale snapshot), the only torn-read hazard a local file has.
     while ! mkdir "$SANDBOX/issues-file.lock" 2>/dev/null; do
+      trace "api waiting for issues lock"
       sleep 0.01
     done
     if [ -n "$jq_filter" ]; then
-      jq -r "$jq_filter" "$SANDBOX/issues.json"
+      result="$(jq -r "$jq_filter" "$SANDBOX/issues.json")" || { rmdir "$SANDBOX/issues-file.lock"; exit 1; }
     else
-      jq -r '.[].title' "$SANDBOX/issues.json"
+      result="$(jq -r '.[].title' "$SANDBOX/issues.json")" || { rmdir "$SANDBOX/issues-file.lock"; exit 1; }
     fi
-    rmdir "$SANDBOX/issues-file.lock" ;;
+    rmdir "$SANDBOX/issues-file.lock"
+    trace "scan result=$result"
+    printf '%s\\n' "$result" ;;
   label)
     verb="$1"; shift
     name=""
@@ -83,11 +106,14 @@ case "$sub" in
           mv "$SANDBOX/issues.json.tmp" "$SANDBOX/issues.json"
         fi
         if ! mkdir "$SANDBOX/label-$name.lock" 2>/dev/null; then
+          trace "lock busy $name"
           echo "label with name \\"$name\\" already exists; use --force to update its color and description" >&2
           exit 1
         fi
+        trace "lock acquired $name"
         exit 0 ;;
       delete)
+        trace "lock deleting $name"
         rm -rf "$SANDBOX/label-$name.lock"
         exit 0 ;;
     esac ;;
@@ -118,6 +144,13 @@ case "$sub" in
         jq --arg t "$title" --argjson n "$n" '. + [{number: $n, title: $t, state: "open"}]' "$SANDBOX/issues.json" > "$SANDBOX/issues.json.tmp"
         mv "$SANDBOX/issues.json.tmp" "$SANDBOX/issues.json"
         rmdir "$SANDBOX/issues-file.lock"
+        # The create path is served by the primary: from here on, listing reads
+        # observe the new issue (clears the listing-lag emulation).
+        rm -f "$SANDBOX/lag-listing.json"
+        if [ -n "\${GH_CREATE_SAVED_FAIL:-}" ]; then
+          echo "connection lost after issue was saved" >&2
+          exit 1
+        fi
         printf 'https://github.com/x/y/issues/%s\\n' "$n" ;;
       close)
         num="$1"; shift
@@ -329,6 +362,43 @@ describe("release-stop-notify.sh (fake gh)", () => {
     assert.equal(issues.length, 0, "no issue must be stored on create failure");
   });
 
+  it("retains the reservation after an ambiguous create failure", () => {
+    const sb = makeSandbox();
+    const first = runScript(sb, { GH_CREATE_FAIL: "y" });
+    assert.equal(first.status, 1);
+    const retry = runScript(sb, { RELEASE_STOP_LOCK_TIMEOUT: "1", RELEASE_STOP_LOCK_POLL_DELAY: "0" });
+    assert.equal(retry.status, 1, retry.stderr);
+    assert.match(retry.stderr, /timed out waiting/);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(sb.dir, "issues.json"), "utf8")).length, 0);
+    const calls = fs.readFileSync(path.join(sb.dir, "calls.log"), "utf8");
+    assert.equal((calls.match(/gh issue create/g) || []).length, 1);
+    assert.doesNotMatch(calls, /gh label delete/);
+  });
+
+  it("recovers a saved issue after a lost create response, including stale listings", () => {
+    const sb = makeSandbox();
+    const first = runScript(sb, { GH_CREATE_SAVED_FAIL: "y" });
+    assert.equal(first.status, 1, first.stdout);
+    assert.match(first.stderr, /could not create the stop notification issue/);
+    const visible = runScript(sb);
+    assert.equal(visible.status, 0, visible.stderr);
+    assert.match(visible.stdout, /stop=deduplicated issue=100 event=111/);
+    fs.writeFileSync(path.join(sb.dir, "lag-listing.json"), "[]");
+    const stale = runScript(sb, { RELEASE_STOP_LOCK_TIMEOUT: "1", RELEASE_STOP_LOCK_POLL_DELAY: "0" });
+    assert.equal(stale.status, 1, stale.stdout);
+    assert.match(stale.stderr, /timed out waiting/);
+    fs.unlinkSync(path.join(sb.dir, "lag-listing.json"));
+    const recovered = runScript(sb);
+    assert.equal(recovered.status, 0, recovered.stderr);
+    assert.match(recovered.stdout, /stop=deduplicated issue=100 event=111/);
+    const issues = JSON.parse(fs.readFileSync(path.join(sb.dir, "issues.json"), "utf8"));
+    assert.deepEqual(issues, [{ number: 100, title: "release-stop: myr-v1.8.0 (111)", state: "open" }]);
+    const calls = fs.readFileSync(path.join(sb.dir, "calls.log"), "utf8");
+    assert.equal((calls.match(/gh issue create/g) || []).length, 1);
+    assert.doesNotMatch(calls, /gh label delete/);
+    assert.ok(fs.existsSync(path.join(sb.dir, "label-release-stop-lock-111.lock")));
+  });
+
   it("deduplicates concurrent executions for the same stop event without duplicate issue creation (overlap)", async () => {
     const sb = makeSandbox();
     const [r1, r2] = await Promise.all([
@@ -342,8 +412,96 @@ describe("release-stop-notify.sh (fake gh)", () => {
     assert.match(outputs, /stop=deduplicated issue=100 event=111/);
     const issues = JSON.parse(fs.readFileSync(path.join(sb.dir, "issues.json"), "utf8"));
     const matchingIssues = issues.filter((it) => it.title === "release-stop: myr-v1.8.0 (111)");
-    assert.equal(matchingIssues.length, 1, `expected exactly 1 matching issue, got: ${JSON.stringify(issues)}`);
+    assert.equal(matchingIssues.length, 1, `expected exactly 1 matching issue, got: ${JSON.stringify(issues)}\n${fs.readFileSync(path.join(sb.dir, "trace.log"), "utf8")}\np1: ${r1.stderr}\np2: ${r2.stderr}`);
     assert.equal(matchingIssues[0].state, "open");
+  });
+
+  // Fixture-fidelity proof (deterministic, no wall-clock): the production
+  // contract requires a listing read to observe every COMPLETED write. On a
+  // local file the only way to violate that is a torn read: the reader's
+  // open() lands before a concurrent create's rename and its read() executes
+  // after it, returning the pre-write inode (a stale snapshot). The old fake
+  // api handler read issues.json without the issues-file.lock the create and
+  // close handlers hold, so nothing prevented that window. The fix makes the
+  // listing read take the same lock, which moves the open() strictly after
+  // the writer's rename. This test is a pure event handshake: the test
+  // process holds the lock (as an in-flight create would), starts a scan,
+  // waits until the fake handler observably reports it is waiting on that
+  // lock, asserts the scan stays blocked, then publishes the fully written
+  // issue and releases the lock. The scan must observe the published issue.
+  it("fake gh api scan is serialized with a concurrent issue write (deterministic interleaving)", async () => {
+    const sb = makeSandbox();
+    const lockDir = path.join(sb.dir, "issues-file.lock");
+    const traceFile = path.join(sb.dir, "trace.log");
+    // Writer half of the handshake: hold the lock exactly like an in-flight
+    // create, and publish the issue only after the scan is observably blocked.
+    fs.mkdirSync(lockDir);
+    const scan = spawn("gh", [
+      "api", "--paginate",
+      "-H", "Accept: application/vnd.github+json",
+      `/repos/${REPO}/issues?state=all&per_page=100`,
+      "--jq", '.[] | select(.title == "written") | .number',
+    ], {
+      env: { ...process.env, SANDBOX: sb.dir, PATH: `${sb.bin}:${process.env.PATH}` },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    scan.stdout.on("data", (chunk) => { stdout += chunk; });
+    scan.stderr.on("data", (chunk) => { stderr += chunk; });
+    const closed = new Promise((resolve) => scan.on("close", (code) => resolve(code)));
+    try {
+      const readTrace = () => (fs.existsSync(traceFile) ? fs.readFileSync(traceFile, "utf8") : "");
+      // Wait (bounded) until the fake handler observably reports it is
+      // waiting on the issues lock. A scan that does not serialize reads
+      // with writes never waits: it reads the pre-write file and exits, so
+      // this assertion fails deterministically.
+      const deadline = Date.now() + 5000;
+      while (!readTrace().includes("api waiting for issues lock")) {
+        if (scan.exitCode !== null) break;
+        if (Date.now() > deadline) break;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      assert.ok(
+        readTrace().includes("api waiting for issues lock"),
+        `scan never waited on the issues lock; it read the pre-write snapshot and raced ahead. stderr: ${stderr}`,
+      );
+      assert.equal(scan.exitCode, null, "scan must stay blocked while the lock is held");
+      // Publish the fully written issue, then release the lock.
+      fs.writeFileSync(path.join(sb.dir, "issues.json"), '[{"number":7,"title":"written","state":"open"}]');
+      fs.rmdirSync(lockDir);
+      const status = await closed;
+      assert.equal(status, 0, stderr);
+      assert.match(stdout, /^7/, `scan must observe the fully written issue, got: ${JSON.stringify(stdout)}`);
+    } finally {
+      if (fs.existsSync(lockDir)) fs.rmdirSync(lockDir);
+      if (scan.exitCode === null) scan.kill();
+      await closed;
+    }
+  });
+
+  // A finishes before B sees an out-of-date issue listing. The durable
+  // reservation must prevent B from creating even a subsequently closed copy.
+  it("fails closed on a stale listing after a completed notification", () => {
+    const sb = makeSandbox();
+    const ra = runScript(sb);
+    assert.equal(ra.status, 0, ra.stderr);
+    assert.match(ra.stdout, /stop=created issue=https:\/\/github\.com\/x\/y\/issues\/100 event=111/);
+    fs.writeFileSync(path.join(sb.dir, "lag-listing.json"), "[]");
+    const rb = runScript(sb, { RELEASE_STOP_LOCK_TIMEOUT: "1", RELEASE_STOP_LOCK_POLL_DELAY: "0" });
+    assert.equal(rb.status, 1, rb.stderr);
+    assert.match(rb.stderr, /timed out waiting/);
+    const issues = JSON.parse(fs.readFileSync(path.join(sb.dir, "issues.json"), "utf8"));
+    const matching = issues.filter((it) => it.title === "release-stop: myr-v1.8.0 (111)");
+    assert.deepEqual(
+      matching.map((m) => `${m.number}:${m.state}`).sort(),
+      ["100:open"],
+      `expected exactly one issue, got: ${JSON.stringify(issues)}`,
+    );
+    const mutations = fs.readFileSync(path.join(sb.dir, "mutations.log"), "utf8");
+    assert.match(mutations, /create title=release-stop: myr-v1\.8\.0 \(111\)/);
+    assert.equal((mutations.match(/create title=/g) || []).length, 1);
+    assert.doesNotMatch(mutations, /close issue=/);
   });
 
   it("rescans after acquiring lock when another run created the issue and released the lock", () => {

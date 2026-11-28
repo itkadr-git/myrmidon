@@ -101,6 +101,7 @@ import {
   type SwarmQueueOrderOptions,
 } from "./effective-pheromone.js";
 import { projectMemberAgentIds, projectMembershipByProject, projectScopedClaimGate } from "../project-membership.js";
+import { offlineBotAcceptsIssue } from "../../services/offline-bot-workspace.js";
 import { issueService } from "../../services/issues.js";
 import { currentCompanyReleaseFocus } from "../run-priority/state.js";
 import { AUTO_SLICE_DEDUPE_STATUSES, AUTO_SLICE_TITLE, createAutoSlicePolicy, projectQueueShortages, releaseEpicCandidates, runAutoSlicePass } from "./auto-slice-policy.js";
@@ -400,6 +401,9 @@ async function pairTaskWithPool(
   if (candidates.length > 0 && (await taskBudgetBlocked(deps, companyId, task, candidates[0]!.agentId))) {
     return null;
   }
+  const compatible = await Promise.all(candidates.map((agent) =>
+    offlineBotAcceptsIssue(deps.db, companyId, task.issueId, agent.agentId)));
+  candidates = candidates.filter((_, index) => compatible[index]);
   while (candidates.length > 0) {
     const chosen = pick(task, candidates);
     if (!chosen) return null;
@@ -574,6 +578,9 @@ async function claimTaskForAgent(
         row.assigneeAgentId ||
         !(SWARM_CLAIM_QUEUE_ISSUE_STATUSES as readonly string[]).includes(row.status)
       ) {
+        throw new MatcherClaimLost();
+      }
+      if (!(await offlineBotAcceptsIssue(txDb, companyId, target.issueId, target.agentId))) {
         throw new MatcherClaimLost();
       }
       // Respect the resolved caste/settings ceiling; do not impose a separate
@@ -1002,6 +1009,7 @@ export async function matchAgent(
   for (const candidate of pair.queue) {
     if (candidate.issueId === opts.excludeIssueId) continue;
     if (candidate.assigneeAgentId) continue;
+    if (!(await offlineBotAcceptsIssue(deps.db, agentRow.companyId, candidate.issueId, agentId))) continue;
     if (candidate.projectId) {
       let member = memberOf.get(candidate.projectId);
       if (member === undefined) {

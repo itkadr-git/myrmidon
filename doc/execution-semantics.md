@@ -530,6 +530,24 @@ An `in_review` issue is stalled when it has no typed participant, no pending int
 
 When an execution-policy review stage has a pending agent participant, the participant's run is part of the review path only while it is live or queued. If that participant run reaches a terminal state while `executionState.status` remains `pending`, no decision has been recorded. After a successful run with no review decision, Paperclip should queue one bounded normal-model recovery wake for the same participant when the agent is invokable and no other review path exists. A failed participant instead follows the provider-continuity rules below: local conversational adapters can start a bounded continuation turn, while native sessions use validated resume/replacement. Other adapters retain their action-recovery gates. The original assignee stays unchanged. If that recovery run also finishes while the stage remains pending, or the participant cannot be invoked, Paperclip must move the source issue to an explicit blocked/recovery path instead of leaving `in_review` to drift silently.
 
+#### Repair an incompatible review return assignee
+
+A review's `changes_requested` transition uses the saved `executionState.returnAssignee`, not the current reviewer. On an engineering task an editor in that slot causes `422 issue_requires_engineer`; no verdict is written. The older participant-repair payload cannot replace an existing agent with one of a different role.
+
+On a server that advertises the guarded request in OpenAPI, an authorized board operator can repair **only** the return destination. First read `GET /api/issues/{id}`. Verify that the task is not paused, is `in_review` on the intended pending agent review, and the reviewer still owns the issue. Wait for any queued or running review run to finish normally; do not cancel, release, or reassign it. Resolve the replacement to the UUID of an invokable same-company engineer outside the review participants. Send `PATCH /api/issues/{id}/execution-participants` as the board operator with this JSON (replace all placeholders):
+
+```json
+{
+  "returnAssignee": { "type": "agent", "agentId": "<engineer-uuid>" },
+  "expectedStageId": "<current-review-stage-uuid>",
+  "expectedReturnAssigneeAgentId": "<saved-return-agent-uuid>"
+}
+```
+
+The server checks the stage and saved target again under the issue row lock. If a run is queued or running at the check, the server returns `409 review_return_repair_active_run` without modifying it. If the review or target changed, the server returns `409 review_return_repair_stale`: re-read the issue and stop if the original repair is no longer needed. An ineligible or foreign agent is refused; a non-engineer or reviewer is refused with `422`. Do not clear the slot as an intermediate step.
+
+After `200`, read the issue again. Confirm the intended return target, unchanged `in_review` status, policy, stage, current participant, assignee, and previous decision references. The repair records one `issue.review_return_assignee_repaired` activity entry, not a verdict; it does not wake or interrupt a run. The same reviewer then submits the normal `PATCH /api/issues/{id}` with `{"status":"in_progress","comment":"Changes requested: ..."}` under the existing review, role and CI gates. For a production incident, obtain separate operator authorization before repair; use the documented route, not a policy reset or a direct database write.
+
 ### Issue monitors
 
 An issue monitor is a one-shot deferred action path for agent-owned issues in `in_progress` or `in_review`.
@@ -680,6 +698,26 @@ and task-bridge containment. Target freshness and supersession are checked befor
 the outcome commits. Resolution records an answer; every continuation, task
 creation, tool/provider call, execution-policy transition, spend, deployment, or
 other effect independently re-runs its own authorization and approval gates.
+
+#### Waiting for an owner versus technical review
+
+An agent waiting for a human decision should create a `human_only` confirmation
+and enter `in_review` with its `reviewInteractionId`, rather than starting a
+technical review stage. For a plan, publish the document and target its current
+revision. The interaction is the waiting path; the human decision returns the
+confirmation to its creator. An agent cannot resolve a human-only card. Do not
+use a technical review verdict or spend review rounds to represent this wait.
+
+If a pending technical stage has drifted, a non-participant's attempt to leave
+review receives HTTP 422; it must not silently restore `in_review`. Do not use
+an agent to bypass the reviewer. An authorized board operator can explicitly
+set `blocked`, supply the intended executor, a real `blockedByIssueIds` dependency
+and complete `blockerMetadata`, and replace `executionPolicy` with its existing
+stages but without `monitor`. Verify the resulting status, dependency, assignee,
+and cleared monitor. The override clears the pending stage without recording an
+approval or changes-requested verdict. Removing the monitor is explicit: a
+blocked issue can otherwise retain an existing schedule. Apply operator actions
+to real issues only under the relevant operating authorization.
 
 A pending interaction cannot outlive its issue. When the issue reaches a
 terminal status (`done` or `cancelled`) through any path — an HTTP status

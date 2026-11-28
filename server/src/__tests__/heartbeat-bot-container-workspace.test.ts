@@ -9,15 +9,17 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   agentRuntimeState,
+  agentTaskSessions,
   agentWakeupRequests,
   activityLog,
   budgetPolicies,
   companies,
   companySkills,
+  companySecrets,
   createDb,
   environments,
   environmentLeases,
@@ -29,6 +31,7 @@ import {
   issues,
   projects,
   projectWorkspaces,
+  secretAccessEvents,
 } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -45,6 +48,11 @@ import { heartbeatService } from "../services/heartbeat.ts";
 import { executionWorkspaceService } from "../services/execution-workspaces.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { setBotContainerWorkspaceAdapterTypesForTests } from "../services/bot-container-workspace.ts";
+import { registerOfflineBotWorkspace, resolveOfflineBotWorkspace } from "../services/offline-bot-workspace.ts";
+import { secretService } from "../services/secrets.ts";
+import { gatewayApiBaseUrl } from "../myrmidon/bot-containers/card-sync.ts";
+import { getBotContainerRuntime, setBotContainerRuntime } from "../myrmidon/bot-containers/routes-wiring.ts";
+import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.ts";
 
 const execFileAsync = promisify(execFile);
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -75,7 +83,7 @@ describeEmbeddedPostgres("bot-container isolated workspace", () => {
       "-C", projectCwd, "-c", "user.name=Test", "-c", "user.email=test@example.com",
       "commit", "--allow-empty", "-m", "initial",
     ]);
-    setBotContainerWorkspaceAdapterTypesForTests([BOT_CONTAINER_TEST_ADAPTER]);
+    setBotContainerWorkspaceAdapterTypesForTests([BOT_CONTAINER_TEST_ADAPTER, "hermes_gateway"]);
     registerServerAdapter({
       type: BOT_CONTAINER_TEST_ADAPTER,
       execute: async (input) => {
@@ -104,6 +112,7 @@ describeEmbeddedPostgres("bot-container isolated workspace", () => {
         await db.delete(projectWorkspaces);
         await db.delete(projects);
         await db.delete(heartbeatRunEvents);
+        await db.delete(agentTaskSessions);
         await db.delete(activityLog);
         await db.delete(heartbeatRuns);
         await db.delete(agentWakeupRequests);
@@ -112,6 +121,8 @@ describeEmbeddedPostgres("bot-container isolated workspace", () => {
         await db.delete(agents);
         await db.delete(environments);
         await db.delete(companySkills);
+        await db.delete(secretAccessEvents);
+        await db.delete(companySecrets);
         await db.delete(companies);
         break;
       } catch (error) {
@@ -202,6 +213,116 @@ describeEmbeddedPostgres("bot-container isolated workspace", () => {
     }
     return { companyId, projectId, agentId, issueIds, issuePrefix };
   }
+
+  it("serializes physical directory claims and revalidates the same offline workspace on swarm restore", async () => {
+    const { companyId, projectId, agentId, issueIds } = await seedTwoIssuesOfOneAgent();
+    const adapterConfig = { container: { enabled: true, image: "test", memoryMb: 1024, cpus: 1, pidsLimit: 512 } };
+    await db.update(agents).set({ adapterType: "hermes_gateway", adapterConfig }).where(eq(agents.id, agentId));
+    for (const issueId of issueIds) {
+      await db.update(issues).set({ assigneeAgentId: null, status: "todo" }).where(eq(issues.id, issueId));
+    }
+    const body = { action: "register", botId: agentId } as const;
+    const probe = async (_db: unknown, company: string, issue: string) => ({
+      cwd: `/data/hermes/offline-workspaces/${company}/${issue}`,
+      fingerprint: "a".repeat(64),
+      physicalId: "101:42",
+    });
+    const results = await Promise.allSettled(issueIds.map((issueId) =>
+      registerOfflineBotWorkspace(db, companyId, issueId, body, probe)));
+    expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+    const won = results.findIndex((r) => r.status === "fulfilled");
+    const winner = results[won];
+    const loser = results[1 - won];
+    if (winner.status !== "fulfilled" || loser.status !== "rejected") throw new Error("Unexpected registration outcomes");
+    expect(loser.reason).toMatchObject({ message: "Physical directory already belongs to another issue" });
+    const issueId = issueIds[won];
+    const { id, cwd } = winner.value;
+    const [otherIssue] = await db.select().from(issues).where(eq(issues.id, issueIds[1 - won]));
+    expect(otherIssue.executionWorkspaceId).toBeNull();
+    await expect(registerOfflineBotWorkspace(db, companyId, issueId, body, probe)).resolves.toMatchObject({ id, cwd });
+
+    const input = { companyId, issueId, requestedId: id, projectId, botId: agentId,
+      adapterType: "hermes_gateway", adapterConfig, mode: "isolated_workspace", wakeReason: "swarm_matched" };
+    await expect(resolveOfflineBotWorkspace(db, input, probe)).resolves.toMatchObject({ id, cwd });
+    await expect(resolveOfflineBotWorkspace(db, { ...input, wakeReason: "swarm_claim_queue" }, probe))
+      .resolves.toMatchObject({ id, cwd });
+    await expect(resolveOfflineBotWorkspace(db, { ...input, issueId: otherIssue.id }, probe)).rejects.toThrow("refusing fallback");
+    await expect(resolveOfflineBotWorkspace(db, { ...input, botId: randomUUID() }, probe)).rejects.toThrow("refusing fallback");
+    await expect(resolveOfflineBotWorkspace(db, input, async () => ({ cwd, fingerprint: "b".repeat(64), physicalId: "101:42" })))
+      .rejects.toThrow("refusing fallback");
+  });
+
+  it("sends the registered workspace UUID and cwd to Hermes on both swarm wakes", async () => {
+    const { companyId, agentId, issueIds: [issueId] } = await seedTwoIssuesOfOneAgent({ repoOnly: true });
+    const secret = await secretService(db).create(companyId, {
+      name: "Offline test gateway", key: "offline_test_gateway", provider: "local_encrypted", value: "fixture-only",
+    });
+    const llmBase = "https://litellm.example.invalid";
+    const adminName = "offline_test_llm_admin";
+    await secretService(db).create(companyId, {
+      name: adminName, key: adminName, provider: "local_encrypted", value: "fixture-only-admin",
+    });
+    const base = gatewayApiBaseUrl(agentId);
+    await db.update(agents).set({ adapterType: "hermes_gateway", adapterConfig: {
+      container: { enabled: true, image: "test", memoryMb: 1024, cpus: 1, pidsLimit: 512 },
+      apiBaseUrl: base, apiKey: { type: "secret_ref", secretId: secret.id, version: 1 },
+      pollIntervalMs: 250,
+    } }).where(eq(agents.id, agentId));
+    await secretService(db).syncSecretRefsForTarget(companyId, { targetType: "agent", targetId: agentId }, [
+      { secretId: secret.id, configPath: "apiKey" },
+    ]);
+    await db.update(issues).set({ assigneeAgentId: null, status: "todo" }).where(eq(issues.id, issueId!));
+    const cwd = `/data/hermes/offline-workspaces/${companyId}/${issueId}`;
+    const fingerprint = "c".repeat(64);
+    const runtime = getBotContainerRuntime();
+    setBotContainerRuntime({ driver: { status: async () => ({ state: "running" }) } } as NonNullable<typeof runtime>);
+    const sent: unknown[] = [];
+    const attestations: unknown[] = [];
+    const realFetch = globalThis.fetch;
+    vi.stubEnv("MYRMIDON_LITELLM_BASE_URL", llmBase);
+    vi.stubEnv("MYRMIDON_LITELLM_ADMIN_KEY_SECRET", adminName);
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.origin === llmBase) return Response.json({});
+      if (url.origin !== base) return realFetch(input, init);
+      if (url.pathname === "/v1/offline-workspace") {
+        attestations.push(JSON.parse(String(init?.body)));
+        return Response.json({ cwd, fingerprint, physicalId: "101:43" });
+      }
+      if (url.pathname === "/v1/runs" && init?.method === "POST") {
+        sent.push(JSON.parse(String(init.body)).workspace);
+        return Response.json({ run_id: `offline-run-${sent.length}`, status: "started" });
+      }
+      if (url.pathname.endsWith("/events")) return new Response(null, { status: 404 });
+      return Response.json({ status: "completed", output: "done" });
+    });
+    try {
+      const binding = await registerOfflineBotWorkspace(db, companyId, issueId!, { action: "register", botId: agentId });
+      expect(binding).toMatchObject({ cwd, id: expect.any(String) });
+      await db.update(issues).set({ assigneeAgentId: agentId, status: "in_progress" }).where(eq(issues.id, issueId!));
+      for (const [index, reason] of ["swarm_matched", "swarm_claim_queue"].entries()) {
+        const wake = await queueIssueAssignmentWakeup({
+          heartbeat, issue: { id: issueId!, assigneeAgentId: agentId, status: "in_progress" },
+          reason, mutation: reason, contextSource: reason, requestedByActorType: "system", rethrowOnError: true,
+        }) as { id: string } | null;
+        expect(wake).not.toBeNull();
+        const run = await waitForRunToLeaveActiveStates(wake!.id);
+        expect(run, run?.error ?? "missing heartbeat run").toMatchObject({ status: "succeeded" });
+        expect(sent).toHaveLength(index + 1);
+        expect(sent[index]).toEqual({
+          offlineCompanyId: companyId, offlineIssueId: issueId, offlineBotId: agentId,
+          offlineWorkspaceId: binding.id, offlineCwd: cwd, offlineFingerprint: fingerprint,
+        });
+      }
+      expect(attestations).toEqual(Array.from({ length: 3 }, () => ({ companyId, issueId, botId: agentId, action: "register" })));
+      const rows = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.sourceIssueId, issueId!));
+      expect(rows.map(({ id, cwd }) => ({ id, cwd }))).toEqual([{ id: binding.id, cwd }]);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.unstubAllGlobals();
+      setBotContainerRuntime(runtime);
+    }
+  }, 60_000);
 
   it("records one bot_container workspace per task and leaves no file on the board side", async () => {
     const fixture = await seedTwoIssuesOfOneAgent();

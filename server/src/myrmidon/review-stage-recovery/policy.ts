@@ -193,6 +193,7 @@ export type ReviewAdmissionDecision = "admit" | "wait_for_ci" | "wait_red";
 export interface ReviewAdmissionFacts {
   /** CI of the exact head the review decision is made on. */
   ci: ReviewPullRequestCiState;
+  ciReason?: string | null;
   /** Result of the exact-head `CI result` check, if CI has completed. */
   headFinalCheck: "green" | "red" | "unknown";
   /** A critical issue is reviewed in parallel with CI. */
@@ -200,6 +201,9 @@ export interface ReviewAdmissionFacts {
 }
 
 export function decideReviewAdmission(facts: ReviewAdmissionFacts): ReviewAdmissionDecision {
+  if (facts.ci === "unknown" && (facts.ciReason?.includes("budget_exhausted") || facts.ciReason?.startsWith("head_moved"))) {
+    return "wait_for_ci";
+  }
   if (facts.critical) return "admit";
   if (isReviewCiWaiting(facts.ci)) return "wait_for_ci";
   if (facts.ci === "complete" && facts.headFinalCheck === "unknown") return "wait_for_ci";

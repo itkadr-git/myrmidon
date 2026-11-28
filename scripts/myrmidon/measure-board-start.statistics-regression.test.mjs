@@ -56,21 +56,24 @@ describe("measure-board-start statistics regressions", () => {
       "--json",
     ]);
     const runs = Object.freeze([
-      Object.freeze({ index: 1, elapsedMs: 1234.5678, cold: true }),
-      Object.freeze({ index: 2, elapsedMs: 2500.5, cold: false }),
+      Object.freeze({ index: 1, firstHttp200Ms: 1000, elapsedMs: 1234.5678, cold: true }),
+      Object.freeze({ index: 2, firstHttp200Ms: 2000, elapsedMs: 2500.5, cold: false }),
     ]);
     const summary = Object.freeze({ min: 1234.5678, median: 1867.5339, max: 2500.5 });
 
     const result = buildResult(opts, runs, summary);
 
     assert.deepEqual(result.runs, [
-      { run: 1, seconds: 1.235, cold: true },
-      { run: 2, seconds: 2.501, cold: false },
+      { run: 1, firstHttp200Seconds: 1, seconds: 1.235, cold: true },
+      { run: 2, firstHttp200Seconds: 2, seconds: 2.501, cold: false },
     ]);
     assert.deepEqual(result.summary, {
       minSeconds: 1.235,
       medianSeconds: 1.868,
       maxSeconds: 2.501,
+      firstHttp200MinSeconds: 1,
+      firstHttp200MedianSeconds: 1.5,
+      firstHttp200MaxSeconds: 2,
     });
     assert.deepEqual(result.envKeys, ["SECRET_TOKEN", "FEATURE_FLAG"]);
     const serialized = JSON.stringify(result);

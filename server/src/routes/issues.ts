@@ -124,6 +124,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
+import { executionParticipantsSchema } from "./execution-participants-schema.js";
 import {
   and,
   asc,
@@ -4118,6 +4119,7 @@ export function issueRoutes(
     casteKey?: string | null;
     harnessKind?: string | null;
     executionWorkspacePreference?: string | null;
+    returningToOriginalEditor?: boolean;
   }): Promise<void> {
     if (!input.assigneeAgentId) return;
     if (input.status && ENGINEER_GATE_EXEMPT_STATUSES.has(input.status)) return;
@@ -4157,6 +4159,14 @@ export function issueRoutes(
       executionWorkspacePreference:
         input.executionWorkspacePreference ?? input.issue?.executionWorkspacePreference ?? null,
     });
+
+    // A documentation PR alone is not an engineering signal on a policy-driven
+    // return to the original editor. Explicit engineering signals still win.
+    if (
+      !isCode && input.returningToOriginalEditor && agent?.role === "editor" &&
+      input.issue?.casteKey === "techwriter" &&
+      !(input.issue.executionState as { stages?: unknown } | null)?.stages
+    ) return;
 
     if (!isCode && input.issue?.id) {
       try {
@@ -15007,7 +15017,91 @@ export function issueRoutes(
       assertBoard(req);
       const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
       if (!issue) return;
-      const body = req.body as { returnAssignee?: { type?: string; agentId?: string | null } | null; currentParticipant?: { type?: string; agentId?: string | null } | null };
+      const parsedBody = executionParticipantsSchema.safeParse(req.body);
+      if (!parsedBody.success) {
+        res.status(400).json({ error: "Invalid execution participant repair payload" });
+        return;
+      }
+      const body = parsedBody.data;
+      if ("expectedStageId" in body) {
+        const actor = getActorInfo(req);
+        const publications: ActivityPublication[] = [];
+        const updated = await db.transaction(async (tx) => {
+          const locked = await svc.getByIdForUpdate(issue.id, tx);
+          if (!locked || locked.companyId !== issue.companyId) throw notFound("Issue not found");
+          const state = parseIssueExecutionState(locked.executionState);
+          const reviewer = state?.currentParticipant;
+          const policy = normalizeIssueExecutionPolicy(locked.executionPolicy);
+          const stage = policy?.stages.find((entry) => entry.id === body.expectedStageId);
+          if (
+            locked.status !== "in_review" || state?.status !== "pending" ||
+            state.currentStageType !== "review" || state.currentStageId !== body.expectedStageId ||
+            stage?.type !== "review" || reviewer?.type !== "agent" || !reviewer.agentId ||
+            reviewer.agentId !== locked.assigneeAgentId ||
+            state.returnAssignee?.type !== "agent" || state.returnAssignee.agentId !== body.expectedReturnAssigneeAgentId
+          ) {
+            throw conflict("Review or return assignee changed. Reload the issue before repairing it.", {
+              code: "review_return_repair_stale",
+            });
+          }
+          const hold = await treeControlSvc.getActivePauseHoldGate(locked.companyId, locked.id);
+          if (hold) throw conflict("Task is paused. Resume it before repairing the review return.");
+
+          const boundRunIds = [locked.executionRunId, locked.checkoutRunId].filter((id): id is string => id !== null);
+          const [active] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.companyId, locked.companyId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+            or(
+              inArray(heartbeatRuns.id, boundRunIds),
+              and(
+                eq(heartbeatRuns.agentId, reviewer.agentId),
+                sql`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${locked.id}`,
+              ),
+            ),
+          )).limit(1);
+          if (active) {
+            throw conflict("Wait for the review run to finish without interrupting it.", {
+              code: "review_return_repair_active_run", runId: active.id,
+            });
+          }
+
+          const agentId = body.returnAssignee.agentId;
+          if (agentId === body.expectedReturnAssigneeAgentId) {
+            throw unprocessable("Replacement must differ from the saved return assignee.");
+          }
+          const [target] = await tx.select({ role: agents.role, status: agents.status }).from(agents)
+            .where(and(eq(agents.companyId, locked.companyId), eq(agents.id, agentId)))
+            .for("share");
+          if (!target || !isAgentStatusInvokable(target.status)) {
+            throw conflict("Return assignee must be an active agent in the same company.");
+          }
+          if (target.role !== "engineer" || agentId === reviewer.agentId ||
+              policy?.stages.some((entry) => entry.type === "review" && entry.participants.some((participant) => participant.type === "agent" && participant.agentId === agentId))) {
+            throw unprocessable("Return assignee must be an engineer outside the review participants.");
+          }
+          // Preserve raw JSON fields not modeled by the execution-state parser.
+          const [repaired] = await tx.update(issueRows).set({
+            executionState: { ...locked.executionState, returnAssignee: body.returnAssignee },
+            updatedAt: new Date(),
+          }).where(and(eq(issueRows.id, locked.id), eq(issueRows.companyId, locked.companyId))).returning();
+          if (!repaired) throw notFound("Issue not found");
+          await logActivity(tx as unknown as Db, {
+            companyId: locked.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            runId: actor.runId,
+            action: "issue.review_return_assignee_repaired",
+            entityType: "issue",
+            entityId: locked.id,
+            issueId: locked.id,
+            details: { stageId: state.currentStageId, previousAgentId: body.expectedReturnAssigneeAgentId, agentId },
+          }, publications);
+          return repaired;
+        });
+        for (const publication of publications) publishActivity(publication);
+        res.json(updated);
+        return;
+      }
       const currentState = parseIssueExecutionState(issue.executionState);
       if (!currentState) {
         res.status(409).json({ error: "Issue has no valid execution state" });
@@ -15016,7 +15110,9 @@ export function issueRoutes(
       const nextState = { ...currentState };
       for (const key of ["returnAssignee", "currentParticipant"] as const) {
         if (!(key in body)) continue;
-        const value = body[key];
+        const value = key === "returnAssignee"
+          ? ("returnAssignee" in body ? body.returnAssignee : undefined)
+          : ("currentParticipant" in body ? body.currentParticipant : undefined);
         if (value !== null && (value?.type !== "agent" || !value.agentId)) {
           res.status(400).json({ error: `${key} must be an agent participant or null` });
           return;
@@ -15155,7 +15251,15 @@ export function issueRoutes(
       const movingToOrKeptInCodeInProgress =
         typeof req.body.status === "string" && targetStatus === "in_progress" && targetAssigneeAgentId != null;
 
-      if (isAssigneeChange || movingToOrKeptInCodeInProgress) {
+      // Only the policy transition can confirm a return; also recheck it on the locked row.
+      const documentationReturnCandidate =
+        existing.status === "in_review" && existing.casteKey === "techwriter" &&
+        stageState?.currentStageType === "review" && stageHandBackAssigneeId !== null &&
+        stageParticipant?.agentId === actor.agentId &&
+        ["assigneeAgentId", "assigneeUserId", "executionPolicy", "projectId", "casteKey", "labelIds",
+          "harnessKind", "executionWorkspacePreference"].every((key) => req.body[key] === undefined);
+
+      if (!documentationReturnCandidate && (isAssigneeChange || movingToOrKeptInCodeInProgress)) {
         await assertEngineerForCodeIssue({
           companyId: existing.companyId,
           issue: existing,
@@ -15715,6 +15819,7 @@ export function issueRoutes(
         const routingStore = createPgReviewRoutingStore(db);
         candidateLoads = await routingStore.loadByAgent(existing.companyId);
       }
+      const requestedExecutionStatus = typeof updateFields.status === "string" ? updateFields.status : undefined;
       const transition = applyIssueExecutionPolicyTransition({
         // myrmidon(OPE-9031): senior escalation chain for the round limit.
         issue: transitionIssue,
@@ -15737,6 +15842,17 @@ export function issueRoutes(
         candidateLoads,
         restartPreferredParticipant: handoffPreferredReviewer,
       });
+      if (documentationReturnCandidate) {
+        await assertEngineerForCodeIssue({
+          companyId: existing.companyId,
+          issue: existing,
+          status: targetStatus,
+          assigneeAgentId: stageHandBackAssigneeId,
+          projectId: existing.projectId,
+          returningToOriginalEditor: transition.decision?.outcome === "changes_requested" &&
+            transition.patch.status === "in_progress" && transition.patch.assigneeAgentId === stageHandBackAssigneeId,
+        });
+      }
       // myrmidon(MON-RESTORE): capture and strip transient notice before persistence.
       const monitorClearNotice = transition.patch.monitorClearNotice as
         | { reason?: string | null; notes?: string | null }
@@ -15797,7 +15913,7 @@ export function issueRoutes(
         let diagnostic: Parameters<NonNullable<Parameters<typeof createReviewPullRequestCiResolver>[0]["onDiagnostic"]>>[0] | null = null;
         // OPE-15004: the write verdict gate is review admission — its reads are
         // always fresh, never served from the read cache.
-        const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, admission: true, onDiagnostic: (value) => { diagnostic = value; } }))({
+        const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, admission: true, allowCachedReviewReturn: transition.decision.outcome === "changes_requested", onDiagnostic: (value) => { diagnostic = value; } }))({
           companyId: existing.companyId,
           issueId: existing.id,
         });
@@ -17060,7 +17176,7 @@ export function issueRoutes(
                 )
               : [];
             const lockedTransitionIssue: typeof transitionIssue = {
-              ...existing,
+              ...transitionIssue,
               ...lockedExisting,
               assigneeAgentRole: undefined,
               executionReviewParticipantAgentIds: lockedReviewParticipants,
@@ -17079,7 +17195,8 @@ export function issueRoutes(
               previousPolicy: previousExecutionPolicy,
               // myrmidon(OPE-10045): re-check a pre-merge approval as the
               // approval it is, so a stage that changed under the lock refuses it.
-              requestedStatus: reviewApprovalPendingMerge ? "done" : updateFields.status,
+              // Recompute from the request, not the preliminary transition's status.
+              requestedStatus: reviewApprovalPendingMerge ? "done" : requestedExecutionStatus,
               requestedAssigneePatch: explicitAssigneePatch,
               actor: {
                 agentId: actor.agentId ?? null,
@@ -17091,6 +17208,26 @@ export function issueRoutes(
               monitorExplicitlyUpdated:
                 req.body.executionPolicy !== undefined && monitorChanged,
             });
+            if (documentationReturnCandidate && lockedTransition.patch.status === "in_progress") {
+              const lockedState = parseIssueExecutionState(lockedExisting.executionState);
+              const currentLabels = await tx.select({ name: labels.name }).from(issueLabels)
+                .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+                .where(eq(issueLabels.issueId, lockedExisting.id));
+              await assertEngineerForCodeIssue({
+                companyId: lockedExisting.companyId,
+                issue: { ...lockedExisting, labels: currentLabels },
+                status: "in_progress",
+                assigneeAgentId: typeof lockedTransition.patch.assigneeAgentId === "string"
+                  ? lockedTransition.patch.assigneeAgentId : lockedExisting.assigneeAgentId,
+                projectId: lockedExisting.projectId,
+                returningToOriginalEditor: lockedTransition.decision?.outcome === "changes_requested" &&
+                  lockedExisting.status === "in_review" && lockedState?.status === "pending" &&
+                  lockedState.currentStageType === "review" && lockedState.currentParticipant?.type === "agent" &&
+                  lockedState.currentParticipant.agentId === actor.agentId && lockedState.returnAssignee?.type === "agent" &&
+                  lockedState.returnAssignee.agentId === stageHandBackAssigneeId &&
+                  lockedTransition.patch.assigneeAgentId === stageHandBackAssigneeId,
+              });
+            }
             if (
               reviewApprovalPendingMerge &&
               lockedTransition.decision?.outcome !== "approved"
@@ -17117,7 +17254,7 @@ export function issueRoutes(
               let diagnostic: Parameters<NonNullable<Parameters<typeof createReviewPullRequestCiResolver>[0]["onDiagnostic"]>>[0] | null = null;
               // OPE-15004: the write verdict gate is review admission — its reads are
               // always fresh, never served from the read cache.
-              const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, admission: true, onDiagnostic: (value) => { diagnostic = value; } }))({
+              const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, admission: true, allowCachedReviewReturn: lockedTransition.decision.outcome === "changes_requested", onDiagnostic: (value) => { diagnostic = value; } }))({
                 companyId: lockedExisting.companyId,
                 issueId: lockedExisting.id,
               });
@@ -17395,6 +17532,7 @@ export function issueRoutes(
                   }
                   const admissionDecision = decideReviewAdmission({
                     ci: ci.state,
+                    ciReason: ci.reason,
                     headFinalCheck:
                       ci.state !== "complete" ? "unknown" :
                       ci.finalCheckConclusion === "failure" ? "red" :
@@ -18678,6 +18816,7 @@ export function issueRoutes(
         deferExecutionReviewWakeForCi =
           decideReviewAdmission({
             ci: reviewCi.state,
+            ciReason: reviewCi.reason,
             headFinalCheck:
               reviewCi.state !== "complete" ? "unknown" :
               reviewCi.finalCheckConclusion === "failure" ? "red" :

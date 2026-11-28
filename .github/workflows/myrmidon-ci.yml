@@ -34,12 +34,17 @@ on:
     # workflow name, so it cannot supersede the runs of this one): it cancels the
     # running run on the head and re-runs it; the `plan` step then reads the PR
     # labels live because the payload of a re-run is the old one.
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
     types: [checks_requested]
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      reason:
+        description: Reason for running full CI
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -79,6 +84,7 @@ env:
 jobs:
   plan:
     name: plan
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # OPE-13002: release runs (main pushes and release PRs — anything the plan
     # step classifies is_release=true) start on the priority runner pool
     # (vars.CI_RUNNER_PRIORITY) ahead of queued ordinary runs; ordinary runs
@@ -91,6 +97,16 @@ jobs:
       tier: ${{ steps.plan.outputs.tier }}
       is_release: ${{ steps.plan.outputs.is_release }}
     steps:
+      - name: Record manual run reason
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          REASON: ${{ github.event.inputs.reason }}
+        run: |
+          if [[ ! "$REASON" =~ [^[:space:]] ]]; then
+            echo '::error::A non-empty dispatch reason is required'
+            exit 1
+          fi
+          printf 'Manual CI reason: %s\n' "$REASON" >> "$GITHUB_STEP_SUMMARY"
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -613,6 +629,7 @@ jobs:
     # gitleaks, the internal-address scan, dependency licenses and plugin
     # compatibility. Every step runs even if an earlier one failed.
     name: checks
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN) || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
@@ -892,6 +909,7 @@ jobs:
     # minutes and a red dockergate must not merge. The image itself is built by
     # myrmidon-dockergate.yml. See docs/myrmidon/dockergate.md.
     name: go tools (dockergate + fleetd)
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # fleetd is folded in (one checkout, one runner): tools/fleetd, see
     # docs/myrmidon/fleetd-vmexec.md. Every step runs even if an earlier one failed.
     runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN_GO) || vars.CI_RUNNER_GO || '"ubuntu-latest"') }}
@@ -1016,7 +1034,7 @@ jobs:
   plugin-readiness:
     name: plugin readiness timing
     needs: plan
-    if: ${{ !cancelled() && needs.plan.outputs.tier != 'docs' }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) && needs.plan.outputs.tier != 'docs' }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_CHECKS || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 15
     services:
@@ -1094,6 +1112,7 @@ jobs:
 
   deployed-migrations:
     name: Deployed migration numbers
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 5
     steps:
@@ -1127,8 +1146,8 @@ jobs:
     # stays so a run whose `plan` failed still fails the summary (re-gating on
     # `needs.plan.result` would publish a satisfying `skipped` check on a red
     # plan: GitHub reads `skipped` as passed, OPE-12841, PR #2965).
-    name: CI result
-    if: ${{ !cancelled() }}
+    name: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && 'draft CI omitted' || 'CI result' }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     needs: [plan, migration-guard, typecheck, tests-affected, tests, tests-other, checks, dockergate, plugin-readiness, deployed-migrations]
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}
     timeout-minutes: 5
@@ -1177,6 +1196,11 @@ jobs:
           if [ ! -s "$jobs_file" ]; then
             echo "ERROR: Unable to fetch job data from GitHub API after retries" >&2
             exit 1
+          fi
+          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ]; then
+            export CI_ATTEMPT_STARTED_AT
+            CI_ATTEMPT_STARTED_AT="$(gh api "repos/$REPO/actions/runs/$RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --jq '.run_started_at // empty')"
+            [ -n "$CI_ATTEMPT_STARTED_AT" ] || { echo 'ERROR: Missing attempt start timestamp' >&2; exit 1; }
           fi
           # No checkout: it fails on some self-hosted runners. Read the script of this commit through the API.
           gh api -H "Accept: application/vnd.github.raw" "repos/$REPO/contents/scripts/myrmidon/ci/queue-metrics.mjs?ref=$GITHUB_SHA" > "$RUNNER_TEMP/queue-metrics.mjs"

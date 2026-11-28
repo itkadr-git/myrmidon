@@ -14,6 +14,7 @@ import {
   heartbeatRuns,
   issueApprovals,
   issueComments,
+  issueExecutionDecisions,
   issueInboxArchives,
   issueRecoveryActions,
   issueThreadInteractions,
@@ -25,6 +26,19 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+
+const { wakeup } = vi.hoisted(() => ({ wakeup: vi.fn(async () => null) }));
+vi.mock(import("../services/heartbeat.js"), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    // Exercise API persistence without launching the next agent in this fixture.
+    heartbeatService: (...args: Parameters<typeof actual.heartbeatService>) => ({
+      ...actual.heartbeatService(...args),
+      wakeup,
+    }),
+  };
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -47,10 +61,12 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
 
   afterEach(async () => {
     enqueueWakeup.mockClear();
+    wakeup.mockClear();
     await db.delete(issueThreadInteractions);
     await db.delete(issueApprovals);
     await db.delete(approvals);
     await db.delete(issueComments);
+    await db.delete(issueExecutionDecisions);
     await db.delete(issueRecoveryActions);
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
@@ -209,6 +225,66 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
     });
     return runId;
   }
+
+  it("repairs an incompatible review return only after the live run exits, preserving state and history", async () => {
+    const { companyId, assigneeAgentId: reviewer, peerAgentId: engineer, memberUserId, viewerUserId } = await seedCompany("REP");
+    const editor = randomUUID();
+    await db.insert(agents).values({ id: editor, companyId, name: "Editor", role: "editor", status: "idle", adapterType: "codex_local" });
+    const issueId = await seedReview({ companyId, assigneeAgentId: reviewer, identifier: "REP-1" });
+    const stage = randomUUID();
+    const priorStage = randomUUID();
+    const [priorDecision] = await db.insert(issueExecutionDecisions).values({
+      companyId, issueId, stageId: priorStage, stageType: "approval", outcome: "approved", body: "Prior approval",
+    }).returning();
+    const [priorComment] = await db.insert(issueComments).values({ companyId, issueId, body: "Review context" }).returning();
+    const policy = { mode: "normal", stages: [{ id: stage, type: "review", approvalsNeeded: 1, participants: [{ type: "agent", agentId: reviewer }] }] };
+    const state = {
+      status: "pending", currentStageId: stage, currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: reviewer }, returnAssignee: { type: "agent", agentId: editor },
+      completedStageIds: [priorStage], lastDecisionId: priorDecision.id, lastDecisionOutcome: "approved",
+      reviewRequest: { instructions: "Review this diff" }, unknownFutureField: "preserve me",
+    };
+    await db.update(issues).set({ casteKey: "engineer", executionPolicy: policy, executionState: state }).where(eq(issues.id, issueId));
+    const runId = await seedRun(companyId, reviewer, issueId);
+    const endpoint = `/api/issues/${issueId}/execution-participants`;
+    const board = request(app(boardActor(companyId, memberUserId)));
+    const reviewerRequest = request(app(agentActor(companyId, reviewer, runId)));
+    const replacement = { type: "agent", agentId: engineer };
+    const payload = { returnAssignee: replacement, expectedStageId: stage, expectedReturnAssigneeAgentId: editor };
+    const verdict = await reviewerRequest.patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "Changes requested: fix the diff." }).expect(422);
+    expect(verdict.body.details.code).toBe("issue_requires_engineer");
+    await request(app(boardActor(companyId, viewerUserId, "viewer"))).patch(endpoint).send(payload).expect(403);
+    const active = await board.patch(endpoint).send(payload).expect(409);
+    expect(active.body.details).toMatchObject({ code: "review_return_repair_active_run", runId });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].status).toBe("running");
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].executionState).toEqual(state);
+
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+    await board.patch(endpoint).send({ ...payload, expectedStageId: randomUUID() }).expect(409);
+    await board.patch(endpoint).send({ ...payload, returnAssignee: { type: "agent", agentId: reviewer } }).expect(422);
+    await board.patch(endpoint).send({ ...payload, returnAssignee: { type: "agent", agentId: editor } }).expect(422);
+    const repairs = await Promise.all([board.patch(endpoint).send(payload), board.patch(endpoint).send(payload)]);
+    expect(repairs.map((result) => result.status).sort()).toEqual([200, 409]);
+    const readback = await board.get(`/api/issues/${issueId}`).expect(200);
+    expect(readback.body).toMatchObject({ status: "in_review", assigneeAgentId: reviewer, executionPolicy: policy });
+    expect(readback.body.executionState).toEqual({ ...state, returnAssignee: replacement });
+    expect(await db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, issueId))).toEqual([priorDecision]);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).toEqual([priorComment]);
+    const repairEvents = await db.select().from(activityLog).where(eq(activityLog.action, "issue.review_return_assignee_repaired"));
+    expect(repairEvents).toMatchObject([{ actorId: memberUserId, entityId: issueId, details: { stageId: stage, previousAgentId: editor, agentId: engineer } }]);
+    expect(wakeup).not.toHaveBeenCalled();
+
+    const nextRunId = await seedRun(companyId, reviewer, issueId);
+    const returned = await request(app(agentActor(companyId, reviewer, nextRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_progress", comment: "Changes requested: fix the diff." });
+    expect(returned.status, JSON.stringify(returned.body)).toBe(200);
+    expect(returned.body).toMatchObject({ status: "in_progress", assigneeAgentId: engineer });
+    const decisions = await db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, issueId));
+    expect(decisions).toEqual(expect.arrayContaining([
+      priorDecision, expect.objectContaining({ stageId: stage, actorAgentId: reviewer, outcome: "changes_requested" }),
+    ]));
+  });
 
   it("denies agents, viewers, and cross-company users without exposing issue existence", async () => {
     const primary = await seedCompany("SRD");

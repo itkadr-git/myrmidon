@@ -59,6 +59,17 @@ Once per scan pass (at most once a minute; the scheduler queue ticks every
 A nonzero count of stall interrupts on a healthy board means runs really are
 stalling and the sweep is doing its job, not that the server is broken.
 
+## Distinguish controller lease loss
+
+`Legacy controller lease lost` is separate from the progress-based
+`run_stalled` sweep. After a legacy controller's local lease deadline, if the
+renewal response is delayed, the server checks the committed lease. A running
+run stays active when the same controller still owns an unexpired lease. The
+controller aborts if ownership is lost or changes, the lease is expired, or
+the run is no longer running. The verification read is time-bounded; a failed
+or unanswered read also causes the controller to abort. A late renewal
+response does not replace the deadline established by the committed lease.
+
 ## Metrics
 
 The module exposes `countRunStallInterrupts`, a read-only count of runs the

@@ -19,6 +19,10 @@ import { createPullRequestMergeDetailsResolver } from "./services/github-pull-re
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server as HttpServer } from "node:http";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
+import express from "express";
+import { acceptanceServiceRoutes } from "./routes/acceptance-service.js";
+import { errorHandler } from "./middleware/index.js";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -1342,7 +1346,31 @@ async function startServerWithDatabaseTeardown(
   writeProductEnv(process.env, "API_URL", configuredApiUrl); // myrmidon(REBRAND-C)
 
   let startupListenerBound = false;
+  let acceptanceListener: HttpsServer | null = null;
   try {
+  // A separate listener never trusts proxy-supplied certificate identities.
+  const acceptancePort = readProductEnv("ACCEPTANCE_SERVICE_PORT");
+  const acceptanceKey = readProductEnv("ACCEPTANCE_SERVICE_TLS_KEY_FILE");
+  const acceptanceCert = readProductEnv("ACCEPTANCE_SERVICE_TLS_CERT_FILE");
+  const acceptanceCa = readProductEnv("ACCEPTANCE_SERVICE_TLS_CA_FILE");
+  if (processRoleProfile.role !== "api" && [acceptancePort, acceptanceKey, acceptanceCert, acceptanceCa].some(Boolean)) {
+    const port = Number(acceptancePort);
+    if (!acceptancePort || !acceptanceKey || !acceptanceCert || !acceptanceCa || !Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error("Incomplete or invalid acceptance service TLS configuration");
+    }
+    const serviceApp = express();
+    serviceApp.use("/api", acceptanceServiceRoutes(db));
+    serviceApp.use(errorHandler);
+    acceptanceListener = createHttpsServer({ key: readFileSync(acceptanceKey), cert: readFileSync(acceptanceCert), ca: readFileSync(acceptanceCa), requestCert: true, rejectUnauthorized: true }, serviceApp);
+    const listener = acceptanceListener;
+    await new Promise<void>((resolveListen, rejectListen) => {
+      listener.once("error", rejectListen);
+      listener.listen(port, readProductEnv("ACCEPTANCE_SERVICE_HOST") || "127.0.0.1", () => {
+        listener.off("error", rejectListen);
+        resolveListen();
+      });
+    });
+  }
   // myrmidon(OPE-11755): runnerd is local; bind its URL to the actual listening socket.
   // myrmidon(OPE-12274): `executesRuns` roles own runnerd registrations (worker in
   // single mode serves the public port itself), so the PRP upgrade handler must
@@ -3363,6 +3391,7 @@ async function startServerWithDatabaseTeardown(
     // myrmidon(PROCS-1.1): the worker's internal listener is a second server,
     // so it needs its own close.
     workerLoopbackServer?.close();
+    if (acceptanceListener) await closeHttpListenerForShutdown({ server: acceptanceListener, signal, log: logger });
     stopBotContainers(); // myrmidon(W2a)
     shutdownIdleStopService(); // myrmidon(IDLE-STOP)
     stopLitellmCostSweep(); // myrmidon(M2-A)
@@ -3522,6 +3551,7 @@ async function startServerWithDatabaseTeardown(
     shutdown: (signal = "SIGTERM") => shutdown(signal, false),
   };
   } catch (error) {
+    if (acceptanceListener?.listening) await new Promise<void>((resolveClose) => acceptanceListener?.close(() => resolveClose()));
     if (startupListenerBound) {
       await new Promise<void>((resolveClose) => {
         try {

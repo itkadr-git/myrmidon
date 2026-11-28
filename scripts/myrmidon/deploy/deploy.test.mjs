@@ -27,6 +27,7 @@ case "$1" in
     case "$2" in
       inspect)
         case "$*" in
+          *RepoDigests*) cat "$SANDBOX/repo-digests" 2>/dev/null || exit 1; exit 0 ;;
           *postgres:16-alpine*)
             case "$*" in *-f*) echo /var/lib/postgresql/data ;; esac
             exit 0 ;;
@@ -125,7 +126,10 @@ case "$1" in
   inspect)
     # a container exists for every service and runs; its image is not recorded
     # here (the previous image then falls back to the override file)
-    case "$*" in *"{{.State.Status}} {{.State.Restarting}}"*) echo "running false" ;; esac
+    case "$*" in
+      *"{{.State.Status}} {{.State.Restarting}}"*) echo "running false" ;;
+      *"{{.Image}}"*) echo "sha256:imageid" ;;
+    esac
     exit 0 ;;
   compose)
     case "$*" in
@@ -379,6 +383,15 @@ printf '/dev/fake 100000000 1000000 99000000 1%% /var/lib/docker\\n'
       "",
     ].join("\n"),
   );
+  if (labelVersion.includes("-rc.")) {
+    const manifest = path.join(dir, "release-components.json");
+    fs.writeFileSync(manifest, JSON.stringify({ schema: 1, components: {
+      board: { repository: CI_IMAGE, digest: NEW },
+      dockergate: { repository: `${CI_IMAGE}-dockergate`, digest: `sha256:${"c".repeat(64)}` },
+      fleetd: { repository: `${CI_IMAGE}-fleetd`, digest: `sha256:${"d".repeat(64)}` },
+    } }));
+    fs.appendFileSync(config, `MYRMIDON_RELEASE_MANIFEST_FILE=${manifest}\n`);
+  }
   return { dir, bin, config, override, unitDir, noGit, predeployEnv };
 }
 
@@ -437,6 +450,159 @@ const callsWithoutVersionStamp = (sb) =>
 const maintenance = (sb) => read(path.join(sb.dir, "maintenance.log"));
 
 describe("deploy.sh", () => {
+  it("requires an independently supplied commit and rejects a wrong RC file before registry or deploy calls", () => {
+    const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
+    const args = ["--release", "myr-v1.6.9-rc.22", "--dry-run"];
+    const noCommit = run(sb, "deploy.sh", args);
+    assert.notEqual(noCommit.code, 0, noCommit.out);
+    assert.match(noCommit.out, /requires --expect-commit/);
+    const file = path.join(sb.dir, "release-components.json");
+    const manifest = JSON.parse(read(file));
+    fs.writeFileSync(file, JSON.stringify({ ...manifest,
+      tag: "myr-v1.6.9-rc.21", version: "1.6.9-rc.21", commit: COMMIT,
+    }));
+    const wrongTag = run(sb, "deploy.sh", [...args, "--expect-commit", COMMIT]);
+    assert.notEqual(wrongTag.code, 0, wrongTag.out);
+    assert.match(wrongTag.out, /manifest tag or commit/);
+    assert.doesNotMatch(calls(sb), /imagetools inspect|docker pull|up -d/);
+    assert.equal(maintenance(sb), "");
+  });
+
+  it("refuses an RC deploy when release components are disabled", () => {
+    const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
+    fs.appendFileSync(sb.config, "MYRMIDON_RELEASE_COMPONENTS=none\n");
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /RC deploy requires dockergate and fleetd release components/);
+    assert.doesNotMatch(calls(sb), /docker pull|up -d --no-deps server/);
+    assert.equal(maintenance(sb), "");
+  });
+
+  it("refuses an RC deploy without its matching release manifest", () => {
+    const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
+    fs.rmSync(path.join(sb.dir, "release-components.json"));
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /RC deploy requires a matching release-components manifest/);
+    assert.doesNotMatch(calls(sb), /docker pull|up -d --no-deps server/);
+    assert.equal(maintenance(sb), "");
+  });
+
+  it("refuses an RC deploy with --urgent before changing anything", () => {
+    const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--urgent", "critical fix"]);
+    assert.notEqual(code, 0);
+    assert.match(out, /RC deploy refuses --urgent/);
+    assert.doesNotMatch(calls(sb), /docker pull|myr-predeploy-/);
+  });
+
+  it("refuses an RC deploy before pull when the mandatory nightly PBS query fails", () => {
+    const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
+    fs.writeFileSync(path.join(sb.bin, "runuser"), '#!/bin/sh\nexit 42\n', { mode: 0o755 });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /PBS query failed: archives/);
+    assert.doesNotMatch(calls(sb), /docker pull|up -d --no-deps server/);
+    assert.equal(maintenance(sb), "");
+    assert.equal(fs.existsSync(path.join(sb.dir, "dumps")), false);
+  });
+
+  it("refuses RC deployment if the actual running image has no verified RepoDigest", () => {
+    const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
+    const start = Math.floor(Date.now() / 1000) - 600;
+    const stamp = new Date(start * 1000).toISOString().replace('.000Z', 'Z');
+    const tasks = JSON.stringify([{ id: "100", node: "hk01", type: "vzdump", status: "OK", starttime: start, endtime: start + 10 }]);
+    fs.writeFileSync(path.join(sb.bin, "runuser"), '#!/bin/sh\ncase "$*" in *pvesm*) printf "%s\\n" "$ARCHIVE";; *) printf "%s\\n" "$TASKS";; esac\n', { mode: 0o755 });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW], undefined, {
+      ARCHIVE: `pbs-offsite:backup/vm/100/${stamp}`, TASKS: tasks,
+    });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /actual running board image digest unavailable/);
+    assert.doesNotMatch(calls(sb), /docker pull|up -d --no-deps server/);
+    assert.equal(maintenance(sb), "");
+  });
+
+  it("refuses an RC rollback target with ambiguous running image RepoDigests", () => {
+    const sb = sandbox({ labelVersion: "1.6.9-rc.22" });
+    fs.writeFileSync(path.join(sb.dir, "repo-digests"), JSON.stringify([`${CI_IMAGE}@${OLD}`, `${CI_IMAGE}@${NEW}`]));
+    const start = Math.floor(Date.now() / 1000) - 600;
+    const stamp = new Date(start * 1000).toISOString().replace('.000Z', 'Z');
+    const tasks = JSON.stringify([{ id: "100", node: "hk01", type: "vzdump", status: "OK", starttime: start, endtime: start + 10 }]);
+    fs.writeFileSync(path.join(sb.bin, "runuser"), '#!/bin/sh\ncase "$*" in *pvesm*) printf "%s\\n" "$ARCHIVE";; *) printf "%s\\n" "$TASKS";; esac\n', { mode: 0o755 });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW], undefined, {
+      ARCHIVE: `pbs-offsite:backup/vm/100/${stamp}`, TASKS: tasks,
+    });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /missing or ambiguous RepoDigest/);
+    assert.doesNotMatch(calls(sb), /docker pull|up -d --no-deps server/);
+    assert.equal(maintenance(sb), "");
+  });
+
+  it("deploys an RC with nightly PBS and records the actual rollback digest without a database copy", () => {
+    const sb = sandbox({ labelVersion: "1.6.9-rc.22", health: { status: "ok", version: "1.6.9-rc.22", commit: COMMIT } });
+    fs.writeFileSync(path.join(sb.dir, "repo-digests"), JSON.stringify([`${CI_IMAGE}@${OLD}`]));
+    const start = Math.floor(Date.now() / 1000) - 600;
+    const stamp = new Date(start * 1000).toISOString().replace('.000Z', 'Z');
+    const tasks = JSON.stringify([{ id: "100", node: "hk01", type: "vzdump", status: "OK", starttime: start, endtime: start + 10 }]);
+    fs.writeFileSync(path.join(sb.bin, "runuser"), '#!/bin/sh\ncase "$*" in *pvesm*) printf "%s\\n" "$ARCHIVE";; *) printf "%s\\n" "$TASKS";; esac\n', { mode: 0o755 });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW], undefined, {
+      ARCHIVE: `pbs-offsite:backup/vm/100/${stamp}`, TASKS: tasks,
+    });
+    assert.equal(code, 0, out);
+    assert.match(calls(sb), /docker pull/);
+    assert.equal(read(path.join(sb.dir, "state/previous-image")).trim(), `${CI_IMAGE}@${OLD}`);
+    assert.equal(maintenance(sb), "enter\nexit\n");
+    assert.doesNotMatch(calls(sb), /myr-predeploy-/);
+    assert.equal(fs.existsSync(path.join(sb.dir, "dumps")), false);
+    const rollback = run(sb, "rollback.sh", []);
+    assert.equal(rollback.code, 0, rollback.out);
+    assert.match(read(sb.override), new RegExp(`@${OLD}`));
+    assert.match(rollback.out, /database not restored/);
+    assert.doesNotMatch(calls(sb), /myr-predeploy-/);
+  });
+
+  it("nightly PBS precheck never falls through to a real dump or deploy", () => {
+    const sb = sandbox();
+    const start = Math.floor(Date.now() / 1000) - 600;
+    const stamp = new Date(start * 1000).toISOString().replace('.000Z', 'Z');
+    const tasks = JSON.stringify([{ id: "100", node: "hk01", type: "vzdump", status: "OK", starttime: start, endtime: start + 10 }]);
+    fs.writeFileSync(path.join(sb.bin, "runuser"), '#!/bin/sh\ncase "$*" in *pvesm*) printf "%s\\n" "$ARCHIVE";; *) printf "%s\\n" "$TASKS";; esac\n', { mode: 0o755 });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--nightly-pbs-precheck"], undefined, {
+      ARCHIVE: `pbs-offsite:backup/vm/100/${stamp}`, TASKS: tasks,
+    });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /PBS precheck is not a deploy authorization/);
+    assert.doesNotMatch(calls(sb), /docker pull|up -d --no-deps server/);
+    assert.equal(maintenance(sb), "");
+    assert.equal(fs.existsSync(path.join(sb.dir, "dump.log")), false);
+  });
+
+  it("nightly PBS precheck refuses a deploy when the operator query fails", () => {
+    const sb = sandbox();
+    fs.writeFileSync(path.join(sb.bin, "runuser"), '#!/bin/sh\nexit 42\n', { mode: 0o755 });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--nightly-pbs-precheck", "--dry-run"]);
+    assert.notEqual(code, 0);
+    assert.match(out, /PBS query failed: archives/);
+    assert.doesNotMatch(calls(sb), /docker pull|up -d --no-deps server/);
+    assert.equal(maintenance(sb), "");
+  });
+
+  it("nightly PBS precheck does not replace the existing database rehearsal", () => {
+    const sb = sandbox();
+    const start = Math.floor(Date.now() / 1000) - 600;
+    const stamp = new Date(start * 1000).toISOString().replace('.000Z', 'Z');
+    const tasks = JSON.stringify([{ id: "100", node: "hk01", type: "vzdump", status: "OK", starttime: start, endtime: start + 10 }]);
+    fs.writeFileSync(path.join(sb.bin, "runuser"), '#!/bin/sh\ncase "$*" in *pvesm*) printf "%s\\n" "$ARCHIVE";; *) printf "%s\\n" "$TASKS";; esac\n', { mode: 0o755 });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--nightly-pbs-precheck", "--dry-run"], undefined, {
+      ARCHIVE: `pbs-offsite:backup/vm/100/${stamp}`, TASKS: tasks,
+    });
+    assert.equal(code, 0, out);
+    assert.match(out, /PBS verified/);
+    assert.match(out, /does not prove migration rehearsal or database rollback/);
+    assert.match(out, /dump database with DUMP_COMMAND/);
+    assert.match(out, /PREDEPLOY-DB-CHECK/);
+  });
+
   it("deploys by digest: dump, maintenance, image switch, health, exit", () => {
     const sb = sandbox();
     const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);

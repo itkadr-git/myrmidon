@@ -28,6 +28,7 @@ export { projectTokenQuotas } from "./project_token_quotas.js"; // myrmidon(1.6.
 export { agentConfigRevisions } from "./agent_config_revisions.js";
 export { agentInstructionsRevisions, type AgentInstructionsRevisionFile } from "./agent_instructions_revisions.js";
 export { agentApiKeys } from "./agent_api_keys.js";
+export { acceptanceServiceCredentials } from "./acceptance_service_credentials.js";
 export { agentRuntimeState } from "./agent_runtime_state.js";
 export { agentTaskSessions, agentSessionGoalActions } from "./agent_task_sessions.js";
 export { agentWakeupRequests } from "./agent_wakeup_requests.js";
@@ -147,6 +148,7 @@ export { llmCallTraces } from "./llm_call_traces.js";
 export { completionContracts } from "./completion_contracts.js";
 export { nativeRunResults } from "./native_run_results.js";
 export { nativeRunFinalizations } from "./native_run_finalizations.js";
+export { nativeFinalizationGrants, nativeFinalizationRequests, nativeFinalizationOutbox } from "./native_finalization_admission.js";
 export { workAssessments } from "./work_assessments.js";
 // myrmidon(1.7 TOOL-COMPLAINTS-API, OPE-12228): agent complaints about tools.
 export { toolComplaints } from "./tool_complaints.js";

@@ -89,3 +89,32 @@ layout; unrecognized metadata and truncated or extra record fields are rejected
 conservatively. Only the supported human-readable layouts are accepted; other
 valid swanctl variants may return `unknown`. Run the tests with
 `node --test scripts/myrmidon/ipsec/parse-sas.test.mjs`.
+# swanctl configuration renderer
+
+`node scripts/myrmidon/ipsec/render-swanctl.mjs < input.json` writes an
+example IKEv2 PSK `swanctl.conf` to stdout. It only renders: it does not call
+`swanctl`, alter network state, or read the referenced secrets file. Review the
+result and the secret include separately before any use. The example addresses
+are synthetic.
+
+The JSON object must have exactly these fields (see `example.json`):
+
+- `name`: nonempty connection/child name, ASCII letters, digits, `_` or `-`.
+- `local` and `remote`: objects with exactly `endpoint`, `identity`, and
+  `trafficSelectors`. Endpoint and identity are nonempty single tokens;
+  identities may start with `@`. Traffic selectors are nonempty arrays of
+  single address/subnet tokens.
+- `proposals`: nonempty array of single IKE proposal tokens, in preference order.
+- `secretFile`: absolute path to a swanctl configuration include containing the
+  PSK secrets section; not a raw secret or key file. The include is emitted, not
+  opened. The operator is responsible for its contents and file permissions.
+
+Only conservative ASCII token characters are accepted; whitespace, quotes,
+control characters, braces, commas inside tokens, glob characters and unknown
+fields are rejected. This is syntax/injection validation, not proof that the
+addresses, selectors, proposals or secret file are valid for a deployment.
+Invalid JSON or schema exits nonzero without writing configuration to stdout.
+Order of arrays is preserved; identical inputs produce identical output.
+
+Run `node --test scripts/myrmidon/ipsec/render-swanctl.test.mjs` for the golden
+and rejection checks. No real network, keys, or daemon are used.
