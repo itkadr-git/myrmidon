@@ -32,7 +32,7 @@ export const STATE_ENV = "MYRMIDON_RELEASE_VENDOR_SHARE_STATE";
 export const NOT_COMPUTED = "не посчитано";
 
 const LINE_RE =
-  /Vendor-derived files:\s+(\d+)\s+of\s+(\d+)\s+\((\d+(?:\.\d+)?)\s*%\)/;
+  /Vendor-derived files:\s+(\d+)\s+of\s+(\d+)\s+\((\d+(?:\.\d+)?)\s*%\s*\)/;
 
 export function pctOf(summary) {
   return (summary.share * 100).toFixed(2);

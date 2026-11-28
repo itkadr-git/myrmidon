@@ -20,6 +20,10 @@ Below is a summary of the five core architecture pages. Links point to `docs/arc
 
 Across all five components, runtime and transport remain separated from authority: the server enforces company boundaries, tasks, approvals, and budget rules. Workspaces do not grant extra permissions; Chat links addressing to a conversation, Debates bounds model disagreement, and Agent Exchange tracks the room progression and each message's state.
 
+## Heartbeat wake storage
+
+The server removes repeated CI and equal event-digest content when it stores a wake snapshot, then reconstructs delivery fields and CI Markdown at dispatch. A different redacted wake digest remains separate to preserve its safe version. Digest character limits and UTF-8 byte budgets are distinct. See [heartbeat continuation storage and measurement](https://github.com/itkadr-git/myrmidon/blob/main/docs/performance/heartbeat_runs_optimization.md) for truncation, legacy replay, and measurement details.
+
 ## Sources
 
 Component source code lives in `server/src/myrmidon/`; exact paths are listed on each main page. The [system architecture](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/../start/architecture.md) page describes the overall request flow.

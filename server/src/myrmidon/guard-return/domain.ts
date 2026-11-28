@@ -60,6 +60,7 @@ export interface AgentSummary {
   role: string;
   status?: string;
   pausedAt?: Date | null;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface GuardReturnDecision {
@@ -318,6 +319,21 @@ export function decideGuardReturn(
   const { hasPr, authorAgentId: prAuthorId } = findEngineerPr(candidate.prWorkProducts, agentMap, runAgentMap);
   const isChangesRequested = hasChangesRequestedVerdict(candidate.executionState);
 
+  // A completed review hand-back to the original editor must not be undone
+  // merely because the project's default caste is engineer.
+  const state = candidate.executionState;
+  const returnAssignee = state?.returnAssignee as { type?: string; agentId?: string } | null | undefined;
+  if (
+    candidate.status === "in_progress" && candidate.casteKey === "techwriter" &&
+    candidate.assigneeRole === "editor" && state?.status === "changes_requested" &&
+    state.currentStageType === "review" && state.lastDecisionOutcome === "changes_requested" &&
+    typeof state.lastDecisionId === "string" && state.lastDecisionId.length > 0 &&
+    returnAssignee?.type === "agent" && returnAssignee.agentId === candidate.assigneeAgentId &&
+    !state.stages && !hasPr && !requiresEngineer({ ...candidate, labels: normalizeLabels(candidate.labels) })
+  ) {
+    return { action: "skip", reason: "Documentation review already returned to its original editor" };
+  }
+
   // Check if issue is a dev-project code issue
   const isCode = isDevProjectCodeIssue({
     labels: candidate.labels,
@@ -342,12 +358,7 @@ export function decideGuardReturn(
   const isAvailableEngineer = (id: string | null | undefined): boolean => {
     if (!id) return false;
     const agent = agentMap.get(id) ?? activeEngineers?.find((entry) => entry.id === id);
-    return Boolean(agent && agent.role === "engineer" && agent.status !== "paused" && agent.status !== "terminated" && agent.status !== "pending_approval" && !agent.pausedAt);
-  };
-  const isAvailableLead = (id: string | null | undefined): boolean => {
-    if (!id) return false;
-    const agent = agentMap.get(id);
-    return Boolean(agent && agent.role === "lead" && agent.status !== "paused" && agent.status !== "terminated" && agent.status !== "pending_approval" && !agent.pausedAt);
+    return Boolean(agent && agent.role === "engineer" && agent.status !== "retired" && agent.status !== "paused" && agent.status !== "terminated" && agent.status !== "pending_approval" && !agent.pausedAt && agent.metadata?.swarmQueueEligible !== false);
   };
 
   // Prefer the original author only while they can accept a new run.
@@ -369,24 +380,16 @@ export function decideGuardReturn(
     }
   }
 
-  // Priority 3: an active engineer, then the project lead for planning tasks.
+  // Priority 3: an eligible active engineer.
   if (!targetAssigneeAgentId && activeEngineers && activeEngineers.length > 0) {
     targetAssigneeAgentId = activeEngineers.find((agent) => isAvailableEngineer(agent.id))?.id ?? null;
     if (targetAssigneeAgentId) targetKind = "active_engineer";
   }
 
-  if (!targetAssigneeAgentId && candidate.projectId) {
-    const projectLead = candidate.projectLeadAgentId;
-    if (isAvailableLead(projectLead)) {
-      targetAssigneeAgentId = projectLead ?? null;
-      targetKind = "project_lead";
-    }
-  }
-
   if (!targetAssigneeAgentId) {
     return {
       action: "skip",
-      reason: "Could not find a valid engineer to return the task to",
+      reason: "Could not find an eligible available engineer to return the task to",
     };
   }
 

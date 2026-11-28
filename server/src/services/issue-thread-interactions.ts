@@ -3467,7 +3467,7 @@ export function issueThreadInteractionService(
           : [];
       const routeViaManagerChain = managerChain.length > 0;
 
-      if (!routeViaManagerChain && !normalizedData.addresseeAgentId && !normalizedData.addresseeUserId && actor.agentId) {
+      if (!routeViaManagerChain && !normalizedData.addresseeAgentId && !normalizedData.addresseeUserId && actor.agentId && policy.effectiveResolverPolicy !== "human_only") {
         const cannotTargetAgent =
           normalizedData.kind === "request_confirmation" &&
           (normalizedData.payload.toolAction !== undefined ||
@@ -3624,9 +3624,8 @@ export function issueThreadInteractionService(
       const isPlanApproval = normalizedData.kind === "request_confirmation" &&
         normalizedData.payload.target?.type === "issue_document" &&
         normalizedData.payload.target.key === "plan";
-      if (isPlanApproval && actor.agentId) {
-        // The plan approver is always computed by the board, never taken from the
-        // requesting agent, and can never be the creator (no self-approval).
+      if (isPlanApproval && actor.agentId && policy.effectiveResolverPolicy !== "human_only") {
+        // Engineering plan approvers are computed by the board and cannot be the creator.
         const targetAgentId = await resolvePlanApprovalRecipient(
           db,
           issue.companyId,

@@ -64,7 +64,6 @@ import { decideReviewReturnWake, recordSuppressedReviewReturn } from "../myrmido
 import {
   readReviewInfraCheckNames,
   readReviewReturnGuardEnabled,
-  reviewCommentReferencesCode,
   withChangesRequestedHeadSha,
 } from "../myrmidon/review-return-guard/policy.js";
 // myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): the review verdict is recorded as
@@ -125,6 +124,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
+import { executionParticipantsSchema } from "./execution-participants-schema.js";
 import {
   and,
   asc,
@@ -132,6 +132,7 @@ import {
   eq,
   inArray,
   isNull,
+  lt,
   ne,
   notInArray,
   or,
@@ -1622,6 +1623,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "execution_review_requested",
   "execution_verify_requested",
   "finish_successful_run_handoff",
+  "issue_monitor_due",
   "queued_run_stale_timeout",
   "goal_control",
   "heartbeat.disabled",
@@ -3840,6 +3842,12 @@ function logIssueListRequest(input: {
   });
 }
 
+function logReviewWriteCi(input: { issueId: string; runId: string | null | undefined; ci: Awaited<ReturnType<ReviewPullRequestCiResolver>>; diagnostic: { transportCalls: number; budget: { used: number; cap: number; windowMinutes: number } | null } | null }): void {
+  const reason = input.ci.reason?.match(/(?:budget_exhausted|budget_store_unavailable|network_error|http_401|http_403_rate_limited|http_403|http_429_rate_limited|skipped_rate_limited)/)?.[0] ?? null;
+  const headSha = input.ci.headSha && /^[a-f0-9]{40}$/i.test(input.ci.headSha) ? input.ci.headSha : null;
+  logger.info({ issueId: input.issueId, runId: input.runId ?? null, headSha, source: "review-recovery", state: input.ci.state, reason, transportCalls: input.diagnostic?.transportCalls ?? null, budget: input.diagnostic?.budget ?? null }, "review_write_ci_gate");
+}
+
 export function issueRoutes(
   db: Db,
   storage: StorageService,
@@ -3980,6 +3988,9 @@ export function issueRoutes(
       ) {
         return false;
       }
+      // OPE-15004: this is a wake-path gate, not review admission: it may share
+      // the process read cache. Either way it cannot decide the verdict — a
+      // premature wake still meets the fresh write gate before it can act.
       const admission = await readReviewAdmissionDecision({
         companyId: input.issue.companyId,
         issueId: input.issue.id,
@@ -4109,6 +4120,7 @@ export function issueRoutes(
     casteKey?: string | null;
     harnessKind?: string | null;
     executionWorkspacePreference?: string | null;
+    returningToOriginalEditor?: boolean;
   }): Promise<void> {
     if (!input.assigneeAgentId) return;
     if (input.status && ENGINEER_GATE_EXEMPT_STATUSES.has(input.status)) return;
@@ -4148,6 +4160,14 @@ export function issueRoutes(
       executionWorkspacePreference:
         input.executionWorkspacePreference ?? input.issue?.executionWorkspacePreference ?? null,
     });
+
+    // A documentation PR alone is not an engineering signal on a policy-driven
+    // return to the original editor. Explicit engineering signals still win.
+    if (
+      !isCode && input.returningToOriginalEditor && agent?.role === "editor" &&
+      input.issue?.casteKey === "techwriter" &&
+      !(input.issue.executionState as { stages?: unknown } | null)?.stages
+    ) return;
 
     if (!isCode && input.issue?.id) {
       try {
@@ -13781,6 +13801,10 @@ export function issueRoutes(
         }
         createLabelNames = existingLabels.map((r) => r.name);
       }
+      if (req.actor.type === "agent") {
+        const { assertAutoSliceChildHasReleaseLabel } = await import("../myrmidon/swarm-claim/auto-slice-children.js");
+        assertAutoSliceChildHasReleaseLabel({ parentTitle: createParent?.title, labelNames: createLabelNames });
+      }
       if (
         !watchdogProductBugFollowUp &&
         !(await assertTaskWatchdogCreateIssueAllowed(
@@ -15024,7 +15048,91 @@ export function issueRoutes(
       assertBoard(req);
       const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
       if (!issue) return;
-      const body = req.body as { returnAssignee?: { type?: string; agentId?: string | null } | null; currentParticipant?: { type?: string; agentId?: string | null } | null };
+      const parsedBody = executionParticipantsSchema.safeParse(req.body);
+      if (!parsedBody.success) {
+        res.status(400).json({ error: "Invalid execution participant repair payload" });
+        return;
+      }
+      const body = parsedBody.data;
+      if ("expectedStageId" in body) {
+        const actor = getActorInfo(req);
+        const publications: ActivityPublication[] = [];
+        const updated = await db.transaction(async (tx) => {
+          const locked = await svc.getByIdForUpdate(issue.id, tx);
+          if (!locked || locked.companyId !== issue.companyId) throw notFound("Issue not found");
+          const state = parseIssueExecutionState(locked.executionState);
+          const reviewer = state?.currentParticipant;
+          const policy = normalizeIssueExecutionPolicy(locked.executionPolicy);
+          const stage = policy?.stages.find((entry) => entry.id === body.expectedStageId);
+          if (
+            locked.status !== "in_review" || state?.status !== "pending" ||
+            state.currentStageType !== "review" || state.currentStageId !== body.expectedStageId ||
+            stage?.type !== "review" || reviewer?.type !== "agent" || !reviewer.agentId ||
+            reviewer.agentId !== locked.assigneeAgentId ||
+            state.returnAssignee?.type !== "agent" || state.returnAssignee.agentId !== body.expectedReturnAssigneeAgentId
+          ) {
+            throw conflict("Review or return assignee changed. Reload the issue before repairing it.", {
+              code: "review_return_repair_stale",
+            });
+          }
+          const hold = await treeControlSvc.getActivePauseHoldGate(locked.companyId, locked.id);
+          if (hold) throw conflict("Task is paused. Resume it before repairing the review return.");
+
+          const boundRunIds = [locked.executionRunId, locked.checkoutRunId].filter((id): id is string => id !== null);
+          const [active] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.companyId, locked.companyId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+            or(
+              inArray(heartbeatRuns.id, boundRunIds),
+              and(
+                eq(heartbeatRuns.agentId, reviewer.agentId),
+                sql`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${locked.id}`,
+              ),
+            ),
+          )).limit(1);
+          if (active) {
+            throw conflict("Wait for the review run to finish without interrupting it.", {
+              code: "review_return_repair_active_run", runId: active.id,
+            });
+          }
+
+          const agentId = body.returnAssignee.agentId;
+          if (agentId === body.expectedReturnAssigneeAgentId) {
+            throw unprocessable("Replacement must differ from the saved return assignee.");
+          }
+          const [target] = await tx.select({ role: agents.role, status: agents.status }).from(agents)
+            .where(and(eq(agents.companyId, locked.companyId), eq(agents.id, agentId)))
+            .for("share");
+          if (!target || !isAgentStatusInvokable(target.status)) {
+            throw conflict("Return assignee must be an active agent in the same company.");
+          }
+          if (target.role !== "engineer" || agentId === reviewer.agentId ||
+              policy?.stages.some((entry) => entry.type === "review" && entry.participants.some((participant) => participant.type === "agent" && participant.agentId === agentId))) {
+            throw unprocessable("Return assignee must be an engineer outside the review participants.");
+          }
+          // Preserve raw JSON fields not modeled by the execution-state parser.
+          const [repaired] = await tx.update(issueRows).set({
+            executionState: { ...locked.executionState, returnAssignee: body.returnAssignee },
+            updatedAt: new Date(),
+          }).where(and(eq(issueRows.id, locked.id), eq(issueRows.companyId, locked.companyId))).returning();
+          if (!repaired) throw notFound("Issue not found");
+          await logActivity(tx as unknown as Db, {
+            companyId: locked.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            runId: actor.runId,
+            action: "issue.review_return_assignee_repaired",
+            entityType: "issue",
+            entityId: locked.id,
+            issueId: locked.id,
+            details: { stageId: state.currentStageId, previousAgentId: body.expectedReturnAssigneeAgentId, agentId },
+          }, publications);
+          return repaired;
+        });
+        for (const publication of publications) publishActivity(publication);
+        res.json(updated);
+        return;
+      }
       const currentState = parseIssueExecutionState(issue.executionState);
       if (!currentState) {
         res.status(409).json({ error: "Issue has no valid execution state" });
@@ -15033,7 +15141,9 @@ export function issueRoutes(
       const nextState = { ...currentState };
       for (const key of ["returnAssignee", "currentParticipant"] as const) {
         if (!(key in body)) continue;
-        const value = body[key];
+        const value = key === "returnAssignee"
+          ? ("returnAssignee" in body ? body.returnAssignee : undefined)
+          : ("currentParticipant" in body ? body.currentParticipant : undefined);
         if (value !== null && (value?.type !== "agent" || !value.agentId)) {
           res.status(400).json({ error: `${key} must be an agent participant or null` });
           return;
@@ -15172,7 +15282,15 @@ export function issueRoutes(
       const movingToOrKeptInCodeInProgress =
         typeof req.body.status === "string" && targetStatus === "in_progress" && targetAssigneeAgentId != null;
 
-      if (isAssigneeChange || movingToOrKeptInCodeInProgress) {
+      // Only the policy transition can confirm a return; also recheck it on the locked row.
+      const documentationReturnCandidate =
+        existing.status === "in_review" && existing.casteKey === "techwriter" &&
+        stageState?.currentStageType === "review" && stageHandBackAssigneeId !== null &&
+        stageParticipant?.agentId === actor.agentId &&
+        ["assigneeAgentId", "assigneeUserId", "executionPolicy", "projectId", "casteKey", "labelIds",
+          "harnessKind", "executionWorkspacePreference"].every((key) => req.body[key] === undefined);
+
+      if (!documentationReturnCandidate && (isAssigneeChange || movingToOrKeptInCodeInProgress)) {
         await assertEngineerForCodeIssue({
           companyId: existing.companyId,
           issue: existing,
@@ -15758,6 +15876,7 @@ export function issueRoutes(
         const routingStore = createPgReviewRoutingStore(db);
         candidateLoads = await routingStore.loadByAgent(existing.companyId);
       }
+      const requestedExecutionStatus = typeof updateFields.status === "string" ? updateFields.status : undefined;
       const transition = applyIssueExecutionPolicyTransition({
         // myrmidon(OPE-9031): senior escalation chain for the round limit.
         issue: transitionIssue,
@@ -15780,6 +15899,17 @@ export function issueRoutes(
         candidateLoads,
         restartPreferredParticipant: handoffPreferredReviewer,
       });
+      if (documentationReturnCandidate) {
+        await assertEngineerForCodeIssue({
+          companyId: existing.companyId,
+          issue: existing,
+          status: targetStatus,
+          assigneeAgentId: stageHandBackAssigneeId,
+          projectId: existing.projectId,
+          returningToOriginalEditor: transition.decision?.outcome === "changes_requested" &&
+            transition.patch.status === "in_progress" && transition.patch.assigneeAgentId === stageHandBackAssigneeId,
+        });
+      }
       // myrmidon(MON-RESTORE): capture and strip transient notice before persistence.
       const monitorClearNotice = transition.patch.monitorClearNotice as
         | { reason?: string | null; notes?: string | null }
@@ -15835,16 +15965,45 @@ export function issueRoutes(
           );
         }
       }
-      if (transition.decision?.outcome === "changes_requested") {
-        const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+      let reviewCiAudit: { source: string; headSha: string | null } | null = null;
+      if (transition.decision?.outcome === "changes_requested" || transition.decision?.outcome === "approved") {
+        let diagnostic: Parameters<NonNullable<Parameters<typeof createReviewPullRequestCiResolver>[0]["onDiagnostic"]>>[0] | null = null;
+        // OPE-15004: the write verdict gate is review admission — its reads are
+        // always fresh, never served from the read cache.
+        const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, admission: true, allowCachedReviewReturn: transition.decision.outcome === "changes_requested", onDiagnostic: (value) => { diagnostic = value; } }))({
           companyId: existing.companyId,
           issueId: existing.id,
         });
-        if ((ci.state === "pending" || ci.state === "unknown") && !reviewCommentReferencesCode(transition.decision?.body)) {
+        logReviewWriteCi({ issueId: existing.id, runId: actor.runId, ci, diagnostic });
+        reviewCiAudit = (ci.reason === "budget_exhausted_cached_success" || ci.reason === "budget_exhausted_cached_failure") && transition.decision?.outcome === "changes_requested"
+          ? { source: ci.reason, headSha: ci.headSha } : null;
+        if (ci.state === "pending" || ci.state === "unknown" || (ci.state === "complete" && ((ci.finalCheckConclusion !== "success" && !(ci.reason === "budget_exhausted_cached_failure" && transition.decision?.outcome === "changes_requested")) || (transition.decision?.outcome === "approved" && ci.reason?.startsWith("budget_exhausted_cached_"))))) {
+          if (ci.reason?.includes("budget_exhausted")) {
+            // A triggered CI-wait monitor otherwise gets rearmed by the stale
+            // monitor sweep and repeatedly wakes a reviewer who cannot decide.
+            await db.update(issueRows).set({
+              monitorNextCheckAt: new Date(Date.now() + 61 * 60_000),
+              monitorWakeRequestedAt: null,
+              executionState: sql`jsonb_set(${issueRows.executionState}, '{reviewCiBudgetDeferred}', 'true'::jsonb, true)`,
+            }).where(and(
+              eq(issueRows.id, existing.id),
+              eq(issueRows.companyId, existing.companyId),
+              eq(issueRows.status, "in_review"),
+              or(
+                isNull(issueRows.monitorNextCheckAt),
+                lt(issueRows.monitorNextCheckAt, new Date(Date.now() + 60 * 60_000)),
+              ),
+              sql`${issueRows.executionState} -> 'monitor' ->> 'status' = 'triggered'`,
+              sql`${issueRows.executionState} -> 'monitor' ->> 'serviceName' = 'Review CI wait'`,
+              sql`${issueRows.executionState} -> 'currentParticipant' ->> 'agentId' = ${actor.agentId ?? null}`,
+            ));
+          }
           throw unprocessable(
             ci.state === "pending"
               ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
-              : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
+              : ci.reason?.includes("budget_exhausted")
+                ? "REQUEST CHANGES rejected: GitHub review budget exhausted. Apply a backoff of at least 61 minutes before retrying; do not repeat the verdict immediately."
+                : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
           );
         }
       }
@@ -16985,6 +17144,7 @@ export function issueRoutes(
               ...updateFields,
               identifier: updated.identifier,
               authorizationReason: issueMutationAuthorizationReason,
+              ...(reviewCiAudit ? { reviewCiAudit } : {}),
               changes,
               ...(reviewInteractionId ? { reviewInteractionId } : {}),
               ...(commentBody ? { source: "comment" } : {}),
@@ -17080,7 +17240,7 @@ export function issueRoutes(
                 )
               : [];
             const lockedTransitionIssue: typeof transitionIssue = {
-              ...existing,
+              ...transitionIssue,
               ...lockedExisting,
               title: typeof updateFields.title === "string" && isReleaseTask(updateFields.title)
                 ? updateFields.title
@@ -17109,7 +17269,8 @@ export function issueRoutes(
               previousPolicy: lockedPreviousExecutionPolicy,
               // myrmidon(OPE-10045): re-check a pre-merge approval as the
               // approval it is, so a stage that changed under the lock refuses it.
-              requestedStatus: reviewApprovalPendingMerge ? "done" : updateFields.status,
+              // Recompute from the request, not the preliminary transition's status.
+              requestedStatus: reviewApprovalPendingMerge ? "done" : requestedExecutionStatus,
               requestedAssigneePatch: explicitAssigneePatch,
               actor: {
                 agentId: actor.agentId ?? null,
@@ -17121,6 +17282,26 @@ export function issueRoutes(
               monitorExplicitlyUpdated:
                 req.body.executionPolicy !== undefined && monitorChanged,
             });
+            if (documentationReturnCandidate && lockedTransition.patch.status === "in_progress") {
+              const lockedState = parseIssueExecutionState(lockedExisting.executionState);
+              const currentLabels = await tx.select({ name: labels.name }).from(issueLabels)
+                .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+                .where(eq(issueLabels.issueId, lockedExisting.id));
+              await assertEngineerForCodeIssue({
+                companyId: lockedExisting.companyId,
+                issue: { ...lockedExisting, labels: currentLabels },
+                status: "in_progress",
+                assigneeAgentId: typeof lockedTransition.patch.assigneeAgentId === "string"
+                  ? lockedTransition.patch.assigneeAgentId : lockedExisting.assigneeAgentId,
+                projectId: lockedExisting.projectId,
+                returningToOriginalEditor: lockedTransition.decision?.outcome === "changes_requested" &&
+                  lockedExisting.status === "in_review" && lockedState?.status === "pending" &&
+                  lockedState.currentStageType === "review" && lockedState.currentParticipant?.type === "agent" &&
+                  lockedState.currentParticipant.agentId === actor.agentId && lockedState.returnAssignee?.type === "agent" &&
+                  lockedState.returnAssignee.agentId === stageHandBackAssigneeId &&
+                  lockedTransition.patch.assigneeAgentId === stageHandBackAssigneeId,
+              });
+            }
             if (
               reviewApprovalPendingMerge &&
               lockedTransition.decision?.outcome !== "approved"
@@ -17143,21 +17324,29 @@ export function issueRoutes(
               updateFields.executionState = currentMergedState;
               issueUpdateData.executionState = currentMergedState;
             }
-            if (lockedTransition.decision?.outcome === "changes_requested") {
-              const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+            if (lockedTransition.decision?.outcome === "changes_requested" || lockedTransition.decision?.outcome === "approved") {
+              let diagnostic: Parameters<NonNullable<Parameters<typeof createReviewPullRequestCiResolver>[0]["onDiagnostic"]>>[0] | null = null;
+              // OPE-15004: the write verdict gate is review admission — its reads are
+              // always fresh, never served from the read cache.
+              const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, admission: true, allowCachedReviewReturn: lockedTransition.decision.outcome === "changes_requested", onDiagnostic: (value) => { diagnostic = value; } }))({
                 companyId: lockedExisting.companyId,
                 issueId: lockedExisting.id,
               });
-              if ((ci.state === "pending" || ci.state === "unknown") && !reviewCommentReferencesCode(lockedTransition.decision?.body)) {
+              logReviewWriteCi({ issueId: lockedExisting.id, runId: actor.runId, ci, diagnostic });
+              reviewCiAudit = (ci.reason === "budget_exhausted_cached_success" || ci.reason === "budget_exhausted_cached_failure") && lockedTransition.decision?.outcome === "changes_requested"
+                ? { source: ci.reason, headSha: ci.headSha } : null;
+              if (ci.state === "pending" || ci.state === "unknown" || (ci.state === "complete" && ((ci.finalCheckConclusion !== "success" && !(ci.reason === "budget_exhausted_cached_failure" && lockedTransition.decision?.outcome === "changes_requested")) || (lockedTransition.decision?.outcome === "approved" && ci.reason?.startsWith("budget_exhausted_cached_"))))) {
                 throw unprocessable(
                   ci.state === "pending"
                     ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
-                    : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
+                    : ci.reason?.includes("budget_exhausted")
+                      ? "REQUEST CHANGES rejected: GitHub review budget exhausted. Apply a backoff of at least 61 minutes before retrying; do not repeat the verdict immediately."
+                      : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
                 );
               }
               // myrmidon(OPE-11970): remember the pull request head this return was made on.
               // The next return on the same head does not wake the executor again.
-              if (updateFields.executionState && typeof updateFields.executionState === "object") {
+              if (lockedTransition.decision?.outcome === "changes_requested" && updateFields.executionState && typeof updateFields.executionState === "object") {
                 updateFields.executionState = withChangesRequestedHeadSha(
                   updateFields.executionState as Record<string, unknown>,
                   ci.headSha,
@@ -17391,7 +17580,9 @@ export function issueRoutes(
                 let admitReviewer = true;
                 const admissionCritical = updated.priority === "critical";
                 if (ciAdmissionCandidate) {
-                  const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+                  // OPE-15004: the hand-off admission decides whether the reviewer is
+                  // woken at all, so it reads fresh like the write verdict gate.
+                  const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, admission: true }))({
                     companyId: updated.companyId,
                     issueId: updated.id,
                   });
@@ -17415,6 +17606,7 @@ export function issueRoutes(
                   }
                   const admissionDecision = decideReviewAdmission({
                     ci: ci.state,
+                    ciReason: ci.reason,
                     headFinalCheck:
                       ci.state !== "complete" ? "unknown" :
                       ci.finalCheckConclusion === "failure" ? "red" :
@@ -18106,6 +18298,7 @@ export function issueRoutes(
             ...updateFields,
             identifier: issue.identifier,
             authorizationReason: issueMutationAuthorizationReason,
+            ...(reviewCiAudit ? { reviewCiAudit } : {}),
             changes: issueChanges,
             ...(blockedLoopSignature
               ? { [BLOCKED_LOOP_SIGNATURE_KEY]: blockedLoopSignature }
@@ -18668,7 +18861,9 @@ export function issueRoutes(
         })
         : null;
       if (isReviewCiWakeCandidate) {
-        const reviewCi = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+        // OPE-15004: the wake-path admission is the same green-head rule as the
+        // transactional hand-off above — it reads fresh, not from the cache.
+        const reviewCi = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db, admission: true }))({
           companyId: issue.companyId,
           issueId: issue.id,
         });
@@ -18695,6 +18890,7 @@ export function issueRoutes(
         deferExecutionReviewWakeForCi =
           decideReviewAdmission({
             ci: reviewCi.state,
+            ciReason: reviewCi.reason,
             headFinalCheck:
               reviewCi.state !== "complete" ? "unknown" :
               reviewCi.finalCheckConclusion === "failure" ? "red" :

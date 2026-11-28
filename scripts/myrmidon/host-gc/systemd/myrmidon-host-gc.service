@@ -7,6 +7,7 @@ After=local-fs.target network.target
 Type=oneshot
 EnvironmentFile=-/etc/myrmidon-host-gc.env
 Environment=PAPERCLIP_API_URL=http://127.0.0.1:3100
+Environment=HOST_GC_REQUEST_FILE=/srv/myrmidon-bots/.gc-request/request.json
 # OPE-12722/OPE-13185: scan run copies and omp runner roots; stale OMP containers are matched
 # against the board adapter before the runner's workspace/home/tmp are removed.
 Environment=HOST_GC_RUNNER_ROOTS=/srv/myrmidon-xfs/omp-runners

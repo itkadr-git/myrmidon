@@ -146,7 +146,7 @@ set -euo pipefail
 # shellcheck source=lib.sh source-path=SCRIPTDIR
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
-config="" digest="" expect_version="" expect_commit="" force=0 release_tag="" urgent=0 urgent_reason=""
+config="" digest="" expect_version="" expect_commit="" force=0 release_tag="" urgent=0 urgent_reason="" nightly_pbs_precheck=0
 DRY_RUN=0
 while (($#)); do
   case "$1" in
@@ -159,6 +159,7 @@ while (($#)); do
       [[ $# -ge 2 ]] || die "--urgent needs a reason: --urgent \"<why this deploy cannot wait>\""
       urgent=1; urgent_reason="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --nightly-pbs-precheck) nightly_pbs_precheck=1; shift ;;
     --force) force=1; shift ;;
     -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -222,7 +223,12 @@ manifest_lines=""
 MYR_MANIFEST_FILE="${MYRMIDON_RELEASE_MANIFEST_FILE:-}"
 read_manifest() {
   if [[ -n "$MYR_MANIFEST_FILE" ]]; then
-    "$MYR_SCRIPT_DIR/release-manifest.sh" --from-file "$MYR_MANIFEST_FILE"
+    local -a expected=()
+    if [[ "$1" == *-rc.* && ( -n "$release_tag" || -n "$expect_commit" ) ]]; then
+      [[ -n "$expect_commit" ]] || die "RC release with a local manifest requires --expect-commit (full SHA)"
+      expected=(--expect-tag "$1" --expect-commit "$expect_commit")
+    fi
+    "$MYR_SCRIPT_DIR/release-manifest.sh" --from-file "$MYR_MANIFEST_FILE" "${expected[@]}"
   else
     "$MYR_SCRIPT_DIR/release-manifest.sh" --tag "$1"
   fi
@@ -266,6 +272,17 @@ if ! check_ci_image "$ref"; then
 fi
 log "image ok: built by CI from commit ${CI_IMAGE_REVISION:0:12}, version ${CI_IMAGE_VERSION:-<none>}"
 
+# RC deployment must resolve both required release components; a configured
+# empty/partial list must not silently turn the release gate off.
+if [[ "${CI_IMAGE_VERSION:-}" =~ -rc\.[0-9]+$ ]]; then
+  for required_component in dockergate fleetd; do
+    case ",$MYR_RELEASE_COMPONENTS," in
+      *",$required_component,"*) ;;
+      *) die "RC deploy requires dockergate and fleetd release components; nothing was changed" ;;
+    esac
+  done
+fi
+
 # RELEASE-GATE: resolve the component digests of the SAME release before
 # anything changes. Order: the myr-vX.Y.Z tag when the board commit carries
 # one (version label of a tag build), else the sha-<short> tag of the commit.
@@ -289,6 +306,10 @@ if [[ -z "$manifest_lines" && -n "$version_tag" ]]; then
   if [[ -n "$candidate" && "$(sed -n 's/^board=//p' <<<"$candidate" | head -n1)" == "$digest" ]]; then
     manifest_lines="$candidate"
   fi
+fi
+if [[ "${CI_IMAGE_VERSION:-}" =~ -rc\.[0-9]+$ ]]; then
+  [[ -n "$manifest_lines" && "$(manifest_digest board)" == "$digest" ]] \
+    || die "RC deploy requires a matching release-components manifest; nothing was changed"
 fi
 if [[ -n "$manifest_lines" ]]; then
   component_source="manifest"
@@ -398,6 +419,24 @@ log "boot unit ok: $(boot_unit_path) starts $COMPOSE_SERVICE from COMPOSE_DIR ($
 # container; the override file only when no container exists.
 previous_image="$(previous_board_image)"
 previous="$(ref_digest "$previous_image")"
+
+# RC deployments require fresh PBS evidence and the running image's immutable
+# rollback digest; they must not reach the legacy dump/DB-copy path.
+if [[ "${CI_IMAGE_VERSION:-}" =~ -rc\.[0-9]+$ ]]; then
+  ((urgent == 0)) || die "RC deploy refuses --urgent; nothing was changed"
+  "$MYR_SCRIPT_DIR/nightly-backup-guard.sh" || die "nightly PBS guard failed; nothing was changed"
+  # Resolve from the container's immutable image ID, never the mutable tag or
+  # the compose override. Require exactly one digest for the board repository.
+  board_id="$(docker ps -q --filter "label=com.docker.compose.service=$COMPOSE_SERVICE" --filter "label=com.docker.compose.project.working_dir=$COMPOSE_DIR")"
+  [[ -n "$board_id" && "$board_id" != *$'\n'* ]] || die "actual running board image digest unavailable: expected one running container"
+  board_image_id="$(docker inspect --format '{{.Image}}' "$board_id")" || die "actual running board image digest unavailable: container inspect failed"
+  board_digests="$(docker image inspect --format '{{json .RepoDigests}}' "$board_image_id")" || die "actual running board image digest unavailable: image inspect failed"
+  actual_previous="$(jq -er --arg repo "$MYRMIDON_IMAGE" '[.[] | select(startswith($repo + "@sha256:")) | select(test("@sha256:[0-9a-f]{64}$"))] | unique | if length == 1 then .[0] else error("ambiguous RepoDigests") end' <<<"$board_digests")" || die "actual running board image digest unavailable: missing or ambiguous RepoDigest"
+  log "verified running board image for rollback: $actual_previous"
+  previous_image="$actual_previous"
+  previous="${actual_previous#*@}"
+  log "nightly PBS guard authorizes deploy only; migration rehearsal and database rollback are not verified"
+fi
 
 # ONE-DEPLOY: what changes. The board, each release component whose running
 # image differs from the release's, and the bot images (dockergate images[]).
@@ -597,6 +636,13 @@ preflight_all() {
 }
 preflight_all
 
+# This additional read-only precheck never substitutes for the database rehearsal.
+if ((nightly_pbs_precheck)); then
+  "$MYR_SCRIPT_DIR/nightly-backup-guard.sh" || die "nightly PBS precheck failed; nothing was changed"
+  log "nightly PBS evidence does not prove migration rehearsal or database rollback"
+  ((DRY_RUN)) || die "PBS precheck is not a deploy authorization; no dump, DB copy or deploy was performed"
+fi
+
 # DEPLOY-HYGIENE: estimate all target image layers (board, changed release
 # components and bot digests) plus the DB-dump reserve before any pull/dump.
 MYRMIDON_DEPLOY_IMAGE_REFS=("$MYRMIDON_IMAGE@$digest")
@@ -664,7 +710,9 @@ if [[ "$DRY_RUN" == "1" ]]; then
   if ((need_window)); then
     plan "1. docker pull $ref"
     plan "2. remember previous image: ${previous_image:-<none>} -> $PREVIOUS_IMAGE_FILE"
-    if ((urgent)); then
+    if [[ "${CI_IMAGE_VERSION:-}" =~ -rc\.[0-9]+$ ]]; then
+      plan "3. nightly PBS guard passed; no database dump or copy; migration rehearsal and database rollback are not verified"
+    elif ((urgent)); then
       plan "urgent: steps 3 and 3b skipped; no database dump or PREDEPLOY-DB-CHECK; rollback relies on the VM's nightly backup (reason: $urgent_reason)"
     else
       plan "3. dump database with DUMP_COMMAND into $DUMP_DIR (refuse if smaller than $DUMP_MIN_BYTES bytes); keep newest $DUMP_KEEP validated dumps by modification time"
@@ -839,7 +887,10 @@ if [[ -n "$previous_image" && "$previous_image" != "$ref" ]]; then
   printf '%s\n' "$previous_image" >"$PREVIOUS_IMAGE_FILE"
 fi
 
-if ((urgent)); then
+if [[ "${CI_IMAGE_VERSION:-}" =~ -rc\.[0-9]+$ ]]; then
+  LAST_DUMP_FILE=""
+  log "3/8 nightly PBS guard passed; no database dump or migration rehearsal"
+elif ((urgent)); then
   LAST_DUMP_FILE=""
   log "3/8 database dump: SKIPPED (--urgent); rollback relies on the VM's nightly backup"
 else
@@ -858,7 +909,7 @@ fi
 # uuid). The check is read-only against production: the dump was already taken.
 # Urgent deploys deliberately skip this check; they have no dump to restore and
 # rely on the VM's nightly backup for rollback.
-if ((board_changed)) && ((urgent == 0)); then
+if ((board_changed)) && ((urgent == 0)) && [[ ! "${CI_IMAGE_VERSION:-}" =~ -rc\.[0-9]+$ ]]; then
   dockergate_digest="$(sed -n 's/^dockergate=//p' <<<"$component_digests" | head -n1)"
   check_args=(--config "$config" --digest "$digest" --dump "$LAST_DUMP_FILE")
   [[ -n "$dockergate_digest" ]] && check_args+=(--dockergate-digest "$dockergate_digest")

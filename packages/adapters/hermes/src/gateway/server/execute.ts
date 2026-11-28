@@ -655,8 +655,22 @@ function isReviewerWake(context: Record<string, unknown>): boolean {
   return role === "reviewer" || role === "verifier";
 }
 
+// myrmidon(1.6.9 NO-COPIES-FOR-REVIEWERS-LEADS): an agent that does not write code gets no full task
+// copy on ANY wake. The wake reason does not tell: a reviewer is woken with `ci_completed` without
+// `wakeRole`, a lead with `auto_slice_queue_shortage` on an epic it executes. The agent is told by its
+// role (caste key, `context.paperclipAgentRole`, set by the board) or, as the board has no reviewer role
+// and reviewers have `qa`, by the `-review-` / `-reviewer-` / `-verifier-` / `-lead-` part of its name.
+const NON_CODING_ROLES = new Set(["reviewer", "verifier", "lead"]);
+const NON_CODING_NAME_RE = /(?:^|[-_ ])(?:review|reviewer|verifier|lead)(?:[-_ ]|\d|$)/i;
+
+function isNonCodingAgent(context: Record<string, unknown>, agentName: string): boolean {
+  const role = asString(context.paperclipAgentRole, "").trim().toLowerCase();
+  return NON_CODING_ROLES.has(role) || NON_CODING_NAME_RE.test(agentName);
+}
+
 function buildWorkspaceField(
   context: Record<string, unknown>,
+  agentName = "",
 ): { key: string; repo: string; baseRef?: string; branch?: string } | undefined {
   const wake = parseObject(context.paperclipWake);
   const key = asString(parseObject(wake.issue).identifier, "").trim();
@@ -667,7 +681,7 @@ function buildWorkspaceField(
   // `gh api repos/<repo>/contents/<path>?ref=<sha>`. A reviewer that really needs files opens a
   // copy itself (`myr-ws open <KEY> <repo> --review`, or without --review to run tests) and closes it
   // after the verdict (`myr-ws close <KEY>`).
-  if (isReviewerWake(context)) return undefined;
+  if (isReviewerWake(context) || isNonCodingAgent(context, agentName)) return undefined;
   // The task's own pull request decides the repository and the branch: the project is only the
   // fallback. A PR of one repository on a project bound to another (OPE-7967: PR #82 of
   // myrmidon-deploy under a project of myrmidon) must open the PR's repository on the PR's
@@ -783,12 +797,15 @@ function buildRunBody(
   // myrmidon(1.6.5 BOT-DISK-H5a): same discipline for the `workspace` field —
   // derived from the run context only, set after the spread (a card cannot
   // forge it), `undefined` when the task has no repository.
-  const workspaceField = buildWorkspaceField(ctx.context);
+  const workspaceField = ctx.context.paperclipOfflineBotWorkspace ?? buildWorkspaceField(ctx.context, ctx.agent.name);
   // myrmidon(GITHUB-SHARED-IDENTITY): same forgery rule as github_broker —
   // set unconditionally after the payloadTemplate spread, so a card's attempt
   // to inject launcher content is deleted (`undefined` drops the key); only
   // this builder decides (see buildGitHubLauncherField).
   const githubLauncher = buildGitHubLauncherField(githubBroker);
+  const runKeyEnv = nonEmpty(ctx.context.runScopedGatewayKeyEnv);
+  const modelCredential = runKeyEnv ? nonEmpty(parseObject(ctx.config.env)[runKeyEnv]) : null;
+  if (runKeyEnv && !modelCredential) throw new Error("Run gateway credential is unavailable");
   const body: Record<string, unknown> = {
     ...payloadTemplate,
     input,
@@ -802,6 +819,7 @@ function buildRunBody(
     github_broker: githubBroker,
     workspace: workspaceField,
     github_launcher: githubLauncher,
+    model_credential: modelCredential ? { api_key: modelCredential } : undefined,
     // myrmidon(1.6.6-HERMES-SKILLS-A): Myrmidon-managed skills for the run's
     // profile (see the buildRunBody signature note); the gateway image's
     // run-scoped-skills patch materializes them before the agent starts.

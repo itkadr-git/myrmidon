@@ -221,6 +221,10 @@ is an error and no token is issued. The key is read as the system consumer
 gate says that the board has no access to the repository and asks to configure
 a GitHub App or PAT, instead of saying the PR is not merged yet.
 
+## Review CI evidence and diagnostics
+
+The review gate may reuse a fresh server-fetched authoritative terminal `CI result` only for the same company, repository, PR and exact known head. Check events invalidate cached evidence. Stale, pending, changed-head or missing-head evidence and untrusted comments do not establish green CI; an unknown result is not a pass. A completed failure remains a failure. Distinguish budget denial from `network_error` in diagnostics; both may be reported together. See the [operator guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/github-shared-identity.md) and [PR #4547](https://github.com/itkadr-git/myrmidon/pull/4547).
+
 ## CI and pull-request events from the App (webhook)
 
 The review gate waits for CI on the events GitHub sends. The vendor cloud

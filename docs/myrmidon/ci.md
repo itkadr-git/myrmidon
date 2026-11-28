@@ -3,11 +3,84 @@
 Здесь описано, какие проверки запускаются в `itkadr-git/myrmidon`, почему они устроены так, и
 что из вендорских workflow у нас не работает.
 
+## Проверка bundle-copy для PR #3836
+
+После слияния `.github/workflows/myrmidon-bundle-copy.yml` запустите
+`gh workflow run myrmidon-bundle-copy.yml --ref main` в `itkadr-git/myrmidon`.
+Workflow использует GitHub-hosted runner и Node 24, проверяет checkout
+`66707c986fdc519fa6484b5e1e63f2749e29fa56` и запускает
+`node --test scripts/bundle-copy.myrmidon.test.mjs` без секретов в окружении
+теста. Журнал job содержит SHA workflow, ожидаемый и фактический SHA и TAP.
+Зелёный общий CI не заменяет проверку TAP: нужны успешные assertions без
+fail, skip и todo.
+
+## Два прогона acceptance для PR #3537 (OPE-13891)
+
+Запускайте только после штатного ревью и слияния инфраструктурного PR #4636,
+когда `myrmidon-acceptance-suite-evidence.yml` доступен на `main` и release
+freeze не действует. Workflow сам проверяет freeze до checkout тестируемого SHA.
+При запрете или неясном результате проверки остановитесь: не меняйте ветку
+запуска, не закрывайте freeze вручную и не запускайте тесты локально.
+
+Запуск выполняет уполномоченный ADM оператор: для GitHub UI нужен write access
+к репозиторию, для REST/CLI с токеном GitHub App или fine-grained PAT нужен
+`Actions: write` для этого репозитория. Чтение списка workflow и логов не
+подтверждает право dispatch. Runtime-права самого workflow только на чтение.
+
+1. Получите актуальную голову открытого PR #3537: `gh pr view 3537 -R itkadr-git/myrmidon --json headRefOid --jq .headRefOid`.
+   Сохраните полный SHA в `sha`. Workflow сверяет его с актуальной головой PR,
+   затем отдельно проверяет фактический `git rev-parse HEAD` после checkout.
+2. Выполните команду ниже дважды с тем же `sha`, повторно сверяя голову перед
+   вторым dispatch. Сохраните два разных run ID; rerun старого ID не заменяет
+   второй dispatch. Если голова изменилась, соберите новую пару на новом SHA.
+
+   ```sh
+   gh workflow run myrmidon-acceptance-suite-evidence.yml -R itkadr-git/myrmidon --ref main -f head_sha="$sha"
+   ```
+
+3. Для каждого завершённого запуска откройте job `acceptance` в Actions или
+   получите лог через `gh run view <run-id> -R itkadr-git/myrmidon --log`.
+   `headSha` в карточке Actions относится к конфигурации на `main`; точный
+   тестовый SHA подтверждает строка `PR #3537 test SHA` в логе. Зафиксируйте
+   URL/ID, attempt, оба SHA, статус прогона и вывод следующих команд:
+
+   ```sh
+   node --test --test-reporter=tap scripts/myrmidon/ci/acceptance-document-shape.myrmidon.test.mjs
+   node --test --test-reporter=tap scripts/check-acceptance-scenarios.test.mjs
+   ```
+
+4. Для каждой команды сохраните отдельные строки TAP `# tests`, `# pass`,
+   `# fail`, `# skipped` и `# todo`, плюс `Suite exit` и общий `Combined exit`
+   для каждого прогона. Для текущей матрицы ожидаются 21/0 для document shape
+   и 20/0 для baseline, без пропусков и TODO, с обоими `Suite exit = 0` и
+   `Combined exit = 0`. Сверьте именованные строки TAP: у document shape
+   положительные контроли `bare scenario array`, `version 2`, `allowed metadata`,
+   отрицательные `version zero`, `string version`, `missing scenarios`,
+   `unknown field`; у baseline положительный `valid document with one full
+   scenario and one existing testRef passes`, отрицательные `scenario without
+   falsifiedWhen is reported (the falsifiedWhen criterion)` и `broken testRef
+   (no candidate file exists) is reported, not silent`. `ok` на отрицательном
+   контроле означает, что проверена ожидаемая ошибка входных данных.
+
+Перед сдачей ещё раз сверьте голову #3537. Приложите обе записи в OPE-13891.
+Общий `CI result`, очередь, пропущенный job или лог без отдельного TAP baseline
+не подтверждают приёмку.
+
 ## Два уровня CI
 
-Workflow [`myrmidon-ci.yml`](../../.github/workflows/myrmidon-ci.yml) — на каждый
-`pull_request`, на `push` в `main` и вручную (`workflow_dispatch`). Все job идут на
-раннерах GitHub (`ubuntu-latest`), секреты не нужны. Уровень выбирает job `plan`
+Workflow [`myrmidon-ci.yml`](../../.github/workflows/myrmidon-ci.yml) реагирует на
+`pull_request`, `merge_group`, `push` в `main` и ручной запуск (`workflow_dispatch`).
+На draft PR при `opened`, `reopened` и `synchronize` тяжёлые задания, включая `plan`,
+сборку, тесты и `checks`, не выполняются. Когда PR переводят в ready, событие
+`ready_for_review` запускает обычный CI на текущей голове. Отсутствие `CI result` на
+draft не является зелёным merge gate: пропущенный итог носит другое имя `draft CI omitted`,
+а обязательный `CI result` должен получить настоящий вердикт для ready PR.
+
+Для ручного `workflow_dispatch` требуется непустой, не состоящий только из пробелов
+`reason`: шаг `plan` записывает его в GitHub Actions job summary; пустая причина
+завершает `plan` с ошибкой. Ручной запуск выбирает полный уровень. Push в `main` и
+`merge_group` по-прежнему проходят полный уровень; отдельный workflow релизных тегов
+не меняется. Уровень выбирает job `plan`
 (`scripts/myrmidon/ci/affected-tests.mjs plan`):
 
 | Уровень | Когда | Что запускается |
@@ -18,8 +91,9 @@ Workflow [`myrmidon-ci.yml`](../../.github/workflows/myrmidon-ci.yml) — на �
 
 **Экономия заданий:** обычный PR выполняет только `plan`, `checks`, `typecheck`+`build`, `tests (affected)` и сводную `CI result` вместо всех частей полного прогона (около 13 заданий по замеру из OPE-8531): было около 13 заданий на каждый push в PR, стало 5, то есть `plan`, `checks`, `typecheck`+`build`, `tests (affected)` и `CI result`; ещё `dockergate` при изменениях в его области. Новый push в тот же PR отменяет предыдущий прогон. Основной workflow `Myrmidon CI` на событие `labeled` не запускается совсем (CI-LABEL-NOOP-KEEPS-RESULT): метки `review-approved`, `review-in-progress`, `needs-rebase`, `adm-hold`... не создают прогона и не меняют обязательную проверку `CI result` на голове PR, так что зелёный PR с меткой `review-approved` вливается штатно. Метку `full-ci` обрабатывает отдельный маленький workflow `myrmidon-ci-full-label.yml`: он отменяет идущий прогон `Myrmidon CI` на голове PR (если есть) и перезапускает его (`scripts/myrmidon/ci/rerun-full-ci.mjs`); шаг `plan` читает метки PR живьём и выбирает полный уровень. Метка `review-approved` полный прогон не запускает (с 30.10). Merge queue на репозитории владельца-пользователя недоступна, `merge_group` работает только если очередь включат.
 
-**Обязателен для слияния быстрый уровень** (сводная проверка `CI result` на PR). Полный
-уровень проходит PR с меткой `review-approved` (или кандидат merge queue, если она включена) до вливания и затем `main` после слияния; сбой на
+**Обязателен для слияния реальный вердикт** сводной проверки `CI result` на ready PR,
+на выбранном уровне. Кандидат merge queue, если она включена, и `main` после слияния
+проходят полный уровень; сбой на
 `main` сразу виден (ниже).
 
 **Основа — PR получает полный уровень:** `pnpm-lock.yaml`, `pnpm-workspace.yaml`, корневой
@@ -100,7 +174,7 @@ run 37277281522), а релиз публиковать руками.
 ### Полный прогон на PR вручную
 
 - поставить на PR метку **`full-ci`**: `myrmidon-ci-full-label.yml` отменит идущий прогон на голове и перезапустит его (новая попытка того же прогона, проверка `CI result` заменяется результатом попытки); план увидит метку живьём и выберет полный уровень. Отдельного прогона `Myrmidon CI` на событие `labeled` нет: он стал бы самым новым прогоном на голове и оставил бы обязательную `CI result` «ожидаемой»;
-- или Actions → Myrmidon CI → Run workflow по ветке PR.
+- или Actions → Myrmidon CI → Run workflow по ветке PR, указав непустой `reason`; он записывается в summary задания `plan`.
 
 Известные ограничения метки `full-ci` (CI-LABEL-NOOP-KEEPS-RESULT):
 - у уже открытых PR, чей ref слияния появился до `myrmidon-ci-full-label.yml`, метка не действует, пока ветку не обновят (update-branch) или не запушат в неё;
@@ -124,6 +198,8 @@ run 37277281522), а релиз публиковать руками.
 | `checks` | все | Шаги: `shellcheck` скриптов выката; в `myrmidon-ci-tag.yml` (тег `myr-vX.Y.Z`) — гейт журнала релиза (RELEASE-CUT-CHANGELOG: `collect-fragments.mjs --version X.Y.Z --check`, непустой раздел версии и пустой «без выпуска» в обоих CHANGELOG, без него тег красный — инцидент 1.6.3); `node --test` по `scripts/myrmidon/**/*.test.mjs` (сюда входят сторож CHANGE-FRAGMENTS — ниже — и сторож полос тестов `test-lane-coverage.test.mjs`: каждый серверный тест ровно в одной полосе, OPE-4472); секреты (gitleaks); внутренние адреса (частные сети и запрещённые шаблоны); лицензии зависимостей; совместимость плагинов. Каждый шаг выполняется, даже если предыдущий упал: в журнале видно все сбои сразу |
 | **`CI result`** | все | Сводная: зелёная, если `plan` прошёл и каждая проверка прошла или не требовалась уровнем |
 
+В job `checks` отдельный обязательный шаг запускает `node --experimental-vm-modules --test scripts/dev-runner.child-lifecycle.test.mjs` на всех уровнях CI. Файл должен существовать: сначала интегрируется PR с тестом, затем изменение workflow.
+
 ### Сторож фрагментов изменений (CHANGE-FRAGMENTS)
 
 Общие документы-реестры (`docs/myrmidon/CHANGELOG(.ru).md`, `DIVERGENCE.md`,
@@ -146,9 +222,10 @@ run 37277281522), а релиз публиковать руками.
 | `report main status` | только `main` | issue `main-red` (выше) |
 
 **Для ruleset `main-protection` достаточно одной проверки — `CI result`.** Она есть в каждом
-прогоне на PR любого уровня, включая `docs`: пропущенные уровнем проверки она принимает как
+неотменённом прогоне ready PR любого уровня, включая `docs`: пропущенные уровнем проверки она принимает как
 «не требовались», но только если `plan` прошёл. У отменённого прогона (новый push) `CI result`
-не запускается вовсе — ложного зелёного нет.
+не запускается вовсе — ложного зелёного нет. Draft не публикует `CI result`: `draft CI omitted`
+не заменяет обязательный merge gate.
 
 ### Проверка ключевых файлов (hot files review / hot-files-review)
 

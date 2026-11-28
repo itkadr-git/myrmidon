@@ -1,0 +1,597 @@
+import { randomUUID } from "node:crypto";
+import request from "supertest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { sql } from "drizzle-orm";
+import { activityLog, agentWakeupRequests, agents, companies, connectionEventDeliveries, heartbeatRuns, issueComments, issueExecutionDecisions, issueWorkProducts, issues, toolGatewayRateLimitCounters } from "@myrmidon/db";
+import { describeEmbeddedPostgres, routeApp, seedCompanyWithBoardAccess, useEmbeddedPostgres } from "./helpers/route-test-harness.js";
+import { issueRoutes } from "../routes/issues.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
+import { heartbeatService } from "../services/heartbeat.js";
+import { resetReviewCiCacheForTests } from "../myrmidon/review-stage-recovery/github-ci.js";
+import { resetGitHubRateLimitForTests } from "../services/github-rate-limit.js";
+import { logger } from "../middleware/logger.js";
+import { clearCiCacheForTests, createPullRequestCiResolver, invalidateCiCacheForHead } from "../services/github-pull-request-ci.js";
+
+const transport = vi.hoisted(() => vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> => {
+  throw new Error("Unexpected external transport");
+}));
+const canary = "synthetic-secret-do-not-log-15043";
+const pullUrl = "https://api.github.com/repos/acme/app/pulls/7";
+function unexpectedCalls(calls: Array<[string, RequestInit?]>, allowed: string[]) {
+  return calls.filter(([url, init]) => !allowed.includes(url) || !JSON.stringify(init?.headers).includes(canary));
+}
+it("detects unexpected URLs and missing credentials outside the resolver", () => {
+  expect(unexpectedCalls([["https://unexpected.invalid", { headers: { Authorization: canary } }]], [pullUrl])).toHaveLength(1);
+  expect(unexpectedCalls([[pullUrl, { headers: {} }]], [pullUrl])).toHaveLength(1);
+});
+vi.mock("../services/github-fetch.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../services/github-fetch.js")>(),
+  ghFetch: transport,
+}));
+vi.mock("../services/github-external-object-provider.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../services/github-external-object-provider.js")>(),
+  defaultTokenProvider: async () => canary,
+}));
+
+const ctx = useEmbeddedPostgres("myrmidon-review-ci-gate-");
+
+describeEmbeddedPostgres("real PATCH review CI gate with isolated transport", () => {
+  beforeEach(() => {
+    transport.mockClear();
+    resetReviewCiCacheForTests();
+    clearCiCacheForTests();
+    resetGitHubRateLimitForTests();
+  });
+
+  afterEach(async () => {
+    await drainHeartbeatRunsToQuiescence(ctx.db, heartbeatService(ctx.db));
+    await ctx.db.delete(toolGatewayRateLimitCounters);
+  });
+
+  it.each([
+    { casteKey: "techwriter", harnessKind: null, allowed: true },
+    { casteKey: "engineer", harnessKind: null, allowed: false },
+    { casteKey: "techwriter", harnessKind: "skill_test", allowed: false },
+    { casteKey: null, harnessKind: null, allowed: false },
+  ])("returns to an editor only for a documentation review ($casteKey / $harnessKind)", async ({ casteKey, harnessKind, allowed }) => {
+    const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Documentation review return");
+    const author = randomUUID(), reviewer = randomUUID(), issueId = randomUUID(), runId = randomUUID(), stageId = randomUUID();
+    const headSha = "a".repeat(40);
+    const url = "https://github.com/acme/app/pull/7";
+    const comment = "REQUEST CHANGES: docs/preflight.md:42 must explain the skip condition";
+    const base = { companyId, status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} };
+    await ctx.db.insert(agents).values([
+      { ...base, id: author, name: "Author", role: "editor" },
+      { ...base, id: reviewer, name: "Reviewer", role: "reviewer" },
+    ]);
+    const currentParticipant = { type: "agent", agentId: reviewer, userId: null };
+    const returnAssignee = { type: "agent", agentId: author, userId: null };
+    await ctx.db.insert(issues).values({
+      id: issueId, companyId, title: "Documentation review return", status: "in_review", priority: "medium",
+      casteKey, harnessKind, createdByAgentId: author, assigneeAgentId: reviewer,
+      executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), ...currentParticipant }] }] },
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant, returnAssignee, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null },
+    });
+    await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewer, status: "succeeded", contextSnapshot: { issueId } });
+    await ctx.db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", title: "Synthetic PR", url, status: "open", isPrimary: true, metadata: { repo: "acme/app", number: 7, headSha } });
+    let ciReady = false;
+    const app = routeApp(ctx.db, { type: "agent", agentId: reviewer, companyId, source: "agent_key", runId } as never, (db, storage) => issueRoutes(db, storage, {
+      resolveReviewPullRequestCi: async () => ciReady
+        ? { state: "complete", finalCheckConclusion: "success", pullRequestUrl: url, headSha }
+        : { state: "pending", pullRequestUrl: url, headSha },
+    }));
+    const submit = (extra = {}) => request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment, ...extra });
+    if (allowed) {
+      const explicit = await submit({ assigneeAgentId: author });
+      expect(explicit.body.details?.code).toBe("issue_requires_engineer");
+      const pending = await submit();
+      expect(pending.status, JSON.stringify(pending.body)).toBe(422);
+      expect(pending.body.error).toContain("CI result for the current pull request head is not complete");
+      const [unchanged] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+      expect(unchanged).toMatchObject({ status: "in_review", assigneeAgentId: reviewer, executionState: { status: "pending" } });
+    }
+    ciReady = true;
+    const result = await submit();
+    const comments = await ctx.db.select().from(issueComments).where(sql`${issueComments.issueId} = ${issueId}`);
+    const decisions = await ctx.db.select().from(issueExecutionDecisions).where(sql`${issueExecutionDecisions.issueId} = ${issueId}`);
+    if (allowed) {
+      expect(result.status, JSON.stringify(result.body)).toBe(200);
+      expect(result.body).toMatchObject({ status: "in_progress", casteKey, assigneeAgentId: author, executionState: { lastDecisionOutcome: "changes_requested", returnAssignee } });
+      expect(comments).toEqual(expect.arrayContaining([expect.objectContaining({ authorAgentId: reviewer, body: comment })]));
+      expect(decisions).toMatchObject([{ outcome: "changes_requested", actorAgentId: reviewer, body: comment }]);
+    } else {
+      expect(result.status, JSON.stringify(result.body)).toBe(422);
+      expect(result.body.details?.code).toBe("issue_requires_engineer");
+      expect(comments).toHaveLength(0);
+      expect(decisions).toHaveLength(0);
+    }
+  });
+
+  it("rejects unavailable CI at 2000 without a GitHub call and accepts matching fresh success", async () => {
+    const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Isolated CI write gate");
+    const author = randomUUID();
+    const reviewer = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const stageId = randomUUID();
+    const headSha = "a".repeat(40);
+    const base = { companyId, status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} };
+    await ctx.db.insert(agents).values([
+      { ...base, id: author, name: "Author", role: "engineer" },
+      { ...base, id: reviewer, name: "Reviewer", role: "reviewer" },
+    ]);
+    const policy = { mode: "normal", stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewer, userId: null }] }] };
+    await ctx.db.insert(issues).values({
+      id: issueId, companyId, title: "Isolated write gate", status: "in_review", priority: "medium",
+      createdByAgentId: author, assigneeAgentId: author, executionPolicy: policy,
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewer, userId: null }, returnAssignee: { type: "agent", agentId: author, userId: null }, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null },
+    });
+    await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewer, status: "succeeded", contextSnapshot: { issueId } });
+    await ctx.db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", title: "Synthetic PR", url: "https://github.com/acme/app/pull/7", status: "open", isPrimary: true, metadata: { repo: "acme/app", number: 7, headSha } });
+    const [clock] = await ctx.db.execute(sql`select floor(extract(epoch from clock_timestamp()) / 60)::bigint as minute`);
+    const minute = Number(clock?.minute);
+    const start = new Date(minute * 60_000);
+    // The installation-wide budget lives on the oldest company, not the issue's company.
+    const [carrier] = await ctx.db.select({ id: companies.id }).from(companies).orderBy(companies.createdAt).limit(1);
+    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: carrier.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
+    const actor = { type: "agent", agentId: reviewer, companyId, source: "agent_key", runId };
+    const app = routeApp(ctx.db, actor as never, issueRoutes);
+    const diagnostic = vi.spyOn(logger, "info");
+    const warning = vi.spyOn(logger, "warn");
+    const error = vi.spyOn(logger, "error");
+    const rejected = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
+    expect(diagnostic.mock.calls.some(([fields]) => typeof fields === "object" && fields !== null &&
+      "issueId" in fields && fields.issueId === issueId && "runId" in fields && fields.runId === runId &&
+      "reason" in fields && fields.reason === "budget_exhausted" &&
+      "transportCalls" in fields && fields.transportCalls === 0 &&
+      "budget" in fields && JSON.stringify(fields.budget) === JSON.stringify({ used: 2000, cap: 2000, windowMinutes: 60 }))).toBe(true);
+    expect(rejected.status, JSON.stringify(rejected.body)).toBe(422);
+    expect(JSON.stringify(rejected.body)).toContain("GitHub review budget exhausted");
+    expect(JSON.stringify(rejected.body)).toContain("backoff");
+    expect(transport).not.toHaveBeenCalled();
+    const [unchanged] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+    expect(unchanged?.status).toBe("in_review");
+
+    await ctx.db.update(toolGatewayRateLimitCounters).set({ count: 1999 }).where(sql`${toolGatewayRateLimitCounters.companyId} = ${carrier.id}`);
+    transport.mockImplementationOnce(async () => {
+      throw new Error(`synthetic transport failure ${canary}`);
+    });
+    const networkFailure = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
+    expect(networkFailure.status).toBe(422);
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(transport.mock.calls.map(([url]) => url)).toEqual([pullUrl]);
+    expect(unexpectedCalls(transport.mock.calls, [pullUrl])).toEqual([]);
+    expect(diagnostic.mock.calls.some(([fields]) => typeof fields === "object" && fields !== null &&
+      "reason" in fields && fields.reason === "network_error" &&
+      "budget" in fields && JSON.stringify(fields.budget) === JSON.stringify({ used: 2000, cap: 2000, windowMinutes: 60 }))).toBe(true);
+    expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, rejected.body, networkFailure.body])).not.toContain(canary);
+
+    // One reservation can read the PR head, but cannot complete the subsequent CI reads.
+    transport.mockClear();
+    diagnostic.mockClear();
+    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${carrier.id}`);
+    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: carrier.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 1999, resetAt: new Date(start.getTime() + 3_600_000) });
+    transport.mockImplementationOnce(async () => {
+      return Response.json({ state: "open", head: { sha: headSha } });
+    });
+    const partial = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
+    expect(partial.status).toBe(422);
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(transport.mock.calls.map(([url]) => url)).toEqual([pullUrl]);
+    expect(unexpectedCalls(transport.mock.calls, [pullUrl])).toEqual([]);
+    expect(diagnostic.mock.calls.some(([fields]) => typeof fields === "object" && fields !== null &&
+      "reason" in fields && fields.reason === "budget_exhausted" &&
+      "transportCalls" in fields && fields.transportCalls === 1 &&
+      "budget" in fields && JSON.stringify(fields.budget) === JSON.stringify({ used: 2000, cap: 2000, windowMinutes: 60 }))).toBe(true);
+    expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, partial.body])).not.toContain(canary);
+
+    transport.mockClear();
+
+    const stale = new Date(Date.now() - 31 * 60_000);
+    await ctx.db.insert(connectionEventDeliveries).values([
+      { companyId, provider: "github", providerDeliveryId: "stale-pr", event: "pull_request", status: "processed", createdAt: stale, normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha } },
+      { companyId, provider: "github", providerDeliveryId: "stale-check", event: "check_run", status: "processed", createdAt: stale, normalizedPayload: { repository: "acme/app", number: 7, headSha, checkName: "CI result", status: "completed", conclusion: "success" } },
+    ]);
+    const staleResult = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: server/src/routes/issues.ts:42 is broken" });
+    expect(staleResult.status, JSON.stringify(staleResult.body)).toBe(422);
+    expect(transport).not.toHaveBeenCalled();
+
+    await ctx.db.insert(connectionEventDeliveries).values([
+      { companyId, provider: "github", providerDeliveryId: "moved-pr", event: "pull_request", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha: "b".repeat(40) } },
+      { companyId, provider: "github", providerDeliveryId: "moved-check", event: "check_run", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, headSha: "b".repeat(40), checkName: "CI result", status: "completed", conclusion: "failure" } },
+    ]);
+    const movedResult = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
+    expect(movedResult.status, JSON.stringify(movedResult.body)).toBe(422);
+    expect(transport).not.toHaveBeenCalled();
+
+    await ctx.db.delete(connectionEventDeliveries).where(sql`${connectionEventDeliveries.companyId} = ${companyId}`);
+    await ctx.db.insert(connectionEventDeliveries).values([
+      { companyId, provider: "github", providerDeliveryId: "pending-pr", event: "pull_request", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha } },
+      { companyId, provider: "github", providerDeliveryId: "pending-check", event: "check_run", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, headSha, checkName: "CI result", status: "in_progress", conclusion: null } },
+    ]);
+    const pending = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI failed" });
+    expect(pending.status, JSON.stringify(pending.body)).toBe(422);
+    expect(transport).not.toHaveBeenCalled();
+    const [stillInReview] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+    expect(stillInReview?.status).toBe("in_review");
+
+    await ctx.db.delete(connectionEventDeliveries).where(sql`${connectionEventDeliveries.companyId} = ${companyId}`);
+    await ctx.db.insert(connectionEventDeliveries).values([
+      { companyId, provider: "github", providerDeliveryId: "synthetic-pr", event: "pull_request", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, state: "open", headSha } },
+      { companyId, provider: "github", providerDeliveryId: "synthetic-check", event: "check_run", status: "processed", normalizedPayload: { repository: "acme/app", number: 7, headSha, checkName: "CI result", status: "completed", conclusion: "failure" } },
+    ]);
+    // Each admission must read the head and CI afresh, including locked sweeps.
+    const workflowUrl = "https://api.github.com/repos/acme/app/contents/.github/workflows";
+    const checkUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?check_name=CI%20result&filter=all&per_page=100`;
+    const latestChecksUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?filter=latest&per_page=100`;
+    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${carrier.id}`);
+    transport.mockImplementation(async (url) => {
+      if (url === pullUrl) return Response.json({ state: "open", head: { sha: headSha } });
+      if (url === workflowUrl) return Response.json([{ name: "ci.yml" }]);
+      if (url === latestChecksUrl) return Response.json({ check_runs: [] });
+      if (url === checkUrl) return Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "failure", head_sha: headSha }] });
+      throw new Error("Unexpected external transport");
+    });
+    const red = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
+    expect(red.status).toBe(422);
+    transport.mockImplementation(async (url) => {
+      if (url === pullUrl) return Response.json({ state: "open", head: { sha: headSha } });
+      if (url === workflowUrl) return Response.json([{ name: "ci.yml" }]);
+      if (url === checkUrl) return Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "success", head_sha: headSha }] });
+      throw new Error("Unexpected external transport");
+    });
+    transport.mockClear();
+    const accepted = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI is unavailable" });
+    await drainHeartbeatRunsToQuiescence(ctx.db, heartbeatService(ctx.db));
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+    expect(accepted.body.status).toBe("in_progress");
+    expect(transport.mock.calls.slice(0, 3).map(([url]) => url)).toEqual([pullUrl, workflowUrl, checkUrl]);
+    expect(unexpectedCalls(transport.mock.calls, [pullUrl, workflowUrl, checkUrl, latestChecksUrl])).toEqual([]);
+    expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, accepted.body])).not.toContain(canary);
+    await ctx.db.update(issues).set({ status: "in_review", executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewer, userId: null }, returnAssignee: { type: "agent", agentId: author, userId: null }, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null } }).where(sql`${issues.id} = ${issueId}`);
+    await ctx.db.delete(connectionEventDeliveries).where(sql`${connectionEventDeliveries.companyId} = ${companyId}`);
+    transport.mockReset();
+    diagnostic.mockClear();
+    resetReviewCiCacheForTests();
+    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${carrier.id}`);
+    const workflowRunsUrl = `https://api.github.com/repos/acme/app/actions/runs?head_sha=${headSha}&per_page=100`;
+    transport.mockImplementation(async (url) => {
+      if (url === pullUrl) return Response.json({ state: "open", head: { sha: headSha } });
+      if (url === workflowUrl) return Response.json([{ name: "ci.yml" }]);
+      if (url === latestChecksUrl) return Response.json({ total_count: 2, check_runs: [
+        { name: "build", status: "completed", conclusion: "success" },
+        { name: "sync review label", status: "queued", conclusion: null, check_suite: { id: 42 } },
+      ] });
+      if (url === workflowRunsUrl) return Response.json({ total_count: 1, workflow_runs: [{ check_suite_id: 42, head_sha: headSha, event: "pull_request", path: ".github/workflows/review-label-sync.yml" }] });
+      if (url === checkUrl) return Response.json({ check_runs: [] });
+      throw new Error("Unexpected external transport");
+    });
+    const success = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: server/src/example.ts:42 remains broken" });
+    await drainHeartbeatRunsToQuiescence(ctx.db, heartbeatService(ctx.db));
+    expect(success.status, JSON.stringify(success.body)).toBe(200);
+    // OPE-15114: every admission reads GitHub afresh; the sweep that follows
+    // the PATCH may read again, so only the admission's own read order is pinned.
+    expect(transport.mock.calls.slice(0, 3).map(([url]) => url)).toEqual([pullUrl, workflowUrl, checkUrl]);
+    expect(unexpectedCalls(transport.mock.calls, [pullUrl, workflowUrl, checkUrl, latestChecksUrl, workflowRunsUrl])).toEqual([]);
+    expect(success.body.assigneeAgentId).toBe(author);
+    expect(success.body.executionState.lastDecisionOutcome).toBe("changes_requested");
+    expect(JSON.stringify(success.body)).toContain("server/src/example.ts:42 remains broken");
+    const comments = await ctx.db.select().from(issueComments).where(sql`${issueComments.issueId} = ${issueId}`);
+    expect(comments.some((comment) => comment.authorAgentId === reviewer && comment.body.includes("server/src/example.ts:42 remains broken"))).toBe(true);
+    expect(JSON.stringify([diagnostic.mock.calls, warning.mock.calls, error.mock.calls, success.body])).not.toContain(canary);
+  });
+  it.each(["triggered", "rearmed", "claimed"] as const)("defers a budget-exhausted review monitor in %s state", async (monitorState) => {
+    const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Review budget retry");
+    const author = randomUUID(), reviewer = randomUUID(), issueId = randomUUID(), runId = randomUUID(), stageId = randomUUID();
+    const base = { companyId, status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} };
+    await ctx.db.insert(agents).values([
+      { ...base, id: author, name: "Author", role: "engineer" },
+      { ...base, id: reviewer, name: "Reviewer", role: "reviewer" },
+    ]);
+    const lastTriggeredAt = new Date(Date.now() - 11 * 60_000);
+    await ctx.db.insert(issues).values({
+      id: issueId, companyId, title: "Exhausted review retry", status: "in_review", priority: "critical",
+      createdByAgentId: author, assigneeAgentId: author,
+      executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewer, userId: null }] }] },
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewer, userId: null }, returnAssignee: { type: "agent", agentId: author, userId: null }, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null, monitor: { status: "triggered", nextCheckAt: null, lastTriggeredAt: lastTriggeredAt.toISOString(), attemptCount: 1, notes: "Review CI wait", scheduledBy: "assignee", serviceName: "Review CI wait", externalRef: null, timeoutAt: null, maxAttempts: null, recoveryPolicy: null, clearedAt: null, clearReason: null } },
+      monitorLastTriggeredAt: lastTriggeredAt, monitorAttemptCount: 1,
+    });
+    await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewer, status: "succeeded", contextSnapshot: { issueId } });
+    await ctx.db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", title: "Synthetic PR", url: "https://github.com/acme/app/pull/7", status: "open", isPrimary: true, metadata: { repo: "acme/app", number: 7 } });
+    const [clock] = await ctx.db.execute(sql`select floor(extract(epoch from clock_timestamp()) / 60)::bigint as minute`);
+    const minute = Number(clock?.minute), start = new Date(minute * 60_000);
+    const [carrier] = await ctx.db.select({ id: companies.id }).from(companies).orderBy(companies.createdAt).limit(1);
+    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: carrier.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
+    const app = routeApp(ctx.db, { type: "agent", agentId: reviewer, companyId, source: "agent_key", runId } as never, issueRoutes);
+    if (monitorState !== "triggered") {
+      await heartbeatService(ctx.db).tickTimers(new Date());
+      const [rearmed] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+      expect(rearmed.monitorNextCheckAt).not.toBeNull();
+      if (monitorState === "claimed") {
+        await ctx.db.update(issues).set({ monitorWakeRequestedAt: new Date() }).where(sql`${issues.id} = ${issueId}`);
+      }
+    }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const rejected = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: preserve this finding" });
+      expect(rejected.status, JSON.stringify(rejected.body)).toBe(422);
+    }
+    expect(transport).not.toHaveBeenCalled();
+    const [after] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+    expect(after.status).toBe("in_review");
+    expect(after.assigneeAgentId).toBe(author);
+    expect(after.monitorNextCheckAt?.getTime()).toBeGreaterThan(Date.now() + 10 * 60_000);
+    expect(after.executionState).toMatchObject({ reviewCiBudgetDeferred: true });
+    const scheduledAt = after.monitorNextCheckAt?.getTime();
+    const wakesBefore = await ctx.db.select().from(agentWakeupRequests).where(sql`${agentWakeupRequests.agentId} = ${reviewer}`);
+    const heartbeat = heartbeatService(ctx.db);
+    for (const minutes of [11, 20, 30, 50]) {
+      await heartbeat.tickTimers(new Date(Date.now() + minutes * 60_000));
+    }
+    const [afterTicks] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+    expect(afterTicks.monitorNextCheckAt?.getTime()).toBe(scheduledAt);
+    expect(afterTicks.monitorAttemptCount).toBe(1);
+    expect(afterTicks.status).toBe("in_review");
+    expect(transport).not.toHaveBeenCalled();
+    const wakesAfter = await ctx.db.select().from(agentWakeupRequests).where(sql`${agentWakeupRequests.agentId} = ${reviewer}`);
+    expect(wakesAfter).toHaveLength(wakesBefore.length);
+
+    // Simulate the existing bucket aging out, without resetting the budget.
+    const expiredMinute = minute - 61;
+    const expiredStart = new Date(expiredMinute * 60_000);
+    await ctx.db.update(toolGatewayRateLimitCounters).set({
+      counterKey: `github-budget:review-rework:${expiredMinute}`,
+      windowStartAt: expiredStart,
+      resetAt: new Date(expiredStart.getTime() + 3_600_000),
+    }).where(sql`${toolGatewayRateLimitCounters.companyId} = ${carrier.id}`);
+    const headSha = "e".repeat(40);
+    const workflowUrl = "https://api.github.com/repos/acme/app/contents/.github/workflows";
+    const checkUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?check_name=CI%20result&filter=all&per_page=100`;
+    transport.mockImplementation(async (url) => {
+      if (url === pullUrl) return Response.json({ state: "open", head: { sha: headSha } });
+      if (url === workflowUrl) return Response.json([{ name: "ci.yml" }]);
+      if (url === checkUrl) return Response.json({ check_runs: [{ name: "CI result", status: "completed", conclusion: "success", head_sha: headSha }] });
+      throw new Error("Unexpected external transport");
+    });
+    // The timer itself must resume review after the budget window; a manual
+    // verdict retry alone would conceal a stranded monitor.
+    await heartbeat.tickTimers(new Date(scheduledAt! + 1_000));
+    const wakesAfterRollover = await ctx.db.select().from(agentWakeupRequests).where(sql`${agentWakeupRequests.agentId} = ${reviewer}`);
+    expect(wakesAfterRollover.length).toBeGreaterThan(wakesAfter.length);
+
+    // The recovered gate must still reject a verdict from someone other than
+    // the current review participant, even when fresh CI is available.
+    const nonParticipantRunId = randomUUID();
+    await ctx.db.insert(heartbeatRuns).values({ id: nonParticipantRunId, companyId, agentId: author, status: "succeeded", contextSnapshot: { issueId } });
+    const nonParticipantApp = routeApp(ctx.db, { type: "agent", agentId: author, companyId, source: "agent_key", runId: nonParticipantRunId } as never, issueRoutes);
+    const unauthorized = await request(nonParticipantApp).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: unauthorized finding" });
+    expect(unauthorized.status, JSON.stringify(unauthorized.body)).toBeGreaterThanOrEqual(400);
+    const [beforeVerdict] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+    expect(beforeVerdict.status).toBe("in_review");
+    expect(beforeVerdict.executionState?.currentParticipant?.agentId).toBe(reviewer);
+
+    const accepted = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: preserve this finding" });
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+    const fetched = await request(app).get(`/api/issues/${issueId}`);
+    expect(fetched.status).toBe(200);
+    expect(fetched.body.status).toBe("in_progress");
+    expect(fetched.body.assigneeAgentId).toBe(author);
+    const comments = await request(app).get(`/api/issues/${issueId}/comments`);
+    expect(comments.status).toBe(200);
+    expect(JSON.stringify(comments.body)).toContain("REQUEST CHANGES: preserve this finding");
+  });
+
+  it.each(["medium", "critical"] as const)("defers a new %s reviewer wake when a same-head rerun cannot be checked", async (priority) => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Cached CI handoff");
+    const reviewer = randomUUID(), issueId = randomUUID(), stageId = randomUUID();
+    const headSha = "f".repeat(40);
+    const movedSha = "b".repeat(40);
+    const ref = { host: "github.com", owner: "acme", repo: "app", number: 7 };
+    await ctx.db.insert(agents).values({ id: reviewer, companyId, name: "Reviewer", role: "reviewer", status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    const executionPolicy = { stages: [{ id: stageId, type: "review", participants: [{ type: "agent", agentId: reviewer }] }] };
+    await ctx.db.insert(issues).values({ id: issueId, companyId, title: "Cached CI handoff", status: "todo", priority, executionPolicy });
+    await ctx.db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", title: "Synthetic PR", url: "https://github.com/acme/app/pull/7", status: "open", isPrimary: true, metadata: { repo: "acme/app", number: 7, headSha } });
+    const liveHead = headSha;
+    let liveStatus = "completed";
+    const workflowUrl = "https://api.github.com/repos/acme/app/contents/.github/workflows";
+    const checkUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?check_name=CI%20result&filter=all&per_page=100`;
+    const latestUrl = `https://api.github.com/repos/acme/app/commits/${headSha}/check-runs?filter=latest&per_page=100`;
+    const check = () => ({ id: 1, name: "CI result", status: liveStatus, conclusion: liveStatus === "completed" ? "success" : null, head_sha: headSha, html_url: "https://github.com/acme/app/actions/runs/1", started_at: new Date().toISOString(), completed_at: new Date().toISOString() });
+    const display = createPullRequestCiResolver(ctx.db, { source: "run-context", tokenProvider: async () => canary, fetch: async (url) => {
+      if (url === pullUrl) return Response.json({ state: "open", head: { sha: liveHead, ref: "branch" } });
+      if (url.includes("/check-runs")) return Response.json({ total_count: 1, check_runs: [check()] });
+      throw new Error("Unexpected display transport");
+    } });
+    expect(await display.resolveForPullRequest(companyId, ref)).toMatchObject({ authoritative: true, status: "completed", conclusion: "success", headSha });
+    liveStatus = "queued"; // The rerun webhook has not reached the board yet.
+    transport.mockImplementation(async (url) => {
+      if (url === pullUrl) return Response.json({ state: "open", head: { sha: liveHead } });
+      if (url === workflowUrl) return Response.json([{ name: "ci.yml" }]);
+      if (url === checkUrl || url === latestUrl) return Response.json({ total_count: 1, check_runs: [check()] });
+      throw new Error("Unexpected admission transport");
+    });
+    const [clock] = await ctx.db.execute(sql`select floor(extract(epoch from clock_timestamp()) / 60)::bigint as minute`);
+    const minute = Number(clock?.minute), start = new Date(minute * 60_000);
+    const [carrier] = await ctx.db.select({ id: companies.id }).from(companies).orderBy(companies.createdAt).limit(1);
+    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: carrier.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
+    const app = routeApp(ctx.db, actor, issueRoutes);
+    const transition = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_review", executionPolicy });
+    expect(transition.status, JSON.stringify(transition.body)).toBe(200);
+    const reviewerWakes = () => ctx.db.select().from(agentWakeupRequests).where(sql`${agentWakeupRequests.agentId} = ${reviewer}`);
+    expect(transport).not.toHaveBeenCalled();
+    expect(await reviewerWakes()).toHaveLength(0);
+    const [deferred] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+    expect(deferred.monitorNextCheckAt).not.toBeNull();
+    const heartbeat = heartbeatService(ctx.db);
+    await heartbeat.tickTimers(new Date(deferred.monitorNextCheckAt!.getTime() + 1_000));
+    expect(transport).not.toHaveBeenCalled();
+    expect(await reviewerWakes()).toHaveLength(0);
+    const [stillDeferred] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+
+    // Age out the fixture's exhausted window, then retry via the real timer.
+    const expiredMinute = minute - 61;
+    const expiredStart = new Date(expiredMinute * 60_000);
+    await ctx.db.update(toolGatewayRateLimitCounters).set({ counterKey: `github-budget:review-rework:${expiredMinute}`, windowStartAt: expiredStart, resetAt: new Date(expiredStart.getTime() + 3_600_000) }).where(sql`${toolGatewayRateLimitCounters.companyId} = ${carrier.id}`);
+    await heartbeat.tickTimers(new Date(stillDeferred.monitorNextCheckAt!.getTime() + 1_000));
+    expect(await reviewerWakes()).toHaveLength(0);
+    expect(transport.mock.calls.some(([url]) => url === checkUrl)).toBe(true);
+    const [waiting] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+    expect(waiting.monitorNextCheckAt).not.toBeNull();
+    await ctx.db.update(issueWorkProducts).set({ metadata: { repo: "acme/app", number: 7, headSha: movedSha } }).where(sql`${issueWorkProducts.issueId} = ${issueId}`);
+    liveStatus = "completed";
+    transport.mockClear();
+    await heartbeat.tickTimers(new Date(waiting.monitorNextCheckAt!.getTime() + 1_000));
+    expect(transport.mock.calls.map(([url]) => url)).toContain(pullUrl);
+    expect(await reviewerWakes()).toHaveLength(0);
+    const [moved] = await ctx.db.select().from(issues).where(sql`${issues.id} = ${issueId}`);
+    await ctx.db.update(issueWorkProducts).set({ metadata: { repo: "acme/app", number: 7, headSha } }).where(sql`${issueWorkProducts.issueId} = ${issueId}`);
+    transport.mockClear();
+    await heartbeat.tickTimers(new Date(moved.monitorNextCheckAt!.getTime() + 1_000));
+    expect(transport.mock.calls.some(([url]) => url === checkUrl)).toBe(true);
+    expect(await reviewerWakes()).toHaveLength(1);
+  });
+
+  it.each(["approve", "changes"] as const)("applies fail-closed %s policy to an authoritative cached SUCCESS when review budget is exhausted", async (verdict) => {
+    const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Cached success admission");
+    const author = randomUUID(), reviewer = randomUUID(), issueId = randomUUID(), runId = randomUUID(), stageId = randomUUID();
+    const headSha = "f".repeat(40);
+    const base = { companyId, status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} };
+    await ctx.db.insert(agents).values([
+      { ...base, id: author, name: "Author", role: "engineer" },
+      { ...base, id: reviewer, name: "Reviewer", role: "reviewer" },
+    ]);
+    await ctx.db.insert(issues).values({
+      id: issueId, companyId, title: "Cached success", status: "in_review", priority: "critical",
+      createdByAgentId: author, assigneeAgentId: author,
+      executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewer, userId: null }] }] },
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewer, userId: null }, returnAssignee: { type: "agent", agentId: author, userId: null }, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null },
+    });
+    await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewer, status: "succeeded", contextSnapshot: { issueId } });
+    await ctx.db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", title: "Synthetic PR", url: "https://github.com/acme/app/pull/7", status: "open", isPrimary: true, metadata: { repo: "acme/app", number: 7, headSha } });
+    let checkState: "success" | "failure" | "pending" | "missing" = "success";
+    let liveHeadSha = headSha;
+    let invalidateDuringRead = false;
+    const wakeFetch = vi.fn(async (url: string) => {
+      if (url.includes("/pulls/7")) return Response.json({ state: "open", head: { sha: liveHeadSha, ref: "branch" } });
+      if (url.includes("/check-runs")) {
+        if (invalidateDuringRead) invalidateCiCacheForHead(companyId, "acme/app", headSha);
+        return Response.json({ total_count: checkState === "missing" ? 0 : 1, check_runs: checkState === "missing" ? [] : [{ id: 1, name: "CI result", status: checkState === "pending" ? "in_progress" : "completed", conclusion: checkState === "pending" ? null : checkState, head_sha: headSha, html_url: "https://github.com/acme/app/actions/runs/1", started_at: new Date().toISOString(), completed_at: new Date().toISOString() }] });
+      }
+      return new Response(null, { status: 404 });
+    });
+    const wake = createPullRequestCiResolver(ctx.db, { source: "run-context", fetch: wakeFetch, tokenProvider: async () => canary });
+    const evidence = await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
+    expect(evidence).toMatchObject({ authoritative: true, status: "completed", conclusion: "success", headSha });
+    const [clock] = await ctx.db.execute(sql`select floor(extract(epoch from clock_timestamp()) / 60)::bigint as minute`);
+    const minute = Number(clock?.minute), start = new Date(minute * 60_000);
+    const [carrier] = await ctx.db.select({ id: companies.id }).from(companies).orderBy(companies.createdAt).limit(1);
+    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: carrier.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
+    const app = routeApp(ctx.db, { type: "agent", agentId: reviewer, companyId, source: "agent_key", runId } as never, issueRoutes);
+    const decision = verdict === "approve"
+      ? { status: "done", comment: `APPROVE PR #7 ${headSha}` }
+      : { status: "in_progress", comment: `REQUEST CHANGES PR #7 ${headSha}: server/src/example.ts:42 is broken` };
+    await ctx.db.update(issueWorkProducts).set({ metadata: { repo: "acme/app", number: 7, headSha: "a".repeat(40) } }).where(sql`${issueWorkProducts.issueId} = ${issueId}`);
+    const staleHead = await request(app).patch(`/api/issues/${issueId}`).send(decision);
+    expect(staleHead.status, JSON.stringify(staleHead.body)).toBe(422);
+    await ctx.db.update(issueWorkProducts).set({ metadata: { repo: "acme/app", number: 7, headSha } }).where(sql`${issueWorkProducts.issueId} = ${issueId}`);
+    // A rerun event invalidates even a recent successful snapshot on the same SHA.
+    invalidateCiCacheForHead(companyId, "acme/app", headSha);
+    const invalidated = await request(app).patch(`/api/issues/${issueId}`).send(decision);
+    expect(invalidated.status, JSON.stringify(invalidated.body)).toBe(422);
+    for (const state of ["pending", "missing"] as const) {
+      checkState = state;
+      clearCiCacheForTests();
+      await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
+      const rejected = await request(app).patch(`/api/issues/${issueId}`).send(decision);
+      expect(rejected.status, `${state}: ${JSON.stringify(rejected.body)}`).toBe(422);
+    }
+    checkState = "success";
+    clearCiCacheForTests();
+    invalidateDuringRead = true;
+    await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
+    const raced = await request(app).patch(`/api/issues/${issueId}`).send(decision);
+    expect(raced.status, JSON.stringify(raced.body)).toBe(422);
+    invalidateDuringRead = false;
+    clearCiCacheForTests();
+    await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
+    // An undelivered webhook cannot be ruled out when the budget is exhausted.
+    if (verdict === "approve") {
+      liveHeadSha = "b".repeat(40);
+      const delayedHeadWebhook = await request(app).patch(`/api/issues/${issueId}`).send(decision);
+      expect(delayedHeadWebhook.status).toBe(422);
+      liveHeadSha = headSha;
+      checkState = "pending";
+      const delayedWebhook = await request(app).patch(`/api/issues/${issueId}`).send(decision);
+      expect(delayedWebhook.status).toBe(422);
+    }
+    const response = await request(app).patch(`/api/issues/${issueId}`).send(decision);
+    expect(response.status, JSON.stringify(response.body)).toBe(verdict === "approve" ? 422 : 200);
+    if (verdict === "changes") {
+      const records = await ctx.db.select().from(activityLog).where(sql`${activityLog.entityId} = ${issueId} and ${activityLog.action} = 'issue.updated'`);
+      expect(records.some((record) => JSON.stringify(record.details?.reviewCiAudit) === JSON.stringify({ source: "budget_exhausted_cached_success", headSha }))).toBe(true);
+    }
+  });
+
+  it("admits only a return on matching authoritative failure when the review budget is exhausted", async () => {
+    const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Shared wake evidence");
+    const author = randomUUID(), reviewer = randomUUID(), issueId = randomUUID(), runId = randomUUID(), stageId = randomUUID();
+    const headSha = "c".repeat(40);
+    const base = { companyId, status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} };
+    await ctx.db.insert(agents).values([
+      { ...base, id: author, name: "Author", role: "engineer" },
+      { ...base, id: reviewer, name: "Reviewer", role: "reviewer" },
+    ]);
+    await ctx.db.insert(issues).values({
+      id: issueId, companyId, title: "Shared evidence gate", status: "in_review", priority: "medium",
+      createdByAgentId: author, assigneeAgentId: author,
+      executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewer, userId: null }] }] },
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewer, userId: null }, returnAssignee: { type: "agent", agentId: author, userId: null }, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null },
+    });
+    await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewer, status: "succeeded", contextSnapshot: { issueId } });
+    await ctx.db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", title: "Synthetic PR", url: "https://github.com/acme/app/pull/7", status: "open", isPrimary: true, metadata: { repo: "acme/app", number: 7, headSha } });
+    const wakeFetch = vi.fn(async (url: string) => {
+      if (url.includes("/pulls/7")) return Response.json({ state: "open", head: { sha: headSha, ref: "branch" } });
+      if (url.includes("/check-runs")) return Response.json({ total_count: 1, check_runs: [{ id: 1, name: "CI result", status: "completed", conclusion: "failure", head_sha: headSha, html_url: "https://github.com/acme/app/actions/runs/1", started_at: new Date().toISOString(), completed_at: new Date().toISOString() }] });
+      return new Response(null, { status: 404 });
+    });
+    const wake = createPullRequestCiResolver(ctx.db, { source: "run-context", fetch: wakeFetch, tokenProvider: async () => canary });
+    const evidence = await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
+    expect(evidence).toMatchObject({ authoritative: true, status: "completed", headSha });
+    const [clock] = await ctx.db.execute(sql`select floor(extract(epoch from clock_timestamp()) / 60)::bigint as minute`);
+    const minute = Number(clock?.minute), start = new Date(minute * 60_000);
+    // The installation-wide review budget is carried by the oldest company.
+    const [budgetCompany] = await ctx.db.select({ id: companies.id }).from(companies).orderBy(companies.createdAt).limit(1);
+    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: budgetCompany.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
+    const app = routeApp(ctx.db, { type: "agent", agentId: reviewer, companyId, source: "agent_key", runId } as never, issueRoutes);
+    for (const otherHead of ["d".repeat(40), null]) {
+      await ctx.db.update(issueWorkProducts).set({ metadata: { repo: "acme/app", number: 7, headSha: otherHead } }).where(sql`${issueWorkProducts.issueId} = ${issueId}`);
+      const rejected = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI failed" });
+      expect(rejected.status, JSON.stringify(rejected.body)).toBe(422);
+    }
+    await ctx.db.update(issueWorkProducts).set({ metadata: { repo: "acme/app", number: 7, headSha } }).where(sql`${issueWorkProducts.issueId} = ${issueId}`);
+    // A check-run event invalidates the old verdict before a rerun can be admitted.
+    invalidateCiCacheForHead(companyId, "acme/app", headSha);
+    const invalidated = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI failed" });
+    expect(invalidated.status, JSON.stringify(invalidated.body)).toBe(422);
+    expect(transport).not.toHaveBeenCalled();
+    await ctx.db.delete(toolGatewayRateLimitCounters).where(sql`${toolGatewayRateLimitCounters.companyId} = ${budgetCompany.id}`);
+    transport.mockImplementation(async () => new Response(null, { status: 403 }));
+    const forbidden = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI failed" });
+    expect(forbidden.status, JSON.stringify(forbidden.body)).toBe(422);
+    expect(transport).toHaveBeenCalled();
+    transport.mockImplementation(async () => { throw new Error("connection reset"); });
+    const disconnected = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI failed" });
+    expect(disconnected.status, JSON.stringify(disconnected.body)).toBe(422);
+    expect(disconnected.body.error).toContain("CI status for the current pull request head is unavailable");
+    transport.mockReset();
+    await ctx.db.insert(toolGatewayRateLimitCounters).values({ companyId: budgetCompany.id, counterKey: `github-budget:review-rework:${minute}`, windowStartAt: start, windowMs: 60_000, limit: 2000, count: 2000, resetAt: new Date(start.getTime() + 3_600_000) });
+    await wake.resolveForPullRequest(companyId, { host: "github.com", owner: "acme", repo: "app", number: 7 });
+    const approval = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done", comment: `APPROVE PR #7 ${headSha}` });
+    expect(approval.status, JSON.stringify(approval.body)).toBe(422);
+    const response = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_progress", comment: "REQUEST CHANGES: CI failed" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.executionState.lastDecisionOutcome).toBe("changes_requested");
+    const records = await ctx.db.select().from(activityLog).where(sql`${activityLog.entityId} = ${issueId} and ${activityLog.action} = 'issue.updated'`);
+    expect(records.some((record) => JSON.stringify(record.details?.reviewCiAudit) === JSON.stringify({ source: "budget_exhausted_cached_failure", headSha }))).toBe(true);
+    expect(transport).not.toHaveBeenCalled();
+  });
+});

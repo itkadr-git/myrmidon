@@ -30,6 +30,15 @@ test("an unclassified entry is reported", () => {
   assert.ok(problems.some((p) => p.includes("decision")));
 });
 
+test("dynamic pattern fields reject pending-audit placeholders", () => {
+  for (const field of ["id", "template", "prefix", "classification", "scope", "source", "decision"]) {
+    const pattern = { ...registry.dynamic_patterns[0], [field]: "before-pending-audit-after" };
+    const broken = { ...registry, dynamic_patterns: [pattern] };
+    const problems = checkRegistry({ extracted: new Map(), registry: broken });
+    assert.ok(problems.some((p) => p.includes(`field ${field}`) && p.includes("pending-audit")), field);
+  }
+});
+
 test("csv parser handles quotes and commas", () => {
   assert.deepEqual(parseCsv('a,"b,c","d ""e"""\n1,2,3\n'), [["a", "b,c", 'd "e"'], ["1", "2", "3"]]);
 });

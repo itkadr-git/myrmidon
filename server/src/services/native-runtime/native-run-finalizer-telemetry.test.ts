@@ -48,6 +48,7 @@ function captureRunFailureCallsFrom(fromIndex: number) {
 
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { finalizeNativeRun, recordNativeFinalizationFailure } from "./native-run-finalizer.js";
+import * as statusCommitter from "./status-decision-committer.js";
 import { commitNativeStatusDecision } from "./status-decision-committer.js";
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION, type NativeStatusDecision } from "./status-arbiter.js";
 
@@ -173,6 +174,25 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
       callerResultId: `${fixture.runId}:result`,
     });
   }
+
+  it("re-reads issue projection after a deadlocked decision transaction", async () => {
+    const fixture = await seedNativeRun();
+    await driveToCompleteResult(fixture);
+    const commit = vi.spyOn(statusCommitter, "commitNativeStatusDecision");
+    commit.mockImplementationOnce(async (input) => {
+      await db.update(issues).set({ status: "todo", statusVersion: input.priorStatusVersion + 1 })
+        .where(eq(issues.id, fixture.issueId));
+      throw new Error("query failed", { cause: Object.assign(new Error("deadlock detected"), { code: "40P01" }) });
+    });
+    try {
+      const result = await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded" });
+      expect(commit).toHaveBeenCalledTimes(2);
+      expect(commit.mock.calls[1]?.[0].priorStatus).toBe("todo");
+      expect(result.phase).toBe("committed");
+    } finally {
+      commit.mockRestore();
+    }
+  });
 
   it("emits exactly one agent.task_run event when the native finalizer commits a terminal status", async () => {
     const fixture = await seedNativeRun();

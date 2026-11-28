@@ -63,6 +63,8 @@ function paperclipBrokerCandidateUrls(env) {
   return urls;
 }
 async function paperclipRequestBrokerCredentials(env, candidateUrls, limits, repository) {
+  const scope = env.MYRMIDON_GITHUB_BROKER_SCOPE_DIR;
+  const singleRequest = Boolean(scope) || env.MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST === '1';
   const requestTimeoutMs = (limits && limits.requestTimeoutMs) || ${GITHUB_BROKER_REQUEST_TIMEOUT_MS};
   const totalTimeoutMs = (limits && limits.totalTimeoutMs) || ${GITHUB_BROKER_TOTAL_TIMEOUT_MS};
   const retryDelayMs = (limits && limits.retryDelayMs) || ${GITHUB_BROKER_CONFLICT_RETRY_DELAY_MS};
@@ -74,10 +76,20 @@ async function paperclipRequestBrokerCredentials(env, candidateUrls, limits, rep
   if (cached && paperclipCachedBrokerCredentialIsFresh(cached, now)) {
     return { response: paperclipCachedResponse(cached), tried: [] };
   }
+  if (scope && candidateUrls.length > 0) {
+    // Claim the whole operation's budget before attempting any I/O to the broker.
+    // Never release the claim on refusal, transport failure, or process death.
+    try {
+      const fs = require('node:fs');
+      fs.closeSync(fs.openSync(require('node:path').join(scope, 'attempted'), 'wx', 0o600));
+    } catch {
+      return { response: null, tried: [] };
+    }
+  }
   const deadline = now + totalTimeoutMs;
   const tried = [];
   let lastResponse = null;
-  for (const base of candidateUrls) {
+  for (const base of singleRequest ? candidateUrls.slice(0, 1) : candidateUrls) {
     const url = base + '/runtime-tools/github/credentials';
     let response = null;
     let outcome = 'no_response';
@@ -100,7 +112,7 @@ async function paperclipRequestBrokerCredentials(env, candidateUrls, limits, rep
           body,
         });
         outcome = String(response.status);
-        if (response.status !== 409 && ![400, 495, 496].includes(response.status)) break;
+        if (singleRequest || (response.status !== 409 && ![400, 495, 496].includes(response.status))) break;
         await response.arrayBuffer().catch(() => undefined);
         if ([400, 495, 496].includes(response.status)) break;
       }
@@ -148,6 +160,8 @@ async function paperclipRequestBrokerCredentials(env, candidateUrls, limits, rep
 const MYRMIDON_BROKER_CACHE_DEFAULT_TTL_MS = 45 * 60 * 1000;
 const MYRMIDON_BROKER_CACHE_EXPIRY_MARGIN_MS = 60 * 1000;
 function paperclipBrokerCacheRoot(env) {
+  // cut-rc owns the scope; descendants must never recreate it after cleanup.
+  if (env.MYRMIDON_GITHUB_BROKER_SCOPE_DIR) return env.MYRMIDON_GITHUB_BROKER_SCOPE_DIR;
   for (const name of ['MYRMIDON_GITHUB_CREDENTIALS_CACHE_DIR', 'PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR']) {
     const value = typeof env[name] === 'string' ? env[name].trim() : '';
     if (!value) continue;
@@ -366,10 +380,40 @@ function paperclipRepositoryFromOrigin(cwd, env, originalPath) {
   }
 }
 
+// Only known gh options may precede the first repository positional.
+function paperclipRepositoryFromPositional(args) {
+  if (args[0] !== 'repo' || !['view', 'clone'].includes(args[1])) return null;
+  const valued = new Set(['--branch', '-b', '--json', '--jq', '-q', '--template', '-t', '--upstream-remote-name', '-u']);
+  const switches = new Set(['--web', '-w', '--no-upstream']);
+  let positionalOnly = false;
+  for (let index = 2; index < args.length; index++) {
+    const arg = args[index];
+    if (!positionalOnly && arg === '--') { positionalOnly = true; continue; }
+    if (!positionalOnly && arg.startsWith('-')) {
+      if (valued.has(arg)) { index++; continue; }
+      if (switches.has(arg) || [...valued].some(flag => arg.startsWith(flag + '='))) continue;
+      return null;
+    }
+    const shorthand = /^(?:[A-Za-z0-9-]+\/[A-Za-z0-9._-]+|(?:www\.)?github\.com\/[A-Za-z0-9-]+\/[A-Za-z0-9._-]+)$/i.test(arg);
+    const url = args[1] === 'clone' && /^(?:https?:\/\/(?:www\.)?github\.com\/[A-Za-z0-9-]+\/[A-Za-z0-9._-]+|git@(?:www\.)?github\.com:[A-Za-z0-9-]+\/[A-Za-z0-9._-]+)$/i.test(arg);
+    return shorthand || url ? paperclipNormalizeRepository(arg) : null;
+  }
+  return null;
+}
+
 function paperclipTargetRepository(program, args, env, originalPath) {
   if (program === 'gh') {
     const explicit = paperclipRepositoryFromArgs(args) ?? (env.GH_REPO || null);
     if (explicit) return paperclipNormalizeRepository(explicit);
+    if (args[0] === 'api') {
+      for (const arg of args.slice(1)) {
+        if (arg === '--') break;
+        const match = /^\/?repos\/([^/?#]+)\/([^/?#]+)/.exec(arg);
+        if (match) return paperclipNormalizeRepository(match[1] + '/' + match[2]);
+      }
+    }
+    const positional = paperclipRepositoryFromPositional(args);
+    if (positional) return positional;
     return paperclipRepositoryFromOrigin(process.cwd(), env, originalPath);
   }
   const fromArgs = paperclipRepositoryFromGitArgs(args);

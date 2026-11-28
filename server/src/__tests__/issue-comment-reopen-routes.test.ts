@@ -4443,6 +4443,7 @@ describe.sequential("issue comment reopen routes", () => {
             state: "complete" as const,
             pullRequestUrl: PR_URL,
             headSha: input.headSha,
+            finalCheckConclusion: "success" as const,
           }),
           resolveReviewHeadFailedChecks,
         },

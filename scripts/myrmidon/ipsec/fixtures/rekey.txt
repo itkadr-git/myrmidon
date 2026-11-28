@@ -1,0 +1,7 @@
+office: #1, ESTABLISHED, IKEv2, rekeying in 10s
+  office-net: #2, reqid 1, INSTALLED, TUNNEL, ESP:AES_GCM_16_128
+    in  c1234567, 1024 bytes, 12 packets
+    out c7654321, 2048 bytes, 13 packets
+  office-net: #3, reqid 1, INSTALLED, TUNNEL, ESP:AES_GCM_16_128
+    in  c1234568, 123 bytes, 2 packets
+    out c7654322, 456 bytes, 3 packets

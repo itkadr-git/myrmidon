@@ -7,6 +7,8 @@
 #   release-manifest.sh --tag myr-vX.Y.Z      read the release from GitHub
 #   release-manifest.sh --from-file <file>    read a manifest file (an offline
 #                                             copy of the release asset)
+#   Add --expect-tag <RC tag> --expect-commit <full SHA> to verify an RC
+#   candidate file against its expected identity and the CI image registry.
 #
 # Source, strongest first:
 #   1. the release asset release-components.json (machine-readable, written by
@@ -37,11 +39,13 @@ set -euo pipefail
 log() { printf '[myrmidon-release-manifest] %s\n' "$*" >&2; }
 die() { printf '[myrmidon-release-manifest] ERROR: %s\n' "$*" >&2; exit 1; }
 
-tag="" file=""
+tag="" file="" expect_tag="" expect_commit=""
 while (($#)); do
   case "$1" in
     --tag) tag="$2"; shift 2 ;;
     --from-file) file="$2"; shift 2 ;;
+    --expect-tag) expect_tag="$2"; shift 2 ;;
+    --expect-commit) expect_commit="$2"; shift 2 ;;
     -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -49,6 +53,12 @@ done
 [[ -n "$tag" || -n "$file" ]] || die "give --tag or --from-file"
 [[ -z "$tag" || -z "$file" ]] || die "give --tag or --from-file, not both"
 command -v jq >/dev/null 2>&1 || die "jq is not installed"
+strict=0
+if [[ -n "$expect_tag" || -n "$expect_commit" ]]; then
+  [[ -n "$file" && "$expect_tag" =~ ^myr-v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ && "$expect_commit" =~ ^[0-9a-f]{40}$ ]] \
+    || die "RC verification requires --from-file, --expect-tag and --expect-commit (full SHA)"
+  strict=1
+fi
 
 # name -> fixed repository (the same CI repositories as the component scripts).
 declare -A REPOSITORIES=(
@@ -77,6 +87,40 @@ fetch() {
 if [[ -n "$file" ]]; then
   [[ -f "$file" ]] || die "manifest file not found: $file"
   manifest="$(cat "$file")"
+  if ((!strict)) && jq -e 'has("commit")' >/dev/null 2>&1 <<<"$manifest"; then
+    die "RC candidate requires an independently expected tag and commit"
+  fi
+  if ((strict)); then
+    jq -es --arg tag "$expect_tag" --arg commit "$expect_commit" '
+      length == 1 and (.[0] | .schema == 1 and .tag == $tag and .version == ($tag | ltrimstr("myr-v"))
+      and .commit == $commit and (.components | type == "object"))
+    ' >/dev/null <<<"$manifest" || die "manifest tag or commit (or schema) does not match the expected RC"
+    for name in board dockergate fleetd hermes; do
+      jq -e --arg name "$name" '.components[$name] | type == "object"' >/dev/null <<<"$manifest" \
+        || die "RC manifest missing required component $name"
+    done
+    verified=()
+    for name in "${ORDER[@]}"; do
+      jq -e --arg name "$name" '.components | has($name)' >/dev/null <<<"$manifest" || continue
+      repository="${REPOSITORIES[$name]}"
+      digest="$(jq -er --arg name "$name" --arg repo "$repository" '
+        .components[$name] | select(.repository == $repo) | .digest | strings | select(test("^sha256:[0-9a-f]{64}$"))
+      ' <<<"$manifest")" || die "invalid RC image reference for $name"
+      [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "malformed RC digest for $name"
+      actual="$(timeout 90 docker buildx imagetools inspect "$repository:${expect_tag#myr-v}" --format '{{json .Manifest.Digest}}')" \
+        || die "cannot establish RC tag provenance for $name"
+      [[ "$actual" == "\"$digest\"" ]] || die "RC tag digest does not match manifest for $name"
+      image="$(timeout 90 docker buildx imagetools inspect "$repository@$digest" --format '{{json .Image}}')" \
+        || die "cannot establish image provenance for $name"
+      jq -e --arg commit "$expect_commit" '
+        .config.Labels | .["org.opencontainers.image.revision"] == $commit
+        and .["org.opencontainers.image.source"] == "https://github.com/itkadr-git/myrmidon"
+      ' >/dev/null <<<"$image" || die "RC image provenance mismatch for $name"
+      verified+=("$name=$digest")
+    done
+    printf '%s\n' "${verified[@]}"
+    exit 0
+  fi
 else
   [[ "$tag" =~ ^myr-v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || die "tag must look like myr-vX.Y.Z or myr-vX.Y.Z-rc.N (got: $tag)"
   api="${MYRMIDON_RELEASE_API_URL:-https://api.github.com}"

@@ -61864,7 +61864,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
       expect(failedDownload).toHaveBeenCalledTimes(1);
       expect(storage.putFile).not.toHaveBeenCalled();
-      expect(wakeup).not.toHaveBeenCalled();
       const [conversation] = await service.listConversations(endpoint.id);
       if (!conversation)
         throw new Error("Expected Telegram attachment failure conversation");
@@ -61885,33 +61884,29 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           "1 external attachment was omitted",
         ),
       });
-      await vi.waitFor(() =>
-        expect(dm.post).toHaveBeenCalledWith(visibleFailure),
-      );
-      await expect(
-        db
-          .select({ kind: chatActions.kind, status: chatActions.status })
+      // The provider call can be observed before the outbox commits its result.
+      await vi.waitFor(async () => {
+        const actions = await db
+          .select({
+            kind: chatActions.kind,
+            providerActionId: chatActions.providerActionId,
+            status: chatActions.status,
+          })
           .from(chatActions)
-          .where(eq(chatActions.deliveryId, delivery.id)),
-      ).resolves.toEqual(
-        expect.arrayContaining([
-          { kind: "inbound_wakeup", status: "failed" },
-          { kind: "provider_effect", status: "processed" },
-        ]),
-      );
-      // myrmidon(P7): an empty turn keeps exactly one visible message: the replacement
-      // failure. No omission notice is added beside it.
-      await expect(
-        db
-          .select({ id: chatActions.id })
-          .from(chatActions)
-          .where(
-            and(
-              eq(chatActions.deliveryId, delivery.id),
-              like(chatActions.providerActionId, "%attachment-omission-notice%"),
-            ),
-          ),
-      ).resolves.toEqual([]);
+          .where(eq(chatActions.deliveryId, delivery.id));
+        expect(actions.filter(({ kind }) => kind === "provider_effect")).toEqual([
+          {
+            kind: "provider_effect",
+            providerActionId: `provider_effect:attachment-ingest-failure:${delivery.id}`,
+            status: "processed",
+          },
+        ]);
+        expect(actions).toContainEqual(
+          expect.objectContaining({ kind: "inbound_wakeup", status: "failed" }),
+        );
+      });
+      // An empty turn sends only the replacement failure, not an omission notice.
+      expect(wakeup).not.toHaveBeenCalled();
       expect(dm.post.mock.calls.map(([text]) => text)).toEqual([
         visibleFailure,
       ]);

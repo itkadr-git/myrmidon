@@ -131,6 +131,10 @@ else
   sha="$object_sha"
 fi
 log "tag $tag -> commit $sha"
+checkout_sha="$(git rev-parse --verify 'HEAD^{commit}' 2>/dev/null)" \
+  || die "cannot resolve checkout commit — NOT publishing $tag"
+[[ "$checkout_sha" == "$sha" ]] \
+  || die "checkout commit '$checkout_sha' does not match tag commit '$sha' — NOT publishing $tag"
 
 # -------------------------------------- 1b. DB audit gate (final tags only) --
 # DB-AUDIT-GATE (the 08.10.2026 entry of the OPE-401 decision registry): a
@@ -292,12 +296,8 @@ runs_of() {
 
 run_verdict() {
   local workflow_file="$1" branches verdict
-  # TAG-CI (the 1.6.4 incident): the release green comes ONLY from the tag's
-  # own runs (head_branch == the tag). A green main-branch run of the same
-  # commit used to satisfy the CI gate (myrmidon-ci.yml had no tag trigger);
-  # myrmidon-ci-tag.yml now runs the full pipeline on the tag itself, so the
-  # main fallback is gone — and a push to main can no longer cancel the
-  # tag's run (own concurrency group, cancel-in-progress: false).
+  # TAG-CI (the 1.6.4 incident): the tag's own run (head_branch == the tag) is
+  # un-cancellable by pushes to main (own concurrency group).
   branches="$(branch_match_expr "$tag")"
   verdict="$(runs_of "$workflow_file" "$branches" \
     | jq "[.[] | select(.status == \"completed\")]
@@ -392,6 +392,8 @@ refuse_if_cancelled() {
   fi
 }
 
+# A green branch run can let the tag workflow reuse its build, but cannot
+# replace the tag's own verdict (including the release queue priority check).
 log "gate: Myrmidon CI (tag) on $sha"
 refuse_if_cancelled ".github/workflows/myrmidon-ci-tag.yml" "Myrmidon CI (tag)"
 wait_for ".github/workflows/myrmidon-ci-tag.yml" must "Myrmidon CI (tag)"
@@ -401,6 +403,51 @@ log "gate: Myrmidon dockergate image on $sha"
 wait_for ".github/workflows/myrmidon-dockergate.yml" soft "Myrmidon dockergate image"
 log "gate: Myrmidon fleetd image on $sha"
 wait_for ".github/workflows/myrmidon-fleetd.yml" soft "Myrmidon fleetd image"
+
+# --------------------------------------------- 2b. queue priority gate --------
+# OPE-13002: the release build must hold priority in the CI queue. The
+# enforcement mechanism is the priority runner pool (myrmidon-ci.yml
+# is_release -> vars.CI_RUNNER_PRIORITY). This gate makes priority a RELEASE
+# criterion, not just a CI-side monitor: before anything is published it
+# checks the FACTUAL dispatch order of the pending runs of the two release
+# CI workflows. A proven inversion — an ordinary run that queued AFTER this
+# tag's CI run has already started (started_at recorded by the dispatcher)
+# while the tag's run has not — refuses the publish. Fail-closed: an
+# unreadable runs API answer refuses the publish (a retryable answer, never
+# a silent pass).
+queue_priority_ok() {
+  local runs_json
+  runs_json="$(for ((attempt = 1; attempt <= GH_API_RETRIES; attempt++)); do
+    out="$(gh api "repos/$repo/actions/runs?per_page=100" 2>/dev/null)" && rc=0 || rc=$?
+    if ((rc == 0)) && [[ -n "$out" ]]; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+    log "gate: queue priority runs read failed (attempt $attempt/$GH_API_RETRIES) - retrying in ${GH_API_RETRY_SLEEP}s"
+    sleep "$GH_API_RETRY_SLEEP"
+  done; return 1)"
+  [[ -n "$runs_json" ]] || return 1
+  # GitHub pages can exceed the per-argument/environment size limit.
+  QUEUE_TAG="$tag" QUEUE_HELPERS="$here/release-jobs.mjs" node --input-type=module -e '
+    import { readFileSync } from "node:fs";
+    const { observedPriorityViolations } = await import(process.env.QUEUE_HELPERS);
+    const { workflow_runs: all } = JSON.parse(readFileSync(0, "utf8"));
+    if (!Array.isArray(all)) throw new Error("invalid workflow runs response");
+    const pending = all.filter((r) =>
+      (r.status === "queued" || r.status === "in_progress") &&
+      (r.name === "Myrmidon CI (tag)" || r.name === "Myrmidon CI")
+    );
+    const violations = observedPriorityViolations(pending)
+      .filter((v) => v.release === process.env.QUEUE_TAG);
+    for (const v of violations) {
+      console.error(`[myrmidon-release-publish] ERROR: queue priority inversion: release run ${v.release} (queued ${v.releaseQueuedAt}, not started) is behind ordinary run ${v.blockedBy} (queued ${v.blockedByQueuedAt}, started ${v.blockedByStartedAt})`);
+    }
+    if (violations.length > 0) process.exit(1);
+  ' <<< "$runs_json"
+}
+log "gate: release build queue priority on $tag"
+queue_priority_ok || die "queue priority could not be verified for $tag (or a proven inversion exists) — NOT publishing. Release builds must hold priority in the CI queue."
+log "gate: queue priority holds for $tag"
 
 # ------------------------------------------------------ 3. the release body --
 # release-body.mjs exits 1 when the CHANGELOG section or any component
@@ -485,17 +532,27 @@ title="Myrmidon $version$title_suffix"
 prerelease_args=()
 ((prerelease)) && prerelease_args+=(--prerelease)
 if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
-  log "release $tag already exists — updating (idempotent re-run, never --latest)"
-  gh release edit "$tag" --repo "$repo" --title "$title" "${prerelease_args[@]}" \
-    --notes-file release-body.md
+  release_exists=1
 else
-  gh release create "$tag" --repo "$repo" --title "$title" "${prerelease_args[@]}" \
+  release_exists=0
+fi
+# Re-read the ref immediately before the first write; a moved or deleted tag
+# invalidates the gates and artifacts computed from the original checkout.
+current_ref="$(gh api "repos/$repo/git/ref/tags/$tag" 2>/dev/null)" \
+  || die "tag $tag changed or disappeared — NOT publishing"
+current_type="$(jq -r '.object.type // empty' <<<"$current_ref")"
+current_sha="$(jq -r '.object.sha // empty' <<<"$current_ref")"
+[[ "$current_type" == "$object_type" && "$current_sha" == "$object_sha" ]] \
+  || die "tag $tag changed since verification — NOT publishing"
+if ((release_exists)); then
+  die "release $tag already exists — conflict requires manual resolution; NOT overwriting"
+else
+  gh release create "$tag" --verify-tag --repo "$repo" --title "$title" "${prerelease_args[@]}" \
     --notes-file release-body.md
 fi
 
-# The manifest asset: replaced on a re-run (--clobber), so it always matches
-# the body of the same publish.
-gh release upload "$tag" release-components.json --repo "$repo" --clobber
+# Assets are uploaded only to the release just created; never replace existing assets.
+gh release upload "$tag" release-components.json --repo "$repo"
 log "uploaded the component manifest asset release-components.json"
 
 # ONE-COMMAND-INSTALL (1.6.6): the installer of a fresh installation rides with
@@ -505,7 +562,7 @@ log "uploaded the component manifest asset release-components.json"
 # scripts/myrmidon/install/install.sh (the single source of truth).
 installer="$here/../install/install.sh"
 [[ -f "$installer" ]] || die "the installer script $installer is missing"
-gh release upload "$tag" "$installer#install.sh" --repo "$repo" --clobber
+gh release upload "$tag" "$installer#install.sh" --repo "$repo"
 log "uploaded the installer asset install.sh"
 
 # ----------------------------------------------- 5. supersede the previous --

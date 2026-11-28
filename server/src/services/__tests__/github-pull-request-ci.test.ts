@@ -7,6 +7,7 @@ import {
   createPullRequestCiResolver,
   withCiResolveDeadline,
   clearCiCacheForTests,
+  readFreshReviewCiSnapshot,
   invalidateCiCacheForHead,
   summarizeHeadLaneEvidence,
   resolveCiFailureTails,
@@ -801,6 +802,20 @@ describe("summarizeCheckRuns", () => {
 });
 
 describe("fetchCommitCheckRuns", () => {
+  it("distinguishes review budget denial from a transport failure without exposing errors", async () => {
+    const { GitHubReviewBudgetError } = await import("../github-review-budget.js");
+    const denied = await fetchCommitCheckRuns("acme", "app", "abc123", null, async () => {
+      throw new GitHubReviewBudgetError("budget_exhausted");
+    });
+    const network = await fetchCommitCheckRuns("acme", "app", "abc123", null, async () => {
+      throw new Error("synthetic-secret");
+    });
+    expect(denied.authoritative).toBe(false);
+    expect(denied.summary).toContain("budget_exhausted");
+    expect(network.summary).toContain("network_error");
+    expect(JSON.stringify(network)).not.toContain("synthetic-secret");
+  });
+
   it("fetches check runs for exact head SHA with authorization header", async () => {
     const mockCheckRuns = [
       {
@@ -1901,6 +1916,22 @@ describe("createPullRequestCiResolver", () => {
       expect(markdown).toContain("Job lint (eslint) (id: 54321) log unavailable: token lacks actions:read permission or access denied (403)");
     });
   });
+  it("shares a fresh authoritative exact-head failure with review without another GitHub read", async () => {
+    clearCiCacheForTests();
+    const mockFetch = vi.fn(async () => ({ ok: true, status: 200, headers: new Headers(), json: async () => ({ total_count: 1, check_runs: [{ id: 1, name: "CI result", status: "completed", conclusion: "failure", html_url: "https://github.com/acme/app/runs/1", started_at: "2026-11-14T08:00:00Z", completed_at: "2026-11-14T08:01:00Z" }] }) }));
+    const resolver = createPullRequestCiResolver({ select: vi.fn() } as never, {
+      source: "run-context", fetch: mockFetch as never, tokenProvider: async () => "token",
+      prResolver: async () => ({ headSha: "exact-head", headRef: "branch" }),
+    });
+    const reference = { host: "github.com" as const, owner: "acme", repo: "app", number: 42 };
+    await resolver.resolveForPullRequest("company-1", reference);
+    expect(readFreshReviewCiSnapshot("company-1", reference, "exact-head")).toEqual({ state: "complete", headSha: "exact-head", finalCheckConclusion: "failure" });
+    expect(readFreshReviewCiSnapshot("company-1", reference, "changed-head")).toBeNull();
+    expect(readFreshReviewCiSnapshot("company-2", reference, "exact-head")).toBeNull();
+    invalidateCiCacheForHead("company-1", "acme/app", "exact-head");
+    expect(readFreshReviewCiSnapshot("company-1", reference, "exact-head")).toBeNull();
+  });
+
   it("invalidates a failed completed result when the retried check_run webhook arrives", async () => {
     const mockDb = { select: vi.fn() };
     let conclusion = "failure";

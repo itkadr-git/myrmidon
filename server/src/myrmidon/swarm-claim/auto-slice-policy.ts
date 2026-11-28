@@ -71,3 +71,17 @@ export async function runAutoSlicePass(
     }
   }
 }
+
+/**
+ * Statuses of an existing slicing task that stop the board from creating the next one.
+ * `blocked` and `in_review` are deliberately absent: a lead that has cut its tasks parks
+ * the slicing task behind them as blockers, and that must not freeze the queue refill
+ * for hours. Duplicates of a task that is still being created are caught by `todo`.
+ */
+export const AUTO_SLICE_DEDUPE_STATUSES = ["backlog", "todo", "in_progress"] as const;
+
+export function autoSliceBlocksNext(status: string): boolean {
+  return (AUTO_SLICE_DEDUPE_STATUSES as readonly string[]).includes(status);
+}
+
+export const AUTO_SLICE_TITLE = "[AUTO-SLICE] Пополнить очередь инженеров";

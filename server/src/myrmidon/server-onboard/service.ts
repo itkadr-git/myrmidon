@@ -12,13 +12,15 @@
 // - at most one open job per server (partial unique index; createJob maps the
 //   violation to a 409 the UI can show);
 // - secrets are written before the registry names them, and the bootstrap
-//   password is deleted after the access step reports key login verified
+//   password is deleted only after successful onboarding with verified stored-key login
 //   (unless the owner chose to keep it);
 // - executor claims/reports require the shared executor token;
 // - one-time secret handoff: the claim response carries values exactly once
 //   and they never touch the step log (maskStepDetail re-masks detail).
 
-import { generateKeyPairSync } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { generateSshKeyPair, sshPublicKey } from "./ssh-key.js";
+import { parseOwnedFleetResource, type OwnedFleetResource } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
@@ -143,8 +145,8 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
     }
   }
 
-  function secretName(slug: string, kind: "bootstrap-password" | "access-key"): string {
-    return `fleet/${slug}/${kind}`;
+  function secretName(slug: string, attemptId: string, kind: "bootstrap-password" | "access-key"): string {
+    return `fleet/${slug}/${attemptId}/${kind}`;
   }
 
   // The sweep has no natural company scope; the activity row is instance-level.
@@ -152,6 +154,32 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
   const claimlessAuditEntity = "fleet-onboard-sweep";
 
   return {
+    async pinHostKey(presentedToken: string | null | undefined, companyId: string, jobId: string, fingerprint: string): Promise<boolean> {
+      requireEnabled();
+      requireExecutorToken(presentedToken);
+      const job = await deps.store.getJob(companyId, jobId);
+      if (!job) throw new OnboardServiceError(404, "Job not found");
+      if (!["claimed", "running"].includes(job.status)) throw new OnboardServiceError(409, "Host pin requires an active job");
+      return deps.store.pinHostKey(companyId, job.serverId, job.id, fingerprint);
+    },
+
+    /** The authenticated executor reports identities, never arbitrary cleanup commands. */
+    async recordOwnedResource(presentedToken: string | null | undefined, companyId: string, jobId: string, value: unknown) {
+      requireEnabled();
+      requireExecutorToken(presentedToken);
+      const job = await deps.store.getJob(companyId, jobId);
+      if (!job) throw new OnboardServiceError(404, "Job not found");
+      if (job.kind !== "onboard" || !["claimed", "running"].includes(job.status)) {
+        throw new OnboardServiceError(409, "Ownership requires an active onboard job");
+      }
+      let resource;
+      try { resource = parseOwnedFleetResource(value); }
+      catch { throw new OnboardServiceError(400, "Invalid owned resource identity"); }
+      const inventory = await deps.store.recordOwnedResource(companyId, job.serverId, jobId, resource);
+      await writeAudit(companyId, "resource_owned", job.serverId, { jobId, kind: resource.kind });
+      return inventory;
+    },
+
     /** Add a server: registry row + secret stash + pending onboard job. */
     async addServer(input: {
       companyId: string;
@@ -169,34 +197,35 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
       const existing = await deps.getServerBySlug?.(input.companyId, input.slug);
       if (existing) throw new OnboardServiceError(409, `Server slug already exists: ${input.slug}`);
 
+      // Each attempt owns its secrets; losing the slug race cannot affect the winner.
+      const attemptId = randomUUID();
       const keepPassword = input.auth.type === "password" && input.keepPassword && deps.settings.allowKeepPassword;
       let generatedPublicKey: string | null = null;
       let passwordSecretName: string | null = null;
       let accessKeySecretName: string | null = null;
 
-      if (input.auth.type === "password") {
-        passwordSecretName = await deps.secrets.putSecret(
-          input.companyId,
-          secretName(input.slug, "bootstrap-password"),
-          `fleet-${input.slug}-bootstrap-password`,
-          input.auth.password,
-          "SERVER-ONBOARD: one-time bootstrap password",
-        );
-      } else {
+      let created: Awaited<ReturnType<FleetOnboardStore["createServerAndJob"]>>;
+      try {
+        if (input.auth.type === "password") {
+          passwordSecretName = await deps.secrets.putSecret(
+            input.companyId,
+            secretName(input.slug, attemptId, "bootstrap-password"),
+            `fleet-${attemptId}-bootstrap-password`,
+            input.auth.password,
+            "SERVER-ONBOARD: one-time bootstrap password",
+          );
+        }
         const pair = (deps.generateKeyPair ?? defaultGenerateKeyPair)();
         accessKeySecretName = await deps.secrets.putSecret(
           input.companyId,
-          secretName(input.slug, "access-key"),
-          `fleet-${input.slug}-access-key`,
+          secretName(input.slug, attemptId, "access-key"),
+          `fleet-${attemptId}-access-key`,
           pair.privateKey,
           "SERVER-ONBOARD: board access key (private)",
         );
-        generatedPublicKey = pair.publicKey;
-      }
+        if (input.auth.type === "generate-key") generatedPublicKey = pair.publicKey;
 
-      // Registry row (secret names in, values never), then the pending job.
-      let created: Awaited<ReturnType<FleetOnboardStore["createServerAndJob"]>>;
-      try {
+        // Registry row (secret names in, values never), then the pending job.
         created = await deps.store.createServerAndJob(input.companyId, {
           slug: input.slug,
           name: input.name,
@@ -311,10 +340,17 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
         [claim.server.passwordSecretKey, "bootstrapPassword"],
         [claim.server.accessKeySecretKey, "accessKey"],
       ];
-      for (const [name, slot] of wanted) {
-        if (!name) continue;
-        const value = await deps.secrets.readSecret(claim.job.companyId, name);
-        if (value) secretValues[slot] = value;
+      try {
+        for (const [name, slot] of wanted) {
+          if (!name) continue;
+          const value = await deps.secrets.readSecret(claim.job.companyId, name);
+          if (value) secretValues[slot] = value;
+        }
+      } catch {
+        // Do not expose secret-provider errors or leave a consumed claim running.
+        await deps.store.updateJob(companyId, claim.job.id, { status: "failed", error: "Unable to retrieve onboarding credentials" });
+        await deps.store.updateServerOnboard(companyId, claim.job.serverId, { onboardState: "needs_attention" });
+        throw new OnboardServiceError(503, "Unable to retrieve onboarding credentials");
       }
       await writeAudit(claim.job.companyId, "job_claimed", claim.job.serverId, { jobId: claim.job.id, kind: claim.job.kind });
       return { ...claim, secretValues };
@@ -323,36 +359,89 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
     /** Executor report after each step; also the terminal transition. */
     async report(
       presentedToken: string | null | undefined,
-      input: { companyId: string; jobId: string; step?: string; entry?: OnboardStepLogEntry; status?: OnboardJob["status"]; error?: string | null; hostKeyFingerprint?: string | null },
+      input: { companyId: string; jobId: string; step?: string; entry?: OnboardStepLogEntry; status?: OnboardJob["status"]; error?: string | null; hostKeyFingerprint?: string | null; verifiedAccessPublicKey?: string; ownedFirewallRule?: unknown },
     ): Promise<OnboardJob | null> {
       requireEnabled();
       requireExecutorToken(presentedToken);
       const job = await deps.store.getJob(input.companyId, input.jobId);
       if (!job) throw new OnboardServiceError(404, "Job not found");
+      if (job.status !== "claimed" && job.status !== "running") {
+        throw new OnboardServiceError(409, "Onboarding job is no longer active");
+      }
+
+      let ownedFirewallRule: Extract<OwnedFleetResource, { kind: "firewall_rule" }> | undefined;
+      if (input.ownedFirewallRule !== undefined) {
+        if (job.kind !== "onboard" || input.status !== "succeeded") {
+          throw new OnboardServiceError(400, "Firewall ownership requires successful onboarding");
+        }
+        if (!job.stepLog.some((step) => step.step === "harden" && step.result === "ok")) {
+          throw new OnboardServiceError(409, "Firewall ownership requires verified hardening");
+        }
+        let resource: OwnedFleetResource;
+        try { resource = parseOwnedFleetResource(input.ownedFirewallRule); }
+        catch { throw new OnboardServiceError(400, "Invalid firewall rule identity"); }
+        const server = await deps.store.getServerById(job.companyId, job.serverId);
+        const scope = `myrmidon:${job.companyId}:${job.serverId}:`;
+        if (!server || resource.kind !== "firewall_rule" || resource.rule !== `allow ${server.port}/tcp` ||
+            !resource.marker.startsWith(scope) || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(resource.marker.slice(scope.length))) {
+          throw new OnboardServiceError(400, "Firewall rule identity does not match the onboard server");
+        }
+        ownedFirewallRule = resource;
+      }
+
+      let bootstrapToDelete: string | null = null;
+      // The authenticated worker attests to fresh key-only login. Match that
+      // attestation against the current pin and the key in protected storage.
+      if (job.kind === "onboard" && input.status === "succeeded") {
+        const server = await deps.getServer(job.companyId, job.serverId);
+        if (!input.verifiedAccessPublicKey || !server?.hostKeyFingerprint || server.hostKeyFingerprint !== input.hostKeyFingerprint ||
+            !server.accessKeySecretKey || !job.stepLog.some((step) => step.step === "access" && step.result === "ok")) {
+          throw new OnboardServiceError(409, "Cannot confirm verified onboarding access");
+        }
+        let publicKey: string | null = null;
+        try {
+          const key = await deps.secrets.readSecret(job.companyId, server.accessKeySecretKey);
+          if (key) publicKey = sshPublicKey(key);
+        } catch {
+          throw new OnboardServiceError(503, "Unable to confirm stored onboarding key");
+        }
+        if (publicKey !== input.verifiedAccessPublicKey) {
+          throw new OnboardServiceError(409, "Verified access key does not match protected storage");
+        }
+        if (!server.keepPassword) bootstrapToDelete = server.passwordSecretKey;
+      }
+
       const updated = await deps.store.updateJob(input.companyId, input.jobId, {
+        requireClaimed: true,
+        ownedFirewallRule,
         status: input.status,
         step: input.step ?? (input.status ? null : undefined),
         stepLogEntry: input.entry,
         error: input.error ?? undefined,
       });
-      if (!updated) return null;
+      if (!updated) throw new OnboardServiceError(409, "Onboarding job is no longer active");
 
       // Server state follows the job.
       const isFailed = input.status === "failed" || input.entry?.result === "failed";
-      if (input.status === "succeeded") {
+      if (input.status === "succeeded" && !ownedFirewallRule) {
+        const nextState = job.kind === "decommission" ? "decommissioned" : "ready";
         await deps.store.updateServerOnboard(job.companyId, job.serverId, {
-          onboardState: "ready",
-          lastCheckOk: true,
-          ...(input.hostKeyFingerprint ? { hostKeyFingerprint: input.hostKeyFingerprint } : {}),
+          onboardState: nextState,
+          lastCheckOk: job.kind !== "decommission",
         });
       } else if (isFailed) {
         await deps.store.updateServerOnboard(job.companyId, job.serverId, { onboardState: "needs_attention" });
       } else if (input.entry?.step === "access" && input.entry.result === "ok") {
         await deps.store.updateServerOnboard(job.companyId, job.serverId, { onboardState: "onboarding" });
-        const server = await deps.getServer(job.companyId, job.serverId);
-        if (server?.passwordSecretKey && !server.accessKeySecretKey && !server.keepPassword) {
-          // key login verified — the bootstrap password has done its job
-          await deps.secrets.deleteSecret(job.companyId, server.passwordSecretKey);
+        // Intermediate reports never retire the bootstrap credential.
+      }
+      if (bootstrapToDelete) {
+        // Cleanup is after the terminal transition. A failed cleanup must not
+        // turn an already committed success into a rollback at the worker.
+        try {
+          await deps.secrets.deleteSecret(job.companyId, bootstrapToDelete);
+        } catch {
+          await writeAudit(job.companyId, "bootstrap_password_cleanup_failed", job.serverId, { jobId: job.id });
         }
       }
       const actionName = input.status ? `job_${input.status}` : isFailed ? "job_failed" : "step_reported";
@@ -386,11 +475,7 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
 }
 
 function defaultGenerateKeyPair(): { publicKey: string; privateKey: string } {
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  return {
-    publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
-    privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
-  };
+  return generateSshKeyPair();
 }
 
 export type OnboardService = ReturnType<typeof onboardService>;

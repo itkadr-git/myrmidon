@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Measures how long a board server takes to reach HTTP 200 on GET /api/health.
+// Measures first HTTP 200 and readiness (HTTP 200 with status "ok") on GET /api/health.
 //
 // Usage:
 //   node scripts/myrmidon/measure-board-start.mjs --cwd <repo root> \
@@ -8,9 +8,8 @@
 //
 // Each run spawns the command (detached in its own process group) with
 // PORT=<port> plus the given --env vars, polls GET http://127.0.0.1:<port>/api/health
-// every 100 ms, and records the time from spawn to the first 200 response.
-// Non-200 answers (e.g. 503 while migrations/DB are starting) keep the poll
-// going. The whole process group is always stopped: SIGTERM to the group,
+// every 100 ms. Both times are measured from spawn. HTTP 200/starting and
+// non-200 responses keep polling. The whole process group is stopped: SIGTERM to the group,
 // escalated to SIGKILL after 5 s. A command that exits early (crash) or never
 // turns the port healthy before --timeout-sec is an error with the exit code
 // or the timeout recorded; it never yields a number.
@@ -26,6 +25,7 @@ import process from "node:process";
 export const DEFAULT_PORT = 3199;
 export const DEFAULT_RUNS = 3;
 export const DEFAULT_TIMEOUT_SEC = 120;
+export const MAX_TIMEOUT_SEC = Math.floor(2147483647 / 1000);
 export const POLL_INTERVAL_MS = 100;
 export const KILL_GRACE_MS = 5000;
 
@@ -72,20 +72,20 @@ export function parseArgs(argv) {
     else if (flag === "--cmd") opts.cmd = readValue("--cmd");
     else if (flag === "--runs") {
       const value = Number(readValue("--runs"));
-      if (argv[i - 1] === undefined || Number.isNaN(value) || !Number.isInteger(value) || value < 1) {
+      if (argv[i - 1] === undefined || !Number.isSafeInteger(value) || value < 1) {
         throw new Error("--runs must be a positive integer");
       }
       opts.runs = value;
     } else if (flag === "--port") {
       const value = Number(readValue("--port"));
-      if (argv[i - 1] === undefined || Number.isNaN(value) || !Number.isInteger(value) || value < 1 || value > 65535) {
+      if (argv[i - 1] === undefined || !Number.isSafeInteger(value) || value < 1 || value > 65535) {
         throw new Error("--port must be an integer in 1..65535");
       }
       opts.port = value;
     } else if (flag === "--timeout-sec") {
       const value = Number(readValue("--timeout-sec"));
-      if (argv[i - 1] === undefined || Number.isNaN(value) || !Number.isInteger(value) || value < 1) {
-        throw new Error("--timeout-sec must be a positive integer");
+      if (argv[i - 1] === undefined || !Number.isSafeInteger(value) || value < 1 || value > MAX_TIMEOUT_SEC) {
+        throw new Error(`--timeout-sec must be a positive integer no greater than ${MAX_TIMEOUT_SEC}`);
       }
       opts.timeoutSec = value;
     } else if (flag === "--env") {
@@ -123,9 +123,9 @@ export function killProcessGroup(pid, signal) {
 }
 
 /**
- * Spawns `command` with `PORT` plus `extraEnv` and resolves on the first 200
- * from GET /api/health. Non-200 answers keep polling.
- * Resolves { elapsedMs, pid, exitCode, signalCode }
+ * Spawns `command` and polls GET /api/health until 200 with JSON status "ok".
+ * Resolves { firstHttp200Ms, elapsedMs, pid, exitCode, signalCode }, where
+ * elapsedMs is time to readiness, not just the first 200.
  * or rejects { kind: "crashed" | "timeout", reason, pid, ... }.
  * The child process group is always stopped: SIGTERM to the group, SIGKILL after killGraceMs.
  */
@@ -151,6 +151,7 @@ export function measureRun({
     });
 
     const pid = child.pid;
+    let firstHttp200Ms = null;
     let measured = null;
     let timedOut = false;
     let settled = false;
@@ -204,13 +205,14 @@ export function measureRun({
 
     child.on("close", (code, signal) => {
       if (measured !== null) {
-        settle(() => resolve({ elapsedMs: measured, pid, exitCode: code, signalCode: signal }));
+        settle(() => resolve({ firstHttp200Ms, elapsedMs: measured, pid, exitCode: code, signalCode: signal }));
         return;
       }
       if (timedOut) {
         settle(() => reject({
           kind: "timeout",
           timeoutMs,
+          firstHttp200Ms,
           pid,
           reason: `timeout after ${timeoutMs}ms`,
         }));
@@ -235,15 +237,22 @@ export function measureRun({
       try {
         const response = await fetchImpl(`http://127.0.0.1:${port}/api/health`, {
           signal: controller.signal,
+          redirect: "manual",
         });
-        // Only HTTP 200 counts as ready; 503 or others keep polling.
-        if (response.status === 200 && measured === null && !settled && !killed && !controller.signal.aborted) {
+        if (settled || killed || controller.signal.aborted) return;
+        if (response.status !== 200) {
+          await response.body?.cancel();
+          return;
+        }
+        firstHttp200Ms ??= elapsedMsSince(startedAt);
+        const health = await response.json();
+        if (health?.status === "ok" && !settled && !killed && !controller.signal.aborted) {
           measured = elapsedMsSince(startedAt);
           // Stop the server and wait for close so port is free for subsequent runs.
           stopChild();
         }
       } catch {
-        // Connection refused / reset / aborted before readiness: keep polling.
+        // Network errors, aborted responses and invalid JSON keep polling.
       } finally {
         if (probeTimeout) { clearTimeout(probeTimeout); probeTimeout = null; }
         probeController = null;
@@ -277,8 +286,8 @@ function median(values) {
   return (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
-export function summarize(runs) {
-  const times = runs.map((run) => run.elapsedMs);
+export function summarize(runs, metric = "elapsedMs") {
+  const times = runs.map((run) => run[metric]);
   if (times.length === 0) {
     return { min: 0, median: 0, max: 0 };
   }
@@ -291,14 +300,16 @@ export function summarize(runs) {
 
 /** Markdown table: one row per run (cold = first run) plus min/median/max. */
 export function formatMarkdown(runs) {
-  const lines = ["| Run | Seconds | Note |", "| --- | --- | --- |"];
+  const seconds = (ms) => (ms / 1000).toFixed(3);
+  const lines = ["| Run | First HTTP 200 (s) | Ready: 200/ok (s) | Note |", "| --- | --- | --- | --- |"];
   runs.forEach((run, index) => {
-    lines.push(`| ${index + 1} | ${(run.elapsedMs / 1000).toFixed(3)} | ${index === 0 ? "cold" : ""} |`);
+    lines.push(`| ${index + 1} | ${seconds(run.firstHttp200Ms)} | ${seconds(run.elapsedMs)} | ${index === 0 ? "cold" : ""} |`);
   });
-  const { min, median: med, max } = summarize(runs);
-  lines.push(`| min | ${(min / 1000).toFixed(3)} | |`);
-  lines.push(`| median | ${(med / 1000).toFixed(3)} | |`);
-  lines.push(`| max | ${(max / 1000).toFixed(3)} | |`);
+  const http = summarize(runs, "firstHttp200Ms");
+  const ready = summarize(runs);
+  for (const metric of ["min", "median", "max"]) {
+    lines.push(`| ${metric} | ${seconds(http[metric])} | ${seconds(ready[metric])} | |`);
+  }
   return lines.join("\n");
 }
 
@@ -320,7 +331,7 @@ export async function runMeasurement(opts, {
   try {
     for (let index = 0; index < opts.runs; index += 1) {
       if (!opts.json) log.log(`run ${index + 1}/${opts.runs}: starting...`);
-      const { elapsedMs } = await measureRun({
+      const { firstHttp200Ms, elapsedMs } = await measureRun({
         command: opts.cmd,
         cwd: opts.cwd,
         port: opts.port,
@@ -331,12 +342,12 @@ export async function runMeasurement(opts, {
         spawnImpl,
         fetchImpl,
       });
-      runs.push({ index: index + 1, elapsedMs, cold: index === 0 });
-      if (!opts.json) log.log(`run ${index + 1}/${opts.runs}: ${(elapsedMs / 1000).toFixed(3)} s`);
+      runs.push({ index: index + 1, firstHttp200Ms, elapsedMs, cold: index === 0 });
+      if (!opts.json) log.log(`run ${index + 1}/${opts.runs}: ready in ${(elapsedMs / 1000).toFixed(3)} s`);
     }
   } catch (failure) {
     const reason = failure?.kind === "timeout"
-      ? `timeout: no 200 on /api/health within ${opts.timeoutSec} s; process group stopped`
+      ? `timeout: no 200/ok on /api/health within ${opts.timeoutSec} s; process group stopped`
       : `command exited before readiness (${failure?.reason ?? "unknown"})`;
     throw new Error(`run ${runs.length + 1} failed: ${reason}`);
   }
@@ -345,21 +356,28 @@ export async function runMeasurement(opts, {
 
 /** Builds the machine-readable result object (env values never included). */
 export function buildResult(opts, runs, summary) {
+  const seconds = (ms) => Number((ms / 1000).toFixed(3));
+  const first = summarize(runs, "firstHttp200Ms");
   return {
     cmd: opts.cmd,
     cwd: opts.cwd,
     port: opts.port,
     timeoutSec: opts.timeoutSec,
     envKeys: opts.envPairs.map((pair) => pair.slice(0, pair.indexOf("="))),
+    readiness: "http_200_status_ok",
     runs: runs.map((r) => ({
       run: r.index,
-      seconds: Number((r.elapsedMs / 1000).toFixed(3)),
+      firstHttp200Seconds: seconds(r.firstHttp200Ms),
+      seconds: seconds(r.elapsedMs),
       cold: r.cold,
     })),
     summary: {
-      minSeconds: Number((summary.min / 1000).toFixed(3)),
-      medianSeconds: Number((summary.median / 1000).toFixed(3)),
-      maxSeconds: Number((summary.max / 1000).toFixed(3)),
+      minSeconds: seconds(summary.min),
+      medianSeconds: seconds(summary.median),
+      maxSeconds: seconds(summary.max),
+      firstHttp200MinSeconds: seconds(first.min),
+      firstHttp200MedianSeconds: seconds(first.median),
+      firstHttp200MaxSeconds: seconds(first.max),
     },
   };
 }

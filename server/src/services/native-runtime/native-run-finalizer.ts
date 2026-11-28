@@ -14,6 +14,7 @@ import {
   issueThreadInteractions,
   issues,
   nativeRunFinalizations,
+  nativeFinalizationRequests,
   nativeRunResults,
   statusDecisions,
   workAssessments,
@@ -33,6 +34,7 @@ import {
   type NativeStatusCommitFailpoint,
 } from "./status-decision-committer.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { isRetryablePostgresError } from "../postgres-transaction-retry.js";
 import { issueService } from "../issues.js";
 import { publishChatPublicationCommitSignal } from "../chat-publication-reconciliation.js";
 import { nativeSha256 } from "./canonical.js";
@@ -189,6 +191,7 @@ async function claimCoordinator(input: {
   db: Db;
   runId: string;
   preserveProviderAttempt?: boolean;
+  serviceRequest?: { requestId: string; leaseOwner: string; leaseUntil: Date };
 }) {
   const leaseOwner = `native-finalizer:${randomUUID()}`;
   const now = new Date();
@@ -201,6 +204,21 @@ async function claimCoordinator(input: {
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!coordinator?.resultId) throw new Error("native_finalization_missing");
+    if ((coordinator.authorizationMode === "service_required") !== Boolean(input.serviceRequest) ||
+        !["internal", "service_required"].includes(coordinator.authorizationMode)) {
+      throw new Error("native_service_authorization_required");
+    }
+    if (input.serviceRequest) {
+      const [request] = await tx.select().from(nativeFinalizationRequests).where(and(
+        eq(nativeFinalizationRequests.id, input.serviceRequest.requestId),
+        eq(nativeFinalizationRequests.companyId, coordinator.companyId),
+        eq(nativeFinalizationRequests.issueId, coordinator.issueId),
+        eq(nativeFinalizationRequests.runId, coordinator.runId),
+      )).for("update");
+      if (!request || request.state !== "processing" || request.leaseOwner !== input.serviceRequest.leaseOwner ||
+          !request.leaseUntil || request.leaseUntil.getTime() !== input.serviceRequest.leaseUntil.getTime() ||
+          request.leaseUntil <= new Date()) throw new Error("native_service_authorization_required");
+    }
     if (coordinator.phase === "committed") {
       if (!coordinator.decisionId) {
         const run = await tx
@@ -233,7 +251,9 @@ async function claimCoordinator(input: {
       .update(nativeRunFinalizations)
       .set({
         leaseOwner,
-        leaseExpiresAt: new Date(now.getTime() + 5 * 60_000),
+        leaseExpiresAt: input.serviceRequest
+          ? new Date(Math.min(now.getTime() + 5 * 60_000, input.serviceRequest.leaseUntil.getTime()))
+          : new Date(now.getTime() + 5 * 60_000),
         attempt:
           input.preserveProviderAttempt || coordinator.controllerBootId !== null
             ? coordinator.attempt
@@ -281,6 +301,12 @@ async function recordRetryableFailure(input: {
         : ("failed" as const);
   let terminalRunToEmit: typeof heartbeatRuns.$inferSelect | null = null;
   const outcome = await input.db.transaction(async (tx) => {
+    const [lockedCoordinator] = await tx.select().from(nativeRunFinalizations)
+      .where(and(eq(nativeRunFinalizations.runId, input.run.id), eq(nativeRunFinalizations.companyId, input.run.companyId)))
+      .for("update");
+    if (!lockedCoordinator || lockedCoordinator.authorizationMode !== "internal") {
+      throw new Error("native_service_authorization_required");
+    }
     const issue = await tx
       .select({
         lastStatusDecisionId: issues.lastStatusDecisionId,
@@ -985,6 +1011,7 @@ export async function finalizeNativeRun(input: {
   projectRunStatus?: boolean;
   /** Workspace-only replay must not consume the provider recovery budget. */
   preserveProviderAttempt?: boolean;
+  serviceRequest?: { requestId: string; leaseOwner: string; leaseUntil: Date };
   failpoint?: NativeStatusCommitFailpoint;
 }) {
   const run = await input.db
@@ -999,6 +1026,7 @@ export async function finalizeNativeRun(input: {
     db: input.db,
     runId: input.runId,
     preserveProviderAttempt: input.preserveProviderAttempt,
+    serviceRequest: input.serviceRequest,
   });
   const coordinator = claim.coordinator;
   if (!claim.leaseOwner && coordinator.phase === "committed") {
@@ -1105,7 +1133,8 @@ export async function finalizeNativeRun(input: {
     ],
   };
 
-  await dismissAutomaticCompletionReviews(input.db, coordinator.issueId);
+  // Service requests cannot mutate issue interactions outside the decision fence.
+  if (!input.serviceRequest) await dismissAutomaticCompletionReviews(input.db, coordinator.issueId);
   const sourceWake = run.wakeupRequestId ? await input.db.select({ payload: agentWakeupRequests.payload })
     .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.id, run.wakeupRequestId),
       eq(agentWakeupRequests.companyId, run.companyId))).then((rows) => rows[0]) : null;
@@ -1114,6 +1143,9 @@ export async function finalizeNativeRun(input: {
   const allowIncompleteContinuation = record(sourceWake?.payload).continuationIdempotencyKey !== "native-completion-incomplete";
   let supersedesAssessmentId: string | null = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    let attemptedAssessmentId: string | null = null;
+    let decisionCommitted = false;
+    try {
     const authoritativeIssue = await input.db
       .select()
       .from(issues)
@@ -1221,6 +1253,7 @@ export async function finalizeNativeRun(input: {
       assessment,
       supersedesAssessmentId,
     });
+    attemptedAssessmentId = assessmentRow.id;
     await input.db
       .update(nativeRunFinalizations)
       .set({
@@ -1234,7 +1267,6 @@ export async function finalizeNativeRun(input: {
           eq(nativeRunFinalizations.leaseOwner, claim.leaseOwner!),
         ),
       );
-    try {
       const committed = await commitNativeStatusDecision({
         db: input.db,
         companyId: run.companyId,
@@ -1269,7 +1301,10 @@ export async function finalizeNativeRun(input: {
               }
             : undefined,
         failpoint: input.failpoint,
+        serviceRequest: input.serviceRequest,
+        serviceCoordinatorLeaseOwner: input.serviceRequest ? claim.leaseOwner ?? undefined : undefined,
       });
+      decisionCommitted = true;
       const now = new Date();
       const finalizationFailed = decision.effects.some(
         (effect) => effect.kind === "record_finalization_error",
@@ -1361,24 +1396,23 @@ export async function finalizeNativeRun(input: {
         decisionId: committed.decision.id,
       };
     } catch (error) {
-      if (error instanceof NativeStatusRaceError && attempt < 2) {
-        supersedesAssessmentId = assessmentRow.id;
+      const retryableRace = !decisionCommitted && (error instanceof NativeStatusRaceError || isRetryablePostgresError(error));
+      if (retryableRace && attempt < 2) {
+        supersedesAssessmentId = attemptedAssessmentId ?? supersedesAssessmentId;
         await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
         continue;
       }
+      if (input.serviceRequest) throw error;
+      if (!attemptedAssessmentId && !retryableRace) throw error;
       return recordRetryableFailure({
         db: input.db,
         run,
         coordinator,
-        failureCode:
-          error instanceof NativeStatusRaceError
-            ? "status_cas_exhausted"
-            : "side_effect_planning_failed",
+        failureCode: retryableRace ? "status_cas_exhausted" : "side_effect_planning_failed",
         message: error instanceof Error ? error.message : String(error),
-        nextAction:
-          error instanceof NativeStatusRaceError
-            ? "Reassess against the latest authoritative issue status version."
-            : "Retry atomic status and liveness materialization from the persisted assessment.",
+        nextAction: retryableRace
+          ? "Reassess against the latest authoritative issue status version."
+          : "Retry atomic status and liveness materialization from the persisted assessment.",
         projectRunStatus: input.projectRunStatus,
       });
     }

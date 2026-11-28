@@ -572,7 +572,7 @@ export function isReviewPendingWaitingForCi(params: {
  * lost: the sweep looks at the task again, and the CI result of the head wakes
  * the stage anyway. The stored-state check above reads only what the webhook
  * kept; this one asks for the head as it is now. A critical issue and a task
- * without a pull request are admitted; a failed read admits (old behaviour).
+ * without a pull request are admitted; a failed read defers (EMPTY-WAKES-CI-UNREADY).
  */
 export async function reviewCiDefersIdlePickup(
   deps: Pick<IdlePickupDeps, "db" | "env" | "resolveReviewPullRequestCi" | "resolveReviewHeadFailedChecks">,
@@ -591,6 +591,9 @@ export async function reviewCiDefersIdlePickup(
       : null;
   if (!participant || participant.type !== "agent" || participant.agentId !== agent.id) return false;
   try {
+    // OPE-15004: idle pickup is a wake-path sweep, not review admission: it
+    // shares the resolver's process read cache and never decides the verdict —
+    // the reviewer it may wake still meets the fresh write gate.
     const decision = await readReviewAdmissionDecision({
       companyId: agent.companyId,
       issueId: candidate.id,
@@ -601,8 +604,10 @@ export async function reviewCiDefersIdlePickup(
     });
     return decision !== "admit";
   } catch (err) {
-    logger.warn({ err, issueId: candidate.id }, "myrmidon.idle_pickup: the CI of the review head could not be read; waking as before");
-    return false;
+    // EMPTY-WAKES-CI-UNREADY: an unreadable CI defers the wake like an unfinished one; the
+    // sweep asks again, and the wake gate in `enqueueWakeupInner` holds the same line.
+    logger.warn({ err, issueId: candidate.id }, "myrmidon.idle_pickup: the CI of the review head could not be read; wake deferred");
+    return true;
   }
 }
 
@@ -1232,7 +1237,7 @@ export async function findTopReadyIssueForAgent(
   if (candidates.length === 0) return null;
   const liveIssueIds = await loadAgentLiveIssueIds(db, agent);
   let ordered = orderIdlePickupCandidates(candidates);
-  const currentRelease = strictReleaseFocusRelease();
+  const currentRelease = strictReleaseFocusRelease(agent.companyId);
   if (currentRelease) {
     const releaseRows = await db
       .select({ issueId: issues.id, label: labels.name })

@@ -1,0 +1,7 @@
+{
+  "name": "example",
+  "local": { "endpoint": "192.0.2.1", "identity": "@left.example", "trafficSelectors": ["198.51.100.0/24"] },
+  "remote": { "endpoint": "192.0.2.2", "identity": "@right.example", "trafficSelectors": ["203.0.113.0/24"] },
+  "proposals": ["aes256-sha256-modp2048"],
+  "secretFile": "/etc/swanctl/conf.d/example-secret.conf"
+}

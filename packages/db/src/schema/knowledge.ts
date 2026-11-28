@@ -253,6 +253,7 @@ export const knowledgeSuggestions = pgTable(
     targetItemId: uuid("target_item_id"),
     body: text("body").notNull(),
     rationale: text("rationale"),
+    recommendation: text("recommendation").$type<"accepted" | "rejected">(),
     sourceKind: text("source_kind").$type<KnowledgeSourceKind>(),
     sourceRef: text("source_ref"),
     /** Provenance trust (L-5): `external` = the only source is a foreign url. */

@@ -260,13 +260,16 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # (contextvars), bridge into terminal child envs, and never touch the process
 # env shared by concurrent runs.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/github_broker_run_scope.py /opt/hermes-src
+# Run-scoped model credentials must reach only the selected gateway agent.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/model_credential_run_scope.py /opt/hermes-src
 # myrmidon(BOT-DISK-H5b): behaviour regression for 10-run-workspace-open.patch
 # (bot-disk contract C6): the workspace body field must run `myr-ws open`
 # (fake CLI via MYRMIDON_WS_BIN) with the contract argv, bind the opened path as
 # cwd + MYRMIDON_TASK_WORKSPACE per run, fall back to /scratch with a warning on
 # exit codes 3/4/5, and be a no-op — never an inherited stale value — without
 # the field.
-RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_workspace_open.py /opt/hermes-src
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_workspace_open.py /opt/hermes-src \
+ && PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/offline_workspace.py /opt/hermes-src
 # myrmidon(G1): behaviour regression for 11-run-scoped-github-launcher.patch
 # (NONCONTAINER-GITHUB-LAUNCHER): the github_launcher body field stages the
 # managed git/gh wrappers and the credential helper under the run's own

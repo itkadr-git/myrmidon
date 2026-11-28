@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@myrmidon/db";
 import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@myrmidon/shared";
@@ -224,11 +224,17 @@ export function documentService(db: Db) {
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         try {
           return await db.transaction(async (tx) => {
+          // Bump by the known issue before document or revision writes, not by
+          // a link lookup that may be invisible in a repeatable-read snapshot.
+          if (key === "acceptance-scenarios") {
+            await tx.execute(sql`SELECT bump_issue_acceptance_epoch(${issue.id}::uuid)`);
+          }
           const now = new Date();
           const existing = await tx
             .select({
               id: documents.id,
               companyId: documents.companyId,
+              linkCompanyId: issueDocuments.companyId,
               issueId: issueDocuments.issueId,
               key: issueDocuments.key,
               title: documents.title,
@@ -253,6 +259,9 @@ export function documentService(db: Db) {
             .then((rows) => rows[0] ?? null);
 
           if (existing) {
+            if (existing.companyId !== issue.companyId || existing.linkCompanyId !== issue.companyId) {
+              throw conflict("Issue document company mismatch");
+            }
             if (existing.lockedAt) {
               if (input.lockedDocumentStrategy === "create_new_document") {
                 const issueDocumentKeys = await tx
@@ -593,6 +602,9 @@ export function documentService(db: Db) {
     }) => {
       const key = normalizeDocumentKey(input.key);
       return db.transaction(async (tx) => {
+        if (key === "acceptance-scenarios") {
+          await tx.execute(sql`SELECT bump_issue_acceptance_epoch(${input.issueId}::uuid)`);
+        }
         const existing = await tx
           .select(issueDocumentSelect)
           .from(issueDocuments)
@@ -693,6 +705,9 @@ export function documentService(db: Db) {
     }) => {
       const key = normalizeDocumentKey(input.key);
       return db.transaction(async (tx) => {
+        if (key === "acceptance-scenarios") {
+          await tx.execute(sql`SELECT bump_issue_acceptance_epoch(${input.issueId}::uuid)`);
+        }
         const existing = await tx
           .select(issueDocumentSelect)
           .from(issueDocuments)
@@ -740,6 +755,9 @@ export function documentService(db: Db) {
     unlockIssueDocument: async (issueId: string, rawKey: string) => {
       const key = normalizeDocumentKey(rawKey);
       return db.transaction(async (tx) => {
+        if (key === "acceptance-scenarios") {
+          await tx.execute(sql`SELECT bump_issue_acceptance_epoch(${issueId}::uuid)`);
+        }
         const existing = await tx
           .select(issueDocumentSelect)
           .from(issueDocuments)
@@ -787,6 +805,9 @@ export function documentService(db: Db) {
     deleteIssueDocument: async (issueId: string, rawKey: string) => {
       const key = normalizeDocumentKey(rawKey);
       return db.transaction(async (tx) => {
+        if (key === "acceptance-scenarios") {
+          await tx.execute(sql`SELECT bump_issue_acceptance_epoch(${issueId}::uuid)`);
+        }
         const existing = await tx
           .select(issueDocumentSelect)
           .from(issueDocuments)

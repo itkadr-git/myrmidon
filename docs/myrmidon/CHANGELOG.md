@@ -10,6 +10,83 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+## 1.6.9
+
+### Manual CI timeout smoke
+
+- Added an isolated manual workflow for testing a self-hosted CI job timeout and a runbook for coordinated, single-dispatch evidence collection. A merged workflow alone does not establish that timeout or runner cleanup passed.
+
+### Smaller persisted wake context
+
+The board stores a matching wake event digest once and reconstructs it on replay, reducing duplicated run context without changing the wake payload. See [PR #4642](https://github.com/itkadr-git/myrmidon/pull/4642).
+
+### Documentation review returns to the original editor
+
+A reviewer can return requested changes on a documentation issue to its original editor without changing the techwriter caste or bypassing the PR-head CI gate. See [PR #4647](https://github.com/itkadr-git/myrmidon/pull/4647) and the [guide update #4649](https://github.com/itkadr-git/myrmidon/pull/4649).
+
+### New reviews wait for current CI evidence
+
+When the current CI result cannot be verified, the board postpones a new review even if the same commit passed earlier. See [PR #4654](https://github.com/itkadr-git/myrmidon/pull/4654).
+
+### One credential request budget when preparing an RC
+
+With a compatible managed launcher, a release preflight shares one broker request budget across its GitHub subprocesses. A fresh scoped cache hit needs no request; on a miss the first endpoint is tried once, with no retry or fallback. If credentials are unavailable, the preflight cannot pass the GitHub gates. See [PR #4650](https://github.com/itkadr-git/myrmidon/pull/4650) and [PR #4652](https://github.com/itkadr-git/myrmidon/pull/4652).
+
+### Review gate CI evidence and diagnostics
+
+- The review gate can reuse fresh, server-fetched authoritative terminal CI evidence for the matching company, PR and exact head. Stale, pending, ambiguous or changed-head evidence does not prove a green result. Budget denial and network errors remain distinguishable. See [PR #4547](https://github.com/itkadr-git/myrmidon/pull/4547).
+
+### CI Go tool checks no longer leave root-owned files that break the next checkout
+
+The Go checks (`tools/dockergate`, `tools/fleetd`) ran in a Docker container as
+root with the workspace mounted, so files they created in the reused
+self-hosted runner workspace were owned by root. The next job's checkout could
+not clean the workspace and failed (`fatal: --local can only be used inside a
+git repository`), taking down every job on that runner. These containers now
+run as the runner user (`--user "$(id -u):$(id -g)"`, `HOME=/tmp`). The Go
+jobs on the self-hosted lane also start with a step, before checkout, that
+detects files owned by another user, prints their paths, hands them back to the
+runner user with a throwaway container and fails with a clear error if that
+does not help.
+
+Also, every `pnpm/action-setup` step now installs pnpm into the runner's own
+tool cache (`dest: ${{ runner.tool_cache }}/setup-pnpm`) instead of the shared
+`$HOME/setup-pnpm`; parallel runners on one host no longer race on that
+directory (`ENOTEMPTY ... setup-pnpm/node_modules/.bin/store`).
+
+### CI: CI result start latency caused by the runner queue is a warning, not a failure (OPE-13479)
+
+- The `CI result` job checks how long it started after the last predecessor job finished (fail-closed gate, OPE-10065, PR #2063). On 2026-11-16 10:46 (UTC+8) PR #3306, run 43789711787, had all 20 test and build jobs green, but `CI result` failed: `CI result start latency exceeded threshold: 249s > 120s`. The runner queue was full of bot PRs and the job waited for a free runner. A rerun did not help, because the delay only grew.
+- The check now splits the delay. The time the `CI result` job spent in `queued` (job `created_at` to `started_at`) is reported as `::warning::` with the numbers (latency, queue wait, runner name). It does not fail the run.
+- The check still fails when the part that the runner queue does not explain (last predecessor end to job `created_at`) is more than 120 s, and when timestamps are missing. A job that is stuck after it got a runner is still stopped by `timeout-minutes: 5`.
+- The inline bash and jq in `myrmidon-ci.yml` and `myrmidon-ci-tag.yml` moved to `scripts/myrmidon/ci/queue-metrics.mjs --verify-latency`. Tests are in `scripts/myrmidon/ci/queue-metrics.test.mjs` (queue delay 300 s with green jobs gives success and a warning; a delay not caused by the queue gives failure).
+
+### Reviewers read the PR diff and head instead of a full task copy
+
+A wake of a reviewer or verifier (execution stage) no longer makes the hermes
+gateway adapter send the `workspace` field, so the bot gateway does not open a
+full task worktree (about 0.5 GB) before the model starts. On 16.11 the
+reviewers opened one roughly every 3 minutes and the bot volume lost 11 GB in
+6 minutes. The review skill now tells the reviewer to read the change through
+`gh pr diff`, `gh pr view` and `gh api repos/<repo>/contents/<path>?ref=<sha>`,
+to open a copy only when it really needs files (`myr-ws open <KEY> <repo>
+--review`, or a full copy to run a test) and to close it after the verdict
+(`myr-ws close <KEY>`). Executor runs are unchanged.
+
+### Task copies check out only the latest drizzle snapshot
+
+`myr-ws open` now creates a new task copy with a non-cone sparse checkout. In
+`packages/db/src/migrations/meta` the copy holds `_journal.json` and the latest
+snapshot named by the journal (highest `idx`, not a hard-coded file name); the
+rest of the tree is checked out in full. The 263 snapshots of about 1.1 MB each
+were 57% of a 500 MB copy, and `drizzle-kit generate` reads only the journal
+and the last snapshot. Existing copies, scratch copies and review copies are
+not changed, and a repository without a drizzle journal gets a full checkout.
+A new snapshot is added with `git add --sparse`; checks that read every
+snapshot (`check-migration-snapshots`, `pnpm db:renumber`) need
+`git sparse-checkout disable` first. This changes the bot image (`myr-ws`), so
+it reaches bots with the next bot image roll.
+
 ## 1.6.7
 
 ### Corpus: the full-text ranking starts after the embedding again (1.6.7 CORPUS-LATENCY, OPE-12272)

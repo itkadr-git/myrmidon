@@ -11,6 +11,8 @@ import {
   companySkills,
   costEvents,
   createDb,
+  documentRevisions,
+  documents,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -165,6 +167,26 @@ describeEmbeddedPostgres("heartbeat private-task suppression (1.7 PRIVATE-TASKS 
 
   const timerWake = (agentId: string) =>
     heartbeat.wakeup(agentId, { source: "timer", triggerDetail: "system", reason: "heartbeat_timer" });
+
+  it("cleans up agent-authored documents after the private-task heartbeat fixture", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const documentId = randomUUID();
+    await seedIssue(companyId, agentId, "todo", { isPrivate: true });
+    await db.insert(documents).values({
+      id: documentId, companyId, latestBody: "private task", createdByAgentId: agentId, updatedByAgentId: agentId,
+    });
+    await db.insert(documentRevisions).values({
+      documentId, companyId, revisionNumber: 1, body: "private task", createdByAgentId: agentId,
+    });
+    await db.delete(issues).where(eq(issues.companyId, companyId));
+    await db.delete(agents).where(eq(agents.id, agentId));
+    const [document] = await db.select().from(documents).where(eq(documents.id, documentId));
+    const [revision] = await db.select().from(documentRevisions).where(eq(documentRevisions.documentId, documentId));
+    expect(document?.createdByAgentId).toBeNull();
+    expect(document?.updatedByAgentId).toBeNull();
+    expect(revision?.createdByAgentId).toBeNull();
+    expect(revision?.body).toBe("private task");
+  });
 
   it("timer heartbeat with a private todo and a free agent creates no run; the public control task is taken", async () => {
     const { companyId, agentId } = await seedAgent();

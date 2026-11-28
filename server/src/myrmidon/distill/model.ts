@@ -95,6 +95,7 @@ export interface DistillModelProposal {
   class: DistillClass;
   body: string;
   rationale: string | null;
+  recommendation: "accepted" | "rejected" | null;
   section: string;
   slug: string | null;
   /** Task identifiers cited as evidence (must exist in the window material). */
@@ -112,7 +113,7 @@ export const DISTILL_SYSTEM_PROMPT = [
   "Mark as noise everything that is routine bookkeeping, status chatter, or duplicates of known text.",
   "Proposals about the `life` private contour (projects named with a life segment) are forbidden for",
   "common sections; drop them as noise instead of proposing.",
-  'Answer ONLY a JSON array: [{"class":"...","body":"...","rationale":"...",',
+  'Answer ONLY a JSON array: [{"class":"...","body":"...","recommendation":"accepted|rejected","rationale":"non-empty reason",',
   '"section":"glossary|releases|how-made|general","slug":"existing-slug-or-null",',
   '"evidence":["<issue identifier>", ...]}]. Max 15 entries.',
 ].join("\n");
@@ -153,6 +154,7 @@ export function parseDistillAnswer(text: string): DistillModelProposal[] {
       // Suggestion bodies are single-line (the store asserts it); newlines collapse.
       body: item.body.replace(/\s*\n\s*/g, " ").trim(),
       rationale: typeof item.rationale === "string" ? item.rationale.replace(/\s*\n\s*/g, " ").trim() : null,
+      recommendation: (item.recommendation === "accepted" || item.recommendation === "rejected") && typeof item.rationale === "string" && item.rationale.trim() ? item.recommendation : null,
       section: typeof item.section === "string" ? item.section : "general",
       slug: typeof item.slug === "string" && item.slug ? item.slug : null,
       evidence: item.evidence.filter((e): e is string => typeof e === "string"),

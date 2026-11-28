@@ -1,4 +1,5 @@
 import { aiConnectionRoutes } from "./routes/ai-connections.js";
+import { startNativeFinalizationRequestScheduler } from "./services/native-runtime/native-finalization-request-scheduler.js";
 import { projectToolRoutes } from "./routes/project-tools.js";
 import { emailChannelService } from "./services/email-channels.js";
 import { emailRoutes, emailWebhookRoutes } from "./routes/email.js";
@@ -69,6 +70,7 @@ import { environmentRuntimeService } from "./services/environment-runtime.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { blockerGraphRoutes } from "./routes/blocker-graph.js";
+import { issueAcceptanceSnapshotRoutes } from "./routes/issue-acceptance-snapshot.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { caseRoutes } from "./routes/cases.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
@@ -79,6 +81,7 @@ import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { onboardingSeedRoutes } from "./routes/onboarding-seed.js";
 import { serverOnboardingRoutes } from "./routes/servers.js";
+import { acceptanceServiceCredentialRoutes } from "./routes/acceptance-service-credentials.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { admAccessRequestRoutes } from "./routes/adm-access-requests.js";
@@ -1236,6 +1239,7 @@ export async function createApp(
   api.use(goalRoutes(db));
   api.use(onboardingSeedRoutes(db));
   api.use(serverOnboardingRoutes(db)); // myrmidon(SERVER-ONBOARD): SSH dry-run probe
+  api.use(acceptanceServiceCredentialRoutes(db));
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(admAccessRequestRoutes(db, {
@@ -1489,6 +1493,9 @@ export async function createApp(
   // issue approval endpoints delegate to it. The intervening routers use distinct
   // route prefixes, so this dependency does not change issue-route precedence.
   api.use(blockerGraphRoutes(db));
+  // myrmidon(OPE-15134): the atomic acceptance snapshot for the acceptance-reader
+  // gateway; a distinct literal prefix, mounted before the issue router.
+  api.use(issueAcceptanceSnapshotRoutes(db));
   api.use(issueRoutes(db, opts.storageService, {
     chatRunRetries: chatChannels,
     feedbackExportService: opts.feedbackExportService,
@@ -1806,6 +1813,9 @@ export async function createApp(
   // myrmidon(OPE-9084): the client installation pulls the issuer's signed
   // deny-list itself. API-only processes do not own periodic work.
   const denyListPuller = backgroundWorkEnabled ? startDenyListPuller() : null;
+  const nativeFinalizationScheduler = backgroundWorkEnabled
+    ? startNativeFinalizationRequestScheduler({ db, onError: (err) => logger.warn({ err }, "native finalization recovery failed") })
+    : null;
   let feedbackExportShuttingDown = false;
   let feedbackExportTimer: ReturnType<typeof setInterval> | null = null;
   const disableFeedbackExportFlushes = () => {
@@ -2041,6 +2051,7 @@ export async function createApp(
       // awaited teardown, so no tick runs after the caller ends the pool.
       scheduler.stop();
       jobCoordinator.stop();
+      await nativeFinalizationScheduler?.stop();
       modelProviderPluginBridge.teardown();
       disableFeedbackExportFlushes();
       unsubscribeChatPublicationSignals();
