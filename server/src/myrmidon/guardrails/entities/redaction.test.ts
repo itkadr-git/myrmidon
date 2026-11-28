@@ -69,6 +69,19 @@ describe("entity redaction modes", () => {
       return { app, store: s };
     }
 
+    it("returns scored entities through the board API", async () => {
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => {
+        req.actor = { type: "board", source: "local_implicit" } as typeof req.actor;
+        next();
+      });
+      app.use("/api", myrmidonGuardrailsRoutes({} as any, { store: store() }));
+      const response = await request(app).post("/api/myrmidon/guardrails/entities").send({ text: "ИНН 7707083893" });
+      expect(response.status).toBe(200);
+      expect(response.body.entities).toEqual([expect.objectContaining({ entity: "inn", value: "7707083893", score: 0.92 })]);
+    });
+
     it("handles round-trip via POST /api/myrmidon/guardrails/redact and restore", async () => {
       const { app } = setupApp();
       const redactRes = await request(app)
