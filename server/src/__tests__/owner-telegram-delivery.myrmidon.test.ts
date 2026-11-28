@@ -28,6 +28,7 @@ import {
   toolConnections,
 } from "@myrmidon/db";
 import {
+  BRIDGE_LANGUAGE_SETTINGS_KEY,
   OWNER_DELIVERY_SETTINGS_KEY,
   type ChatProvider,
   type SafeChatPublicationPayload,
@@ -129,14 +130,18 @@ describeEmbeddedPostgres(
       process.env.PAPERCLIP_PUBLIC_URL = "https://board.example";
       // Each scenario opts into owner delivery explicitly; do not leak the
       // singleton setting from a preceding scenario.
+      // myrmidon(1.7-TG-LOCALE): keep instance language in Russian for existing
+      // Russian assertion fixtures; scenarios below also verify English.
       await instanceSettingsService(db).updateGeneral({
         [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "via_bot" },
+        [BRIDGE_LANGUAGE_SETTINGS_KEY]: { language: "ru" },
       });
     });
 
     afterEach(async () => {
       await instanceSettingsService(db).updateGeneral({
         [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "via_bot" },
+        [BRIDGE_LANGUAGE_SETTINGS_KEY]: { language: "ru" },
       });
       if (previousPublicUrl === undefined)
         delete process.env.PAPERCLIP_PUBLIC_URL;
@@ -428,6 +433,50 @@ describeEmbeddedPostgres(
       expect(stored?.id).toBe(fixture.workIssue.id);
     });
 
+    it("delivers oversized interaction as English board-only notice when instance language is en", async () => {
+      const fixture = await seedFixture();
+      const interaction = await issueThreadInteractionService(db).create(
+        { id: fixture.workIssue.id, companyId: fixture.companyId },
+        {
+          kind: "ask_user_questions" as const,
+          continuationPolicy: "wake_assignee" as const,
+          resolverPolicy: "human_only" as const,
+          payload: {
+            version: 1 as const,
+            title: "A question with a large but valid prompt",
+            questions: [{
+              id: "large",
+              prompt: "x".repeat(4_000),
+              selectionMode: "single" as const,
+              allowOther: true,
+              options: [{ id: "option", label: "Option" }],
+            }],
+          },
+        },
+        { agentId: fixture.agentId },
+      );
+
+      await instanceSettingsService(db).updateGeneral({
+        [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
+        [BRIDGE_LANGUAGE_SETTINGS_KEY]: { language: "en" },
+      });
+      const warn = vi.spyOn(logger, "warn").mockImplementation(() => logger);
+      try {
+        const inserted = await enqueueIssueInteractionChatPublications(db, interaction);
+        expect(inserted).toHaveLength(1);
+        const payload = inserted[0]!.payload as SafeChatPublicationPayload;
+        expect(payload.text).toContain("The question is too long for Telegram.");
+        expect(payload.text).toContain("Please answer on the board.");
+        expect(payload.text).not.toMatch(/[а-яёА-ЯЁ]/);
+        expect(payload.text).toContain(`https://board.example/issues/${fixture.workIssue.id}`);
+        expect(payload.text).not.toContain("xxxxxxxx");
+        expect(payload.interactionId).toBe(interaction.id);
+        expect(payload).not.toHaveProperty("card");
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     it("sends a board-only notice for confirmations that cannot be shown as text", async () => {
       const fixture = await seedFixture();
       const created = await issueThreadInteractionService(db).create(
@@ -458,6 +507,46 @@ describeEmbeddedPostgres(
       expect(inserted).toHaveLength(1);
       const payload = inserted[0]!.payload as SafeChatPublicationPayload;
       expect(payload.text).toContain("Ответить можно только на доске.");
+      expect(payload.text).toContain(`https://board.example/issues/${fixture.workIssue.id}`);
+      expect(payload.text).not.toContain("SENSITIVE-DETAILS");
+      expect(payload.text).not.toContain("Approve the sensitive change?");
+      expect(payload.interactionId).toBe(interaction.id);
+      expect(payload).not.toHaveProperty("card");
+    });
+
+    it("sends an English board-only notice for confirmations that cannot be shown as text", async () => {
+      const fixture = await seedFixture();
+      const created = await issueThreadInteractionService(db).create(
+        { id: fixture.workIssue.id, companyId: fixture.companyId },
+        {
+          kind: "request_confirmation" as const,
+          addresseeUserId: fixture.boardUserId,
+          continuationPolicy: "wake_assignee" as const,
+          resolverPolicy: "human_only" as const,
+          payload: {
+            version: 1 as const,
+            prompt: "Approve the sensitive change?",
+            detailsMarkdown: "SENSITIVE-DETAILS",
+          },
+        },
+        { agentId: fixture.agentId },
+      );
+      // Only the sensitive-payload markers matter to the renderer; the
+      // persisted proposal shape is validated at create time elsewhere.
+      const interaction = {
+        ...created,
+        payload: { ...created.payload, secretProposal: {} },
+      } as unknown as typeof created;
+      await instanceSettingsService(db).updateGeneral({
+        [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
+        [BRIDGE_LANGUAGE_SETTINGS_KEY]: { language: "en" },
+      });
+      const inserted = await enqueueIssueInteractionChatPublications(db, interaction);
+      expect(inserted).toHaveLength(1);
+      const payload = inserted[0]!.payload as SafeChatPublicationPayload;
+      expect(payload.text).toContain("We need your decision.");
+      expect(payload.text).toContain("Please answer on the board.");
+      expect(payload.text).not.toMatch(/[а-яёА-ЯЁ]/);
       expect(payload.text).toContain(`https://board.example/issues/${fixture.workIssue.id}`);
       expect(payload.text).not.toContain("SENSITIVE-DETAILS");
       expect(payload.text).not.toContain("Approve the sensitive change?");
@@ -617,6 +706,69 @@ describeEmbeddedPostgres(
       expect(boundConversation?.isDirectMessage).toBe(true);
     });
 
+    it("delivers owner questions in English when the instance language is en", async () => {
+      const fixture = await seedFixture();
+      const question = {
+        kind: "ask_user_questions" as const,
+        continuationPolicy: "wake_assignee" as const,
+        resolverPolicy: "human_only" as const,
+        payload: {
+          version: 1 as const,
+          title: "Choose a deploy window",
+          questions: [
+            {
+              id: "deploy-window",
+              header: "Choose a deploy window",
+              prompt: "Which deploy window?",
+              helpText: "Choose one and include any timing constraints.",
+              selectionMode: "single" as const,
+              allowOther: false,
+              options: [
+                {
+                  id: "morning",
+                  label: "Morning",
+                  description: "Before noon",
+                  recommended: true,
+                },
+                { id: "evening", label: "Evening", description: "After work" },
+              ],
+            },
+          ],
+        },
+      };
+
+      const interaction = await issueThreadInteractionService(db).create(
+        { id: fixture.workIssue.id, companyId: fixture.companyId },
+        question,
+        { agentId: fixture.agentId },
+      );
+
+      await instanceSettingsService(db).updateGeneral({
+        [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
+        [BRIDGE_LANGUAGE_SETTINGS_KEY]: { language: "en" },
+      });
+      await enqueueIssueInteractionChatPublications(db, interaction);
+      const publications = await publicationsForInteraction(
+        fixture.companyId,
+        interaction.id,
+      );
+      expect(publications).toHaveLength(1);
+      const payload = publications[0]!.payload as {
+        text?: string;
+        interactionId?: string;
+        card?: unknown;
+      };
+      expect(payload.text).toContain("Choose a deploy window");
+      expect(payload.text).toContain("Which deploy window?");
+      expect(payload.text).toContain("1. Morning (recommended)");
+      expect(payload.text).toContain("2. Evening");
+      expect(payload.text).toContain(
+        "Reply with a message: the option number or your own words.",
+      );
+      expect(payload.text).not.toMatch(/[а-яёА-ЯЁ]/);
+      expect(payload.text!.length).toBeLessThanOrEqual(4_096);
+    });
+
     it("delivers confirmation details as plain text with no executable actions", async () => {
       const fixture = await seedFixture();
       const interaction = await issueThreadInteractionService(db).create(
@@ -660,6 +812,48 @@ describeEmbeddedPostgres(
       expect(payload.text).toContain("Deploy build to production.");
       expect(payload.text).toContain("Ответить можно только на доске.");
       expect(payload.text).not.toContain("Ответьте сообщением");
+      expect(payload.interactionId).toBe(interaction.id);
+      expect(payload).not.toHaveProperty("card");
+    });
+
+    it("delivers confirmation details in English when the instance language is en", async () => {
+      const fixture = await seedFixture();
+      const interaction = await issueThreadInteractionService(db).create(
+        { id: fixture.workIssue.id, companyId: fixture.companyId },
+        {
+          kind: "request_confirmation" as const,
+          addresseeUserId: fixture.boardUserId,
+          continuationPolicy: "wake_assignee" as const,
+          resolverPolicy: "human_only" as const,
+          payload: {
+            version: 1 as const,
+            prompt: "Proceed with the deploy?",
+            detailsMarkdown: "Deploy build to production.",
+            allowDeclineReason: true,
+          },
+        },
+        { agentId: fixture.agentId },
+      );
+
+      await instanceSettingsService(db).updateGeneral({
+        [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
+        [BRIDGE_LANGUAGE_SETTINGS_KEY]: { language: "en" },
+      });
+      await enqueueIssueInteractionChatPublications(db, interaction);
+      const publications = await publicationsForInteraction(
+        fixture.companyId,
+        interaction.id,
+      );
+      expect(publications).toHaveLength(1);
+      const payload = publications[0]!.payload as {
+        text?: string;
+        interactionId?: string;
+        card?: unknown;
+      };
+      expect(payload.text).toContain("Proceed with the deploy?");
+      expect(payload.text).toContain("Deploy build to production.");
+      expect(payload.text).toContain("Please answer on the board.");
+      expect(payload.text).not.toMatch(/[а-яёА-ЯЁ]/);
       expect(payload.interactionId).toBe(interaction.id);
       expect(payload).not.toHaveProperty("card");
     });
