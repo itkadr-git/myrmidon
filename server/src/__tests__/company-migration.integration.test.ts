@@ -1880,6 +1880,25 @@ describe("company migration dry run", () => {
     expect(run?.status).toBe("failed");
     expect(await db.select().from(projects).where(eq(projects.companyId, destination!.id))).toEqual([]);
     expect((await db.select().from(agents)).some((agent) => agent.companyId === destination!.id)).toBe(true);
+
+    // Fail the final destination deletion, when its FK would clear the ledger's
+    // company_id, after the rollback has already attempted to delete child rows.
+    const beforeRollback = await companyTransferRunService.getRun(db, run!.id);
+    const beforeAgents = await db.select().from(agents).where(eq(agents.companyId, destination!.id));
+    const beforeMemberships = await db.select().from(companyMemberships).where(eq(companyMemberships.companyId, destination!.id));
+    await db.execute(sql`alter table company_transfer_runs add constraint migration_fixture_keep_destination check (status <> 'rolling_back' or company_id is not null) not valid`);
+    try {
+      const failedRollback = await request(app)
+        .post(`/api/companies/${source!.id}/migrations/${run!.id}/rollback`)
+        .send({ confirm: "exercise interrupted rollback" });
+      expect(failedRollback.status, JSON.stringify(failedRollback.body)).toBe(409);
+      expect(await companyTransferRunService.getRun(db, run!.id)).toEqual(beforeRollback);
+      expect(await db.select().from(companies).where(eq(companies.id, destination!.id))).toEqual([destination]);
+      expect(await db.select().from(agents).where(eq(agents.companyId, destination!.id))).toEqual(beforeAgents);
+      expect(await db.select().from(companyMemberships).where(eq(companyMemberships.companyId, destination!.id))).toEqual(beforeMemberships);
+    } finally {
+      await db.execute(sql`alter table company_transfer_runs drop constraint migration_fixture_keep_destination`);
+    }
     const rollback = await request(app)
       .post(`/api/companies/${source!.id}/migrations/${run!.id}/rollback`)
       .send({ confirm: "recover partial import" });
