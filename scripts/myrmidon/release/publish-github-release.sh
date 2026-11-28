@@ -297,9 +297,7 @@ runs_of() {
 run_verdict() {
   local workflow_file="$1" branches verdict
   # TAG-CI (the 1.6.4 incident): the tag's own run (head_branch == the tag) is
-  # un-cancellable by pushes to main (own concurrency group). Since 16.11 a
-  # green push/dispatch run of myrmidon-ci.yml of the same commit on any branch
-  # is accepted too, see branch_ci_green below.
+  # un-cancellable by pushes to main (own concurrency group).
   branches="$(branch_match_expr "$tag")"
   verdict="$(runs_of "$workflow_file" "$branches" \
     | jq "[.[] | select(.status == \"completed\")]
@@ -394,34 +392,62 @@ refuse_if_cancelled() {
   fi
 }
 
-# CI-TAG-REUSE-BRANCH-RUN (16.11): the release tag is cut on the head of a rel
-# branch whose full Myrmidon CI (myrmidon-ci.yml, a push or a manual dispatch;
-# never a pull_request run, which is the fast tier) already ran on this very
-# commit. A completed green run of it on ANY branch is the same rule the
-# freeze gate applies, and it satisfies the CI gate without a second full run
-# on the tag. Otherwise the tag's own run (myrmidon-ci-tag.yml) is awaited.
-branch_ci_green() {
-  local n
-  n="$(runs_of ".github/workflows/myrmidon-ci.yml" '(.event == "push" or .event == "workflow_dispatch")' \
-    | jq '[.[] | select(.status == "completed" and .conclusion == "success")] | length' 2>/dev/null)" || n=0
-  n="${n//\"/}"
-  [[ "$n" =~ ^[0-9]+$ ]] || n=0
-  ((n > 0))
-}
-
+# A green branch run can let the tag workflow reuse its build, but cannot
+# replace the tag's own verdict (including the release queue priority check).
 log "gate: Myrmidon CI (tag) on $sha"
-if branch_ci_green; then
-  log "gate: Myrmidon CI (branch run of the same commit) success for $sha"
-else
-  refuse_if_cancelled ".github/workflows/myrmidon-ci-tag.yml" "Myrmidon CI (tag)"
-  wait_for ".github/workflows/myrmidon-ci-tag.yml" must "Myrmidon CI (tag)"
-fi
+refuse_if_cancelled ".github/workflows/myrmidon-ci-tag.yml" "Myrmidon CI (tag)"
+wait_for ".github/workflows/myrmidon-ci-tag.yml" must "Myrmidon CI (tag)"
 log "gate: Myrmidon image (board) on $sha"
 wait_for ".github/workflows/myrmidon-image.yml" must "Myrmidon image (board)"
 log "gate: Myrmidon dockergate image on $sha"
 wait_for ".github/workflows/myrmidon-dockergate.yml" soft "Myrmidon dockergate image"
 log "gate: Myrmidon fleetd image on $sha"
 wait_for ".github/workflows/myrmidon-fleetd.yml" soft "Myrmidon fleetd image"
+
+# --------------------------------------------- 2b. queue priority gate --------
+# OPE-13002: the release build must hold priority in the CI queue. The
+# enforcement mechanism is the priority runner pool (myrmidon-ci.yml
+# is_release -> vars.CI_RUNNER_PRIORITY). This gate makes priority a RELEASE
+# criterion, not just a CI-side monitor: before anything is published it
+# checks the FACTUAL dispatch order of the pending runs of the two release
+# CI workflows. A proven inversion — an ordinary run that queued AFTER this
+# tag's CI run has already started (started_at recorded by the dispatcher)
+# while the tag's run has not — refuses the publish. Fail-closed: an
+# unreadable runs API answer refuses the publish (a retryable answer, never
+# a silent pass).
+queue_priority_ok() {
+  local runs_json
+  runs_json="$(for ((attempt = 1; attempt <= GH_API_RETRIES; attempt++)); do
+    out="$(gh api "repos/$repo/actions/runs?per_page=100" 2>/dev/null)" && rc=0 || rc=$?
+    if ((rc == 0)) && [[ -n "$out" ]]; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+    log "gate: queue priority runs read failed (attempt $attempt/$GH_API_RETRIES) - retrying in ${GH_API_RETRY_SLEEP}s"
+    sleep "$GH_API_RETRY_SLEEP"
+  done; return 1)"
+  [[ -n "$runs_json" ]] || return 1
+  # GitHub pages can exceed the per-argument/environment size limit.
+  QUEUE_TAG="$tag" QUEUE_HELPERS="$here/release-jobs.mjs" node --input-type=module -e '
+    import { readFileSync } from "node:fs";
+    const { observedPriorityViolations } = await import(process.env.QUEUE_HELPERS);
+    const { workflow_runs: all } = JSON.parse(readFileSync(0, "utf8"));
+    if (!Array.isArray(all)) throw new Error("invalid workflow runs response");
+    const pending = all.filter((r) =>
+      (r.status === "queued" || r.status === "in_progress") &&
+      (r.name === "Myrmidon CI (tag)" || r.name === "Myrmidon CI")
+    );
+    const violations = observedPriorityViolations(pending)
+      .filter((v) => v.release === process.env.QUEUE_TAG);
+    for (const v of violations) {
+      console.error(`[myrmidon-release-publish] ERROR: queue priority inversion: release run ${v.release} (queued ${v.releaseQueuedAt}, not started) is behind ordinary run ${v.blockedBy} (queued ${v.blockedByQueuedAt}, started ${v.blockedByStartedAt})`);
+    }
+    if (violations.length > 0) process.exit(1);
+  ' <<< "$runs_json"
+}
+log "gate: release build queue priority on $tag"
+queue_priority_ok || die "queue priority could not be verified for $tag (or a proven inversion exists) — NOT publishing. Release builds must hold priority in the CI queue."
+log "gate: queue priority holds for $tag"
 
 # ------------------------------------------------------ 3. the release body --
 # release-body.mjs exits 1 when the CHANGELOG section or any component
