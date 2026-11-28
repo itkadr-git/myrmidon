@@ -25,6 +25,9 @@
       },
       "inbox": {
         "knowledgeReview": "Knowledge review",
+        "knowledgeEmpty": "No pending suggestions",
+        "knowledgeRecommendAccept": "Recommendation: accept",
+        "knowledgeRecommendReject": "Recommendation: reject",
         "knowledgeLoading": "Loading suggestions...",
         "knowledgeLoadFailed": "Could not load knowledge suggestions.",
         "agentErrors_one": "<b>{{count}}</b> agent has errors",

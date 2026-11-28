@@ -25,6 +25,9 @@
       },
       "inbox": {
         "knowledgeReview": "Разбор предложений знаний",
+        "knowledgeEmpty": "Нет предложений на разбор",
+        "knowledgeRecommendAccept": "Рекомендация: принять",
+        "knowledgeRecommendReject": "Рекомендация: отклонить",
         "knowledgeLoading": "Загрузка предложений...",
         "knowledgeLoadFailed": "Не удалось загрузить предложения знаний.",
         "agentErrors_few": "<b>{{count}}</b> агента с ошибками",
