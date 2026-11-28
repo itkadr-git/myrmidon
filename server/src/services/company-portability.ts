@@ -768,6 +768,8 @@ type ImportBehaviorOptions = {
   resumeMigrationDestinationId?: string;
   resumeMigrationCheckpoint?: {
     hasRecordedLogo?: boolean;
+    embeddedAssetIds?: ReadonlyMap<string, string>;
+    hasCommittedIssues?: boolean;
     agentIds: ReadonlyMap<string, string>;
     filesByAgentId: ReadonlyMap<string, ReadonlyMap<string, string>>;
     skillRefs?: ReadonlyMap<string, string>;
@@ -5547,13 +5549,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       // instructions can be rewritten to the asset ids this board minted.
       // References whose entry or blob cannot be imported keep their source
       // ids and stay broken rather than pointing at the wrong asset.
-      const embeddedAssetIdMap = new Map<string, string>();
+      const embeddedAssetIdMap = new Map(options?.resumeMigrationCheckpoint?.embeddedAssetIds);
       const manifestEmbeddedAssets = sourceManifest.embeddedAssets ?? [];
       if (manifestEmbeddedAssets.length > 0) {
         if (!storage) {
           warnings.push(`Skipped ${manifestEmbeddedAssets.length} embedded image asset${manifestEmbeddedAssets.length === 1 ? "" : "s"} because storage is unavailable; their references were left unchanged.`);
         } else {
           for (const embeddedAsset of manifestEmbeddedAssets) {
+            if (embeddedAssetIdMap.has(embeddedAsset.assetId)) continue;
             const embeddedAssetLabel = embeddedAsset.originalFilename ?? embeddedAsset.assetId;
             const blobPath = portableBlobPath(embeddedAsset.sha256);
             const blobFile = plan.source.files[blobPath];
@@ -5584,7 +5587,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 createdByUserId: actorUserId ?? null,
               };
               const createdAsset = migrationRunId
-                ? await recordMigrationAsset(db, migrationRunId, destinationCompanyId, assetData, false)
+                ? await recordMigrationAsset(db, migrationRunId, destinationCompanyId, assetData, { sourceAssetId: embeddedAsset.assetId })
                 : await assetRecords.create(targetCompany.id, assetData);
               embeddedAssetIdMap.set(embeddedAsset.assetId, createdAsset.id);
             } catch (error) {
@@ -6048,7 +6051,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         }
       }
 
-      if (include.issues) {
+      if (include.issues && !checkpoint?.hasCommittedIssues) {
         const routines = routineService(db);
 
         // Resolve label names against the target company before creating
@@ -6598,11 +6601,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         if (migrationRunId) {
           await createMigrationIssues(db, migrationRunId, targetCompany.id, {
             issues: issueRows, comments: commentRows, documents: documentRows, workProducts: workProductRows,
-            relations: relationRows, actorUserId,
+            relations: relationRows, attachments: attachmentRows, actorUserId,
           });
-          for (const { companyId, issueId, issueCommentId, ...assetData } of attachmentRows) {
-            await recordMigrationAsset(db, migrationRunId, companyId, assetData, { issueId, issueCommentId });
-          }
         }
 
         if (unarmedMonitorCount > 0) {

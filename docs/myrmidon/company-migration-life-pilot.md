@@ -84,17 +84,19 @@ so it is not a rollback ID or evidence that apply occurred.
 6. If recovery is needed, read `GET /api/companies/{sourceCompanyId}/migrations/{runId}`.
    The same confirmed apply can resume after destination creation or owner
    provisioning if the destination still matches its journal. If the owner was
-   already provisioned, retry as that same operator. The retry can also delete a
-   reserved logo upload whose database record never committed, then upload it
-   again in the same run. A committed logo is reused only if the asset and logo
-   rows match the journal and the reserved object still has the expected bytes.
+   already provisioned, retry as that same operator. A retry removes reserved uploads
+   whose database records never committed, then uploads them again in the same
+   run. It reuses committed assets only if the rows match the journal and the
+   stored objects still match the expected hashes and sizes.
    If the import stopped after creating agents, but before
    committing later entities, a retry can reuse those agents after verifying their
    rows, access records and managed instructions against the journal. A committed
    skill library is also reusable when its rows, managed files and source-to-target
    references match the journal. Committed projects can be reused with their
-   original workspace IDs. Older nonempty checkpoints without these mappings,
-   and runs with committed routines, issue batches, or non-logo assets, require
+   original workspace IDs. Committed routines are reused. The issue batch,
+   including attachment records, commits with its journal in one database
+   transaction; a retry after that commit does not recreate the batch. Older
+   nonempty checkpoints without the required mappings or commit marker require
    rollback rather than in-place replay.
    Use `POST /api/companies/{sourceCompanyId}/migrations/{runId}/rollback` with a
    non-empty `confirm` reason. One database transaction removes journaled child

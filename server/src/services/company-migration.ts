@@ -21,7 +21,7 @@ import { documentService } from "./documents.js";
 import { issueService } from "./issues.js";
 import { workProductService } from "./work-products.js";
 import { routineService } from "./routines.js";
-import type { ImportIssueCommentRow, ImportIssueDocumentRow, ImportIssueRow, ImportIssueWorkProductRow } from "./import-write-types.js";
+import type { ImportIssueAttachmentRow, ImportIssueCommentRow, ImportIssueDocumentRow, ImportIssueRow, ImportIssueWorkProductRow } from "./import-write-types.js";
 
 type Portability = ReturnType<typeof companyPortabilityService>;
 
@@ -92,9 +92,10 @@ export async function recordMigrationAsset(
   runId: string,
   companyId: string,
   data: Omit<typeof assets.$inferInsert, "companyId">,
-  placement: boolean | { issueId: string; issueCommentId: string | null },
+  placement: boolean | { issueId: string; issueCommentId: string | null } | { sourceAssetId: string },
 ) {
-  const attachment = typeof placement === "object" ? placement : null;
+  const attachment = typeof placement === "object" && "issueId" in placement ? placement : null;
+  const sourceAssetId = typeof placement === "object" && "sourceAssetId" in placement ? placement.sourceAssetId : undefined;
   const logo = placement === true;
   const namespace = attachment ? `issues/${attachment.issueId}` : `assets/${logo ? "companies" : "general"}`;
   const resource = parseMigrationResource(companyId, data.objectKey);
@@ -140,6 +141,7 @@ export async function recordMigrationAsset(
     const provenance = { [data.objectKey]: {
       id: asset.id, fingerprint, logo: logoRows[0] ?? null,
       ...(attachment ? { attachment: attachmentRows[0] } : {}),
+      ...(sourceAssetId ? { sourceAssetId } : {}),
     } };
     const [saved] = await tx.update(companyTransferRuns).set({
       containerRef: sql`${companyTransferRuns.containerRef} || jsonb_build_object('assetProvenance', coalesce(${companyTransferRuns.containerRef}->'assetProvenance', '{}'::jsonb) || ${JSON.stringify(provenance)}::jsonb)`,
@@ -305,11 +307,12 @@ export async function createMigrationIssues(db: Db, runId: string, companyId: st
   comments: ImportIssueCommentRow[];
   documents: ImportIssueDocumentRow[];
   workProducts: ImportIssueWorkProductRow[];
+  attachments?: ImportIssueAttachmentRow[];
   relations: Array<{ issueId: string; relatedIssueId: string }>;
   actorUserId?: string | null;
 }) {
   const ids = new Set(batch.issues.map(({ id }) => id));
-  if ([...batch.comments, ...batch.documents, ...batch.workProducts].some((row) => row.companyId !== companyId || !ids.has(row.issueId)) ||
+  if ([...batch.comments, ...batch.documents, ...batch.workProducts, ...(batch.attachments ?? [])].some((row) => row.companyId !== companyId || !ids.has(row.issueId)) ||
       batch.relations.some((row) => !ids.has(row.issueId) || !ids.has(row.relatedIssueId))) {
     throw new Error("Migration issue batch refers to an issue outside the batch");
   }
@@ -330,6 +333,10 @@ export async function createMigrationIssues(db: Db, runId: string, companyId: st
     await service.importIssues(companyId, batch.issues);
     if (batch.actorUserId) await service.archiveImportedInbox(companyId, issueIds, batch.actorUserId);
     await service.addImportedComments(batch.comments);
+    // Savepoints keep asset rows and their journal inside the issue transaction.
+    for (const { issueId, issueCommentId, companyId: _, ...assetData } of batch.attachments ?? []) {
+      await recordMigrationAsset(txDb, runId, companyId, assetData, { issueId, issueCommentId });
+    }
     await documentService(txDb).createIssueDocumentsForImport(batch.documents);
     await workProductService(txDb).createManyForImport(batch.workProducts);
     if (batch.relations.length > 0) {
@@ -346,6 +353,7 @@ export async function createMigrationIssues(db: Db, runId: string, companyId: st
     const documentIds = tx.select({ id: issueDocuments.documentId }).from(issueDocuments)
       .where(and(eq(issueDocuments.companyId, companyId), inArray(issueDocuments.issueId, issueIds)));
     const provenance = {
+      attachmentsCommitted: true,
       issueCounter: company.issueCounter,
       companyFingerprint: company.fingerprint,
       issues: await tx.select({ id: issues.id, fingerprint: migrationRowFingerprint(getTableName(issues)) })
@@ -585,7 +593,7 @@ async function claimMigrationAtDestinationCheckpoint(
         eq(companyTransferRuns.direction, "import"), eq(companyTransferRuns.status, "failed"),
         eq(companyTransferRuns.actorKey, `company_migration:${sourceCompanyId}`),
         sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' = ${sourceCompanyId}`,
-        sql`${companyTransferRuns.containerRef} - array['kind', 'sourceCompanyId', 'destinationClaimed', 'destinationCompanyId', 'initialCompanyFingerprint', 'ownerProvenance', 'skillProvenance', 'agentProvenance', 'projectProvenance', 'labelProvenance', 'assetProvenance', 'routineProvenance']::text[] = '{}'::jsonb`,
+        sql`${companyTransferRuns.containerRef} - array['kind', 'sourceCompanyId', 'destinationClaimed', 'destinationCompanyId', 'initialCompanyFingerprint', 'ownerProvenance', 'skillProvenance', 'agentProvenance', 'projectProvenance', 'labelProvenance', 'assetProvenance', 'routineProvenance', 'issueProvenance']::text[] = '{}'::jsonb`,
       )).returning({ provenance: companyTransferRuns.containerRef, parts: companyTransferRuns.completedParts });
     if (!claim) return null;
     if (!Array.isArray(claim.parts)) throw conflict("Migration requires rollback.", { runId });
@@ -596,9 +604,12 @@ async function claimMigrationAtDestinationCheckpoint(
       skillProvenance?: { skills: unknown[]; folders: unknown[]; refs?: unknown };
       agentProvenance?: Record<string, { sourceSlug?: string }>;
       projectProvenance?: Record<string, { sourceSlug?: string; workspaceRefs?: unknown; workspaces: { id: string }[] }>;
-      assetProvenance?: Record<string, { id: string; logo: { id: string } | null }>;
+      assetProvenance?: Record<string, { id: string; logo: { id: string } | null; attachment?: { id: string }; sourceAssetId?: string }>;
       routineProvenance?: Record<string, { sourceSlug?: string }>;
+      issueProvenance?: { attachmentsCommitted?: boolean };
     };
+    const hasCommittedIssues = ref.issueProvenance?.attachmentsCommitted === true;
+    if (ref.issueProvenance && !hasCommittedIssues) throw conflict("Migration issue checkpoint requires rollback.", { runId });
     const routinesBySlug = new Map<string, string>();
     for (const [id, entry] of Object.entries(ref.routineProvenance ?? {})) {
       if (typeof entry.sourceSlug !== "string" || !entry.sourceSlug || routinesBySlug.has(entry.sourceSlug)) {
@@ -607,34 +618,37 @@ async function claimMigrationAtDestinationCheckpoint(
       routinesBySlug.set(entry.sourceSlug, id);
     }
     const recordedAssets = Object.entries(ref.assetProvenance ?? {});
-    let recordedLogoKey: string | undefined;
-    if (recordedAssets.length > 0) {
-      const [entry] = recordedAssets;
-      if (recordedAssets.length !== 1 || !entry?.[1].logo || !storage) {
+    const embeddedAssetIds = new Map<string, string>();
+    const verifiedObjects = new Set<string>();
+    let hasRecordedLogo = false;
+    for (const [key, recorded] of recordedAssets) {
+      const validPlacement = recorded.logo ? !hasRecordedLogo && key.startsWith(`${companyId}/assets/companies/`)
+        : recorded.attachment ? hasCommittedIssues && key.startsWith(`${companyId}/issues/`)
+        : typeof recorded.sourceAssetId === "string" && !!recorded.sourceAssetId && !embeddedAssetIds.has(recorded.sourceAssetId)
+          && key.startsWith(`${companyId}/assets/general/`);
+      if (!storage || !validPlacement || parseMigrationResource(companyId, key)?.kind !== "object" || !claim.parts.includes(key)) {
         throw conflict("Migration asset checkpoint requires rollback.", { runId });
-      }
-      const [key, recorded] = entry;
-      if (!key.startsWith(`${companyId}/assets/companies/`) || !claim.parts.includes(key)) {
-        throw conflict("Migration logo reservation no longer matches its checkpoint.", { runId });
       }
       const [asset] = await tx.select({ sha256: assets.sha256, byteSize: assets.byteSize }).from(assets)
         .where(and(eq(assets.id, recorded.id), eq(assets.companyId, companyId), eq(assets.objectKey, key)));
       try {
-        if (!asset) throw new Error("Migration logo row missing");
+        if (!asset) throw new Error("Migration asset row missing");
         const { stream } = await storage.getObject(companyId, key);
         const hash = createHash("sha256");
         let bytes = 0;
         for await (const chunk of stream) {
           const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
           bytes += data.length;
-          if (bytes > asset.byteSize) throw new Error("Migration logo size changed");
+          if (bytes > asset.byteSize) throw new Error("Migration asset size changed");
           hash.update(data);
         }
-        if (bytes !== asset.byteSize || hash.digest("hex") !== asset.sha256) throw new Error("Migration logo bytes changed");
+        if (bytes !== asset.byteSize || hash.digest("hex") !== asset.sha256) throw new Error("Migration asset bytes changed");
       } catch {
-        throw conflict("Migration logo no longer matches its checkpoint.", { runId });
+        throw conflict("Migration asset no longer matches its checkpoint.", { runId });
       }
-      recordedLogoKey = key;
+      if (recorded.logo) hasRecordedLogo = true;
+      if (recorded.sourceAssetId) embeddedAssetIds.set(recorded.sourceAssetId, recorded.id);
+      verifiedObjects.add(key);
     }
     const skillRefs = ref.skillProvenance ? new Map<string, string>() : undefined;
     if (ref.skillProvenance && skillRefs) {
@@ -663,7 +677,7 @@ async function claimMigrationAtDestinationCheckpoint(
     }
     const ownedIds = new Set(agentIds.values());
     const filesByAgentId = new Map<string, Map<string, string>>();
-    let orphanLogo: string | undefined;
+    const orphanObjects = new Set<string>();
     for (const part of claim.parts) {
       const resource = typeof part === "string" ? parseMigrationResource(companyId, part) : null;
       if (resource?.kind === "company_skills" && skillRefs) continue;
@@ -683,19 +697,18 @@ async function claimMigrationAtDestinationCheckpoint(
         filesByAgentId.set(resource.directory.agentId, files);
         continue;
       }
-      if (resource?.kind === "object" && resource.objectKey === recordedLogoKey) continue;
-      if (resource?.kind === "object" && !recordedLogoKey && !orphanLogo && claim.parts.length === 1 && resource.objectKey.startsWith(`${companyId}/assets/companies/`)) {
-        orphanLogo = resource.objectKey;
+      if (resource?.kind === "object") {
+        if (!verifiedObjects.has(resource.objectKey)) orphanObjects.add(resource.objectKey);
         continue;
       }
       throw conflict("Migration requires rollback.", { runId });
     }
-    if (orphanLogo) {
+    if (orphanObjects.size > 0) {
+      if (hasCommittedIssues) throw conflict("Migration issue checkpoint has unexpected storage reservations.", { runId });
       if (!storage) {
         throw conflict("Migration requires rollback.", { runId });
       }
-      // The only replayable external write here is an uncommitted company
-      // logo. Verify the operator before touching storage, not after cleanup.
+      // Verify the operator before touching uncommitted reserved storage.
       const [owner] = await tx.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
         eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, "user"),
         eq(companyMemberships.principalId, actorUserId ?? "board"), eq(companyMemberships.membershipRole, "owner"),
@@ -703,14 +716,13 @@ async function claimMigrationAtDestinationCheckpoint(
       ));
       if (!owner) throw conflict("Migration retry must preserve the provisioned owner.", { runId });
       try {
-        // Hold the ledger lock until the reservation is cleared. If deletion
-        // succeeds but the transaction aborts, the next retry deletes again.
-        await storage.deleteObject(companyId, orphanLogo);
-        const [cleared] = await tx.update(companyTransferRuns).set({ completedParts: [] })
+        // Keep every reservation until all deletes succeed; a retry can repeat them.
+        for (const key of orphanObjects) await storage.deleteObject(companyId, key);
+        const [cleared] = await tx.update(companyTransferRuns).set({ completedParts: claim.parts.filter((part) => !orphanObjects.has(part)) })
           .where(applyingDestination(runId, companyId)).returning({ id: companyTransferRuns.id });
-        if (!cleared) throw new Error("Migration logo reservation was not cleared");
+        if (!cleared) throw new Error("Migration storage reservations were not cleared");
       } catch {
-        throw conflict("Migration logo recovery failed; retry the confirmed request or roll back.", { runId });
+        throw conflict("Migration storage recovery failed; retry the confirmed request or roll back.", { runId });
       }
     }
     const projectsBySlug = new Map<string, { id: string; workspaceIds: ReadonlyMap<string, string> }>();
@@ -730,7 +742,7 @@ async function claimMigrationAtDestinationCheckpoint(
       if (remainingIds.size > 0) throw conflict("Migration workspace checkpoint is incomplete.", { runId });
       projectsBySlug.set(entry.sourceSlug, { id, workspaceIds });
     }
-    return { agentIds, filesByAgentId, skillRefs, projectsBySlug, routinesBySlug, hasRecordedLogo: recordedLogoKey !== undefined };
+    return { agentIds, filesByAgentId, skillRefs, projectsBySlug, routinesBySlug, hasRecordedLogo, embeddedAssetIds, hasCommittedIssues };
   });
 }
 

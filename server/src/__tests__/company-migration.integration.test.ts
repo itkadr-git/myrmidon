@@ -1661,7 +1661,28 @@ describe("company migration dry run", () => {
     expect(await companyService(db).getById(destination.id)).toMatchObject({ issueCounter: destination.issueCounter });
     expect(await ledger.getRun(db, run.id)).toEqual(before);
 
-    await createMigrationIssues(db, run.id, destination.id, batch);
+    const storage = createStorageService(createLocalDiskStorageProvider(root));
+    const stored = await storage.putFile({
+      companyId: destination.id, namespace: `issues/${firstId}`, originalFilename: "batch.txt",
+      contentType: "text/plain", body: Buffer.from("batch attachment"),
+      beforeWrite: (key) => ledger.reserveMigrationObject(db, run.id, destination.id, key),
+    });
+    const attachment = {
+      ...stored, companyId: destination.id, issueId: firstId, issueCommentId: null,
+      createdByAgentId: null, createdByUserId: null,
+    };
+    const reserved = await ledger.getRun(db, run.id);
+    // The second link fails after the first asset and its provenance were written.
+    await expect(createMigrationIssues(db, run.id, destination.id, {
+      ...batch, attachments: [attachment, attachment],
+    })).rejects.toThrow("Migration asset recording rejected");
+    expect(await db.select().from(issues).where(eq(issues.companyId, destination.id))).toEqual([]);
+    expect(await db.select().from(assets).where(eq(assets.companyId, destination.id))).toEqual([]);
+    expect(await ledger.getRun(db, run.id)).toEqual(reserved);
+
+    await createMigrationIssues(db, run.id, destination.id, { ...batch, attachments: [attachment] });
+    expect(await db.select().from(issueAttachments).where(eq(issueAttachments.companyId, destination.id)))
+      .toEqual([expect.objectContaining({ issueId: firstId })]);
     expect(await db.select().from(issues).where(eq(issues.companyId, destination.id))).toHaveLength(2);
     expect(await db.select().from(issueRelations).where(eq(issueRelations.companyId, destination.id))).toHaveLength(1);
     expect((await ledger.getRun(db, run.id))?.containerRef).toMatchObject({ issueProvenance: {
@@ -2304,6 +2325,20 @@ describe("company migration dry run", () => {
     expect(await companyTransferRunService.getRun(db, runId)).toEqual(run);
     await db.update(projects).set({ name: importedProject.name }).where(eq(projects.id, importedProject.id));
 
+    const settlement = vi.spyOn(companyTransferRunService, "complete").mockRejectedValueOnce(new Error("fixture: lost settlement after issue commit"));
+    try {
+      expect((await apply()).status).toBe(409);
+      expect(settlement).toHaveBeenCalledWith(db, runId);
+    } finally {
+      settlement.mockRestore();
+    }
+    const issueScope = eq(issues.companyId, companyId);
+    const committedIssues = await db.select().from(issues).where(issueScope);
+    expect(committedIssues).toHaveLength(1);
+    expect(await companyTransferRunService.getRun(db, runId)).toMatchObject({
+      status: "failed", containerRef: { issueProvenance: { attachmentsCommitted: true } },
+    });
+
     const resumed = await apply();
     expect(resumed.status, JSON.stringify(resumed.body)).toBe(200);
     expect(resumed.body).toMatchObject({ runId, status: "completed", createdCounts: { projects: 1, issues: 2 } });
@@ -2317,7 +2352,8 @@ describe("company migration dry run", () => {
     expect(await db.select().from(documentRevisions).where(revisionScope).orderBy(documentRevisions.id)).toEqual(importedDocumentRevisions);
     expect(await db.select().from(routineDocuments).where(linkScope)).toEqual(importedLinks);
     expect((await storage.headObject(companyId, importedAssets[0]!.objectKey)).exists).toBe(true);
-    expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toEqual([
+    expect(await db.select().from(issues).where(issueScope)).toEqual(committedIssues);
+    expect(committedIssues).toEqual([
       expect.objectContaining({ projectId: importedProject.id, projectWorkspaceId: importedWorkspaces[0]!.id }),
     ]);
 
