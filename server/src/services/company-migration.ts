@@ -443,6 +443,7 @@ export async function createMigrationRoutine(
   companyId: string,
   populate: (service: Pick<ReturnType<typeof routineService>, "create" | "createTrigger">) =>
     ReturnType<ReturnType<typeof routineService>["create"]>,
+  sourceSlug?: string,
 ) {
   return db.transaction(async (tx) => {
     const ownedRun = applyingDestination(runId, companyId);
@@ -474,7 +475,7 @@ export async function createMigrationRoutine(
       .from(routineTriggers).where(and(eq(routineTriggers.companyId, companyId), eq(routineTriggers.routineId, created.id)));
     const revisions = await tx.select({ id: routineRevisions.id, fingerprint: migrationRowFingerprint(getTableName(routineRevisions)) })
       .from(routineRevisions).where(and(eq(routineRevisions.companyId, companyId), eq(routineRevisions.routineId, created.id)));
-    const provenance = { [created.id]: { ...row, triggers, revisions } };
+    const provenance = { [created.id]: { ...row, triggers, revisions, sourceSlug } };
     const [saved] = await tx.update(companyTransferRuns).set({
       containerRef: sql`${companyTransferRuns.containerRef} || jsonb_build_object('routineProvenance', coalesce(${companyTransferRuns.containerRef}->'routineProvenance', '{}'::jsonb) || ${JSON.stringify(provenance)}::jsonb)`,
       updatedAt: new Date(),
@@ -575,7 +576,7 @@ async function claimMigrationAtDestinationCheckpoint(
         eq(companyTransferRuns.direction, "import"), eq(companyTransferRuns.status, "failed"),
         eq(companyTransferRuns.actorKey, `company_migration:${sourceCompanyId}`),
         sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' = ${sourceCompanyId}`,
-        sql`${companyTransferRuns.containerRef} - array['kind', 'sourceCompanyId', 'destinationClaimed', 'destinationCompanyId', 'initialCompanyFingerprint', 'ownerProvenance', 'skillProvenance', 'agentProvenance', 'projectProvenance', 'labelProvenance', 'assetProvenance']::text[] = '{}'::jsonb`,
+        sql`${companyTransferRuns.containerRef} - array['kind', 'sourceCompanyId', 'destinationClaimed', 'destinationCompanyId', 'initialCompanyFingerprint', 'ownerProvenance', 'skillProvenance', 'agentProvenance', 'projectProvenance', 'labelProvenance', 'assetProvenance', 'routineProvenance']::text[] = '{}'::jsonb`,
       )).returning({ provenance: companyTransferRuns.containerRef, parts: companyTransferRuns.completedParts });
     if (!claim) return null;
     if (!Array.isArray(claim.parts)) throw conflict("Migration requires rollback.", { runId });
@@ -587,7 +588,15 @@ async function claimMigrationAtDestinationCheckpoint(
       agentProvenance?: Record<string, { sourceSlug?: string }>;
       projectProvenance?: Record<string, { sourceSlug?: string; workspaceRefs?: unknown; workspaces: { id: string }[] }>;
       assetProvenance?: Record<string, { id: string; logo: { id: string } | null }>;
+      routineProvenance?: Record<string, { sourceSlug?: string }>;
     };
+    const routinesBySlug = new Map<string, string>();
+    for (const [id, entry] of Object.entries(ref.routineProvenance ?? {})) {
+      if (typeof entry.sourceSlug !== "string" || !entry.sourceSlug || routinesBySlug.has(entry.sourceSlug)) {
+        throw conflict("Migration routine checkpoint requires rollback.", { runId });
+      }
+      routinesBySlug.set(entry.sourceSlug, id);
+    }
     const recordedAssets = Object.entries(ref.assetProvenance ?? {});
     let recordedLogoKey: string | undefined;
     if (recordedAssets.length > 0) {
@@ -712,7 +721,7 @@ async function claimMigrationAtDestinationCheckpoint(
       if (remainingIds.size > 0) throw conflict("Migration workspace checkpoint is incomplete.", { runId });
       projectsBySlug.set(entry.sourceSlug, { id, workspaceIds });
     }
-    return { agentIds, filesByAgentId, skillRefs, projectsBySlug, hasRecordedLogo: recordedLogoKey !== undefined };
+    return { agentIds, filesByAgentId, skillRefs, projectsBySlug, routinesBySlug, hasRecordedLogo: recordedLogoKey !== undefined };
   });
 }
 

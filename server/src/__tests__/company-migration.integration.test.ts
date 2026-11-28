@@ -2217,7 +2217,7 @@ describe("company migration dry run", () => {
     expect(replay.body).toMatchObject({ runId: retried.body.runId, resume: "already_completed" });
   });
 
-  it("resumes after a committed logo and project and preserves the issue workspace reference", async () => {
+  it("resumes after a committed logo, project and routine and preserves the issue workspace reference", async () => {
     const [source] = await db.insert(companies).values({ name: "Project recovery source", issuePrefix: "MPR" }).returning();
     const storage = createStorageService(createLocalDiskStorageProvider(root));
     const logo = await storage.putFile({
@@ -2232,6 +2232,12 @@ describe("company migration dry run", () => {
     }).returning();
     await db.insert(issues).values({
       companyId: source!.id, projectId: project!.id, projectWorkspaceId: workspace!.id, title: "Recovery issue",
+    });
+    const [routine] = await db.insert(routines).values({
+      companyId: source!.id, title: "Recovery routine", projectId: project!.id, status: "paused",
+    }).returning();
+    await db.insert(routineTriggers).values({
+      companyId: source!.id, routineId: routine!.id, kind: "api", enabled: false,
     });
     const app = express();
     app.use(express.json());
@@ -2267,6 +2273,12 @@ describe("company migration dry run", () => {
     expect(importedProjects).toHaveLength(1);
     expect(importedWorkspaces).toHaveLength(1);
     expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toEqual([]);
+    const routineScope = eq(routines.companyId, companyId);
+    const triggerScope = eq(routineTriggers.companyId, companyId);
+    const importedRoutines = await db.select().from(routines).where(routineScope);
+    const importedTriggers = await db.select().from(routineTriggers).where(triggerScope);
+    expect(importedRoutines).toEqual([expect.objectContaining({ title: "Recovery routine", status: "paused" })]);
+    expect(importedTriggers).toEqual([expect.objectContaining({ routineId: importedRoutines[0]!.id, enabled: false })]);
 
     const importedProject = importedProjects[0]!;
     await db.update(projects).set({ name: "Independent project edit" }).where(eq(projects.id, importedProject.id));
@@ -2276,11 +2288,13 @@ describe("company migration dry run", () => {
 
     const resumed = await apply();
     expect(resumed.status, JSON.stringify(resumed.body)).toBe(200);
-    expect(resumed.body).toMatchObject({ runId, status: "completed", createdCounts: { projects: 1, issues: 1 } });
+    expect(resumed.body).toMatchObject({ runId, status: "completed", createdCounts: { projects: 1, issues: 2 } });
     expect(await companyTransferRunService.getRun(db, runId)).toMatchObject({ companyId, status: "completed" });
     expect(await db.select().from(projects).where(projectScope)).toEqual(importedProjects);
     expect(await db.select().from(projectWorkspaces).where(workspaceScope)).toEqual(importedWorkspaces);
     expect(await db.select().from(assets).where(assetScope)).toEqual(importedAssets);
+    expect(await db.select().from(routines).where(routineScope)).toEqual(importedRoutines);
+    expect(await db.select().from(routineTriggers).where(triggerScope)).toEqual(importedTriggers);
     expect((await storage.headObject(companyId, importedAssets[0]!.objectKey)).exists).toBe(true);
     expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toEqual([
       expect.objectContaining({ projectId: importedProject.id, projectWorkspaceId: importedWorkspaces[0]!.id }),

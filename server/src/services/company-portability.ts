@@ -8,6 +8,7 @@ import {
   builtInManagedResources,
   issueRelations,
   principalPermissionGrants,
+  routines as routineRows,
   type Db,
 } from "@myrmidon/db";
 // myrmidon(B1c): product name in user-facing import errors; see product.ts.
@@ -771,6 +772,7 @@ type ImportBehaviorOptions = {
     filesByAgentId: ReadonlyMap<string, ReadonlyMap<string, string>>;
     skillRefs?: ReadonlyMap<string, string>;
     projectsBySlug: ReadonlyMap<string, { id: string; workspaceIds: ReadonlyMap<string, string> }>;
+    routinesBySlug: ReadonlyMap<string, string>;
   };
   planNewCompanyAgentNameCollisions?: boolean;
 };
@@ -5619,6 +5621,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
       const importsSkills = include.skills || include.agents;
       const checkpoint = options?.resumeMigrationDestinationId ? options.resumeMigrationCheckpoint : undefined;
+      if (checkpoint && [...checkpoint.routinesBySlug.keys()].some((slug) =>
+        !include.issues || !sourceManifest.issues.some((issue) => issue.recurring && issue.slug === slug))) {
+        throw new Error("Migration routine checkpoint does not match the import plan");
+      }
       if (checkpoint && [...checkpoint.agentIds.keys()].some((slug) =>
         !plan.preview.plan.agentPlans.some((entry) => entry.slug === slug && entry.action === "create"))) {
         throw new Error("Migration agent checkpoint does not match the import plan");
@@ -6227,9 +6233,13 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               }
               return createdRoutine;
             };
-            const createdRoutine = migrationRunId
-              ? await createMigrationRoutine(db, migrationRunId, targetCompany.id, populateRoutine)
-              : await populateRoutine(routines);
+            const recordedId = checkpoint?.routinesBySlug.get(manifestIssue.slug);
+            const [recorded] = recordedId ? await db.select({ id: routineRows.id, title: routineRows.title, status: routineRows.status })
+              .from(routineRows).where(and(eq(routineRows.companyId, destinationCompanyId), eq(routineRows.id, recordedId))) : [];
+            if (recordedId && !recorded) throw new Error("Migration routine checkpoint is missing");
+            const createdRoutine = recorded ?? (migrationRunId
+              ? await createMigrationRoutine(db, migrationRunId, targetCompany.id, populateRoutine, manifestIssue.slug)
+              : await populateRoutine(routines));
             resultRoutines.push({
               slug: manifestIssue.slug,
               id: createdRoutine.id,
