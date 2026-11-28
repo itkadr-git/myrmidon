@@ -1,10 +1,9 @@
 # Life company migration pilot
 
-Status: the operator migration route supports read-only dry runs. Confirmed
-rollback can retry reserved resource cleanup only after the migration-owned
-company has already been removed. Confirmed apply and rollback of a live
-destination are not yet available. Do not use the existing company import API
-as a substitute: it does not provide the provenance-based recovery required here.
+The operator migration route defaults to a read-only dry run. Confirmed apply
+and provenance-checked rollback are implemented, but the pilot must not be
+scheduled until the release gate below is met. Do not use the existing company
+import API as a substitute: it does not provide this recovery workflow.
 
 ## Scope and authorization
 
@@ -54,7 +53,7 @@ pilot. Record only the approved scope, counts and outcome without secret values.
 The `runKey` identifies the prepared content; a dry-run creates no durable run,
 so it is not a rollback ID or evidence that apply occurred.
 
-## Procedure once the tool is available
+## Procedure after CI, review, and pilot approval
 
 1. Obtain the separate approval, agree on the window and identify the operator,
    destination name, recovery owner and communication channel. Verify that the
@@ -64,8 +63,11 @@ so it is not a rollback ID or evidence that apply occurred.
    the issue or operational log. Resolve all validation errors. Review warnings,
    including required secret bindings, with their owners.
 3. Confirm the approved source and destination and compare the dry-run report to
-   the approved scope. In the window, explicitly confirm apply. Record the run ID,
-   approved scope, entity counts and outcome, without secret values.
+   the approved scope. In the window, submit the same request with `dryRun: false`,
+   `apply: true` and a non-empty `confirm` reason. Apply rejects validation errors
+   and unresolved required secret bindings. Record the `runId`, approved scope,
+   entity counts and outcome, without secret values. On a partial failure the
+   conflict response carries `details.runId`; do not confuse it with `runKey`.
 4. Compare actual counts and unresolved bindings with the dry-run report. Verify
    that destination agents cannot access the source or other companies and that
    only intended roles and permissions were granted. Provision missing secrets
@@ -73,19 +75,23 @@ so it is not a rollback ID or evidence that apply occurred.
 5. Repeat the same apply request and verify it returns the completed run without
    creating duplicates. If verification fails, stop further writes and notify
    the recovery owner.
-6. If recovery is needed, inspect the migration journal and explicitly confirm
-   rollback for that run. Verify that only run-created resources were removed,
-   source data remains unchanged, and no later changes were overwritten. If the
-   rollback rejects changed resources or cannot safely remove a resource, stop
-   and escalate; do not manually delete resources based on guesses.
+6. If recovery is needed, read `GET /api/companies/{sourceCompanyId}/migrations/{runId}`.
+   Use `POST /api/companies/{sourceCompanyId}/migrations/{runId}/rollback` with a
+   non-empty `confirm` reason. The database removal is transactional; storage
+   cleanup follows it and can be retried with the same confirmed rollback if
+   interrupted. Verify `rolled_back`, that only run-created resources were
+   removed, and that source data is unchanged. If rollback refuses a changed
+   destination, stop and escalate; do not manually delete resources based on
+   guesses.
 
 ## Release gate
 
 Do not schedule the pilot until CI exercises the real migration routes and
 storage/database boundaries for no-write dry-run, confirmation, duplicate apply,
 partial failure and recovery, collision handling, company isolation, secret
-redaction and rollback. A green CI run for an earlier incomplete implementation is
-not evidence that these scenarios pass.
+redaction and rollback. Require independent review. A green aggregate with
+skipped test jobs or a result from another commit is not evidence that these
+scenarios pass.
 
 The existing import path is not a recovery mechanism: it creates the destination
 company before importing its entities, and its error handler only attempts to

@@ -2117,18 +2117,20 @@ registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/migrations",
   tags: ["companies"],
-  summary: "Preview a company migration without writing",
+  summary: "Preview a company migration or explicitly apply it to a new company",
+  description: "Dry-run is read-only and is the default. Applying requires dryRun: false, apply: true, and a non-empty confirmation.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(z.object({
       target: z.object({ mode: z.literal("new_company"), newCompanyName: z.string().trim().min(1) }).strict(),
       export: companyPortabilityExportSchema.optional().default({}),
-      dryRun: z.literal(true).optional().default(true),
-      apply: z.literal(false).optional().default(false),
+      dryRun: z.boolean().optional().default(true),
+      apply: z.boolean().optional().default(false),
+      confirm: z.string().trim().min(1).optional(),
       collisionStrategy: z.enum(["rename", "skip", "replace"]).optional().default("rename"),
     }).strict()),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 422: r.unprocessable },
 });
 
 registry.registerPath({
@@ -2144,7 +2146,8 @@ registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/migrations/{runId}/rollback",
   tags: ["companies"],
-  summary: "Retry migration resource cleanup after the owned destination has been removed",
+  summary: "Roll back a migration-owned destination or retry its resource cleanup",
+  description: "Requires confirmation and refuses to remove a destination that differs from its migration journal.",
   request: {
     params: z.object({ companyId: z.string(), runId: z.string() }),
     body: jsonBody(z.object({ confirm: z.string().trim().min(1) }).strict()),
