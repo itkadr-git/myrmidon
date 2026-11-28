@@ -30,6 +30,8 @@ settings-section: Track 5 — operations
 
 | `MYRMIDON_FLEET_ONBOARD_BASE_URL` | SERVER-ONBOARD B | unset | Base URL of the board that the executor claims jobs from | Required at worker startup |
 | `MYRMIDON_FLEET_ONBOARD_COMPANY_ID` | SERVER-ONBOARD B | unset | Board company ID used to scope executor claims | Required at worker startup |
+| `MYRMIDON_FLEET_ONBOARD_SKIP_MONITORING` | SERVER-ONBOARD B | unset | Explicitly skip monitoring setup | Only `true` skips; otherwise the unconfigured monitoring step fails |
+| `MYRMIDON_FLEET_ONBOARD_SKIP_ROLE_BOOTSTRAP` | SERVER-ONBOARD B | unset | Explicitly skip setup for a specialized role | Only `true` skips; the generic role requires no setup |
 | `MYRMIDON_FLEET_ONBOARD_ENABLED` | SERVER-ONBOARD A | `false` | Enables fleet server onboarding writes; read-only registry access remains available while disabled | `false`, `0`, `no`, or `off` disables onboarding; default is disabled |
 | `MYRMIDON_FLEET_ONBOARD_STEP_TIMEOUT_SEC` | SERVER-ONBOARD A | `1800` | Maximum duration of one onboarding step | Values outside 30–86400 seconds use the default |
 | `MYRMIDON_FLEET_ONBOARD_TICK_SEC` | SERVER-ONBOARD A | `60` | Interval at which the onboarding service reconciles queued jobs | Values outside 5–3600 seconds use the default |
@@ -40,6 +42,8 @@ settings-section: Track 5 — operations
 
 | `MYRMIDON_FLEET_ONBOARD_BASE_URL` | SERVER-ONBOARD B | не задан | Базовый URL доски, с которой исполнитель получает задачи | Обязателен при запуске worker |
 | `MYRMIDON_FLEET_ONBOARD_COMPANY_ID` | SERVER-ONBOARD B | не задан | ID компании на доске, в пределах которой исполнитель получает задачи | Обязателен при запуске worker |
+| `MYRMIDON_FLEET_ONBOARD_SKIP_MONITORING` | SERVER-ONBOARD B | не задан | Явно пропускает настройку мониторинга | Только `true` разрешает пропуск; иначе ненастроенный шаг завершается ошибкой |
+| `MYRMIDON_FLEET_ONBOARD_SKIP_ROLE_BOOTSTRAP` | SERVER-ONBOARD B | не задан | Явно пропускает настройку специализированной роли | Только `true` разрешает пропуск; роль generic не требует настройки |
 | `MYRMIDON_FLEET_ONBOARD_ENABLED` | SERVER-ONBOARD A | `false` | Включает операции добавления серверов в парк; чтение реестра остаётся доступно при выключенной функции | `false`, `0`, `no` или `off` выключает онбординг; по умолчанию выключен |
 | `MYRMIDON_FLEET_ONBOARD_STEP_TIMEOUT_SEC` | SERVER-ONBOARD A | `1800` | Максимальная длительность одного шага онбординга | При значении вне диапазона 30–86400 секунд используется умолчание |
 | `MYRMIDON_FLEET_ONBOARD_TICK_SEC` | SERVER-ONBOARD A | `60` | Интервал сверки очереди задач сервисом онбординга | При значении вне диапазона 5–3600 секунд используется умолчание |

@@ -17,7 +17,8 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
-import type { OwnedFleetResource } from "@myrmidon/shared";
+import { parseFleetOwnershipInventory, type OwnedFleetResource } from "@myrmidon/shared";
+import { cleanupOwnedResources } from "./owned-cleanup.js";
 import { generateSshKeyPair, sshPublicKey } from "./ssh-key.js";
 import { OnboardSshTransport } from "./ssh-transport.js";
 import type {
@@ -53,6 +54,8 @@ export interface ExecutorReporter {
 export interface OnboardExecutorDeps {
   createSshExecutor?: (options: SshConnectionOptions) => SshExecutor | Promise<SshExecutor>;
   generateKeyPair?: () => { publicKey: string; privateKey: string };
+  skipMonitoring?: boolean;
+  skipRoleBootstrap?: boolean;
 }
 
 export interface ExecutorExecutionResult {
@@ -97,6 +100,9 @@ export class FleetOnboardExecutor {
 
     try {
       const steps = claim.steps && claim.steps.length > 0 ? claim.steps : ["connect", "preflight", "access", "verify"];
+      if (claim.job.kind === "decommission" && (steps.length !== 1 || steps[0] !== "cleanup")) {
+        throw new Error("Invalid decommission step sequence");
+      }
 
       // Initial connection options
       const connOptions: SshConnectionOptions = {
@@ -105,6 +111,7 @@ export class FleetOnboardExecutor {
         username: claim.server.username,
         hostVerifier: async (fingerprint) => {
           if (discoveredFingerprint && discoveredFingerprint !== fingerprint) return false;
+          if (claim.job.kind === "decommission") return discoveredFingerprint === fingerprint;
           if (!reporter.pinHostKey || !(await reporter.pinHostKey(fingerprint))) return false;
           discoveredFingerprint = fingerprint;
           return true;
@@ -564,27 +571,25 @@ touch ${rollbackDir}/restored
           }
 
           case "monitoring": {
-            // Monitoring bootstrap or skip with note
-            await reporter.reportStep("monitoring", "skipped", "Monitoring agent skipped: instance monitoring not configured");
+            if (this.deps.skipMonitoring !== true) {
+              throw new Error("Monitoring bootstrap is not configured; explicitly opt out to skip it");
+            }
+            await reporter.reportStep("monitoring", "skipped", "Monitoring explicitly disabled by executor configuration");
             stepsCompleted.push("monitoring");
             break;
           }
 
           case "role": {
-            if (!activeSsh) {
-              activeSsh = await connectVerified(connOptions);
-            }
-
             const role = claim.options.role ?? "generic";
-            if (role === "build-runner") {
-              await activeSsh.execute("docker --version || true");
-            } else if (role === "sandbox") {
-              await activeSsh.execute("docker --version || true");
-            } else if (role === "bot-host") {
-              await activeSsh.execute("test -d /opt/fleetd || true");
+            if (role !== "generic" && role !== "build-runner" && role !== "sandbox" && role !== "bot-host") {
+              throw new Error("Unknown onboarding role");
             }
-
-            await reporter.reportStep("role", "ok", `Role bootstrap applied: ${role}`);
+            if (role !== "generic" && this.deps.skipRoleBootstrap !== true) {
+              throw new Error(`Role bootstrap is not configured for ${role}; explicitly opt out to skip it`);
+            }
+            await reporter.reportStep("role", "skipped", role === "generic"
+              ? "Generic role requires no bootstrap"
+              : `Role bootstrap for ${role} explicitly disabled by executor configuration`);
             stepsCompleted.push("role");
             break;
           }
@@ -614,14 +619,19 @@ touch ${rollbackDir}/restored
           }
 
           case "cleanup": {
-            // Decommission step
-            if (!activeSsh) {
-              activeSsh = await connectVerified(connOptions);
+            if (claim.job.kind !== "decommission" || claim.job.serverId !== claim.server.id) {
+              throw new Error("Decommission ownership inventory claim scope mismatch");
             }
-
-            // No ownership inventory is available yet; fail closed rather than deleting
-            // unrelated workloads, SSH keys, or firewall rules.
-            throw new Error("Decommission cleanup requires an ownership inventory");
+            if (!claim.ownershipInventory) throw new Error("Decommission cleanup requires an ownership inventory");
+            const inventory = parseFleetOwnershipInventory(claim.ownershipInventory, claim.job.companyId, claim.server.id);
+            if (inventory.resources.length > 0) {
+              if (!claim.server.hostKeyFingerprint) throw new Error("Decommission cleanup requires a previously pinned host key");
+              activeSsh ??= await connectVerified(connOptions);
+              await cleanupOwnedResources(activeSsh, inventory, claim.server.username);
+            }
+            await reporter.reportStep("cleanup", "ok", "Owned resource cleanup complete");
+            stepsCompleted.push("cleanup");
+            break;
           }
 
           default: {
