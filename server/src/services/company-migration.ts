@@ -575,9 +575,10 @@ async function claimMigrationAtDestinationCheckpoint(
         eq(companyTransferRuns.direction, "import"), eq(companyTransferRuns.status, "failed"),
         eq(companyTransferRuns.actorKey, `company_migration:${sourceCompanyId}`),
         sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' = ${sourceCompanyId}`,
-        sql`${companyTransferRuns.containerRef} - array['kind', 'sourceCompanyId', 'destinationClaimed', 'destinationCompanyId', 'initialCompanyFingerprint', 'ownerProvenance', 'skillProvenance', 'agentProvenance', 'projectProvenance', 'labelProvenance']::text[] = '{}'::jsonb`,
+        sql`${companyTransferRuns.containerRef} - array['kind', 'sourceCompanyId', 'destinationClaimed', 'destinationCompanyId', 'initialCompanyFingerprint', 'ownerProvenance', 'skillProvenance', 'agentProvenance', 'projectProvenance', 'labelProvenance', 'assetProvenance']::text[] = '{}'::jsonb`,
       )).returning({ provenance: companyTransferRuns.containerRef, parts: companyTransferRuns.completedParts });
     if (!claim) return null;
+    if (!Array.isArray(claim.parts)) throw conflict("Migration requires rollback.", { runId });
     if (!await matchesJournaledMigrationRows(tx, companyId, claim.provenance)) {
       throw conflict("Migration destination no longer matches its creation checkpoint.", { runId });
     }
@@ -585,7 +586,38 @@ async function claimMigrationAtDestinationCheckpoint(
       skillProvenance?: { skills: unknown[]; folders: unknown[]; refs?: unknown };
       agentProvenance?: Record<string, { sourceSlug?: string }>;
       projectProvenance?: Record<string, { sourceSlug?: string; workspaceRefs?: unknown; workspaces: { id: string }[] }>;
+      assetProvenance?: Record<string, { id: string; logo: { id: string } | null }>;
     };
+    const recordedAssets = Object.entries(ref.assetProvenance ?? {});
+    let recordedLogoKey: string | undefined;
+    if (recordedAssets.length > 0) {
+      const [entry] = recordedAssets;
+      if (recordedAssets.length !== 1 || !entry?.[1].logo || !storage) {
+        throw conflict("Migration asset checkpoint requires rollback.", { runId });
+      }
+      const [key, recorded] = entry;
+      if (!key.startsWith(`${companyId}/assets/companies/`) || !claim.parts.includes(key)) {
+        throw conflict("Migration logo reservation no longer matches its checkpoint.", { runId });
+      }
+      const [asset] = await tx.select({ sha256: assets.sha256, byteSize: assets.byteSize }).from(assets)
+        .where(and(eq(assets.id, recorded.id), eq(assets.companyId, companyId), eq(assets.objectKey, key)));
+      try {
+        if (!asset) throw new Error("Migration logo row missing");
+        const { stream } = await storage.getObject(companyId, key);
+        const hash = createHash("sha256");
+        let bytes = 0;
+        for await (const chunk of stream) {
+          const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          bytes += data.length;
+          if (bytes > asset.byteSize) throw new Error("Migration logo size changed");
+          hash.update(data);
+        }
+        if (bytes !== asset.byteSize || hash.digest("hex") !== asset.sha256) throw new Error("Migration logo bytes changed");
+      } catch {
+        throw conflict("Migration logo no longer matches its checkpoint.", { runId });
+      }
+      recordedLogoKey = key;
+    }
     const skillRefs = ref.skillProvenance ? new Map<string, string>() : undefined;
     if (ref.skillProvenance && skillRefs) {
       const { skills, folders, refs } = ref.skillProvenance;
@@ -612,7 +644,6 @@ async function claimMigrationAtDestinationCheckpoint(
       agentIds.set(entry.sourceSlug, id);
     }
     const ownedIds = new Set(agentIds.values());
-    if (!Array.isArray(claim.parts)) throw conflict("Migration requires rollback.", { runId });
     const filesByAgentId = new Map<string, Map<string, string>>();
     let orphanLogo: string | undefined;
     for (const part of claim.parts) {
@@ -634,7 +665,8 @@ async function claimMigrationAtDestinationCheckpoint(
         filesByAgentId.set(resource.directory.agentId, files);
         continue;
       }
-      if (resource?.kind === "object" && !orphanLogo && claim.parts.length === 1 && resource.objectKey.startsWith(`${companyId}/assets/companies/`)) {
+      if (resource?.kind === "object" && resource.objectKey === recordedLogoKey) continue;
+      if (resource?.kind === "object" && !recordedLogoKey && !orphanLogo && claim.parts.length === 1 && resource.objectKey.startsWith(`${companyId}/assets/companies/`)) {
         orphanLogo = resource.objectKey;
         continue;
       }
@@ -680,7 +712,7 @@ async function claimMigrationAtDestinationCheckpoint(
       if (remainingIds.size > 0) throw conflict("Migration workspace checkpoint is incomplete.", { runId });
       projectsBySlug.set(entry.sourceSlug, { id, workspaceIds });
     }
-    return { agentIds, filesByAgentId, skillRefs, projectsBySlug };
+    return { agentIds, filesByAgentId, skillRefs, projectsBySlug, hasRecordedLogo: recordedLogoKey !== undefined };
   });
 }
 

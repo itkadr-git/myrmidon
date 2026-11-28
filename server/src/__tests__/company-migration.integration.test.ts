@@ -2217,8 +2217,15 @@ describe("company migration dry run", () => {
     expect(replay.body).toMatchObject({ runId: retried.body.runId, resume: "already_completed" });
   });
 
-  it("resumes after a committed project and preserves the issue workspace reference", async () => {
+  it("resumes after a committed logo and project and preserves the issue workspace reference", async () => {
     const [source] = await db.insert(companies).values({ name: "Project recovery source", issuePrefix: "MPR" }).returning();
+    const storage = createStorageService(createLocalDiskStorageProvider(root));
+    const logo = await storage.putFile({
+      companyId: source!.id, namespace: "assets/companies", originalFilename: "logo.png",
+      contentType: "image/png", body: Buffer.from("project recovery logo"),
+    });
+    const [sourceLogo] = await db.insert(assets).values({ companyId: source!.id, ...logo }).returning();
+    await db.insert(companyLogos).values({ companyId: source!.id, assetId: sourceLogo!.id });
     const [project] = await db.insert(projects).values({ companyId: source!.id, name: "Recovery project" }).returning();
     const [workspace] = await db.insert(projectWorkspaces).values({
       companyId: source!.id, projectId: project!.id, name: "Recovery workspace", sourceType: "git_repo", repoUrl: "https://example.com/recovery.git", isPrimary: true,
@@ -2232,11 +2239,11 @@ describe("company migration dry run", () => {
       req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
       next();
     });
-    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use("/api/companies", companyRoutes(db, storage));
     app.use(errorHandler);
-    const apply = () => request(app).post(`/api/companies/${source!.id}/migrations`).send({
+    const apply = async () => request(app).post(`/api/companies/${source!.id}/migrations`).send({
       target: { mode: "new_company", newCompanyName: "Project recovery destination" },
-      export: { include: { projects: true, issues: true } },
+      export: { include: { company: true, projects: true, issues: true } },
       dryRun: false, apply: true, confirm: "approved fixture",
     });
     await db.execute(sql`alter table issues add constraint migration_project_checkpoint_failure check (title <> 'Recovery issue') not valid`);
@@ -2253,6 +2260,10 @@ describe("company migration dry run", () => {
     const workspaceScope = eq(projectWorkspaces.companyId, companyId);
     const importedProjects = await db.select().from(projects).where(projectScope);
     const importedWorkspaces = await db.select().from(projectWorkspaces).where(workspaceScope);
+    const assetScope = eq(assets.companyId, companyId);
+    const importedAssets = await db.select().from(assets).where(assetScope);
+    expect(importedAssets).toHaveLength(1);
+    expect(importedAssets[0]?.sha256).toBe(logo.sha256);
     expect(importedProjects).toHaveLength(1);
     expect(importedWorkspaces).toHaveLength(1);
     expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toEqual([]);
@@ -2269,6 +2280,8 @@ describe("company migration dry run", () => {
     expect(await companyTransferRunService.getRun(db, runId)).toMatchObject({ companyId, status: "completed" });
     expect(await db.select().from(projects).where(projectScope)).toEqual(importedProjects);
     expect(await db.select().from(projectWorkspaces).where(workspaceScope)).toEqual(importedWorkspaces);
+    expect(await db.select().from(assets).where(assetScope)).toEqual(importedAssets);
+    expect((await storage.headObject(companyId, importedAssets[0]!.objectKey)).exists).toBe(true);
     expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toEqual([
       expect.objectContaining({ projectId: importedProject.id, projectWorkspaceId: importedWorkspaces[0]!.id }),
     ]);

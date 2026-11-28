@@ -766,6 +766,7 @@ type ImportBehaviorOptions = {
   transferRunId?: string;
   resumeMigrationDestinationId?: string;
   resumeMigrationCheckpoint?: {
+    hasRecordedLogo?: boolean;
     agentIds: ReadonlyMap<string, string>;
     filesByAgentId: ReadonlyMap<string, ReadonlyMap<string, string>>;
     skillRefs?: ReadonlyMap<string, string>;
@@ -5481,7 +5482,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           actorUserId, createdImportSecretIds);
       }
 
-      if (include.company) {
+      if (include.company && !options?.resumeMigrationCheckpoint?.hasRecordedLogo) {
         const logoPath = sourceManifest.company?.logoPath ?? null;
         if (!logoPath) {
           if (!migrationRunId) {
