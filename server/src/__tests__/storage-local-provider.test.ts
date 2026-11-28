@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import { Readable } from "node:stream";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
 
@@ -69,6 +70,24 @@ describe("local disk storage provider", () => {
     } });
     expect(stored.objectKey).toBe(reservedKey);
     expect((await service.headObject("company-1", reservedKey)).exists).toBe(true);
+  });
+
+  it("leaves interrupted reserved writes at the recoverable key only", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-storage-"));
+    tempRoots.push(root);
+    const provider = createLocalDiskStorageProvider(root);
+    const objectKey = "company-1/assets/reserved";
+    const interrupted = Readable.from((async function* () {
+      yield Buffer.from("partial");
+      throw new Error("interrupted write");
+    })());
+    await expect(provider.putObject({
+      objectKey, body: interrupted, contentLength: 100,
+      contentType: "application/octet-stream", reservedForRecovery: true,
+    })).rejects.toThrow("interrupted write");
+    expect(await fs.readdir(path.join(root, "company-1", "assets"))).toEqual(["reserved"]);
+    await provider.deleteObject({ objectKey });
+    expect(await fs.readdir(path.join(root, "company-1", "assets"))).toEqual([]);
   });
 
   it("streams only requested byte ranges", async () => {

@@ -46,6 +46,17 @@ export function createLocalDiskStorageProvider(baseDir: string): StorageProvider
       const dir = path.dirname(targetPath);
       await fs.mkdir(dir, { recursive: true });
 
+      if (input.reservedForRecovery) {
+        // The asset row is published only after the write succeeds. Any partial
+        // bytes must stay at the reserved key so rollback can find them.
+        const handle = await fs.open(targetPath, "wx", 0o600);
+        try {
+          await handle.writeFile(input.body);
+        } finally {
+          await handle.close();
+        }
+        return;
+      }
       const tempPath = `${targetPath}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       await fs.writeFile(tempPath, input.body);
       await fs.rename(tempPath, targetPath);

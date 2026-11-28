@@ -104,6 +104,7 @@ export function createStorageService(provider: StorageProvider): StorageService 
         body: input.body,
         contentType,
         contentLength: byteSize,
+        ...(input.beforeWrite ? { reservedForRecovery: true } : {}),
       });
 
       return {
