@@ -129,6 +129,10 @@ component_compose() { component_host_compose "$@"; }
 component_cat_override() { component_host_cat_override; }
 component_service_exists() { component_host_service_exists; }
 component_write_override() { component_host_write_override "$@"; }
+# The component name the lib.sh site helpers read (COMPONENT_NAME), and the
+# site settings (unit, binary path, health URL) when COMPONENT_HOST=site:…
+COMPONENT_NAME="$component"
+component_site_env "$component"
 
 DG_CONFIG="${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG:-}"
 
@@ -155,6 +159,23 @@ component_precheck() {
   if [[ "$COMPONENT_SKIP" == "1" ]]; then
     log "SKIP: $component rollout ends here; nothing was pulled, switched or recreated on this host"
     exit 0
+  fi
+
+  # HOST-TARGETING, site mode: there is NO compose project on a site host (the
+  # unit runs the binary directly), so the fail-closed compose pre-check of the
+  # other modes does not apply. The fail-closed proof here is the systemd unit:
+  # a site without the unit is a misconfiguration (the 1.4.0 pattern again —
+  # deploying onto a host that never ran the service), not something to create
+  # from nothing.
+  if [[ "$COMPONENT_SITE" == "1" ]]; then
+    local_desc="$COMPONENT_REMOTE (site)"
+    if ! component_site_ssh "systemctl list-unit-files '$COMPONENT_SITE_SERVICE.service'" >/dev/null 2>&1; then
+      die "$component has no unit $COMPONENT_SITE_SERVICE.service on $local_desc (MYR_${component^^}_SITE_SERVICE; a site rollout would deploy onto a host that never ran the service, as in the 1.4.0 fleetd incident): enroll the site first (docs/myrmidon/guides/remote-execution-sites.md) or fix MYR_${component^^}_HOST"
+    fi
+    [[ -n "$COMPONENT_SITE_HEALTH_URL" ]] \
+      || die "$component has no MYR_${component^^}_SITE_HEALTH_URL configured: a site rollout must prove the restarted unit answers; refusing before anything is pulled"
+    log "pre-check ok: $ref is a CI image and $COMPONENT_SITE_SERVICE.service exists on $local_desc"
+    return 0
   fi
 
   # HOST-TARGETING (fail-closed local pre-check): before anything is pulled or
@@ -203,6 +224,51 @@ component_precheck
 # log and needs no URL.
 if [[ "$component" == "dockergate" && -n "$COMPONENT_HEALTH_URL" ]]; then
   log "NOTE: MYR_DOCKERGATE_HEALTH_URL is ignored: the host cannot ping dockergate (the socket answers only the board's main process); dockergate is proven by its self-check log line"
+fi
+
+# --- site mode: a systemd binary on the site host, not a compose service -----
+if [[ "$COMPONENT_SITE" == "1" ]]; then
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "dry run: nothing will be changed. Component plan (site target):"
+    plan "1. component image check passed (read-only): $ref built by CI from commit ${CI_IMAGE_REVISION:0:12}"
+    plan "1b. the unit $COMPONENT_SITE_SERVICE.service exists on $COMPONENT_REMOTE (read-only)"
+    plan "2. docker pull $ref"
+    plan "3. extract $COMPONENT_SITE_BINARY from the image on this host; back up the site binary to $COMPONENT_SITE_BINARY.pre-deploy"
+    plan "4. install the new binary and systemctl restart $COMPONENT_SITE_SERVICE (through ssh $COMPONENT_REMOTE)"
+    plan "5. health: $COMPONENT_SITE_HEALTH_URL"
+    exit 0
+  fi
+
+  log "1/4 pull $ref"
+  docker pull --quiet "$ref" >/dev/null || die "cannot pull $ref"
+
+  log "2/4 remember the site's current sha256; the rollback ref is the site's own backup"
+  current_digest="$(component_site_current_digest)"
+  [[ -n "$current_digest" ]] || log "no previous binary on $COMPONENT_REMOTE yet: a later rollback will find no backup (nothing to restore)"
+  record_history "deploy-site-$component" "$ref (previous site sha256: ${current_digest:-none}; rollback = the site's <binary>.pre-deploy backup)"
+
+  log "3/4 install on $COMPONENT_REMOTE and restart $COMPONENT_SITE_SERVICE"
+  component_site_rollout_binary "$ref" || exit 1
+  next_digest="$(component_site_current_digest)"
+
+  log "4/4 health: $COMPONENT_SITE_HEALTH_URL"
+  health_ok=0
+  for _ in $(seq 1 "$((HEALTH_TIMEOUT_SEC / POLL_INTERVAL_SEC + 1))"); do
+    # shellcheck disable=SC2086
+    if curl -fsS --max-time 10 $COMPONENT_SITE_HEALTH_URL >/dev/null 2>&1; then
+      health_ok=1
+      break
+    fi
+    sleep "$POLL_INTERVAL_SEC"
+  done
+  if [[ "$health_ok" != "1" ]]; then
+    log "DEGRADED: $component did not answer at $COMPONENT_SITE_HEALTH_URL within ${HEALTH_TIMEOUT_SEC}s; the unit keeps running the new binary until a rollback"
+    log "Roll back this component with: $MYR_SCRIPT_DIR/rollback-component.sh --config $config --component $component"
+    log "Roll back the board with: $MYR_SCRIPT_DIR/rollback.sh --config $config"
+    exit 1
+  fi
+  log "component $component rolled out on $COMPONENT_REMOTE ($ref, site sha256: ${next_digest:-unknown}, previous: ${current_digest:-none})"
+  exit 0
 fi
 
 # One source of truth: the previous image is the running container's image.
