@@ -41,6 +41,7 @@ export interface DistillProposal {
   /** The suggestion body the curator cast will polish into final text. */
   body: string;
   rationale: string | null;
+  recommendation?: "accepted" | "rejected" | null;
   target: DistillProposalTarget;
   sources: DistillSourceRef[];
   /** Task identifiers this proposal cites as evidence — "never one line per task":

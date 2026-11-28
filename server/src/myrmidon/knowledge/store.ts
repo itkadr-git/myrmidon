@@ -1176,6 +1176,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       companyId: string;
       body: string;
       rationale?: string | null;
+      recommendation?: "accepted" | "rejected" | null;
       targetSlug?: string | null;
       sourceKind?: KnowledgeSourceKind;
       sourceRef?: string | null;
@@ -1215,6 +1216,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
             targetItemId: targetId,
             body: input.body,
             rationale: input.rationale ?? null,
+            recommendation: input.rationale?.trim() && (input.recommendation === "accepted" || input.recommendation === "rejected") ? input.recommendation : null,
             sourceKind: input.sourceKind ?? null,
             sourceRef: input.sourceRef ?? null,
             trust: input.trust ?? null,
@@ -1287,7 +1289,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     return { id: row.id, status: input.decision };
   }
 
-  async function listSuggestions(nestId: string, status: "pending" | "accepted" | "declined" | "all" = "pending"): Promise<Array<{ id: string; targetItemId: string | null; body: string; status: string; trust: string | null; createdAt: string }>> {
+  async function listSuggestions(nestId: string, status: "pending" | "accepted" | "declined" | "all" = "pending") {
     const conditions = [eq(knowledgeSuggestions.nestId, nestId)];
     if (status !== "all") conditions.push(eq(knowledgeSuggestions.status, status));
     const rows = await db.select().from(knowledgeSuggestions).where(and(...conditions)).orderBy(asc(knowledgeSuggestions.createdAt));
@@ -1297,6 +1299,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       body: row.body,
       status: row.status,
       trust: row.trust ?? null,
+      rationale: row.rationale?.trim() ? row.rationale : null,
+      recommendation: row.rationale?.trim() && (row.recommendation === "accepted" || row.recommendation === "rejected") ? row.recommendation : null,
       createdAt: row.createdAt.toISOString(),
     }));
   }
