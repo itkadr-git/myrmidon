@@ -6,10 +6,10 @@
 Скопируйте её на сервер и запустите — дальше установщик делает всё сам:
 
 ```sh
-curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.9-rc.13/install.sh | sudo bash -s -- --version myr-v1.6.9-rc.13
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.9-rc.22/install.sh | sudo bash -s -- --version myr-v1.6.9-rc.22
 ```
 
-Команда выше закрепляет кандидат выпуска 1.6.9-rc.13.
+Команда выше закрепляет кандидат выпуска 1.6.9-rc.22.
 Для другого выпуска замените тег и в URL, и в `--version`; постоянная ссылка
 `releases/latest/download/install.sh` ведёт на последний стабильный выпуск
 и не заменяет зафиксированный тег кандидата. Нужны только интернет на
@@ -105,7 +105,7 @@ PostgreSQL 18 с установленным расширением `pgvector`; �
 Чтобы добавить параметр к однострочной команде, сначала скачайте скрипт:
 
 ```sh
-curl -fsSL -O https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.9-rc.13/install.sh
+curl -fsSL -O https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.9-rc.22/install.sh
 sudo bash install.sh --version myr-vX.Y.Z
 ```
 

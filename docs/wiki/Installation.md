@@ -6,10 +6,10 @@ One command brings a clean server to a working Myrmidon board. Copy it onto
 the server and run it — the installer does the rest itself:
 
 ```sh
-curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.9-rc.13/install.sh | sudo bash -s -- --version myr-v1.6.9-rc.13
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.9-rc.22/install.sh | sudo bash -s -- --version myr-v1.6.9-rc.22
 ```
 
-The command above pins the release candidate 1.6.9-rc.13. To install another release, replace the tag in both the URL and `--version`; the
+The command above pins the release candidate 1.6.9-rc.22. To install another release, replace the tag in both the URL and `--version`; the
 permanent `releases/latest/download/install.sh` link follows the latest
 stable release and is not a substitute for a pinned candidate. The command
 needs an internet connection and `curl` (on a bare Ubuntu or Debian, run
@@ -103,7 +103,7 @@ last lines of its log are printed right there.
 To use an option with the one-line form, download the script first:
 
 ```sh
-curl -fsSL -O https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.9-rc.13/install.sh
+curl -fsSL -O https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.9-rc.22/install.sh
 sudo bash install.sh --version myr-vX.Y.Z
 ```
 
