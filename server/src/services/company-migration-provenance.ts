@@ -3,7 +3,7 @@ import {
   activityLog, agents, assets, companies, companyLogos, companyMemberships, companySecretBindings,
   companySkills, documentRevisions, documents, folders, issueAttachments, issueComments, issueDocuments,
   issueInboxArchives, issueLabels, issueRelations, issues, issueWorkProducts, labels, principalPermissionGrants,
-  projects, projectWorkspaces, routineRevisions, routines, routineTriggers, userSecretDeclarations,
+  projects, projectWorkspaces, routineDocuments, routineRevisions, routines, routineTriggers, userSecretDeclarations,
 } from "@myrmidon/db";
 import { eq, getTableName, is, sql } from "drizzle-orm";
 import * as schema from "@myrmidon/db";
@@ -80,13 +80,14 @@ export async function matchesJournaledMigrationRows(tx: Tx, companyId: string, p
     [routines, rows(routineRows)],
     [routineTriggers, routineRows.flatMap((row) => rows(row.triggers))],
     [routineRevisions, routineRows.flatMap((row) => rows(row.revisions))],
+    [routineDocuments, routineRows.flatMap((row) => rows(row.documentLinks ?? []))],
     [labels, ref.labelProvenance === undefined ? [] : Object.values(record(ref.labelProvenance)).map(fingerprint)],
     [issues, issueRows ? rows(issueRows.issues) : []],
     [issueLabels, issueRows ? rows(issueRows.labels) : []],
     [issueInboxArchives, issueRows ? rows(issueRows.inboxArchives) : []],
     [issueComments, issueRows ? rows(issueRows.comments) : []],
-    [documents, issueRows ? rows(issueRows.documents) : []],
-    [documentRevisions, issueRows ? rows(issueRows.revisions) : []],
+    [documents, [...(issueRows ? rows(issueRows.documents) : []), ...routineRows.flatMap((row) => rows(row.descriptionDocuments ?? []))]],
+    [documentRevisions, [...(issueRows ? rows(issueRows.revisions) : []), ...routineRows.flatMap((row) => rows(row.descriptionRevisions ?? []))]],
     [issueDocuments, issueRows ? rows(issueRows.documentLinks) : []],
     [issueWorkProducts, issueRows ? rows(issueRows.workProducts) : []],
     [issueRelations, issueRows ? rows(issueRows.relations) : []],
@@ -115,7 +116,7 @@ export async function archiveJournaledMigrationCompany(tx: Tx, companyId: string
   // Delete only the verified child rows. Keep the destination identity and ledger.
   const childTables = [
     issueAttachments, companyLogos, issueRelations, issueWorkProducts, issueInboxArchives, issueLabels,
-    issueComments, issueDocuments, documentRevisions, documents, routineTriggers, routineRevisions,
+    issueComments, issueDocuments, routineDocuments, documentRevisions, documents, routineTriggers, routineRevisions,
     routines, issues, labels, projectWorkspaces, companySkills, assets, companySecretBindings,
     userSecretDeclarations, activityLog, principalPermissionGrants, companyMemberships, projects, agents,
   ];

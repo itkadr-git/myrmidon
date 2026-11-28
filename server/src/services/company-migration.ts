@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { CompanyPortabilityExport } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
-import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companySecretBindings, companySkills, companyTransferRuns, documentRevisions, documents, folders, issueAttachments, issueComments, issueDocuments, issueInboxArchives, issueLabels, issueRelations, issues, issueWorkProducts, labels, principalPermissionGrants, projects, projectWorkspaces, routineRevisions, routines, routineTriggers, userSecretDeclarations } from "@myrmidon/db";
+import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companySecretBindings, companySkills, companyTransferRuns, documentRevisions, documents, folders, issueAttachments, issueComments, issueDocuments, issueInboxArchives, issueLabels, issueRelations, issues, issueWorkProducts, labels, principalPermissionGrants, projects, projectWorkspaces, routineDocuments, routineRevisions, routines, routineTriggers, userSecretDeclarations } from "@myrmidon/db";
 import { and, eq, getTableColumns, getTableName, inArray, sql } from "drizzle-orm";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { matchesJournaledMigrationRows, archiveJournaledMigrationCompany, countJournaledMigrationEntities } from "./company-migration-provenance.js";
@@ -475,7 +475,16 @@ export async function createMigrationRoutine(
       .from(routineTriggers).where(and(eq(routineTriggers.companyId, companyId), eq(routineTriggers.routineId, created.id)));
     const revisions = await tx.select({ id: routineRevisions.id, fingerprint: migrationRowFingerprint(getTableName(routineRevisions)) })
       .from(routineRevisions).where(and(eq(routineRevisions.companyId, companyId), eq(routineRevisions.routineId, created.id)));
-    const provenance = { [created.id]: { ...row, triggers, revisions, sourceSlug } };
+    // Routine revisions also own a description document and its history.
+    const linkScope = and(eq(routineDocuments.companyId, companyId), eq(routineDocuments.routineId, created.id));
+    const documentIds = tx.select({ id: routineDocuments.documentId }).from(routineDocuments).where(linkScope);
+    const documentLinks = await tx.select({ id: routineDocuments.id, fingerprint: migrationRowFingerprint(getTableName(routineDocuments)) })
+      .from(routineDocuments).where(linkScope);
+    const descriptionDocuments = await tx.select({ id: documents.id, fingerprint: migrationRowFingerprint(getTableName(documents)) })
+      .from(documents).where(and(eq(documents.companyId, companyId), inArray(documents.id, documentIds)));
+    const descriptionRevisions = await tx.select({ id: documentRevisions.id, fingerprint: migrationRowFingerprint(getTableName(documentRevisions)) })
+      .from(documentRevisions).where(and(eq(documentRevisions.companyId, companyId), inArray(documentRevisions.documentId, documentIds)));
+    const provenance = { [created.id]: { ...row, triggers, revisions, sourceSlug, documentLinks, descriptionDocuments, descriptionRevisions } };
     const [saved] = await tx.update(companyTransferRuns).set({
       containerRef: sql`${companyTransferRuns.containerRef} || jsonb_build_object('routineProvenance', coalesce(${companyTransferRuns.containerRef}->'routineProvenance', '{}'::jsonb) || ${JSON.stringify(provenance)}::jsonb)`,
       updatedAt: new Date(),
