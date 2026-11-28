@@ -236,6 +236,7 @@ export async function createMigrationProject(
     project: Awaited<ReturnType<ReturnType<typeof projectService>["create"]>>,
     service: Pick<ReturnType<typeof projectService>, "createWorkspace" | "update">,
   ) => Promise<void>,
+  checkpoint?: { sourceSlug: string; workspaceIds: ReadonlyMap<string, string> },
 ): Promise<Awaited<ReturnType<ReturnType<typeof projectService>["create"]>>> {
   return db.transaction(async (tx) => {
     const ownedRun = applyingDestination(runId, companyId);
@@ -260,7 +261,16 @@ export async function createMigrationProject(
     const declarations = await tx.select({ id: userSecretDeclarations.id, fingerprint: migrationRowFingerprint(getTableName(userSecretDeclarations)) })
       .from(userSecretDeclarations).where(and(eq(userSecretDeclarations.companyId, companyId), eq(userSecretDeclarations.targetType, "project"), eq(userSecretDeclarations.targetId, project.id)));
 
-    const provenance = { [project.id]: { ...row, workspaces, secretBindings, userSecretDeclarations: declarations } };
+    const workspaceRefs = checkpoint ? [...checkpoint.workspaceIds] : undefined;
+    if (workspaceRefs && (workspaceRefs.length !== workspaces.length
+      || new Set(workspaceRefs.map(([, id]) => id)).size !== workspaces.length
+      || workspaceRefs.some(([, id]) => !workspaces.some((workspace) => workspace.id === id)))) {
+      throw new Error("Migration workspace references do not match the created project");
+    }
+    const provenance = { [project.id]: {
+      ...row, workspaces, secretBindings, userSecretDeclarations: declarations,
+      ...(checkpoint ? { sourceSlug: checkpoint.sourceSlug, workspaceRefs } : {}),
+    } };
     const [saved] = await tx.update(companyTransferRuns).set({
       containerRef: sql`${companyTransferRuns.containerRef} || jsonb_build_object('projectProvenance', coalesce(${companyTransferRuns.containerRef}->'projectProvenance', '{}'::jsonb) || ${JSON.stringify(provenance)}::jsonb)`,
       updatedAt: new Date(),
@@ -565,7 +575,7 @@ async function claimMigrationAtDestinationCheckpoint(
         eq(companyTransferRuns.direction, "import"), eq(companyTransferRuns.status, "failed"),
         eq(companyTransferRuns.actorKey, `company_migration:${sourceCompanyId}`),
         sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' = ${sourceCompanyId}`,
-        sql`${companyTransferRuns.containerRef} - array['kind', 'sourceCompanyId', 'destinationClaimed', 'destinationCompanyId', 'initialCompanyFingerprint', 'ownerProvenance', 'skillProvenance', 'agentProvenance']::text[] = '{}'::jsonb`,
+        sql`${companyTransferRuns.containerRef} - array['kind', 'sourceCompanyId', 'destinationClaimed', 'destinationCompanyId', 'initialCompanyFingerprint', 'ownerProvenance', 'skillProvenance', 'agentProvenance', 'projectProvenance', 'labelProvenance']::text[] = '{}'::jsonb`,
       )).returning({ provenance: companyTransferRuns.containerRef, parts: companyTransferRuns.completedParts });
     if (!claim) return null;
     if (!await matchesJournaledMigrationRows(tx, companyId, claim.provenance)) {
@@ -574,6 +584,7 @@ async function claimMigrationAtDestinationCheckpoint(
     const ref = claim.provenance as {
       skillProvenance?: { skills: unknown[]; folders: unknown[]; refs?: unknown };
       agentProvenance?: Record<string, { sourceSlug?: string }>;
+      projectProvenance?: Record<string, { sourceSlug?: string; workspaceRefs?: unknown; workspaces: { id: string }[] }>;
     };
     const skillRefs = ref.skillProvenance ? new Map<string, string>() : undefined;
     if (ref.skillProvenance && skillRefs) {
@@ -652,7 +663,24 @@ async function claimMigrationAtDestinationCheckpoint(
         throw conflict("Migration logo recovery failed; retry the confirmed request or roll back.", { runId });
       }
     }
-    return { agentIds, filesByAgentId, skillRefs };
+    const projectsBySlug = new Map<string, { id: string; workspaceIds: ReadonlyMap<string, string> }>();
+    for (const [id, entry] of Object.entries(ref.projectProvenance ?? {})) {
+      if (!entry.sourceSlug || projectsBySlug.has(entry.sourceSlug) || !Array.isArray(entry.workspaceRefs)) {
+        throw conflict("Migration project checkpoint requires rollback.", { runId });
+      }
+      const workspaceIds = new Map<string, string>();
+      const remainingIds = new Set(entry.workspaces.map((workspace) => workspace.id));
+      for (const pair of entry.workspaceRefs) {
+        if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== "string" || typeof pair[1] !== "string"
+          || !pair[0] || workspaceIds.has(pair[0]) || !remainingIds.delete(pair[1])) {
+          throw conflict("Migration workspace references no longer match their checkpoint.", { runId });
+        }
+        workspaceIds.set(pair[0], pair[1]);
+      }
+      if (remainingIds.size > 0) throw conflict("Migration workspace checkpoint is incomplete.", { runId });
+      projectsBySlug.set(entry.sourceSlug, { id, workspaceIds });
+    }
+    return { agentIds, filesByAgentId, skillRefs, projectsBySlug };
   });
 }
 

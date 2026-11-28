@@ -769,6 +769,7 @@ type ImportBehaviorOptions = {
     agentIds: ReadonlyMap<string, string>;
     filesByAgentId: ReadonlyMap<string, ReadonlyMap<string, string>>;
     skillRefs?: ReadonlyMap<string, string>;
+    projectsBySlug: ReadonlyMap<string, { id: string; workspaceIds: ReadonlyMap<string, string> }>;
   };
   planNewCompanyAgentNameCollisions?: boolean;
 };
@@ -5887,6 +5888,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         }
       }
 
+      if (checkpoint && [...checkpoint.projectsBySlug.keys()].some((slug) =>
+        !plan.preview.plan.projectPlans.some((project) => project.slug === slug && project.action === "create"))) {
+        throw new Error("Migration project checkpoint does not match the import plan");
+      }
       if (include.projects) {
         for (const planProject of plan.preview.plan.projectPlans) {
           const manifestProject = sourceManifest.projects.find((project) => project.slug === planProject.slug);
@@ -5899,6 +5904,21 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               name: planProject.plannedName,
               reason: planProject.reason,
             });
+            continue;
+          }
+
+          const recorded = checkpoint?.projectsBySlug.get(planProject.slug);
+          if (recorded) {
+            const project = await projects.getById(recorded.id);
+            if (project?.companyId !== destinationCompanyId || project.name !== planProject.plannedName
+              || manifestProject.workspaces.length !== recorded.workspaceIds.size
+              || manifestProject.workspaces.some(({ key }) => !recorded.workspaceIds.has(key))) {
+              throw new Error("Migration project checkpoint does not match the prepared project");
+            }
+            importedSlugToProjectId.set(planProject.slug, project.id);
+            existingProjectSlugToId.set(project.urlKey, project.id);
+            importedProjectWorkspaceIdByProjectSlug.set(planProject.slug, new Map(recorded.workspaceIds));
+            resultProjects.push({ slug: planProject.slug, id: project.id, action: "created", name: project.name, reason: planProject.reason });
             continue;
           }
 
@@ -5991,7 +6011,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           } else {
             const created = migrationRunId
               ? await createMigrationProject(db, migrationRunId, targetCompany.id, projectPatch,
-                (project, service) => populateProjectWorkspaces(project.id, service))
+                (project, service) => populateProjectWorkspaces(project.id, service),
+                { sourceSlug: planProject.slug, workspaceIds: projectWorkspaceIdByKey })
               : await projects.create(targetCompany.id, projectPatch);
             recordedWithProvenance = Boolean(migrationRunId);
             projectId = created.id;
