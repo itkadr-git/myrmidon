@@ -330,11 +330,22 @@ describe("openapi routes", () => {
     const { spec } = loadSpecRoutes();
     const repair = spec.paths["/api/issues/{id}/execution-participants"].patch;
     const schema = repair.requestBody.content["application/json"].schema;
-    expect(schema.oneOf).toHaveLength(3);
+    expect(repair["x-paperclip-authorization"]).toEqual({ actor: "board" });
     expect(schema.oneOf.map((branch: { required: string[] }) => branch.required)).toEqual([
       ["returnAssignee"], ["currentParticipant"], ["returnAssignee", "currentParticipant"],
+      ["returnAssignee", "expectedStageId", "expectedReturnAssigneeAgentId"],
     ]);
-    for (const branch of schema.oneOf) {
+    const guarded = schema.oneOf[3];
+    expect(guarded).toMatchObject({
+      additionalProperties: false,
+      properties: {
+        returnAssignee: { additionalProperties: false, required: ["type", "agentId"] },
+        expectedStageId: { type: "string", format: "uuid" },
+        expectedReturnAssigneeAgentId: { type: "string", format: "uuid" },
+      },
+    });
+    expect(guarded.properties.returnAssignee.nullable).not.toBe(true);
+    for (const branch of schema.oneOf.slice(0, 3)) {
       expect(branch.additionalProperties).toBe(false);
       for (const key of branch.required) {
         expect(branch.properties[key]).toMatchObject({

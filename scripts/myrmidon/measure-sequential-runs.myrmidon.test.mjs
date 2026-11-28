@@ -18,7 +18,7 @@ function harness(json) {
       },
       fetchImpl: async () => {
         probes.push(children.length);
-        return { status: 200 };
+        return { status: 200, json: async () => ({ status: "ok" }) };
       },
       log: { log: (line) => lines.push(line) },
     },
@@ -62,7 +62,7 @@ test("failure before the second readiness rejects without starting a third run",
   assert.deepEqual(h.probes, [1]);
   assert.equal(h.lines.length, 3);
   assert.equal(h.lines[0], "run 1/3: starting...");
-  assert.match(h.lines[1], /^run 1\/3: \d+\.\d{3} s$/);
+  assert.match(h.lines[1], /^run 1\/3: ready in \d+\.\d{3} s$/);
   assert.equal(h.lines[2], "run 2/3: starting...");
 });
 
@@ -79,6 +79,6 @@ test("non-JSON progress reports exactly the started and completed successful run
   await h.result;
   assert.equal(h.lines.length, 6);
   for (let i = 1; i <= 3; i += 1) {
-    assert.match(h.lines[i * 2 - 1], new RegExp(`^run ${i}/3: \\d+\\.\\d{3} s$`));
+    assert.match(h.lines[i * 2 - 1], new RegExp(`^run ${i}/3: ready in \\d+\\.\\d{3} s$`));
   }
 });

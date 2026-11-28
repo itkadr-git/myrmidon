@@ -1,6 +1,7 @@
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
 // myrmidon(B1): product name in the OpenAPI document; see product.ts.
 import { PRODUCT_ATTRIBUTION, PRODUCT_NAME } from "../myrmidon/product.js";
+import { offlineWorkspaceRequest } from "../services/offline-bot-workspace.js";
 import {
   experimentalApiPaths,
   experimentalApiQueries,
@@ -1537,6 +1538,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/chat-endpoints/{endpointId}/conversations/{conversationId}/publications/{publicationId}/status",
   "GET /api/issues/{issueId}/chat-binding",
   "POST /api/issues/{id}/stalled-review-decision",
+  "PATCH /api/issues/{id}/execution-participants",
   // myrmidon(1.7 COMPANY-BOUNDARIES, OPE-12766): only ADM control-plane board
   // operators decide access requests; agent keys never act as ADM operators
   // (the route rejects non-board actors outright).
@@ -4009,9 +4011,10 @@ registry.registerPath({
   method: "patch",
   path: "/api/issues/{id}/execution-participants",
   tags: ["issues"],
-  summary: "Operator: replace the execution stage participant or return assignee (e.g. a terminated agent)",
+  summary: "Operator: repair an execution stage participant or return assignee",
+  description: "The legacy payload preserves the previous agent role. Supply both expectedStageId and expectedReturnAssigneeAgentId to replace only the saved return assignee of a pending agent review with a same-company invokable engineer outside the review participants. The guarded repair refuses paused tasks, stale state, and queued or running review runs. It does not record a verdict or wake or interrupt an agent.",
   request: { params: z.object({ id: z.string() }), body: jsonBody(executionParticipantsSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
 });
 
 registry.registerPath({
@@ -8776,6 +8779,27 @@ registry.registerPath({
 });
 
 // ─── Execution workspaces ─────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/issues/{issueId}/offline-bot-workspace",
+  tags: ["execution-workspaces"],
+  summary: "Reserve or register an offline bot workspace for an issue",
+  description: "Requires a board operator with company runtime management access. Reserve returns a directory without binding it to the issue. Register binds an existing standalone checkout; repeating registration of the same binding returns the existing workspace ID.",
+  request: {
+    params: z.object({ companyId: z.string().uuid(), issueId: z.string().uuid() }),
+    body: jsonBody(offlineWorkspaceRequest),
+  },
+  responses: {
+    200: r.ok(z.object({ id: z.string().uuid().nullable(), cwd: z.string() })),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
 
 registry.registerPath({
   method: "get",

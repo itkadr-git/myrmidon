@@ -55,6 +55,22 @@ export async function hasLiveLegacyController(db: Db, run: Run): Promise<boolean
   return Boolean(owner);
 }
 
+/** Read the committed row without waiting on a renewal's row lock. */
+async function readLegacyControllerLeaseState(db: Db, run: Pick<Run, "id" | "companyId">) {
+  const [row] = await db.select({
+    runtimeMode: heartbeatRuns.runtimeMode,
+    status: heartbeatRuns.status,
+    controllerBootId: heartbeatRuns.controllerBootId,
+    controllerLeaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt,
+  }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+  ));
+  if (row?.runtimeMode !== "legacy" || row.status !== "running" || row.controllerBootId !== legacyControllerBootId) {
+    return null;
+  }
+  return row.controllerLeaseExpiresAt;
+}
+
 /** Atomically revoke an expired controller. Renewal and revocation serialize on
  * the run row. Expiry permits cleanup, never dispatch of a replacement agent. */
 export async function revokeExpiredLegacyController(db: Db, run: Run): Promise<boolean> {
@@ -71,15 +87,8 @@ export async function revokeExpiredLegacyController(db: Db, run: Run): Promise<b
   return Boolean(revoked);
 }
 
-/** Abort the adapter if the controller cannot renew. Bound each check by the
- * lease duration even when the database connection never settles.
- *
- * myrmidon(OPE-12578): a passed deadline is a question, not a verdict. After a
- * stall of this process the deadline fires late together with the renewal tick;
- * it asks the database first and aborts only when the renewal is refused, fails,
- * or does not settle within LEGACY_CONTROLLER_DEADLINE_CONFIRM_MS. A failed
- * background renewal (pool timeout, connection error) is retried on the next
- * tick; only a refused renewal aborts at once. */
+/** After the local deadline, try to renew. If its reply times out, allow one
+ * more confirm window to check the committed lease before aborting. */
 export function watchLegacyControllerLease(db: Db, run: Run, controller: AbortController) {
   if (run.runtimeMode === "native" || !run.controllerBootId) {
     return { stop() {}, async assertOwned(_stage?: "dispatching") {} };
@@ -93,22 +102,59 @@ export function watchLegacyControllerLease(db: Db, run: Run, controller: AbortCo
     controller.abort(error);
   };
   let confirm: ReturnType<typeof setTimeout> | null = null;
+  let verify: ReturnType<typeof setTimeout> | null = null;
+  const confirmLease = () => {
+    if (stopped || controller.signal.aborted) return;
+    // The UPDATE can already be committed even though its response is late.
+    const timeout = setTimeout(() => {
+      verify = null;
+      lost();
+    }, LEGACY_CONTROLLER_DEADLINE_CONFIRM_MS);
+    timeout.unref();
+    verify = timeout;
+    const finish = (expiresAt: Date | null) => {
+      if (verify !== timeout) return;
+      clearTimeout(timeout);
+      verify = null;
+      if (stopped || controller.signal.aborted) return;
+      const remaining = (expiresAt?.getTime() ?? 0) - Date.now();
+      if (remaining > 0) armDeadline(remaining);
+      else lost();
+    };
+    void readLegacyControllerLeaseState(db, run).then(finish, () => finish(null));
+  };
   const onDeadline = () => {
-    if (stopped || confirm) return;
-    confirm = setTimeout(lost, LEGACY_CONTROLLER_DEADLINE_CONFIRM_MS);
-    confirm.unref();
-    void assertOwned().catch(lost).finally(() => {
-      if (confirm) clearTimeout(confirm);
+    if (stopped || controller.signal.aborted || confirm || verify) return;
+    const timeout = setTimeout(() => {
       confirm = null;
+      confirmLease();
+    }, LEGACY_CONTROLLER_DEADLINE_CONFIRM_MS);
+    confirm = timeout;
+    timeout.unref();
+    void assertOwned().then(() => {
+      if (confirm !== timeout) return;
+      clearTimeout(timeout);
+      confirm = null;
+    }, () => {
+      if (confirm !== timeout) return;
+      clearTimeout(timeout);
+      confirm = null;
+      lost();
     });
   };
   let deadline = setTimeout(onDeadline, Math.max(0,
     (run.controllerLeaseExpiresAt?.getTime() ?? 0) - Date.now()));
   deadline.unref();
+  const armDeadline = (remaining: number) => {
+    clearTimeout(deadline);
+    deadline = setTimeout(onDeadline, Math.max(0, remaining));
+    deadline.unref();
+  };
   const assertOwned = async (stage?: "dispatching") => {
     if (stopped) return;
     controller.signal.throwIfAborted();
     const startedAt = Date.now();
+    const observedDeadline = deadline;
     let onAbort!: () => void;
     const aborted = new Promise<never>((_, reject) => {
       onAbort = () => reject(controller.signal.reason);
@@ -126,10 +172,9 @@ export function watchLegacyControllerLease(db: Db, run: Run, controller: AbortCo
       controller.signal.throwIfAborted();
     }
     controller.signal.throwIfAborted();
-    if (!stopped) {
-      clearTimeout(deadline);
-      deadline = setTimeout(onDeadline, Math.max(0, LEGACY_CONTROLLER_LEASE_MS - (Date.now() - startedAt)));
-      deadline.unref();
+    // A late response must not replace a deadline already set by the DB read.
+    if (!verify && deadline === observedDeadline) {
+      armDeadline(LEGACY_CONTROLLER_LEASE_MS - (Date.now() - startedAt));
     }
   };
   const timer = backgroundInterval(() => {
@@ -144,5 +189,7 @@ export function watchLegacyControllerLease(db: Db, run: Run, controller: AbortCo
   return { assertOwned, stop() {
     stopped = true; clearInterval(timer); clearTimeout(deadline);
     if (confirm) clearTimeout(confirm);
+    if (verify) clearTimeout(verify);
+    confirm = verify = null;
   } };
 }

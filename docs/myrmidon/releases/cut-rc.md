@@ -9,6 +9,8 @@ open release tasks, and six closed tasks later turned out to carry unmerged
 PRs. Every candidate tag now goes through the same checks, and every bypass
 lands on the board.
 
+For obtaining and verifying the manifest before deployment, see [RC candidate before GitHub Release](../deploy.md#rc-candidate-before-github-release).
+
 ## The command
 
 ```bash
@@ -96,6 +98,36 @@ run `git push origin myr-vX.Y.Z-rc.N` yourself after checking the output.
 
 Exit codes: `0` tagged (or dry-run clean), `1` refusal, `2` usage error.
 
+For a separately authorized dry-run in Hermes, use the run whose managed
+launcher includes this change. From the release checkout, put the staged
+launcher first on `PATH` and set the opt-in for that command only:
+
+```bash
+PATH="${PAPERCLIP_GITHUB_LAUNCHER_DIR:?managed launcher required}:$PATH" \
+  GH_REPO=itkadr-git/myrmidon MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST=1 \
+  node scripts/myrmidon/release/cut-rc.mjs --version 1.6.9 --rc 23 --board-label 1.6.9 --dry-run
+```
+
+`MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST=1` limits each managed launcher or
+helper process to the first configured candidate, once, with no retry or
+fallback. On its own, this per-process mode is not a limit across processes.
+
+Separately, `cut-rc` creates a shared broker scope for the whole invocation,
+including its child processes, even when that variable is unset. In the
+verified managed-launcher mode, at most one actual broker POST is made per
+invocation, including on refusal, transport failure, or redirect; there is no
+retry, fallback, or redirect request. A fresh scoped credential cache hit makes
+no broker request. Local-only Git operations do not spend the budget; Git
+credential acquisition is deferred until an authentication challenge. If
+managed credentials are unavailable, the managed `gh` launcher exits nonzero
+without starting `gh`.
+
+The offline E2E used cold HOME and cache with loopback fixtures: the 200 case
+verified two PRs and CI, while 409, 429, 503 with an available secondary, and
+307 failed closed. Each case made one primary POST and zero secondary POSTs.
+This offline result and the merged change do not establish release-environment
+readiness; live preflight remains a separate, explicitly authorized check.
+
 Tests: `scripts/myrmidon/release/cut-rc.test.mjs` (the board API and `gh`
 are faked, `git` is a throwaway repo per test: open task → refusal; done
 task with an unmerged PR → refusal; merged PR missing from the branch →
@@ -113,6 +145,8 @@ refusal even with an override).
 задачах выпуска, а позже выяснилось, что у шести закрытых задач PR не
 влиты. Каждый кандидат теперь проходит одни и те же проверки, и каждый
 обход попадает на доску.
+
+Получение и проверка манифеста до выката описаны в разделе [«Кандидат RC до GitHub Release»](../deploy.ru.md#кандидат-rc-до-github-release).
 
 ## Команда
 
@@ -200,6 +234,38 @@ node scripts/myrmidon/release/cut-rc.mjs --version 1.7.0 --rc 25 \
 
 Коды выхода: `0` — тег поставлен (или dry-run чист), `1` — отказ,
 `2` — ошибка использования.
+
+Для отдельно разрешённого dry-run в Hermes нужен прогон со штатным launcher,
+в котором уже есть эта правка. Из release checkout укажите его первым в `PATH`
+и включите режим только на время команды:
+
+```bash
+PATH="${PAPERCLIP_GITHUB_LAUNCHER_DIR:?managed launcher required}:$PATH" \
+  GH_REPO=itkadr-git/myrmidon MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST=1 \
+  node scripts/myrmidon/release/cut-rc.mjs --version 1.6.9 --rc 23 --board-label 1.6.9 --dry-run
+```
+
+`MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST=1` ограничивает каждый процесс
+штатного launcher или helper одним обращением к первому настроенному адресу,
+без повтора и перехода на резервный. Сам по себе этот режим не ограничивает
+сумму запросов нескольких процессов.
+
+Отдельно `cut-rc` создаёт общую область broker для всего вызова и его
+дочерних процессов, даже если переменная не задана. В проверенном режиме
+штатного launcher на весь вызов приходится не более одного фактического
+broker POST, в том числе при отказе, ошибке транспорта или перенаправлении:
+повтора, перехода на резервный адрес и запроса по перенаправлению нет. При
+попадании в свежий кэш общей области запроса к broker нет. Локальные
+операции Git не расходуют бюджет; получение Git credentials откладывается до
+запроса аутентификации. Если управляемых учётных данных нет, launcher
+завершает `gh` ненулевым кодом, не запуская CLI.
+
+Offline E2E с холодными HOME и кэшем использовал локальные fixtures: при 200
+проверены два PR и CI; 409, 429, 503 при доступном резервном адресе и 307
+завершились отказом. В каждом случае был один POST на основной адрес и ноль
+на резервный. Offline-результат и слияние не подтверждают готовность
+релизного окружения; live preflight остаётся отдельной проверкой, требующей
+явного разрешения.
 
 Тесты: `scripts/myrmidon/release/cut-rc.test.mjs` (API доски и `gh`
 подменены, `git` — одноразовый репозиторий на тест: открытая задача →

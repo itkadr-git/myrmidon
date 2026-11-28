@@ -27,6 +27,7 @@
 
 import { and, eq, ne } from "drizzle-orm";
 import { agents, type Db } from "@myrmidon/db";
+import { DEFAULT_RUN_KEY_ENV_NAME, runKeySecretName } from "../litellm-keys/run-keys.js";
 import { secretService } from "../../services/index.js";
 import { cardUsesLlmGateway } from "../bot-containers/profile-input.js";
 
@@ -36,6 +37,20 @@ export const BOT_LLM_API_KEY_SECRET_ENV = "MYRMIDON_BOT_LLM_API_KEY_SECRET";
 export interface GatewayBotKey {
   agentId: string;
   keyValue: string;
+}
+
+/**
+ * myrmidon(OPE-12932 KEY-TTL): the run-scoped projection of an agent's managed
+ * gateway key. The run's compiled env carries only the REFERENCE
+ * ({ type: "secret_ref", secretId, version: "latest" }); the secrets service
+ * resolves it once at dispatch, masks the value, and records the access. The
+ * raw key never enters the persisted adapter config or the profile.
+ */
+export interface RunScopedGatewayKeyRef {
+  /** The env name the run receives the reference under (settings.keyEnv). */
+  envKey: string;
+  /** The secret store binding placed in the run env: reference, never a value. */
+  secretRef: { type: "secret_ref"; secretId: string; version: "latest" };
 }
 
 /** A bot card as the resolver needs it. */
@@ -173,6 +188,48 @@ function readVersion(value: unknown): number | "latest" | null {
   if (value === undefined || value === null || value === "latest") return "latest";
   if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
   return null;
+}
+
+/**
+ * The run-owned secret_ref for the current heartbeat, if it exists. The
+ * lookup never reads the key value; expiry and deletion make stale refs fail.
+ */
+export async function findRunScopedGatewayKeyRef(
+  db: Db,
+  companyId: string,
+  runId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<RunScopedGatewayKeyRef | null> {
+  const keyEnv = readGatewayBotKeySettings(env).keyEnv ?? DEFAULT_RUN_KEY_ENV_NAME;
+  const secret = await secretService(db).getByName(companyId, runKeySecretName(runId));
+  if (!secret || secret.status !== "active" || secret.scope !== "company" ||
+      !secret.expiresAt || secret.expiresAt.getTime() <= Date.now()) return null;
+  return {
+    envKey: keyEnv,
+    secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+  };
+}
+
+/**
+ * Deletes only the run-owned secret, leaving any persistent agent key intact.
+ * A missing secret or provider failure is treated as a best-effort no-op.
+ */
+export async function removeRunScopedGatewayKeyRef(
+  db: Db,
+  companyId: string,
+  runId: string,
+  _env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> {
+  const secretName = runKeySecretName(runId);
+  const secrets = secretService(db);
+  const secret = await secrets.getByName(companyId, secretName).catch(() => null);
+  if (!secret) return false;
+  try {
+    await secrets.remove(secret.id);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

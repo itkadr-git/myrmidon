@@ -1,5 +1,5 @@
 {
-  "id": "3595989d-c862-4d32-8ccd-29df77f36c3c",
+  "id": "c823faac-63a7-4804-b5b0-051e41563731",
   "prevId": "73f1cbb1-5542-44be-93aa-e736ebdea5de",
   "version": "7",
   "dialect": "postgresql",
@@ -39078,12 +39078,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "recommendation": {
-          "name": "recommendation",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "source_kind": {
           "name": "source_kind",
           "type": "text",
@@ -41478,6 +41472,12 @@
         "last_check_ok": {
           "name": "last_check_ok",
           "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ownership_inventory": {
+          "name": "ownership_inventory",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },

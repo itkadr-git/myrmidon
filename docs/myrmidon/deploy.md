@@ -218,6 +218,7 @@ scripts/myrmidon/deploy/deploy.sh --config deploy.env --release myr-v1.6.2
   `MYRMIDON_COMPONENT_AUTO_ROLLBACK=0` restores the old manual contract. A release whose
   component or bot digests are missing, and a component that cannot roll out (registry, CI
   labels, compose service), is refused **before** the window.
+
 - **Bot cards.** After the window, bot cards that track the release image switch: a card
   whose image is a digest-pinned image of one of our bot repositories (hermes, hermes-dev,
   hermes-node) that is not the release's image of that repository tracks and moves to the
@@ -263,18 +264,43 @@ scripts/myrmidon/deploy/deploy.sh --config deploy.env --release myr-v1.6.2
 
 ### Release candidates and the `latest` marker (RC-VERSIONS)
 
+#### RC candidate before GitHub Release
+
+1. Once all four tag-push image workflows succeed, dispatch **Myrmidon release publish**
+   from `main` with the exact RC `tag` and `prepare_rc=true`. This mode checks the
+   tag's commit and GHCR images, then saves the checked manifest as an Actions
+   artifact. It does not fetch a verdict or publish a GitHub Release asset.
+2. Download `release-components-<tag>-attempt-<n>` from that successful `prepare-rc`
+   run. Use only that run's `release-components.json`. Resolve the expected full
+   commit independently from the trusted release tag (peel annotated tags to the commit).
+3. With the updated installer, point `MYRMIDON_RELEASE_MANIFEST_FILE` in `deploy.env`
+   at the extracted file. Preflight with:
+
+   ```bash
+   scripts/myrmidon/deploy/deploy.sh --config deploy.env --release "$tag" --expect-commit "$sha" --dry-run
+   ```
+
+   The installer checks the file against the expected tag and commit and verifies
+   each selected image against GHCR. Required: board, dockergate, fleetd and hermes.
+   Optional bot variants are checked if present. Stop on any mismatch or unavailable
+   provenance.
+4. Only after the operator deploys and verifies the exact commit, run the ordinary
+   publication workflow with `prepare_rc=false`. Publication still requires the
+   signed production verdict for the tag commit. The candidate artifact is not a verdict.
+
 Since 1.6.5 a release goes through a trial run on our own production before it becomes the
 GitHub **Latest** release (the owner's requirement of 05.10):
 
 1. **Cut the candidate.** The release-cut PR lands on `main`, then the tag
    `myr-vX.Y.Z-rc.1` (next trial: `-rc.2`, …) is pushed on the release commit. CI builds
    every component image with the tag `X.Y.Z-rc.N` and the version `/api/health` reports is
-   exactly `X.Y.Z-rc.N`. The publish workflow creates the GitHub Release as a
-   **pre-release** titled `Myrmidon X.Y.Z-rc.N (RC N)` — it never touches `latest`.
-2. **Deploy the candidate.** `deploy.sh --release myr-vX.Y.Z-rc.N` works exactly like a
-   final release (the manifest asset, the component gate, the bot rollout): the digests
-   resolve from the rc's own image tags. `--expect-version X.Y.Z-rc.N` matches what the
-   board reports.
+   exactly `X.Y.Z-rc.N`. Prepare the Actions artifact as described above; publication
+   requires the signed verdict and creates a **pre-release** titled
+   `Myrmidon X.Y.Z-rc.N (RC N)` without moving `latest`.
+2. **Deploy the candidate.** Before publication, use the prepared manifest as described
+   above. After publication, `deploy.sh --release myr-vX.Y.Z-rc.N` can use the Release
+   manifest asset; the component gate and bot rollout apply. The digests resolve from
+   the RC image tags. `--expect-version X.Y.Z-rc.N` matches what the board reports.
 3. **Verify on production.** Health (`/api/health` status ok at `X.Y.Z-rc.N`), the
    attention list empty of new deploy damage, the fleet taking tasks, the bot images
    applied. The deploy itself already proved the bot re-apply smoke.

@@ -294,7 +294,7 @@ describe("managed GitHub launcher with broker candidates (myrmidon P6)", () => {
       "#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ token: process.env.GH_TOKEN ?? null }));",
       { mode: 0o700 },
     );
-    return { bin, realBin };
+    return { root, bin, realBin };
   }
 
   function launcherEnv(input: { bin: string; realBin: string; brokerUrl: string; extra?: Record<string, string> }) {
@@ -308,8 +308,84 @@ describe("managed GitHub launcher with broker candidates (myrmidon P6)", () => {
     delete env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
     delete env.PAPERCLIP_GITHUB_BRIDGE_TOKEN;
     delete env.PAPERCLIP_API_KEY;
+    delete env.MYRMIDON_API_URL;
+    delete env.MYRMIDON_BOT_BOARD_URL;
+    delete env.MYRMIDON_API_KEY;
+    delete env.MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST;
+    delete env.MYRMIDON_GITHUB_BROKER_SCOPE_DIR;
+    delete env.MYRMIDON_GITHUB_CREDENTIALS_CACHE_DIR;
+    delete env.PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR;
+    delete env.PAPERCLIP_RUN_SCRATCH_DIR;
     return { ...env, ...input.extra };
   }
+
+  it("makes one cold request and no warm request in single-request mode", async () => {
+    const { root, bin, realBin } = await stageGh();
+    const urls: string[] = [];
+    const { port } = await startBroker((req, res) => {
+      urls.push(`${req.method} ${req.url}`);
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ status: "available", expiresAt: new Date(Date.now() + 600_000).toISOString(), env: { GH_TOKEN: "managed-credential" } }));
+    });
+    const brokerUrl = `http://127.0.0.1:${port}`;
+    const env = launcherEnv({ bin, realBin, brokerUrl, extra: {
+      MYRMIDON_BOT_BOARD_URL: brokerUrl,
+      MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST: "1",
+      MYRMIDON_GITHUB_CREDENTIALS_CACHE_DIR: root,
+      PAPERCLIP_RUN_ID: "fake-run",
+      MYRMIDON_RUN_ID: "fake-run",
+    } });
+    const invoke = () => exec(path.join(bin, "gh"), ["pr", "view", "4640", "--repo", "itkadr-git/myrmidon"], { env });
+    expect(JSON.parse((await invoke()).stdout)).toEqual({ token: "managed-credential" });
+    expect(urls).toEqual(["POST /runtime-tools/github/credentials"]);
+    expect(JSON.parse((await invoke()).stdout)).toEqual({ token: "managed-credential" });
+    expect(urls).toHaveLength(1);
+  });
+
+  it("shares a spent budget across competing launcher processes", async () => {
+    const { root, bin, realBin } = await stageGh();
+    let posts = 0;
+    const { port } = await startBroker((req, res) => {
+      if (req.method === "POST") posts++;
+      setTimeout(() => res.writeHead(409).end(), 200);
+    });
+    const brokerUrl = `http://127.0.0.1:${port}`;
+    const env = launcherEnv({ bin, realBin, brokerUrl, extra: {
+      MYRMIDON_BOT_BOARD_URL: brokerUrl,
+      MYRMIDON_GITHUB_BROKER_SCOPE_DIR: root,
+      MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST: "0",
+    } });
+    const invoke = () => exec(path.join(bin, "gh"), ["--version"], { env });
+    const results = await Promise.allSettled(Array.from({ length: 6 }, invoke));
+    for (const result of results) expect(result).toMatchObject({ status: "rejected", reason: { code: 1 } });
+    await expect(invoke()).rejects.toMatchObject({ code: 1 });
+    expect(posts).toBe(1);
+  });
+
+  it.each([400, 409, 429])("refuses HTTP %i after one request even when a fallback is live", async (status) => {
+    const { bin, realBin } = await stageGh();
+    const posts: string[] = [];
+    const primary = await startBroker((req, res) => {
+      posts.push(`primary ${req.method}`);
+      res.writeHead(status);
+      res.end("synthetic refusal");
+    });
+    const fallback = await startBroker((req, res) => {
+      posts.push(`fallback ${req.method}`);
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ status: "available", env: { GH_TOKEN: "fallback-credential" } }));
+    });
+    const brokerUrl = `http://127.0.0.1:${primary.port}`;
+    const env = launcherEnv({ bin, realBin, brokerUrl, extra: {
+      MYRMIDON_BOT_BOARD_URL: brokerUrl,
+      PAPERCLIP_RUNTIME_API_URL: `http://127.0.0.1:${fallback.port}`,
+      MYRMIDON_GITHUB_BROKER_SINGLE_REQUEST: "1",
+    } });
+    await expect(exec(path.join(bin, "gh"), [], { env })).rejects.toMatchObject({
+      code: 1, stdout: "", stderr: expect.stringContaining(`single-request mode refused (HTTP ${status})`),
+    });
+    expect(posts).toEqual(["primary POST"]);
+  });
 
   it("gets credentials from a later candidate when the broker URL is unreachable", async () => {
     const { bin, realBin } = await stageGh();
@@ -323,7 +399,7 @@ describe("managed GitHub launcher with broker candidates (myrmidon P6)", () => {
         bin,
         realBin,
         brokerUrl: `http://127.0.0.1:${unreachable}`,
-        extra: { PAPERCLIP_RUNTIME_API_CANDIDATES_JSON: JSON.stringify([`http://127.0.0.1:${port}`]) },
+        extra: { MYRMIDON_BOT_BOARD_URL: `http://127.0.0.1:${unreachable}`, PAPERCLIP_RUNTIME_API_CANDIDATES_JSON: JSON.stringify([`http://127.0.0.1:${port}`]) },
       }),
     });
     expect(JSON.parse(result.stdout)).toEqual({ token: "managed-credential" });
@@ -345,7 +421,7 @@ describe("managed GitHub launcher with broker candidates (myrmidon P6)", () => {
         bin,
         realBin,
         brokerUrl: `http://127.0.0.1:${refusing.port}`,
-        extra: { PAPERCLIP_RUNTIME_API_URL: `http://127.0.0.1:${port}` },
+        extra: { MYRMIDON_BOT_BOARD_URL: `http://127.0.0.1:${refusing.port}`, PAPERCLIP_RUNTIME_API_URL: `http://127.0.0.1:${port}` },
       }),
     });
     expect(JSON.parse(result.stdout)).toEqual({ token: "managed-credential" });
@@ -363,7 +439,7 @@ describe("managed GitHub launcher with broker candidates (myrmidon P6)", () => {
         bin,
         realBin,
         brokerUrl: `http://127.0.0.1:${refusing.port}`,
-        extra: { PAPERCLIP_RUNTIME_API_CANDIDATES_JSON: JSON.stringify([`http://127.0.0.1:${unreachable}`]) },
+        extra: { MYRMIDON_BOT_BOARD_URL: `http://127.0.0.1:${refusing.port}`, PAPERCLIP_RUNTIME_API_CANDIDATES_JSON: JSON.stringify([`http://127.0.0.1:${unreachable}`]) },
       }),
     });
     expect(JSON.parse(result.stdout)).toEqual({ token: null });

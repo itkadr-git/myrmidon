@@ -21,9 +21,35 @@ export type OnboardServerRole = (typeof ONBOARD_SERVER_ROLES)[number];
 export const ONBOARD_SERVER_STATES = ["new", "onboarding", "ready", "needs_attention", "decommissioned"] as const;
 export type OnboardServerState = (typeof ONBOARD_SERVER_STATES)[number];
 
-/** Part-A step order. The executor reports each by key. */
-export const ONBOARD_STEPS = ["connect", "preflight", "access", "verify"] as const;
+/** Part-A & Part-B step orders. The executor reports each by key. */
+export const ONBOARD_STEPS = [
+  "connect",
+  "preflight",
+  "access",
+  "harden",
+  "monitoring",
+  "role",
+  "verify",
+] as const;
 export type OnboardStep = (typeof ONBOARD_STEPS)[number];
+
+export const RECHECK_STEPS = ["connect", "preflight", "verify"] as const;
+export type RecheckStep = (typeof RECHECK_STEPS)[number];
+
+export const DECOMMISSION_STEPS = ["cleanup"] as const;
+export type DecommissionStep = (typeof DECOMMISSION_STEPS)[number];
+
+export function stepsForJobKind(kind: OnboardJobKind): string[] {
+  switch (kind) {
+    case "recheck":
+      return [...RECHECK_STEPS];
+    case "decommission":
+      return [...DECOMMISSION_STEPS];
+    case "onboard":
+    default:
+      return [...ONBOARD_STEPS];
+  }
+}
 
 /** Version of the step set the executor ships; recorded on the server row. */
 export const ONBOARD_BOOTSTRAP_VERSION = "a1";
