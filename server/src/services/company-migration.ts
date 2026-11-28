@@ -41,8 +41,11 @@ function applyingDestination(runId: string, companyId: string) {
 
 export async function provisionMigrationOwner(db: Db, runId: string, companyId: string, actorUserId: string | null | undefined, options?: { verifyCheckpoint: boolean }) {
   await db.transaction(async (tx) => {
-    const ownedRun = and(applyingDestination(runId, companyId), sql`not (${companyTransferRuns.containerRef} ? 'ownerProvenance')`);
-    const [claim] = await tx.select({ provenance: companyTransferRuns.containerRef })
+    const ownedRun = applyingDestination(runId, companyId);
+    const [claim] = await tx.select({
+      provenance: companyTransferRuns.containerRef,
+      ownerRecorded: sql<boolean>`${companyTransferRuns.containerRef} ? 'ownerProvenance'`,
+    })
       .from(companyTransferRuns).where(ownedRun).for("update");
     if (!claim) throw new Error("Migration owner provisioning rejected");
     if (options?.verifyCheckpoint && !await matchesJournaledMigrationRows(tx, companyId, claim.provenance)) {
@@ -50,6 +53,18 @@ export async function provisionMigrationOwner(db: Db, runId: string, companyId: 
     }
 
     const principalId = actorUserId ?? "board";
+    if (claim.ownerRecorded) {
+      if (!options?.verifyCheckpoint) throw new Error("Migration owner was already provisioned");
+      const [owner] = await tx.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, principalId),
+        eq(companyMemberships.membershipRole, "owner"),
+        eq(companyMemberships.status, "active"),
+      ));
+      if (!owner) throw new Error("Migration retry must preserve the provisioned owner");
+      return;
+    }
     const [membership] = await tx.insert(companyMemberships).values({
       companyId, principalType: "user", principalId, membershipRole: "owner", status: "active",
     }).returning({ id: companyMemberships.id, fingerprint: migrationRowFingerprint("company_memberships") });
@@ -530,7 +545,9 @@ async function claimMigrationAtDestinationCheckpoint(db: Db, runId: string, sour
         eq(companyTransferRuns.direction, "import"), eq(companyTransferRuns.status, "failed"),
         eq(companyTransferRuns.actorKey, `company_migration:${sourceCompanyId}`),
         sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' = ${sourceCompanyId}`,
-        sql`${companyTransferRuns.containerRef} - array['kind', 'sourceCompanyId', 'destinationClaimed', 'destinationCompanyId', 'initialCompanyFingerprint']::text[] = '{}'::jsonb`,
+        // The importer can restart after owner provisioning, but cannot yet
+        // replay committed child entities or reserved storage.
+        sql`${companyTransferRuns.containerRef} - array['kind', 'sourceCompanyId', 'destinationClaimed', 'destinationCompanyId', 'initialCompanyFingerprint', 'ownerProvenance']::text[] = '{}'::jsonb`,
         sql`${companyTransferRuns.completedParts} = '[]'::jsonb`,
       )).returning({ provenance: companyTransferRuns.containerRef });
     if (!claim) return false;

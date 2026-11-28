@@ -2063,6 +2063,43 @@ describe("company migration dry run", () => {
     expect((await apply()).body).toMatchObject({ runId, resume: "already_completed" });
   });
 
+  it("resumes after a restart at the committed owner checkpoint without rewriting the owner", async () => {
+    const [source] = await db.insert(companies).values({ name: "Owner checkpoint source", issuePrefix: "MOCP" }).returning();
+    await db.insert(agents).values({ companyId: source!.id, name: "Checkpoint worker" });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+    const endpoint = `/api/companies/${source!.id}/migrations`;
+    const target = { mode: "new_company", newCompanyName: "Owner checkpoint destination" };
+    const preview = await request(app).post(endpoint).send({ target });
+    expect(preview.status).toBe(200);
+    const ledger = companyTransferRunService;
+    const { run } = await ledger.resumeOrCreateMigration(db, source!.id, preview.body.runKey);
+    expect(await ledger.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: target.newCompanyName }, { transferRunId: run.id });
+    await provisionMigrationOwner(db, run.id, destination.id, "local-board");
+    const ownerScope = eq(companyMemberships.companyId, destination.id);
+    const [owner] = await db.select().from(companyMemberships).where(ownerScope);
+    expect(owner?.principalId).toBe("local-board");
+    expect(await ledger.recoverStrandedApplyingRuns(db)).toContain(run.id);
+
+    const payload = { target, dryRun: false, apply: true, confirm: "resume approved fixture" };
+    const resumed = await request(app).post(endpoint).send(payload);
+    expect(resumed.status, JSON.stringify(resumed.body)).toBe(200);
+    expect(resumed.body).toMatchObject({ runId: run.id, status: "completed", createdCounts: { agents: 1 } });
+    expect(await db.select().from(companies).where(eq(companies.name, target.newCompanyName)))
+      .toEqual([expect.objectContaining({ id: destination.id })]);
+    const memberships = await db.select().from(companyMemberships).where(ownerScope);
+    expect(memberships.filter((member) => member.principalType === "user")).toEqual([owner]);
+    expect(await db.select().from(agents).where(eq(agents.companyId, destination.id))).toHaveLength(1);
+    expect((await request(app).post(endpoint).send(payload)).body).toMatchObject({ runId: run.id, resume: "already_completed" });
+  });
+
   it("recovers a partial import after agent creation without touching the source", async () => {
     const [source] = await db.insert(companies).values({ name: "Partial import source", issuePrefix: "MPI" }).returning();
     const [worker] = await db.insert(agents).values({ companyId: source!.id, name: "Partial import worker" }).returning();

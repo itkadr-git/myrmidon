@@ -82,10 +82,11 @@ so it is not a rollback ID or evidence that apply occurred.
    creating duplicates. If verification fails, stop further writes and notify
    the recovery owner.
 6. If recovery is needed, read `GET /api/companies/{sourceCompanyId}/migrations/{runId}`.
-   If the failure occurred just after destination creation and no child writes
-   or storage reservations were committed, the same confirmed apply resumes
-   that destination only if it still matches its journal. Later failures are
-   not replayed in place.
+   The same confirmed apply can resume after destination creation or owner
+   provisioning if the destination still matches its journal and no other child
+   writes or storage reservations were committed. If the owner was already
+   provisioned, retry as that same operator. Later failures require rollback;
+   the importer does not replay them in place.
    Use `POST /api/companies/{sourceCompanyId}/migrations/{runId}/rollback` with a
    non-empty `confirm` reason. One database transaction removes journaled child
    rows and archives the destination, preserving its ID. Reserved storage cleanup
