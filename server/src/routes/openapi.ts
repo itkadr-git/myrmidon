@@ -2137,9 +2137,17 @@ registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/migrations/{runId}",
   tags: ["companies"],
-  summary: "Get the status of a company migration",
+  summary: "Get source-scoped migration status and recovery checkpoints",
   request: { params: z.object({ companyId: z.string(), runId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+  responses: { 200: r.ok(z.object({
+    runId: z.string().uuid(), status: z.string(),
+    steps: z.object({
+      destinationClaimed: z.boolean(),
+      createdCounts: z.object({ agents: z.number(), projects: z.number(), issues: z.number(), skills: z.number() }),
+      databaseRollback: z.enum(["not_completed", "completed"]),
+      storageRollback: z.enum(["not_started", "pending", "completed"]),
+    }),
+  })), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({

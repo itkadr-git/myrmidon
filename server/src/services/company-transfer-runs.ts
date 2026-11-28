@@ -153,9 +153,19 @@ const migrationObjectKey = new RegExp(
 export function parseMigrationResource(companyId: string, part: string):
   | { kind: "object"; objectKey: string }
   | MigrationManagedDirectory
+  | { kind: "managed_file"; directory: MigrationManagedDirectory; relativePath: string; sha256: string; identity: string; stagingId: string }
   | null {
   if (!migrationUuid.test(companyId) || !part.startsWith(`${companyId}/`)) return null;
   const relative = part.slice(companyId.length + 1);
+  if (relative.startsWith("managed-file/")) {
+    const [root, sha256, identity, stagingId, encoded, extra] = relative.slice("managed-file/".length).split("/");
+    if (extra !== undefined || !root || !sha256 || !/^[a-f0-9]{64}$/.test(sha256) || !identity || !/^\d+:\d+$/.test(identity) || !stagingId || !migrationUuid.test(stagingId) || !encoded || !/^[\w-]+$/.test(encoded)) return null;
+    const relativePath = Buffer.from(encoded, "base64url").toString("utf8");
+    if (Buffer.from(relativePath).toString("base64url") !== encoded || relativePath.split("/").some((segment) => !segment || segment === "." || segment === ".." || /[\u0000\\:]/.test(segment))) return null;
+    const directory = root === "skills" ? { kind: "company_skills" as const }
+      : migrationUuid.test(root) ? { kind: "agent_instructions" as const, agentId: root } : null;
+    return directory && { kind: "managed_file", directory, relativePath, sha256, identity, stagingId };
+  }
   if (relative === "managed/skills") return { kind: "company_skills" };
   const agentId = relative.startsWith("managed/instructions/") ? relative.slice("managed/instructions/".length) : "";
   if (migrationUuid.test(agentId)) return { kind: "agent_instructions", agentId };
@@ -497,6 +507,13 @@ export const companyTransferRunService = {
     if (parseMigrationResource(companyId, part)?.kind !== directory.kind) {
       throw new Error("Invalid migration managed directory");
     }
+    await reserveMigrationResource(db, runId, companyId, part);
+  },
+
+  async reserveMigrationManagedFile(db: Db, runId: string, companyId: string, directory: MigrationManagedDirectory, relativePath: string, sha256: string, identity: string, stagingId: string): Promise<void> {
+    const root = directory.kind === "company_skills" ? "skills" : directory.agentId;
+    const part = `${companyId}/managed-file/${root}/${sha256}/${identity}/${stagingId}/${Buffer.from(relativePath).toString("base64url")}`;
+    if (parseMigrationResource(companyId, part)?.kind !== "managed_file") throw new Error("Invalid migration managed file");
     await reserveMigrationResource(db, runId, companyId, part);
   },
 

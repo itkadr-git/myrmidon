@@ -145,6 +145,13 @@ export function resolveManagedInstructionsRoot(agent: Pick<AgentLike, "companyId
   );
 }
 
+export function normalizeManagedInstructionsEntries(root: string, files: Record<string, string>, entryFile = ENTRY_FILE_DEFAULT) {
+  const entries = new Map<string, string>(Object.entries(files).map(([file, content]) => [resolvePathWithinRoot(root, file), content]));
+  const entryPath = resolvePathWithinRoot(root, entryFile);
+  if (!entries.has(entryPath)) entries.set(entryPath, "");
+  return entries;
+}
+
 function resolveLegacyInstructionsPath(candidatePath: string, config: Record<string, unknown>): string {
   if (path.isAbsolute(candidatePath)) return candidatePath;
   const cwd = asString(config.cwd);
@@ -715,27 +722,18 @@ export function agentInstructionsService() {
       clearLegacyPromptTemplate?: boolean;
       replaceExisting?: boolean;
       entryFile?: string;
+      filesAlreadyMaterialized?: boolean;
     },
   ): Promise<{ bundle: AgentInstructionsBundle; adapterConfig: Record<string, unknown> }> {
     const rootPath = resolveManagedInstructionsRoot(agent);
     const entryFile = options?.entryFile ? normalizeRelativeFilePath(options.entryFile) : ENTRY_FILE_DEFAULT;
 
-    if (options?.replaceExisting) {
-      await fs.rm(rootPath, { recursive: true, force: true });
-    }
-    await fs.mkdir(rootPath, { recursive: true });
-
-    const normalizedEntries = Object.entries(files).map(([relativePath, content]) => [
-      normalizeRelativeFilePath(relativePath),
-      content,
-    ] as const);
-    for (const [relativePath, content] of normalizedEntries) {
-      const absolutePath = resolvePathWithinRoot(rootPath, relativePath);
-      await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-      await fs.writeFile(absolutePath, content, "utf8");
-    }
-    if (!normalizedEntries.some(([relativePath]) => relativePath === entryFile)) {
-      await fs.writeFile(resolvePathWithinRoot(rootPath, entryFile), "", "utf8");
+    if (!options?.filesAlreadyMaterialized) {
+      if (options?.replaceExisting) await fs.rm(rootPath, { recursive: true, force: true });
+      for (const [file, content] of normalizeManagedInstructionsEntries(rootPath, files, entryFile)) {
+        await fs.mkdir(path.dirname(file), { recursive: true });
+        await fs.writeFile(file, content, "utf8");
+      }
     }
 
     const adapterConfig = applyBundleConfig(asRecord(agent.adapterConfig), {

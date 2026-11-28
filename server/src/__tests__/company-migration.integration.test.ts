@@ -7,13 +7,14 @@ import { activityLog, agents, assets, companies, companyLogos, companyMembership
 import { companyRoutes } from "../routes/companies.js";
 import { companyService } from "../services/companies.js";
 import { createMigrationAgent, createMigrationIssues, createMigrationProject, createMigrationRoutine, importMigrationSkills, linkMigrationAgent, provisionMigrationOwner, recordMigrationAsset, recoverMigrationStorage } from "../services/company-migration.js";
+import { migrationManagedFileWriter } from "../services/company-migration-files.js";
 import { companyTransferRunService, parseMigrationResource } from "../services/company-transfer-runs.js";
 import { matchesJournaledMigrationRows } from "../services/company-migration-provenance.js";
 import { errorHandler } from "../middleware/index.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -678,7 +679,7 @@ describe("company migration dry run", () => {
 
     const visible = await request(app).get(`/api/companies/${source!.id}/migrations/${run!.id}`);
     expect(visible.status).toBe(200);
-    expect(visible.body).toEqual({ runId: run!.id, status: "failed" });
+    expect(visible.body).toEqual({ runId: run!.id, status: "failed", steps: { destinationClaimed: false, createdCounts: { agents: 0, projects: 0, issues: 0, skills: 0 }, databaseRollback: "not_completed", storageRollback: "not_started" } });
     expect(JSON.stringify(visible.body)).not.toContain("private-status");
     const crossCompany = await request(app).get(`/api/companies/${other!.id}/migrations/${run!.id}`);
     expect(crossCompany.status).toBe(404);
@@ -1125,7 +1126,7 @@ describe("company migration dry run", () => {
     expect((await storage.headObject(source!.id, original.objectKey)).exists).toBe(true);
   });
 
-  it("recovers managed directories after destination removal without following symlinks", async () => {
+  it("recovers only unchanged journaled managed files after restart without following symlinks", async () => {
     const [source] = await db.insert(companies).values({ name: "Managed cleanup source", issuePrefix: "MCL" }).returning();
     const ledger = companyTransferRunService;
     const { run } = await ledger.resumeOrCreateMigration(db, source!.id, "managed-cleanup-restart");
@@ -1145,22 +1146,28 @@ describe("company migration dry run", () => {
       const sourceInstructions = path.join(sourceDir, relativeInstructions);
       const skills = path.join(instance, "skills", destination.id);
       await mkdir(sourceInstructions, { recursive: true });
-      await mkdir(skills, { recursive: true });
       await writeFile(path.join(sourceInstructions, "AGENTS.md"), "source instructions");
-      await writeFile(path.join(skills, "SKILL.md"), "destination skill");
+      const instructions = path.join(destinationDir, relativeInstructions);
+      const writeInstructions = migrationManagedFileWriter(db, run.id, destination.id, { kind: "agent_instructions", agentId: agent!.id });
+      const writeSkills = migrationManagedFileWriter(db, run.id, destination.id, { kind: "company_skills" });
+      await writeInstructions(path.join(instructions, "AGENTS.md"), "destination instructions");
+      await writeSkills(path.join(skills, "SKILL.md"), "destination skill");
+      await writeSkills(path.join(skills, "changed.md"), "original content");
+      await writeFile(path.join(skills, "changed.md"), "changed independently");
+      await writeFile(path.join(skills, "new.md"), "added independently");
+      const parked = `${destinationDir}.parked`;
+      await rename(destinationDir, parked);
       await symlink(sourceDir, destinationDir, "dir");
 
-      await ledger.releaseApplyClaim(db, run.id, "interrupted");
+      expect(await ledger.recoverStrandedApplyingRuns(db)).toContain(run.id);
       await db.delete(agents).where(eq(agents.id, agent!.id));
       await db.delete(companies).where(eq(companies.id, destination.id));
       await expect(recoverMigrationStorage(db, undefined, source!.id, run.id)).rejects.toThrow("Migration storage recovery failed");
-      expect((await ledger.getRun(db, run.id))?.completedParts).toHaveLength(2);
+      expect((await ledger.getRun(db, run.id))?.completedParts).toHaveLength(3);
       expect(await readFile(path.join(sourceInstructions, "AGENTS.md"), "utf8")).toBe("source instructions");
 
       await rm(destinationDir);
-      const instructions = path.join(destinationDir, relativeInstructions);
-      await mkdir(instructions, { recursive: true });
-      await writeFile(path.join(instructions, "AGENTS.md"), "destination instructions");
+      await rename(parked, destinationDir);
       const app = express();
       app.use(express.json());
       app.use((req, _res, next) => {
@@ -1173,8 +1180,10 @@ describe("company migration dry run", () => {
         .send({ confirm: "retry managed cleanup" });
       expect(response.status).toBe(200);
       expect(response.body).toEqual({ runId: run.id, status: "rolled_back" });
-      await expect(readdir(instructions)).rejects.toMatchObject({ code: "ENOENT" });
-      await expect(readdir(skills)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(path.join(instructions, "AGENTS.md"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(path.join(skills, "SKILL.md"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(path.join(skills, "changed.md"), "utf8")).toBe("changed independently");
+      expect(await readFile(path.join(skills, "new.md"), "utf8")).toBe("added independently");
       expect(await readFile(path.join(sourceInstructions, "AGENTS.md"), "utf8")).toBe("source instructions");
     } finally {
       vi.unstubAllEnvs();
@@ -1973,6 +1982,14 @@ describe("company migration dry run", () => {
     expect(await db.select().from(projects).where(eq(projects.companyId, destination!.id))).toEqual([]);
     expect((await db.select().from(agents)).some((agent) => agent.companyId === destination!.id)).toBe(true);
 
+    const statusUrl = `/api/companies/${source!.id}/migrations/${run!.id}`;
+    const partial = await request(app).get(statusUrl);
+    expect(partial.status).toBe(200);
+    expect(partial.body.steps).toEqual({
+      destinationClaimed: true, createdCounts: { agents: 1, projects: 0, issues: 0, skills: 0 },
+      databaseRollback: "not_completed", storageRollback: "not_started",
+    });
+
     // Fail the final archival after rollback has attempted to delete child rows.
     const beforeRollback = await companyTransferRunService.getRun(db, run!.id);
     const beforeAgents = await db.select().from(agents).where(eq(agents.companyId, destination!.id));
@@ -1999,6 +2016,11 @@ describe("company migration dry run", () => {
       companyId: destination!.id, status: "rolled_back", completedParts: [],
     });
     expect((await db.select().from(companies).where(eq(companies.id, destination!.id)))[0]?.status).toBe("archived");
+    const recovered = await request(app).get(statusUrl);
+    expect(recovered.status).toBe(200);
+    expect(recovered.body).toMatchObject({ status: "rolled_back", steps: {
+      createdCounts: partial.body.steps.createdCounts, databaseRollback: "completed", storageRollback: "completed",
+    } });
     const remainingAgents = await db.select().from(agents);
     expect(remainingAgents.some((agent) => agent.companyId === destination!.id)).toBe(false);
     expect(remainingAgents.some((agent) => agent.id === worker!.id && agent.companyId === source!.id)).toBe(true);
@@ -2490,7 +2512,7 @@ describe("company migration dry run", () => {
 
     const result = await request(app).get(`/api/companies/${source!.id}/migrations/${run!.id}`);
     expect(result.status).toBe(200);
-    expect(result.body).toEqual({ runId: run!.id, status: "failed" });
+    expect(result.body).toEqual({ runId: run!.id, status: "failed", steps: { destinationClaimed: false, createdCounts: { agents: 0, projects: 0, issues: 0, skills: 0 }, databaseRollback: "not_completed", storageRollback: "not_started" } });
     expect((await request(app).get(`/api/companies/${other!.id}/migrations/${run!.id}`)).status).toBe(404);
     expect((await request(app).get(`/api/companies/${source!.id}/migrations/not-a-uuid`)).status).toBe(404);
   });

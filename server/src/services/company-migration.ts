@@ -1,16 +1,13 @@
 import { createHash } from "node:crypto";
-import { lstat, rm } from "node:fs/promises";
-import path from "node:path";
 import type { CompanyPortabilityExport } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
 import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companySecretBindings, companySkills, companyTransferRuns, documentRevisions, documents, folders, issueAttachments, issueComments, issueDocuments, issueInboxArchives, issueLabels, issueRelations, issues, issueWorkProducts, labels, principalPermissionGrants, projects, projectWorkspaces, routineRevisions, routines, routineTriggers, userSecretDeclarations } from "@myrmidon/db";
 import { and, eq, getTableColumns, getTableName, inArray, sql } from "drizzle-orm";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { matchesJournaledMigrationRows, archiveJournaledMigrationCompany, countJournaledMigrationEntities } from "./company-migration-provenance.js";
-import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import type { StorageService } from "../storage/types.js";
-import { resolveManagedInstructionsRoot } from "./agent-instructions.js";
-import { companySkillService, resolveManagedSkillsRoot } from "./company-skills.js";
+import { companySkillService } from "./company-skills.js";
+import { migrationManagedFileWriter, removeJournaledMigrationFile } from "./company-migration-files.js";
 import type { companyPortabilityService } from "./company-portability.js";
 import { MIGRATION_SKIPPED_MANAGER_ERROR, validateMigrationManifest } from "./company-migration-validation.js";
 import { companyTransferRunService, migrationCompanyFingerprint, migrationRowFingerprint, parseMigrationResource } from "./company-transfer-runs.js";
@@ -353,11 +350,26 @@ export async function getMigrationStatus(db: Db, sourceCompanyId: string, runId:
   const ref = run?.containerRef;
   if (!run || run.direction !== "import" || typeof ref !== "object" || ref === null || Array.isArray(ref)) return null;
   if (!("kind" in ref) || ref.kind !== "company_migration" || !("sourceCompanyId" in ref) || ref.sourceCompanyId !== sourceCompanyId) return null;
-  return { runId: run.id, status: run.status };
+  const destinationClaimed = "destinationClaimed" in ref && ref.destinationClaimed === true;
+  const archived = "destinationArchived" in ref && ref.destinationArchived === true;
+  const rollbackComplete = run.status === "rolled_back";
+  return {
+    runId: run.id,
+    status: run.status,
+    steps: {
+      destinationClaimed,
+      createdCounts: countJournaledMigrationEntities(ref),
+      databaseRollback: archived || rollbackComplete ? "completed" : "not_completed",
+      storageRollback: rollbackComplete ? "completed" : archived ? "pending" : "not_started",
+    },
+  };
 }
 
 export async function importMigrationSkills(db: Db, runId: string, companyId: string, files: Record<string, string>) {
   await companyTransferRunService.reserveMigrationManagedDirectory(db, runId, companyId, { kind: "company_skills" });
+  const migrationSkillLocations = await companySkillService(db).prepareMigrationSkillFiles(
+    companyId, files, migrationManagedFileWriter(db, runId, companyId, { kind: "company_skills" }),
+  );
   return db.transaction(async (tx) => {
     const ownedRun = applyingDestination(runId, companyId);
     const [claim] = await tx.select({ id: companyTransferRuns.id }).from(companyTransferRuns).where(ownedRun).for("update");
@@ -368,7 +380,7 @@ export async function importMigrationSkills(db: Db, runId: string, companyId: st
     const existingFolders = await tx.select({ id: folders.id }).from(folders).where(folderScope).limit(1);
     if (existingSkills.length || existingFolders.length) throw conflict("Migration requires an empty skill library and folder tree.");
 
-    const imported = await companySkillService(tx as unknown as Db).importPackageFiles(companyId, files, { skipInventoryRefresh: true });
+    const imported = await companySkillService(tx as unknown as Db).importPackageFiles(companyId, files, { skipInventoryRefresh: true, migrationSkillLocations });
     const skills = await tx.select({ id: companySkills.id, fingerprint: migrationRowFingerprint(getTableName(companySkills)) })
       .from(companySkills).where(eq(companySkills.companyId, companyId));
     const skillFolders = await tx.select({ id: folders.id, fingerprint: migrationRowFingerprint(getTableName(folders)) })
@@ -430,27 +442,6 @@ export async function createMigrationRoutine(
   });
 }
 
-async function removeManagedDirectory(directory: string) {
-  const root = resolvePaperclipInstanceRoot();
-  const relative = path.relative(root, directory);
-  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw new Error("Migration directory is outside the managed instance");
-  }
-  let current = root;
-  // The configured instance root is trusted, but do not traverse a symlink
-  // in any managed path below it. An absent directory is already cleaned up.
-  for (const segment of relative.split(path.sep)) {
-    current = path.join(current, segment);
-    const entry = await lstat(current).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return null;
-      throw error;
-    });
-    if (!entry) return;
-    if (!entry.isDirectory()) throw new Error("Invalid managed migration directory");
-  }
-  await rm(directory, { recursive: true, force: true });
-}
-
 // Storage recovery is retryable after transactional database cleanup.
 export async function recoverMigrationStorage(db: Db, storage: StorageService | undefined, sourceCompanyId: string, runId: string, alreadyClaimed = false) {
   const ledger = companyTransferRunService;
@@ -483,11 +474,10 @@ export async function recoverMigrationStorage(db: Db, storage: StorageService | 
         if (resource.kind === "object") {
           if (!storage) throw new Error("Migration storage unavailable");
           await storage.deleteObject(destinationId, resource.objectKey);
-        } else if (resource.kind === "agent_instructions") {
-          await removeManagedDirectory(resolveManagedInstructionsRoot({ companyId: destinationId, id: resource.agentId }));
-        } else {
-          await removeManagedDirectory(resolveManagedSkillsRoot(destinationId));
+        } else if (resource.kind === "managed_file") {
+          await removeJournaledMigrationFile(destinationId, resource.directory, resource.relativePath, resource.sha256, resource.identity, resource.stagingId);
         }
+        // Directory reservations alone do not authorize deleting any files.
       });
     }
     if (!await ledger.finishMigrationRollback(db, runId)) throw new Error("Migration settlement rejected");

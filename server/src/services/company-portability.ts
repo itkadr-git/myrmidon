@@ -80,7 +80,7 @@ import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
-import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
+import { agentInstructionsBundleMode, agentInstructionsService, normalizeManagedInstructionsEntries, resolveManagedInstructionsRoot } from "./agent-instructions.js";
 import { assetService } from "./assets.js";
 import { generateReadme } from "./company-export-readme.js";
 import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
@@ -88,6 +88,7 @@ import { companySkillService } from "./company-skills.js";
 import { companyService } from "./companies.js";
 import { createMigrationAgent, createMigrationIssues, createMigrationLabel, createMigrationProject, createMigrationRoutine, importMigrationSkills, linkMigrationAgent, provisionMigrationOwner, recordMigrationAsset } from "./company-migration.js";
 import { MIGRATION_SKIPPED_MANAGER_ERROR } from "./company-migration-validation.js";
+import { migrationManagedFileWriter } from "./company-migration-files.js";
 import { companyTransferRunService } from "./company-transfer-runs.js";
 import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
@@ -5752,10 +5753,13 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             await companyTransferRunService.reserveMigrationManagedDirectory(db, migrationRunId, destinationCompanyId, {
               kind: "agent_instructions", agentId: id,
             });
+            const write = migrationManagedFileWriter(db, migrationRunId, destinationCompanyId, { kind: "agent_instructions", agentId: id });
+            const root = resolveManagedInstructionsRoot({ companyId: destinationCompanyId, id });
+            for (const [file, content] of normalizeManagedInstructionsEntries(root, bundleFiles)) await write(file, content);
             created = await createMigrationAgent(db, migrationRunId, destinationCompanyId, { ...createData, id }, async (agent, service, permissions) => {
               await permissions.ensureMembership(destinationCompanyId, "agent", agent.id, "member", "active");
               await permissions.setPrincipalPermission(destinationCompanyId, "agent", agent.id, "tasks:assign", true, actorUserId ?? null);
-              const materialized = await instructions.materializeManagedBundle(agent, bundleFiles, { clearLegacyPromptTemplate: true });
+              const materialized = await instructions.materializeManagedBundle(agent, bundleFiles, { clearLegacyPromptTemplate: true, filesAlreadyMaterialized: true });
               const updated = await service.update(agent.id, { adapterConfig: materialized.adapterConfig });
               if (!updated) throw new Error("Migration agent instruction update failed");
               await applyImportedAgentPermissionGrants(destinationCompanyId, agent.id, manifestAgent.permissionGrants ?? [], actorUserId ?? null, permissions);
