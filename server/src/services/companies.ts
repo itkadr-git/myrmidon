@@ -345,8 +345,11 @@ export function companyService(db: Db) {
 
     create: async (data: typeof companies.$inferInsert, options?: { transferRunId?: string }) => {
       const created = await createCompanyWithUniquePrefix(data, options?.transferRunId);
-      await environmentsSvc.ensureLocalEnvironment(created.id);
-      await builtInAgents.autoProvisionBundledAgents(created.id);
+      // A tracked migration imports only what its journal can recover.
+      if (!options?.transferRunId) {
+        await environmentsSvc.ensureLocalEnvironment(created.id);
+        await builtInAgents.autoProvisionBundledAgents(created.id);
+      }
       const row = await getCompanyQuery(db)
         .where(eq(companies.id, created.id))
         .then((rows) => rows[0] ?? null);

@@ -8,6 +8,7 @@ import { companyRoutes } from "../routes/companies.js";
 import { companyService } from "../services/companies.js";
 import { createMigrationAgent, createMigrationIssues, createMigrationProject, createMigrationRoutine, importMigrationSkills, linkMigrationAgent, provisionMigrationOwner, recordMigrationAsset, recoverRemovedMigrationStorage } from "../services/company-migration.js";
 import { companyTransferRunService, parseMigrationResource } from "../services/company-transfer-runs.js";
+import { matchesJournaledMigrationRows } from "../services/company-migration-provenance.js";
 import { errorHandler } from "../middleware/index.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
@@ -537,7 +538,7 @@ describe("company migration dry run", () => {
     expect((await db.select().from(companies)).some((company) => company.id === source!.id)).toBe(true);
   });
 
-  it("rejects a confirmed apply until recovery is implemented, without side effects", async () => {
+  it("rejects an unconfirmed apply without side effects", async () => {
     const [source] = await db.insert(companies).values({ name: "Apply safety fixture", issuePrefix: "MSF" }).returning();
     const storage = createStorageService(createLocalDiskStorageProvider(root));
     const app = express();
@@ -559,7 +560,7 @@ describe("company migration dry run", () => {
     try {
       const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
         target: { mode: "new_company", newCompanyName: "Forbidden destination" },
-        dryRun: false, apply: true, confirm: "approved pilot",
+        dryRun: false, apply: true,
       });
       expect(response.status).toBe(400);
       expect(insert).not.toHaveBeenCalled();
@@ -1675,6 +1676,37 @@ describe("company migration dry run", () => {
     expect(await db.select().from(companyMemberships).where(eq(companyMemberships.companyId, destination.id))).toEqual([membership]);
   });
 
+  it("matches only the exact journaled destination rows, including after startup recovery", async () => {
+    const [source] = await db.insert(companies).values({ name: "Journal match source", issuePrefix: "MJM" }).returning();
+    const ledger = companyTransferRunService;
+    const { run } = await ledger.resumeOrCreateMigration(db, source!.id, "journal-match");
+    expect(await ledger.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Journal match destination" }, { transferRunId: run.id });
+    const check = async () => {
+      const saved = await ledger.getRun(db, run.id);
+      return db.transaction((tx) => matchesJournaledMigrationRows(tx, destination.id, saved!.containerRef));
+    };
+    // A crash before owner provisioning leaves only the journaled company.
+    expect(await check()).toBe(true);
+    await provisionMigrationOwner(db, run.id, destination.id, "migration-owner");
+    const workerId = randomUUID();
+    await ledger.reserveMigrationManagedDirectory(db, run.id, destination.id, { kind: "agent_instructions", agentId: workerId });
+    await createMigrationAgent(db, run.id, destination.id, { id: workerId, name: "Imported worker", status: "paused" }, async (agent) => agent);
+    const interrupted = await ledger.getRun(db, run.id);
+    expect(interrupted?.status).toBe("applying");
+    expect(await ledger.recoverStrandedApplyingRuns(db)).toContain(run.id);
+    expect(await check()).toBe(true);
+
+    const [independent] = await db.insert(projects).values({ companyId: destination.id, name: "Independent project" }).returning();
+    expect(await check()).toBe(false);
+    await db.delete(projects).where(eq(projects.id, independent!.id));
+    expect(await check()).toBe(true);
+    await db.update(agents).set({ name: "Edited worker" }).where(eq(agents.id, workerId));
+    expect(await check()).toBe(false);
+    await db.delete(agents).where(eq(agents.id, workerId));
+    expect(await check()).toBe(false);
+  });
+
   it("rolls back the migration membership when an owner grant cannot be inserted", async () => {
     const [source] = await db.insert(companies).values({ name: "Owner grant conflict source", issuePrefix: "MGC" }).returning();
     const ledger = companyTransferRunService;
@@ -1781,20 +1813,15 @@ describe("company migration dry run", () => {
     app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
     app.use(errorHandler);
 
-    const originalInsert = db.insert.bind(db);
-    const insert = vi.spyOn(db, "insert").mockImplementation(((table: Parameters<typeof db.insert>[0]) => {
-      if (table === companyMemberships) throw new Error("injected membership failure");
-      return originalInsert(table);
-    }) as typeof db.insert);
+    await db.execute(sql`alter table company_memberships add constraint migration_fixture_failure check (principal_id <> 'local-board') not valid`);
     try {
       const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
         target: { mode: "new_company", newCompanyName: "Interrupted destination" },
         dryRun: false, apply: true, confirm: "approved pilot",
       });
       expect(response.status).toBeGreaterThanOrEqual(400);
-      expect(insert).toHaveBeenCalledWith(companyMemberships);
     } finally {
-      insert.mockRestore();
+      await db.execute(sql`alter table company_memberships drop constraint migration_fixture_failure`);
     }
 
     const destination = (await db.select().from(companies)).find((company) => company.name === "Interrupted destination");
@@ -1824,11 +1851,7 @@ describe("company migration dry run", () => {
     app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
     app.use(errorHandler);
 
-    const originalInsert = db.insert.bind(db);
-    const insert = vi.spyOn(db, "insert").mockImplementation(((table: Parameters<typeof db.insert>[0]) => {
-      if (table === projects) throw new Error("injected project failure");
-      return originalInsert(table);
-    }) as typeof db.insert);
+    await db.execute(sql`alter table projects add constraint migration_fixture_failure check (name <> 'Partial import project') not valid`);
     try {
       const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
         target: { mode: "new_company", newCompanyName: "Partial import destination" },
@@ -1836,9 +1859,8 @@ describe("company migration dry run", () => {
         dryRun: false, apply: true, confirm: "approved pilot",
       });
       expect(response.status).toBeGreaterThanOrEqual(400);
-      expect(insert).toHaveBeenCalledWith(projects);
     } finally {
-      insert.mockRestore();
+      await db.execute(sql`alter table projects drop constraint migration_fixture_failure`);
     }
 
     const destination = (await db.select().from(companies)).find((company) => company.name === "Partial import destination");
@@ -1875,11 +1897,7 @@ describe("company migration dry run", () => {
     app.use("/api/companies", companyRoutes(db, storage));
     app.use(errorHandler);
 
-    const originalInsert = db.insert.bind(db);
-    const insert = vi.spyOn(db, "insert").mockImplementation(((table: Parameters<typeof db.insert>[0]) => {
-      if (table === projects) throw new Error("injected project failure after logo import");
-      return originalInsert(table);
-    }) as typeof db.insert);
+    await db.execute(sql`alter table projects add constraint migration_fixture_failure check (name <> 'Logo recovery project') not valid`);
     const putFile = vi.spyOn(storage, "putFile");
     try {
       const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
@@ -1888,9 +1906,8 @@ describe("company migration dry run", () => {
         dryRun: false, apply: true, confirm: "approved pilot",
       });
       expect(response.status).toBeGreaterThanOrEqual(400);
-      expect(insert).toHaveBeenCalledWith(projects);
     } finally {
-      insert.mockRestore();
+      await db.execute(sql`alter table projects drop constraint migration_fixture_failure`);
     }
 
     expect(putFile).toHaveBeenCalledTimes(1);
@@ -1928,11 +1945,7 @@ describe("company migration dry run", () => {
     app.use("/api/companies", companyRoutes(db, storage));
     app.use(errorHandler);
 
-    const originalInsert = db.insert.bind(db);
-    const insert = vi.spyOn(db, "insert").mockImplementation(((table: Parameters<typeof db.insert>[0]) => {
-      if (table === assets) throw new Error("injected asset record failure");
-      return originalInsert(table);
-    }) as typeof db.insert);
+    await db.execute(sql`alter table assets add constraint migration_fixture_failure check (original_filename <> 'company-logo.png') not valid`);
     const putFile = vi.spyOn(storage, "putFile");
     try {
       const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
@@ -1940,9 +1953,8 @@ describe("company migration dry run", () => {
         dryRun: false, apply: true, confirm: "approved pilot",
       });
       expect(response.status).toBeGreaterThanOrEqual(400);
-      expect(insert).toHaveBeenCalledWith(assets);
     } finally {
-      insert.mockRestore();
+      await db.execute(sql`alter table assets drop constraint migration_fixture_failure`);
     }
 
     expect(putFile).toHaveBeenCalledTimes(1);

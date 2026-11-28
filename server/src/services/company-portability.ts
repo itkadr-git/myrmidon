@@ -5246,10 +5246,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     if (options?.transferRunId && (input.target.mode !== "new_company" || mode !== "board_full")) {
       throw unprocessable("Tracked imports require a new company destination and board-full import mode.");
     }
-    // Destination ownership alone cannot recover the import's other side effects.
-    // Keep tracked imports closed until entity and storage provenance is complete.
-    if (options?.transferRunId) {
-      throw unprocessable("Tracked imports are unavailable until recovery is implemented.");
+    if (options?.transferRunId && (!options.pauseAutomations || Object.keys(input.secretValues ?? {}).length > 0)) {
+      throw unprocessable("Tracked imports require paused automation and cannot accept secret values.");
     }
     const plan = await buildPreview(input, options);
     if (plan.preview.errors.length > 0) {
@@ -5425,14 +5423,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     });
     const createdImportSecretIds: string[] = [];
     try {
-      await materializeImportEnvInputValues(
-        targetCompany.id,
-        sourceManifest,
-        importEnvInputs,
-        input.secretValues,
-        actorUserId,
-        createdImportSecretIds,
-      );
+      if (!migrationRunId) {
+        await materializeImportEnvInputValues(targetCompany.id, sourceManifest, importEnvInputs, input.secretValues,
+          actorUserId, createdImportSecretIds);
+      }
 
       if (include.company) {
         const logoPath = sourceManifest.company?.logoPath ?? null;

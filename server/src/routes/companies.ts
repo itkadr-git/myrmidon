@@ -50,7 +50,7 @@ import {
   writeImportTransferPart,
 } from "../services/company-import-transfers.js";
 import { companyTransferRunService } from "../services/company-transfer-runs.js";
-import { companyMigrationService, getMigrationStatus, recoverRemovedMigrationStorage } from "../services/company-migration.js";
+import { companyMigrationService, getMigrationStatus, rollbackCompanyMigration } from "../services/company-migration.js";
 import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
 import { resolvePortableExportAgentSelection } from "../services/company-portability-agent-selection.js";
 import {
@@ -1126,14 +1126,20 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     const body = z.object({
       target: z.object({ mode: z.literal("new_company"), newCompanyName: z.string().trim().min(1) }).strict(),
       export: companyPortabilityExportSchema.optional().default({}),
-      dryRun: z.literal(true).optional().default(true),
-      apply: z.literal(false).optional().default(false),
+      dryRun: z.boolean().optional().default(true),
+      apply: z.boolean().optional().default(false),
+      confirm: z.string().trim().min(1).optional(),
       collisionStrategy: z.enum(["rename", "skip", "replace"]).optional().default("rename"),
     }).strict().parse(req.body);
-    const result = await companyMigrationService(portability).dryRun(
-      req.params.companyId as string, body.export, body.target.newCompanyName, body.collisionStrategy,
-    );
-    res.json(result);
+    const migration = companyMigrationService(portability);
+    const companyId = req.params.companyId as string;
+    if (body.apply || !body.dryRun) {
+      if (!body.apply || body.dryRun || !body.confirm) throw badRequest("Apply requires dryRun: false, apply: true and confirmation.");
+      res.json(await migration.apply(db, companyId, body.export, body.target.newCompanyName, body.collisionStrategy,
+        req.actor.type === "board" ? req.actor.userId : null));
+      return;
+    }
+    res.json(await migration.dryRun(companyId, body.export, body.target.newCompanyName, body.collisionStrategy));
   });
 
   router.get("/:companyId/migrations/:runId", async (req, res) => {
@@ -1157,9 +1163,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     const run = await getMigrationStatus(db, companyId, runId);
     if (!run) throw notFound("Migration not found");
     if (run.status === "applying") throw conflict("Cannot roll back an active migration.");
-    // Only replay cleanup for an already removed, migration-owned destination.
-    // Live destinations still require transactional row provenance checks.
-    res.json(await recoverRemovedMigrationStorage(db, storage, companyId, runId));
+    res.json(await rollbackCompanyMigration(db, storage, companyId, runId));
   });
 
   router.post("/:companyId/exports/preview", async (req, res) => {

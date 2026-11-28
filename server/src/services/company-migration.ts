@@ -5,7 +5,8 @@ import type { CompanyPortabilityExport } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
 import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companySecretBindings, companySkills, companyTransferRuns, documentRevisions, documents, folders, issueAttachments, issueComments, issueDocuments, issueInboxArchives, issueLabels, issueRelations, issues, issueWorkProducts, labels, principalPermissionGrants, projects, projectWorkspaces, routineRevisions, routines, routineTriggers, userSecretDeclarations } from "@myrmidon/db";
 import { and, eq, getTableColumns, getTableName, inArray, sql } from "drizzle-orm";
-import { conflict, notFound } from "../errors.js";
+import { conflict, notFound, unprocessable } from "../errors.js";
+import { matchesJournaledMigrationRows, removeJournaledMigrationCompany } from "./company-migration-provenance.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import type { StorageService } from "../storage/types.js";
 import { resolveManagedInstructionsRoot } from "./agent-instructions.js";
@@ -452,7 +453,7 @@ async function removeManagedDirectory(directory: string) {
 
 // Only recover storage after the owned destination has been removed. Live
 // destinations need a separate transactional provenance check before deletion.
-export async function recoverRemovedMigrationStorage(db: Db, storage: StorageService | undefined, sourceCompanyId: string, runId: string) {
+export async function recoverRemovedMigrationStorage(db: Db, storage: StorageService | undefined, sourceCompanyId: string, runId: string, alreadyClaimed = false) {
   const ledger = companyTransferRunService;
   const run = await ledger.getRun(db, runId);
   const ref = run?.containerRef as { destinationClaimed?: unknown; destinationCompanyId?: unknown } | null;
@@ -460,7 +461,7 @@ export async function recoverRemovedMigrationStorage(db: Db, storage: StorageSer
     throw notFound("Migration rollback is not available.");
   }
   const destinationId = ref.destinationCompanyId;
-  if (!await ledger.claimMigrationRollback(db, runId, sourceCompanyId, { removedDestinationId: destinationId })) {
+  if (alreadyClaimed ? run.status !== "rolling_back" : !await ledger.claimMigrationRollback(db, runId, sourceCompanyId, { removedDestinationId: destinationId })) {
     throw conflict("Migration is not available for recovery.");
   }
   try {
@@ -497,7 +498,27 @@ export async function recoverRemovedMigrationStorage(db: Db, storage: StorageSer
   }
 }
 
-// The planner remains read-only until live destination recovery is available.
+export async function rollbackCompanyMigration(db: Db, storage: StorageService | undefined, sourceCompanyId: string, runId: string) {
+  const ledger = companyTransferRunService;
+  const run = await ledger.getRun(db, runId);
+  const companyId = run?.companyId;
+  if (!companyId) return recoverRemovedMigrationStorage(db, storage, sourceCompanyId, runId);
+  try {
+    await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      if (!await ledger.claimMigrationRollback(txDb, runId, sourceCompanyId)) throw new Error("Migration claim rejected");
+      const claimed = await ledger.getRun(txDb, runId);
+      if (!claimed || claimed.companyId !== companyId || !await matchesJournaledMigrationRows(tx, companyId, claimed.containerRef)) {
+        throw new Error("Destination differs from the migration journal");
+      }
+      await removeJournaledMigrationCompany(tx, companyId);
+    });
+  } catch {
+    throw conflict("Migration rollback refused; the destination was not removed.");
+  }
+  return recoverRemovedMigrationStorage(db, storage, sourceCompanyId, runId, true);
+}
+
 export function companyMigrationService(portability: Portability) {
   async function prepare(companyId: string, input: CompanyPortabilityExport, newCompanyName: string, collisionStrategy: "rename" | "skip" | "replace") {
     const exported = await portability.exportBundle(companyId, input, { preview: true, rejectUnknownAgentPermissions: true });
@@ -554,6 +575,29 @@ export function companyMigrationService(portability: Portability) {
   }
 
   return {
+    async apply(db: Db, companyId: string, input: CompanyPortabilityExport, newCompanyName: string, collisionStrategy: "rename" | "skip" | "replace", actorUserId: string | null) {
+      const { exported, report } = await prepare(companyId, input, newCompanyName, collisionStrategy);
+      if (report.validation.errorCount > 0) throw unprocessable("Migration validation failed; run a dry-run for the report.");
+      if (report.validation.secretBindings.some((binding) => binding.requirement === "required")) {
+        throw unprocessable("Migration cannot apply while required secret bindings are unresolved.");
+      }
+      const ledger = companyTransferRunService;
+      const { run, alreadyCompleted } = await ledger.resumeOrCreateMigration(db, companyId, report.runKey);
+      const response = { ...report, runId: run.id, dryRun: false as const };
+      if (alreadyCompleted) return { ...response, status: "completed", resume: "already_completed" };
+      if (!await ledger.claimApply(db, run.id)) throw conflict("Migration is active or requires recovery.", { runId: run.id });
+      try {
+        await portability.importBundle({
+          source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+          target: { mode: "new_company", newCompanyName }, include: input.include, collisionStrategy,
+        }, actorUserId, { mode: "board_full", pauseAutomations: true, transferRunId: run.id });
+        if (!await ledger.complete(db, run.id)) throw new Error("Migration settlement rejected");
+        return { ...response, status: "completed" };
+      } catch {
+        await ledger.releaseApplyClaim(db, run.id, "migration apply failed");
+        throw conflict("Migration apply failed; inspect its status and recover the destination before retrying.", { runId: run.id });
+      }
+    },
     async dryRun(companyId: string, input: CompanyPortabilityExport, newCompanyName: string, collisionStrategy: "rename" | "skip" | "replace" = "rename") {
       return (await prepare(companyId, input, newCompanyName, collisionStrategy)).report;
     },
