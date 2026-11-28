@@ -2693,6 +2693,14 @@ default `adm-devops`. Dedup state lives in a JSON key in
 
 ## Team liveness settings (instance and agent card)
 
+The company Team liveness health card also shows a read-only breakdown of
+`emptyRunsByAgent` for the existing `windowHours` metrics window. Each row
+shows the full `agentId` and `count`; only counts greater than zero appear,
+ordered by count descending and then agent ID ascending. If none are positive,
+the card shows an empty-state message. The breakdown and empty state are hidden
+while loading, on error, or when metrics are null. This display adds no setting
+and does not change execution or automatic pauses.
+
 The three automatic behaviours read their knobs from one settings area. The
 stored row lives in `instance_settings.general.teamLiveness`, holds only the
 keys an operator saved, and is changed on the Instance → General page ("Team

@@ -112,6 +112,8 @@
           "label": "Empty runs",
           "hint": "Runs that finished only with a comment and without a commit, PR, or status change. API includes per-agent counts."
         },
+        "emptyRunsByAgent": "Empty runs by agent",
+        "noEmptyRuns": "No empty runs",
         "loading": "Loading team liveness...",
         "footnote": "What the board did on its own for this company in the window. A run of \"Resumes given up\" or \"Stalled runs\" means an agent needs a human look; the switches behind all four sit in the Team liveness panel."
       },
