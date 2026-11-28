@@ -602,7 +602,7 @@ describe("company migration dry run", () => {
     expect(invalid.status).toBe(404);
   });
 
-  it("rejects rollback of a claimed migration without changing its destination or ledger", async () => {
+  it("rejects rollback when a known migration lacks destination provenance", async () => {
     const [source] = await db.insert(companies).values({ name: "Recovery safety source", issuePrefix: "MSS" }).returning();
     const [destination] = await db.insert(companies).values({ name: "Recovery safety destination", issuePrefix: "MSD" }).returning();
     const [run] = await db.insert(companyTransferRuns).values({
@@ -627,7 +627,8 @@ describe("company migration dry run", () => {
       .post(`/api/companies/${source!.id}/migrations/${run!.id}/rollback`)
       .send({ confirm: "recover interrupted pilot" });
 
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(409);
+    expect(response.body.error).toBe("Migration rollback refused; the destination was not removed.");
     expect(await db.select().from(companies)).toEqual(beforeCompanies);
     expect(await db.select().from(companyTransferRuns)).toEqual(beforeRuns);
     expect(await db.select().from(activityLog)).toEqual(beforeAudit);
@@ -1034,7 +1035,7 @@ describe("company migration dry run", () => {
   });
 
   it("recovers managed directories after destination removal without following symlinks", async () => {
-    const [source] = await db.insert(companies).values({ name: "Managed cleanup source", issuePrefix: "MDC" }).returning();
+    const [source] = await db.insert(companies).values({ name: "Managed cleanup source", issuePrefix: "MCL" }).returning();
     const ledger = companyTransferRunService;
     const { run } = await ledger.resumeOrCreateMigration(db, source!.id, "managed-cleanup-restart");
     expect(await ledger.claimApply(db, run.id)).toBe(true);
@@ -1325,7 +1326,7 @@ describe("company migration dry run", () => {
   });
 
   it("rejects storage reservations if provenance identifies the destination as the source", async () => {
-    const [source] = await db.insert(companies).values({ name: "Reservation source", issuePrefix: "MRS" }).returning();
+    const [source] = await db.insert(companies).values({ name: "Reservation source", issuePrefix: "MRSV" }).returning();
     const { run } = await companyTransferRunService.resumeOrCreateMigration(db, source!.id, "reservation-source-corruption");
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
     const destination = await companyService(db).create({ name: "Reservation destination" }, { transferRunId: run.id });
@@ -1607,7 +1608,7 @@ describe("company migration dry run", () => {
   });
 
   it("does not leave a partially imported routine when a later trigger fails", async () => {
-    const [source] = await db.insert(companies).values({ name: "Routine provenance source", issuePrefix: "MRT" }).returning();
+    const [source] = await db.insert(companies).values({ name: "Routine provenance source", issuePrefix: "MRTP" }).returning();
     const ledger = companyTransferRunService;
     const { run } = await ledger.resumeOrCreateMigration(db, source!.id, "routine-provenance");
     expect(await ledger.claimApply(db, run.id)).toBe(true);
