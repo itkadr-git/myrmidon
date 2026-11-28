@@ -53,3 +53,34 @@ The SQL goes to the command on stdin. `--verdicts <file.json>` reads a JSON arra
 2 usage. The token is never printed.
 
 Test: `node --test scripts/myrmidon/review-approve-label.test.mjs`.
+
+## The native `Board review` check and `checks:write`
+
+Besides the label, the board records a formal review as a GitHub check run named
+`Board review` on the PR head commit (`server/src/services/pull-request-approval-propagation.ts`):
+`success` after an approval, `failure` after a rejection. The check makes the verdict
+visible in GitHub's checks UI without opening the board. The board verdict stays the
+source of truth; the check run is a projection of it.
+
+Writing that check run needs the GitHub App installation (or the token the operator
+uses) to hold the `checks:write` permission. Without it GitHub answers `403`, the
+board logs a warn, and no check appears — the label pipeline itself is unaffected.
+
+Probe the permission before relying on the check:
+
+```sh
+GH_TOKEN=... node scripts/myrmidon/review-check-run-probe.mjs --repo itkadr-git/myrmidon --ref <branch-or-sha>
+```
+
+The probe resolves the branch head, creates one check run named `Board review probe`
+(never the production `Board review` name) already `completed` with conclusion
+`neutral`, and prints `ok` with the check run id. On refusal it prints a mapped
+message: `403` -> "нет права checks:write — нужна задача оператору доски" (exit 1),
+`404` -> the repository or branch was not found, `401` -> the token was rejected.
+Exit code is 0 only on success. The token is never printed.
+
+Enabling `checks:write` is a change to the production GitHub App settings. It is done
+by the board operator on an operator task; the repository carries no App-settings or
+compose changes (the board runs only from the CI-built image).
+
+Test: `node --test scripts/myrmidon/review-check-run-probe.test.mjs`.
