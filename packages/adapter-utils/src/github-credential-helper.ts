@@ -88,7 +88,11 @@ async function main() {
   let response = null;
   try {
     const attempt = await paperclipRequestBrokerCredentials(
-      process.env, paperclipBrokerCandidateUrls({ ...process.env, MYRMIDON_BOT_BOARD_URL: process.env.MYRMIDON_BOT_BOARD_URL || 'http://paperclip-server-1:3100' }),
+      // OPE-12669: candidates come only from this run's environment — a bot
+      // container always sets MYRMIDON_BOT_BOARD_URL, and inventing a default
+      // board host made machines without that DNS name stall on a doomed
+      // first candidate before reaching the configured broker URL.
+      process.env, paperclipBrokerCandidateUrls(process.env),
       { totalTimeoutMs: TOTAL_TIMEOUT_MS }, repository);
     response = attempt.response;
   } catch { response = null; }
