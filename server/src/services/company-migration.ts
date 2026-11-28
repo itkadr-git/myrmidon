@@ -3,13 +3,13 @@ import { lstat, rm } from "node:fs/promises";
 import path from "node:path";
 import type { CompanyPortabilityExport } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
-import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companySecretBindings, companyTransferRuns, documentRevisions, documents, issueAttachments, issueComments, issueDocuments, issueInboxArchives, issueLabels, issueRelations, issues, issueWorkProducts, labels, principalPermissionGrants, projects, projectWorkspaces, userSecretDeclarations } from "@myrmidon/db";
+import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companySecretBindings, companySkills, companyTransferRuns, documentRevisions, documents, folders, issueAttachments, issueComments, issueDocuments, issueInboxArchives, issueLabels, issueRelations, issues, issueWorkProducts, labels, principalPermissionGrants, projects, projectWorkspaces, routineRevisions, routines, routineTriggers, userSecretDeclarations } from "@myrmidon/db";
 import { and, eq, getTableColumns, getTableName, inArray, sql } from "drizzle-orm";
 import { conflict, notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import type { StorageService } from "../storage/types.js";
 import { resolveManagedInstructionsRoot } from "./agent-instructions.js";
-import { resolveManagedSkillsRoot } from "./company-skills.js";
+import { companySkillService, resolveManagedSkillsRoot } from "./company-skills.js";
 import type { companyPortabilityService } from "./company-portability.js";
 import { validateMigrationManifest } from "./company-migration-validation.js";
 import { companyTransferRunService, migrationCompanyFingerprint, migrationRowFingerprint, parseMigrationResource } from "./company-transfer-runs.js";
@@ -22,6 +22,7 @@ import { secretService } from "./secrets.js";
 import { documentService } from "./documents.js";
 import { issueService } from "./issues.js";
 import { workProductService } from "./work-products.js";
+import { routineService } from "./routines.js";
 import type { ImportIssueCommentRow, ImportIssueDocumentRow, ImportIssueRow, ImportIssueWorkProductRow } from "./import-write-types.js";
 
 type Portability = ReturnType<typeof companyPortabilityService>;
@@ -352,6 +353,80 @@ export async function getMigrationStatus(db: Db, sourceCompanyId: string, runId:
   if (!run || run.direction !== "import" || typeof ref !== "object" || ref === null || Array.isArray(ref)) return null;
   if (!("kind" in ref) || ref.kind !== "company_migration" || !("sourceCompanyId" in ref) || ref.sourceCompanyId !== sourceCompanyId) return null;
   return { runId: run.id, status: run.status };
+}
+
+export async function importMigrationSkills(db: Db, runId: string, companyId: string, files: Record<string, string>) {
+  await companyTransferRunService.reserveMigrationManagedDirectory(db, runId, companyId, { kind: "company_skills" });
+  return db.transaction(async (tx) => {
+    const ownedRun = applyingDestination(runId, companyId);
+    const [claim] = await tx.select({ id: companyTransferRuns.id }).from(companyTransferRuns).where(ownedRun).for("update");
+    if (!claim) throw new Error("Migration skill recording rejected");
+    await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, companyId)).for("update");
+    const existingSkills = await tx.select({ id: companySkills.id }).from(companySkills).where(eq(companySkills.companyId, companyId)).limit(1);
+    const folderScope = eq(folders.companyId, companyId);
+    const existingFolders = await tx.select({ id: folders.id }).from(folders).where(folderScope).limit(1);
+    if (existingSkills.length || existingFolders.length) throw conflict("Migration requires an empty skill library and folder tree.");
+
+    const imported = await companySkillService(tx as unknown as Db).importPackageFiles(companyId, files, { skipInventoryRefresh: true });
+    const skills = await tx.select({ id: companySkills.id, fingerprint: migrationRowFingerprint(getTableName(companySkills)) })
+      .from(companySkills).where(eq(companySkills.companyId, companyId));
+    const skillFolders = await tx.select({ id: folders.id, fingerprint: migrationRowFingerprint(getTableName(folders)) })
+      .from(folders).where(folderScope);
+    const provenance = { skills, folders: skillFolders };
+    const [saved] = await tx.update(companyTransferRuns).set({
+      containerRef: sql`${companyTransferRuns.containerRef} || jsonb_build_object('skillProvenance', ${JSON.stringify(provenance)}::jsonb)`,
+      updatedAt: new Date(),
+    }).where(ownedRun).returning({ id: companyTransferRuns.id });
+    if (!saved) throw new Error("Migration skill provenance was not recorded");
+    return imported;
+  });
+}
+
+export async function createMigrationRoutine(
+  db: Db,
+  runId: string,
+  companyId: string,
+  populate: (service: Pick<ReturnType<typeof routineService>, "create" | "createTrigger">) =>
+    ReturnType<ReturnType<typeof routineService>["create"]>,
+) {
+  return db.transaction(async (tx) => {
+    const ownedRun = applyingDestination(runId, companyId);
+    const [claim] = await tx.select({ id: companyTransferRuns.id }).from(companyTransferRuns).where(ownedRun).for("update");
+    if (!claim) throw new Error("Migration routine recording rejected");
+
+    const service = routineService(tx as unknown as Db);
+    let createdId: string | undefined;
+    const created = await populate({
+      create: async (targetId, input, actor) => {
+        if (createdId || targetId !== companyId || input.env != null) throw new Error("Invalid migration routine creation");
+        const routine = await service.create(targetId, { ...input, status: "paused" }, actor);
+        createdId = routine.id;
+        return routine;
+      },
+      createTrigger: (routineId, input, actor) => {
+        if (routineId !== createdId) throw new Error("Migration trigger must belong to the imported routine");
+        // Webhook creation provisions a credential through a provider outside
+        // this transaction. Do not import external integrations via migration.
+        if (input.kind === "webhook") throw new Error("Webhook triggers are not supported by migration");
+        return service.createTrigger(routineId, { ...input, enabled: false }, actor);
+      },
+    });
+    if (created.id !== createdId) throw new Error("Migration routine identity changed");
+    const scope = and(eq(routines.companyId, companyId), eq(routines.id, created.id));
+    const [row] = await tx.select({ fingerprint: migrationRowFingerprint(getTableName(routines)) }).from(routines).where(scope);
+    if (!row) throw new Error("Migration routine was not created");
+    const triggers = await tx.select({ id: routineTriggers.id, fingerprint: migrationRowFingerprint(getTableName(routineTriggers)) })
+      .from(routineTriggers).where(and(eq(routineTriggers.companyId, companyId), eq(routineTriggers.routineId, created.id)));
+    const revisions = await tx.select({ id: routineRevisions.id, fingerprint: migrationRowFingerprint(getTableName(routineRevisions)) })
+      .from(routineRevisions).where(and(eq(routineRevisions.companyId, companyId), eq(routineRevisions.routineId, created.id)));
+    const provenance = { [created.id]: { ...row, triggers, revisions } };
+    const [saved] = await tx.update(companyTransferRuns).set({
+      containerRef: sql`${companyTransferRuns.containerRef} || jsonb_build_object('routineProvenance', coalesce(${companyTransferRuns.containerRef}->'routineProvenance', '{}'::jsonb) || ${JSON.stringify(provenance)}::jsonb)`,
+      updatedAt: new Date(),
+    }).where(ownedRun).returning({ id: companyTransferRuns.id });
+    if (!saved) throw new Error("Migration routine provenance was not recorded");
+    return created;
+  });
 }
 
 async function removeManagedDirectory(directory: string) {

@@ -86,7 +86,7 @@ import { generateReadme } from "./company-export-readme.js";
 import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
 import { companySkillService } from "./company-skills.js";
 import { companyService } from "./companies.js";
-import { createMigrationAgent, createMigrationIssues, createMigrationLabel, createMigrationProject, linkMigrationAgent, provisionMigrationOwner, recordMigrationAsset } from "./company-migration.js";
+import { createMigrationAgent, createMigrationIssues, createMigrationLabel, createMigrationProject, createMigrationRoutine, importMigrationSkills, linkMigrationAgent, provisionMigrationOwner, recordMigrationAsset } from "./company-migration.js";
 import { companyTransferRunService } from "./company-transfer-runs.js";
 import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
@@ -3890,7 +3890,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     const allAgentRows = include.agents ? await agents.list(companyId, { includeTerminated: true }) : [];
     const agentSelection = resolvePortableExportAgentSelection(allAgentRows, input.agents, include.agents);
-    const companySkillRowsRaw = include.skills ? await companySkills.listFull(companyId) : [];
+    const companySkillRowsRaw = include.skills ? await companySkills.listFull(companyId, { skipInventoryRefresh: options.preview }) : [];
     const managedSkillRows = companySkillRowsRaw.filter((skill) => managedSkillIds.has(skill.id));
     const companySkillRows = companySkillRowsRaw.filter((skill) => !managedSkillIds.has(skill.id));
     warnings.push(...agentSelection.warnings);
@@ -5570,14 +5570,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       }
 
       const importsSkills = include.skills || include.agents;
-      if (migrationRunId && importsSkills) {
-        await companyTransferRunService.reserveMigrationManagedDirectory(db, migrationRunId, destinationCompanyId, { kind: "company_skills" });
-      }
-      const importedSkills = importsSkills
-        ? await companySkills.importPackageFiles(targetCompany.id, pickTextFiles(plan.source.files), {
-            onConflict: resolveSkillConflictStrategy(mode, plan.collisionStrategy),
-          })
-        : [];
+      const importedSkills = !importsSkills ? []
+        : migrationRunId
+          ? await importMigrationSkills(db, migrationRunId, destinationCompanyId, pickTextFiles(plan.source.files))
+          : await companySkills.importPackageFiles(targetCompany.id, pickTextFiles(plan.source.files), {
+              onConflict: resolveSkillConflictStrategy(mode, plan.collisionStrategy),
+            });
       const desiredSkillRefMap = new Map<string, string>();
       for (const importedSkill of importedSkills) {
         desiredSkillRefMap.set(importedSkill.originalKey, importedSkill.skill.key);
@@ -6068,34 +6066,83 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               variables: null,
               triggers: [],
             };
-            const createdRoutine = await routines.create(targetCompany.id, {
-              projectId,
-              goalId: null,
-              parentIssueId: null,
-              title: manifestIssue.title,
-              description,
-              assigneeAgentId,
-              priority: manifestIssue.priority && ISSUE_PRIORITIES.includes(manifestIssue.priority as any)
-                ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
-                : "medium",
-              status: pauseAutomations
-                ? "paused"
-                : manifestIssue.status && ROUTINE_STATUSES.includes(manifestIssue.status as any)
-                ? manifestIssue.status as typeof ROUTINE_STATUSES[number]
-                : "active",
-              concurrencyPolicy:
-                routineDefinition.concurrencyPolicy && ROUTINE_CONCURRENCY_POLICIES.includes(routineDefinition.concurrencyPolicy as any)
-                  ? routineDefinition.concurrencyPolicy as typeof ROUTINE_CONCURRENCY_POLICIES[number]
-                  : "coalesce_if_active",
-              catchUpPolicy:
-                routineDefinition.catchUpPolicy && ROUTINE_CATCH_UP_POLICIES.includes(routineDefinition.catchUpPolicy as any)
-                  ? routineDefinition.catchUpPolicy as typeof ROUTINE_CATCH_UP_POLICIES[number]
-                  : "skip_missed",
-              variables: routineDefinition.variables ?? [],
-            }, {
-              agentId: null,
-              userId: actorUserId ?? null,
-            });
+            const populateRoutine = async (service: Pick<typeof routines, "create" | "createTrigger">) => {
+              const createdRoutine = await service.create(destinationCompanyId, {
+                projectId,
+                goalId: null,
+                parentIssueId: null,
+                title: manifestIssue.title,
+                description,
+                assigneeAgentId,
+                priority: manifestIssue.priority && ISSUE_PRIORITIES.includes(manifestIssue.priority as any)
+                  ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
+                  : "medium",
+                status: pauseAutomations
+                  ? "paused"
+                  : manifestIssue.status && ROUTINE_STATUSES.includes(manifestIssue.status as any)
+                  ? manifestIssue.status as typeof ROUTINE_STATUSES[number]
+                  : "active",
+                concurrencyPolicy:
+                  routineDefinition.concurrencyPolicy && ROUTINE_CONCURRENCY_POLICIES.includes(routineDefinition.concurrencyPolicy as any)
+                    ? routineDefinition.concurrencyPolicy as typeof ROUTINE_CONCURRENCY_POLICIES[number]
+                    : "coalesce_if_active",
+                catchUpPolicy:
+                  routineDefinition.catchUpPolicy && ROUTINE_CATCH_UP_POLICIES.includes(routineDefinition.catchUpPolicy as any)
+                    ? routineDefinition.catchUpPolicy as typeof ROUTINE_CATCH_UP_POLICIES[number]
+                    : "skip_missed",
+                variables: routineDefinition.variables ?? [],
+              }, {
+                agentId: null,
+                userId: actorUserId ?? null,
+              });
+              for (const trigger of routineDefinition.triggers) {
+                if (trigger.kind === "schedule") {
+                  await service.createTrigger(createdRoutine.id, {
+                    kind: "schedule",
+                    label: trigger.label,
+                    enabled: trigger.enabled,
+                    cronExpression: trigger.cronExpression!,
+                    timezone: trigger.timezone!,
+                  }, {
+                    agentId: null,
+                    userId: actorUserId ?? null,
+                  });
+                  continue;
+                }
+                if (trigger.kind === "webhook") {
+                  if (migrationRunId) {
+                    warnings.push(`Webhook trigger omitted for migrated routine ${manifestIssue.slug}.`);
+                    continue;
+                  }
+                  await service.createTrigger(createdRoutine.id, {
+                    kind: "webhook",
+                    label: trigger.label,
+                    enabled: trigger.enabled,
+                    signingMode:
+                      trigger.signingMode && ROUTINE_TRIGGER_SIGNING_MODES.includes(trigger.signingMode as any)
+                        ? trigger.signingMode as typeof ROUTINE_TRIGGER_SIGNING_MODES[number]
+                        : "bearer",
+                    replayWindowSec: trigger.replayWindowSec ?? 300,
+                  }, {
+                    agentId: null,
+                    userId: actorUserId ?? null,
+                  });
+                  continue;
+                }
+                await service.createTrigger(createdRoutine.id, {
+                  kind: "api",
+                  label: trigger.label,
+                  enabled: trigger.enabled,
+                }, {
+                  agentId: null,
+                  userId: actorUserId ?? null,
+                });
+              }
+              return createdRoutine;
+            };
+            const createdRoutine = migrationRunId
+              ? await createMigrationRoutine(db, migrationRunId, targetCompany.id, populateRoutine)
+              : await populateRoutine(routines);
             resultRoutines.push({
               slug: manifestIssue.slug,
               id: createdRoutine.id,
@@ -6105,45 +6152,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             });
             if (!assigneeAgentId) {
               warnings.push(`Routine ${manifestIssue.slug} was imported without an assignee and will stay paused until one is set.`);
-            }
-            for (const trigger of routineDefinition.triggers) {
-              if (trigger.kind === "schedule") {
-                await routines.createTrigger(createdRoutine.id, {
-                  kind: "schedule",
-                  label: trigger.label,
-                  enabled: trigger.enabled,
-                  cronExpression: trigger.cronExpression!,
-                  timezone: trigger.timezone!,
-                }, {
-                  agentId: null,
-                  userId: actorUserId ?? null,
-                });
-                continue;
-              }
-              if (trigger.kind === "webhook") {
-                await routines.createTrigger(createdRoutine.id, {
-                  kind: "webhook",
-                  label: trigger.label,
-                  enabled: trigger.enabled,
-                  signingMode:
-                    trigger.signingMode && ROUTINE_TRIGGER_SIGNING_MODES.includes(trigger.signingMode as any)
-                      ? trigger.signingMode as typeof ROUTINE_TRIGGER_SIGNING_MODES[number]
-                      : "bearer",
-                  replayWindowSec: trigger.replayWindowSec ?? 300,
-                }, {
-                  agentId: null,
-                  userId: actorUserId ?? null,
-                });
-                continue;
-              }
-              await routines.createTrigger(createdRoutine.id, {
-                kind: "api",
-                label: trigger.label,
-                enabled: trigger.enabled,
-              }, {
-                agentId: null,
-                userId: actorUserId ?? null,
-              });
             }
             continue;
           }

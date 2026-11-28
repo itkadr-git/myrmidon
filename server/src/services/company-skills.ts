@@ -3721,8 +3721,8 @@ export function companySkillService(db: Db) {
     return items;
   }
 
-  async function listFull(companyId: string): Promise<CompanySkill[]> {
-    await ensureSkillInventoryCurrent(companyId);
+  async function listFull(companyId: string, options: { skipInventoryRefresh?: boolean } = {}): Promise<CompanySkill[]> {
+    if (!options.skipInventoryRefresh) await ensureSkillInventoryCurrent(companyId);
     const rows = await db
       .select(selectCompanySkillColumns())
       .from(companySkills)
@@ -6352,9 +6352,10 @@ export function companySkillService(db: Db) {
     files: Record<string, string>,
     options?: {
       onConflict?: PackageSkillConflictStrategy;
+      skipInventoryRefresh?: boolean;
     },
   ): Promise<ImportPackageSkillResult[]> {
-    await ensureSkillInventoryCurrent(companyId);
+    if (!options?.skipInventoryRefresh) await ensureSkillInventoryCurrent(companyId);
     const normalizedFiles = normalizePackageFileMap(files);
     const importedSkills = readInlineSkillImports(companyId, normalizedFiles);
     if (importedSkills.length === 0) return [];
@@ -6376,7 +6377,7 @@ export function companySkillService(db: Db) {
     }
 
     const conflictStrategy = options?.onConflict ?? "skip";
-    const existingSkills = await listFull(companyId);
+    const existingSkills = await listFull(companyId, { skipInventoryRefresh: options?.skipInventoryRefresh });
     const existingByKey = new Map(existingSkills.map((skill) => [skill.key, skill]));
     const existingBySlug = new Map(
       existingSkills.map((skill) => [normalizeSkillSlug(skill.slug) ?? skill.slug, skill]),

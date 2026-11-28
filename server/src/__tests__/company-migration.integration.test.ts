@@ -2,11 +2,11 @@ import express from "express";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companyTransferRuns, createDb, issueAttachments, issueComments, issueRelations, issues, principalPermissionGrants, projects, projectWorkspaces } from "@myrmidon/db";
+import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companySkills, companyTransferRuns, createDb, folders, issueAttachments, issueComments, issueRelations, issues, principalPermissionGrants, projects, projectWorkspaces, routineRevisions, routines, routineTriggers } from "@myrmidon/db";
 
 import { companyRoutes } from "../routes/companies.js";
 import { companyService } from "../services/companies.js";
-import { createMigrationAgent, createMigrationIssues, createMigrationProject, linkMigrationAgent, provisionMigrationOwner, recordMigrationAsset, recoverRemovedMigrationStorage } from "../services/company-migration.js";
+import { createMigrationAgent, createMigrationIssues, createMigrationProject, createMigrationRoutine, importMigrationSkills, linkMigrationAgent, provisionMigrationOwner, recordMigrationAsset, recoverRemovedMigrationStorage } from "../services/company-migration.js";
 import { companyTransferRunService, parseMigrationResource } from "../services/company-transfer-runs.js";
 import { errorHandler } from "../middleware/index.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
@@ -54,6 +54,8 @@ describe("company migration dry run", () => {
       const beforeIssues = await db.select().from(issues);
       const beforeRuns = await db.select().from(companyTransferRuns);
       const beforeAudit = await db.select().from(activityLog);
+      const beforeSkills = await db.select().from(companySkills).where(eq(companySkills.companyId, source!.id));
+      const beforeFolders = await db.select().from(folders).where(eq(folders.companyId, source!.id));
       const filesBefore = await readdir(root, { recursive: true });
       const app = express();
       app.use(express.json());
@@ -65,12 +67,14 @@ describe("company migration dry run", () => {
       app.use(errorHandler);
       const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
         target: { mode: "new_company", newCompanyName: "Destination" },
-        export: { include: { projects: true, issues: true } },
+        export: { include: { projects: true, issues: true, skills: true } },
       });
       expect(response.status).toBe(200);
       expect(response.body.dryRun).toBe(true);
       expect(response.body.validation.errors).toEqual([]);
       expect(response.body.counts).toMatchObject({ agents: 1, projects: 1, issues: 1 });
+      expect(await db.select().from(companySkills).where(eq(companySkills.companyId, source!.id))).toEqual(beforeSkills);
+      expect(await db.select().from(folders).where(eq(folders.companyId, source!.id))).toEqual(beforeFolders);
 
       const existingTarget = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
         target: { mode: "existing_company", companyId: source!.id },
@@ -1581,6 +1585,69 @@ describe("company migration dry run", () => {
     expect((await ledger.getRun(db, run.id))?.containerRef).not.toEqual(beforeLink?.containerRef);
     await db.update(agents).set({ name: "Independently changed worker" }).where(eq(agents.id, workerId));
     await expect(linkMigrationAgent(db, run.id, destination.id, workerId, managerId)).rejects.toThrow("modified agent");
+  });
+
+  it("journals imported skill rows and does not adopt an existing library", async () => {
+    const [source] = await db.insert(companies).values({ name: "Skill provenance source", issuePrefix: "MSK" }).returning();
+    const ledger = companyTransferRunService;
+    const { run } = await ledger.resumeOrCreateMigration(db, source!.id, "skill-provenance");
+    expect(await ledger.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Skill provenance destination" }, { transferRunId: run.id });
+    const files = { "skills/portable/SKILL.md": "---\nname: Portable skill\nslug: portable\n---\n\n# Portable skill\n" };
+    await importMigrationSkills(db, run.id, destination.id, files);
+    const scope = eq(companySkills.companyId, destination.id);
+    const rows = await db.select().from(companySkills).where(scope);
+    expect(rows).toHaveLength(1);
+    expect((await ledger.getRun(db, run.id))?.containerRef).toMatchObject({
+      skillProvenance: { skills: [{ id: rows[0]!.id, fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) }], folders: [] },
+    });
+    await expect(importMigrationSkills(db, run.id, destination.id, files)).rejects.toThrow("empty skill library");
+    expect(await db.select().from(companySkills).where(scope)).toEqual(rows);
+  });
+
+  it("does not leave a partially imported routine when a later trigger fails", async () => {
+    const [source] = await db.insert(companies).values({ name: "Routine provenance source", issuePrefix: "MRT" }).returning();
+    const ledger = companyTransferRunService;
+    const { run } = await ledger.resumeOrCreateMigration(db, source!.id, "routine-provenance");
+    expect(await ledger.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Routine provenance destination" }, { transferRunId: run.id });
+    const actor = { userId: "migration-owner" };
+    const populate = (fail: boolean) => createMigrationRoutine(db, run.id, destination.id, async (service) => {
+      const created = await service.create(destination.id, {
+        title: "Imported routine", priority: "medium", status: "active",
+        concurrencyPolicy: "coalesce_if_active", catchUpPolicy: "skip_missed", variables: [],
+      }, actor);
+      await service.createTrigger(created.id, { kind: "api", enabled: true }, actor);
+      if (fail) {
+        await service.createTrigger(created.id, {
+          kind: "schedule", cronExpression: "invalid", timezone: "UTC", enabled: false,
+        }, actor);
+      }
+      return created;
+    });
+    const before = await ledger.getRun(db, run.id);
+    await expect(populate(true)).rejects.toThrow();
+    expect(await db.select().from(routines).where(eq(routines.companyId, destination.id))).toEqual([]);
+    expect(await db.select().from(routineTriggers).where(eq(routineTriggers.companyId, destination.id))).toEqual([]);
+    expect(await db.select().from(routineRevisions).where(eq(routineRevisions.companyId, destination.id))).toEqual([]);
+    expect(await ledger.getRun(db, run.id)).toEqual(before);
+
+    const created = await populate(false);
+    expect(created.status).toBe("paused");
+    const [trigger] = await db.select().from(routineTriggers).where(eq(routineTriggers.routineId, created.id));
+    const revisions = await db.select().from(routineRevisions).where(eq(routineRevisions.routineId, created.id));
+    expect(trigger).toMatchObject({ kind: "api", enabled: false });
+    expect(revisions).toHaveLength(2);
+    const fingerprint = expect.stringMatching(/^[a-f0-9]{64}$/);
+    expect((await ledger.getRun(db, run.id))?.containerRef).toMatchObject({
+      routineProvenance: {
+        [created.id]: {
+          fingerprint,
+          triggers: [{ id: trigger!.id, fingerprint }],
+          revisions: expect.arrayContaining(revisions.map(({ id }) => ({ id, fingerprint }))),
+        },
+      },
+    });
   });
 
   it("commits migration owner membership and its provenance together", async () => {
