@@ -513,7 +513,10 @@ describe("createReviewPullRequestCiResolver", () => {
     let selects = 0;
     const db = {
       select: () => ({ from: () => ({ where: () => {
-        if (selects++ === 0) return Promise.resolve([openProduct]);
+        if (selects++ === 0) return Promise.resolve([
+          { ...openProduct, url: "https://github.com/acme/app/pull/8", metadata: { repo: "acme/app", number: 8 }, isPrimary: false, updatedAt: new Date(2) },
+          { ...openProduct, isPrimary: true, updatedAt: new Date(1) },
+        ]);
         return { orderBy: () => ({ limit: async () => rows }) };
       } }) }),
     } as never;

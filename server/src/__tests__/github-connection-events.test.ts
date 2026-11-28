@@ -53,7 +53,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     await tempDb?.cleanup();
   });
 
-  it("completes the linked issue only when a closed PR is merged", async () => {
+  it.each([false, true])("records a merge without closing the issue when another primary is open (%s)", async (otherPrimaryOpen) => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -76,6 +76,10 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     });
     await db.insert(issues).values({ id: issueId, companyId, title: "PR task", status: "in_progress", assigneeAgentId: agentId });
     await db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", externalId: "paperclipai/paperclip#pull/123", title: "PR #123", status: "open", metadata: { repository: "paperclipai/paperclip", number: 123 } });
+    if (otherPrimaryOpen) await db.insert(issueWorkProducts).values({
+      companyId, issueId, type: "pull_request", provider: "github", externalId: "paperclipai/paperclip#pull/124",
+      title: "PR #124", status: "open", isPrimary: true, metadata: { repository: "paperclipai/paperclip", number: 124 },
+    });
     await db.insert(externalObjects).values({ companyId, providerKey: "github", objectType: "pull_request", externalId: "paperclipai/paperclip#pull/123", statusKey: "open", statusCategory: "open", statusTone: "info", isTerminal: false, data: { provider: "github", owner: "paperclipai", repo: "paperclip", number: 123, state: "open" } });
     const events = [false, true].map((merged, i) => ({
       id: `delivery-pr-close-${i}`, provider: "github" as const, event: "pull_request", action: "closed", installationId: "101", repositoryId: "99", createdAt: "2026-09-04T12:00:00.000Z", bindingIds: [`${grantId}_101`],
@@ -88,10 +92,13 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("in_progress");
     currentTime = new Date("2026-09-04T12:00:16.000Z");
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, failed: 0 });
-    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("done");
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe(otherPrimaryOpen ? "in_progress" : "done");
+    expect(await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, issueId))).toEqual(
+      expect.arrayContaining([expect.objectContaining({ externalId: "paperclipai/paperclip#pull/123", status: "merged" })]),
+    );
   });
 
-  it("writes a head-change row when the PR head moves and none when it stays (myrmidon EMPTY-RUNS-1)", async () => {
+  it.each([false, true])("records a head change but preserves review CI deferral when another primary is open (%s)", async (otherPrimaryOpen) => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -119,6 +126,10 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
       executionState: { reviewCiBudgetDeferred: true, status: "pending", currentStageId: null, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId, userId: null }, returnAssignee: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null, monitor: { status: "triggered", nextCheckAt: null, lastTriggeredAt: "2026-11-16T11:50:00.000Z", attemptCount: 1, notes: "Review CI wait", scheduledBy: "assignee", serviceName: "Review CI wait", externalRef: null, timeoutAt: null, maxAttempts: null, recoveryPolicy: null, clearedAt: null, clearReason: null } },
     });
     const [product] = await db.insert(issueWorkProducts).values({ companyId, issueId, type: "pull_request", provider: "github", externalId: "paperclipai/paperclip#pull/123", title: "PR #123", status: "open", metadata: { repository: "paperclipai/paperclip", number: 123, headSha: "a".repeat(40) } }).returning({ id: issueWorkProducts.id });
+    if (otherPrimaryOpen) await db.insert(issueWorkProducts).values({
+      companyId, issueId, type: "pull_request", provider: "github", externalId: "paperclipai/paperclip#pull/124",
+      title: "PR #124", status: "open", isPrimary: true, metadata: { repository: "paperclipai/paperclip", number: 124 },
+    });
     await db.insert(externalObjects).values({ companyId, providerKey: "github", objectType: "pull_request", externalId: "paperclipai/paperclip#pull/123", statusKey: "open", statusCategory: "open", statusTone: "info", isTerminal: false, data: { provider: "github", owner: "paperclipai", repo: "paperclip", number: 123, state: "open" } });
     const sync = (id: string, headSha: string) => ({
       id, provider: "github" as const, event: "pull_request", action: "synchronize", installationId: "101", repositoryId: "99", createdAt: "2026-11-16T12:00:00.000Z", bindingIds: [`${grantId}_101`],
@@ -143,7 +154,9 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     expect(rows[0]).toMatchObject({ actorType: "system", entityType: "issue", runId: null });
     expect(rows[0]!.details).toMatchObject({ workProductId: product!.id, headShaChanged: true, fromSha: "a".repeat(40), toSha: "b".repeat(40), sender: "bot-eng" });
     const [afterNewHead] = await db.select().from(issues).where(eq(issues.id, issueId));
-    expect(afterNewHead?.monitorNextCheckAt?.getTime()).toBeLessThanOrEqual(currentTime.getTime());
+    expect(afterNewHead?.monitorNextCheckAt).toEqual(otherPrimaryOpen ? deferredUntil : currentTime);
+    const [updatedProduct] = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.id, product!.id));
+    expect(updatedProduct?.metadata).toMatchObject({ headSha: "b".repeat(40) });
 
     // the same new head again: still one row
     currentTime = new Date("2026-11-16T12:01:00.000Z");
@@ -572,7 +585,9 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     ["success", "in_review", "standard", false],
     ["failure", "in_progress", "standard", false],
     ["failure", "in_review", "planning", false],
-  ])("handles CI %s for %s (%s), return=%s, idempotently", async (conclusion, status, workMode, returnsToExecutor) => {
+    ["failure", "in_review", "standard", false, true],
+    ["success", "in_review", "standard", false, true],
+  ])("handles CI %s for %s (%s), return=%s, secondary=%s, idempotently", async (conclusion, status, workMode, returnsToExecutor, secondary) => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -595,6 +610,10 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     await db.insert(toolApplications).values({ id: applicationId, companyId, applicationKey: `github-${randomUUID()}`, name: "GitHub", type: "mcp_server", status: "active" });
     await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId, name: "GitHub", uid: `github-${randomUUID()}`, transport: "mcp_remote", authKind: "oauth", credentialPolicy: "per_user", status: "active", enabled: true, config: { sourceTemplateKey: "github", oauth: { connectorProfile: "github.code" } }, transportConfig: {} });
     await db.insert(connectionGrants).values({ id: grantId, companyId, connectionId, kind: "user", subjectUserId: `github-owner-${randomUUID()}`, status: "active", isDefault: false, providerTenant: { oauth: { strategy: "paperclip_cloud_connector", accessTokenExpiresAt: null }, github: { userId: "42", login: "octocat", installationCount: 1, repositoryCount: 1, repositorySelection: "selected", installationIds: ["101"], installationOwnerLogins: ["paperclipai"], repositories: [], webhookHealth: "pending" } } });
+    if (secondary) await db.insert(issueWorkProducts).values({
+      companyId, issueId, type: "pull_request", provider: "github", externalId: "paperclipai/paperclip#pull/124",
+      title: "PR #124", status: "open", isPrimary: true, metadata: { repository: "paperclipai/paperclip", number: 124 },
+    });
     const headSha = "a".repeat(40);
     const events = ["workflow_run", "check_suite", "check_run"].map((event, i) => ({
       id: `ci-delivery-${i}`, provider: "github" as const, event, action: "completed", installationId: "101", repositoryId: "99", createdAt: "2026-09-04T12:00:00.000Z", bindingIds: [`${grantId}_101`],
@@ -605,8 +624,8 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     let currentTime = new Date("2026-09-04T12:00:05.000Z");
     const service = githubConnectionEventService(db, { connector, assignmentWakeup: wakeup, now: () => currentTime });
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 3, failed: 0 });
-    expect(wakeup).toHaveBeenCalledTimes(1);
-    expect(wakeup).toHaveBeenCalledWith(returnsToExecutor ? agentId : reviewerId, expect.objectContaining({ reason: "ci_completed", payload: expect.objectContaining({ conclusion, headSha, pullRequestNumber: 123 }) }));
+    expect(wakeup).toHaveBeenCalledTimes(secondary ? 0 : 1);
+    if (!secondary) expect(wakeup).toHaveBeenCalledWith(returnsToExecutor ? agentId : reviewerId, expect.objectContaining({ reason: "ci_completed", payload: expect.objectContaining({ conclusion, headSha, pullRequestNumber: 123 }) }));
     const [updated] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(updated.status).toBe(returnsToExecutor ? "in_progress" : status);
     expect(updated.assigneeAgentId).toBe(returnsToExecutor ? agentId : reviewerId);
@@ -618,11 +637,13 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
       expect(comments[0].body).toContain(headSha);
       expect(comments[0].body).toContain("https://github.com/paperclipai/paperclip/actions/runs/456");
     }
-    expect(wakeup.mock.calls[0]?.[1].idempotencyKey).toContain(headSha);
-    expect(wakeup.mock.calls[0]?.[1].payload).not.toHaveProperty("accessToken");
+    if (!secondary) {
+      expect(wakeup.mock.calls[0]?.[1].idempotencyKey).toContain(headSha);
+      expect(wakeup.mock.calls[0]?.[1].payload).not.toHaveProperty("accessToken");
+    }
     currentTime = new Date(currentTime.getTime() + 5_000);
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 0, duplicate: 3, failed: 0 });
-    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(wakeup).toHaveBeenCalledTimes(secondary ? 0 : 1);
   });
 
   it.each([
@@ -630,10 +651,12 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     { mergeable: false, status: "in_review", returnsToAuthor: true },
     { mergeable: "CONFLICTING", status: "in_progress", returnsToAuthor: false },
     { mergeable: "MERGEABLE", status: "in_review", returnsToAuthor: false },
+    { mergeable: "CONFLICTING", status: "in_review", returnsToAuthor: false, secondary: true },
   ])("handles pull_request webhook with mergeable=$mergeable (status=$status, returnsToAuthor=$returnsToAuthor)", async ({
     mergeable,
     status,
     returnsToAuthor,
+    secondary,
   }) => {
     const companyId = randomUUID();
     const authorAgentId = randomUUID();
@@ -676,6 +699,10 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
       title: "PR #200",
       status: "open",
       metadata: { repository: "paperclipai/paperclip", number: 200 },
+    });
+    if (secondary) await db.insert(issueWorkProducts).values({
+      companyId, issueId, type: "pull_request", provider: "github", externalId: "paperclipai/paperclip#pull/201",
+      title: "PR #201", status: "open", isPrimary: true, metadata: { repository: "paperclipai/paperclip", number: 201 },
     });
 
     await db.insert(toolApplications).values({

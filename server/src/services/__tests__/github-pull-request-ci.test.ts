@@ -3,6 +3,7 @@ import { getTableName } from "drizzle-orm";
 import { issueWorkProducts, issues, issueComments } from "@myrmidon/db";
 import {
   fetchCommitCheckRuns,
+  formatAuthoritativeCiOutput,
   summarizeCheckRuns,
   createPullRequestCiResolver,
   withCiResolveDeadline,
@@ -1098,7 +1099,9 @@ describe("createPullRequestCiResolver", () => {
   it("resolves CI for linked deploy PR discovered via issue work products and comments", async () => {
     // Mock DB queries for resolveForIssue
     const mockWorkProducts = [
+      { type: "pull_request", status: "draft", url: "https://github.com/itkadr-git/myrmidon-deploy/pull/57", title: "Secondary" },
       {
+        type: "pull_request", status: "open", isPrimary: true,
         url: "https://github.com/itkadr-git/myrmidon/pull/2024",
         title: "PR #2024",
         metadata: {
@@ -1187,6 +1190,17 @@ describe("createPullRequestCiResolver", () => {
 
     const results = await resolver.resolveForIssue("comp-1", "issue-1");
     expect(results).toHaveLength(2);
+    expect(results[0].pullNumber).toBe(2024);
+    const read = resolver.resolveForPullRequest.bind(resolver);
+    vi.spyOn(resolver, "resolveForPullRequest").mockImplementation((companyId, ref) => {
+      if (ref.number === 2024) return Promise.reject(new Error("primary CI read failed"));
+      return read(companyId, ref);
+    });
+    const unavailable = await resolver.resolveForIssue("comp-1", "issue-1");
+    expect(unavailable[0]).toMatchObject({ pullNumber: 2024, status: "unavailable", authoritative: false });
+    expect(unavailable[1]).toMatchObject({ pullNumber: 57, conclusion: "success", secondary: true });
+    expect(formatAuthoritativeCiOutput(unavailable)).toContain("PR #2024");
+    expect(formatAuthoritativeCiOutput(unavailable)).not.toContain("PR #57");
 
     const deployCi = results.find((r) => r.repository === "itkadr-git/myrmidon-deploy");
     expect(deployCi).toBeDefined();
