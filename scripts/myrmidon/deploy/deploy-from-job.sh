@@ -115,7 +115,40 @@ window_state() {
 }
 
 run_deploy() { # run_deploy <jobId> <digest>
-  local job="$1" digest="$2" rc=0
+  local job="$1" digest="$2" rc=0 previous_phase=""
+  if [[ "$DRY_RUN" != "1" && -e "$REPORT_DIR/job-$job.json" ]]; then
+    previous_phase="$(jq -r '.phase // "unknown"' "$REPORT_DIR/job-$job.json" 2>/dev/null)" || previous_phase="unknown"
+    case "$previous_phase" in
+      health-ok|health-failed|rolled-back|rollback-failed|error)
+        log "executor: job $job already has terminal report $previous_phase; waiting for board reconciliation"
+        return 1 ;;
+    esac
+    log "ERROR: job $job already has report phase $previous_phase; refusing automatic replay"
+    report "$job" error "Previous executor phase $previous_phase; reconcile deployment state before retrying"
+    return 1
+  fi
+  # A crash after appending intent but before creating the report must not
+  # start the same job again. An unreadable or malformed journal fails closed.
+  if [[ "$DRY_RUN" != "1" && -e "${RELEASE_AUDIT_FILE:-$STATE_DIR/release-events.jsonl}" ]]; then
+    local audit_file="${RELEASE_AUDIT_FILE:-$STATE_DIR/release-events.jsonl}" prior_intent
+    if ! prior_intent="$(jq -s -r --arg job "$job" 'any(.[]; .jobId == $job and .event == "deploy.intent")' "$audit_file")"; then
+      report "$job" error "release audit unreadable; reconcile deployment state before retrying"
+      return 1
+    fi
+    if [[ "$prior_intent" == "true" ]]; then
+      report "$job" error "previous deployment intent exists without a report; reconcile deployment state before retrying"
+      return 1
+    fi
+  fi
+  # RELEASE-STAGE: persist intent before touching the maintenance window or
+  # invoking deploy.sh. If the process dies afterwards, the host journal still
+  # explains why a continuation is safe and what digest was intended.
+  # Fail-closed (OPE-13004): refuse to proceed if the intent cannot be recorded.
+  if ! record_release_event "deploy.intent" "$job" "$digest" "planned" "host executor accepted the release job"; then
+    log "ERROR: release audit: could not record deploy intent for $job; refusing to proceed"
+    report "$job" error "failed to record deploy intent in release audit journal"
+    return 1
+  fi
   report "$job" claimed "host executor picked the job"
   # The window must be fully on before the image switch: same rule as the UI.
   local waited=0 state
@@ -124,6 +157,11 @@ run_deploy() { # run_deploy <jobId> <digest>
     [[ "$state" == "on" ]] && break
     if ((waited >= timeout_sec)); then
       report "$job" error "maintenance window never reached on within ${timeout_sec}s (state $state)"
+      if ! record_release_event "deploy.result" "$job" "$digest" "failed" "maintenance window did not reach on (state $state)"; then
+        log "ERROR: release audit: could not record deploy result for $job"
+        report "$job" error "deploy result could not be recorded"
+        return 1
+      fi
       return 1
     fi
     sleep "${POLL_INTERVAL_SEC:-5}"
@@ -132,7 +170,9 @@ run_deploy() { # run_deploy <jobId> <digest>
   report "$job" switching "switching the image"
   if [[ "$DRY_RUN" == "1" ]]; then
     plan "would run: $MYR_SCRIPT_DIR/deploy.sh --config $config --digest $digest"
-    report "$job" health-ok "dry run" "" ""
+    report "$job" health-ok "dry run"
+    record_release_event "deploy.result" "$job" "$digest" "succeeded" "dry run; no image switch performed" \
+      || log "WARNING: release audit: could not record deploy result for $job"
     return 0
   fi
   set +e
@@ -143,6 +183,10 @@ run_deploy() { # run_deploy <jobId> <digest>
   version="$(image_label "$MYR_CI_IMAGE@$digest" org.opencontainers.image.version || true)"
   commit="$(image_label "$MYR_CI_IMAGE@$digest" org.opencontainers.image.revision || true)"
   if ((rc == 0)); then
+    if ! record_release_event "deploy.result" "$job" "$digest" "succeeded" "deploy.sh finished: version ${version:-<none>}, commit ${commit:0:12}"; then
+      report "$job" error "audit failure after successful deploy; reconcile running image and audit before retry" "$version" "$commit"
+      return 1
+    fi
     report "$job" health-ok "deploy.sh finished" "$version" "$commit"
     return 0
   fi
@@ -153,15 +197,35 @@ run_deploy() { # run_deploy <jobId> <digest>
   # warns. A successful rollback still has to pass its health check, so
   # "rolled-back" means the board answers on the previous image again.
   if [[ "$AUTO_ROLLBACK" != "0" ]]; then
+    if ! record_release_event "deploy.result" "$job" "$digest" "failed" "deploy.sh failed with exit $rc; automatic rollback follows"; then
+      report "$job" error "audit failure recording failed deploy; reconcile before rollback" "$version" "$commit"
+      return 1
+    fi
+    if ! record_release_event "rollback.intent" "$job" "$digest" "planned" "automatic rollback initiated after failed deploy (exit $rc)"; then
+      report "$job" error "audit failure recording rollback intent; reconcile before rollback" "$version" "$commit"
+      return 1
+    fi
     report "$job" rolling-back "deploy failed (exit $rc); rolling back automatically; see $STATE_DIR/job-$job.log" "$version" "$commit"
     local rc_rb=0
     "$MYR_SCRIPT_DIR/rollback.sh" --config "$config" 2>>"$STATE_DIR/job-$job.log"
     rc_rb=$?
     if ((rc_rb == 0)); then
+      if ! record_release_event "rollback.result" "$job" "$digest" "succeeded" "automatic rollback finished; health check passed"; then
+        report "$job" error "audit failure after successful rollback; reconcile before retry"
+        return 1
+      fi
       report "$job" rolled-back "rolled back to the previous image; health check passed" "" ""
       return 0
     fi
+    if ! record_release_event "rollback.result" "$job" "$digest" "failed" "automatic rollback failed with exit $rc_rb; maintenance window stays on"; then
+      report "$job" error "audit failure after failed rollback; reconcile before retry"
+      return 1
+    fi
     report "$job" rollback-failed "rollback failed with exit $rc_rb; maintenance stays on; see $STATE_DIR/job-$job.log" "" ""
+    return 1
+  fi
+  if ! record_release_event "deploy.result" "$job" "$digest" "failed" "deploy.sh failed with exit $rc (auto-rollback off)"; then
+    report "$job" error "audit failure after failed deploy; reconcile before retry" "$version" "$commit"
     return 1
   fi
   report "$job" health-failed "deploy.sh failed with exit $rc; see $STATE_DIR/job-$job.log" "$version" "$commit"

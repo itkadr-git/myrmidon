@@ -6,6 +6,10 @@
 // 503 on create, not on read.
 
 import express from "express";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { releaseAuditReader } from "./host-report.js";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@myrmidon/db";
@@ -44,7 +48,7 @@ const agentActor = {
   keyId: "key-a",
 };
 
-function harness(options: { enabled?: boolean } = {}) {
+function harness(options: { enabled?: boolean; auditFile?: string } = {}) {
   const doc: DeployJobDocument = emptyDeployJobDocument();
   const deps: DeployJobServiceDeps = {
     maintenance: {
@@ -53,6 +57,7 @@ function harness(options: { enabled?: boolean } = {}) {
       status: vi.fn(async () => ({ instance: null })),
     },
     readHostReport: async () => null,
+    readReleaseAudit: releaseAuditReader(options.auditFile ?? null),
     readHealth: async () => null,
     settings: { ...readDeployJobsSettings({}), enabled: options.enabled ?? true, tickMs: 60_000 },
     probes: {
@@ -94,7 +99,23 @@ describe("deploy jobs routes", () => {
   it("lets a board member read the job state", async () => {
     const h = harness();
     const res = await request(h.app).get(URL).expect(200);
-    expect(res.body).toEqual({ job: null, history: [] });
+    expect(res.body).toEqual({ job: null, history: [], audit: [] });
+  });
+
+  it("serves host JSONL audit events through the deploy API", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "deploy-audit-"));
+    try {
+      const file = join(dir, "release-events.jsonl");
+      const events = [
+        { eventId: "1", event: "deploy.intent", jobId: "job-a", digest: GOOD, status: "planned", detail: "accepted", at: "2026-11-15T12:00:00Z" },
+        { eventId: "2", event: "deploy.result", jobId: "job-a", digest: GOOD, status: "failed", detail: "health failed", at: "2026-11-15T12:01:00Z" },
+      ];
+      writeFileSync(file, events.map((event) => JSON.stringify(event)).join("\n") + "\n");
+      const res = await request(harness({ auditFile: file }).app).get(URL).expect(200);
+      expect(res.body.audit).toEqual(events);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("refuses an agent token on read and write", async () => {

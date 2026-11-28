@@ -22,6 +22,16 @@ export interface HostReportReader {
   (jobId: string): Promise<HostReport | null>;
 }
 
+export interface ReleaseAuditEvent {
+  eventId: string;
+  event: string;
+  jobId: string | null;
+  digest: string | null;
+  status: string | null;
+  detail: string | null;
+  at: string;
+}
+
 const PHASES = new Set([
   "claimed",
   "switching",
@@ -46,6 +56,36 @@ function parseReport(raw: unknown, jobId: string): HostReport | null {
     commit: typeof record.commit === "string" ? record.commit : null,
     detail: typeof record.detail === "string" ? record.detail : null,
     at: typeof record.at === "string" ? record.at : undefined,
+  };
+}
+
+export function releaseAuditReader(auditFile: string | null): (jobId?: string) => Promise<ReleaseAuditEvent[]> {
+  return async (jobId) => {
+    if (!auditFile) return [];
+    let raw: string;
+    try {
+      raw = readFileSync(auditFile, "utf8");
+    } catch {
+      return [];
+    }
+    return raw.split("\n").filter(Boolean).flatMap((line) => {
+      try {
+        const value = JSON.parse(line) as Partial<ReleaseAuditEvent>;
+        if (typeof value.eventId !== "string" || typeof value.event !== "string" || typeof value.at !== "string") return [];
+        if (jobId && value.jobId !== jobId) return [];
+        return [{
+          eventId: value.eventId,
+          event: value.event,
+          jobId: typeof value.jobId === "string" ? value.jobId : null,
+          digest: typeof value.digest === "string" ? value.digest : null,
+          status: typeof value.status === "string" ? value.status : null,
+          detail: typeof value.detail === "string" ? value.detail : null,
+          at: value.at,
+        }];
+      } catch {
+        return [];
+      }
+    });
   };
 }
 
