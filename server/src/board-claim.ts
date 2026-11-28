@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import { companies, companyMemberships, instanceUserRoles } from "@myrmidon/db";
@@ -32,10 +32,23 @@ function createChallenge(now = new Date()): ClaimChallenge {
   };
 }
 
+function sha256Hex(value: string): Buffer {
+  return createHash("sha256").update(value, "utf8").digest();
+}
+
+function constantTimeSecretEqual(left: string, right: string): boolean {
+  // Hash both sides to a fixed-length digest so timingSafeEqual never sees
+  // length-mismatched buffers (which would throw or early-exit on length).
+  return timingSafeEqual(sha256Hex(left), sha256Hex(right));
+}
+
 function getChallengeStatus(token: string, code: string | undefined): ChallengeStatus {
   if (!activeChallenge) return "invalid";
-  if (activeChallenge.token !== token) return "invalid";
-  if (activeChallenge.code !== (code ?? "")) return "invalid";
+  // Always evaluate BOTH comparisons so a wrong token does not skip the code
+  // comparison (constant-time discipline). The results are AND-ed afterwards.
+  const tokenOk = constantTimeSecretEqual(activeChallenge.token, token);
+  const codeOk = constantTimeSecretEqual(activeChallenge.code, code ?? "");
+  if (!tokenOk || !codeOk) return "invalid";
   if (activeChallenge.claimedAt) return "claimed";
   if (activeChallenge.expiresAt.getTime() <= Date.now()) return "expired";
   return "available";

@@ -1263,6 +1263,20 @@ describe("sandbox adapter execution targets", () => {
       badPeer.once("connect", () => badPeer.write(`${JSON.stringify({ token: "wrong-token", type: "stdinEnd" })}\n`));
       await badPeerClosed;
 
+      // A peer presenting a different-length token is disconnected without an exception.
+      const badLengthPeer = net.createConnection({ host: "127.0.0.1", port });
+      badLengthPeer.on("error", () => undefined);
+      const badLengthPeerClosed = new Promise<void>((resolve) => badLengthPeer.once("close", () => resolve()));
+      badLengthPeer.once("connect", () => badLengthPeer.write(`${JSON.stringify({ token: "x", type: "stdinEnd" })}\n`));
+      await badLengthPeerClosed;
+
+      // A peer presenting no token at all is disconnected without an exception.
+      const noTokenPeer = net.createConnection({ host: "127.0.0.1", port });
+      noTokenPeer.on("error", () => undefined);
+      const noTokenPeerClosed = new Promise<void>((resolve) => noTokenPeer.once("close", () => resolve()));
+      noTokenPeer.once("connect", () => noTokenPeer.write(`${JSON.stringify({ type: "stdinEnd" })}\n`));
+      await noTokenPeerClosed;
+
       // The authenticated proxy still attaches and receives the buffered output.
       const result = await runProxyWithInput(bridge!.agentCommand, "");
       expect(result.code).toBe(0);
