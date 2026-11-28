@@ -113,6 +113,20 @@ export interface CostByAgentModel {
   outputTokens: number;
 }
 
+/** myrmidon(1.8 MODEL-BY-STEP OPE-12999): spend grouped by the run's model-selection snapshot; snapshot-less records land in the "unknown" class */
+export interface CostByStepClass {
+  stepClass: string;
+  modelGroup: string | null;
+  ruleSource: string | null;
+  ruleLabel: string | null;
+  costCents: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  events: number;
+  runs: number;
+}
+
 /** spend per provider for a fixed rolling time window */
 export interface CostWindowSpendRow {
   provider: string;

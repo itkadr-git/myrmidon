@@ -4,6 +4,7 @@ import type {
   BudgetPolicySummary,
   CostByAgentModel,
   CostByBiller,
+  CostByStepClass,
   CostByProviderModel,
   CostWindowSpendRow,
   FinanceEvent,
@@ -259,13 +260,14 @@ export function Costs({
   const { data: spendData, isLoading: spendLoading, error: spendError } = useQuery({
     queryKey: queryKeys.costs(companyId, from || undefined, to || undefined),
     queryFn: async () => {
-      const [summary, byAgent, byProject, byAgentModel] = await Promise.all([
+      const [summary, byAgent, byProject, byAgentModel, byStepClass] = await Promise.all([
         costsApi.summary(companyId, from || undefined, to || undefined),
         costsApi.byAgent(companyId, from || undefined, to || undefined),
         costsApi.byProject(companyId, from || undefined, to || undefined),
         costsApi.byAgentModel(companyId, from || undefined, to || undefined),
+        costsApi.byStepClass(companyId, from || undefined, to || undefined),
       ]);
-      return { summary, byAgent, byProject, byAgentModel };
+      return { summary, byAgent, byProject, byAgentModel, byStepClass };
     },
     enabled: !!selectedCompanyId && customReady && showSummaryChrome,
   });
@@ -636,14 +638,14 @@ export function Costs({
             />
             <MetricTile
               label={t("area.costs-budgets-2.costs.metrics.financeNet")}
-              value={formatCents(financeData?.summary.netCents ?? 0)}
-              subtitle={t("area.costs-budgets-2.costs.metrics.financeNetSubtitle", { debits: formatCents(financeData?.summary.debitCents ?? 0), credits: formatCents(financeData?.summary.creditCents ?? 0) })}
+              value={formatCents(financeData?.summary?.netCents ?? 0)}
+              subtitle={t("area.costs-budgets-2.costs.metrics.financeNetSubtitle", { debits: formatCents(financeData?.summary?.debitCents ?? 0), credits: formatCents(financeData?.summary?.creditCents ?? 0) })}
               icon={ReceiptText}
             />
             <MetricTile
               label={t("area.costs-budgets-2.costs.metrics.financeEvents")}
-              value={String(financeData?.summary.eventCount ?? 0)}
-              subtitle={t("area.costs-budgets-2.costs.metrics.financeEventsSubtitle", { amount: formatCents(financeData?.summary.estimatedDebitCents ?? 0) })}
+              value={String(financeData?.summary?.eventCount ?? 0)}
+              subtitle={t("area.costs-budgets-2.costs.metrics.financeEventsSubtitle", { amount: formatCents(financeData?.summary?.estimatedDebitCents ?? 0) })}
               icon={ArrowUpRight}
             />
           </div>
@@ -743,11 +745,11 @@ export function Costs({
                 </Card>
 
                 <FinanceSummaryCard
-                  debitCents={financeData?.summary.debitCents ?? 0}
-                  creditCents={financeData?.summary.creditCents ?? 0}
-                  netCents={financeData?.summary.netCents ?? 0}
-                  estimatedDebitCents={financeData?.summary.estimatedDebitCents ?? 0}
-                  eventCount={financeData?.summary.eventCount ?? 0}
+                  debitCents={financeData?.summary?.debitCents ?? 0}
+                  creditCents={financeData?.summary?.creditCents ?? 0}
+                  netCents={financeData?.summary?.netCents ?? 0}
+                  estimatedDebitCents={financeData?.summary?.estimatedDebitCents ?? 0}
+                  eventCount={financeData?.summary?.eventCount ?? 0}
                 />
               </div>
 
@@ -854,6 +856,36 @@ export function Costs({
                           >
                             <span className="truncate">{row.projectName ?? row.projectId ?? t("area.costs-budgets-2.costs.byProject.unattributed")}</span>
                             <span className="font-medium tabular-nums">{formatCents(row.costCents)}</span>
+                          </div>
+                        ))
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  <Card data-testid="costs-by-step-class">
+                    <CardHeader className="px-5 pt-5 pb-2">
+                      <CardTitle className="text-base">{t("area.costs-budgets-2.costs.byStepClass.title")}</CardTitle>
+                      <CardDescription>{t("area.costs-budgets-2.costs.byStepClass.description")}</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-2 px-5 pb-5 pt-2">
+                      {(spendData?.byStepClass.length ?? 0) === 0 ? (
+                        <p className="text-sm text-muted-foreground">{t("area.costs-budgets-2.costs.byStepClass.empty")}</p>
+                      ) : (
+                        spendData?.byStepClass.map((row, index) => (
+                          <div
+                            key={`${row.stepClass}-${row.modelGroup ?? "na"}-${index}`}
+                            className="flex items-center justify-between gap-3 border border-border px-3 py-2 text-sm"
+                          >
+                            <span className="truncate">
+                              <span className="font-medium">{row.stepClass}</span>
+                              {row.modelGroup ? <span className="text-muted-foreground"> · {row.modelGroup}</span> : null}
+                              {row.stepClass === "unknown" ? <span className="text-muted-foreground"> · {t("area.costs-budgets-2.costs.byStepClass.unknown")}</span> : null}
+                              {row.ruleLabel ? <span className="block text-xs text-muted-foreground">{row.ruleLabel}</span> : null}
+                            </span>
+                            <span className="text-right">
+                              <span className="font-medium tabular-nums">{formatCents(row.costCents)}</span>
+                              <span className="block text-xs tabular-nums text-muted-foreground">{formatTokens(row.inputTokens + row.cachedInputTokens + row.outputTokens)}</span>
+                            </span>
                           </div>
                         ))
                       )}
@@ -1114,11 +1146,11 @@ export function Costs({
           ) : (
             <>
               <FinanceSummaryCard
-                debitCents={financeData?.summary.debitCents ?? 0}
-                creditCents={financeData?.summary.creditCents ?? 0}
-                netCents={financeData?.summary.netCents ?? 0}
-                estimatedDebitCents={financeData?.summary.estimatedDebitCents ?? 0}
-                eventCount={financeData?.summary.eventCount ?? 0}
+                debitCents={financeData?.summary?.debitCents ?? 0}
+                creditCents={financeData?.summary?.creditCents ?? 0}
+                netCents={financeData?.summary?.netCents ?? 0}
+                estimatedDebitCents={financeData?.summary?.estimatedDebitCents ?? 0}
+                eventCount={financeData?.summary?.eventCount ?? 0}
               />
 
               <div className="grid gap-4 xl:grid-cols-(--gtc-33)">
@@ -1129,10 +1161,10 @@ export function Costs({
                       <CardDescription>{t("area.costs-budgets-2.costs.finance.byBillerDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-4 px-5 pb-5 pt-2 md:grid-cols-2">
-                      {(financeData?.byBiller.length ?? 0) === 0 ? (
+                      {(financeData?.byBiller?.length ?? 0) === 0 ? (
                         <p className="text-sm text-muted-foreground">{t("area.costs-budgets-2.costs.finance.empty")}</p>
                       ) : (
-                        financeData?.byBiller.map((row) => <FinanceBillerCard key={row.biller} row={row} />)
+                        financeData?.byBiller?.map((row) => <FinanceBillerCard key={row.biller} row={row} />)
                       )}
                     </CardContent>
                   </Card>

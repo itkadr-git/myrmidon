@@ -3,6 +3,7 @@ import type { ActivityEvent, Issue, Agent, ProviderTraceMetadata } from "@myrmid
 import {
   isResponsibleUserDenialCode,
   responsibleUserLabel,
+  readRunModelSelection,
 } from "@myrmidon/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
@@ -913,6 +914,20 @@ export function IssueRunLedgerContent({
                     requested={runRequestedProviderTrace(run.contextSnapshot)}
                     showOff
                   />
+                  {(() => {
+                    const selection = readRunModelSelection(run.contextSnapshot);
+                    if (!selection) return null;
+                    const label = selection.ruleLabel ?? `${selection.stepClass} -> ${selection.modelGroup}`;
+                    return (
+                      <span
+                        data-testid="run-model-selection"
+                        className="rounded-md border border-border px-1.5 py-0.5 text-(length:--text-micro) font-medium text-muted-foreground"
+                        title={selection.model ? `${label} (${selection.model})` : label}
+                      >
+                        {label}
+                      </span>
+                    );
+                  })()}
                   <span
                     className={cn(
                       "rounded-md border px-1.5 py-0.5 text-(length:--text-micro) font-medium",
