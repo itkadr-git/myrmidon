@@ -2271,6 +2271,14 @@ describe("company migration dry run", () => {
       expect(rejected.status, JSON.stringify(rejected.body)).toBe(409);
       expect(rejected.body.details?.runId).toBe(runId);
       expect(await companyTransferRunService.getRun(db, runId)).toEqual(run);
+
+      const rollback = await request(app).post(`/api/companies/${source!.id}/migrations/${runId}/rollback`)
+        .send({ confirm: "recover interrupted import" });
+      expect(rollback.status, JSON.stringify(rollback.body)).toBe(409);
+      expect(await companyTransferRunService.getRun(db, runId)).toEqual(run);
+      expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toEqual(importedAgents);
+      expect(await db.select().from(companySkills).where(skillScope)).toEqual(importedSkills);
+      expect(await readFile(skillFile, "utf8")).toBe("Independently changed skill");
     } finally {
       await writeFile(skillFile, originalSkill);
     }

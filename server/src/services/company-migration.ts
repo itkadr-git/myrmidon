@@ -534,6 +534,16 @@ export async function rollbackCompanyMigration(db: Db, storage: StorageService |
       if (!claimed || claimed.companyId !== companyId || !await matchesJournaledMigrationRows(tx, companyId, claimed.containerRef)) {
         throw new Error("Destination differs from the migration journal");
       }
+      // A missing file may never have been published. A changed file must not
+      // lose its owning database rows when we archive the destination.
+      for (const part of claimed.completedParts) {
+        const resource = parseMigrationResource(companyId, part);
+        if (!resource || (resource.kind === "managed_file" && !await matchesJournaledMigrationFile(
+          companyId, resource.directory, resource.relativePath, resource.sha256, resource.identity, { allowMissing: true },
+        ))) {
+          throw new Error("Destination storage differs from the migration journal");
+        }
+      }
       await archiveJournaledMigrationCompany(tx, companyId);
       if (!await ledger.markMigrationDatabaseCleanupComplete(tx, runId, companyId)) throw new Error("Migration archival was not journaled");
     });

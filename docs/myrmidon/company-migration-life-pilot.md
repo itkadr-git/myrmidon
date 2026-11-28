@@ -95,7 +95,9 @@ so it is not a rollback ID or evidence that apply occurred.
    importer does not replay them in place.
    Use `POST /api/companies/{sourceCompanyId}/migrations/{runId}/rollback` with a
    non-empty `confirm` reason. One database transaction removes journaled child
-   rows and archives the destination, preserving its ID. Reserved storage cleanup
+   rows and archives the destination, preserving its ID. If a journaled managed
+   file is already changed, rollback refuses before archiving; an absent file
+   may be an interrupted publication. Reserved storage cleanup
    follows and can be retried with the same confirmed rollback if interrupted.
    Repeating a settled rollback returns `rolled_back` without another cleanup.
    Status reports the destination claim, committed creation counts, and separate

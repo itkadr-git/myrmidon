@@ -73,13 +73,13 @@ export function migrationManagedFileWriter(db: Db, runId: string, companyId: str
   };
 }
 
-export async function matchesJournaledMigrationFile(companyId: string, directory: MigrationManagedDirectory, relativePath: string, sha256: string, identity: string) {
+export async function matchesJournaledMigrationFile(companyId: string, directory: MigrationManagedDirectory, relativePath: string, sha256: string, identity: string, options?: { allowMissing?: boolean }) {
   const root = managedRoot(companyId, directory);
   const file = path.resolve(root, relativePath);
   relativeWithin(root, file);
-  if (!await checkedParent(file, false)) return false;
+  if (!await checkedParent(file, false)) return options?.allowMissing === true;
   const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch(absent);
-  if (!handle) return false;
+  if (!handle) return options?.allowMissing === true;
   try {
     const entry = await handle.stat({ bigint: true });
     if (!entry.isFile() || fileIdentity(entry) !== identity || digest(await handle.readFile()) !== sha256) return false;
