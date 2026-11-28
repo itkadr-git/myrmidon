@@ -134,7 +134,7 @@ function resolvePathWithinRoot(rootPath: string, relativePath: string): string {
   return absolutePath;
 }
 
-function resolveManagedInstructionsRoot(agent: AgentLike): string {
+export function resolveManagedInstructionsRoot(agent: Pick<AgentLike, "companyId" | "id">): string {
   return path.resolve(
     resolvePaperclipInstanceRoot(),
     "companies",

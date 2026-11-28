@@ -1,9 +1,10 @@
 # Life company migration pilot
 
-Status: the operator migration route supports read-only dry runs; apply and
-rollback are not yet implemented. Confirmed apply requests are rejected. Do not
-use the existing company import API as a substitute: it does not provide the
-provenance-based recovery required here.
+Status: the operator migration route supports read-only dry runs. Confirmed
+rollback can retry reserved resource cleanup only after the migration-owned
+company has already been removed. Confirmed apply and rollback of a live
+destination are not yet available. Do not use the existing company import API
+as a substitute: it does not provide the provenance-based recovery required here.
 
 ## Scope and authorization
 

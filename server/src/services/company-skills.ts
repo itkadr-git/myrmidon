@@ -2766,7 +2766,7 @@ export async function findMissingLocalSkillIds(
   return missingIds;
 }
 
-function resolveManagedSkillsRoot(companyId: string) {
+export function resolveManagedSkillsRoot(companyId: string) {
   return path.resolve(resolvePaperclipInstanceRoot(), "skills", companyId);
 }
 

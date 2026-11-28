@@ -1,8 +1,13 @@
 import { createHash } from "node:crypto";
+import { lstat, rm } from "node:fs/promises";
+import path from "node:path";
 import type { CompanyPortabilityExport } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
 import { conflict, notFound } from "../errors.js";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import type { StorageService } from "../storage/types.js";
+import { resolveManagedInstructionsRoot } from "./agent-instructions.js";
+import { resolveManagedSkillsRoot } from "./company-skills.js";
 import type { companyPortabilityService } from "./company-portability.js";
 import { validateMigrationManifest } from "./company-migration-validation.js";
 import { companyTransferRunService, parseMigrationResource } from "./company-transfer-runs.js";
@@ -16,6 +21,27 @@ export async function getMigrationStatus(db: Db, sourceCompanyId: string, runId:
   if (!run || run.direction !== "import" || typeof ref !== "object" || ref === null || Array.isArray(ref)) return null;
   if (!("kind" in ref) || ref.kind !== "company_migration" || !("sourceCompanyId" in ref) || ref.sourceCompanyId !== sourceCompanyId) return null;
   return { runId: run.id, status: run.status };
+}
+
+async function removeManagedDirectory(directory: string) {
+  const root = resolvePaperclipInstanceRoot();
+  const relative = path.relative(root, directory);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error("Migration directory is outside the managed instance");
+  }
+  let current = root;
+  // The configured instance root is trusted, but do not traverse a symlink
+  // in any managed path below it. An absent directory is already cleaned up.
+  for (const segment of relative.split(path.sep)) {
+    current = path.join(current, segment);
+    const entry = await lstat(current).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!entry) return;
+    if (!entry.isDirectory()) throw new Error("Invalid managed migration directory");
+  }
+  await rm(directory, { recursive: true, force: true });
 }
 
 // Only recover storage after the owned destination has been removed. Live
@@ -34,21 +60,27 @@ export async function recoverRemovedMigrationStorage(db: Db, storage: StorageSer
   try {
     const claimed = await ledger.getRun(db, runId);
     if (!claimed) throw new Error("Migration claim missing");
-    const objects = claimed.completedParts.map((part) => {
+    const resources = claimed.completedParts.map((part) => {
       const resource = parseMigrationResource(destinationId, part);
-      if (resource?.kind !== "object") throw new Error("Unsupported migration resource");
-      return resource.objectKey;
+      if (!resource) throw new Error("Unsupported migration resource");
+      return { part, resource };
     });
-    for (const objectKey of objects) {
-      if (!storage) throw new Error("Migration storage unavailable");
+    for (const { part, resource } of resources) {
       await db.transaction(async (tx) => {
         // Validate and tentatively acknowledge the reservation before touching
         // storage. The UPDATE holds the run lock and rolls back if deletion
         // throws or the process dies before commit. Deleting twice is safe.
-        if (!await ledger.acknowledgeMigrationObjectDeletion(tx, runId, destinationId, objectKey)) {
+        if (!await ledger.acknowledgeMigrationObjectDeletion(tx, runId, destinationId, part)) {
           throw new Error("Migration storage acknowledgement rejected");
         }
-        await storage.deleteObject(destinationId, objectKey);
+        if (resource.kind === "object") {
+          if (!storage) throw new Error("Migration storage unavailable");
+          await storage.deleteObject(destinationId, resource.objectKey);
+        } else if (resource.kind === "agent_instructions") {
+          await removeManagedDirectory(resolveManagedInstructionsRoot({ companyId: destinationId, id: resource.agentId }));
+        } else {
+          await removeManagedDirectory(resolveManagedSkillsRoot(destinationId));
+        }
       });
     }
     if (!await ledger.finishMigrationRollback(db, runId)) throw new Error("Migration settlement rejected");

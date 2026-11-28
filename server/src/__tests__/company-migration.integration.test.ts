@@ -12,7 +12,7 @@ import { errorHandler } from "../middleware/index.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -1018,6 +1018,62 @@ describe("company migration dry run", () => {
     expect((await companyTransferRunService.getRun(db, run.id))?.completedParts).toEqual([]);
     expect((await storage.headObject(destination.id, remaining.objectKey)).exists).toBe(false);
     expect((await storage.headObject(source!.id, original.objectKey)).exists).toBe(true);
+  });
+
+  it("recovers managed directories after destination removal without following symlinks", async () => {
+    const [source] = await db.insert(companies).values({ name: "Managed cleanup source", issuePrefix: "MDC" }).returning();
+    const ledger = companyTransferRunService;
+    const { run } = await ledger.resumeOrCreateMigration(db, source!.id, "managed-cleanup-restart");
+    expect(await ledger.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Managed cleanup destination" }, { transferRunId: run.id });
+    const [agent] = await db.insert(agents).values({ companyId: destination.id, name: "Managed worker" }).returning();
+    await ledger.reserveMigrationManagedDirectory(db, run.id, destination.id, { kind: "agent_instructions", agentId: agent!.id });
+    await ledger.reserveMigrationManagedDirectory(db, run.id, destination.id, { kind: "company_skills" });
+    const home = await mkdtemp(path.join(root, "managed-home-"));
+    vi.stubEnv("MYRMIDON_HOME", home);
+    vi.stubEnv("MYRMIDON_INSTANCE_ID", "migration-test");
+    try {
+      const instance = path.join(home, "instances", "migration-test");
+      const sourceDir = path.join(instance, "companies", source!.id);
+      const destinationDir = path.join(instance, "companies", destination.id);
+      const relativeInstructions = path.join("agents", agent!.id, "instructions");
+      const sourceInstructions = path.join(sourceDir, relativeInstructions);
+      const skills = path.join(instance, "skills", destination.id);
+      await mkdir(sourceInstructions, { recursive: true });
+      await mkdir(skills, { recursive: true });
+      await writeFile(path.join(sourceInstructions, "AGENTS.md"), "source instructions");
+      await writeFile(path.join(skills, "SKILL.md"), "destination skill");
+      await symlink(sourceDir, destinationDir, "dir");
+
+      await ledger.releaseApplyClaim(db, run.id, "interrupted");
+      await db.delete(agents).where(eq(agents.id, agent!.id));
+      await db.delete(companies).where(eq(companies.id, destination.id));
+      await expect(recoverRemovedMigrationStorage(db, undefined, source!.id, run.id)).rejects.toThrow("Migration storage recovery failed");
+      expect((await ledger.getRun(db, run.id))?.completedParts).toHaveLength(2);
+      expect(await readFile(path.join(sourceInstructions, "AGENTS.md"), "utf8")).toBe("source instructions");
+
+      await rm(destinationDir);
+      const instructions = path.join(destinationDir, relativeInstructions);
+      await mkdir(instructions, { recursive: true });
+      await writeFile(path.join(instructions, "AGENTS.md"), "destination instructions");
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => {
+        req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+        next();
+      });
+      app.use("/api/companies", companyRoutes(db));
+      app.use(errorHandler);
+      const response = await request(app).post(`/api/companies/${source!.id}/migrations/${run.id}/rollback`)
+        .send({ confirm: "retry managed cleanup" });
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ runId: run.id, status: "rolled_back" });
+      await expect(readdir(instructions)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readdir(skills)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(path.join(sourceInstructions, "AGENTS.md"), "utf8")).toBe("source instructions");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("retains the run identity after its migration-owned destination is deleted", async () => {

@@ -2144,12 +2144,12 @@ registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/migrations/{runId}/rollback",
   tags: ["companies"],
-  summary: "Request a company migration rollback (currently unavailable)",
+  summary: "Retry migration resource cleanup after the owned destination has been removed",
   request: {
     params: z.object({ companyId: z.string(), runId: z.string() }),
     body: jsonBody(z.object({ confirm: z.string().trim().min(1) }).strict()),
   },
-  responses: { 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registry.registerPath({
