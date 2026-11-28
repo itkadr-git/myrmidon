@@ -18,6 +18,13 @@ agent or a run registers a delivering pull request
 resolves each one through the existing company-scoped GitHub resolver and
 adds no token or credential of its own.
 
+For a GitHub `pull_request` registered by URL, the server derives the PR
+reference, fills the missing external ID and repository metadata, and updates
+the existing work product when the same PR is registered again on the task.
+The same normalization applies to updates. With GitHub webhook delivery
+configured, a `synchronize` event can then match the work product, update its
+head SHA, and record `issue.work_product_head_changed` when the head moves.
+
 ## What one pass does
 
 A pass runs on a dedicated process timer, independently of the heartbeat tick, and only the `scheduler` leader performs work. `MYRMIDON_TASK_PR_SYNC_POLL_SEC` sets its interval (default 60 seconds, minimum 15); graceful shutdown stops the timer. A separate daily reconciliation refreshes only still-open PR work products belonging to already-closed tasks, avoiding GitHub requests for products already synced. One pass inspects up to
