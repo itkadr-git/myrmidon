@@ -56,7 +56,8 @@ it("keeps a saved draft after a failed accept and cancel, without creating a dup
   await click("Save and accept");
   expect(http.post).toHaveBeenCalledTimes(2);
   expect(http.post.mock.calls[0]).toEqual(["/myrmidon/companies/c1/knowledge/items/i1/draft", { content: "Edited text" }]);
-  expect(host.textContent).toContain("Forbidden");
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Could not complete the action");
+  expect(host.textContent).not.toContain("Forbidden");
 
   await click("Cancel");
   await click("Edit");
@@ -98,7 +99,8 @@ it("preserves a new page draft and its fields without creating the page twice", 
   expect(http.post.mock.calls).toEqual([["/myrmidon/companies/c1/knowledge/items", { content: "New content", title: "New title", slug: "new-slug" }]]);
   await act(async () => resolveDraft({}));
   await settle();
-  expect(host.textContent).toContain("Forbidden");
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Could not complete the action");
+  expect(host.textContent).not.toContain("Forbidden");
   await click("Cancel");
   await click("Edit");
   expect(host.querySelector("textarea")?.value).toBe("New content");

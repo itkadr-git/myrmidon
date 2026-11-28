@@ -43,7 +43,8 @@ async function openAndFail() {
   await click("Edit");
   await click("Save and accept");
   expect(http.post.mock.calls).toEqual([[draftUrl, { content: "Original proposal" }]]);
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Draft failed");
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Could not complete the action");
+  expect(host.textContent).not.toContain("Draft failed");
   await changeContent(revised);
 }
 
@@ -84,6 +85,7 @@ it("does not decide or create an article if the retry also fails", async () => {
     [draftUrl, { content: revised }],
   ]);
   expect(host.querySelector("textarea")?.value).toBe(revised);
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Draft failed");
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Could not complete the action");
+  expect(host.textContent).not.toContain("Draft failed");
   expect(host.textContent).toContain("Other proposal");
 });

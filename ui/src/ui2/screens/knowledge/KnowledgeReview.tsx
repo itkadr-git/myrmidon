@@ -60,7 +60,7 @@ function ReviewQueue({ companyId, text }: { companyId: string; text: Messages })
       <h1 className="text-2xl font-semibold">{text.heading}</h1>
       {queue.isPending && <p role="status">{text.loading}</p>}
       {queue.error && <div role="alert"><p>{text.loadFailed}</p><Button onClick={() => void queue.refetch()}>{text.retry}</Button></div>}
-      {decision.error && <p role="alert">{text.failed}: {decision.error.message}</p>}
+      {decision.error && <p role="alert">{text.failed}</p>}
       {queue.data?.suggestions.length === 0 && <p>{text.empty}</p>}
       {queue.data?.suggestions.map((suggestion) => (
         <section key={suggestion.id} aria-label={text.suggestion} className="space-y-3 border-b border-border py-4">
