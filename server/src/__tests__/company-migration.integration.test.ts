@@ -564,7 +564,12 @@ describe("company migration dry run", () => {
     app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
     app.use(errorHandler);
     const endpoint = `/api/companies/${source!.id}/migrations`;
-    const input = { target: { mode: "new_company", newCompanyName: `Collision destination for ${reference}` }, collisionStrategy: "skip" };
+    const entity = reference === "project lead" ? "projects" : "issues";
+    const input = {
+      target: { mode: "new_company", newCompanyName: `Collision destination for ${reference}` },
+      export: { include: { [entity]: true } },
+      collisionStrategy: "skip",
+    };
     const before = {
       companies: await db.select().from(companies),
       runs: await db.select().from(companyTransferRuns),
@@ -573,6 +578,8 @@ describe("company migration dry run", () => {
     };
     const preview = await request(app).post(endpoint).send(input);
     expect(preview.status, JSON.stringify(preview.body)).toBe(200);
+    expect(preview.body.sourceCounts[entity]).toBe(workers.length);
+    expect(preview.body.plannedCounts[entity]).toBe(workers.length);
     expect(preview.body.validation.errors).toContain(error);
     const applied = await request(app).post(endpoint).send({ ...input, dryRun: false, apply: true, confirm: "exercise collision policy" });
     expect(applied.status, JSON.stringify(applied.body)).toBe(422);
