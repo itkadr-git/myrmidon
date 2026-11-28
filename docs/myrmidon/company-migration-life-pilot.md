@@ -82,6 +82,10 @@ so it is not a rollback ID or evidence that apply occurred.
    creating duplicates. If verification fails, stop further writes and notify
    the recovery owner.
 6. If recovery is needed, read `GET /api/companies/{sourceCompanyId}/migrations/{runId}`.
+   If the failure occurred just after destination creation and no child writes
+   or storage reservations were committed, the same confirmed apply resumes
+   that destination only if it still matches its journal. Later failures are
+   not replayed in place.
    Use `POST /api/companies/{sourceCompanyId}/migrations/{runId}/rollback` with a
    non-empty `confirm` reason. One database transaction removes journaled child
    rows and archives the destination, preserving its ID. Reserved storage cleanup
@@ -94,6 +98,9 @@ so it is not a rollback ID or evidence that apply occurred.
    run-created resources, and unchanged source data. If rollback refuses a changed
    destination, stop and escalate; do not manually delete resources based on
    guesses.
+   After complete rollback, a new explicitly confirmed apply of the same
+   package starts a new attempt. The previous run and its archived destination
+   remain available for audit.
 
 ## Release gate
 

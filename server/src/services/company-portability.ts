@@ -75,7 +75,7 @@ import {
 import { requireOpenCodeModelId } from "@myrmidon/adapter-opencode-local/server";
 import { findServerAdapter } from "../adapters/index.js";
 import { formatAttachmentSize, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
-import { forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
@@ -764,6 +764,7 @@ type ImportBehaviorOptions = {
   sourceCompanyId?: string | null;
   pauseAutomations?: boolean;
   transferRunId?: string;
+  resumeMigrationDestinationId?: string;
   planNewCompanyAgentNameCollisions?: boolean;
 };
 
@@ -5391,11 +5392,19 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           ? (sourceManifest.company?.feedbackDataSharingTermsVersion ?? null)
           : null,
       };
-      const created = options?.transferRunId
-        ? await companies.create(companyInput, { transferRunId: options.transferRunId })
-        : await companies.create(companyInput);
+      const resumedId = options?.resumeMigrationDestinationId;
+      if (resumedId && (!options?.transferRunId || !options.sourceCompanyId
+        || !await companyTransferRunService.matchesInitialMigrationCompany(db, options.transferRunId, options.sourceCompanyId, resumedId))) {
+        throw conflict("Migration destination no longer matches its creation checkpoint.");
+      }
+      const created = resumedId
+        ? await companies.getById(resumedId)
+        : options?.transferRunId
+          ? await companies.create(companyInput, { transferRunId: options.transferRunId })
+          : await companies.create(companyInput);
+      if (!created) throw conflict("Migration destination is unavailable.");
       if (options?.transferRunId) {
-        await provisionMigrationOwner(db, options.transferRunId, created.id, actorUserId);
+        await provisionMigrationOwner(db, options.transferRunId, created.id, actorUserId, { verifyCheckpoint: Boolean(resumedId) });
       } else if (mode === "agent_safe" && options?.sourceCompanyId) {
         await access.copyActiveUserMemberships(options.sourceCompanyId, created.id);
       } else {

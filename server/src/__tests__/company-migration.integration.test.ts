@@ -2003,6 +2003,64 @@ describe("company migration dry run", () => {
     const remaining = await db.select().from(companies);
     expect(remaining.some((company) => company.id === source!.id)).toBe(true);
     expect(remaining.find((company) => company.id === destination!.id)?.status).toBe("archived");
+    const retry = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+      target: { mode: "new_company", newCompanyName: "Interrupted destination" },
+      dryRun: false, apply: true, confirm: "approved retry after rollback",
+    });
+    expect(retry.status, JSON.stringify(retry.body)).toBe(200);
+    expect(retry.body.runId).not.toBe(run!.id);
+    expect(await companyTransferRunService.getRun(db, run!.id)).toMatchObject({ status: "rolled_back" });
+    const destinations = await db.select().from(companies).where(eq(companies.name, "Interrupted destination"));
+    expect(destinations).toHaveLength(2);
+    expect(destinations.filter((company) => company.status !== "archived")).toHaveLength(1);
+  });
+
+  it("resumes the same confirmed apply after owner creation fails without duplicating the destination", async () => {
+    const [source] = await db.insert(companies).values({ name: "Resume source", issuePrefix: "MRSM" }).returning();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+    const apply = () => request(app).post(`/api/companies/${source!.id}/migrations`).send({
+      target: { mode: "new_company", newCompanyName: "Resume destination" },
+      dryRun: false, apply: true, confirm: "approved fixture",
+    });
+
+    let runId: string | undefined;
+    await db.execute(sql`alter table company_memberships add constraint migration_fixture_failure check (principal_id <> 'local-board') not valid`);
+    try {
+      const failed = await apply();
+      expect(failed.status, JSON.stringify(failed.body)).toBe(409);
+      runId = failed.body.details.runId;
+    } finally {
+      await db.execute(sql`alter table company_memberships drop constraint migration_fixture_failure`);
+    }
+    if (!runId) throw new Error("Failed apply did not return a migration run ID");
+    const failedRun = await companyTransferRunService.getRun(db, runId);
+    expect(failedRun?.companyId).toEqual(expect.any(String));
+    // An independent destination write must not be treated as an import checkpoint.
+    const [independent] = await db.insert(projects).values({ companyId: failedRun!.companyId!, name: "Independent project" }).returning();
+    const refused = await apply();
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(await companyTransferRunService.getRun(db, runId)).toEqual(failedRun);
+    expect(await db.select().from(projects).where(eq(projects.id, independent!.id))).toEqual([independent]);
+    await db.delete(projects).where(eq(projects.id, independent!.id));
+    const retries = await Promise.all([apply(), apply()]);
+    for (const retry of retries) {
+      if (retry.status === 409) continue;
+      expect(retry.status, JSON.stringify(retry.body)).toBe(200);
+      expect(retry.body).toMatchObject({ runId, status: "completed" });
+    }
+    expect(retries.some((retry) => retry.status === 200)).toBe(true);
+    expect(await db.select().from(companies).where(eq(companies.name, "Resume destination")))
+      .toEqual([expect.objectContaining({ id: failedRun!.companyId })]);
+    expect(await db.select().from(companyMemberships).where(eq(companyMemberships.companyId, failedRun!.companyId!)))
+      .toEqual([expect.objectContaining({ principalId: "local-board", membershipRole: "owner" })]);
+    expect((await apply()).body).toMatchObject({ runId, resume: "already_completed" });
   });
 
   it("recovers a partial import after agent creation without touching the source", async () => {

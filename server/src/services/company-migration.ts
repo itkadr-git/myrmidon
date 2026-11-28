@@ -39,12 +39,15 @@ function applyingDestination(runId: string, companyId: string) {
   );
 }
 
-export async function provisionMigrationOwner(db: Db, runId: string, companyId: string, actorUserId: string | null | undefined) {
+export async function provisionMigrationOwner(db: Db, runId: string, companyId: string, actorUserId: string | null | undefined, options?: { verifyCheckpoint: boolean }) {
   await db.transaction(async (tx) => {
     const ownedRun = and(applyingDestination(runId, companyId), sql`not (${companyTransferRuns.containerRef} ? 'ownerProvenance')`);
-    const [claim] = await tx.select({ id: companyTransferRuns.id })
+    const [claim] = await tx.select({ provenance: companyTransferRuns.containerRef })
       .from(companyTransferRuns).where(ownedRun).for("update");
     if (!claim) throw new Error("Migration owner provisioning rejected");
+    if (options?.verifyCheckpoint && !await matchesJournaledMigrationRows(tx, companyId, claim.provenance)) {
+      throw new Error("Migration destination changed before owner provisioning");
+    }
 
     const principalId = actorUserId ?? "board";
     const [membership] = await tx.insert(companyMemberships).values({
@@ -518,6 +521,26 @@ export async function rollbackCompanyMigration(db: Db, storage: StorageService |
   return recoverMigrationStorage(db, storage, sourceCompanyId, runId, true);
 }
 
+async function claimMigrationAtDestinationCheckpoint(db: Db, runId: string, sourceCompanyId: string, companyId: string) {
+  return db.transaction(async (tx) => {
+    // Win the same ledger lock as rollback before checking the live destination.
+    const [claim] = await tx.update(companyTransferRuns).set({ status: "applying", error: null, finishedAt: null, updatedAt: new Date() })
+      .where(and(
+        eq(companyTransferRuns.id, runId), eq(companyTransferRuns.companyId, companyId),
+        eq(companyTransferRuns.direction, "import"), eq(companyTransferRuns.status, "failed"),
+        eq(companyTransferRuns.actorKey, `company_migration:${sourceCompanyId}`),
+        sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' = ${sourceCompanyId}`,
+        sql`${companyTransferRuns.containerRef} - array['kind', 'sourceCompanyId', 'destinationClaimed', 'destinationCompanyId', 'initialCompanyFingerprint']::text[] = '{}'::jsonb`,
+        sql`${companyTransferRuns.completedParts} = '[]'::jsonb`,
+      )).returning({ provenance: companyTransferRuns.containerRef });
+    if (!claim) return false;
+    if (!await matchesJournaledMigrationRows(tx, companyId, claim.provenance)) {
+      throw conflict("Migration destination no longer matches its creation checkpoint.", { runId });
+    }
+    return true;
+  });
+}
+
 export function companyMigrationService(portability: Portability) {
   async function prepare(companyId: string, input: CompanyPortabilityExport, newCompanyName: string, collisionStrategy: "rename" | "skip" | "replace") {
     const exported = await portability.exportBundle(companyId, input, { preview: true, rejectUnknownAgentPermissions: true });
@@ -595,18 +618,25 @@ export function companyMigrationService(portability: Portability) {
         throw unprocessable("Migration cannot apply while required secret bindings are unresolved.");
       }
       const ledger = companyTransferRunService;
-      const { run, alreadyCompleted } = await ledger.resumeOrCreateMigration(db, companyId, report.runKey);
+      const { run, alreadyCompleted } = await ledger.resumeOrCreateMigration(db, companyId, report.runKey, { retryAfterRollback: true });
       const response = { ...report, runId: run.id, dryRun: false as const };
       if (alreadyCompleted) {
         const createdCounts = countJournaledMigrationEntities(run.containerRef);
         return { ...response, counts: createdCounts, createdCounts, status: "completed", resume: "already_completed" };
       }
-      if (!await ledger.claimApply(db, run.id)) throw conflict("Migration is active or requires recovery.", { runId: run.id });
+      const resumeDestination = run.status === "failed" ? run.companyId : null;
+      const claimed = resumeDestination
+        ? await claimMigrationAtDestinationCheckpoint(db, run.id, companyId, resumeDestination)
+        : await ledger.claimApply(db, run.id);
+      if (!claimed) throw conflict("Migration is active or requires recovery.", { runId: run.id });
       try {
         await portability.importBundle({
           source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
           target: { mode: "new_company", newCompanyName }, include: input.include, collisionStrategy,
-        }, actorUserId, { mode: "board_full", pauseAutomations: true, transferRunId: run.id });
+        }, actorUserId, {
+          mode: "board_full", pauseAutomations: true, transferRunId: run.id, sourceCompanyId: companyId,
+          resumeMigrationDestinationId: resumeDestination ?? undefined,
+        });
         const recorded = await ledger.getRun(db, run.id);
         if (!recorded) throw new Error("Migration provenance missing");
         const createdCounts = countJournaledMigrationEntities(recorded.containerRef);

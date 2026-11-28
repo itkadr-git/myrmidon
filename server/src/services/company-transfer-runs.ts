@@ -111,6 +111,8 @@ export interface ResumeOrCreateTransferRunInput {
   /** Credential-free container location descriptor. Never put secrets here. */
   containerRef: unknown;
   companyId?: string | null;
+  /** A confirmed migration apply can start a new attempt after verified rollback. */
+  retryAfterMigrationRollback?: boolean;
 }
 
 export interface ResumeOrCreateTransferRunResult {
@@ -211,12 +213,14 @@ const migrationDatabaseCleanupComplete = sql`(
 export const companyTransferRunService = {
   // This proves only the initial company row, not its children. It is not a
   // deletion predicate: rollback must separately verify all dependent writes.
-  async matchesInitialMigrationCompany(db: Db, runId: string, sourceCompanyId: string): Promise<boolean> {
+  async matchesInitialMigrationCompany(db: Db, runId: string, sourceCompanyId: string, companyId: string): Promise<boolean> {
     const [row] = await db.select({ id: companies.id })
       .from(companies)
       .innerJoin(companyTransferRuns, eq(companies.id, companyTransferRuns.companyId))
       .where(and(
         eq(companyTransferRuns.id, runId),
+        eq(companyTransferRuns.status, "applying"),
+        eq(companies.id, companyId),
         eq(companyTransferRuns.direction, "import"),
         eq(companyTransferRuns.actorKey, `company_migration:${sourceCompanyId}`),
         sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
@@ -237,13 +241,14 @@ export const companyTransferRunService = {
   },
 
   // Migration identity is scoped to the source, not the operator retrying it.
-  async resumeOrCreateMigration(db: Db, sourceCompanyId: string, idempotencyKey: string): Promise<ResumeOrCreateTransferRunResult> {
+  async resumeOrCreateMigration(db: Db, sourceCompanyId: string, idempotencyKey: string, options?: { retryAfterRollback: boolean }): Promise<ResumeOrCreateTransferRunResult> {
     const actorKey = `company_migration:${sourceCompanyId}`;
     return companyTransferRunService.resumeOrCreate(db, {
       direction: "import",
       actorKey,
       idempotencyKey,
       containerRef: { kind: "company_migration", sourceCompanyId },
+      retryAfterMigrationRollback: options?.retryAfterRollback,
     });
   },
 
@@ -276,10 +281,11 @@ export const companyTransferRunService = {
             inArray(companyTransferRuns.status, [...RESUMABLE_STATUSES, "applying", "rolling_back", "rolled_back", "completed"]),
           ),
         )
-        .orderBy(desc(companyTransferRuns.createdAt))
+        // A new attempt must win even when its timestamp ties the rolled-back attempt.
+        .orderBy(input.retryAfterMigrationRollback ? sql`case when ${companyTransferRuns.status} = 'rolled_back' then 1 else 0 end` : desc(companyTransferRuns.createdAt), desc(companyTransferRuns.createdAt))
         .limit(1);
       const existing = matches[0] ? rowFromRecord(matches[0]) : null;
-      if (existing) {
+      if (existing && !(existing.status === "rolled_back" && input.retryAfterMigrationRollback)) {
         return { run: existing, resumed: true, alreadyCompleted: existing.status === "completed" };
       }
       const [created] = await txDb
