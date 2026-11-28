@@ -4,6 +4,8 @@ export interface KnowledgeSuggestion {
   id: string;
   targetItemId: string | null;
   body: string;
+  recommendation?: "accepted" | "rejected" | null;
+  rationale?: string | null;
   status: "pending" | "accepted" | "declined";
   trust: string | null;
   createdAt: string;

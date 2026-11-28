@@ -4,11 +4,13 @@
 //   ?screen=ui2     -> Ui2Shell + Ui2Knowledge at /OPE/knowledge/...
 //   ?screen=legacy  -> the current UI's Ui2KnowledgeCurrentUi at /OPE/wiki/..., in a
 //                      frame that copies the scroll structure of Layout's <main>.
+//   ?screen=review  -> KnowledgeReview in the same current UI scroll frame.
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import "../index.css";
+import { KnowledgeReview } from "../pages/KnowledgeReview";
 import { Ui2Shell } from "../ui2/shell/Ui2Shell";
 import { Ui2I18nProvider } from "../ui2/i18n/Ui2I18n";
 import { Ui2Knowledge } from "../ui2/screens/knowledge/Ui2Knowledge";
@@ -17,7 +19,7 @@ import { Ui2LanguageSettings } from "../ui2/screens/settings/language/Ui2Languag
 
 const params = new URLSearchParams(window.location.search);
 const screenParam = params.get("screen");
-const screen = screenParam === "legacy" ? "legacy" : screenParam === "language" ? "language" : "ui2";
+const screen = screenParam === "legacy" || screenParam === "language" || screenParam === "review" ? screenParam : "ui2";
 const page = params.get("page") ?? "infra/long-page";
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
@@ -44,6 +46,7 @@ function Legacy() {
               <Routes>
                 <Route path="/:companyPrefix/wiki" element={<Ui2KnowledgeCurrentUi />} />
                 <Route path="/:companyPrefix/wiki/:spaceKey/:slug" element={<Ui2KnowledgeCurrentUi />} />
+                <Route path="/:companyPrefix/knowledge/review" element={<KnowledgeReview />} />
               </Routes>
             </main>
           </div>
@@ -72,13 +75,15 @@ const start =
     ? `/OPE/wiki/${encodeURIComponent(spaceKey)}/${encodeURIComponent(slug)}`
     : screen === "language"
       ? `/OPE/company/settings/language`
-      : `/OPE/knowledge/${encodeURIComponent(spaceKey)}/${encodeURIComponent(slug)}`;
+      : screen === "review"
+        ? "/OPE/knowledge/review"
+        : `/OPE/knowledge/${encodeURIComponent(spaceKey)}/${encodeURIComponent(slug)}`;
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[start]}>
-        {screen === "legacy" ? <Legacy /> : screen === "language" ? <Ui2Language /> : <Ui2 />}
+        {screen === "legacy" || screen === "review" ? <Legacy /> : screen === "language" ? <Ui2Language /> : <Ui2 />}
       </MemoryRouter>
     </QueryClientProvider>
   </StrictMode>,
