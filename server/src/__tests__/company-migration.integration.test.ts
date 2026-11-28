@@ -2,7 +2,7 @@ import express from "express";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companySkills, companyTransferRuns, createDb, folders, issueAttachments, issueComments, issueRelations, issues, principalPermissionGrants, projects, projectWorkspaces, routineRevisions, routines, routineTriggers } from "@myrmidon/db";
+import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companySkills, companyTransferRuns, createDb, documentRevisions, documents, folders, issueAttachments, issueComments, issueRelations, issues, principalPermissionGrants, projects, projectWorkspaces, routineDocuments, routineRevisions, routines, routineTriggers } from "@myrmidon/db";
 
 import { companyRoutes } from "../routes/companies.js";
 import { companyService } from "../services/companies.js";
@@ -1801,6 +1801,9 @@ describe("company migration dry run", () => {
     expect(await db.select().from(routines).where(eq(routines.companyId, destination.id))).toEqual([]);
     expect(await db.select().from(routineTriggers).where(eq(routineTriggers.companyId, destination.id))).toEqual([]);
     expect(await db.select().from(routineRevisions).where(eq(routineRevisions.companyId, destination.id))).toEqual([]);
+    expect(await db.select().from(routineDocuments).where(eq(routineDocuments.companyId, destination.id))).toEqual([]);
+    expect(await db.select().from(documents).where(eq(documents.companyId, destination.id))).toEqual([]);
+    expect(await db.select().from(documentRevisions).where(eq(documentRevisions.companyId, destination.id))).toEqual([]);
     expect(await ledger.getRun(db, run.id)).toEqual(before);
 
     const created = await populate(false);
@@ -2279,6 +2282,21 @@ describe("company migration dry run", () => {
     const importedTriggers = await db.select().from(routineTriggers).where(triggerScope);
     expect(importedRoutines).toEqual([expect.objectContaining({ title: "Recovery routine", status: "paused" })]);
     expect(importedTriggers).toEqual([expect.objectContaining({ routineId: importedRoutines[0]!.id, enabled: false })]);
+    const documentScope = eq(documents.companyId, companyId);
+    const revisionScope = eq(documentRevisions.companyId, companyId);
+    const linkScope = eq(routineDocuments.companyId, companyId);
+    const importedDocuments = await db.select().from(documents).where(documentScope);
+    const importedDocumentRevisions = await db.select().from(documentRevisions).where(revisionScope).orderBy(documentRevisions.id);
+    const importedLinks = await db.select().from(routineDocuments).where(linkScope);
+    expect(importedDocuments).toHaveLength(1);
+    expect(importedDocumentRevisions.length).toBeGreaterThan(0);
+    expect(importedLinks).toEqual([expect.objectContaining({ routineId: importedRoutines[0]!.id, documentId: importedDocuments[0]!.id })]);
+
+    const [description] = importedDocuments;
+    await db.update(documents).set({ latestBody: "Independent routine description edit" }).where(eq(documents.id, description!.id));
+    expect((await apply()).status).toBe(409);
+    expect(await companyTransferRunService.getRun(db, runId)).toEqual(run);
+    await db.update(documents).set({ latestBody: description!.latestBody }).where(eq(documents.id, description!.id));
 
     const importedProject = importedProjects[0]!;
     await db.update(projects).set({ name: "Independent project edit" }).where(eq(projects.id, importedProject.id));
@@ -2295,10 +2313,22 @@ describe("company migration dry run", () => {
     expect(await db.select().from(assets).where(assetScope)).toEqual(importedAssets);
     expect(await db.select().from(routines).where(routineScope)).toEqual(importedRoutines);
     expect(await db.select().from(routineTriggers).where(triggerScope)).toEqual(importedTriggers);
+    expect(await db.select().from(documents).where(documentScope)).toEqual(importedDocuments);
+    expect(await db.select().from(documentRevisions).where(revisionScope).orderBy(documentRevisions.id)).toEqual(importedDocumentRevisions);
+    expect(await db.select().from(routineDocuments).where(linkScope)).toEqual(importedLinks);
     expect((await storage.headObject(companyId, importedAssets[0]!.objectKey)).exists).toBe(true);
     expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toEqual([
       expect.objectContaining({ projectId: importedProject.id, projectWorkspaceId: importedWorkspaces[0]!.id }),
     ]);
+
+    const rollback = await request(app).post(`/api/companies/${source!.id}/migrations/${runId}/rollback`)
+      .send({ confirm: "recover routine with description history" });
+    expect(rollback.status, JSON.stringify(rollback.body)).toBe(200);
+    expect(rollback.body).toMatchObject({ runId, status: "rolled_back" });
+    expect(await db.select().from(routineDocuments).where(linkScope)).toEqual([]);
+    expect(await db.select().from(documents).where(documentScope)).toEqual([]);
+    expect(await db.select().from(documentRevisions).where(revisionScope)).toEqual([]);
+    expect(await db.select().from(routines).where(eq(routines.id, routine!.id))).toEqual([routine]);
   });
 
   it("resumes confirmed apply from unchanged committed agent and skill checkpoints", async () => {
