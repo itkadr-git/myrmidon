@@ -2,6 +2,10 @@ import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import { companies, companyTransferRuns } from "@myrmidon/db";
 
+// Hash PostgreSQL's binary row representation so comparison does not depend
+// on the connection's time zone or timestamp formatting. Persist no row data.
+export const migrationCompanyFingerprint = sql<string>`encode(sha256(record_send(${sql.identifier("companies")})), 'hex')`;
+
 // Durable run ledger for chunked company transfers. A run tracks one export
 // publish or import apply of a transfer container. Progress is recorded per
 // container part (chunk or blob name) as each part finishes processing and
@@ -179,6 +183,26 @@ async function reserveMigrationResource(db: Db, runId: string, companyId: string
 }
 
 export const companyTransferRunService = {
+  // This proves only the initial company row, not its children. It is not a
+  // deletion predicate: rollback must separately verify all dependent writes.
+  async matchesInitialMigrationCompany(db: Db, runId: string, sourceCompanyId: string): Promise<boolean> {
+    const [row] = await db.select({ id: companies.id })
+      .from(companies)
+      .innerJoin(companyTransferRuns, eq(companies.id, companyTransferRuns.companyId))
+      .where(and(
+        eq(companyTransferRuns.id, runId),
+        eq(companyTransferRuns.direction, "import"),
+        eq(companyTransferRuns.actorKey, `company_migration:${sourceCompanyId}`),
+        sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
+        sql`nullif(${companyTransferRuns.containerRef}->>'sourceCompanyId', '') = ${sourceCompanyId}`,
+        sql`${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true'`,
+        sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' = ${companies.id}::text`,
+        sql`${companies.id}::text <> ${sourceCompanyId}`,
+        sql`${companyTransferRuns.containerRef}->>'initialCompanyFingerprint' = ${migrationCompanyFingerprint}`,
+      ));
+    return row !== undefined;
+  },
+
   getRun,
 
   async getRunForActor(db: Db, runId: string, actorKey: string): Promise<CompanyTransferRunRow | null> {

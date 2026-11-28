@@ -1,4 +1,4 @@
-import { and, count, eq, gte, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
+import { and, count, eq, getTableColumns, gte, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   companies,
@@ -49,6 +49,7 @@ import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
+import { migrationCompanyFingerprint } from "./company-transfer-runs.js";
 
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -286,11 +287,17 @@ export function companyService(db: Db) {
           return rows[0];
         }
         return await db.transaction(async (tx) => {
-          const [created] = await tx.insert(companies).values({ ...data, issuePrefix: candidate }).returning();
+          const [created] = await tx.insert(companies).values({ ...data, issuePrefix: candidate })
+            .returning({ ...getTableColumns(companies), initialCompanyFingerprint: migrationCompanyFingerprint });
           const attached = await tx.update(companyTransferRuns)
             .set({
               companyId: created!.id,
-              containerRef: sql`case when ${companyTransferRuns.containerRef}->>'kind' = 'company_migration' then jsonb_set(jsonb_set(${companyTransferRuns.containerRef}, '{destinationClaimed}', 'true'::jsonb), '{destinationCompanyId}', to_jsonb(${created!.id}::text)) else ${companyTransferRuns.containerRef} end`,
+              containerRef: sql`case when ${companyTransferRuns.containerRef}->>'kind' = 'company_migration'
+                then ${companyTransferRuns.containerRef} || jsonb_build_object(
+                  'destinationClaimed', true,
+                  'destinationCompanyId', ${created!.id}::text,
+                  'initialCompanyFingerprint', ${created!.initialCompanyFingerprint}::text
+                ) else ${companyTransferRuns.containerRef} end`,
               updatedAt: new Date(),
             })
             .where(and(
