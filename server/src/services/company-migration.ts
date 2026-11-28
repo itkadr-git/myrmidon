@@ -219,7 +219,7 @@ export async function createMigrationProject(
     project: Awaited<ReturnType<ReturnType<typeof projectService>["create"]>>,
     service: Pick<ReturnType<typeof projectService>, "createWorkspace" | "update">,
   ) => Promise<void>,
-) {
+): Promise<Awaited<ReturnType<ReturnType<typeof projectService>["create"]>>> {
   return db.transaction(async (tx) => {
     const ownedRun = applyingDestination(runId, companyId);
     const [claim] = await tx.select({ id: companyTransferRuns.id })

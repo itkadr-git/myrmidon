@@ -724,7 +724,11 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     if (!run || run.direction !== "import") {
       throw notFound("Import transfer not found");
     }
-    return run;
+    const { status } = run;
+    if (status === "rolling_back" || status === "rolled_back") {
+      throw notFound("Import transfer not found");
+    }
+    return { ...run, status };
   }
 
   /** The declared part list persisted on the run at create time. */
@@ -1136,7 +1140,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     if (body.apply || !body.dryRun) {
       if (!body.apply || body.dryRun || !body.confirm) throw badRequest("Apply requires dryRun: false, apply: true and confirmation.");
       res.json(await migration.apply(db, companyId, body.export, body.target.newCompanyName, body.collisionStrategy,
-        req.actor.type === "board" ? req.actor.userId : null));
+        req.actor.type === "board" ? req.actor.userId ?? null : null));
       return;
     }
     res.json(await migration.dryRun(companyId, body.export, body.target.newCompanyName, body.collisionStrategy));
