@@ -97,40 +97,42 @@ export function createActionsReader({
 } = {}) {
   return async (path) => {
     for (let attempt = 1; ; attempt += 1) {
-      // Retry only while both the attempt budget and the caller's deadline
-      // leave room for the wait this attempt would cost.
+      const remaining = deadlineAt() - now();
+      if (remaining <= 0) throw new Error("GitHub Actions read deadline exceeded.");
       const waitMs = backoffMs * attempt;
-      const retryable = attempt < attempts && now() + waitMs < deadlineAt();
-      const pause = (response) => sleep(retryAfterMs(response, maxRetryAfterMs) ?? waitMs);
+      const pause = async (response) => {
+        const delay = retryAfterMs(response, maxRetryAfterMs) ?? waitMs;
+        if (attempt >= attempts || now() + delay >= deadlineAt()) return false;
+        await sleep(delay);
+        return true;
+      };
       let response;
       try {
         response = await fetchImpl(`https://api.github.com${path}`, {
           headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" },
-          signal: AbortSignal.timeout(30_000), redirect: "error",
+          signal: AbortSignal.timeout(Math.min(30_000, Math.max(1, Math.floor(remaining)))), redirect: "error",
         });
       } catch (cause) {
-        if (!retryable) throw new Error(`GitHub Actions read failed: ${cause.message}`);
+        if (!await pause()) throw new Error(`GitHub Actions read failed: ${cause.message}`);
         log(`GitHub Actions read failed (${cause.message}); retrying (${attempt}/${attempts - 1}).`);
-        await pause();
         continue;
       }
       if (response.ok) {
+        let body;
         try {
-          // A 200 whose body is truncated or undecodable is a transport
-          // failure like any other, so it belongs inside the retry.
-          return await response.json();
+          body = await response.json();
         } catch (cause) {
-          if (!retryable) throw new Error(`GitHub Actions read failed: ${cause.message}`);
+          if (!await pause()) throw new Error(`GitHub Actions read failed: ${cause.message}`);
           log(`GitHub Actions read body failed (${cause.message}); retrying (${attempt}/${attempts - 1}).`);
-          await pause();
           continue;
         }
+        if (now() >= deadlineAt()) throw new Error("GitHub Actions read deadline exceeded.");
+        return body;
       }
-      if (!retryable || !(TRANSIENT_READ_STATUSES.has(response.status) || rateLimited(response))) {
+      if (!(TRANSIENT_READ_STATUSES.has(response.status) || rateLimited(response)) || !await pause(response)) {
         throw new Error(`GitHub Actions read failed (HTTP ${response.status}).`);
       }
       log(`GitHub Actions read failed (HTTP ${response.status}); retrying (${attempt}/${attempts - 1}).`);
-      await pause(response);
     }
   };
 }
@@ -144,7 +146,7 @@ export async function waitForSourceVerification(sha, {
   log(`Waiting for ${sourceVerificationJob} for ${sha}.`);
   while (now() < deadline) {
     const result = await readSourceVerification(sha, api);
-    if (result) return result;
+    if (result && now() < deadline) return result;
     const remaining = deadline - now();
     if (remaining > 0) await sleep(Math.min(intervalMs, remaining));
   }
