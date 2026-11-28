@@ -3,8 +3,8 @@ import { lstat, rm } from "node:fs/promises";
 import path from "node:path";
 import type { CompanyPortabilityExport } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
-import { companyMemberships, companyTransferRuns, principalPermissionGrants } from "@myrmidon/db";
-import { and, eq, sql } from "drizzle-orm";
+import { assets, companyLogos, companyMemberships, companyTransferRuns, principalPermissionGrants } from "@myrmidon/db";
+import { and, eq, getTableColumns, sql } from "drizzle-orm";
 import { conflict, notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import type { StorageService } from "../storage/types.js";
@@ -18,20 +18,23 @@ import { grantsForHumanRole } from "./company-member-roles.js";
 
 type Portability = ReturnType<typeof companyPortabilityService>;
 
+function applyingDestination(runId: string, companyId: string) {
+  return and(
+    eq(companyTransferRuns.id, runId),
+    eq(companyTransferRuns.companyId, companyId),
+    eq(companyTransferRuns.direction, "import"),
+    eq(companyTransferRuns.status, "applying"),
+    sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
+    sql`${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true'`,
+    sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' = ${companyId}`,
+    sql`nullif(${companyTransferRuns.containerRef}->>'sourceCompanyId', '') <> ${companyId}`,
+    sql`${companyTransferRuns.actorKey} = 'company_migration:' || (${companyTransferRuns.containerRef}->>'sourceCompanyId')`,
+  );
+}
+
 export async function provisionMigrationOwner(db: Db, runId: string, companyId: string, actorUserId: string | null | undefined) {
   await db.transaction(async (tx) => {
-    const ownedRun = and(
-      eq(companyTransferRuns.id, runId),
-      eq(companyTransferRuns.companyId, companyId),
-      eq(companyTransferRuns.direction, "import"),
-      eq(companyTransferRuns.status, "applying"),
-      sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
-      sql`${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true'`,
-      sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' = ${companyId}`,
-      sql`nullif(${companyTransferRuns.containerRef}->>'sourceCompanyId', '') <> ${companyId}`,
-      sql`${companyTransferRuns.actorKey} = 'company_migration:' || (${companyTransferRuns.containerRef}->>'sourceCompanyId')`,
-      sql`not (${companyTransferRuns.containerRef} ? 'ownerProvenance')`,
-    );
+    const ownedRun = and(applyingDestination(runId, companyId), sql`not (${companyTransferRuns.containerRef} ? 'ownerProvenance')`);
     const [claim] = await tx.select({ id: companyTransferRuns.id })
       .from(companyTransferRuns).where(ownedRun).for("update");
     if (!claim) throw new Error("Migration owner provisioning rejected");
@@ -56,6 +59,47 @@ export async function provisionMigrationOwner(db: Db, runId: string, companyId: 
       updatedAt: new Date(),
     }).where(ownedRun).returning({ id: companyTransferRuns.id });
     if (!saved) throw new Error("Migration owner provenance was not recorded");
+  });
+}
+
+export async function recordMigrationAsset(
+  db: Db,
+  runId: string,
+  companyId: string,
+  data: Omit<typeof assets.$inferInsert, "companyId">,
+  logo: boolean,
+) {
+  const resource = parseMigrationResource(companyId, data.objectKey);
+  if (resource?.kind !== "object" || !data.objectKey.startsWith(`${companyId}/assets/${logo ? "companies" : "general"}/`)) {
+    throw new Error("Invalid migration asset reservation");
+  }
+  return db.transaction(async (tx) => {
+    const ownedRun = and(
+      applyingDestination(runId, companyId),
+      sql`${companyTransferRuns.completedParts} @> ${JSON.stringify([data.objectKey])}::jsonb`,
+      sql`not (coalesce(${companyTransferRuns.containerRef}->'assetProvenance', '{}'::jsonb) ? ${data.objectKey})`,
+    );
+    const [claim] = await tx.select({ id: companyTransferRuns.id })
+      .from(companyTransferRuns).where(ownedRun).for("update");
+    if (!claim) throw new Error("Migration asset recording rejected");
+
+    const [created] = await tx.insert(assets).values({ ...data, companyId }).returning({
+      ...getTableColumns(assets), fingerprint: migrationRowFingerprint("assets"),
+    });
+    if (!created) throw new Error("Migration asset was not created");
+    const { fingerprint, ...asset } = created;
+    const logoRows = logo ? await tx.insert(companyLogos).values({ companyId, assetId: asset.id }).returning({
+      id: companyLogos.id, fingerprint: migrationRowFingerprint("company_logos"),
+    }) : [];
+    if (logo && logoRows.length !== 1) throw new Error("Migration logo was not created");
+
+    const provenance = { [data.objectKey]: { id: asset.id, fingerprint, logo: logoRows[0] ?? null } };
+    const [saved] = await tx.update(companyTransferRuns).set({
+      containerRef: sql`${companyTransferRuns.containerRef} || jsonb_build_object('assetProvenance', coalesce(${companyTransferRuns.containerRef}->'assetProvenance', '{}'::jsonb) || ${JSON.stringify(provenance)}::jsonb)`,
+      updatedAt: new Date(),
+    }).where(ownedRun).returning({ id: companyTransferRuns.id });
+    if (!saved) throw new Error("Migration asset provenance was not recorded");
+    return asset;
   });
 }
 

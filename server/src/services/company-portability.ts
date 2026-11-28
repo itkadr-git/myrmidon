@@ -86,7 +86,7 @@ import { generateReadme } from "./company-export-readme.js";
 import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
 import { companySkillService } from "./company-skills.js";
 import { companyService } from "./companies.js";
-import { provisionMigrationOwner } from "./company-migration.js";
+import { provisionMigrationOwner, recordMigrationAsset } from "./company-migration.js";
 import { companyTransferRunService } from "./company-transfer-runs.js";
 import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
@@ -5436,8 +5436,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       if (include.company) {
         const logoPath = sourceManifest.company?.logoPath ?? null;
         if (!logoPath) {
-          const cleared = await companies.update(targetCompany.id, { logoAssetId: null });
-          targetCompany = cleared ?? targetCompany;
+          if (!migrationRunId) {
+            const cleared = await companies.update(targetCompany.id, { logoAssetId: null });
+            targetCompany = cleared ?? targetCompany;
+          }
         } else {
           const logoFile = plan.source.files[logoPath];
           if (!logoFile) {
@@ -5461,7 +5463,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                   body,
                   beforeWrite: migrationStorageReservation,
                 });
-                const createdAsset = await assetRecords.create(targetCompany.id, {
+                const assetData = {
                   provider: stored.provider,
                   objectKey: stored.objectKey,
                   contentType: stored.contentType,
@@ -5470,11 +5472,16 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                   originalFilename: stored.originalFilename,
                   createdByAgentId: null,
                   createdByUserId: actorUserId ?? null,
-                });
-                const updated = await companies.update(targetCompany.id, {
-                  logoAssetId: createdAsset.id,
-                });
-                targetCompany = updated ?? targetCompany;
+                };
+                if (migrationRunId) {
+                  await recordMigrationAsset(db, migrationRunId, destinationCompanyId, assetData, true);
+                } else {
+                  const createdAsset = await assetRecords.create(targetCompany.id, assetData);
+                  const updated = await companies.update(targetCompany.id, {
+                    logoAssetId: createdAsset.id,
+                  });
+                  targetCompany = updated ?? targetCompany;
+                }
               } catch (err) {
                 if (migrationStorageReservation) throw err;
                 warnings.push(`Failed to import company logo ${logoPath}: ${err instanceof Error ? err.message : String(err)}`);
@@ -5515,7 +5522,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 body,
                 beforeWrite: migrationStorageReservation,
               });
-              const createdAsset = await assetRecords.create(targetCompany.id, {
+              const assetData = {
                 provider: stored.provider,
                 objectKey: stored.objectKey,
                 contentType: stored.contentType,
@@ -5524,7 +5531,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 originalFilename: stored.originalFilename,
                 createdByAgentId: null,
                 createdByUserId: actorUserId ?? null,
-              });
+              };
+              const createdAsset = migrationRunId
+                ? await recordMigrationAsset(db, migrationRunId, destinationCompanyId, assetData, false)
+                : await assetRecords.create(targetCompany.id, assetData);
               embeddedAssetIdMap.set(embeddedAsset.assetId, createdAsset.id);
             } catch (error) {
               if (migrationStorageReservation) throw error;

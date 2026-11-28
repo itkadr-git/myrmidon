@@ -6,7 +6,7 @@ import { activityLog, agents, assets, companies, companyLogos, companyMembership
 
 import { companyRoutes } from "../routes/companies.js";
 import { companyService } from "../services/companies.js";
-import { provisionMigrationOwner, recoverRemovedMigrationStorage } from "../services/company-migration.js";
+import { provisionMigrationOwner, recordMigrationAsset, recoverRemovedMigrationStorage } from "../services/company-migration.js";
 import { companyTransferRunService, parseMigrationResource } from "../services/company-transfer-runs.js";
 import { errorHandler } from "../middleware/index.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
@@ -1503,6 +1503,43 @@ describe("company migration dry run", () => {
     expect(await db.select().from(companyMemberships).where(eq(companyMemberships.companyId, destination.id))).toEqual([]);
     expect(await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, destination.id))).toEqual([existing]);
     expect(await ledger.getRun(db, run.id)).toEqual(before);
+  });
+
+  it("commits reserved asset and logo provenance together and leaves failed reservations recoverable", async () => {
+    const ledger = companyTransferRunService;
+    const { run } = await ledger.resumeOrCreateMigration(db, "asset-source", "asset-provenance");
+    expect(await ledger.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Asset provenance destination" }, { transferRunId: run.id });
+    const storage = createStorageService(createLocalDiskStorageProvider(root));
+    const upload = () => storage.putFile({
+      companyId: destination.id, namespace: "assets/companies", originalFilename: "logo.png",
+      contentType: "image/png", body: Buffer.from("synthetic logo"),
+      beforeWrite: (objectKey) => ledger.reserveMigrationObject(db, run.id, destination.id, objectKey),
+    });
+    const first = await upload();
+    const [unclaimed] = await db.insert(companies).values({ name: "Unclaimed asset company", issuePrefix: "UAC" }).returning();
+    const foreign = { ...first, objectKey: first.objectKey.replace(destination.id, unclaimed!.id) };
+    await expect(recordMigrationAsset(db, run.id, unclaimed!.id, foreign, true)).rejects.toThrow("Migration asset recording rejected");
+
+    const asset = await recordMigrationAsset(db, run.id, destination.id, first, true);
+    const [logo] = await db.select().from(companyLogos).where(eq(companyLogos.companyId, destination.id));
+    expect(logo?.assetId).toBe(asset.id);
+    expect((await ledger.getRun(db, run.id))?.containerRef).toMatchObject({
+      assetProvenance: { [first.objectKey]: {
+        id: asset.id, fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+        logo: { id: logo!.id, fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      } },
+    });
+    await expect(recordMigrationAsset(db, run.id, destination.id, first, true)).rejects.toThrow("Migration asset recording rejected");
+
+    const second = await upload();
+    const before = await ledger.getRun(db, run.id);
+    await expect(recordMigrationAsset(db, run.id, destination.id, second, true)).rejects.toThrow();
+    expect(await db.select().from(assets).where(eq(assets.companyId, destination.id))).toEqual([asset]);
+    expect(await db.select().from(companyLogos).where(eq(companyLogos.companyId, destination.id))).toEqual([logo]);
+    expect(await ledger.getRun(db, run.id)).toEqual(before);
+    expect(before?.completedParts).toContain(second.objectKey);
+    expect((await storage.headObject(destination.id, second.objectKey)).exists).toBe(true);
   });
 
   it("records destination provenance before a failure creating its owner membership", async () => {
