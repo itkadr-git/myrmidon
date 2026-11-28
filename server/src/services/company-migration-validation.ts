@@ -195,3 +195,10 @@ export function validateMigrationManifest(manifest: MigrationManifest) {
 }
 
 export const MIGRATION_SKIPPED_MANAGER_ERROR = "An agent would lose its reportsTo link because its manager is skipped.";
+export const MIGRATION_SKIPPED_PROJECT_LEAD_ERROR = "A project would lose its lead because its lead agent is skipped.";
+export const MIGRATION_SKIPPED_TASK_ASSIGNEE_ERROR = "A task would lose its assignee because its assigned agent is skipped.";
+export const MIGRATION_SAFE_PLAN_ERRORS: ReadonlySet<string> = new Set([
+  MIGRATION_SKIPPED_MANAGER_ERROR,
+  MIGRATION_SKIPPED_PROJECT_LEAD_ERROR,
+  MIGRATION_SKIPPED_TASK_ASSIGNEE_ERROR,
+]);

@@ -9,7 +9,7 @@ import type { StorageService } from "../storage/types.js";
 import { companySkillService } from "./company-skills.js";
 import { migrationManagedFileWriter, removeJournaledMigrationFile } from "./company-migration-files.js";
 import type { companyPortabilityService } from "./company-portability.js";
-import { MIGRATION_SKIPPED_MANAGER_ERROR, validateMigrationManifest } from "./company-migration-validation.js";
+import { MIGRATION_SAFE_PLAN_ERRORS, validateMigrationManifest } from "./company-migration-validation.js";
 import { companyTransferRunService, migrationCompanyFingerprint, migrationRowFingerprint, parseMigrationResource } from "./company-transfer-runs.js";
 import { migrationRunKey } from "./company-migration-key.js";
 import { grantsForHumanRole } from "./company-member-roles.js";
@@ -552,8 +552,8 @@ export function companyMigrationService(portability: Portability) {
       collisionStrategy,
     }, { mode: "board_full", planNewCompanyAgentNameCollisions: true }) : null;
     const importErrors = preview?.errors ?? [];
-    const safeImportErrors = importErrors.includes(MIGRATION_SKIPPED_MANAGER_ERROR) ? [MIGRATION_SKIPPED_MANAGER_ERROR] : [];
-    if (importErrors.some((error) => error !== MIGRATION_SKIPPED_MANAGER_ERROR)) {
+    const safeImportErrors = importErrors.filter((error) => MIGRATION_SAFE_PLAN_ERRORS.has(error));
+    if (safeImportErrors.length !== importErrors.length) {
       safeImportErrors.push("Import preview reported errors; inspect the source package.");
     }
     const sourceCounts = {

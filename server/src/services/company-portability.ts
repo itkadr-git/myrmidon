@@ -87,7 +87,7 @@ import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
 import { companySkillService } from "./company-skills.js";
 import { companyService } from "./companies.js";
 import { createMigrationAgent, createMigrationIssues, createMigrationLabel, createMigrationProject, createMigrationRoutine, importMigrationSkills, linkMigrationAgent, provisionMigrationOwner, recordMigrationAsset } from "./company-migration.js";
-import { MIGRATION_SKIPPED_MANAGER_ERROR } from "./company-migration-validation.js";
+import { MIGRATION_SKIPPED_MANAGER_ERROR, MIGRATION_SKIPPED_PROJECT_LEAD_ERROR, MIGRATION_SKIPPED_TASK_ASSIGNEE_ERROR } from "./company-migration-validation.js";
 import { migrationManagedFileWriter } from "./company-migration-files.js";
 import { companyTransferRunService } from "./company-transfer-runs.js";
 import { validateCron } from "./cron.js";
@@ -5116,13 +5116,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       });
     }
 
-    if (input.target.mode === "new_company" && (options?.planNewCompanyAgentNameCollisions || options?.transferRunId)) {
-      const skipped = new Set(agentPlans.filter((entry) => entry.action === "skip").map((entry) => entry.slug));
-      if (selectedAgents.some((agent) => !skipped.has(agent.slug) && agent.reportsToSlug && skipped.has(agent.reportsToSlug))) {
-        errors.push(MIGRATION_SKIPPED_MANAGER_ERROR);
-      }
-    }
-
     if (include.projects) {
       for (const manifestProject of manifest.projects) {
         const existing = existingProjectSlugToProject.get(manifestProject.slug) ?? null;
@@ -5212,6 +5205,23 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           plannedTitle: manifestIssue.title,
           reason: manifestIssue.recurring ? "Recurring task will be imported as a routine." : null,
         });
+      }
+    }
+
+    if (input.target.mode === "new_company" && (options?.planNewCompanyAgentNameCollisions || options?.transferRunId)) {
+      // A skipped agent in a fresh destination has no existing row to resolve to.
+      const skipped = new Set(agentPlans.filter((entry) => entry.action === "skip").map((entry) => entry.slug));
+      const losesAgent = (slug: string | null) => slug !== null && skipped.has(slug);
+      if (selectedAgents.some((agent) => !skipped.has(agent.slug) && losesAgent(agent.reportsToSlug))) {
+        errors.push(MIGRATION_SKIPPED_MANAGER_ERROR);
+      }
+      const importedProjects = new Set(projectPlans.filter((entry) => entry.action !== "skip").map((entry) => entry.slug));
+      if (manifest.projects.some((project) => importedProjects.has(project.slug) && losesAgent(project.leadAgentSlug))) {
+        errors.push(MIGRATION_SKIPPED_PROJECT_LEAD_ERROR);
+      }
+      const importedIssues = new Set(issuePlans.filter((entry) => entry.action !== "skip").map((entry) => entry.slug));
+      if (manifest.issues.some((issue) => importedIssues.has(issue.slug) && losesAgent(issue.assigneeAgentSlug))) {
+        errors.push(MIGRATION_SKIPPED_TASK_ASSIGNEE_ERROR);
       }
     }
 
