@@ -148,6 +148,18 @@ are unaffected. See the knowledge gate settings
 [`docs/myrmidon/SETTINGS.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md)
 for the rollout and settings reference.
 
+## Task card readiness gate
+
+When a task explicitly marked for an engineer is created in `todo`, or an
+API update moves it to `todo`, the server checks the card's completeness.
+In `enforce` mode it rejects incomplete cards with `422 task_card_not_ready`
+and a list of violations. In `warning` mode it logs the violations and
+allows the transition. By default, the gate warns for three days from
+`2026-11-07T00:00:00Z` and then enforces the check. Set
+`MYRMIDON_TASK_CARD_GATE_MODE` to `warning` or `enforce` to choose a mode, or
+set `MYRMIDON_TASK_CARD_GATE_START_DATE` to change the rollout start date.
+See the [1.6.8 release notes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/releases/1.6.8.md) for more context.
+
 ## Recovery and requeue holds
 
 If a failed run is reconciled after an operator has already returned its task
