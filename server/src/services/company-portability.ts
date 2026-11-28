@@ -5555,7 +5555,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         existingProjectSlugToId.set(existing.urlKey, existing.id);
       }
 
-      const importedSkills = include.skills || include.agents
+      const importsSkills = include.skills || include.agents;
+      if (migrationRunId && importsSkills) {
+        await companyTransferRunService.reserveMigrationManagedDirectory(db, migrationRunId, destinationCompanyId, { kind: "company_skills" });
+      }
+      const importedSkills = importsSkills
         ? await companySkills.importPackageFiles(targetCompany.id, pickTextFiles(plan.source.files), {
             onConflict: resolveSkillConflictStrategy(mode, plan.collisionStrategy),
           })
@@ -5721,6 +5725,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             true,
             actorUserId ?? null,
           );
+          if (migrationRunId) {
+            await companyTransferRunService.reserveMigrationManagedDirectory(db, migrationRunId, destinationCompanyId, {
+              kind: "agent_instructions", agentId: created.id,
+            });
+          }
           try {
             const materialized = await instructions.materializeManagedBundle(created, bundleFiles, {
               clearLegacyPromptTemplate: true,
@@ -5728,6 +5737,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             });
             created = await agents.update(created.id, { adapterConfig: materialized.adapterConfig }) ?? created;
           } catch (err) {
+            if (migrationRunId) throw err;
             warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
           }
           await applyImportedAgentPermissionGrants(

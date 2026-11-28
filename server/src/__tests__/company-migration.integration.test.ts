@@ -6,7 +6,7 @@ import { activityLog, agents, assets, companies, companyLogos, companyMembership
 
 import { companyRoutes } from "../routes/companies.js";
 import { companyService } from "../services/companies.js";
-import { companyTransferRunService } from "../services/company-transfer-runs.js";
+import { companyTransferRunService, parseMigrationResource } from "../services/company-transfer-runs.js";
 import { errorHandler } from "../middleware/index.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
@@ -1128,6 +1128,31 @@ describe("company migration dry run", () => {
     await companyTransferRunService.releaseApplyClaim(db, run.id, "interrupted");
     await expect(companyTransferRunService.reserveMigrationObject(db, run.id, destination.id, key)).rejects.toThrow();
     expect((await companyTransferRunService.getRun(db, run.id))?.completedParts).toEqual([key]);
+  });
+
+  it("preserves only destination-scoped managed directory reservations across restart", async () => {
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, "managed-directory-source", "managed-directory-restart");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Managed directory destination" }, { transferRunId: run.id });
+    const otherId = "ac9e0773-eb55-4cdd-a975-21237aa9965e";
+    const agentId = "960e2c8a-970d-4a69-8261-35f683e6452f";
+    const instructions = { kind: "agent_instructions", agentId } as const;
+    await expect(companyTransferRunService.reserveMigrationManagedDirectory(db, run.id, otherId, instructions)).rejects.toThrow();
+    await expect(companyTransferRunService.reserveMigrationManagedDirectory(db, run.id, destination.id, {
+      kind: "agent_instructions", agentId: "../../instructions",
+    })).rejects.toThrow();
+    await companyTransferRunService.reserveMigrationManagedDirectory(db, run.id, destination.id, instructions);
+    await companyTransferRunService.reserveMigrationManagedDirectory(db, run.id, destination.id, instructions);
+    await companyTransferRunService.reserveMigrationManagedDirectory(db, run.id, destination.id, { kind: "company_skills" });
+
+    expect(await companyTransferRunService.recoverStrandedApplyingRuns(db)).toContain(run.id);
+    const recovered = await companyTransferRunService.getRun(db, run.id);
+    expect(recovered?.status).toBe("failed");
+    expect(recovered?.completedParts.map((part) => parseMigrationResource(destination.id, part))).toEqual([
+      instructions, { kind: "company_skills" },
+    ]);
+    expect(parseMigrationResource(otherId, `${destination.id}/managed/skills`)).toBeNull();
+    await expect(companyTransferRunService.reserveMigrationManagedDirectory(db, run.id, destination.id, instructions)).rejects.toThrow();
   });
 
   it("does not acknowledge object deletion if rollback provenance changes to the source", async () => {
