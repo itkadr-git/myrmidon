@@ -2217,6 +2217,63 @@ describe("company migration dry run", () => {
     expect(replay.body).toMatchObject({ runId: retried.body.runId, resume: "already_completed" });
   });
 
+  it("resumes after a committed project and preserves the issue workspace reference", async () => {
+    const [source] = await db.insert(companies).values({ name: "Project recovery source", issuePrefix: "MPR" }).returning();
+    const [project] = await db.insert(projects).values({ companyId: source!.id, name: "Recovery project" }).returning();
+    const [workspace] = await db.insert(projectWorkspaces).values({
+      companyId: source!.id, projectId: project!.id, name: "Recovery workspace", sourceType: "git_repo", repoUrl: "https://example.com/recovery.git", isPrimary: true,
+    }).returning();
+    await db.insert(issues).values({
+      companyId: source!.id, projectId: project!.id, projectWorkspaceId: workspace!.id, title: "Recovery issue",
+    });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+    const apply = () => request(app).post(`/api/companies/${source!.id}/migrations`).send({
+      target: { mode: "new_company", newCompanyName: "Project recovery destination" },
+      export: { include: { projects: true, issues: true } },
+      dryRun: false, apply: true, confirm: "approved fixture",
+    });
+    await db.execute(sql`alter table issues add constraint migration_project_checkpoint_failure check (title <> 'Recovery issue') not valid`);
+    const failed = await apply().finally(async () => {
+      await db.execute(sql`alter table issues drop constraint migration_project_checkpoint_failure`);
+    });
+    expect(failed.status, JSON.stringify(failed.body)).toBe(409);
+    const runId = failed.body.details?.runId;
+    expect(runId).toEqual(expect.any(String));
+    const run = await companyTransferRunService.getRun(db, runId);
+    expect(run).toMatchObject({ status: "failed", companyId: expect.any(String) });
+    const companyId = run!.companyId!;
+    const projectScope = eq(projects.companyId, companyId);
+    const workspaceScope = eq(projectWorkspaces.companyId, companyId);
+    const importedProjects = await db.select().from(projects).where(projectScope);
+    const importedWorkspaces = await db.select().from(projectWorkspaces).where(workspaceScope);
+    expect(importedProjects).toHaveLength(1);
+    expect(importedWorkspaces).toHaveLength(1);
+    expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toEqual([]);
+
+    const importedProject = importedProjects[0]!;
+    await db.update(projects).set({ name: "Independent project edit" }).where(eq(projects.id, importedProject.id));
+    expect((await apply()).status).toBe(409);
+    expect(await companyTransferRunService.getRun(db, runId)).toEqual(run);
+    await db.update(projects).set({ name: importedProject.name }).where(eq(projects.id, importedProject.id));
+
+    const resumed = await apply();
+    expect(resumed.status, JSON.stringify(resumed.body)).toBe(200);
+    expect(resumed.body).toMatchObject({ runId, status: "completed", createdCounts: { projects: 1, issues: 1 } });
+    expect(await companyTransferRunService.getRun(db, runId)).toMatchObject({ companyId, status: "completed" });
+    expect(await db.select().from(projects).where(projectScope)).toEqual(importedProjects);
+    expect(await db.select().from(projectWorkspaces).where(workspaceScope)).toEqual(importedWorkspaces);
+    expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toEqual([
+      expect.objectContaining({ projectId: importedProject.id, projectWorkspaceId: importedWorkspaces[0]!.id }),
+    ]);
+  });
+
   it("resumes confirmed apply from unchanged committed agent and skill checkpoints", async () => {
     const [source] = await db.insert(companies).values({ name: "Agent checkpoint source", issuePrefix: "MACP" }).returning();
     await companySkillService(db).importPackageFiles(source!.id, {
