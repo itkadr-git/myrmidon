@@ -6,7 +6,7 @@ import { activityLog, agents, assets, companies, companyLogos, companyMembership
 
 import { companyRoutes } from "../routes/companies.js";
 import { companyService } from "../services/companies.js";
-import { recoverRemovedMigrationStorage } from "../services/company-migration.js";
+import { provisionMigrationOwner, recoverRemovedMigrationStorage } from "../services/company-migration.js";
 import { companyTransferRunService, parseMigrationResource } from "../services/company-transfer-runs.js";
 import { errorHandler } from "../middleware/index.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
@@ -1461,6 +1461,48 @@ describe("company migration dry run", () => {
     expect((await db.select().from(companies)).some((company) => company.name === "Export provenance destination")).toBe(false);
     const saved = (await db.select().from(companyTransferRuns)).find((entry) => entry.id === run!.id);
     expect(saved?.companyId).toBeNull();
+  });
+
+  it("commits migration owner membership and its provenance together", async () => {
+    const [source] = await db.insert(companies).values({ name: "Owner provenance source", issuePrefix: "MOP" }).returning();
+    const ledger = companyTransferRunService;
+    const { run } = await ledger.resumeOrCreateMigration(db, source!.id, "owner-provenance");
+    expect(await ledger.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Owner provenance destination" }, { transferRunId: run.id });
+
+    await expect(provisionMigrationOwner(db, run.id, source!.id, "foreign-owner")).rejects.toThrow();
+    expect(await db.select().from(companyMemberships).where(eq(companyMemberships.companyId, source!.id))).toEqual([]);
+
+    await provisionMigrationOwner(db, run.id, destination.id, "migration-owner");
+    const [membership] = await db.select().from(companyMemberships).where(eq(companyMemberships.companyId, destination.id));
+    const grants = await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, destination.id));
+    expect(membership).toMatchObject({ principalId: "migration-owner", membershipRole: "owner" });
+    expect(grants.length).toBeGreaterThan(0);
+    expect((await ledger.getRun(db, run.id))?.containerRef).toMatchObject({
+      ownerProvenance: {
+        membership: { id: membership!.id, fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) },
+        grants: expect.arrayContaining(grants.map(({ id }) => ({ id, fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) }))),
+      },
+    });
+    await expect(provisionMigrationOwner(db, run.id, destination.id, "unexpected-owner")).rejects.toThrow();
+    expect(await db.select().from(companyMemberships).where(eq(companyMemberships.companyId, destination.id))).toEqual([membership]);
+  });
+
+  it("rolls back the migration membership when an owner grant cannot be inserted", async () => {
+    const [source] = await db.insert(companies).values({ name: "Owner grant conflict source", issuePrefix: "MGC" }).returning();
+    const ledger = companyTransferRunService;
+    const { run } = await ledger.resumeOrCreateMigration(db, source!.id, "owner-grant-conflict");
+    expect(await ledger.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Owner grant conflict destination" }, { transferRunId: run.id });
+    const [existing] = await db.insert(principalPermissionGrants).values({
+      companyId: destination.id, principalType: "user", principalId: "migration-owner", permissionKey: "agents:create",
+    }).returning();
+    const before = await ledger.getRun(db, run.id);
+
+    await expect(provisionMigrationOwner(db, run.id, destination.id, "migration-owner")).rejects.toThrow();
+    expect(await db.select().from(companyMemberships).where(eq(companyMemberships.companyId, destination.id))).toEqual([]);
+    expect(await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, destination.id))).toEqual([existing]);
+    expect(await ledger.getRun(db, run.id)).toEqual(before);
   });
 
   it("records destination provenance before a failure creating its owner membership", async () => {

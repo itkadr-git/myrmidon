@@ -3,6 +3,8 @@ import { lstat, rm } from "node:fs/promises";
 import path from "node:path";
 import type { CompanyPortabilityExport } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
+import { companyMemberships, companyTransferRuns, principalPermissionGrants } from "@myrmidon/db";
+import { and, eq, sql } from "drizzle-orm";
 import { conflict, notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import type { StorageService } from "../storage/types.js";
@@ -10,10 +12,52 @@ import { resolveManagedInstructionsRoot } from "./agent-instructions.js";
 import { resolveManagedSkillsRoot } from "./company-skills.js";
 import type { companyPortabilityService } from "./company-portability.js";
 import { validateMigrationManifest } from "./company-migration-validation.js";
-import { companyTransferRunService, parseMigrationResource } from "./company-transfer-runs.js";
+import { companyTransferRunService, migrationRowFingerprint, parseMigrationResource } from "./company-transfer-runs.js";
 import { migrationRunKey } from "./company-migration-key.js";
+import { grantsForHumanRole } from "./company-member-roles.js";
 
 type Portability = ReturnType<typeof companyPortabilityService>;
+
+export async function provisionMigrationOwner(db: Db, runId: string, companyId: string, actorUserId: string | null | undefined) {
+  await db.transaction(async (tx) => {
+    const ownedRun = and(
+      eq(companyTransferRuns.id, runId),
+      eq(companyTransferRuns.companyId, companyId),
+      eq(companyTransferRuns.direction, "import"),
+      eq(companyTransferRuns.status, "applying"),
+      sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
+      sql`${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true'`,
+      sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' = ${companyId}`,
+      sql`nullif(${companyTransferRuns.containerRef}->>'sourceCompanyId', '') <> ${companyId}`,
+      sql`${companyTransferRuns.actorKey} = 'company_migration:' || (${companyTransferRuns.containerRef}->>'sourceCompanyId')`,
+      sql`not (${companyTransferRuns.containerRef} ? 'ownerProvenance')`,
+    );
+    const [claim] = await tx.select({ id: companyTransferRuns.id })
+      .from(companyTransferRuns).where(ownedRun).for("update");
+    if (!claim) throw new Error("Migration owner provisioning rejected");
+
+    const principalId = actorUserId ?? "board";
+    const [membership] = await tx.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId, membershipRole: "owner", status: "active",
+    }).returning({ id: companyMemberships.id, fingerprint: migrationRowFingerprint("company_memberships") });
+    if (!membership) throw new Error("Migration owner membership was not created");
+
+    const defaults = grantsForHumanRole("owner");
+    const grants = defaults.length === 0 ? [] : await tx.insert(principalPermissionGrants).values(
+      defaults.map(({ permissionKey, scope }) => ({
+        companyId, principalType: "user", principalId, permissionKey, scope: scope ?? null,
+        grantedByUserId: actorUserId ?? null,
+      })),
+    ).returning({ id: principalPermissionGrants.id, fingerprint: migrationRowFingerprint("principal_permission_grants") });
+    if (grants.length !== defaults.length) throw new Error("Migration owner grants were not created");
+
+    const [saved] = await tx.update(companyTransferRuns).set({
+      containerRef: sql`${companyTransferRuns.containerRef} || jsonb_build_object('ownerProvenance', ${JSON.stringify({ membership, grants })}::jsonb)`,
+      updatedAt: new Date(),
+    }).where(ownedRun).returning({ id: companyTransferRuns.id });
+    if (!saved) throw new Error("Migration owner provenance was not recorded");
+  });
+}
 
 export async function getMigrationStatus(db: Db, sourceCompanyId: string, runId: string) {
   const run = await companyTransferRunService.getRun(db, runId);

@@ -86,6 +86,7 @@ import { generateReadme } from "./company-export-readme.js";
 import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
 import { companySkillService } from "./company-skills.js";
 import { companyService } from "./companies.js";
+import { provisionMigrationOwner } from "./company-migration.js";
 import { companyTransferRunService } from "./company-transfer-runs.js";
 import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
@@ -5241,8 +5242,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const mode = resolveImportMode(options);
     // A migration run owns only a newly created destination. Refuse tracked
     // updates before preview or any importer side effect can occur.
-    if (options?.transferRunId && input.target.mode !== "new_company") {
-      throw unprocessable("Tracked imports require a new company destination.");
+    if (options?.transferRunId && (input.target.mode !== "new_company" || mode !== "board_full")) {
+      throw unprocessable("Tracked imports require a new company destination and board-full import mode.");
     }
     // Destination ownership alone cannot recover the import's other side effects.
     // Keep tracked imports closed until entity and storage provenance is complete.
@@ -5358,7 +5359,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       const created = options?.transferRunId
         ? await companies.create(companyInput, { transferRunId: options.transferRunId })
         : await companies.create(companyInput);
-      if (mode === "agent_safe" && options?.sourceCompanyId) {
+      if (options?.transferRunId) {
+        await provisionMigrationOwner(db, options.transferRunId, created.id, actorUserId);
+      } else if (mode === "agent_safe" && options?.sourceCompanyId) {
         await access.copyActiveUserMemberships(options.sourceCompanyId, created.id);
       } else {
         const ownerPrincipalId = actorUserId ?? "board";

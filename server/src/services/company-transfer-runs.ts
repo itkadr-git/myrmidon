@@ -4,7 +4,11 @@ import { companies, companyTransferRuns } from "@myrmidon/db";
 
 // Hash PostgreSQL's binary row representation so comparison does not depend
 // on the connection's time zone or timestamp formatting. Persist no row data.
-export const migrationCompanyFingerprint = sql<string>`encode(sha256(record_send(${sql.identifier("companies")})), 'hex')`;
+export function migrationRowFingerprint(table: string) {
+  return sql<string>`encode(sha256(record_send(${sql.identifier(table)})), 'hex')`;
+}
+
+export const migrationCompanyFingerprint = migrationRowFingerprint("companies");
 
 // Durable run ledger for chunked company transfers. A run tracks one export
 // publish or import apply of a transfer container. Progress is recorded per
