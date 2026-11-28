@@ -1032,3 +1032,11 @@ export * from "./server-onboarding.js";
 export * from "./server-onboard.js";
 export * from "./updates.js";
 export * from "./auto-update-settings.js";
+export {
+  REVIEW_PATTERN_DIGEST_MAX_WINDOW_MS,
+  REVIEW_PATTERN_REDACTION_MARKER,
+  reviewPatternDigestSchema,
+  reviewPatternDigestSourceSchema,
+  type ReviewPatternDigest,
+  type ReviewPatternDigestSource,
+} from "./review-learning.js";

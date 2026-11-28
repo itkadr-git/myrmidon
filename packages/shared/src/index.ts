@@ -1886,6 +1886,12 @@ export {
   haStandbyStatusSchema,
   haStandbyCheckSchema,
   haStandbyCheckStatusSchema,
+  REVIEW_PATTERN_DIGEST_MAX_WINDOW_MS,
+  REVIEW_PATTERN_REDACTION_MARKER,
+  reviewPatternDigestSchema,
+  reviewPatternDigestSourceSchema,
+  type ReviewPatternDigest,
+  type ReviewPatternDigestSource,
 } from "./validators/index.js";
 
 export {
@@ -2764,6 +2770,9 @@ export {
 } from "./validators/environment-custom-images.js";
 export * from "./validators/skill-policy.js";
 export * from "./validators/provider-trace.js";
+// myrmidon(1.8 LEARN, OPE-13160): review-pattern digest contract is exported
+// via the domain barrel "./validators/index.js" (named block), not appended
+// here as a per-file export (AGENTS.md barrel guidance).
 export {
   FEATURE_TIERS,
   INSTANCE_FEATURE_CATALOG,
