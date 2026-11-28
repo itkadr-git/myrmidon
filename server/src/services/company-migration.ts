@@ -3,7 +3,7 @@ import { lstat, rm } from "node:fs/promises";
 import path from "node:path";
 import type { CompanyPortabilityExport } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
-import { assets, companies, companyLogos, companyMemberships, companySecretBindings, companyTransferRuns, documentRevisions, documents, issueAttachments, issueComments, issueDocuments, issueInboxArchives, issueLabels, issueRelations, issues, issueWorkProducts, labels, principalPermissionGrants, projects, projectWorkspaces, userSecretDeclarations } from "@myrmidon/db";
+import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companySecretBindings, companyTransferRuns, documentRevisions, documents, issueAttachments, issueComments, issueDocuments, issueInboxArchives, issueLabels, issueRelations, issues, issueWorkProducts, labels, principalPermissionGrants, projects, projectWorkspaces, userSecretDeclarations } from "@myrmidon/db";
 import { and, eq, getTableColumns, getTableName, inArray, sql } from "drizzle-orm";
 import { conflict, notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
@@ -16,6 +16,8 @@ import { companyTransferRunService, migrationCompanyFingerprint, migrationRowFin
 import { migrationRunKey } from "./company-migration-key.js";
 import { grantsForHumanRole } from "./company-member-roles.js";
 import { projectService } from "./projects.js";
+import { agentService } from "./agents.js";
+import { accessService } from "./access.js";
 import { secretService } from "./secrets.js";
 import { documentService } from "./documents.js";
 import { issueService } from "./issues.js";
@@ -128,6 +130,81 @@ export async function recordMigrationAsset(
     }).where(ownedRun).returning({ id: companyTransferRuns.id });
     if (!saved) throw new Error("Migration asset provenance was not recorded");
     return asset;
+  });
+}
+
+export async function createMigrationAgent(
+  db: Db,
+  runId: string,
+  companyId: string,
+  data: Omit<typeof agents.$inferInsert, "companyId" | "id"> & { id: string },
+  populate: (
+    agent: Awaited<ReturnType<ReturnType<typeof agentService>["create"]>>,
+    service: Pick<ReturnType<typeof agentService>, "update">,
+    access: Pick<ReturnType<typeof accessService>, "ensureMembership" | "setPrincipalPermission">,
+  ) => Promise<Awaited<ReturnType<ReturnType<typeof agentService>["create"]>>>,
+) {
+  const reservation = `${companyId}/managed/instructions/${data.id}`;
+  return db.transaction(async (tx) => {
+    const ownedRun = and(
+      applyingDestination(runId, companyId),
+      sql`${companyTransferRuns.completedParts} @> ${JSON.stringify([reservation])}::jsonb`,
+      sql`not (coalesce(${companyTransferRuns.containerRef}->'agentProvenance', '{}'::jsonb) ? ${data.id})`,
+    );
+    const [claim] = await tx.select({ id: companyTransferRuns.id }).from(companyTransferRuns).where(ownedRun).for("update");
+    if (!claim) throw new Error("Migration agent recording rejected");
+
+    const txDb = tx as unknown as Db;
+    const service = agentService(txDb);
+    const created = await service.create(companyId, data);
+    const agent = await populate(created, service, accessService(txDb));
+    if (agent.id !== created.id || agent.companyId !== companyId) throw new Error("Migration agent identity changed");
+    const [row] = await tx.select({ fingerprint: migrationRowFingerprint(getTableName(agents)) })
+      .from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agent.id)));
+    if (!row) throw new Error("Migration agent was not created");
+    const memberships = await tx.select({ id: companyMemberships.id, fingerprint: migrationRowFingerprint(getTableName(companyMemberships)) })
+      .from(companyMemberships).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, "agent"), eq(companyMemberships.principalId, agent.id)));
+    const grants = await tx.select({ id: principalPermissionGrants.id, fingerprint: migrationRowFingerprint(getTableName(principalPermissionGrants)) })
+      .from(principalPermissionGrants).where(and(eq(principalPermissionGrants.companyId, companyId), eq(principalPermissionGrants.principalType, "agent"), eq(principalPermissionGrants.principalId, agent.id)));
+    const secretBindings = await tx.select({ id: companySecretBindings.id, fingerprint: migrationRowFingerprint(getTableName(companySecretBindings)) })
+      .from(companySecretBindings).where(and(eq(companySecretBindings.companyId, companyId), eq(companySecretBindings.targetType, "agent"), eq(companySecretBindings.targetId, agent.id)));
+    const declarations = await tx.select({ id: userSecretDeclarations.id, fingerprint: migrationRowFingerprint(getTableName(userSecretDeclarations)) })
+      .from(userSecretDeclarations).where(and(eq(userSecretDeclarations.companyId, companyId), eq(userSecretDeclarations.targetType, "agent"), eq(userSecretDeclarations.targetId, agent.id)));
+    const audit = await tx.select({ id: activityLog.id, fingerprint: migrationRowFingerprint(getTableName(activityLog)) })
+      .from(activityLog).where(and(eq(activityLog.companyId, companyId), eq(activityLog.entityType, "agent"), eq(activityLog.entityId, agent.id)));
+    const provenance = { [agent.id]: { ...row, memberships, grants, secretBindings, userSecretDeclarations: declarations, audit } };
+    const [saved] = await tx.update(companyTransferRuns).set({
+      containerRef: sql`${companyTransferRuns.containerRef} || jsonb_build_object('agentProvenance', coalesce(${companyTransferRuns.containerRef}->'agentProvenance', '{}'::jsonb) || ${JSON.stringify(provenance)}::jsonb)`,
+      updatedAt: new Date(),
+    }).where(ownedRun).returning({ id: companyTransferRuns.id });
+    if (!saved) throw new Error("Migration agent provenance was not recorded");
+    return agent;
+  });
+}
+
+export async function linkMigrationAgent(db: Db, runId: string, companyId: string, agentId: string, managerId: string) {
+  await db.transaction(async (tx) => {
+    const ownedRun = and(
+      applyingDestination(runId, companyId),
+      sql`(${companyTransferRuns.containerRef}->'agentProvenance') ? ${managerId}`,
+    );
+    const [claim] = await tx.select({ fingerprint: sql<string | null>`${companyTransferRuns.containerRef}->'agentProvenance'->${agentId}::text->>'fingerprint'` })
+      .from(companyTransferRuns).where(ownedRun).for("update");
+    const [row] = await tx.select({ fingerprint: migrationRowFingerprint(getTableName(agents)) })
+      .from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId))).for("update");
+    if (!claim?.fingerprint || row?.fingerprint !== claim.fingerprint) {
+      throw new Error("Migration reporting link rejected for an unowned or modified agent");
+    }
+    const updated = await agentService(tx as unknown as Db).update(agentId, { reportsTo: managerId });
+    if (!updated) throw new Error("Migration reporting link was not recorded");
+    const [linked] = await tx.select({ fingerprint: migrationRowFingerprint(getTableName(agents)) })
+      .from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
+    if (!linked) throw new Error("Migration agent was not found after reporting update");
+    const [saved] = await tx.update(companyTransferRuns).set({
+      containerRef: sql`jsonb_set(${companyTransferRuns.containerRef}, array['agentProvenance', ${agentId}::text, 'fingerprint'], to_jsonb(${linked.fingerprint}::text))`,
+      updatedAt: new Date(),
+    }).where(ownedRun).returning({ id: companyTransferRuns.id });
+    if (!saved) throw new Error("Migration agent provenance was not updated");
   });
 }
 

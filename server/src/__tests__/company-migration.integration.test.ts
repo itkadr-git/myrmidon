@@ -6,7 +6,7 @@ import { activityLog, agents, assets, companies, companyLogos, companyMembership
 
 import { companyRoutes } from "../routes/companies.js";
 import { companyService } from "../services/companies.js";
-import { createMigrationIssues, createMigrationProject, provisionMigrationOwner, recordMigrationAsset, recoverRemovedMigrationStorage } from "../services/company-migration.js";
+import { createMigrationAgent, createMigrationIssues, createMigrationProject, linkMigrationAgent, provisionMigrationOwner, recordMigrationAsset, recoverRemovedMigrationStorage } from "../services/company-migration.js";
 import { companyTransferRunService, parseMigrationResource } from "../services/company-transfer-runs.js";
 import { errorHandler } from "../middleware/index.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
@@ -15,6 +15,7 @@ import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.j
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 describe("company migration dry run", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -1529,6 +1530,57 @@ describe("company migration dry run", () => {
       workspaces: expect.arrayContaining(workspaces.map(({ id }) => ({ id, fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) }))),
       secretBindings: [], userSecretDeclarations: [],
     } } });
+  });
+
+  it("rolls back an interrupted agent write and journals successful agent writes and reporting links", async () => {
+    const [source] = await db.insert(companies).values({ name: "Agent provenance source", issuePrefix: "MGP" }).returning();
+    const ledger = companyTransferRunService;
+    const { run } = await ledger.resumeOrCreateMigration(db, source!.id, "agent-provenance");
+    expect(await ledger.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Agent provenance destination" }, { transferRunId: run.id });
+    const workerId = randomUUID();
+    const managerId = randomUUID();
+    const worker = { id: workerId, name: "Migration worker", status: "paused" };
+    const populateAccess = async (agent: { id: string }, access: Parameters<Parameters<typeof createMigrationAgent>[4]>[2]) => {
+      await access.ensureMembership(destination.id, "agent", agent.id, "member", "active");
+      await access.setPrincipalPermission(destination.id, "agent", agent.id, "tasks:assign", true, null);
+    };
+    await expect(createMigrationAgent(db, run.id, destination.id, worker, async (agent) => agent))
+      .rejects.toThrow("Migration agent recording rejected");
+    await ledger.reserveMigrationManagedDirectory(db, run.id, destination.id, { kind: "agent_instructions", agentId: workerId });
+    const reserved = await ledger.getRun(db, run.id);
+    await expect(createMigrationAgent(db, run.id, destination.id, worker, async (agent, _service, access) => {
+      await populateAccess(agent, access);
+      throw new Error("injected instruction failure");
+    })).rejects.toThrow("injected instruction failure");
+    expect(await db.select().from(agents).where(eq(agents.companyId, destination.id))).toEqual([]);
+    expect(await db.select().from(companyMemberships).where(eq(companyMemberships.companyId, destination.id))).toEqual([]);
+    expect(await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, destination.id))).toEqual([]);
+    expect(await ledger.getRun(db, run.id)).toEqual(reserved);
+    expect(reserved?.completedParts).toContain(`${destination.id}/managed/instructions/${workerId}`);
+
+    await createMigrationAgent(db, run.id, destination.id, worker, async (agent, _service, access) => {
+      await populateAccess(agent, access);
+      return agent;
+    });
+    await ledger.reserveMigrationManagedDirectory(db, run.id, destination.id, { kind: "agent_instructions", agentId: managerId });
+    await createMigrationAgent(db, run.id, destination.id, { id: managerId, name: "Migration manager", status: "paused" }, async (agent) => agent);
+    const [membership] = await db.select().from(companyMemberships).where(eq(companyMemberships.companyId, destination.id));
+    const [grant] = await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, destination.id));
+    const beforeLink = await ledger.getRun(db, run.id);
+    expect(beforeLink?.containerRef).toMatchObject({
+      agentProvenance: { [workerId]: {
+        fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+        memberships: [{ id: membership!.id, fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) }],
+        grants: [{ id: grant!.id, fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) }],
+      } },
+    });
+    await linkMigrationAgent(db, run.id, destination.id, workerId, managerId);
+    const [linked] = await db.select().from(agents).where(eq(agents.id, workerId));
+    expect(linked?.reportsTo).toBe(managerId);
+    expect((await ledger.getRun(db, run.id))?.containerRef).not.toEqual(beforeLink?.containerRef);
+    await db.update(agents).set({ name: "Independently changed worker" }).where(eq(agents.id, workerId));
+    await expect(linkMigrationAgent(db, run.id, destination.id, workerId, managerId)).rejects.toThrow("modified agent");
   });
 
   it("commits migration owner membership and its provenance together", async () => {

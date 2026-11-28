@@ -86,7 +86,7 @@ import { generateReadme } from "./company-export-readme.js";
 import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
 import { companySkillService } from "./company-skills.js";
 import { companyService } from "./companies.js";
-import { createMigrationIssues, createMigrationLabel, createMigrationProject, provisionMigrationOwner, recordMigrationAsset } from "./company-migration.js";
+import { createMigrationAgent, createMigrationIssues, createMigrationLabel, createMigrationProject, linkMigrationAgent, provisionMigrationOwner, recordMigrationAsset } from "./company-migration.js";
 import { companyTransferRunService } from "./company-transfer-runs.js";
 import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
@@ -3570,11 +3570,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     agentId: string,
     permissionGrants: PortableAgentPermissionGrant[],
     grantedByUserId: string | null,
+    permissions: Pick<typeof access, "ensureMembership" | "setPrincipalPermission"> = access,
   ) {
     if (permissionGrants.length === 0) return;
-    await access.ensureMembership(companyId, "agent", agentId, "member", "active");
+    await permissions.ensureMembership(companyId, "agent", agentId, "member", "active");
     for (const grant of permissionGrants) {
-      await access.setPrincipalPermission(
+      await permissions.setPrincipalPermission(
         companyId,
         "agent",
         agentId,
@@ -5676,6 +5677,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             : {};
 
           if (planAgent.action === "update" && planAgent.existingAgentId) {
+            if (migrationRunId) throw new Error("Migration cannot update an existing agent");
             let updated = await agents.update(planAgent.existingAgentId, {
               ...patch,
               ...automationPausePatch,
@@ -5724,47 +5726,57 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             continue;
           }
 
-          let created = await agents.create(targetCompany.id, {
-            ...patch,
-            ...automationPausePatch,
-            status: pauseAutomations ? "paused" : "idle",
-          });
-          await access.ensureMembership(targetCompany.id, "agent", created.id, "member", "active");
-          await access.setPrincipalPermission(
-            targetCompany.id,
-            "agent",
-            created.id,
-            "tasks:assign",
-            true,
-            actorUserId ?? null,
-          );
+          const createData = { ...patch, ...automationPausePatch, status: pauseAutomations ? "paused" : "idle" };
+          let created: Awaited<ReturnType<typeof agents.create>>;
           if (migrationRunId) {
+            const id = randomUUID();
+            // This reservation commits before any filesystem write, even if the
+            // following agent transaction aborts during instruction materialization.
             await companyTransferRunService.reserveMigrationManagedDirectory(db, migrationRunId, destinationCompanyId, {
-              kind: "agent_instructions", agentId: created.id,
+              kind: "agent_instructions", agentId: id,
             });
-          }
-          try {
-            const materialized = await instructions.materializeManagedBundle(created, bundleFiles, {
-              clearLegacyPromptTemplate: true,
-              replaceExisting: true,
+            created = await createMigrationAgent(db, migrationRunId, destinationCompanyId, { ...createData, id }, async (agent, service, permissions) => {
+              await permissions.ensureMembership(destinationCompanyId, "agent", agent.id, "member", "active");
+              await permissions.setPrincipalPermission(destinationCompanyId, "agent", agent.id, "tasks:assign", true, actorUserId ?? null);
+              const materialized = await instructions.materializeManagedBundle(agent, bundleFiles, { clearLegacyPromptTemplate: true });
+              const updated = await service.update(agent.id, { adapterConfig: materialized.adapterConfig });
+              if (!updated) throw new Error("Migration agent instruction update failed");
+              await applyImportedAgentPermissionGrants(destinationCompanyId, agent.id, manifestAgent.permissionGrants ?? [], actorUserId ?? null, permissions);
+              return updated;
             });
-            created = await agents.update(created.id, { adapterConfig: materialized.adapterConfig }) ?? created;
-          } catch (err) {
-            if (migrationRunId) throw err;
-            warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
+          } else {
+            created = await agents.create(targetCompany.id, createData);
+            await access.ensureMembership(targetCompany.id, "agent", created.id, "member", "active");
+            await access.setPrincipalPermission(
+              targetCompany.id,
+              "agent",
+              created.id,
+              "tasks:assign",
+              true,
+              actorUserId ?? null,
+            );
+            try {
+              const materialized = await instructions.materializeManagedBundle(created, bundleFiles, {
+                clearLegacyPromptTemplate: true,
+                replaceExisting: true,
+              });
+              created = await agents.update(created.id, { adapterConfig: materialized.adapterConfig }) ?? created;
+            } catch (err) {
+              warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+            await applyImportedAgentPermissionGrants(
+              targetCompany.id,
+              created.id,
+              manifestAgent.permissionGrants ?? [],
+              actorUserId ?? null,
+            );
+            await secrets.syncEnvBindingsForTarget?.(
+              targetCompany.id,
+              { targetType: "agent", targetId: created.id },
+              isPlainRecord(created.adapterConfig) ? created.adapterConfig.env : undefined,
+            );
           }
-          await applyImportedAgentPermissionGrants(
-            targetCompany.id,
-            created.id,
-            manifestAgent.permissionGrants ?? [],
-            actorUserId ?? null,
-          );
           agentStatusById.set(created.id, created.status ?? (pauseAutomations ? "paused" : "idle"));
-          await secrets.syncEnvBindingsForTarget?.(
-            targetCompany.id,
-            { targetType: "agent", targetId: created.id },
-            isPlainRecord(created.adapterConfig) ? created.adapterConfig.env : undefined,
-          );
           importedSlugToAgentId.set(planAgent.slug, created.id);
           existingSlugToAgentId.set(normalizeAgentUrlKey(created.name) ?? created.id, created.id);
           resultAgents.push({
@@ -5799,8 +5811,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               : null);
           if (!managerId || managerId === agentId) continue;
           try {
-            await agents.update(agentId, { reportsTo: managerId });
-          } catch {
+            if (migrationRunId) await linkMigrationAgent(db, migrationRunId, destinationCompanyId, agentId, managerId);
+            else await agents.update(agentId, { reportsTo: managerId });
+          } catch (error) {
+            if (migrationRunId) throw error;
             const managerRef =
               managerSlug
               ?? manifestAgent.reportsToExistingAgentSlug
