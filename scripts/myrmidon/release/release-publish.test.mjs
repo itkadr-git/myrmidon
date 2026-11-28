@@ -306,6 +306,15 @@ const GREEN_RUNS = [
   run(COMMIT, ".github/workflows/myrmidon-fleetd.yml", "success"),
 ];
 
+describe("publish-github-release.sh: release-stage gate", () => {
+  it("refuses to publish when no release-stage authorization exists", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const result = runScript(sb, "myr-v1.6.0");
+    assert.notEqual(result.code, 0, "publication must require the release-stage gate");
+    assert.equal(mutations(sb), "", "no GitHub release mutation is allowed");
+  });
+});
+
 describe("publish-github-release.sh: checkout binding", () => {
   it("refuses publication when checkout differs from the resolved tag commit", () => {
     const sb = sandbox({ runs: GREEN_RUNS });
