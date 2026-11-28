@@ -4182,8 +4182,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         skillFileJobs.push({
           filePath: `${packageDir}/${inventoryEntry.path}`,
           load: async () => {
+            // Preview and migration retries must not reconcile the source
+            // inventory while reading the files that determine the run key.
             const fileDetail = await companySkills
-              .readFile(companyId, skill.id, inventoryEntry.path)
+              .readFile(companyId, skill.id, inventoryEntry.path, { skipInventoryRefresh: options.preview })
               .catch(() => null);
             if (!fileDetail) return null;
             return inventoryEntry.path === "SKILL.md"

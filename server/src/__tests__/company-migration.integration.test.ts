@@ -204,6 +204,9 @@ describe("company migration dry run", () => {
   it("keeps concurrent repeated dry runs read-only", async () => {
     const [source] = await db.insert(companies).values({ name: "Concurrent dry run source", issuePrefix: "MDR" }).returning();
     await db.insert(agents).values({ companyId: source!.id, name: "Dry run worker" });
+    await companySkillService(db).importPackageFiles(source!.id, {
+      "skills/dry-run-skill/SKILL.md": "---\nname: Dry run skill\nslug: dry-run-skill\n---\n\n# Dry run skill\n",
+    }, { skipInventoryRefresh: true });
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -215,11 +218,16 @@ describe("company migration dry run", () => {
 
     const beforeCompanies = await db.select().from(companies);
     const beforeAgents = await db.select().from(agents);
+    const skillScope = eq(companySkills.companyId, source!.id);
+    const beforeSkills = await db.select().from(companySkills).where(skillScope);
     const beforeRuns = await db.select().from(companyTransferRuns);
     const beforeAudit = await db.select().from(activityLog);
     const filesBefore = await readdir(root, { recursive: true });
     const endpoint = `/api/companies/${source!.id}/migrations`;
-    const payload = { target: { mode: "new_company", newCompanyName: "Concurrent dry run destination" } };
+    const payload = {
+      target: { mode: "new_company", newCompanyName: "Concurrent dry run destination" },
+      export: { include: { skills: true } },
+    };
     const responses = await Promise.all([
       request(app).post(endpoint).send(payload),
       request(app).post(endpoint).send(payload),
@@ -228,9 +236,11 @@ describe("company migration dry run", () => {
     expect(responses.map((response) => response.status)).toEqual([200, 200]);
     expect(responses[0]!.body).toEqual(responses[1]!.body);
     expect(responses[0]!.body.dryRun).toBe(true);
+    expect(responses[0]!.body.sourceCounts.skills).toBe(1);
     expect(responses[0]!.body.runKey).toMatch(/^[a-f0-9]{64}$/);
     expect(await db.select().from(companies)).toEqual(beforeCompanies);
     expect(await db.select().from(agents)).toEqual(beforeAgents);
+    expect(await db.select().from(companySkills).where(skillScope)).toEqual(beforeSkills);
     expect(await db.select().from(companyTransferRuns)).toEqual(beforeRuns);
     expect(await db.select().from(activityLog)).toEqual(beforeAudit);
     expect(await readdir(root, { recursive: true })).toEqual(filesBefore);
@@ -2246,11 +2256,20 @@ describe("company migration dry run", () => {
     expect(run?.containerRef).toMatchObject({
       skillProvenance: { refs: expect.arrayContaining([["checkpoint-skill", importedSkills[0]!.key]]) },
     });
+    expect(run!.completedParts.map((part) => parseMigrationResource(companyId, part))).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "managed_file",
+        directory: { kind: "company_skills" },
+        relativePath: expect.stringMatching(/\/SKILL\.md$/),
+      }),
+    ]));
     const skillFile = path.join(importedSkills[0]!.sourceLocator!, "SKILL.md");
     const originalSkill = await readFile(skillFile, "utf8");
     await writeFile(skillFile, "Independently changed skill");
     try {
-      expect((await apply()).status).toBe(409);
+      const rejected = await apply();
+      expect(rejected.status, JSON.stringify(rejected.body)).toBe(409);
+      expect(rejected.body.details?.runId).toBe(runId);
       expect(await companyTransferRunService.getRun(db, runId)).toEqual(run);
     } finally {
       await writeFile(skillFile, originalSkill);

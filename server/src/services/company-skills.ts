@@ -4698,8 +4698,8 @@ export function companySkillService(db: Db) {
     };
   }
 
-  async function readFile(companyId: string, skillId: string, relativePath: string): Promise<CompanySkillFileDetail | null> {
-    await ensureSkillInventoryCurrent(companyId);
+  async function readFile(companyId: string, skillId: string, relativePath: string, options: { skipInventoryRefresh?: boolean } = {}): Promise<CompanySkillFileDetail | null> {
+    if (!options.skipInventoryRefresh) await ensureSkillInventoryCurrent(companyId);
     const skill = await getById(companyId, skillId);
     if (!skill) return null;
 
