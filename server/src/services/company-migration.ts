@@ -6,7 +6,7 @@ import type { Db } from "@myrmidon/db";
 import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companySecretBindings, companySkills, companyTransferRuns, documentRevisions, documents, folders, issueAttachments, issueComments, issueDocuments, issueInboxArchives, issueLabels, issueRelations, issues, issueWorkProducts, labels, principalPermissionGrants, projects, projectWorkspaces, routineRevisions, routines, routineTriggers, userSecretDeclarations } from "@myrmidon/db";
 import { and, eq, getTableColumns, getTableName, inArray, sql } from "drizzle-orm";
 import { conflict, notFound, unprocessable } from "../errors.js";
-import { matchesJournaledMigrationRows, removeJournaledMigrationCompany } from "./company-migration-provenance.js";
+import { matchesJournaledMigrationRows, archiveJournaledMigrationCompany } from "./company-migration-provenance.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import type { StorageService } from "../storage/types.js";
 import { resolveManagedInstructionsRoot } from "./agent-instructions.js";
@@ -451,17 +451,17 @@ async function removeManagedDirectory(directory: string) {
   await rm(directory, { recursive: true, force: true });
 }
 
-// Only recover storage after the owned destination has been removed. Live
-// destinations need a separate transactional provenance check before deletion.
-export async function recoverRemovedMigrationStorage(db: Db, storage: StorageService | undefined, sourceCompanyId: string, runId: string, alreadyClaimed = false) {
+// Storage recovery is retryable after transactional database cleanup.
+export async function recoverMigrationStorage(db: Db, storage: StorageService | undefined, sourceCompanyId: string, runId: string, alreadyClaimed = false) {
   const ledger = companyTransferRunService;
   const run = await ledger.getRun(db, runId);
-  const ref = run?.containerRef as { destinationClaimed?: unknown; destinationCompanyId?: unknown } | null;
-  if (run?.companyId !== null || ref?.destinationClaimed !== true || typeof ref.destinationCompanyId !== "string") {
+  const ref = run?.containerRef as { destinationClaimed?: unknown; destinationCompanyId?: unknown; destinationArchived?: unknown; sourceCompanyId?: unknown } | null;
+  if (!run || ref?.sourceCompanyId !== sourceCompanyId || ref.destinationClaimed !== true || typeof ref.destinationCompanyId !== "string"
+    || (run.companyId !== null && (ref.destinationArchived !== true || run.companyId !== ref.destinationCompanyId))) {
     throw notFound("Migration rollback is not available.");
   }
   const destinationId = ref.destinationCompanyId;
-  if (alreadyClaimed ? run.status !== "rolling_back" : !await ledger.claimMigrationRollback(db, runId, sourceCompanyId, { removedDestinationId: destinationId })) {
+  if (alreadyClaimed ? run.status !== "rolling_back" : !await ledger.claimMigrationRollback(db, runId, sourceCompanyId, { cleanedDestinationId: destinationId })) {
     throw conflict("Migration is not available for recovery.");
   }
   try {
@@ -502,21 +502,23 @@ export async function rollbackCompanyMigration(db: Db, storage: StorageService |
   const ledger = companyTransferRunService;
   const run = await ledger.getRun(db, runId);
   const companyId = run?.companyId;
-  if (!companyId) return recoverRemovedMigrationStorage(db, storage, sourceCompanyId, runId);
+  const ref = run?.containerRef as { destinationArchived?: unknown } | null;
+  if (!companyId || ref?.destinationArchived === true) return recoverMigrationStorage(db, storage, sourceCompanyId, runId);
   try {
     await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
-      if (!await ledger.claimMigrationRollback(txDb, runId, sourceCompanyId)) throw new Error("Migration claim rejected");
+      if (!await ledger.claimMigrationRollback(tx, runId, sourceCompanyId)) throw new Error("Migration claim rejected");
       const claimed = await ledger.getRun(txDb, runId);
       if (!claimed || claimed.companyId !== companyId || !await matchesJournaledMigrationRows(tx, companyId, claimed.containerRef)) {
         throw new Error("Destination differs from the migration journal");
       }
-      await removeJournaledMigrationCompany(tx, companyId);
+      await archiveJournaledMigrationCompany(tx, companyId);
+      if (!await ledger.markMigrationDatabaseCleanupComplete(tx, runId, companyId)) throw new Error("Migration archival was not journaled");
     });
   } catch {
-    throw conflict("Migration rollback refused; the destination was not removed.");
+    throw conflict("Migration rollback refused; the destination was not archived.");
   }
-  return recoverRemovedMigrationStorage(db, storage, sourceCompanyId, runId, true);
+  return recoverMigrationStorage(db, storage, sourceCompanyId, runId, true);
 }
 
 export function companyMigrationService(portability: Portability) {
@@ -551,7 +553,7 @@ export function companyMigrationService(portability: Portability) {
       target: { mode: "new_company", newCompanyName },
       include: input.include,
       collisionStrategy,
-    }, { mode: "board_full" }) : null;
+    }, { mode: "board_full", planNewCompanyAgentNameCollisions: true }) : null;
     const report = {
       dryRun: true as const,
       runKey: migrationRunKey({ sourceCompanyId: companyId, targetName: newCompanyName, collisionStrategy, exportOptions: input, files: exported.files, secretBindings: validation.secretBindings }),

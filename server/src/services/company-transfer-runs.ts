@@ -186,6 +186,18 @@ async function reserveMigrationResource(db: Db, runId: string, companyId: string
   if (updated.length !== 1) throw new Error("Migration resource reservation rejected");
 }
 
+// Older rollback runs may already have removed their destination. New runs
+// require the archival marker committed together with the database cleanup.
+const migrationDatabaseCleanupComplete = sql`(
+  (${companyTransferRuns.companyId} is null and not exists (
+    select 1 from ${companies} where ${companies.id}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId'
+  )) or (
+    ${companyTransferRuns.companyId}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId'
+    and ${companyTransferRuns.containerRef}->>'destinationArchived' = 'true'
+    and exists (select 1 from ${companies} where ${companies.id} = ${companyTransferRuns.companyId} and ${companies.status} = 'archived')
+  )
+)`;
+
 export const companyTransferRunService = {
   // This proves only the initial company row, not its children. It is not a
   // deletion predicate: rollback must separately verify all dependent writes.
@@ -334,10 +346,10 @@ export const companyTransferRunService = {
   // A rollback claim is durable: retries must find this same run while cleanup
   // is in flight, and startup recovery makes an interrupted claim retryable.
   async claimMigrationRollback(
-    db: Db,
+    db: Pick<Db, "update">,
     runId: string,
     sourceCompanyId: string,
-    options?: { removedDestinationId: string },
+    options?: { cleanedDestinationId: string },
   ): Promise<boolean> {
     const claimed = await db.update(companyTransferRuns)
       .set({ status: "rolling_back", updatedAt: new Date() })
@@ -355,12 +367,27 @@ export const companyTransferRunService = {
         // A cleared foreign key is valid only after the owned company is gone.
         sql`(${companyTransferRuns.companyId}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId' or (${companyTransferRuns.companyId} is null and not exists (select 1 from ${companies} where ${companies.id}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId')))`,
         options ? and(
-          sql`${companyTransferRuns.companyId} is null`,
-          sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' = ${options.removedDestinationId}`,
+          sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' = ${options.cleanedDestinationId}`,
+          migrationDatabaseCleanupComplete,
         ) : undefined,
       ))
       .returning({ id: companyTransferRuns.id });
     return claimed.length === 1;
+  },
+
+  // Called inside the same transaction as provenance verification and archival.
+  async markMigrationDatabaseCleanupComplete(db: Pick<Db, "update">, runId: string, companyId: string): Promise<boolean> {
+    const updated = await db.update(companyTransferRuns).set({
+      containerRef: sql`${companyTransferRuns.containerRef} || '{"destinationArchived":true}'::jsonb`,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(companyTransferRuns.id, runId), eq(companyTransferRuns.companyId, companyId),
+      eq(companyTransferRuns.direction, "import"), eq(companyTransferRuns.status, "rolling_back"),
+      sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
+      sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' = ${companyId}`,
+      sql`exists (select 1 from ${companies} where ${companies.id} = ${companyId} and ${companies.status} = 'archived')`,
+    )).returning({ id: companyTransferRuns.id });
+    return updated.length === 1;
   },
 
   // A failed cleanup remains discoverable and can be retried after the cause
@@ -390,10 +417,8 @@ export const companyTransferRunService = {
         sql`${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true'`,
         sql`nullif(${companyTransferRuns.containerRef}->>'sourceCompanyId', '') is not null`,
         sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' <> ${companyTransferRuns.containerRef}->>'sourceCompanyId'`,
-        // Cleanup must remove the owned company and every reserved object first.
-        sql`${companyTransferRuns.companyId} is null`,
-        sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' is not null`,
-        sql`not exists (select 1 from ${companies} where ${companies.id}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId')`,
+        // Database cleanup and every reserved storage deletion must finish first.
+        migrationDatabaseCleanupComplete,
         sql`jsonb_array_length(${companyTransferRuns.completedParts}) = 0`,
       ))
       .returning({ id: companyTransferRuns.id });
@@ -495,7 +520,7 @@ export const companyTransferRunService = {
       sql`nullif(${companyTransferRuns.containerRef}->>'sourceCompanyId', '') is not null`,
       sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' <> ${companyTransferRuns.containerRef}->>'sourceCompanyId'`,
       sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' = ${companyId}`,
-      sql`(${companyTransferRuns.companyId}::text = ${companyId} or (${companyTransferRuns.companyId} is null and not exists (select 1 from ${companies} where ${companies.id}::text = ${companyId})))`,
+      migrationDatabaseCleanupComplete,
       sql`${companyTransferRuns.completedParts} @> ${JSON.stringify([objectKey])}::jsonb`,
     )).returning({ id: companyTransferRuns.id });
     return updated.length === 1;

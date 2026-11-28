@@ -6,7 +6,7 @@ import { activityLog, agents, assets, companies, companyLogos, companyMembership
 
 import { companyRoutes } from "../routes/companies.js";
 import { companyService } from "../services/companies.js";
-import { createMigrationAgent, createMigrationIssues, createMigrationProject, createMigrationRoutine, importMigrationSkills, linkMigrationAgent, provisionMigrationOwner, recordMigrationAsset, recoverRemovedMigrationStorage } from "../services/company-migration.js";
+import { createMigrationAgent, createMigrationIssues, createMigrationProject, createMigrationRoutine, importMigrationSkills, linkMigrationAgent, provisionMigrationOwner, recordMigrationAsset, recoverMigrationStorage } from "../services/company-migration.js";
 import { companyTransferRunService, parseMigrationResource } from "../services/company-transfer-runs.js";
 import { matchesJournaledMigrationRows } from "../services/company-migration-provenance.js";
 import { errorHandler } from "../middleware/index.js";
@@ -451,6 +451,37 @@ describe("company migration dry run", () => {
     }
   });
 
+  it.each([
+    { collisionStrategy: "rename", expected: ["Collision Worker", "Collision Worker 2"] },
+    { collisionStrategy: "skip", expected: ["Collision Worker"] },
+  ] as const)("applies $collisionStrategy to colliding normalized agent names in a new company", async ({ collisionStrategy, expected }) => {
+    const [source] = await db.insert(companies).values({
+      name: `Collision fixture ${collisionStrategy}`, issuePrefix: collisionStrategy === "rename" ? "MCOLR" : "MCOLS",
+    }).returning();
+    await db.insert(agents).values([
+      { companyId: source!.id, name: "Collision Worker" },
+      { companyId: source!.id, name: "Collision Worker" },
+    ]);
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+    const applied = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
+      target: { mode: "new_company", newCompanyName: `Collision destination ${collisionStrategy}` },
+      collisionStrategy, dryRun: false, apply: true, confirm: "exercise collision policy",
+    });
+    expect(applied.status, JSON.stringify(applied.body)).toBe(200);
+    const run = await companyTransferRunService.getRun(db, applied.body.runId);
+    expect(run?.companyId).toBeTruthy();
+    const imported = await db.select().from(agents).where(eq(agents.companyId, run!.companyId!));
+    expect(imported.map((row) => row.name).sort()).toEqual(expected);
+    expect(await db.select().from(agents).where(eq(agents.companyId, source!.id))).toHaveLength(2);
+  });
+
   it("applies a confirmed migration once when the same request is retried", async () => {
     const [source] = await db.insert(companies).values({ name: "Apply retry source", issuePrefix: "MRA" }).returning();
     await db.insert(agents).values({ companyId: source!.id, name: "Apply retry worker" });
@@ -628,7 +659,7 @@ describe("company migration dry run", () => {
       .send({ confirm: "recover interrupted pilot" });
 
     expect(response.status).toBe(409);
-    expect(response.body.error).toBe("Migration rollback refused; the destination was not removed.");
+    expect(response.body.error).toBe("Migration rollback refused; the destination was not archived.");
     expect(await db.select().from(companies)).toEqual(beforeCompanies);
     expect(await db.select().from(companyTransferRuns)).toEqual(beforeRuns);
     expect(await db.select().from(activityLog)).toEqual(beforeAudit);
@@ -953,6 +984,9 @@ describe("company migration dry run", () => {
     await companyTransferRunService.releaseApplyClaim(db, run.id, "interrupted");
     expect(await companyTransferRunService.claimMigrationRollback(db, run.id, "cleanup-source")).toBe(true);
     expect(await companyTransferRunService.acknowledgeMigrationObjectDeletion(db, run.id, "other-company", key)).toBe(false);
+    expect(await companyTransferRunService.acknowledgeMigrationObjectDeletion(db, run.id, destination.id, key)).toBe(false);
+    await db.update(companies).set({ status: "archived" }).where(eq(companies.id, destination.id));
+    expect(await companyTransferRunService.markMigrationDatabaseCleanupComplete(db, run.id, destination.id)).toBe(true);
     expect(await companyTransferRunService.acknowledgeMigrationObjectDeletion(db, run.id, destination.id, "unknown")).toBe(false);
     await storage.deleteObject(destination.id, key);
     expect(await companyTransferRunService.acknowledgeMigrationObjectDeletion(db, run.id, destination.id, key)).toBe(true);
@@ -1009,27 +1043,31 @@ describe("company migration dry run", () => {
     const deleted = await put(destination.id, reserve);
     const remaining = await put(destination.id, reserve);
     await companyTransferRunService.releaseApplyClaim(db, run.id, "interrupted");
-    await expect(recoverRemovedMigrationStorage(db, storage, source!.id, run.id)).rejects.toThrow("not available");
+    await expect(recoverMigrationStorage(db, storage, source!.id, run.id)).rejects.toThrow("not available");
     expect((await storage.headObject(destination.id, deleted.objectKey)).exists).toBe(true);
 
-    await db.delete(companies).where(eq(companies.id, destination.id));
-    expect(await companyTransferRunService.claimMigrationRollback(db, run.id, source!.id)).toBe(true);
+    await db.transaction(async (tx) => {
+      expect(await companyTransferRunService.claimMigrationRollback(tx, run.id, source!.id)).toBe(true);
+      await tx.update(companies).set({ status: "archived" }).where(eq(companies.id, destination.id));
+      expect(await companyTransferRunService.markMigrationDatabaseCleanupComplete(tx, run.id, destination.id)).toBe(true);
+    });
     await storage.deleteObject(destination.id, deleted.objectKey);
     // Model a process death after provider deletion but before ledger acknowledgement.
     expect(await companyTransferRunService.recoverStrandedApplyingRuns(db)).toContain(run.id);
-    await expect(recoverRemovedMigrationStorage(db, storage, destination.id, run.id)).rejects.toThrow("not available");
+    await expect(recoverMigrationStorage(db, storage, destination.id, run.id)).rejects.toThrow("not available");
     expect((await storage.headObject(destination.id, remaining.objectKey)).exists).toBe(true);
     const failingStorage = {
       ...storage,
       deleteObject: async () => { throw new Error("provider detail canary"); },
     };
-    await expect(recoverRemovedMigrationStorage(db, failingStorage, source!.id, run.id))
+    await expect(recoverMigrationStorage(db, failingStorage, source!.id, run.id))
       .rejects.toThrow("Migration storage recovery failed");
     const failed = await companyTransferRunService.getRun(db, run.id);
     expect(failed).toMatchObject({ status: "failed", completedParts: [deleted.objectKey, remaining.objectKey] });
     expect(failed?.error).not.toContain("provider detail canary");
-    await expect(recoverRemovedMigrationStorage(db, storage, source!.id, run.id)).resolves.toEqual({ runId: run.id, status: "rolled_back" });
-    expect((await companyTransferRunService.getRun(db, run.id))?.completedParts).toEqual([]);
+    await expect(recoverMigrationStorage(db, storage, source!.id, run.id)).resolves.toEqual({ runId: run.id, status: "rolled_back" });
+    expect(await companyTransferRunService.getRun(db, run.id)).toMatchObject({ companyId: destination.id, completedParts: [] });
+    expect((await db.select().from(companies).where(eq(companies.id, destination.id)))[0]?.status).toBe("archived");
     expect((await storage.headObject(destination.id, remaining.objectKey)).exists).toBe(false);
     expect((await storage.headObject(source!.id, original.objectKey)).exists).toBe(true);
   });
@@ -1062,7 +1100,7 @@ describe("company migration dry run", () => {
       await ledger.releaseApplyClaim(db, run.id, "interrupted");
       await db.delete(agents).where(eq(agents.id, agent!.id));
       await db.delete(companies).where(eq(companies.id, destination.id));
-      await expect(recoverRemovedMigrationStorage(db, undefined, source!.id, run.id)).rejects.toThrow("Migration storage recovery failed");
+      await expect(recoverMigrationStorage(db, undefined, source!.id, run.id)).rejects.toThrow("Migration storage recovery failed");
       expect((await ledger.getRun(db, run.id))?.completedParts).toHaveLength(2);
       expect(await readFile(path.join(sourceInstructions, "AGENTS.md"), "utf8")).toBe("source instructions");
 
@@ -1840,11 +1878,11 @@ describe("company migration dry run", () => {
     expect(rollback.status, JSON.stringify(rollback.body)).toBe(200);
     expect(rollback.body).toMatchObject({ runId: failedRunId, status: "rolled_back" });
     expect(await companyTransferRunService.getRun(db, run!.id)).toMatchObject({
-      companyId: null, status: "rolled_back", completedParts: [],
+      companyId: destination!.id, status: "rolled_back", completedParts: [],
     });
     const remaining = await db.select().from(companies);
     expect(remaining.some((company) => company.id === source!.id)).toBe(true);
-    expect(remaining.some((company) => company.id === destination!.id && company.status !== "archived")).toBe(false);
+    expect(remaining.find((company) => company.id === destination!.id)?.status).toBe("archived");
   });
 
   it("recovers a partial import after agent creation without touching the source", async () => {
@@ -1882,12 +1920,11 @@ describe("company migration dry run", () => {
     expect(await db.select().from(projects).where(eq(projects.companyId, destination!.id))).toEqual([]);
     expect((await db.select().from(agents)).some((agent) => agent.companyId === destination!.id)).toBe(true);
 
-    // Fail the final destination deletion, when its FK would clear the ledger's
-    // company_id, after the rollback has already attempted to delete child rows.
+    // Fail the final archival after rollback has attempted to delete child rows.
     const beforeRollback = await companyTransferRunService.getRun(db, run!.id);
     const beforeAgents = await db.select().from(agents).where(eq(agents.companyId, destination!.id));
     const beforeMemberships = await db.select().from(companyMemberships).where(eq(companyMemberships.companyId, destination!.id));
-    await db.execute(sql`alter table company_transfer_runs add constraint migration_fixture_keep_destination check (status <> 'rolling_back' or company_id is not null) not valid`);
+    await db.execute(sql`alter table companies add constraint migration_fixture_keep_destination check (name <> 'Partial import destination' or status <> 'archived') not valid`);
     try {
       const failedRollback = await request(app)
         .post(`/api/companies/${source!.id}/migrations/${run!.id}/rollback`)
@@ -1898,7 +1935,7 @@ describe("company migration dry run", () => {
       expect(await db.select().from(agents).where(eq(agents.companyId, destination!.id))).toEqual(beforeAgents);
       expect(await db.select().from(companyMemberships).where(eq(companyMemberships.companyId, destination!.id))).toEqual(beforeMemberships);
     } finally {
-      await db.execute(sql`alter table company_transfer_runs drop constraint migration_fixture_keep_destination`);
+      await db.execute(sql`alter table companies drop constraint migration_fixture_keep_destination`);
     }
     const rollback = await request(app)
       .post(`/api/companies/${source!.id}/migrations/${run!.id}/rollback`)
@@ -1906,8 +1943,9 @@ describe("company migration dry run", () => {
     expect(rollback.status, JSON.stringify(rollback.body)).toBe(200);
     expect(rollback.body).toMatchObject({ runId: failedRunId, status: "rolled_back" });
     expect(await companyTransferRunService.getRun(db, run!.id)).toMatchObject({
-      companyId: null, status: "rolled_back", completedParts: [],
+      companyId: destination!.id, status: "rolled_back", completedParts: [],
     });
+    expect((await db.select().from(companies).where(eq(companies.id, destination!.id)))[0]?.status).toBe("archived");
     const remainingAgents = await db.select().from(agents);
     expect(remainingAgents.some((agent) => agent.companyId === destination!.id)).toBe(false);
     expect(remainingAgents.some((agent) => agent.id === worker!.id && agent.companyId === source!.id)).toBe(true);
@@ -2011,14 +2049,15 @@ describe("company migration dry run", () => {
     expect(rollback.status, JSON.stringify(rollback.body)).toBe(200);
     expect(rollback.body).toMatchObject({ runId: failedRunId, status: "rolled_back" });
     expect(await companyTransferRunService.getRun(db, run!.id)).toMatchObject({
-      companyId: null, status: "rolled_back", completedParts: [],
+      companyId: destination!.id, status: "rolled_back", completedParts: [],
     });
+    expect((await db.select().from(companies).where(eq(companies.id, destination!.id)))[0]?.status).toBe("archived");
     expect((await storage.headObject(destination!.id, uploaded.objectKey)).exists).toBe(false);
     expect((await storage.headObject(source!.id, original.objectKey)).exists).toBe(true);
     expect((await db.select().from(assets)).some((entry) => entry.id === asset!.id)).toBe(true);
   });
 
-  it("requires confirmation for rollback and removes only the migrated company", async () => {
+  it("requires confirmation for rollback and archives only the migrated company", async () => {
     const [source] = await db.insert(companies).values({ name: "Rollback fixture", issuePrefix: "RBF" }).returning();
     const app = express();
     app.use(express.json());
@@ -2038,7 +2077,8 @@ describe("company migration dry run", () => {
     expect(applied.status).toBe(200);
     expect(applied.body.runId).toEqual(expect.any(String));
     const beforeRollback = await db.select().from(companies);
-    expect(beforeRollback.some((company) => company.name === "Rollback destination")).toBe(true);
+    const destination = beforeRollback.find((company) => company.name === "Rollback destination");
+    expect(destination).toBeDefined();
 
     const endpoint = `/api/companies/${source!.id}/migrations/${applied.body.runId}/rollback`;
     const unconfirmed = await request(app).post(endpoint).send({});
@@ -2051,7 +2091,7 @@ describe("company migration dry run", () => {
     expect(afterRollback.find((company) => company.id === source!.id)).toEqual(
       beforeRollback.find((company) => company.id === source!.id),
     );
-    expect(afterRollback.filter((company) => company.name === "Rollback destination" && company.status !== "archived")).toHaveLength(0);
+    expect(afterRollback.find((company) => company.id === destination!.id)?.status).toBe("archived");
   });
 
   it("refuses rollback when destination company settings changed after migration", async () => {

@@ -72,15 +72,18 @@ so it is not a rollback ID or evidence that apply occurred.
    that destination agents cannot access the source or other companies and that
    only intended roles and permissions were granted. Provision missing secrets
    through the destination's normal secret-management process.
+   In a fresh destination, `rename` gives colliding agent names unique names;
+   `skip` omits later matches. `replace` does not overwrite another bundle entry.
 5. Repeat the same apply request and verify it returns the completed run without
    creating duplicates. If verification fails, stop further writes and notify
    the recovery owner.
 6. If recovery is needed, read `GET /api/companies/{sourceCompanyId}/migrations/{runId}`.
    Use `POST /api/companies/{sourceCompanyId}/migrations/{runId}/rollback` with a
-   non-empty `confirm` reason. The database removal is transactional; storage
-   cleanup follows it and can be retried with the same confirmed rollback if
-   interrupted. Verify `rolled_back`, that only run-created resources were
-   removed, and that source data is unchanged. If rollback refuses a changed
+   non-empty `confirm` reason. One database transaction removes journaled child
+   rows and archives the destination, preserving its ID. Reserved storage cleanup
+   follows and can be retried with the same confirmed rollback if interrupted.
+   Verify `rolled_back`, the destination's `archived` status, removal of only
+   run-created resources, and unchanged source data. If rollback refuses a changed
    destination, stop and escalate; do not manually delete resources based on
    guesses.
 

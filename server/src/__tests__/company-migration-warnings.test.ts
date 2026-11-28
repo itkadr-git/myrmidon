@@ -26,7 +26,7 @@ describe("migration dry-run warnings", () => {
       previewImport,
     } as unknown as ReturnType<typeof companyPortabilityService>;
     await companyMigrationService(portability).dryRun("source", {}, "destination", "skip");
-    expect(previewImport).toHaveBeenCalledWith(expect.objectContaining({ collisionStrategy: "skip" }), { mode: "board_full" });
+    expect(previewImport).toHaveBeenCalledWith(expect.objectContaining({ collisionStrategy: "skip" }), { mode: "board_full", planNewCompanyAgentNameCollisions: true });
   });
 
   it("requests a read-only export and never applies the bundle", async () => {

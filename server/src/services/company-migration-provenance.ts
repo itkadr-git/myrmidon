@@ -32,8 +32,8 @@ function section(value: unknown): Entry[] {
   return value === undefined ? [] : Object.values(record(value)).map(record);
 }
 
-// This checks the imported row families, not the entire cascade graph. It is
-// deliberately not sufficient authorization to delete a live destination.
+// Verify that all imported rows are unchanged and no independent company-scoped
+// data has appeared before removing the imported rows and archiving the company.
 export async function matchesJournaledMigrationRows(tx: Tx, companyId: string, provenance: unknown): Promise<boolean> {
   const ref = record(provenance);
   if (ref.kind !== "company_migration" || ref.destinationClaimed !== true || ref.destinationCompanyId !== companyId
@@ -99,9 +99,8 @@ export async function matchesJournaledMigrationRows(tx: Tx, companyId: string, p
   return otherRuns.length === 1;
 }
 
-export async function removeJournaledMigrationCompany(tx: Tx, companyId: string) {
-  // Delete only the table scopes verified above, in dependency order. Keep the
-  // transfer ledger: its FK is cleared by deletion of the owned destination.
+export async function archiveJournaledMigrationCompany(tx: Tx, companyId: string) {
+  // Delete only the verified child rows. Keep the destination identity and ledger.
   for (const table of [
     issueAttachments, companyLogos, issueRelations, issueWorkProducts, issueInboxArchives, issueLabels,
     issueComments, issueDocuments, documentRevisions, documents, routineTriggers, routineRevisions,
@@ -117,6 +116,7 @@ export async function removeJournaledMigrationCompany(tx: Tx, companyId: string)
     )`).returning({ id: folders.id });
     if (deleted.length === 0) break;
   }
-  const [removed] = await tx.delete(companies).where(eq(companies.id, companyId)).returning({ id: companies.id });
-  if (!removed) throw new Error("Migration destination was not removed");
+  const [archived] = await tx.update(companies).set({ status: "archived", updatedAt: new Date() })
+    .where(eq(companies.id, companyId)).returning({ id: companies.id });
+  if (!archived) throw new Error("Migration destination was not archived");
 }

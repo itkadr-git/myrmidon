@@ -762,6 +762,7 @@ type ImportBehaviorOptions = {
   sourceCompanyId?: string | null;
   pauseAutomations?: boolean;
   transferRunId?: string;
+  planNewCompanyAgentNameCollisions?: boolean;
 };
 
 type AgentLike = {
@@ -5051,6 +5052,22 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         warnings.push(
           `Agent ${manifestAgent.slug} references existing manager slug ${manifestAgent.reportsToExistingAgentSlug}, but that agent is not present in the target company.`,
         );
+      }
+      if (input.target.mode === "new_company" && (options?.planNewCompanyAgentNameCollisions || options?.transferRunId)) {
+        const name = manifestAgent.name;
+        const nameKey = normalizeAgentUrlKey(name);
+        const collides = nameKey !== null && existingSlugs.has(nameKey);
+        const skip = collides && collisionStrategy === "skip";
+        // Replace can only update a pre-existing target row, not an entry in
+        // the same bundle. Allocate a unique name in a fresh destination.
+        const plannedName = collides && !skip ? uniqueNameBySlug(name, existingSlugs) : name;
+        const plannedKey = normalizeAgentUrlKey(plannedName);
+        if (!skip && plannedKey) existingSlugs.add(plannedKey);
+        agentPlans.push({
+          slug: manifestAgent.slug, action: skip ? "skip" : "create", plannedName, existingAgentId: null,
+          reason: collides ? (skip ? "Duplicate target agent name; skip strategy." : "Duplicate target agent name; allocated a unique name.") : null,
+        });
+        continue;
       }
       const existing = existingSlugToAgent.get(manifestAgent.slug) ?? null;
       if (!existing) {
