@@ -5,7 +5,7 @@ import { projects } from "@myrmidon/db";
 import type { Db } from "@myrmidon/db";
 import { maintenanceWindowSettingsSchema } from "@myrmidon/shared";
 import { validate } from "../middleware/validate.js";
-import { getAccessibleResource } from "./authz.js";
+import { assertBoard, getAccessibleResource } from "./authz.js";
 
 const DEFAULT_SETTINGS = { enabled: false, cron: "0 2 * * 0", durationMinutes: 120, timezone: "UTC" };
 
@@ -38,6 +38,7 @@ export function systemRoutes(db: Db) {
   });
 
   router.put("/projects/:projectId/system/auto-update-settings", validate(maintenanceWindowSettingsSchema), async (req, res) => {
+    assertBoard(req);
     const projectId = req.params.projectId as string;
     const row = await getAccessibleResource(req, res, readProject(projectId), "Project not found");
     if (!row) return;

@@ -8,7 +8,7 @@ import {
   type UpdateSettings,
 } from "@myrmidon/shared";
 import { validate } from "../middleware/validate.js";
-import { forbidden } from "../errors.js";
+import { assertInstanceAdmin } from "./authz.js";
 
 export const UPDATE_SETTINGS_GENERAL_KEY = "myrmidonAutoUpdateSettings";
 const SINGLETON_KEY = "default";
@@ -229,17 +229,6 @@ class DbUpdateSettingsService implements UpdateSettingsService {
   }
 }
 
-function assertCanManageUpdates(req: Request) {
-  const actor = (req as any).actor;
-  if (!actor) return;
-  if (actor.type !== "board") {
-    throw forbidden("Board access required");
-  }
-  if (actor.source === "local_implicit" || actor.isInstanceAdmin) {
-    return;
-  }
-  throw forbidden("Instance admin access required");
-}
 
 export function updatesRoutes(
   db?: Db,
@@ -253,27 +242,27 @@ export function updatesRoutes(
       : new InMemoryUpdateSettingsService());
 
   const getHandler = async (_req: Request, res: Response) => {
-    assertCanManageUpdates(_req);
+    assertInstanceAdmin(_req);
     const settings = await service.get();
     res.json(settings);
   };
 
   const putHandler = async (req: Request, res: Response) => {
-    assertCanManageUpdates(req);
+    assertInstanceAdmin(req);
     const validated = putUpdateSettingsSchema.parse(req.body);
     const saved = await service.replace(validated);
     res.json(saved);
   };
 
   const patchHandler = async (req: Request, res: Response) => {
-    assertCanManageUpdates(req);
+    assertInstanceAdmin(req);
     const validated = patchUpdateSettingsSchema.parse(req.body);
     const saved = await service.update(validated);
     res.json(saved);
   };
 
   const validateHandler = async (req: Request, res: Response) => {
-    assertCanManageUpdates(req);
+    assertInstanceAdmin(req);
     const validated = updateSettingsSchema.parse(req.body);
     res.json({ valid: true, settings: validated });
   };
