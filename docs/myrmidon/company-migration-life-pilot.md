@@ -86,8 +86,12 @@ so it is not a rollback ID or evidence that apply occurred.
    provisioning if the destination still matches its journal. If the owner was
    already provisioned, retry as that same operator. The retry can also delete a
    reserved logo upload whose database record never committed, then upload it
-   again in the same run. Committed child writes and other reservations still
-   require rollback; the importer does not replay them in place.
+   again in the same run. If the import stopped after creating agents, but before
+   committing later entities, a retry can reuse those agents after verifying their
+   rows, access records and managed instructions against the journal. This agent
+   checkpoint requires an empty or absent imported skill library and no other
+   outstanding resource reservations. Other partial imports require rollback;
+   the importer does not replay them in place.
    Use `POST /api/companies/{sourceCompanyId}/migrations/{runId}/rollback` with a
    non-empty `confirm` reason. One database transaction removes journaled child
    rows and archives the destination, preserving its ID. Reserved storage cleanup

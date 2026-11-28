@@ -765,6 +765,11 @@ type ImportBehaviorOptions = {
   pauseAutomations?: boolean;
   transferRunId?: string;
   resumeMigrationDestinationId?: string;
+  resumeMigrationCheckpoint?: {
+    agentIds: ReadonlyMap<string, string>;
+    filesByAgentId: ReadonlyMap<string, ReadonlyMap<string, string>>;
+    skillCheckpoint: boolean;
+  };
   planNewCompanyAgentNameCollisions?: boolean;
 };
 
@@ -5393,7 +5398,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           : null,
       };
       const resumedId = options?.resumeMigrationDestinationId;
-      if (resumedId && (!options?.transferRunId || !options.sourceCompanyId
+      if (resumedId && (!options?.resumeMigrationCheckpoint || !options.transferRunId || !options.sourceCompanyId
         || !await companyTransferRunService.matchesInitialMigrationCompany(db, options.transferRunId, options.sourceCompanyId, resumedId))) {
         throw conflict("Migration destination no longer matches its creation checkpoint.");
       }
@@ -5609,7 +5614,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       }
 
       const importsSkills = include.skills || include.agents;
-      const importedSkills = !importsSkills ? []
+      const checkpoint = options?.resumeMigrationDestinationId ? options.resumeMigrationCheckpoint : undefined;
+      if (checkpoint && [...checkpoint.agentIds.keys()].some((slug) =>
+        !plan.preview.plan.agentPlans.some((entry) => entry.slug === slug && entry.action === "create"))) {
+        throw new Error("Migration agent checkpoint does not match the import plan");
+      }
+      const importedSkills = !importsSkills || checkpoint?.skillCheckpoint ? []
         : migrationRunId
           ? await importMigrationSkills(db, migrationRunId, destinationCompanyId, pickTextFiles(plan.source.files))
           : await companySkills.importPackageFiles(targetCompany.id, pickTextFiles(plan.source.files), {
@@ -5765,7 +5775,18 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
           const createData = { ...patch, ...automationPausePatch, status: pauseAutomations ? "paused" : "idle" };
           let created: Awaited<ReturnType<typeof agents.create>>;
-          if (migrationRunId) {
+          const recordedId = checkpoint?.agentIds.get(planAgent.slug);
+          if (recordedId) {
+            const recorded = existingAgents.find((agent) => agent.id === recordedId && agent.name === planAgent.plannedName);
+            const root = resolveManagedInstructionsRoot({ companyId: destinationCompanyId, id: recordedId });
+            const expected = normalizeManagedInstructionsEntries(root, bundleFiles);
+            const verified = checkpoint?.filesByAgentId.get(recordedId);
+            if (!recorded || verified?.size !== expected.size || [...expected].some(([file, content]) =>
+              verified?.get(path.relative(root, file).split(path.sep).join("/")) !== sha256HexOfBytes(Buffer.from(content, "utf8")))) {
+              throw new Error("Migration agent checkpoint does not match the prepared instructions");
+            }
+            created = recorded;
+          } else if (migrationRunId) {
             const id = randomUUID();
             // This reservation commits before any filesystem write, even if the
             // following agent transaction aborts during instruction materialization.
@@ -5783,7 +5804,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               if (!updated) throw new Error("Migration agent instruction update failed");
               await applyImportedAgentPermissionGrants(destinationCompanyId, agent.id, manifestAgent.permissionGrants ?? [], actorUserId ?? null, permissions);
               return updated;
-            });
+            }, manifestAgent.slug);
           } else {
             created = await agents.create(targetCompany.id, createData);
             await access.ensureMembership(targetCompany.id, "agent", created.id, "member", "active");

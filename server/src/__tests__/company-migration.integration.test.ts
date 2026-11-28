@@ -2206,6 +2206,51 @@ describe("company migration dry run", () => {
     expect(replay.body).toMatchObject({ runId: retried.body.runId, resume: "already_completed" });
   });
 
+  it("resumes confirmed apply from an unchanged committed agent checkpoint", async () => {
+    const [source] = await db.insert(companies).values({ name: "Agent checkpoint source", issuePrefix: "MACP" }).returning();
+    await db.insert(agents).values({ companyId: source!.id, name: "Agent checkpoint worker" });
+    await db.insert(projects).values({ companyId: source!.id, name: "Checkpoint project" });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
+    app.use(errorHandler);
+    const apply = () => request(app).post(`/api/companies/${source!.id}/migrations`).send({
+      target: { mode: "new_company", newCompanyName: "Agent checkpoint destination" },
+      export: { include: { projects: true } },
+      dryRun: false, apply: true, confirm: "approved fixture",
+    });
+    await db.execute(sql`alter table projects add constraint migration_checkpoint_failure check (name <> 'Checkpoint project') not valid`);
+    const failed = await apply().finally(async () => {
+      await db.execute(sql`alter table projects drop constraint migration_checkpoint_failure`);
+    });
+    expect(failed.status, JSON.stringify(failed.body)).toBe(409);
+    const runId = failed.body.details?.runId;
+    expect(runId).toEqual(expect.any(String));
+    const run = await companyTransferRunService.getRun(db, runId);
+    expect(run?.companyId).toEqual(expect.any(String));
+    const companyId = run!.companyId!;
+    const importedAgents = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(importedAgents).toHaveLength(1);
+
+    const originalName = importedAgents[0]!.name;
+    const workerId = importedAgents[0]!.id;
+    await db.update(agents).set({ name: "Independent change" }).where(eq(agents.id, workerId));
+    expect((await apply()).status).toBe(409);
+    expect(await companyTransferRunService.getRun(db, runId)).toEqual(run);
+    await db.update(agents).set({ name: originalName }).where(eq(agents.id, workerId));
+
+    const resumed = await apply();
+    expect(resumed.status, JSON.stringify(resumed.body)).toBe(200);
+    expect(resumed.body).toMatchObject({ runId, status: "completed", createdCounts: { agents: 1, projects: 1 } });
+    expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toEqual(importedAgents);
+    expect(await db.select().from(companies).where(eq(companies.name, "Agent checkpoint destination"))).toHaveLength(1);
+    expect((await apply()).body).toMatchObject({ runId, resume: "already_completed" });
+  });
+
   it("removes imported logo storage after a partial failure without touching the source logo", async () => {
     const [source] = await db.insert(companies).values({ name: "Logo recovery source", issuePrefix: "MLR" }).returning();
     await db.insert(projects).values({ companyId: source!.id, name: "Logo recovery project" });

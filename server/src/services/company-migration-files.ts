@@ -73,6 +73,23 @@ export function migrationManagedFileWriter(db: Db, runId: string, companyId: str
   };
 }
 
+export async function matchesJournaledMigrationFile(companyId: string, directory: MigrationManagedDirectory, relativePath: string, sha256: string, identity: string) {
+  const root = managedRoot(companyId, directory);
+  const file = path.resolve(root, relativePath);
+  relativeWithin(root, file);
+  if (!await checkedParent(file, false)) return false;
+  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch(absent);
+  if (!handle) return false;
+  try {
+    const entry = await handle.stat({ bigint: true });
+    if (!entry.isFile() || fileIdentity(entry) !== identity || digest(await handle.readFile()) !== sha256) return false;
+    const current = await lstat(file, { bigint: true }).catch(absent);
+    return current?.isFile() === true && fileIdentity(current) === identity && current.ctimeNs === entry.ctimeNs;
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function removeJournaledMigrationFile(companyId: string, directory: MigrationManagedDirectory, relativePath: string, sha256: string, identity: string, stagingId: string) {
   const root = managedRoot(companyId, directory);
   const file = path.resolve(root, relativePath);

@@ -7,7 +7,7 @@ import { conflict, notFound, unprocessable } from "../errors.js";
 import { matchesJournaledMigrationRows, archiveJournaledMigrationCompany, countJournaledMigrationEntities } from "./company-migration-provenance.js";
 import type { StorageService } from "../storage/types.js";
 import { companySkillService } from "./company-skills.js";
-import { migrationManagedFileWriter, removeJournaledMigrationFile } from "./company-migration-files.js";
+import { matchesJournaledMigrationFile, migrationManagedFileWriter, removeJournaledMigrationFile } from "./company-migration-files.js";
 import type { companyPortabilityService } from "./company-portability.js";
 import { MIGRATION_SAFE_PLAN_ERRORS, validateMigrationManifest } from "./company-migration-validation.js";
 import { companyTransferRunService, migrationCompanyFingerprint, migrationRowFingerprint, parseMigrationResource } from "./company-transfer-runs.js";
@@ -160,6 +160,7 @@ export async function createMigrationAgent(
     service: Pick<ReturnType<typeof agentService>, "update">,
     access: Pick<ReturnType<typeof accessService>, "ensureMembership" | "setPrincipalPermission">,
   ) => Promise<Awaited<ReturnType<ReturnType<typeof agentService>["create"]>>>,
+  sourceSlug?: string,
 ) {
   const reservation = `${companyId}/managed/instructions/${data.id}`;
   return db.transaction(async (tx) => {
@@ -189,7 +190,7 @@ export async function createMigrationAgent(
       .from(userSecretDeclarations).where(and(eq(userSecretDeclarations.companyId, companyId), eq(userSecretDeclarations.targetType, "agent"), eq(userSecretDeclarations.targetId, agent.id)));
     const audit = await tx.select({ id: activityLog.id, fingerprint: migrationRowFingerprint(getTableName(activityLog)) })
       .from(activityLog).where(and(eq(activityLog.companyId, companyId), eq(activityLog.entityType, "agent"), eq(activityLog.entityId, agent.id)));
-    const provenance = { [agent.id]: { ...row, memberships, grants, secretBindings, userSecretDeclarations: declarations, audit } };
+    const provenance = { [agent.id]: { ...row, sourceSlug, memberships, grants, secretBindings, userSecretDeclarations: declarations, audit } };
     const [saved] = await tx.update(companyTransferRuns).set({
       containerRef: sql`${companyTransferRuns.containerRef} || jsonb_build_object('agentProvenance', coalesce(${companyTransferRuns.containerRef}->'agentProvenance', '{}'::jsonb) || ${JSON.stringify(provenance)}::jsonb)`,
       updatedAt: new Date(),
@@ -207,11 +208,12 @@ export async function linkMigrationAgent(db: Db, runId: string, companyId: strin
     );
     const [claim] = await tx.select({ fingerprint: sql<string | null>`${companyTransferRuns.containerRef}->'agentProvenance'->${agentId}::text->>'fingerprint'` })
       .from(companyTransferRuns).where(ownedRun).for("update");
-    const [row] = await tx.select({ fingerprint: migrationRowFingerprint(getTableName(agents)) })
+    const [row] = await tx.select({ fingerprint: migrationRowFingerprint(getTableName(agents)), reportsTo: agents.reportsTo })
       .from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId))).for("update");
     if (!claim?.fingerprint || row?.fingerprint !== claim.fingerprint) {
       throw new Error("Migration reporting link rejected for an unowned or modified agent");
     }
+    if (row.reportsTo === managerId) return;
     const updated = await agentService(tx as unknown as Db).update(agentId, { reportsTo: managerId });
     if (!updated) throw new Error("Migration reporting link was not recorded");
     const [linked] = await tx.select({ fingerprint: migrationRowFingerprint(getTableName(agents)) })
@@ -548,18 +550,53 @@ async function claimMigrationAtDestinationCheckpoint(
         eq(companyTransferRuns.direction, "import"), eq(companyTransferRuns.status, "failed"),
         eq(companyTransferRuns.actorKey, `company_migration:${sourceCompanyId}`),
         sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' = ${sourceCompanyId}`,
-        // No child rows may have committed past the owner checkpoint.
-        sql`${companyTransferRuns.containerRef} - array['kind', 'sourceCompanyId', 'destinationClaimed', 'destinationCompanyId', 'initialCompanyFingerprint', 'ownerProvenance']::text[] = '{}'::jsonb`,
+        sql`${companyTransferRuns.containerRef} - array['kind', 'sourceCompanyId', 'destinationClaimed', 'destinationCompanyId', 'initialCompanyFingerprint', 'ownerProvenance', 'skillProvenance', 'agentProvenance']::text[] = '{}'::jsonb`,
       )).returning({ provenance: companyTransferRuns.containerRef, parts: companyTransferRuns.completedParts });
-    if (!claim) return false;
+    if (!claim) return null;
     if (!await matchesJournaledMigrationRows(tx, companyId, claim.provenance)) {
       throw conflict("Migration destination no longer matches its creation checkpoint.", { runId });
     }
-    if (!Array.isArray(claim.parts) || claim.parts.length > 1) throw conflict("Migration requires rollback.", { runId });
-    if (claim.parts.length === 1) {
-      const [part] = claim.parts;
+    const ref = claim.provenance as {
+      skillProvenance?: { skills: unknown[]; folders: unknown[] };
+      agentProvenance?: Record<string, { sourceSlug?: string }>;
+    };
+    // This checkpoint can replay an empty skill import, but not rebuild a
+    // committed skill library's source-to-destination mappings.
+    const skillCheckpoint = ref.skillProvenance !== undefined;
+    if (ref.skillProvenance?.skills.length || ref.skillProvenance?.folders.length) {
+      throw conflict("Migration requires rollback.", { runId });
+    }
+    const agentIds = new Map<string, string>();
+    const ownedAgents = Object.entries(ref.agentProvenance ?? {});
+    for (const [id, entry] of ownedAgents) {
+      if (!entry.sourceSlug || agentIds.has(entry.sourceSlug)) throw conflict("Migration requires rollback.", { runId });
+      agentIds.set(entry.sourceSlug, id);
+    }
+    const ownedIds = new Set(agentIds.values());
+    if (!Array.isArray(claim.parts)) throw conflict("Migration requires rollback.", { runId });
+    const filesByAgentId = new Map<string, Map<string, string>>();
+    let orphanLogo: string | undefined;
+    for (const part of claim.parts) {
       const resource = typeof part === "string" ? parseMigrationResource(companyId, part) : null;
-      if (!storage || resource?.kind !== "object" || !resource.objectKey.startsWith(`${companyId}/assets/companies/`)) {
+      if (resource?.kind === "company_skills" && skillCheckpoint) continue;
+      if (resource?.kind === "agent_instructions" && ownedIds.has(resource.agentId)) continue;
+      if (resource?.kind === "managed_file" && resource.directory.kind === "agent_instructions" && ownedIds.has(resource.directory.agentId)) {
+        const files = filesByAgentId.get(resource.directory.agentId) ?? new Map<string, string>();
+        if (files.has(resource.relativePath) || !await matchesJournaledMigrationFile(companyId, resource.directory, resource.relativePath, resource.sha256, resource.identity)) {
+          throw conflict("Migration instructions no longer match their checkpoint.", { runId });
+        }
+        files.set(resource.relativePath, resource.sha256);
+        filesByAgentId.set(resource.directory.agentId, files);
+        continue;
+      }
+      if (resource?.kind === "object" && !orphanLogo && claim.parts.length === 1 && resource.objectKey.startsWith(`${companyId}/assets/companies/`)) {
+        orphanLogo = resource.objectKey;
+        continue;
+      }
+      throw conflict("Migration requires rollback.", { runId });
+    }
+    if (orphanLogo) {
+      if (!storage) {
         throw conflict("Migration requires rollback.", { runId });
       }
       // The only replayable external write here is an uncommitted company
@@ -573,7 +610,7 @@ async function claimMigrationAtDestinationCheckpoint(
       try {
         // Hold the ledger lock until the reservation is cleared. If deletion
         // succeeds but the transaction aborts, the next retry deletes again.
-        await storage.deleteObject(companyId, resource.objectKey);
+        await storage.deleteObject(companyId, orphanLogo);
         const [cleared] = await tx.update(companyTransferRuns).set({ completedParts: [] })
           .where(applyingDestination(runId, companyId)).returning({ id: companyTransferRuns.id });
         if (!cleared) throw new Error("Migration logo reservation was not cleared");
@@ -581,7 +618,7 @@ async function claimMigrationAtDestinationCheckpoint(
         throw conflict("Migration logo recovery failed; retry the confirmed request or roll back.", { runId });
       }
     }
-    return true;
+    return { agentIds, filesByAgentId, skillCheckpoint };
   });
 }
 
@@ -669,10 +706,12 @@ export function companyMigrationService(portability: Portability, storage?: Stor
         return { ...response, counts: createdCounts, createdCounts, status: "completed", resume: "already_completed" };
       }
       const resumeDestination = run.status === "failed" ? run.companyId : null;
-      const claimed = resumeDestination
+      const checkpoint = resumeDestination
         ? await claimMigrationAtDestinationCheckpoint(db, run.id, companyId, resumeDestination, actorUserId, storage)
-        : await ledger.claimApply(db, run.id);
-      if (!claimed) throw conflict("Migration is active or requires recovery.", { runId: run.id });
+        : null;
+      if (resumeDestination ? !checkpoint : !await ledger.claimApply(db, run.id)) {
+        throw conflict("Migration is active or requires recovery.", { runId: run.id });
+      }
       try {
         await portability.importBundle({
           source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
@@ -680,6 +719,7 @@ export function companyMigrationService(portability: Portability, storage?: Stor
         }, actorUserId, {
           mode: "board_full", pauseAutomations: true, transferRunId: run.id, sourceCompanyId: companyId,
           resumeMigrationDestinationId: resumeDestination ?? undefined,
+          resumeMigrationCheckpoint: checkpoint ?? undefined,
         });
         const recorded = await ledger.getRun(db, run.id);
         if (!recorded) throw new Error("Migration provenance missing");
