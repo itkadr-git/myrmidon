@@ -1123,10 +1123,10 @@ describe("company migration dry run", () => {
     expect(recovered?.containerRef).toMatchObject({
       initialCompanyFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
-    expect(await companyTransferRunService.matchesInitialMigrationCompany(db, run.id, "crash-source")).toBe(true);
+    expect(await companyTransferRunService.matchesInitialMigrationCompany(db, run.id, "crash-source", destination.id)).toBe(true);
     // Checking only updatedAt would miss writes made without an ORM timestamp update.
     await db.update(companies).set({ description: "Independent edit" }).where(eq(companies.id, destination.id));
-    expect(await companyTransferRunService.matchesInitialMigrationCompany(db, run.id, "crash-source")).toBe(false);
+    expect(await companyTransferRunService.matchesInitialMigrationCompany(db, run.id, "crash-source", destination.id)).toBe(false);
     expect(recovered?.completedParts).toEqual([key]);
     expect((await storage.headObject(destination.id, key)).exists).toBe(true);
     expect(await companyTransferRunService.claimApply(db, run.id)).toBe(false);

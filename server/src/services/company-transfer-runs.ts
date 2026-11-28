@@ -219,7 +219,6 @@ export const companyTransferRunService = {
       .innerJoin(companyTransferRuns, eq(companies.id, companyTransferRuns.companyId))
       .where(and(
         eq(companyTransferRuns.id, runId),
-        eq(companyTransferRuns.status, "applying"),
         eq(companies.id, companyId),
         eq(companyTransferRuns.direction, "import"),
         eq(companyTransferRuns.actorKey, `company_migration:${sourceCompanyId}`),
