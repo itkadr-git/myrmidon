@@ -8,6 +8,8 @@ export interface PutObjectInput {
   body: Buffer | Readable;
   contentType: string;
   contentLength: number;
+  // The caller journaled this fresh key and will recover incomplete writes.
+  reservedForRecovery?: boolean;
 }
 
 export interface GetObjectInput {
@@ -48,6 +50,7 @@ export interface PutFileInput {
   originalFilename: string | null;
   contentType: string;
   body: Buffer;
+  beforeWrite?: (objectKey: string) => Promise<void>;
 }
 
 export interface PutFileResult {

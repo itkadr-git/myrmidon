@@ -93,14 +93,18 @@ export function createStorageService(provider: StorageProvider): StorageService 
 
     async putFile(input: PutFileInput): Promise<PutFileResult> {
       assertPutFileInput(input);
-      const objectKey = buildObjectKey(input.companyId, input.namespace, input.originalFilename);
+      // Reserved keys are persisted in migration provenance; never embed source filenames there.
+      const objectKey = buildObjectKey(input.companyId, input.namespace, input.beforeWrite ? null : input.originalFilename);
       const byteSize = input.body.length;
       const contentType = input.contentType.trim().toLowerCase();
+      // Callers can durably record the generated key before any storage side effect.
+      await input.beforeWrite?.(objectKey);
       await provider.putObject({
         objectKey,
         body: input.body,
         contentType,
         contentLength: byteSize,
+        ...(input.beforeWrite ? { reservedForRecovery: true } : {}),
       });
 
       return {

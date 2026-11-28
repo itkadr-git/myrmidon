@@ -197,6 +197,36 @@ describe("company portability", () => {
   const paperclipKey = "paperclipai/paperclip/paperclip";
   const companyPlaybookKey = "company/company-1/company-playbook";
 
+  it("rejects provenance-tracked imports into an existing company before any writes", async () => {
+    const portability = companyPortabilityService({} as never);
+    await expect(portability.importBundle({
+      source: { type: "inline", rootPath: "package", files: {} },
+      target: { mode: "existing_company", companyId: "destination" },
+    }, null, { mode: "board_full", transferRunId: "run" })).rejects.toThrow(
+      "Tracked imports require a new company",
+    );
+    expect(companySvc.create).not.toHaveBeenCalled();
+    expect(companySvc.update).not.toHaveBeenCalled();
+    expect(agentSvc.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { reason: "automation is not paused", pauseAutomations: false, secretValues: undefined },
+    { reason: "secret values are supplied", pauseAutomations: true, secretValues: { TOKEN: "fixture-only" } },
+  ])("rejects tracked new-company imports before preview or writes when $reason", async ({ pauseAutomations, secretValues }) => {
+    const portability = companyPortabilityService({} as never);
+    await expect(portability.importBundle({
+      source: { type: "inline", rootPath: "package", files: {} },
+      target: { mode: "new_company", newCompanyName: "Destination" },
+      secretValues,
+    }, null, { mode: "board_full", transferRunId: "run", pauseAutomations })).rejects.toThrow(
+      "Tracked imports require paused automation and cannot accept secret values.",
+    );
+    expect(companySvc.create).not.toHaveBeenCalled();
+    expect(companySvc.update).not.toHaveBeenCalled();
+    expect(agentSvc.create).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     instanceSettingsSvc.getExperimental.mockResolvedValue({ enableNativeRunner: false });
@@ -1213,6 +1243,12 @@ describe("company portability", () => {
     expect(preview.counts.issues).toBe(0);
     expect(preview.fileInventory.some((entry) => entry.path.startsWith("tasks/"))).toBe(false);
     expect(preview.fileInventory.some((entry) => entry.path === "images/org-chart.png")).toBe(false);
+    expect(companySvc.create).not.toHaveBeenCalled();
+    expect(agentSvc.create).not.toHaveBeenCalled();
+    expect(projectSvc.create).not.toHaveBeenCalled();
+    expect(issueSvc.create).not.toHaveBeenCalled();
+    expect(secretSvc.create).not.toHaveBeenCalled();
+    expect(companySkillSvc.importPackageFiles).not.toHaveBeenCalled();
 
     const downloaded = await portability.exportBundle("company-1", {
       include: {
@@ -4796,6 +4832,18 @@ describe("company portability", () => {
     const exported = await portability.exportBundle("company-1", {
       include: { company: true, agents: false, projects: false, issues: true },
     });
+    const request = {
+      source: { type: "inline" as const, rootPath: exported.rootPath, files: exported.files },
+      include: { company: true, agents: false, projects: false, issues: true },
+      target: { mode: "new_company" as const, newCompanyName: "Imported" },
+      agents: "all" as const,
+      collisionStrategy: "rename" as const,
+    };
+    const validPreview = await portability.previewImport(request);
+    expect(validPreview.errors).toEqual([]);
+    expect(companySvc.create).not.toHaveBeenCalled();
+    expect(storage.putFile).not.toHaveBeenCalled();
+
     exported.files[`blobs/${sha}`] = {
       encoding: "base64",
       data: Buffer.from("tampered-bytes").toString("base64"),
@@ -4806,6 +4854,18 @@ describe("company portability", () => {
     accessSvc.ensureMembership.mockResolvedValue(undefined);
     agentSvc.list.mockResolvedValue([]);
     issueSvc.create.mockResolvedValue({ id: "issue-imported", title: "Attachment task", projectId: null });
+
+    const preview = await portability.previewImport({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: true, agents: false, projects: false, issues: true },
+      target: { mode: "new_company", newCompanyName: "Imported" },
+      agents: "all",
+      collisionStrategy: "rename",
+    });
+    expect(preview.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("does not match its declared sha256"),
+    ]));
+    expect(companySvc.create).not.toHaveBeenCalled();
 
     await expect(portability.importBundle({
       source: { type: "inline", rootPath: exported.rootPath, files: exported.files },

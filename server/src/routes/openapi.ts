@@ -2133,6 +2133,56 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/companies/{companyId}/migrations",
+  tags: ["companies"],
+  summary: "Preview a company migration or explicitly apply it to a new company",
+  description: "Dry-run is read-only and is the default. Applying requires dryRun: false, apply: true, and a non-empty confirmation.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(z.object({
+      target: z.object({ mode: z.literal("new_company"), newCompanyName: z.string().trim().min(1) }).strict(),
+      export: companyPortabilityExportSchema.optional().default({}),
+      dryRun: z.boolean().optional().default(true),
+      apply: z.boolean().optional().default(false),
+      confirm: z.string().trim().min(1).optional(),
+      collisionStrategy: z.enum(["rename", "skip", "replace"]).optional().default("rename"),
+    }).strict()),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/migrations/{runId}",
+  tags: ["companies"],
+  summary: "Get source-scoped migration status and recovery checkpoints",
+  request: { params: z.object({ companyId: z.string(), runId: z.string() }) },
+  responses: { 200: r.ok(z.object({
+    runId: z.string().uuid(), status: z.string(),
+    steps: z.object({
+      destinationClaimed: z.boolean(),
+      createdCounts: z.object({ agents: z.number(), projects: z.number(), issues: z.number(), skills: z.number() }),
+      databaseRollback: z.enum(["not_completed", "completed"]),
+      storageRollback: z.enum(["not_started", "pending", "completed"]),
+    }),
+  })), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/migrations/{runId}/rollback",
+  tags: ["companies"],
+  summary: "Roll back a migration-owned destination or retry its resource cleanup",
+  description: "Requires confirmation and refuses to remove a destination that differs from its migration journal.",
+  request: {
+    params: z.object({ companyId: z.string(), runId: z.string() }),
+    body: jsonBody(z.object({ confirm: z.string().trim().min(1) }).strict()),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/companies/{companyId}/exports",
   tags: ["companies"],
   summary: "Export company data",

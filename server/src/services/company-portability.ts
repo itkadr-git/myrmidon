@@ -8,6 +8,7 @@ import {
   builtInManagedResources,
   issueRelations,
   principalPermissionGrants,
+  routines as routineRows,
   type Db,
 } from "@myrmidon/db";
 // myrmidon(B1c): product name in user-facing import errors; see product.ts.
@@ -75,17 +76,21 @@ import {
 import { requireOpenCodeModelId } from "@myrmidon/adapter-opencode-local/server";
 import { findServerAdapter } from "../adapters/index.js";
 import { formatAttachmentSize, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
-import { forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
-import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
+import { agentInstructionsBundleMode, agentInstructionsService, normalizeManagedInstructionsEntries, resolveManagedInstructionsRoot } from "./agent-instructions.js";
 import { assetService } from "./assets.js";
 import { generateReadme } from "./company-export-readme.js";
 import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
 import { companySkillService } from "./company-skills.js";
 import { companyService } from "./companies.js";
+import { createMigrationAgent, createMigrationIssues, createMigrationLabel, createMigrationProject, createMigrationRoutine, importMigrationSkills, linkMigrationAgent, provisionMigrationOwner, recordMigrationAsset } from "./company-migration.js";
+import { MIGRATION_SKIPPED_MANAGER_ERROR, MIGRATION_SKIPPED_PROJECT_LEAD_ERROR, MIGRATION_SKIPPED_TASK_ASSIGNEE_ERROR } from "./company-migration-validation.js";
+import { migrationManagedFileWriter } from "./company-migration-files.js";
+import { companyTransferRunService } from "./company-transfer-runs.js";
 import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
 import { issueService } from "./issues.js";
@@ -759,6 +764,19 @@ type ImportBehaviorOptions = {
   mode?: ImportMode;
   sourceCompanyId?: string | null;
   pauseAutomations?: boolean;
+  transferRunId?: string;
+  resumeMigrationDestinationId?: string;
+  resumeMigrationCheckpoint?: {
+    hasRecordedLogo?: boolean;
+    embeddedAssetIds?: ReadonlyMap<string, string>;
+    hasCommittedIssues?: boolean;
+    agentIds: ReadonlyMap<string, string>;
+    filesByAgentId: ReadonlyMap<string, ReadonlyMap<string, string>>;
+    skillRefs?: ReadonlyMap<string, string>;
+    projectsBySlug: ReadonlyMap<string, { id: string; workspaceIds: ReadonlyMap<string, string> }>;
+    routinesBySlug: ReadonlyMap<string, string>;
+  };
+  planNewCompanyAgentNameCollisions?: boolean;
 };
 
 type AgentLike = {
@@ -3567,11 +3585,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     agentId: string,
     permissionGrants: PortableAgentPermissionGrant[],
     grantedByUserId: string | null,
+    permissions: Pick<typeof access, "ensureMembership" | "setPrincipalPermission"> = access,
   ) {
     if (permissionGrants.length === 0) return;
-    await access.ensureMembership(companyId, "agent", agentId, "member", "active");
+    await permissions.ensureMembership(companyId, "agent", agentId, "member", "active");
     for (const grant of permissionGrants) {
-      await access.setPrincipalPermission(
+      await permissions.setPrincipalPermission(
         companyId,
         "agent",
         agentId,
@@ -3842,7 +3861,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   async function exportBundle(
     companyId: string,
     input: CompanyPortabilityExport,
-    options: { preview?: boolean; allowExternalInstructions?: boolean } = {},
+    options: { preview?: boolean; allowExternalInstructions?: boolean; rejectUnknownAgentPermissions?: boolean } = {},
   ): Promise<CompanyPortabilityExportResult> {
     const include = normalizeInclude({
       ...input.include,
@@ -3886,7 +3905,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     const allAgentRows = include.agents ? await agents.list(companyId, { includeTerminated: true }) : [];
     const agentSelection = resolvePortableExportAgentSelection(allAgentRows, input.agents, include.agents);
-    const companySkillRowsRaw = include.skills ? await companySkills.listFull(companyId) : [];
+    const companySkillRowsRaw = include.skills ? await companySkills.listFull(companyId, { skipInventoryRefresh: options.preview }) : [];
     const managedSkillRows = companySkillRowsRaw.filter((skill) => managedSkillIds.has(skill.id));
     const companySkillRows = companySkillRowsRaw.filter((skill) => !managedSkillIds.has(skill.id));
     warnings.push(...agentSelection.warnings);
@@ -3920,7 +3939,13 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       : [];
     const permissionGrantsByAgentId = new Map<string, PortableAgentPermissionGrant[]>();
     for (const row of agentPermissionGrantRows) {
-      if (!VALID_PERMISSION_KEYS.has(row.permissionKey as PermissionKey)) continue;
+      if (!VALID_PERMISSION_KEYS.has(row.permissionKey as PermissionKey)) {
+        if (options.rejectUnknownAgentPermissions) throw unprocessable("Source contains an unsupported agent permission.");
+        continue;
+      }
+      if (options.rejectUnknownAgentPermissions && row.scope != null && !isPlainRecord(row.scope)) {
+        throw unprocessable("Source contains an invalid agent permission scope.");
+      }
       const grants = permissionGrantsByAgentId.get(row.principalId) ?? [];
       grants.push({
         permissionKey: row.permissionKey as PermissionKey,
@@ -4163,8 +4188,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         skillFileJobs.push({
           filePath: `${packageDir}/${inventoryEntry.path}`,
           load: async () => {
+            // Preview and migration retries must not reconcile the source
+            // inventory while reading the files that determine the run key.
             const fileDetail = await companySkills
-              .readFile(companyId, skill.id, inventoryEntry.path)
+              .readFile(companyId, skill.id, inventoryEntry.path, { skipInventoryRefresh: options.preview })
               .catch(() => null);
             if (!fileDetail) return null;
             return inventoryEntry.path === "SKILL.md"
@@ -4839,6 +4866,15 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const warnings = [...source.warnings];
     const errors: string[] = [];
 
+    // Validate content-addressed blobs during preview as well as before apply.
+    for (const [filePath, fileEntry] of Object.entries(source.files)) {
+      if (!filePath.startsWith("blobs/")) continue;
+      const body = portableFileToBuffer(fileEntry, filePath);
+      if (sha256HexOfBytes(body) !== filePath.slice("blobs/".length)) {
+        errors.push(`Bundle blob ${filePath} does not match its declared sha256; the package is corrupted or was tampered with.`);
+      }
+    }
+
     if (include.company && !manifest.company) {
       errors.push("Manifest does not include company metadata.");
     }
@@ -5033,6 +5069,22 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           `Agent ${manifestAgent.slug} references existing manager slug ${manifestAgent.reportsToExistingAgentSlug}, but that agent is not present in the target company.`,
         );
       }
+      if (input.target.mode === "new_company" && (options?.planNewCompanyAgentNameCollisions || options?.transferRunId)) {
+        const name = manifestAgent.name;
+        const nameKey = normalizeAgentUrlKey(name);
+        const collides = nameKey !== null && existingSlugs.has(nameKey);
+        const skip = collides && collisionStrategy === "skip";
+        // Replace can only update a pre-existing target row, not an entry in
+        // the same bundle. Allocate a unique name in a fresh destination.
+        const plannedName = collides && !skip ? uniqueNameBySlug(name, existingSlugs) : name;
+        const plannedKey = normalizeAgentUrlKey(plannedName);
+        if (!skip && plannedKey) existingSlugs.add(plannedKey);
+        agentPlans.push({
+          slug: manifestAgent.slug, action: skip ? "skip" : "create", plannedName, existingAgentId: null,
+          reason: collides ? (skip ? "Duplicate target agent name; skip strategy." : "Duplicate target agent name; allocated a unique name.") : null,
+        });
+        continue;
+      }
       const existing = existingSlugToAgent.get(manifestAgent.slug) ?? null;
       if (!existing) {
         agentPlans.push({
@@ -5170,6 +5222,23 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       }
     }
 
+    if (input.target.mode === "new_company" && (options?.planNewCompanyAgentNameCollisions || options?.transferRunId)) {
+      // A skipped agent in a fresh destination has no existing row to resolve to.
+      const skipped = new Set(agentPlans.filter((entry) => entry.action === "skip").map((entry) => entry.slug));
+      const losesAgent = (slug: string | null) => slug !== null && skipped.has(slug);
+      if (selectedAgents.some((agent) => !skipped.has(agent.slug) && losesAgent(agent.reportsToSlug))) {
+        errors.push(MIGRATION_SKIPPED_MANAGER_ERROR);
+      }
+      const importedProjects = new Set(projectPlans.filter((entry) => entry.action !== "skip").map((entry) => entry.slug));
+      if (manifest.projects.some((project) => importedProjects.has(project.slug) && losesAgent(project.leadAgentSlug))) {
+        errors.push(MIGRATION_SKIPPED_PROJECT_LEAD_ERROR);
+      }
+      const importedIssues = new Set(issuePlans.filter((entry) => entry.action !== "skip").map((entry) => entry.slug));
+      if (manifest.issues.some((issue) => importedIssues.has(issue.slug) && losesAgent(issue.assigneeAgentSlug))) {
+        errors.push(MIGRATION_SKIPPED_TASK_ASSIGNEE_ERROR);
+      }
+    }
+
     const preview: CompanyPortabilityPreviewResult = {
       include,
       targetCompanyId,
@@ -5222,6 +5291,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     // deliberately small bundle. Reject the fragment rather than importing it.
     assertInlineSourceComplete(input.source);
     const mode = resolveImportMode(options);
+    // A migration run owns only a newly created destination. Refuse tracked
+    // updates before preview or any importer side effect can occur.
+    if (options?.transferRunId && (input.target.mode !== "new_company" || mode !== "board_full")) {
+      throw unprocessable("Tracked imports require a new company destination and board-full import mode.");
+    }
+    if (options?.transferRunId && (!options.pauseAutomations || Object.keys(input.secretValues ?? {}).length > 0)) {
+      throw unprocessable("Tracked imports require paused automation and cannot accept secret values.");
+    }
     const plan = await buildPreview(input, options);
     if (plan.preview.errors.length > 0) {
       throw unprocessable(`Import preview has errors: ${plan.preview.errors.join("; ")}`);
@@ -5309,7 +5386,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               manifestCompanyName,
               (await companies.list()).map((company) => company.name),
             ));
-      const created = await companies.create({
+      const companyInput = {
         name: companyName,
         description: include.company ? (sourceManifest.company?.description ?? null) : null,
         requireBoardApprovalForNewAgents: include.company
@@ -5327,8 +5404,21 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         feedbackDataSharingTermsVersion: include.company
           ? (sourceManifest.company?.feedbackDataSharingTermsVersion ?? null)
           : null,
-      });
-      if (mode === "agent_safe" && options?.sourceCompanyId) {
+      };
+      const resumedId = options?.resumeMigrationDestinationId;
+      if (resumedId && (!options?.resumeMigrationCheckpoint || !options.transferRunId || !options.sourceCompanyId
+        || !await companyTransferRunService.matchesInitialMigrationCompany(db, options.transferRunId, options.sourceCompanyId, resumedId))) {
+        throw conflict("Migration destination no longer matches its creation checkpoint.");
+      }
+      const created = resumedId
+        ? await companies.getById(resumedId)
+        : options?.transferRunId
+          ? await companies.create(companyInput, { transferRunId: options.transferRunId })
+          : await companies.create(companyInput);
+      if (!created) throw conflict("Migration destination is unavailable.");
+      if (options?.transferRunId) {
+        await provisionMigrationOwner(db, options.transferRunId, created.id, actorUserId, { verifyCheckpoint: Boolean(resumedId) });
+      } else if (mode === "agent_safe" && options?.sourceCompanyId) {
         await access.copyActiveUserMemberships(options.sourceCompanyId, created.id);
       } else {
         const ownerPrincipalId = actorUserId ?? "board";
@@ -5364,6 +5454,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     if (!targetCompany) throw notFound("Target company not found");
 
+    const migrationRunId = options?.transferRunId;
+    const destinationCompanyId = targetCompany.id;
+    const migrationStorageReservation = migrationRunId
+      ? (objectKey: string) => companyTransferRunService.reserveMigrationObject(db, migrationRunId, destinationCompanyId, objectKey)
+      : undefined;
+
     const importedAgentEnvSlugs = new Set(
       plan.preview.plan.agentPlans
         .filter((entry) => entry.action !== "skip")
@@ -5385,20 +5481,18 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     });
     const createdImportSecretIds: string[] = [];
     try {
-      await materializeImportEnvInputValues(
-        targetCompany.id,
-        sourceManifest,
-        importEnvInputs,
-        input.secretValues,
-        actorUserId,
-        createdImportSecretIds,
-      );
+      if (!migrationRunId) {
+        await materializeImportEnvInputValues(targetCompany.id, sourceManifest, importEnvInputs, input.secretValues,
+          actorUserId, createdImportSecretIds);
+      }
 
-      if (include.company) {
+      if (include.company && !options?.resumeMigrationCheckpoint?.hasRecordedLogo) {
         const logoPath = sourceManifest.company?.logoPath ?? null;
         if (!logoPath) {
-          const cleared = await companies.update(targetCompany.id, { logoAssetId: null });
-          targetCompany = cleared ?? targetCompany;
+          if (!migrationRunId) {
+            const cleared = await companies.update(targetCompany.id, { logoAssetId: null });
+            targetCompany = cleared ?? targetCompany;
+          }
         } else {
           const logoFile = plan.source.files[logoPath];
           if (!logoFile) {
@@ -5420,8 +5514,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                   originalFilename: path.posix.basename(logoPath),
                   contentType,
                   body,
+                  beforeWrite: migrationStorageReservation,
                 });
-                const createdAsset = await assetRecords.create(targetCompany.id, {
+                const assetData = {
                   provider: stored.provider,
                   objectKey: stored.objectKey,
                   contentType: stored.contentType,
@@ -5430,12 +5525,18 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                   originalFilename: stored.originalFilename,
                   createdByAgentId: null,
                   createdByUserId: actorUserId ?? null,
-                });
-                const updated = await companies.update(targetCompany.id, {
-                  logoAssetId: createdAsset.id,
-                });
-                targetCompany = updated ?? targetCompany;
+                };
+                if (migrationRunId) {
+                  await recordMigrationAsset(db, migrationRunId, destinationCompanyId, assetData, true);
+                } else {
+                  const createdAsset = await assetRecords.create(targetCompany.id, assetData);
+                  const updated = await companies.update(targetCompany.id, {
+                    logoAssetId: createdAsset.id,
+                  });
+                  targetCompany = updated ?? targetCompany;
+                }
               } catch (err) {
+                if (migrationStorageReservation) throw err;
                 warnings.push(`Failed to import company logo ${logoPath}: ${err instanceof Error ? err.message : String(err)}`);
               }
             }
@@ -5448,13 +5549,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       // instructions can be rewritten to the asset ids this board minted.
       // References whose entry or blob cannot be imported keep their source
       // ids and stay broken rather than pointing at the wrong asset.
-      const embeddedAssetIdMap = new Map<string, string>();
+      const embeddedAssetIdMap = new Map(options?.resumeMigrationCheckpoint?.embeddedAssetIds);
       const manifestEmbeddedAssets = sourceManifest.embeddedAssets ?? [];
       if (manifestEmbeddedAssets.length > 0) {
         if (!storage) {
           warnings.push(`Skipped ${manifestEmbeddedAssets.length} embedded image asset${manifestEmbeddedAssets.length === 1 ? "" : "s"} because storage is unavailable; their references were left unchanged.`);
         } else {
           for (const embeddedAsset of manifestEmbeddedAssets) {
+            if (embeddedAssetIdMap.has(embeddedAsset.assetId)) continue;
             const embeddedAssetLabel = embeddedAsset.originalFilename ?? embeddedAsset.assetId;
             const blobPath = portableBlobPath(embeddedAsset.sha256);
             const blobFile = plan.source.files[blobPath];
@@ -5472,8 +5574,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 originalFilename: embeddedAsset.originalFilename,
                 contentType: embeddedAsset.contentType,
                 body,
+                beforeWrite: migrationStorageReservation,
               });
-              const createdAsset = await assetRecords.create(targetCompany.id, {
+              const assetData = {
                 provider: stored.provider,
                 objectKey: stored.objectKey,
                 contentType: stored.contentType,
@@ -5482,9 +5585,13 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 originalFilename: stored.originalFilename,
                 createdByAgentId: null,
                 createdByUserId: actorUserId ?? null,
-              });
+              };
+              const createdAsset = migrationRunId
+                ? await recordMigrationAsset(db, migrationRunId, destinationCompanyId, assetData, { sourceAssetId: embeddedAsset.assetId })
+                : await assetRecords.create(targetCompany.id, assetData);
               embeddedAssetIdMap.set(embeddedAsset.assetId, createdAsset.id);
             } catch (error) {
+              if (migrationStorageReservation) throw error;
               warnings.push(`Embedded image asset ${embeddedAssetLabel} could not be imported: ${error instanceof Error ? error.message : String(error)}; its references were left unchanged.`);
             }
           }
@@ -5515,12 +5622,23 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         existingProjectSlugToId.set(existing.urlKey, existing.id);
       }
 
-      const importedSkills = include.skills || include.agents
-        ? await companySkills.importPackageFiles(targetCompany.id, pickTextFiles(plan.source.files), {
-            onConflict: resolveSkillConflictStrategy(mode, plan.collisionStrategy),
-          })
-        : [];
-      const desiredSkillRefMap = new Map<string, string>();
+      const importsSkills = include.skills || include.agents;
+      const checkpoint = options?.resumeMigrationDestinationId ? options.resumeMigrationCheckpoint : undefined;
+      if (checkpoint && [...checkpoint.routinesBySlug.keys()].some((slug) =>
+        !include.issues || !sourceManifest.issues.some((issue) => issue.recurring && issue.slug === slug))) {
+        throw new Error("Migration routine checkpoint does not match the import plan");
+      }
+      if (checkpoint && [...checkpoint.agentIds.keys()].some((slug) =>
+        !plan.preview.plan.agentPlans.some((entry) => entry.slug === slug && entry.action === "create"))) {
+        throw new Error("Migration agent checkpoint does not match the import plan");
+      }
+      const importedSkills = !importsSkills || checkpoint?.skillRefs ? []
+        : migrationRunId
+          ? await importMigrationSkills(db, migrationRunId, destinationCompanyId, pickTextFiles(plan.source.files))
+          : await companySkills.importPackageFiles(targetCompany.id, pickTextFiles(plan.source.files), {
+              onConflict: resolveSkillConflictStrategy(mode, plan.collisionStrategy),
+            });
+      const desiredSkillRefMap = new Map(checkpoint?.skillRefs);
       for (const importedSkill of importedSkills) {
         desiredSkillRefMap.set(importedSkill.originalKey, importedSkill.skill.key);
         desiredSkillRefMap.set(importedSkill.originalSlug, importedSkill.skill.key);
@@ -5619,6 +5737,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             : {};
 
           if (planAgent.action === "update" && planAgent.existingAgentId) {
+            if (migrationRunId) throw new Error("Migration cannot update an existing agent");
             let updated = await agents.update(planAgent.existingAgentId, {
               ...patch,
               ...automationPausePatch,
@@ -5667,41 +5786,71 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             continue;
           }
 
-          let created = await agents.create(targetCompany.id, {
-            ...patch,
-            ...automationPausePatch,
-            status: pauseAutomations ? "paused" : "idle",
-          });
-          await access.ensureMembership(targetCompany.id, "agent", created.id, "member", "active");
-          await access.setPrincipalPermission(
-            targetCompany.id,
-            "agent",
-            created.id,
-            "tasks:assign",
-            true,
-            actorUserId ?? null,
-          );
-          try {
-            const materialized = await instructions.materializeManagedBundle(created, bundleFiles, {
-              clearLegacyPromptTemplate: true,
-              replaceExisting: true,
+          const createData = { ...patch, ...automationPausePatch, status: pauseAutomations ? "paused" : "idle" };
+          let created: Awaited<ReturnType<typeof agents.create>>;
+          const recordedId = checkpoint?.agentIds.get(planAgent.slug);
+          if (recordedId) {
+            const recorded = existingAgents.find((agent) => agent.id === recordedId && agent.name === planAgent.plannedName);
+            const root = resolveManagedInstructionsRoot({ companyId: destinationCompanyId, id: recordedId });
+            const expected = normalizeManagedInstructionsEntries(root, bundleFiles);
+            const verified = checkpoint?.filesByAgentId.get(recordedId);
+            if (!recorded || verified?.size !== expected.size || [...expected].some(([file, content]) =>
+              verified?.get(path.relative(root, file).split(path.sep).join("/")) !== sha256HexOfBytes(Buffer.from(content, "utf8")))) {
+              throw new Error("Migration agent checkpoint does not match the prepared instructions");
+            }
+            created = recorded;
+          } else if (migrationRunId) {
+            const id = randomUUID();
+            // This reservation commits before any filesystem write, even if the
+            // following agent transaction aborts during instruction materialization.
+            await companyTransferRunService.reserveMigrationManagedDirectory(db, migrationRunId, destinationCompanyId, {
+              kind: "agent_instructions", agentId: id,
             });
-            created = await agents.update(created.id, { adapterConfig: materialized.adapterConfig }) ?? created;
-          } catch (err) {
-            warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
+            const write = migrationManagedFileWriter(db, migrationRunId, destinationCompanyId, { kind: "agent_instructions", agentId: id });
+            const root = resolveManagedInstructionsRoot({ companyId: destinationCompanyId, id });
+            for (const [file, content] of normalizeManagedInstructionsEntries(root, bundleFiles)) await write(file, content);
+            created = await createMigrationAgent(db, migrationRunId, destinationCompanyId, { ...createData, id }, async (agent, service, permissions) => {
+              await permissions.ensureMembership(destinationCompanyId, "agent", agent.id, "member", "active");
+              await permissions.setPrincipalPermission(destinationCompanyId, "agent", agent.id, "tasks:assign", true, actorUserId ?? null);
+              const materialized = await instructions.materializeManagedBundle(agent, bundleFiles, { clearLegacyPromptTemplate: true, filesAlreadyMaterialized: true });
+              const updated = await service.update(agent.id, { adapterConfig: materialized.adapterConfig });
+              if (!updated) throw new Error("Migration agent instruction update failed");
+              await applyImportedAgentPermissionGrants(destinationCompanyId, agent.id, manifestAgent.permissionGrants ?? [], actorUserId ?? null, permissions);
+              return updated;
+            }, manifestAgent.slug);
+          } else {
+            created = await agents.create(targetCompany.id, createData);
+            await access.ensureMembership(targetCompany.id, "agent", created.id, "member", "active");
+            await access.setPrincipalPermission(
+              targetCompany.id,
+              "agent",
+              created.id,
+              "tasks:assign",
+              true,
+              actorUserId ?? null,
+            );
+            try {
+              const materialized = await instructions.materializeManagedBundle(created, bundleFiles, {
+                clearLegacyPromptTemplate: true,
+                replaceExisting: true,
+              });
+              created = await agents.update(created.id, { adapterConfig: materialized.adapterConfig }) ?? created;
+            } catch (err) {
+              warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+            await applyImportedAgentPermissionGrants(
+              targetCompany.id,
+              created.id,
+              manifestAgent.permissionGrants ?? [],
+              actorUserId ?? null,
+            );
+            await secrets.syncEnvBindingsForTarget?.(
+              targetCompany.id,
+              { targetType: "agent", targetId: created.id },
+              isPlainRecord(created.adapterConfig) ? created.adapterConfig.env : undefined,
+            );
           }
-          await applyImportedAgentPermissionGrants(
-            targetCompany.id,
-            created.id,
-            manifestAgent.permissionGrants ?? [],
-            actorUserId ?? null,
-          );
           agentStatusById.set(created.id, created.status ?? (pauseAutomations ? "paused" : "idle"));
-          await secrets.syncEnvBindingsForTarget?.(
-            targetCompany.id,
-            { targetType: "agent", targetId: created.id },
-            isPlainRecord(created.adapterConfig) ? created.adapterConfig.env : undefined,
-          );
           importedSlugToAgentId.set(planAgent.slug, created.id);
           existingSlugToAgentId.set(normalizeAgentUrlKey(created.name) ?? created.id, created.id);
           resultAgents.push({
@@ -5736,8 +5885,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               : null);
           if (!managerId || managerId === agentId) continue;
           try {
-            await agents.update(agentId, { reportsTo: managerId });
-          } catch {
+            if (migrationRunId) await linkMigrationAgent(db, migrationRunId, destinationCompanyId, agentId, managerId);
+            else await agents.update(agentId, { reportsTo: managerId });
+          } catch (error) {
+            if (migrationRunId) throw error;
             const managerRef =
               managerSlug
               ?? manifestAgent.reportsToExistingAgentSlug
@@ -5747,6 +5898,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         }
       }
 
+      if (checkpoint && [...checkpoint.projectsBySlug.keys()].some((slug) =>
+        !plan.preview.plan.projectPlans.some((project) => project.slug === slug && project.action === "create"))) {
+        throw new Error("Migration project checkpoint does not match the import plan");
+      }
       if (include.projects) {
         for (const planProject of plan.preview.plan.projectPlans) {
           const manifestProject = sourceManifest.projects.find((project) => project.slug === planProject.slug);
@@ -5759,6 +5914,21 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               name: planProject.plannedName,
               reason: planProject.reason,
             });
+            continue;
+          }
+
+          const recorded = checkpoint?.projectsBySlug.get(planProject.slug);
+          if (recorded) {
+            const project = await projects.getById(recorded.id);
+            if (project?.companyId !== destinationCompanyId || project.name !== planProject.plannedName
+              || manifestProject.workspaces.length !== recorded.workspaceIds.size
+              || manifestProject.workspaces.some(({ key }) => !recorded.workspaceIds.has(key))) {
+              throw new Error("Migration project checkpoint does not match the prepared project");
+            }
+            importedSlugToProjectId.set(planProject.slug, project.id);
+            existingProjectSlugToId.set(project.urlKey, project.id);
+            importedProjectWorkspaceIdByProjectSlug.set(planProject.slug, new Map(recorded.workspaceIds));
+            resultProjects.push({ slug: planProject.slug, id: project.id, action: "created", name: project.name, reason: planProject.reason });
             continue;
           }
 
@@ -5792,7 +5962,39 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             executionWorkspacePolicy: stripPortableProjectExecutionWorkspaceRefs(manifestProject.executionWorkspacePolicy),
           };
 
+          const populateProjectWorkspaces = async (
+            projectId: string,
+            service: Pick<ReturnType<typeof projectService>, "createWorkspace" | "update">,
+          ) => {
+            for (const workspace of manifestProject.workspaces) {
+              const createdWorkspace = await service.createWorkspace(projectId, {
+                name: workspace.name,
+                sourceType: workspace.sourceType ?? undefined,
+                repoUrl: workspace.repoUrl ?? undefined,
+                repoRef: workspace.repoRef ?? undefined,
+                defaultRef: workspace.defaultRef ?? undefined,
+                visibility: workspace.visibility ?? undefined,
+                setupCommand: workspace.setupCommand ?? undefined,
+                cleanupCommand: workspace.cleanupCommand ?? undefined,
+                metadata: workspace.metadata ?? undefined,
+                isPrimary: workspace.isPrimary,
+              });
+              if (!createdWorkspace) {
+                warnings.push(`Project ${planProject.slug} workspace ${workspace.key} could not be created during import.`);
+                continue;
+              }
+              projectWorkspaceIdByKey.set(workspace.key, createdWorkspace.id);
+            }
+            const hydratedPolicy = importPortableProjectExecutionWorkspacePolicy(
+              planProject.slug, manifestProject.executionWorkspacePolicy, projectWorkspaceIdByKey, warnings,
+            );
+            if (hydratedPolicy) {
+              await service.update(projectId, { executionWorkspacePolicy: hydratedPolicy });
+            }
+          };
+
           let projectId: string | null = null;
+          let recordedWithProvenance = false;
           if (planProject.action === "update" && planProject.existingProjectId) {
             const updated = await projects.update(planProject.existingProjectId, projectPatch);
             if (!updated) {
@@ -5817,7 +6019,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               reason: planProject.reason,
             });
           } else {
-            const created = await projects.create(targetCompany.id, projectPatch);
+            const created = migrationRunId
+              ? await createMigrationProject(db, migrationRunId, targetCompany.id, projectPatch,
+                (project, service) => populateProjectWorkspaces(project.id, service),
+                { sourceSlug: planProject.slug, workspaceIds: projectWorkspaceIdByKey })
+              : await projects.create(targetCompany.id, projectPatch);
+            recordedWithProvenance = Boolean(migrationRunId);
             projectId = created.id;
             importedSlugToProjectId.set(planProject.slug, created.id);
             existingProjectSlugToId.set(created.urlKey, created.id);
@@ -5832,48 +6039,19 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
           if (!projectId) continue;
 
-          await secrets.syncEnvBindingsForTarget?.(
-            targetCompany.id,
-            { targetType: "project", targetId: projectId },
-            normalizedProjectEnv ?? {},
-          );
-
-          for (const workspace of manifestProject.workspaces) {
-            const createdWorkspace = await projects.createWorkspace(projectId, {
-              name: workspace.name,
-              sourceType: workspace.sourceType ?? undefined,
-              repoUrl: workspace.repoUrl ?? undefined,
-              repoRef: workspace.repoRef ?? undefined,
-              defaultRef: workspace.defaultRef ?? undefined,
-              visibility: workspace.visibility ?? undefined,
-              setupCommand: workspace.setupCommand ?? undefined,
-              cleanupCommand: workspace.cleanupCommand ?? undefined,
-              metadata: workspace.metadata ?? undefined,
-              isPrimary: workspace.isPrimary,
-            });
-            if (!createdWorkspace) {
-              warnings.push(`Project ${planProject.slug} workspace ${workspace.key} could not be created during import.`);
-              continue;
-            }
-            projectWorkspaceIdByKey.set(workspace.key, createdWorkspace.id);
+          if (!recordedWithProvenance) {
+            await secrets.syncEnvBindingsForTarget?.(
+              targetCompany.id,
+              { targetType: "project", targetId: projectId },
+              normalizedProjectEnv ?? {},
+            );
+            await populateProjectWorkspaces(projectId, projects);
           }
           importedProjectWorkspaceIdByProjectSlug.set(planProject.slug, projectWorkspaceIdByKey);
-
-          const hydratedProjectExecutionWorkspacePolicy = importPortableProjectExecutionWorkspacePolicy(
-            planProject.slug,
-            manifestProject.executionWorkspacePolicy,
-            projectWorkspaceIdByKey,
-            warnings,
-          );
-          if (hydratedProjectExecutionWorkspacePolicy) {
-            await projects.update(projectId, {
-              executionWorkspacePolicy: hydratedProjectExecutionWorkspacePolicy,
-            });
-          }
         }
       }
 
-      if (include.issues) {
+      if (include.issues && !checkpoint?.hasCommittedIssues) {
         const routines = routineService(db);
 
         // Resolve label names against the target company before creating
@@ -5909,10 +6087,13 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               }
               continue;
             }
-            const created = await issues.createLabel(targetCompany.id, {
+            const label = {
               name,
               color: labelColorByName.get(name) ?? DEFAULT_IMPORTED_LABEL_COLOR,
-            });
+            };
+            const created = migrationRunId
+              ? await createMigrationLabel(db, migrationRunId, targetCompany.id, label)
+              : await issues.createLabel(targetCompany.id, label);
             labelIdByName.set(name, created.id);
           }
           if (keptColorNames.length > 0) {
@@ -5981,34 +6162,87 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               variables: null,
               triggers: [],
             };
-            const createdRoutine = await routines.create(targetCompany.id, {
-              projectId,
-              goalId: null,
-              parentIssueId: null,
-              title: manifestIssue.title,
-              description,
-              assigneeAgentId,
-              priority: manifestIssue.priority && ISSUE_PRIORITIES.includes(manifestIssue.priority as any)
-                ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
-                : "medium",
-              status: pauseAutomations
-                ? "paused"
-                : manifestIssue.status && ROUTINE_STATUSES.includes(manifestIssue.status as any)
-                ? manifestIssue.status as typeof ROUTINE_STATUSES[number]
-                : "active",
-              concurrencyPolicy:
-                routineDefinition.concurrencyPolicy && ROUTINE_CONCURRENCY_POLICIES.includes(routineDefinition.concurrencyPolicy as any)
-                  ? routineDefinition.concurrencyPolicy as typeof ROUTINE_CONCURRENCY_POLICIES[number]
-                  : "coalesce_if_active",
-              catchUpPolicy:
-                routineDefinition.catchUpPolicy && ROUTINE_CATCH_UP_POLICIES.includes(routineDefinition.catchUpPolicy as any)
-                  ? routineDefinition.catchUpPolicy as typeof ROUTINE_CATCH_UP_POLICIES[number]
-                  : "skip_missed",
-              variables: routineDefinition.variables ?? [],
-            }, {
-              agentId: null,
-              userId: actorUserId ?? null,
-            });
+            const populateRoutine = async (service: Pick<typeof routines, "create" | "createTrigger">) => {
+              const createdRoutine = await service.create(destinationCompanyId, {
+                projectId,
+                goalId: null,
+                parentIssueId: null,
+                title: manifestIssue.title,
+                description,
+                assigneeAgentId,
+                priority: manifestIssue.priority && ISSUE_PRIORITIES.includes(manifestIssue.priority as any)
+                  ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
+                  : "medium",
+                status: pauseAutomations
+                  ? "paused"
+                  : manifestIssue.status && ROUTINE_STATUSES.includes(manifestIssue.status as any)
+                  ? manifestIssue.status as typeof ROUTINE_STATUSES[number]
+                  : "active",
+                concurrencyPolicy:
+                  routineDefinition.concurrencyPolicy && ROUTINE_CONCURRENCY_POLICIES.includes(routineDefinition.concurrencyPolicy as any)
+                    ? routineDefinition.concurrencyPolicy as typeof ROUTINE_CONCURRENCY_POLICIES[number]
+                    : "coalesce_if_active",
+                catchUpPolicy:
+                  routineDefinition.catchUpPolicy && ROUTINE_CATCH_UP_POLICIES.includes(routineDefinition.catchUpPolicy as any)
+                    ? routineDefinition.catchUpPolicy as typeof ROUTINE_CATCH_UP_POLICIES[number]
+                    : "skip_missed",
+                variables: routineDefinition.variables ?? [],
+              }, {
+                agentId: null,
+                userId: actorUserId ?? null,
+              });
+              for (const trigger of routineDefinition.triggers) {
+                if (trigger.kind === "schedule") {
+                  await service.createTrigger(createdRoutine.id, {
+                    kind: "schedule",
+                    label: trigger.label,
+                    enabled: trigger.enabled,
+                    cronExpression: trigger.cronExpression!,
+                    timezone: trigger.timezone!,
+                  }, {
+                    agentId: null,
+                    userId: actorUserId ?? null,
+                  });
+                  continue;
+                }
+                if (trigger.kind === "webhook") {
+                  if (migrationRunId) {
+                    warnings.push(`Webhook trigger omitted for migrated routine ${manifestIssue.slug}.`);
+                    continue;
+                  }
+                  await service.createTrigger(createdRoutine.id, {
+                    kind: "webhook",
+                    label: trigger.label,
+                    enabled: trigger.enabled,
+                    signingMode:
+                      trigger.signingMode && ROUTINE_TRIGGER_SIGNING_MODES.includes(trigger.signingMode as any)
+                        ? trigger.signingMode as typeof ROUTINE_TRIGGER_SIGNING_MODES[number]
+                        : "bearer",
+                    replayWindowSec: trigger.replayWindowSec ?? 300,
+                  }, {
+                    agentId: null,
+                    userId: actorUserId ?? null,
+                  });
+                  continue;
+                }
+                await service.createTrigger(createdRoutine.id, {
+                  kind: "api",
+                  label: trigger.label,
+                  enabled: trigger.enabled,
+                }, {
+                  agentId: null,
+                  userId: actorUserId ?? null,
+                });
+              }
+              return createdRoutine;
+            };
+            const recordedId = checkpoint?.routinesBySlug.get(manifestIssue.slug);
+            const [recorded] = recordedId ? await db.select({ id: routineRows.id, title: routineRows.title, status: routineRows.status })
+              .from(routineRows).where(and(eq(routineRows.companyId, destinationCompanyId), eq(routineRows.id, recordedId))) : [];
+            if (recordedId && !recorded) throw new Error("Migration routine checkpoint is missing");
+            const createdRoutine = recorded ?? (migrationRunId
+              ? await createMigrationRoutine(db, migrationRunId, targetCompany.id, populateRoutine, manifestIssue.slug)
+              : await populateRoutine(routines));
             resultRoutines.push({
               slug: manifestIssue.slug,
               id: createdRoutine.id,
@@ -6018,45 +6252,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             });
             if (!assigneeAgentId) {
               warnings.push(`Routine ${manifestIssue.slug} was imported without an assignee and will stay paused until one is set.`);
-            }
-            for (const trigger of routineDefinition.triggers) {
-              if (trigger.kind === "schedule") {
-                await routines.createTrigger(createdRoutine.id, {
-                  kind: "schedule",
-                  label: trigger.label,
-                  enabled: trigger.enabled,
-                  cronExpression: trigger.cronExpression!,
-                  timezone: trigger.timezone!,
-                }, {
-                  agentId: null,
-                  userId: actorUserId ?? null,
-                });
-                continue;
-              }
-              if (trigger.kind === "webhook") {
-                await routines.createTrigger(createdRoutine.id, {
-                  kind: "webhook",
-                  label: trigger.label,
-                  enabled: trigger.enabled,
-                  signingMode:
-                    trigger.signingMode && ROUTINE_TRIGGER_SIGNING_MODES.includes(trigger.signingMode as any)
-                      ? trigger.signingMode as typeof ROUTINE_TRIGGER_SIGNING_MODES[number]
-                      : "bearer",
-                  replayWindowSec: trigger.replayWindowSec ?? 300,
-                }, {
-                  agentId: null,
-                  userId: actorUserId ?? null,
-                });
-                continue;
-              }
-              await routines.createTrigger(createdRoutine.id, {
-                kind: "api",
-                label: trigger.label,
-                enabled: trigger.enabled,
-              }, {
-                agentId: null,
-                userId: actorUserId ?? null,
-              });
             }
             continue;
           }
@@ -6218,6 +6413,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 originalFilename: attachmentEntry.originalFilename,
                 contentType: attachmentEntry.contentType,
                 body,
+                beforeWrite: migrationStorageReservation,
               });
               attachmentRows.push({
                 companyId: targetCompany.id,
@@ -6233,6 +6429,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 createdByUserId: actorUserId ?? null,
               });
             } catch (error) {
+              if (migrationStorageReservation) throw error;
               warnings.push(`Task ${manifestIssue.slug} attachment ${attachmentLabel} could not be imported: ${error instanceof Error ? error.message : String(error)}`);
             }
           }
@@ -6326,25 +6523,28 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         // statements, turning what used to be one round-trip per row into a
         // handful per table. Empty buffers are skipped so an issues-free import
         // (e.g. routines only) issues no writes at all.
-        if (issueRows.length > 0) await issues.importIssues(targetCompany.id, issueRows);
+        if (!migrationRunId && issueRows.length > 0) await issues.importIssues(targetCompany.id, issueRows);
         // Imported issues are historical work, not new inbox items. Seed a
         // per-user inbox archive for the importing board user so a large import
         // (a real 1,418-task company shipped every task to the inbox) does not
         // flood it: the inbox "mine" query hides archived issues, and genuine
         // new activity still resurfaces them. Agent/system imports (no board
         // user) have no inbox to protect, so the seeding is skipped.
-        if (actorUserId && issueRows.length > 0) {
+        if (!migrationRunId && actorUserId && issueRows.length > 0) {
           await issues.archiveImportedInbox(
             targetCompany.id,
             issueRows.map((row) => row.id),
             actorUserId,
           );
         }
-        if (commentRows.length > 0) await issues.addImportedComments(commentRows);
-        if (documentRows.length > 0) await documentsSvc.createIssueDocumentsForImport(documentRows);
-        if (workProductRows.length > 0) await workProductsSvc.createManyForImport(workProductRows);
-        if (attachmentRows.length > 0) await issues.addImportedAttachments(attachmentRows);
+        if (!migrationRunId) {
+          if (commentRows.length > 0) await issues.addImportedComments(commentRows);
+          if (documentRows.length > 0) await documentsSvc.createIssueDocumentsForImport(documentRows);
+          if (workProductRows.length > 0) await workProductsSvc.createManyForImport(workProductRows);
+          if (attachmentRows.length > 0) await issues.addImportedAttachments(attachmentRows);
+        }
 
+        const relationRows: Array<{ issueId: string; relatedIssueId: string }> = [];
         if (blockedByBySlug.size > 0) {
           const acceptedAdjacency = new Map<string, string[]>();
           const wouldCreateBlockingCycle = (blockedIssueId: string, blockerIssueId: string) => {
@@ -6362,7 +6562,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             }
             return false;
           };
-          const relationRows: Array<{ issueId: string; relatedIssueId: string }> = [];
           for (const [slug, blockerSlugs] of blockedByBySlug) {
             const blockedIssueId = importedIssueIdBySlug.get(slug);
             if (!blockedIssueId) continue;
@@ -6383,7 +6582,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               relationRows.push({ issueId: blockerIssueId, relatedIssueId: blockedIssueId });
             }
           }
-          if (relationRows.length > 0) {
+          if (!migrationRunId && relationRows.length > 0) {
             const relationCompanyId = targetCompany.id;
             await db
               .insert(issueRelations)
@@ -6397,6 +6596,13 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               })))
               .onConflictDoNothing();
           }
+        }
+
+        if (migrationRunId) {
+          await createMigrationIssues(db, migrationRunId, targetCompany.id, {
+            issues: issueRows, comments: commentRows, documents: documentRows, workProducts: workProductRows,
+            relations: relationRows, attachments: attachmentRows, actorUserId,
+          });
         }
 
         if (unarmedMonitorCount > 0) {

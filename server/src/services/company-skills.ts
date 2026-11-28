@@ -2766,7 +2766,7 @@ export async function findMissingLocalSkillIds(
   return missingIds;
 }
 
-function resolveManagedSkillsRoot(companyId: string) {
+export function resolveManagedSkillsRoot(companyId: string) {
   return path.resolve(resolvePaperclipInstanceRoot(), "skills", companyId);
 }
 
@@ -3721,8 +3721,8 @@ export function companySkillService(db: Db) {
     return items;
   }
 
-  async function listFull(companyId: string): Promise<CompanySkill[]> {
-    await ensureSkillInventoryCurrent(companyId);
+  async function listFull(companyId: string, options: { skipInventoryRefresh?: boolean } = {}): Promise<CompanySkill[]> {
+    if (!options.skipInventoryRefresh) await ensureSkillInventoryCurrent(companyId);
     const rows = await db
       .select(selectCompanySkillColumns())
       .from(companySkills)
@@ -4698,8 +4698,8 @@ export function companySkillService(db: Db) {
     };
   }
 
-  async function readFile(companyId: string, skillId: string, relativePath: string): Promise<CompanySkillFileDetail | null> {
-    await ensureSkillInventoryCurrent(companyId);
+  async function readFile(companyId: string, skillId: string, relativePath: string, options: { skipInventoryRefresh?: boolean } = {}): Promise<CompanySkillFileDetail | null> {
+    if (!options.skipInventoryRefresh) await ensureSkillInventoryCurrent(companyId);
     const skill = await getById(companyId, skillId);
     if (!skill) return null;
 
@@ -5749,13 +5749,16 @@ export function companySkillService(db: Db) {
     companyId: string,
     skill: ImportedSkill,
     normalizedFiles: Record<string, string>,
+    writeManagedFile?: (file: string, content: string) => Promise<void>,
   ) {
     const packageDir = skill.packageDir ? normalizePortablePath(skill.packageDir) : null;
     if (!packageDir) return null;
     const catalogRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__catalog__");
     const skillDir = path.resolve(catalogRoot, buildSkillRuntimeName(skill.key, skill.slug));
-    await fs.rm(skillDir, { recursive: true, force: true });
-    await fs.mkdir(skillDir, { recursive: true });
+    if (!writeManagedFile) {
+      await fs.rm(skillDir, { recursive: true, force: true });
+      await fs.mkdir(skillDir, { recursive: true });
+    }
 
     for (const entry of skill.fileInventory) {
       const sourcePath = entry.path === "SKILL.md"
@@ -5764,8 +5767,11 @@ export function companySkillService(db: Db) {
       const content = normalizedFiles[sourcePath];
       if (typeof content !== "string") continue;
       const targetPath = path.resolve(skillDir, entry.path);
-      await fs.mkdir(path.dirname(targetPath), { recursive: true });
-      await fs.writeFile(targetPath, content, "utf8");
+      if (writeManagedFile) await writeManagedFile(targetPath, content);
+      else {
+        await fs.mkdir(path.dirname(targetPath), { recursive: true });
+        await fs.writeFile(targetPath, content, "utf8");
+      }
     }
 
     return skillDir;
@@ -6347,14 +6353,29 @@ export function companySkillService(db: Db) {
     return out;
   }
 
+  async function prepareMigrationSkillFiles(companyId: string, files: Record<string, string>, writeManagedFile: (file: string, content: string) => Promise<void>) {
+    const normalizedFiles = normalizePackageFileMap(files);
+    const locations = new Map<string, string>();
+    for (const skill of readInlineSkillImports(companyId, normalizedFiles)) {
+      assertImportedSkillKeyAllowed(skill);
+      assertImportedSkillSourceAllowed(skill);
+      if (skill.sourceType !== "catalog") continue;
+      const directory = await materializeCatalogSkillFiles(companyId, skill, normalizedFiles, writeManagedFile);
+      if (directory) locations.set(skill.key, directory);
+    }
+    return locations;
+  }
+
   async function importPackageFiles(
     companyId: string,
     files: Record<string, string>,
     options?: {
       onConflict?: PackageSkillConflictStrategy;
+      skipInventoryRefresh?: boolean;
+      migrationSkillLocations?: ReadonlyMap<string, string>;
     },
   ): Promise<ImportPackageSkillResult[]> {
-    await ensureSkillInventoryCurrent(companyId);
+    if (!options?.skipInventoryRefresh) await ensureSkillInventoryCurrent(companyId);
     const normalizedFiles = normalizePackageFileMap(files);
     const importedSkills = readInlineSkillImports(companyId, normalizedFiles);
     if (importedSkills.length === 0) return [];
@@ -6369,14 +6390,16 @@ export function companySkillService(db: Db) {
 
     for (const skill of importedSkills) {
       if (skill.sourceType !== "catalog") continue;
-      const materializedDir = await materializeCatalogSkillFiles(companyId, skill, normalizedFiles);
+      const materializedDir = options?.migrationSkillLocations
+        ? options.migrationSkillLocations.get(skill.key)
+        : await materializeCatalogSkillFiles(companyId, skill, normalizedFiles);
       if (materializedDir) {
         skill.sourceLocator = materializedDir;
       }
     }
 
     const conflictStrategy = options?.onConflict ?? "skip";
-    const existingSkills = await listFull(companyId);
+    const existingSkills = await listFull(companyId, { skipInventoryRefresh: options?.skipInventoryRefresh });
     const existingByKey = new Map(existingSkills.map((skill) => [skill.key, skill]));
     const existingBySlug = new Map(
       existingSkills.map((skill) => [normalizeSkillSlug(skill.slug) ?? skill.slug, skill]),
@@ -7632,6 +7655,7 @@ export function companySkillService(db: Db) {
     browseProjectWorkspace,
     scanProjectWorkspaces,
     importPackageFiles,
+    prepareMigrationSkillFiles,
     auditSkill,
     installUpdate,
     resetSkill,

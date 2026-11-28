@@ -1,6 +1,14 @@
 import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
-import { companyTransferRuns } from "@myrmidon/db";
+import { companies, companyTransferRuns } from "@myrmidon/db";
+
+// Hash PostgreSQL's binary row representation so comparison does not depend
+// on the connection's time zone or timestamp formatting. Persist no row data.
+export function migrationRowFingerprint(table: string) {
+  return sql<string>`encode(sha256(record_send(${sql.identifier(table)})), 'hex')`;
+}
+
+export const migrationCompanyFingerprint = migrationRowFingerprint("companies");
 
 // Durable run ledger for chunked company transfers. A run tracks one export
 // publish or import apply of a transfer container. Progress is recorded per
@@ -20,6 +28,8 @@ import { companyTransferRuns } from "@myrmidon/db";
 //                                                          after complete() is a no-op release
 //   applying                --recoverStrandedApplyingRuns-> failed
 //                                                          startup only: in-memory applies died with the process
+//   failed|completed        --claimMigrationRollback--> rolling_back
+//   rolling_back            --recoverStrandedApplyingRuns-> failed
 //   pending|running (idle)  --cancelIfIdle--> cancelled    sweep claim; also guarded on a stale updatedAt
 //   pending|running|failed  --cancel--------> cancelled
 //   (any)                   --fail----------> failed       unguarded settle; callers use it only on runs
@@ -37,6 +47,8 @@ export type CompanyTransferRunStatus =
   | "pending"
   | "running"
   | "applying"
+  | "rolling_back"
+  | "rolled_back"
   | "completed"
   | "failed"
   | "cancelled";
@@ -99,6 +111,8 @@ export interface ResumeOrCreateTransferRunInput {
   /** Credential-free container location descriptor. Never put secrets here. */
   containerRef: unknown;
   companyId?: string | null;
+  /** A confirmed migration apply can start a new attempt after verified rollback. */
+  retryAfterMigrationRollback?: boolean;
 }
 
 export interface ResumeOrCreateTransferRunResult {
@@ -128,12 +142,113 @@ async function getRun(db: Db, runId: string): Promise<CompanyTransferRunRow | nu
   return record ? rowFromRecord(record) : null;
 }
 
+export type MigrationManagedDirectory =
+  | { kind: "agent_instructions"; agentId: string }
+  | { kind: "company_skills" };
+
+const migrationUuidPattern = "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}";
+const migrationUuid = new RegExp(`^${migrationUuidPattern}$`);
+const migrationObjectKey = new RegExp(
+  `^${migrationUuidPattern}/(?:assets/(?:companies|general)|issues/${migrationUuidPattern})/[0-9]{4}/[0-9]{2}/[0-9]{2}/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}-file$`,
+);
+
+export function parseMigrationResource(companyId: string, part: string):
+  | { kind: "object"; objectKey: string }
+  | MigrationManagedDirectory
+  | { kind: "managed_file"; directory: MigrationManagedDirectory; relativePath: string; sha256: string; identity: string; stagingId: string }
+  | null {
+  if (!migrationUuid.test(companyId) || !part.startsWith(`${companyId}/`)) return null;
+  const relative = part.slice(companyId.length + 1);
+  if (relative.startsWith("managed-file/")) {
+    const [root, sha256, identity, stagingId, encoded, extra] = relative.slice("managed-file/".length).split("/");
+    if (extra !== undefined || !root || !sha256 || !/^[a-f0-9]{64}$/.test(sha256) || !identity || !/^\d+:\d+$/.test(identity) || !stagingId || !migrationUuid.test(stagingId) || !encoded || !/^[\w-]+$/.test(encoded)) return null;
+    const relativePath = Buffer.from(encoded, "base64url").toString("utf8");
+    if (Buffer.from(relativePath).toString("base64url") !== encoded || relativePath.split("/").some((segment) => !segment || segment === "." || segment === ".." || /[\u0000\\:]/.test(segment))) return null;
+    const directory = root === "skills" ? { kind: "company_skills" as const }
+      : migrationUuid.test(root) ? { kind: "agent_instructions" as const, agentId: root } : null;
+    return directory && { kind: "managed_file", directory, relativePath, sha256, identity, stagingId };
+  }
+  if (relative === "managed/skills") return { kind: "company_skills" };
+  const agentId = relative.startsWith("managed/instructions/") ? relative.slice("managed/instructions/".length) : "";
+  if (migrationUuid.test(agentId)) return { kind: "agent_instructions", agentId };
+  if (!migrationObjectKey.test(part)) return null;
+  const dateText = part.split("/").slice(-4, -1).join("-");
+  const date = new Date(`${dateText}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === dateText
+    ? { kind: "object", objectKey: part }
+    : null;
+}
+
+async function reserveMigrationResource(db: Db, runId: string, companyId: string, part: string): Promise<void> {
+  const partJson = JSON.stringify([part]);
+  const updated = await db.update(companyTransferRuns).set({
+    completedParts: sql`case when ${companyTransferRuns.completedParts} @> ${partJson}::jsonb then ${companyTransferRuns.completedParts} else ${companyTransferRuns.completedParts} || ${partJson}::jsonb end`,
+    updatedAt: new Date(),
+  }).where(and(
+    eq(companyTransferRuns.id, runId),
+    eq(companyTransferRuns.companyId, companyId),
+    eq(companyTransferRuns.direction, "import"),
+    eq(companyTransferRuns.status, "applying"),
+    sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
+    sql`${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true'`,
+    sql`nullif(${companyTransferRuns.containerRef}->>'sourceCompanyId', '') is not null`,
+    sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' <> ${companyId}`,
+    sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' = ${companyId}`,
+  )).returning({ id: companyTransferRuns.id });
+  if (updated.length !== 1) throw new Error("Migration resource reservation rejected");
+}
+
+// Older rollback runs may already have removed their destination. New runs
+// require the archival marker committed together with the database cleanup.
+const migrationDatabaseCleanupComplete = sql`(
+  (${companyTransferRuns.companyId} is null and not exists (
+    select 1 from ${companies} where ${companies.id}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId'
+  )) or (
+    ${companyTransferRuns.companyId}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId'
+    and ${companyTransferRuns.containerRef}->>'destinationArchived' = 'true'
+    and exists (select 1 from ${companies} where ${companies.id} = ${companyTransferRuns.companyId} and ${companies.status} = 'archived')
+  )
+)`;
+
 export const companyTransferRunService = {
+  // This proves only the initial company row, not its children. It is not a
+  // deletion predicate: rollback must separately verify all dependent writes.
+  async matchesInitialMigrationCompany(db: Db, runId: string, sourceCompanyId: string, companyId: string): Promise<boolean> {
+    const [row] = await db.select({ id: companies.id })
+      .from(companies)
+      .innerJoin(companyTransferRuns, eq(companies.id, companyTransferRuns.companyId))
+      .where(and(
+        eq(companyTransferRuns.id, runId),
+        eq(companies.id, companyId),
+        eq(companyTransferRuns.direction, "import"),
+        eq(companyTransferRuns.actorKey, `company_migration:${sourceCompanyId}`),
+        sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
+        sql`nullif(${companyTransferRuns.containerRef}->>'sourceCompanyId', '') = ${sourceCompanyId}`,
+        sql`${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true'`,
+        sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' = ${companies.id}::text`,
+        sql`${companies.id}::text <> ${sourceCompanyId}`,
+        sql`${companyTransferRuns.containerRef}->>'initialCompanyFingerprint' = ${migrationCompanyFingerprint}`,
+      ));
+    return row !== undefined;
+  },
+
   getRun,
 
   async getRunForActor(db: Db, runId: string, actorKey: string): Promise<CompanyTransferRunRow | null> {
     const run = await getRun(db, runId);
     return run && run.actorKey === actorKey ? run : null;
+  },
+
+  // Migration identity is scoped to the source, not the operator retrying it.
+  async resumeOrCreateMigration(db: Db, sourceCompanyId: string, idempotencyKey: string, options?: { retryAfterRollback: boolean }): Promise<ResumeOrCreateTransferRunResult> {
+    const actorKey = `company_migration:${sourceCompanyId}`;
+    return companyTransferRunService.resumeOrCreate(db, {
+      direction: "import",
+      actorKey,
+      idempotencyKey,
+      containerRef: { kind: "company_migration", sourceCompanyId },
+      retryAfterMigrationRollback: options?.retryAfterRollback,
+    });
   },
 
   /**
@@ -162,13 +277,14 @@ export const companyTransferRunService = {
             eq(companyTransferRuns.idempotencyKey, input.idempotencyKey),
             eq(companyTransferRuns.direction, input.direction),
             eq(companyTransferRuns.actorKey, input.actorKey),
-            inArray(companyTransferRuns.status, [...RESUMABLE_STATUSES, "applying", "completed"]),
+            inArray(companyTransferRuns.status, [...RESUMABLE_STATUSES, "applying", "rolling_back", "rolled_back", "completed"]),
           ),
         )
-        .orderBy(desc(companyTransferRuns.createdAt))
+        // A new attempt must win even when its timestamp ties the rolled-back attempt.
+        .orderBy(input.retryAfterMigrationRollback ? sql`case when ${companyTransferRuns.status} = 'rolled_back' then 1 else 0 end` : desc(companyTransferRuns.createdAt), desc(companyTransferRuns.createdAt))
         .limit(1);
       const existing = matches[0] ? rowFromRecord(matches[0]) : null;
-      if (existing) {
+      if (existing && !(existing.status === "rolled_back" && input.retryAfterMigrationRollback)) {
         return { run: existing, resumed: true, alreadyCompleted: existing.status === "completed" };
       }
       const [created] = await txDb
@@ -209,7 +325,11 @@ export const companyTransferRunService = {
         blobCount,
         updatedAt: new Date(),
       })
-      .where(eq(companyTransferRuns.id, runId));
+      .where(and(
+        eq(companyTransferRuns.id, runId),
+        // Migration journals must never persist source manifests or their values.
+        sql`coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration'`,
+      ));
   },
 
   /**
@@ -226,10 +346,98 @@ export const companyTransferRunService = {
       .update(companyTransferRuns)
       .set({ status: "applying", error: null, updatedAt: new Date() })
       .where(
-        and(eq(companyTransferRuns.id, runId), inArray(companyTransferRuns.status, RESUMABLE_STATUSES)),
+        and(
+          eq(companyTransferRuns.id, runId),
+          inArray(companyTransferRuns.status, RESUMABLE_STATUSES),
+          // A migration with a claimed destination may have made partial writes.
+          // Recovery must inspect/roll it back rather than replay the importer.
+          sql`not (coalesce(${companyTransferRuns.containerRef}->>'kind' = 'company_migration', false) and (${companyTransferRuns.companyId} is not null or coalesce(${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true', false)))`,
+        ),
       )
       .returning({ id: companyTransferRuns.id });
     return claimed.length > 0;
+  },
+
+  // A rollback claim is durable: retries must find this same run while cleanup
+  // is in flight, and startup recovery makes an interrupted claim retryable.
+  async claimMigrationRollback(
+    db: Pick<Db, "update">,
+    runId: string,
+    sourceCompanyId: string,
+    options?: { cleanedDestinationId: string },
+  ): Promise<boolean> {
+    const claimed = await db.update(companyTransferRuns)
+      .set({ status: "rolling_back", updatedAt: new Date() })
+      .where(and(
+        eq(companyTransferRuns.id, runId),
+        eq(companyTransferRuns.direction, "import"),
+        inArray(companyTransferRuns.status, ["failed", "completed"]),
+        sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
+        sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' = ${sourceCompanyId}`,
+        sql`nullif(${companyTransferRuns.containerRef}->>'sourceCompanyId', '') is not null`,
+        sql`${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true'`,
+        sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' is not null`,
+        // Never let corrupted provenance authorize deleting the source company.
+        sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' <> ${sourceCompanyId}`,
+        // A cleared foreign key is valid only after the owned company is gone.
+        sql`(${companyTransferRuns.companyId}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId' or (${companyTransferRuns.companyId} is null and not exists (select 1 from ${companies} where ${companies.id}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId')))`,
+        options ? and(
+          sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' = ${options.cleanedDestinationId}`,
+          migrationDatabaseCleanupComplete,
+        ) : undefined,
+      ))
+      .returning({ id: companyTransferRuns.id });
+    return claimed.length === 1;
+  },
+
+  // Called inside the same transaction as provenance verification and archival.
+  async markMigrationDatabaseCleanupComplete(db: Pick<Db, "update">, runId: string, companyId: string): Promise<boolean> {
+    const updated = await db.update(companyTransferRuns).set({
+      containerRef: sql`${companyTransferRuns.containerRef} || '{"destinationArchived":true}'::jsonb`,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(companyTransferRuns.id, runId), eq(companyTransferRuns.companyId, companyId),
+      eq(companyTransferRuns.direction, "import"), eq(companyTransferRuns.status, "rolling_back"),
+      sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
+      sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' = ${companyId}`,
+      sql`exists (select 1 from ${companies} where ${companies.id} = ${companyId} and ${companies.status} = 'archived')`,
+    )).returning({ id: companyTransferRuns.id });
+    return updated.length === 1;
+  },
+
+  // A failed cleanup remains discoverable and can be retried after the cause
+  // is resolved. Never persist the storage provider's potentially sensitive error.
+  async releaseMigrationRollbackClaim(db: Db, runId: string, _error: string): Promise<boolean> {
+    const released = await db.update(companyTransferRuns)
+      .set({ status: "failed", error: "migration rollback failed; retry recovery", finishedAt: new Date(), updatedAt: new Date() })
+      .where(and(
+        eq(companyTransferRuns.id, runId),
+        eq(companyTransferRuns.direction, "import"),
+        eq(companyTransferRuns.status, "rolling_back"),
+        sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
+      ))
+      .returning({ id: companyTransferRuns.id });
+    return released.length === 1;
+  },
+
+  async finishMigrationRollback(db: Db, runId: string): Promise<boolean> {
+    const finished = await db.update(companyTransferRuns)
+      .set({ status: "rolled_back", error: null, finishedAt: new Date(), updatedAt: new Date() })
+      .where(and(
+        eq(companyTransferRuns.id, runId),
+        eq(companyTransferRuns.direction, "import"),
+        eq(companyTransferRuns.status, "rolling_back"),
+        sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
+        // Revalidate ownership at settlement; the earlier claim is not enough.
+        sql`${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true'`,
+        sql`nullif(${companyTransferRuns.containerRef}->>'sourceCompanyId', '') is not null`,
+        sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' <> ${companyTransferRuns.containerRef}->>'sourceCompanyId'`,
+        // Database cleanup and every reserved storage deletion must finish first.
+        migrationDatabaseCleanupComplete,
+        sql`jsonb_array_length(${companyTransferRuns.completedParts}) = 0`,
+      ))
+      .returning({ id: companyTransferRuns.id });
+    return finished.length === 1;
   },
 
   async start(db: Db, runId: string): Promise<void> {
@@ -237,15 +445,27 @@ export const companyTransferRunService = {
       .update(companyTransferRuns)
       .set({ status: "running", error: null, startedAt: new Date(), finishedAt: null, updatedAt: new Date() })
       .where(
-        and(eq(companyTransferRuns.id, runId), inArray(companyTransferRuns.status, RESUMABLE_STATUSES)),
+        and(
+          eq(companyTransferRuns.id, runId),
+          inArray(companyTransferRuns.status, RESUMABLE_STATUSES),
+          // Do not erase the failure evidence for a partially applied migration.
+          sql`not (coalesce(${companyTransferRuns.containerRef}->>'kind' = 'company_migration', false) and (${companyTransferRuns.companyId} is not null or coalesce(${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true', false)))`,
+        ),
       );
   },
 
   async attachCompany(db: Db, runId: string, companyId: string): Promise<void> {
-    await db
+    // Only atomic company creation may establish migration ownership; this
+    // helper may confirm that association but cannot claim an existing company.
+    const updated = await db
       .update(companyTransferRuns)
       .set({ companyId, updatedAt: new Date() })
-      .where(eq(companyTransferRuns.id, runId));
+      .where(and(
+        eq(companyTransferRuns.id, runId),
+        sql`(coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration' or ${companyTransferRuns.companyId} = ${companyId})`,
+      ))
+      .returning({ id: companyTransferRuns.id });
+    if (updated.length !== 1) throw new Error("Transfer run destination provenance is immutable");
   },
 
   /**
@@ -265,10 +485,67 @@ export const companyTransferRunService = {
         updatedAt: new Date(),
       })
       .where(
-        and(eq(companyTransferRuns.id, runId), inArray(companyTransferRuns.status, PART_UPLOAD_STATUSES)),
+        and(
+          eq(companyTransferRuns.id, runId),
+          inArray(companyTransferRuns.status, PART_UPLOAD_STATUSES),
+          // Migration runs do not upload parts; names can contain sensitive data.
+          sql`coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration'`,
+        ),
       )
       .returning({ id: companyTransferRuns.id });
     return updated.length > 0;
+  },
+
+  // Persist the generated key before writing bytes, so even an interrupted
+  // put can later be cleaned up. Only the owning active migration may append.
+  async reserveMigrationObject(db: Db, runId: string, companyId: string, objectKey: string): Promise<void> {
+    if (parseMigrationResource(companyId, objectKey)?.kind !== "object") {
+      throw new Error("Invalid migration object key");
+    }
+    await reserveMigrationResource(db, runId, companyId, objectKey);
+  },
+
+  async reserveMigrationManagedDirectory(db: Db, runId: string, companyId: string, directory: MigrationManagedDirectory): Promise<void> {
+    const part = directory.kind === "agent_instructions"
+      ? `${companyId}/managed/instructions/${directory.agentId}`
+      : `${companyId}/managed/skills`;
+    if (parseMigrationResource(companyId, part)?.kind !== directory.kind) {
+      throw new Error("Invalid migration managed directory");
+    }
+    await reserveMigrationResource(db, runId, companyId, part);
+  },
+
+  async reserveMigrationManagedFile(db: Db, runId: string, companyId: string, directory: MigrationManagedDirectory, relativePath: string, sha256: string, identity: string, stagingId: string): Promise<void> {
+    const root = directory.kind === "company_skills" ? "skills" : directory.agentId;
+    const part = `${companyId}/managed-file/${root}/${sha256}/${identity}/${stagingId}/${Buffer.from(relativePath).toString("base64url")}`;
+    if (parseMigrationResource(companyId, part)?.kind !== "managed_file") throw new Error("Invalid migration managed file");
+    await reserveMigrationResource(db, runId, companyId, part);
+  },
+
+  // Commit only after the provider confirms deletion; a crash before commit
+  // leaves the reservation available for an idempotent retry.
+  async acknowledgeMigrationObjectDeletion(
+    db: Pick<Db, "update">,
+    runId: string,
+    companyId: string,
+    objectKey: string,
+  ): Promise<boolean> {
+    const updated = await db.update(companyTransferRuns).set({
+      completedParts: sql`${companyTransferRuns.completedParts} - ${objectKey}`,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(companyTransferRuns.id, runId),
+      eq(companyTransferRuns.direction, "import"),
+      eq(companyTransferRuns.status, "rolling_back"),
+      sql`${companyTransferRuns.containerRef}->>'kind' = 'company_migration'`,
+      sql`${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true'`,
+      sql`nullif(${companyTransferRuns.containerRef}->>'sourceCompanyId', '') is not null`,
+      sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' <> ${companyTransferRuns.containerRef}->>'sourceCompanyId'`,
+      sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' = ${companyId}`,
+      migrationDatabaseCleanupComplete,
+      sql`${companyTransferRuns.completedParts} @> ${JSON.stringify([objectKey])}::jsonb`,
+    )).returning({ id: companyTransferRuns.id });
+    return updated.length === 1;
   },
 
   /** Container part names the run still has to process, in manifest order. */
@@ -284,11 +561,16 @@ export const companyTransferRunService = {
     return remaining;
   },
 
-  async complete(db: Db, runId: string): Promise<void> {
-    await db
+  async complete(db: Db, runId: string): Promise<boolean> {
+    const completed = await db
       .update(companyTransferRuns)
       .set({ status: "completed", error: null, finishedAt: new Date(), updatedAt: new Date() })
-      .where(eq(companyTransferRuns.id, runId));
+      .where(and(
+        eq(companyTransferRuns.id, runId),
+        // A completed migration must retain the same atomically claimed destination.
+        sql`(coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration' or (${companyTransferRuns.status} = 'applying' and ${companyTransferRuns.companyId} is not null and ${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true' and ${companyTransferRuns.companyId}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId' and nullif(${companyTransferRuns.containerRef}->>'sourceCompanyId', '') is not null and ${companyTransferRuns.containerRef}->>'sourceCompanyId' <> ${companyTransferRuns.containerRef}->>'destinationCompanyId'))`,
+      )).returning({ id: companyTransferRuns.id });
+    return completed.length === 1;
   },
 
   /**
@@ -308,12 +590,19 @@ export const companyTransferRunService = {
   async cancelIfIdle(db: Db, runId: string, idleSince: Date, error: string): Promise<boolean> {
     const claimed = await db
       .update(companyTransferRuns)
-      .set({ status: "cancelled", error, finishedAt: new Date(), updatedAt: new Date() })
+      .set({
+        status: "cancelled",
+        error: sql`case when coalesce(${companyTransferRuns.containerRef}->>'kind', '') = 'company_migration' then 'migration cancelled after inactivity' else ${error} end`,
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+      })
       .where(
         and(
           eq(companyTransferRuns.id, runId),
           inArray(companyTransferRuns.status, PART_UPLOAD_STATUSES),
           lt(companyTransferRuns.updatedAt, idleSince),
+          // An owned destination must remain discoverable for recovery.
+          sql`not (coalesce(${companyTransferRuns.containerRef}->>'kind' = 'company_migration', false) and (${companyTransferRuns.companyId} is not null or coalesce(${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true', false)))`,
         ),
       )
       .returning({ id: companyTransferRuns.id });
@@ -331,14 +620,22 @@ export const companyTransferRunService = {
   async releaseApplyClaim(db: Db, runId: string, error: string): Promise<boolean> {
     const released = await db
       .update(companyTransferRuns)
-      .set({ status: "failed", error, finishedAt: new Date(), updatedAt: new Date() })
+      .set({
+        status: "failed",
+        // Migration failures may originate in adapters or secret-bearing input;
+        // keep the durable ledger diagnostic-free while retaining legacy details
+        // for ordinary chunked imports.
+        error: sql`case when coalesce(${companyTransferRuns.containerRef}->>'kind', '') = 'company_migration' then 'migration apply failed; inspect migration status and rollback provenance' else ${error} end`,
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+      })
       .where(and(eq(companyTransferRuns.id, runId), eq(companyTransferRuns.status, "applying")))
       .returning({ id: companyTransferRuns.id });
     return released.length > 0;
   },
 
   /**
-   * Fail every run stranded in "applying" by a dead process. Apply jobs run
+   * Fail every run stranded in "applying" or migration "rolling_back" by a dead process. Apply jobs run
    * in-memory in this single server process, so at boot any run still
    * "applying" belongs to an apply that died without settling its claim and
    * would otherwise 409 every retry forever. Failing it makes it claimable
@@ -354,7 +651,7 @@ export const companyTransferRunService = {
         finishedAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(companyTransferRuns.status, "applying"))
+      .where(sql`(${companyTransferRuns.status} = 'applying' or (${companyTransferRuns.status} = 'rolling_back' and ${companyTransferRuns.containerRef}->>'kind' = 'company_migration'))`)
       .returning({ id: companyTransferRuns.id });
     return recovered.map((row) => row.id);
   },
@@ -362,14 +659,29 @@ export const companyTransferRunService = {
   async fail(db: Db, runId: string, error: string): Promise<void> {
     await db
       .update(companyTransferRuns)
-      .set({ status: "failed", error, finishedAt: new Date(), updatedAt: new Date() })
-      .where(eq(companyTransferRuns.id, runId));
+      .set({
+        status: "failed",
+        error: sql`case when coalesce(${companyTransferRuns.containerRef}->>'kind', '') = 'company_migration' then 'migration failed; inspect migration status and rollback provenance' else ${error} end`,
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(companyTransferRuns.id, runId),
+        // Only the guarded releaseApplyClaim may settle an active migration.
+        // A stale failure must not reopen a completed or cancelled migration.
+        sql`(coalesce(${companyTransferRuns.containerRef}->>'kind', '') <> 'company_migration' or ${companyTransferRuns.status} not in ('applying', 'rolling_back', 'rolled_back', 'completed', 'cancelled'))`,
+      ));
   },
 
   async cancel(db: Db, runId: string): Promise<void> {
     await db
       .update(companyTransferRuns)
       .set({ status: "cancelled", finishedAt: new Date(), updatedAt: new Date() })
-      .where(and(eq(companyTransferRuns.id, runId), inArray(companyTransferRuns.status, RESUMABLE_STATUSES)));
+      .where(and(
+        eq(companyTransferRuns.id, runId),
+        inArray(companyTransferRuns.status, RESUMABLE_STATUSES),
+        // Keep a partially applied migration discoverable until recovery.
+        sql`not (coalesce(${companyTransferRuns.containerRef}->>'kind' = 'company_migration', false) and (${companyTransferRuns.companyId} is not null or coalesce(${companyTransferRuns.containerRef}->>'destinationClaimed' = 'true', false)))`,
+      ));
   },
 };

@@ -50,6 +50,7 @@ import {
   writeImportTransferPart,
 } from "../services/company-import-transfers.js";
 import { companyTransferRunService } from "../services/company-transfer-runs.js";
+import { companyMigrationService, getMigrationStatus, rollbackCompanyMigration } from "../services/company-migration.js";
 import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
 import { resolvePortableExportAgentSelection } from "../services/company-portability-agent-selection.js";
 import {
@@ -723,7 +724,11 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     if (!run || run.direction !== "import") {
       throw notFound("Import transfer not found");
     }
-    return run;
+    const { status } = run;
+    if (status === "rolling_back" || status === "rolled_back") {
+      throw notFound("Import transfer not found");
+    }
+    return { ...run, status };
   }
 
   /** The declared part list persisted on the run at create time. */
@@ -1117,6 +1122,57 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       await companyTransferRunService.releaseApplyClaim(db, run.id, errorMessage(error));
       throw error;
     }
+  });
+
+  router.post("/:companyId/migrations", async (req, res) => {
+    assertBoard(req);
+    assertCompanyAccess(req, req.params.companyId as string);
+    const body = z.object({
+      target: z.object({ mode: z.literal("new_company"), newCompanyName: z.string().trim().min(1) }).strict(),
+      export: companyPortabilityExportSchema.optional().default({}),
+      dryRun: z.boolean().optional().default(true),
+      apply: z.boolean().optional().default(false),
+      confirm: z.string().trim().min(1).optional(),
+      collisionStrategy: z.enum(["rename", "skip", "replace"]).optional().default("rename"),
+    }).strict().parse(req.body);
+    const migration = companyMigrationService(portability, storage);
+    const companyId = req.params.companyId as string;
+    if (body.apply || !body.dryRun) {
+      if (!body.apply || body.dryRun || !body.confirm) throw badRequest("Apply requires dryRun: false, apply: true and confirmation.");
+      res.json(await migration.apply(db, companyId, body.export, body.target.newCompanyName, body.collisionStrategy,
+        req.actor.type === "board" ? req.actor.userId ?? null : null));
+      return;
+    }
+    res.json(await migration.dryRun(companyId, body.export, body.target.newCompanyName, body.collisionStrategy));
+  });
+
+  router.get("/:companyId/migrations/:runId", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const runId = req.params.runId as string;
+    if (!isImportTransferRunId(runId)) throw notFound("Migration not found");
+    const status = await getMigrationStatus(db, companyId, runId);
+    if (!status) throw notFound("Migration not found");
+    res.json(status);
+  });
+
+  router.post("/:companyId/migrations/:runId/rollback", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    z.object({ confirm: z.string().trim().min(1) }).strict().parse(req.body);
+    const runId = req.params.runId as string;
+    if (!isImportTransferRunId(runId)) throw notFound("Migration not found");
+    const run = await getMigrationStatus(db, companyId, runId);
+    if (!run) throw notFound("Migration not found");
+    // The previous request may have committed cleanup before its response arrived.
+    if (run.status === "rolled_back") {
+      res.json({ runId, status: "rolled_back" });
+      return;
+    }
+    if (run.status === "applying") throw conflict("Cannot roll back an active migration.");
+    res.json(await rollbackCompanyMigration(db, storage, companyId, runId));
   });
 
   router.post("/:companyId/exports/preview", async (req, res) => {
