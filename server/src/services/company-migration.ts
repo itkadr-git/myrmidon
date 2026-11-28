@@ -3,8 +3,8 @@ import { lstat, rm } from "node:fs/promises";
 import path from "node:path";
 import type { CompanyPortabilityExport } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
-import { assets, companyLogos, companyMemberships, companyTransferRuns, issueAttachments, issueComments, issues, principalPermissionGrants } from "@myrmidon/db";
-import { and, eq, getTableColumns, sql } from "drizzle-orm";
+import { assets, companyLogos, companyMemberships, companySecretBindings, companyTransferRuns, issueAttachments, issueComments, issues, principalPermissionGrants, projects, projectWorkspaces, userSecretDeclarations } from "@myrmidon/db";
+import { and, eq, getTableColumns, getTableName, sql } from "drizzle-orm";
 import { conflict, notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import type { StorageService } from "../storage/types.js";
@@ -15,6 +15,8 @@ import { validateMigrationManifest } from "./company-migration-validation.js";
 import { companyTransferRunService, migrationRowFingerprint, parseMigrationResource } from "./company-transfer-runs.js";
 import { migrationRunKey } from "./company-migration-key.js";
 import { grantsForHumanRole } from "./company-member-roles.js";
+import { projectService } from "./projects.js";
+import { secretService } from "./secrets.js";
 
 type Portability = ReturnType<typeof companyPortabilityService>;
 
@@ -122,6 +124,49 @@ export async function recordMigrationAsset(
     }).where(ownedRun).returning({ id: companyTransferRuns.id });
     if (!saved) throw new Error("Migration asset provenance was not recorded");
     return asset;
+  });
+}
+
+export async function createMigrationProject(
+  db: Db,
+  runId: string,
+  companyId: string,
+  data: Pick<typeof projects.$inferInsert, "name" | "description" | "leadAgentId" | "targetDate" | "color" | "icon" | "status" | "env" | "executionWorkspacePolicy">,
+  populate: (
+    project: Awaited<ReturnType<ReturnType<typeof projectService>["create"]>>,
+    service: Pick<ReturnType<typeof projectService>, "createWorkspace" | "update">,
+  ) => Promise<void>,
+) {
+  return db.transaction(async (tx) => {
+    const ownedRun = applyingDestination(runId, companyId);
+    const [claim] = await tx.select({ id: companyTransferRuns.id })
+      .from(companyTransferRuns).where(ownedRun).for("update");
+    if (!claim) throw new Error("Migration project recording rejected");
+
+    // Reuse project naming and primary-workspace rules on the same connection.
+    const service = projectService(tx as unknown as Db);
+    const project = await service.create(companyId, data);
+    await secretService(tx).syncEnvBindingsForTarget(companyId,
+      { targetType: "project", targetId: project.id }, data.env ?? {}, { db: tx });
+    await populate(project, service);
+
+    const [row] = await tx.select({ fingerprint: migrationRowFingerprint(getTableName(projects)) })
+      .from(projects).where(and(eq(projects.companyId, companyId), eq(projects.id, project.id)));
+    if (!row) throw new Error("Migration project was not created");
+    const workspaces = await tx.select({ id: projectWorkspaces.id, fingerprint: migrationRowFingerprint(getTableName(projectWorkspaces)) })
+      .from(projectWorkspaces).where(and(eq(projectWorkspaces.companyId, companyId), eq(projectWorkspaces.projectId, project.id)));
+    const secretBindings = await tx.select({ id: companySecretBindings.id, fingerprint: migrationRowFingerprint(getTableName(companySecretBindings)) })
+      .from(companySecretBindings).where(and(eq(companySecretBindings.companyId, companyId), eq(companySecretBindings.targetType, "project"), eq(companySecretBindings.targetId, project.id)));
+    const declarations = await tx.select({ id: userSecretDeclarations.id, fingerprint: migrationRowFingerprint(getTableName(userSecretDeclarations)) })
+      .from(userSecretDeclarations).where(and(eq(userSecretDeclarations.companyId, companyId), eq(userSecretDeclarations.targetType, "project"), eq(userSecretDeclarations.targetId, project.id)));
+
+    const provenance = { [project.id]: { ...row, workspaces, secretBindings, userSecretDeclarations: declarations } };
+    const [saved] = await tx.update(companyTransferRuns).set({
+      containerRef: sql`${companyTransferRuns.containerRef} || jsonb_build_object('projectProvenance', coalesce(${companyTransferRuns.containerRef}->'projectProvenance', '{}'::jsonb) || ${JSON.stringify(provenance)}::jsonb)`,
+      updatedAt: new Date(),
+    }).where(ownedRun).returning({ id: companyTransferRuns.id });
+    if (!saved) throw new Error("Migration project provenance was not recorded");
+    return project;
   });
 }
 

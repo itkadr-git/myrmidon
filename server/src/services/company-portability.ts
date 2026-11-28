@@ -86,7 +86,7 @@ import { generateReadme } from "./company-export-readme.js";
 import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
 import { companySkillService } from "./company-skills.js";
 import { companyService } from "./companies.js";
-import { provisionMigrationOwner, recordMigrationAsset } from "./company-migration.js";
+import { createMigrationProject, provisionMigrationOwner, recordMigrationAsset } from "./company-migration.js";
 import { companyTransferRunService } from "./company-transfer-runs.js";
 import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
@@ -5855,7 +5855,39 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             executionWorkspacePolicy: stripPortableProjectExecutionWorkspaceRefs(manifestProject.executionWorkspacePolicy),
           };
 
+          const populateProjectWorkspaces = async (
+            projectId: string,
+            service: Pick<ReturnType<typeof projectService>, "createWorkspace" | "update">,
+          ) => {
+            for (const workspace of manifestProject.workspaces) {
+              const createdWorkspace = await service.createWorkspace(projectId, {
+                name: workspace.name,
+                sourceType: workspace.sourceType ?? undefined,
+                repoUrl: workspace.repoUrl ?? undefined,
+                repoRef: workspace.repoRef ?? undefined,
+                defaultRef: workspace.defaultRef ?? undefined,
+                visibility: workspace.visibility ?? undefined,
+                setupCommand: workspace.setupCommand ?? undefined,
+                cleanupCommand: workspace.cleanupCommand ?? undefined,
+                metadata: workspace.metadata ?? undefined,
+                isPrimary: workspace.isPrimary,
+              });
+              if (!createdWorkspace) {
+                warnings.push(`Project ${planProject.slug} workspace ${workspace.key} could not be created during import.`);
+                continue;
+              }
+              projectWorkspaceIdByKey.set(workspace.key, createdWorkspace.id);
+            }
+            const hydratedPolicy = importPortableProjectExecutionWorkspacePolicy(
+              planProject.slug, manifestProject.executionWorkspacePolicy, projectWorkspaceIdByKey, warnings,
+            );
+            if (hydratedPolicy) {
+              await service.update(projectId, { executionWorkspacePolicy: hydratedPolicy });
+            }
+          };
+
           let projectId: string | null = null;
+          let recordedWithProvenance = false;
           if (planProject.action === "update" && planProject.existingProjectId) {
             const updated = await projects.update(planProject.existingProjectId, projectPatch);
             if (!updated) {
@@ -5880,7 +5912,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               reason: planProject.reason,
             });
           } else {
-            const created = await projects.create(targetCompany.id, projectPatch);
+            const created = migrationRunId
+              ? await createMigrationProject(db, migrationRunId, targetCompany.id, projectPatch,
+                (project, service) => populateProjectWorkspaces(project.id, service))
+              : await projects.create(targetCompany.id, projectPatch);
+            recordedWithProvenance = Boolean(migrationRunId);
             projectId = created.id;
             importedSlugToProjectId.set(planProject.slug, created.id);
             existingProjectSlugToId.set(created.urlKey, created.id);
@@ -5895,44 +5931,15 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
           if (!projectId) continue;
 
-          await secrets.syncEnvBindingsForTarget?.(
-            targetCompany.id,
-            { targetType: "project", targetId: projectId },
-            normalizedProjectEnv ?? {},
-          );
-
-          for (const workspace of manifestProject.workspaces) {
-            const createdWorkspace = await projects.createWorkspace(projectId, {
-              name: workspace.name,
-              sourceType: workspace.sourceType ?? undefined,
-              repoUrl: workspace.repoUrl ?? undefined,
-              repoRef: workspace.repoRef ?? undefined,
-              defaultRef: workspace.defaultRef ?? undefined,
-              visibility: workspace.visibility ?? undefined,
-              setupCommand: workspace.setupCommand ?? undefined,
-              cleanupCommand: workspace.cleanupCommand ?? undefined,
-              metadata: workspace.metadata ?? undefined,
-              isPrimary: workspace.isPrimary,
-            });
-            if (!createdWorkspace) {
-              warnings.push(`Project ${planProject.slug} workspace ${workspace.key} could not be created during import.`);
-              continue;
-            }
-            projectWorkspaceIdByKey.set(workspace.key, createdWorkspace.id);
+          if (!recordedWithProvenance) {
+            await secrets.syncEnvBindingsForTarget?.(
+              targetCompany.id,
+              { targetType: "project", targetId: projectId },
+              normalizedProjectEnv ?? {},
+            );
+            await populateProjectWorkspaces(projectId, projects);
           }
           importedProjectWorkspaceIdByProjectSlug.set(planProject.slug, projectWorkspaceIdByKey);
-
-          const hydratedProjectExecutionWorkspacePolicy = importPortableProjectExecutionWorkspacePolicy(
-            planProject.slug,
-            manifestProject.executionWorkspacePolicy,
-            projectWorkspaceIdByKey,
-            warnings,
-          );
-          if (hydratedProjectExecutionWorkspacePolicy) {
-            await projects.update(projectId, {
-              executionWorkspacePolicy: hydratedProjectExecutionWorkspacePolicy,
-            });
-          }
         }
       }
 

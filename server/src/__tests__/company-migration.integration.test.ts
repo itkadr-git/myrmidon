@@ -2,11 +2,11 @@ import express from "express";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companyTransferRuns, createDb, issueAttachments, issueComments, issues, principalPermissionGrants, projects } from "@myrmidon/db";
+import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companyTransferRuns, createDb, issueAttachments, issueComments, issues, principalPermissionGrants, projects, projectWorkspaces } from "@myrmidon/db";
 
 import { companyRoutes } from "../routes/companies.js";
 import { companyService } from "../services/companies.js";
-import { provisionMigrationOwner, recordMigrationAsset, recoverRemovedMigrationStorage } from "../services/company-migration.js";
+import { createMigrationProject, provisionMigrationOwner, recordMigrationAsset, recoverRemovedMigrationStorage } from "../services/company-migration.js";
 import { companyTransferRunService, parseMigrationResource } from "../services/company-transfer-runs.js";
 import { errorHandler } from "../middleware/index.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
@@ -1461,6 +1461,37 @@ describe("company migration dry run", () => {
     expect((await db.select().from(companies)).some((company) => company.name === "Export provenance destination")).toBe(false);
     const saved = (await db.select().from(companyTransferRuns)).find((entry) => entry.id === run!.id);
     expect(saved?.companyId).toBeNull();
+  });
+
+  it("commits a migration project and its workspace provenance together", async () => {
+    const [source] = await db.insert(companies).values({ name: "Project provenance source", issuePrefix: "MPPV" }).returning();
+    const ledger = companyTransferRunService;
+    const { run } = await ledger.resumeOrCreateMigration(db, source!.id, "project-provenance");
+    expect(await ledger.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Project provenance destination" }, { transferRunId: run.id });
+    const first = { name: "First", repoUrl: "https://example.com/first.git" };
+    const second = { name: "Second", repoUrl: "https://example.com/second.git", isPrimary: true };
+    const readRef = async () => (await ledger.getRun(db, run.id))?.containerRef;
+
+    await expect(createMigrationProject(db, run.id, destination.id, { name: "Imported project" }, async (project, service) => {
+      expect(await service.createWorkspace(project.id, first)).not.toBeNull();
+      throw new Error("interrupted project import");
+    })).rejects.toThrow("interrupted project import");
+    expect(await db.select().from(projects).where(eq(projects.companyId, destination.id))).toEqual([]);
+    expect(await db.select().from(projectWorkspaces).where(eq(projectWorkspaces.companyId, destination.id))).toEqual([]);
+    expect(await readRef()).not.toHaveProperty("projectProvenance");
+
+    const project = await createMigrationProject(db, run.id, destination.id, { name: "Imported project" }, async (row, service) => {
+      expect(await service.createWorkspace(row.id, first)).not.toBeNull();
+      expect(await service.createWorkspace(row.id, second)).not.toBeNull();
+    });
+    const workspaces = await db.select().from(projectWorkspaces).where(eq(projectWorkspaces.projectId, project.id));
+    expect(workspaces.map((row) => [row.name, row.isPrimary])).toEqual(expect.arrayContaining([["First", false], ["Second", true]]));
+    expect(await readRef()).toMatchObject({ projectProvenance: { [project.id]: {
+      fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      workspaces: expect.arrayContaining(workspaces.map(({ id }) => ({ id, fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) }))),
+      secretBindings: [], userSecretDeclarations: [],
+    } } });
   });
 
   it("commits migration owner membership and its provenance together", async () => {
