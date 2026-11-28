@@ -929,39 +929,40 @@ jobs:
 
           # Filter by state at the API so completed history cannot exhaust
           # the bound. Fail closed if either competing set may be truncated.
-          runs_json='{"workflow_runs":[]}'
+          # Keep response bodies in files; even one page can exceed exec's
+          # per-argument/environment size limit.
+          pages_dir="$(mktemp -d "$RUNNER_TEMP/queue-runs.XXXXXX")"
+          trap 'rm -rf -- "$pages_dir"' EXIT
+          pages=()
           for status in queued in_progress; do
-          for page in 1 2 3; do
-            page_json="$(gh api "repos/$REPO/actions/runs?per_page=100&status=$status&page=$page" 2>/dev/null || true)"
-            if [ -z "$page_json" ]; then
-              echo "ERROR: Unable to fetch workflow runs from GitHub API (page $page)" >&2
-              exit 1
-            fi
-            runs_json="$(RUNS_A="$runs_json" RUNS_B="$page_json" node --input-type=module -e '
-              const a = JSON.parse(process.env.RUNS_A);
-              const b = JSON.parse(process.env.RUNS_B);
-              if (!Array.isArray(b.workflow_runs)) throw new Error("invalid workflow runs response");
-              a.workflow_runs.push(...b.workflow_runs);
-              console.log(JSON.stringify(a));
-            ')" || {
-              echo "ERROR: failed to merge workflow run pages" >&2
-              exit 1
-            }
-            has_more="$(PAGE_JSON="$page_json" node --input-type=module -e '
-              const d = JSON.parse(process.env.PAGE_JSON);
-              console.log(d.workflow_runs.length >= 100 ? "yes" : "no");
-            ')"
-            if [ "$has_more" != "yes" ]; then
-              break
-            fi
-            if [ "$page" = "3" ]; then
-              echo "ERROR: more than 300 workflow runs reported; refusing to evaluate queue priority on a truncated set (fail closed)" >&2
-              exit 1
-            fi
-          done
+            for page in 1 2 3; do
+              page_file="$pages_dir/$status-$page.json"
+              if ! gh api "repos/$REPO/actions/runs?per_page=100&status=$status&page=$page" > "$page_file" 2>/dev/null; then
+                echo "ERROR: Unable to fetch workflow runs from GitHub API ($status page $page)" >&2
+                exit 1
+              fi
+              count="$(node --input-type=module -e '
+                import { readFileSync } from "node:fs";
+                const { workflow_runs } = JSON.parse(readFileSync(0, "utf8"));
+                if (!Array.isArray(workflow_runs)) throw new Error("invalid workflow runs response");
+                console.log(workflow_runs.length);
+              ' < "$page_file")" || {
+                echo "ERROR: invalid workflow run page ($status page $page)" >&2
+                exit 1
+              }
+              pages+=("$page_file")
+              if ((count < 100)); then
+                break
+              fi
+              if [ "$page" = "3" ]; then
+                echo "ERROR: refusing to evaluate queue priority on a potentially truncated set ($status; fail closed)" >&2
+                exit 1
+              fi
+            done
           done
 
-          RUNS_JSON="$runs_json" WORKFLOW_NAME="$WORKFLOW" node --input-type=module -e '
+          WORKFLOW_NAME="$WORKFLOW" node --input-type=module -e '
+            import { readFileSync } from "node:fs";
             const { observedPriorityViolations } = await import(`file://${process.env.RUNNER_TEMP}/release-jobs.mjs`);
             // The release build competes in the SAME priority runner pool as
             // every other release run (main pushes and release PRs from
@@ -970,7 +971,9 @@ jobs:
             // The comparison set is every queued or in-progress run of the
             // two release CI workflows — a run of an unrelated workflow
             // (image, publish, pages) never occupies the pool and is dropped.
-            const all = JSON.parse(process.env.RUNS_JSON).workflow_runs;
+            const all = process.argv.slice(1).flatMap((file) =>
+              JSON.parse(readFileSync(file, "utf8")).workflow_runs
+            );
             const pending = all.filter((r) =>
               (r.status === "queued" || r.status === "in_progress") &&
               (r.name === process.env.WORKFLOW_NAME || r.name === "Myrmidon CI")
@@ -991,7 +994,7 @@ jobs:
             const ord = pending.length - rel;
             console.log(`PASS: ${rel} release run(s) and ${ord} ordinary run(s) pending in the priority pool; no factual dispatch inversion observed.`);
             console.log("PASS: release builds hold queue priority (priority runner pool; observed dispatch order).");
-          ' || {
+          ' "${pages[@]}" || {
             echo "ERROR: failed to verify release build queue priority" >&2
             exit 1
           }

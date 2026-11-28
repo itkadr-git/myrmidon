@@ -427,9 +427,12 @@ queue_priority_ok() {
     sleep "$GH_API_RETRY_SLEEP"
   done; return 1)"
   [[ -n "$runs_json" ]] || return 1
-  QUEUE_RUNS_JSON="$runs_json" QUEUE_TAG="$tag" QUEUE_HELPERS="$here/release-jobs.mjs" node --input-type=module -e '
+  # GitHub pages can exceed the per-argument/environment size limit.
+  QUEUE_TAG="$tag" QUEUE_HELPERS="$here/release-jobs.mjs" node --input-type=module -e '
+    import { readFileSync } from "node:fs";
     const { observedPriorityViolations } = await import(process.env.QUEUE_HELPERS);
-    const all = JSON.parse(process.env.QUEUE_RUNS_JSON).workflow_runs || [];
+    const { workflow_runs: all } = JSON.parse(readFileSync(0, "utf8"));
+    if (!Array.isArray(all)) throw new Error("invalid workflow runs response");
     const pending = all.filter((r) =>
       (r.status === "queued" || r.status === "in_progress") &&
       (r.name === "Myrmidon CI (tag)" || r.name === "Myrmidon CI")
@@ -440,7 +443,7 @@ queue_priority_ok() {
       console.error(`[myrmidon-release-publish] ERROR: queue priority inversion: release run ${v.release} (queued ${v.releaseQueuedAt}, not started) is behind ordinary run ${v.blockedBy} (queued ${v.blockedByQueuedAt}, started ${v.blockedByStartedAt})`);
     }
     if (violations.length > 0) process.exit(1);
-  '
+  ' <<< "$runs_json"
 }
 log "gate: release build queue priority on $tag"
 queue_priority_ok || die "queue priority could not be verified for $tag (or a proven inversion exists) — NOT publishing. Release builds must hold priority in the CI queue."
