@@ -1135,7 +1135,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       confirm: z.string().trim().min(1).optional(),
       collisionStrategy: z.enum(["rename", "skip", "replace"]).optional().default("rename"),
     }).strict().parse(req.body);
-    const migration = companyMigrationService(portability);
+    const migration = companyMigrationService(portability, storage);
     const companyId = req.params.companyId as string;
     if (body.apply || !body.dryRun) {
       if (!body.apply || body.dryRun || !body.confirm) throw badRequest("Apply requires dryRun: false, apply: true and confirmation.");

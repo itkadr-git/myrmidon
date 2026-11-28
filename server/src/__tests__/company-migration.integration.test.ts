@@ -2310,6 +2310,71 @@ describe("company migration dry run", () => {
     expect((await db.select().from(assets)).some((entry) => entry.id === asset!.id)).toBe(true);
   });
 
+  it("resumes the same apply after a reserved logo upload fails before its database record", async () => {
+    const [source] = await db.insert(companies).values({ name: "Logo resume source", issuePrefix: "MLR" }).returning();
+    const storage = createStorageService(createLocalDiskStorageProvider(root));
+    const putFile = storage.putFile.bind(storage);
+    const original = await putFile({
+      companyId: source!.id, namespace: "assets/companies", originalFilename: "logo.png",
+      contentType: "image/png", body: Buffer.from("source logo"),
+    });
+    const [asset] = await db.insert(assets).values({ companyId: source!.id, ...original }).returning();
+    await db.insert(companyLogos).values({ companyId: source!.id, assetId: asset!.id });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", companyIds: [source!.id], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, storage));
+    app.use(errorHandler);
+
+    const apply = () => request(app).post(`/api/companies/${source!.id}/migrations`).send({
+      target: { mode: "new_company", newCompanyName: "Logo resume destination" },
+      dryRun: false, apply: true, confirm: "approved pilot fixture",
+    });
+    const upload = vi.spyOn(storage, "putFile").mockImplementationOnce(async (input) => {
+      await putFile(input);
+      throw new Error("fixture: interrupted before recording the uploaded logo");
+    });
+    try {
+      const failed = await apply();
+      expect(failed.status).toBe(409);
+      const runId = failed.body.details.runId;
+      const checkpoint = await companyTransferRunService.getRun(db, runId);
+      expect(checkpoint?.completedParts).toHaveLength(1);
+      const destinationId = checkpoint!.companyId!;
+      const [orphan] = checkpoint!.completedParts;
+      expect((await storage.headObject(destinationId, orphan!)).exists).toBe(true);
+
+      const remove = storage.deleteObject.bind(storage);
+      const deletion = vi.spyOn(storage, "deleteObject").mockImplementationOnce(async (companyId, objectKey) => {
+        await remove(companyId, objectKey);
+        throw new Error("fixture: interrupted after deletion");
+      });
+      try {
+        expect((await apply()).status).toBe(409);
+        expect(await companyTransferRunService.getRun(db, runId)).toEqual(checkpoint);
+        expect(upload).toHaveBeenCalledTimes(1);
+      } finally {
+        deletion.mockRestore();
+      }
+
+      const resumed = await apply();
+      expect(resumed.status, JSON.stringify(resumed.body)).toBe(200);
+      expect(resumed.body).toMatchObject({ runId, status: "completed" });
+      expect(await companyTransferRunService.getRun(db, runId)).toMatchObject({ companyId: destinationId, status: "completed" });
+      const destinationAssets = await db.select().from(assets).where(eq(assets.companyId, destinationId));
+      expect(destinationAssets).toHaveLength(1);
+      expect((await storage.headObject(destinationId, destinationAssets[0]!.objectKey)).exists).toBe(true);
+      expect((await storage.headObject(destinationId, orphan!)).exists).toBe(false);
+      expect((await storage.headObject(source!.id, original.objectKey)).exists).toBe(true);
+      expect(upload).toHaveBeenCalledTimes(2);
+    } finally {
+      upload.mockRestore();
+    }
+  });
+
   it("requires confirmation for rollback and archives only the migrated company", async () => {
     const [source] = await db.insert(companies).values({ name: "Rollback fixture", issuePrefix: "RBF" }).returning();
     const app = express();

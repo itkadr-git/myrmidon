@@ -83,10 +83,11 @@ so it is not a rollback ID or evidence that apply occurred.
    the recovery owner.
 6. If recovery is needed, read `GET /api/companies/{sourceCompanyId}/migrations/{runId}`.
    The same confirmed apply can resume after destination creation or owner
-   provisioning if the destination still matches its journal and no other child
-   writes or storage reservations were committed. If the owner was already
-   provisioned, retry as that same operator. Later failures require rollback;
-   the importer does not replay them in place.
+   provisioning if the destination still matches its journal. If the owner was
+   already provisioned, retry as that same operator. The retry can also delete a
+   reserved logo upload whose database record never committed, then upload it
+   again in the same run. Committed child writes and other reservations still
+   require rollback; the importer does not replay them in place.
    Use `POST /api/companies/{sourceCompanyId}/migrations/{runId}/rollback` with a
    non-empty `confirm` reason. One database transaction removes journaled child
    rows and archives the destination, preserving its ID. Reserved storage cleanup

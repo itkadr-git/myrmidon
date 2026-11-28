@@ -536,7 +536,10 @@ export async function rollbackCompanyMigration(db: Db, storage: StorageService |
   return recoverMigrationStorage(db, storage, sourceCompanyId, runId, true);
 }
 
-async function claimMigrationAtDestinationCheckpoint(db: Db, runId: string, sourceCompanyId: string, companyId: string) {
+async function claimMigrationAtDestinationCheckpoint(
+  db: Db, runId: string, sourceCompanyId: string, companyId: string,
+  actorUserId: string | null, storage: StorageService | undefined,
+) {
   return db.transaction(async (tx) => {
     // Win the same ledger lock as rollback before checking the live destination.
     const [claim] = await tx.update(companyTransferRuns).set({ status: "applying", error: null, finishedAt: null, updatedAt: new Date() })
@@ -545,20 +548,44 @@ async function claimMigrationAtDestinationCheckpoint(db: Db, runId: string, sour
         eq(companyTransferRuns.direction, "import"), eq(companyTransferRuns.status, "failed"),
         eq(companyTransferRuns.actorKey, `company_migration:${sourceCompanyId}`),
         sql`${companyTransferRuns.containerRef}->>'sourceCompanyId' = ${sourceCompanyId}`,
-        // The importer can restart after owner provisioning, but cannot yet
-        // replay committed child entities or reserved storage.
+        // No child rows may have committed past the owner checkpoint.
         sql`${companyTransferRuns.containerRef} - array['kind', 'sourceCompanyId', 'destinationClaimed', 'destinationCompanyId', 'initialCompanyFingerprint', 'ownerProvenance']::text[] = '{}'::jsonb`,
-        sql`${companyTransferRuns.completedParts} = '[]'::jsonb`,
-      )).returning({ provenance: companyTransferRuns.containerRef });
+      )).returning({ provenance: companyTransferRuns.containerRef, parts: companyTransferRuns.completedParts });
     if (!claim) return false;
     if (!await matchesJournaledMigrationRows(tx, companyId, claim.provenance)) {
       throw conflict("Migration destination no longer matches its creation checkpoint.", { runId });
+    }
+    if (!Array.isArray(claim.parts) || claim.parts.length > 1) throw conflict("Migration requires rollback.", { runId });
+    if (claim.parts.length === 1) {
+      const [part] = claim.parts;
+      const resource = typeof part === "string" ? parseMigrationResource(companyId, part) : null;
+      if (!storage || resource?.kind !== "object" || !resource.objectKey.startsWith(`${companyId}/assets/companies/`)) {
+        throw conflict("Migration requires rollback.", { runId });
+      }
+      // The only replayable external write here is an uncommitted company
+      // logo. Verify the operator before touching storage, not after cleanup.
+      const [owner] = await tx.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+        eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, actorUserId ?? "board"), eq(companyMemberships.membershipRole, "owner"),
+        eq(companyMemberships.status, "active"),
+      ));
+      if (!owner) throw conflict("Migration retry must preserve the provisioned owner.", { runId });
+      try {
+        // Hold the ledger lock until the reservation is cleared. If deletion
+        // succeeds but the transaction aborts, the next retry deletes again.
+        await storage.deleteObject(companyId, resource.objectKey);
+        const [cleared] = await tx.update(companyTransferRuns).set({ completedParts: [] })
+          .where(applyingDestination(runId, companyId)).returning({ id: companyTransferRuns.id });
+        if (!cleared) throw new Error("Migration logo reservation was not cleared");
+      } catch {
+        throw conflict("Migration logo recovery failed; retry the confirmed request or roll back.", { runId });
+      }
     }
     return true;
   });
 }
 
-export function companyMigrationService(portability: Portability) {
+export function companyMigrationService(portability: Portability, storage?: StorageService) {
   async function prepare(companyId: string, input: CompanyPortabilityExport, newCompanyName: string, collisionStrategy: "rename" | "skip" | "replace") {
     const exported = await portability.exportBundle(companyId, input, { preview: true, rejectUnknownAgentPermissions: true });
     // Export preserves secret binding metadata that is not present in package files.
@@ -643,7 +670,7 @@ export function companyMigrationService(portability: Portability) {
       }
       const resumeDestination = run.status === "failed" ? run.companyId : null;
       const claimed = resumeDestination
-        ? await claimMigrationAtDestinationCheckpoint(db, run.id, companyId, resumeDestination)
+        ? await claimMigrationAtDestinationCheckpoint(db, run.id, companyId, resumeDestination, actorUserId, storage)
         : await ledger.claimApply(db, run.id);
       if (!claimed) throw conflict("Migration is active or requires recovery.", { runId: run.id });
       try {
