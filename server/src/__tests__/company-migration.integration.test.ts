@@ -6,6 +6,7 @@ import { activityLog, agents, assets, companies, companyLogos, companyMembership
 
 import { companyRoutes } from "../routes/companies.js";
 import { companyService } from "../services/companies.js";
+import { companySkillService } from "../services/company-skills.js";
 import { createMigrationAgent, createMigrationIssues, createMigrationProject, createMigrationRoutine, importMigrationSkills, linkMigrationAgent, provisionMigrationOwner, recordMigrationAsset, recoverMigrationStorage } from "../services/company-migration.js";
 import { migrationManagedFileWriter } from "../services/company-migration-files.js";
 import { companyTransferRunService, parseMigrationResource } from "../services/company-transfer-runs.js";
@@ -2206,8 +2207,11 @@ describe("company migration dry run", () => {
     expect(replay.body).toMatchObject({ runId: retried.body.runId, resume: "already_completed" });
   });
 
-  it("resumes confirmed apply from an unchanged committed agent checkpoint", async () => {
+  it("resumes confirmed apply from unchanged committed agent and skill checkpoints", async () => {
     const [source] = await db.insert(companies).values({ name: "Agent checkpoint source", issuePrefix: "MACP" }).returning();
+    await companySkillService(db).importPackageFiles(source!.id, {
+      "skills/checkpoint-skill/SKILL.md": "---\nname: Checkpoint skill\nslug: checkpoint-skill\n---\n\n# Checkpoint skill\n",
+    }, { skipInventoryRefresh: true });
     await db.insert(agents).values({ companyId: source!.id, name: "Agent checkpoint worker" });
     await db.insert(projects).values({ companyId: source!.id, name: "Checkpoint project" });
     const app = express();
@@ -2218,9 +2222,9 @@ describe("company migration dry run", () => {
     });
     app.use("/api/companies", companyRoutes(db, createStorageService(createLocalDiskStorageProvider(root))));
     app.use(errorHandler);
-    const apply = () => request(app).post(`/api/companies/${source!.id}/migrations`).send({
+    const apply = async () => request(app).post(`/api/companies/${source!.id}/migrations`).send({
       target: { mode: "new_company", newCompanyName: "Agent checkpoint destination" },
-      export: { include: { projects: true } },
+      export: { include: { projects: true, skills: true } },
       dryRun: false, apply: true, confirm: "approved fixture",
     });
     await db.execute(sql`alter table projects add constraint migration_checkpoint_failure check (name <> 'Checkpoint project') not valid`);
@@ -2236,6 +2240,22 @@ describe("company migration dry run", () => {
     const importedAgents = await db.select().from(agents).where(eq(agents.companyId, companyId));
     expect(importedAgents).toHaveLength(1);
 
+    const skillScope = eq(companySkills.companyId, companyId);
+    const importedSkills = await db.select().from(companySkills).where(skillScope);
+    expect(importedSkills).toHaveLength(1);
+    expect(run?.containerRef).toMatchObject({
+      skillProvenance: { refs: expect.arrayContaining([["checkpoint-skill", importedSkills[0]!.key]]) },
+    });
+    const skillFile = path.join(importedSkills[0]!.sourceLocator!, "SKILL.md");
+    const originalSkill = await readFile(skillFile, "utf8");
+    await writeFile(skillFile, "Independently changed skill");
+    try {
+      expect((await apply()).status).toBe(409);
+      expect(await companyTransferRunService.getRun(db, runId)).toEqual(run);
+    } finally {
+      await writeFile(skillFile, originalSkill);
+    }
+
     const originalName = importedAgents[0]!.name;
     const workerId = importedAgents[0]!.id;
     await db.update(agents).set({ name: "Independent change" }).where(eq(agents.id, workerId));
@@ -2245,8 +2265,10 @@ describe("company migration dry run", () => {
 
     const resumed = await apply();
     expect(resumed.status, JSON.stringify(resumed.body)).toBe(200);
-    expect(resumed.body).toMatchObject({ runId, status: "completed", createdCounts: { agents: 1, projects: 1 } });
+    expect(resumed.body).toMatchObject({ runId, status: "completed", createdCounts: { agents: 1, projects: 1, skills: 1 } });
     expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toEqual(importedAgents);
+    expect(await db.select().from(companySkills).where(skillScope)).toEqual(importedSkills);
+    expect(await readFile(skillFile, "utf8")).toBe(originalSkill);
     expect(await db.select().from(companies).where(eq(companies.name, "Agent checkpoint destination"))).toHaveLength(1);
     expect((await apply()).body).toMatchObject({ runId, resume: "already_completed" });
   });

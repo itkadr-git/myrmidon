@@ -88,10 +88,11 @@ so it is not a rollback ID or evidence that apply occurred.
    reserved logo upload whose database record never committed, then upload it
    again in the same run. If the import stopped after creating agents, but before
    committing later entities, a retry can reuse those agents after verifying their
-   rows, access records and managed instructions against the journal. This agent
-   checkpoint requires an empty or absent imported skill library and no other
-   outstanding resource reservations. Other partial imports require rollback;
-   the importer does not replay them in place.
+   rows, access records and managed instructions against the journal. A committed
+   skill library is also reusable when its rows, managed files and source-to-target
+   references match the journal. Older nonempty skill checkpoints without these
+   references and imports with later committed entities require rollback; the
+   importer does not replay them in place.
    Use `POST /api/companies/{sourceCompanyId}/migrations/{runId}/rollback` with a
    non-empty `confirm` reason. One database transaction removes journaled child
    rows and archives the destination, preserving its ID. Reserved storage cleanup

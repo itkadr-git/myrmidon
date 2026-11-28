@@ -768,7 +768,7 @@ type ImportBehaviorOptions = {
   resumeMigrationCheckpoint?: {
     agentIds: ReadonlyMap<string, string>;
     filesByAgentId: ReadonlyMap<string, ReadonlyMap<string, string>>;
-    skillCheckpoint: boolean;
+    skillRefs?: ReadonlyMap<string, string>;
   };
   planNewCompanyAgentNameCollisions?: boolean;
 };
@@ -5619,13 +5619,13 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         !plan.preview.plan.agentPlans.some((entry) => entry.slug === slug && entry.action === "create"))) {
         throw new Error("Migration agent checkpoint does not match the import plan");
       }
-      const importedSkills = !importsSkills || checkpoint?.skillCheckpoint ? []
+      const importedSkills = !importsSkills || checkpoint?.skillRefs ? []
         : migrationRunId
           ? await importMigrationSkills(db, migrationRunId, destinationCompanyId, pickTextFiles(plan.source.files))
           : await companySkills.importPackageFiles(targetCompany.id, pickTextFiles(plan.source.files), {
               onConflict: resolveSkillConflictStrategy(mode, plan.collisionStrategy),
             });
-      const desiredSkillRefMap = new Map<string, string>();
+      const desiredSkillRefMap = new Map(checkpoint?.skillRefs);
       for (const importedSkill of importedSkills) {
         desiredSkillRefMap.set(importedSkill.originalKey, importedSkill.skill.key);
         desiredSkillRefMap.set(importedSkill.originalSlug, importedSkill.skill.key);

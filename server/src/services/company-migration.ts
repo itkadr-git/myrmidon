@@ -412,7 +412,12 @@ export async function importMigrationSkills(db: Db, runId: string, companyId: st
       .from(companySkills).where(eq(companySkills.companyId, companyId));
     const skillFolders = await tx.select({ id: folders.id, fingerprint: migrationRowFingerprint(getTableName(folders)) })
       .from(folders).where(folderScope);
-    const provenance = { skills, folders: skillFolders };
+    const refs = new Map<string, string>();
+    for (const entry of imported) {
+      refs.set(entry.originalKey, entry.skill.key);
+      refs.set(entry.originalSlug, entry.skill.key);
+    }
+    const provenance = { skills, folders: skillFolders, refs: [...refs] };
     const [saved] = await tx.update(companyTransferRuns).set({
       containerRef: sql`${companyTransferRuns.containerRef} || jsonb_build_object('skillProvenance', ${JSON.stringify(provenance)}::jsonb)`,
       updatedAt: new Date(),
@@ -557,14 +562,27 @@ async function claimMigrationAtDestinationCheckpoint(
       throw conflict("Migration destination no longer matches its creation checkpoint.", { runId });
     }
     const ref = claim.provenance as {
-      skillProvenance?: { skills: unknown[]; folders: unknown[] };
+      skillProvenance?: { skills: unknown[]; folders: unknown[]; refs?: unknown };
       agentProvenance?: Record<string, { sourceSlug?: string }>;
     };
-    // This checkpoint can replay an empty skill import, but not rebuild a
-    // committed skill library's source-to-destination mappings.
-    const skillCheckpoint = ref.skillProvenance !== undefined;
-    if (ref.skillProvenance?.skills.length || ref.skillProvenance?.folders.length) {
-      throw conflict("Migration requires rollback.", { runId });
+    const skillRefs = ref.skillProvenance ? new Map<string, string>() : undefined;
+    if (ref.skillProvenance && skillRefs) {
+      const { skills, folders, refs } = ref.skillProvenance;
+      // Older nonempty checkpoints didn't record the importer mapping.
+      if (refs === undefined ? skills.length || folders.length : !Array.isArray(refs)) {
+        throw conflict("Migration requires rollback.", { runId });
+      }
+      if (Array.isArray(refs)) {
+        const keys = await tx.select({ key: companySkills.key }).from(companySkills).where(eq(companySkills.companyId, companyId));
+        const expectedKeys = new Set(keys.map(({ key }) => key));
+        for (const pair of refs) {
+          if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== "string" || typeof pair[1] !== "string"
+            || !pair[0] || !expectedKeys.has(pair[1]) || skillRefs.has(pair[0])) {
+            throw conflict("Migration skill references no longer match their checkpoint.", { runId });
+          }
+          skillRefs.set(pair[0], pair[1]);
+        }
+      }
     }
     const agentIds = new Map<string, string>();
     const ownedAgents = Object.entries(ref.agentProvenance ?? {});
@@ -578,7 +596,13 @@ async function claimMigrationAtDestinationCheckpoint(
     let orphanLogo: string | undefined;
     for (const part of claim.parts) {
       const resource = typeof part === "string" ? parseMigrationResource(companyId, part) : null;
-      if (resource?.kind === "company_skills" && skillCheckpoint) continue;
+      if (resource?.kind === "company_skills" && skillRefs) continue;
+      if (resource?.kind === "managed_file" && resource.directory.kind === "company_skills" && skillRefs) {
+        if (!await matchesJournaledMigrationFile(companyId, resource.directory, resource.relativePath, resource.sha256, resource.identity)) {
+          throw conflict("Migration skill files no longer match their checkpoint.", { runId });
+        }
+        continue;
+      }
       if (resource?.kind === "agent_instructions" && ownedIds.has(resource.agentId)) continue;
       if (resource?.kind === "managed_file" && resource.directory.kind === "agent_instructions" && ownedIds.has(resource.directory.agentId)) {
         const files = filesByAgentId.get(resource.directory.agentId) ?? new Map<string, string>();
@@ -618,7 +642,7 @@ async function claimMigrationAtDestinationCheckpoint(
         throw conflict("Migration logo recovery failed; retry the confirmed request or roll back.", { runId });
       }
     }
-    return { agentIds, filesByAgentId, skillCheckpoint };
+    return { agentIds, filesByAgentId, skillRefs };
   });
 }
 
