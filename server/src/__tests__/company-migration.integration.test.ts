@@ -2114,13 +2114,14 @@ describe("company migration dry run", () => {
     app.use(errorHandler);
 
     await db.execute(sql`alter table projects add constraint migration_fixture_failure check (name <> 'Partial import project') not valid`);
+    const apply = () => request(app).post(`/api/companies/${source!.id}/migrations`).send({
+      target: { mode: "new_company", newCompanyName: "Partial import destination" },
+      export: { include: { projects: true } },
+      dryRun: false, apply: true, confirm: "approved pilot",
+    });
     let failedRunId: string | undefined;
     try {
-      const response = await request(app).post(`/api/companies/${source!.id}/migrations`).send({
-        target: { mode: "new_company", newCompanyName: "Partial import destination" },
-        export: { include: { projects: true } },
-        dryRun: false, apply: true, confirm: "approved pilot",
-      });
+      const response = await apply();
       expect(response.status, JSON.stringify(response.body)).toBe(409);
       failedRunId = response.body.details?.runId;
       expect(failedRunId).toEqual(expect.any(String));
@@ -2160,6 +2161,23 @@ describe("company migration dry run", () => {
     } finally {
       await db.execute(sql`alter table companies drop constraint migration_fixture_keep_destination`);
     }
+
+    // A successful SQL DELETE can still leave the row intact. The ledger and
+    // other deletions must not commit if the destination was not emptied.
+    await db.execute(sql`create function migration_fixture_keep_worker() returns trigger language plpgsql as $$
+      begin return null; end;
+    $$`);
+    try {
+      await db.execute(sql`create trigger migration_fixture_keep_worker before delete on agents
+        for each row when (old.name = 'Partial import worker') execute function migration_fixture_keep_worker()`);
+      const refused = await request(app).post(`${statusUrl}/rollback`).send({ confirm: "verify cleanup completeness" });
+      expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+      expect(await companyTransferRunService.getRun(db, run!.id)).toEqual(beforeRollback);
+      expect(await db.select().from(companyMemberships).where(eq(companyMemberships.companyId, destination!.id))).toEqual(beforeMemberships);
+    } finally {
+      await db.execute(sql`drop function migration_fixture_keep_worker() cascade`);
+    }
+
     const rollback = await request(app)
       .post(`/api/companies/${source!.id}/migrations/${run!.id}/rollback`)
       .send({ confirm: "recover partial import" });
@@ -2178,6 +2196,14 @@ describe("company migration dry run", () => {
     expect(remainingAgents.some((agent) => agent.companyId === destination!.id)).toBe(false);
     expect(remainingAgents.some((agent) => agent.id === worker!.id && agent.companyId === source!.id)).toBe(true);
     expect((await db.select().from(projects)).some((project) => project.companyId === source!.id)).toBe(true);
+
+    const retried = await apply();
+    expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+    expect(retried.body).toMatchObject({ status: "completed", createdCounts: { agents: 1, projects: 1 } });
+    expect(retried.body.runId).not.toBe(run!.id);
+    const replay = await apply();
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+    expect(replay.body).toMatchObject({ runId: retried.body.runId, resume: "already_completed" });
   });
 
   it("removes imported logo storage after a partial failure without touching the source logo", async () => {
@@ -2311,7 +2337,7 @@ describe("company migration dry run", () => {
   });
 
   it("resumes the same apply after a reserved logo upload fails before its database record", async () => {
-    const [source] = await db.insert(companies).values({ name: "Logo resume source", issuePrefix: "MLR" }).returning();
+    const [source] = await db.insert(companies).values({ name: "Logo resume source", issuePrefix: "MLU" }).returning();
     const storage = createStorageService(createLocalDiskStorageProvider(root));
     const putFile = storage.putFile.bind(storage);
     const original = await putFile({

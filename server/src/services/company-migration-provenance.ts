@@ -113,12 +113,13 @@ export async function matchesJournaledMigrationRows(tx: Tx, companyId: string, p
 
 export async function archiveJournaledMigrationCompany(tx: Tx, companyId: string) {
   // Delete only the verified child rows. Keep the destination identity and ledger.
-  for (const table of [
+  const childTables = [
     issueAttachments, companyLogos, issueRelations, issueWorkProducts, issueInboxArchives, issueLabels,
     issueComments, issueDocuments, documentRevisions, documents, routineTriggers, routineRevisions,
     routines, issues, labels, projectWorkspaces, companySkills, assets, companySecretBindings,
     userSecretDeclarations, activityLog, principalPermissionGrants, companyMemberships, projects, agents,
-  ]) {
+  ];
+  for (const table of childTables) {
     await tx.delete(table).where(eq(table.companyId, companyId));
   }
   // The folder parent FK is RESTRICT, so remove leaves before their parents.
@@ -127,6 +128,13 @@ export async function archiveJournaledMigrationCompany(tx: Tx, companyId: string
       select 1 from ${folders} as child where child.parent_id = ${folders.id}
     )`).returning({ id: folders.id });
     if (deleted.length === 0) break;
+  }
+  // A DELETE may report success even when a row-level trigger suppresses it.
+  // Never publish the archival checkpoint while any verified child row remains.
+  for (const table of [...childTables, folders]) {
+    const [remaining] = await tx.select({ found: sql`1` }).from(table)
+      .where(eq(table.companyId, companyId)).limit(1);
+    if (remaining) throw new Error("Migration rollback left destination rows behind");
   }
   const [archived] = await tx.update(companies).set({ status: "archived", updatedAt: new Date() })
     .where(eq(companies.id, companyId)).returning({ id: companies.id });
