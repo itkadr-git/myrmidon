@@ -60,6 +60,22 @@ function actorOf(req: Request): { actorType: "user" | "agent"; actorId: string }
   return { actorType: actor.actorType, actorId: actor.actorId };
 }
 
+/**
+ * myrmidon(1.7 PRIVATE-TASKS G1): a private issue is invisible to agent-facing
+ * paths (packages/shared/src/issue-write-denial.ts). Every agent-exchange
+ * route that resolves an issue for an agent actor answers the SAME 404 the
+ * missing-issue path answers, so the agent cannot tell a private issue from a
+ * nonexistent one. Board actors keep full access.
+ */
+function assertIssueVisibleToActor(
+  req: Request,
+  issue: { isPrivate?: boolean | null },
+): void {
+  if (issue.isPrivate && req.actor.type === "agent") {
+    throw notFound("Issue not found");
+  }
+}
+
 function sendEngineError(res: { status: (n: number) => { json: (b: unknown) => void } }, error: unknown): void {
   if (error instanceof AgentExchangeError) {
     const status =
@@ -101,12 +117,13 @@ export function agentExchangeRoutes(deps: AgentExchangeRoutesDeps): Router {
       const actor = actorOf(req);
       const input = req.body as AgentExchangeCreateRoomInput;
       const issue = await deps.db
-        .select({ id: issues.id, companyId: issues.companyId, title: issues.title })
+        .select({ id: issues.id, companyId: issues.companyId, title: issues.title, isPrivate: issues.isPrivate })
         .from(issues)
         .where(eq(issues.id, input.issueId))
         .then((rows) => rows[0] ?? null);
       if (!issue) throw notFound("Issue not found");
       assertCompanyAccess(req, issue.companyId);
+      assertIssueVisibleToActor(req, issue);
 
       const resolved = await readAgentExchangeSettings(settingsDeps(deps));
       const engine = deps.engineDeps(issue.companyId, resolved);
@@ -137,12 +154,13 @@ export function agentExchangeRoutes(deps: AgentExchangeRoutesDeps): Router {
 
   router.get("/issues/:issueId/agent-exchange/rooms", async (req, res) => {
     const issue = await deps.db
-      .select({ id: issues.id, companyId: issues.companyId })
+      .select({ id: issues.id, companyId: issues.companyId, isPrivate: issues.isPrivate })
       .from(issues)
       .where(eq(issues.id, req.params.issueId as string))
       .then((rows) => rows[0] ?? null);
     if (!issue) throw notFound("Issue not found");
     assertCompanyAccess(req, issue.companyId);
+    assertIssueVisibleToActor(req, issue);
     res.json(await deps.store.listRooms(issue.companyId, issue.id));
   });
 
@@ -165,10 +183,11 @@ export function agentExchangeRoutes(deps: AgentExchangeRoutesDeps): Router {
     const resolved = await readAgentExchangeSettings(settingsDeps(deps));
     const engine = deps.engineDeps(existing.room.companyId, resolved);
     const issue = await deps.db
-      .select({ title: issues.title })
+      .select({ title: issues.title, isPrivate: issues.isPrivate })
       .from(issues)
       .where(eq(issues.id, existing.room.issueId))
       .then((rows) => rows[0] ?? null);
+    assertIssueVisibleToActor(req, issue ?? {});
     try {
       res.json(await runNextRound(engine, req.params.roomId, `Task: ${issue?.title ?? ""}`));
     } catch (error) {
@@ -183,6 +202,12 @@ export function agentExchangeRoutes(deps: AgentExchangeRoutesDeps): Router {
     });
     if (!existing) return;
     assertCompanyAccess(req, existing.room.companyId);
+    const roomIssue = await deps.db
+      .select({ isPrivate: issues.isPrivate })
+      .from(issues)
+      .where(eq(issues.id, existing.room.issueId))
+      .then((rows) => rows[0] ?? null);
+    assertIssueVisibleToActor(req, roomIssue ?? {});
     const resolved = await readAgentExchangeSettings(settingsDeps(deps));
     const engine = deps.engineDeps(existing.room.companyId, resolved);
     try {
@@ -204,6 +229,12 @@ export function agentExchangeRoutes(deps: AgentExchangeRoutesDeps): Router {
       });
       if (!existing) return;
       assertCompanyAccess(req, existing.room.companyId);
+      const roomIssue = await deps.db
+        .select({ isPrivate: issues.isPrivate })
+        .from(issues)
+        .where(eq(issues.id, existing.room.issueId))
+        .then((rows) => rows[0] ?? null);
+      assertIssueVisibleToActor(req, roomIssue ?? {});
       const resolved = await readAgentExchangeSettings(settingsDeps(deps));
       const engine = deps.engineDeps(existing.room.companyId, resolved);
       try {
