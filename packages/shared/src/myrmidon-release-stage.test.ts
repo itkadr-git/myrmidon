@@ -31,6 +31,9 @@ function stage(overrides: Partial<ReleaseStage> = {}): ReleaseStage {
     ],
     artifact: {
       artifactId: "myrmidon-1.8.0",
+      tag: "v2026.1114.1",
+      version: "1.8.0",
+      composition: ["OPE-13005", "OPE-13008"],
       digest: "sha256:abc123",
       signedAt: "2026-11-13T00:00:00.000Z",
       signedBy: { type: "agent", id: "agent-rel", casteKey: RELEASE_CASTE },

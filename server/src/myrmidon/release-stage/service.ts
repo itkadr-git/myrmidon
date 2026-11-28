@@ -138,9 +138,11 @@ export interface ReleaseStageView extends ReleaseStage {
   signaturePresent: boolean;
   /** True when the release has been published, with who and where. */
   published: boolean;
+  /** Internal route signal: this call transitioned the stage to published. */
+  publicationCreated: boolean;
 }
 
-export function releaseStageView(stage: ReleaseStage): ReleaseStageView {
+export function releaseStageView(stage: ReleaseStage, publicationCreated = false): ReleaseStageView {
   return {
     ...stage,
     gatesComplete: releaseGatesComplete(stage.gates),
@@ -148,6 +150,7 @@ export function releaseStageView(stage: ReleaseStage): ReleaseStageView {
       stage.artifact?.signedAt && stage.artifact?.verificationUrl,
     ),
     published: Boolean(stage.publishedAt && stage.publicationUrl && stage.publishedBy),
+    publicationCreated,
   };
 }
 
@@ -212,7 +215,7 @@ export function createReleaseStageService(deps: {
     /** GET all stages of the company. */
     async listStages(companyId: string): Promise<ReleaseStageView[]> {
       const stages = await deps.store.list(companyId);
-      return stages.map(releaseStageView);
+      return stages.map((stage) => releaseStageView(stage));
     },
 
     /**
@@ -255,6 +258,9 @@ export function createReleaseStageService(deps: {
       companyId: string;
       releaseId: string;
       artifactId: string;
+      tag: string;
+      version: string;
+      composition: string[];
       digest: string;
       verificationUrl: string;
       actor: ReleaseActor;
@@ -272,15 +278,21 @@ export function createReleaseStageService(deps: {
       if (stage.publishedAt) {
         throw conflict("release already published", { code: "release_already_published" });
       }
-      if (stage.artifact && stage.artifact.signedBy.id !== input.actor.id) {
-        throw conflict("artifact already signed by another actor", {
-          code: "release_already_signed",
-        });
+      if (stage.artifact) {
+        throw conflict(
+          stage.artifact.signedBy.id === input.actor.id
+            ? "artifact already signed"
+            : "artifact already signed by another actor",
+          { code: "release_already_signed" },
+        );
       }
       const signed: ReleaseStage = {
         ...stage,
         artifact: {
           artifactId: input.artifactId,
+          tag: input.tag,
+          version: input.version,
+          composition: [...new Set(input.composition)].sort(),
           digest: input.digest,
           signedAt: now().toISOString(),
           signedBy:
@@ -316,6 +328,13 @@ export function createReleaseStageService(deps: {
         });
       }
       const stage = await loadStage(input.companyId, input.releaseId);
+      if (stage.publishedAt) {
+        if (stage.publicationUrl === input.publicationUrl) return releaseStageView(stage);
+        throw conflict("release already published at a different URL", {
+          code: "release_already_published",
+          publicationUrl: stage.publicationUrl,
+        });
+      }
       const evaluation = evaluatePublication(input.actor, stage, matrix);
       if (!evaluation.ok) {
         if (evaluation.code === RELEASE_ACTION_FORBIDDEN_CODE) {
@@ -345,7 +364,7 @@ export function createReleaseStageService(deps: {
         publicationUrl: input.publicationUrl,
       };
       await deps.store.save(input.companyId, published);
-      return releaseStageView(published);
+      return releaseStageView(published, true);
     },
   };
 }
