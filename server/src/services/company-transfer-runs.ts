@@ -305,7 +305,12 @@ export const companyTransferRunService = {
 
   // A rollback claim is durable: retries must find this same run while cleanup
   // is in flight, and startup recovery makes an interrupted claim retryable.
-  async claimMigrationRollback(db: Db, runId: string, sourceCompanyId: string): Promise<boolean> {
+  async claimMigrationRollback(
+    db: Db,
+    runId: string,
+    sourceCompanyId: string,
+    options?: { removedDestinationId: string },
+  ): Promise<boolean> {
     const claimed = await db.update(companyTransferRuns)
       .set({ status: "rolling_back", updatedAt: new Date() })
       .where(and(
@@ -321,6 +326,10 @@ export const companyTransferRunService = {
         sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' <> ${sourceCompanyId}`,
         // A cleared foreign key is valid only after the owned company is gone.
         sql`(${companyTransferRuns.companyId}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId' or (${companyTransferRuns.companyId} is null and not exists (select 1 from ${companies} where ${companies.id}::text = ${companyTransferRuns.containerRef}->>'destinationCompanyId')))`,
+        options ? and(
+          sql`${companyTransferRuns.companyId} is null`,
+          sql`${companyTransferRuns.containerRef}->>'destinationCompanyId' = ${options.removedDestinationId}`,
+        ) : undefined,
       ))
       .returning({ id: companyTransferRuns.id });
     return claimed.length === 1;
@@ -438,9 +447,14 @@ export const companyTransferRunService = {
     await reserveMigrationResource(db, runId, companyId, part);
   },
 
-  // Call only after the storage provider confirms deletion; a crash before this
-  // acknowledgement leaves the reservation available for an idempotent retry.
-  async acknowledgeMigrationObjectDeletion(db: Db, runId: string, companyId: string, objectKey: string): Promise<boolean> {
+  // Commit only after the provider confirms deletion; a crash before commit
+  // leaves the reservation available for an idempotent retry.
+  async acknowledgeMigrationObjectDeletion(
+    db: Pick<Db, "update">,
+    runId: string,
+    companyId: string,
+    objectKey: string,
+  ): Promise<boolean> {
     const updated = await db.update(companyTransferRuns).set({
       completedParts: sql`${companyTransferRuns.completedParts} - ${objectKey}`,
       updatedAt: new Date(),

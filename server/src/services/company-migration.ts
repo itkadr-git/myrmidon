@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import type { CompanyPortabilityExport } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
+import { conflict, notFound } from "../errors.js";
+import type { StorageService } from "../storage/types.js";
 import type { companyPortabilityService } from "./company-portability.js";
 import { validateMigrationManifest } from "./company-migration-validation.js";
-import { companyTransferRunService } from "./company-transfer-runs.js";
+import { companyTransferRunService, parseMigrationResource } from "./company-transfer-runs.js";
 import { migrationRunKey } from "./company-migration-key.js";
 
 type Portability = ReturnType<typeof companyPortabilityService>;
@@ -16,7 +18,48 @@ export async function getMigrationStatus(db: Db, sourceCompanyId: string, runId:
   return { runId: run.id, status: run.status };
 }
 
-// This entry point is intentionally read-only; apply and rollback are not yet available.
+// Only recover storage after the owned destination has been removed. Live
+// destinations need a separate transactional provenance check before deletion.
+export async function recoverRemovedMigrationStorage(db: Db, storage: StorageService | undefined, sourceCompanyId: string, runId: string) {
+  const ledger = companyTransferRunService;
+  const run = await ledger.getRun(db, runId);
+  const ref = run?.containerRef as { destinationClaimed?: unknown; destinationCompanyId?: unknown } | null;
+  if (run?.companyId !== null || ref?.destinationClaimed !== true || typeof ref.destinationCompanyId !== "string") {
+    throw notFound("Migration rollback is not available.");
+  }
+  const destinationId = ref.destinationCompanyId;
+  if (!await ledger.claimMigrationRollback(db, runId, sourceCompanyId, { removedDestinationId: destinationId })) {
+    throw conflict("Migration is not available for recovery.");
+  }
+  try {
+    const claimed = await ledger.getRun(db, runId);
+    if (!claimed) throw new Error("Migration claim missing");
+    const objects = claimed.completedParts.map((part) => {
+      const resource = parseMigrationResource(destinationId, part);
+      if (resource?.kind !== "object") throw new Error("Unsupported migration resource");
+      return resource.objectKey;
+    });
+    for (const objectKey of objects) {
+      if (!storage) throw new Error("Migration storage unavailable");
+      await db.transaction(async (tx) => {
+        // Validate and tentatively acknowledge the reservation before touching
+        // storage. The UPDATE holds the run lock and rolls back if deletion
+        // throws or the process dies before commit. Deleting twice is safe.
+        if (!await ledger.acknowledgeMigrationObjectDeletion(tx, runId, destinationId, objectKey)) {
+          throw new Error("Migration storage acknowledgement rejected");
+        }
+        await storage.deleteObject(destinationId, objectKey);
+      });
+    }
+    if (!await ledger.finishMigrationRollback(db, runId)) throw new Error("Migration settlement rejected");
+    return { runId, status: "rolled_back" as const };
+  } catch {
+    await ledger.releaseMigrationRollbackClaim(db, runId, "storage recovery failed");
+    throw conflict("Migration storage recovery failed; inspect the run before retrying.");
+  }
+}
+
+// The planner remains read-only until live destination recovery is available.
 export function companyMigrationService(portability: Portability) {
   async function prepare(companyId: string, input: CompanyPortabilityExport, newCompanyName: string, collisionStrategy: "rename" | "skip" | "replace") {
     const exported = await portability.exportBundle(companyId, input, { preview: true, rejectUnknownAgentPermissions: true });

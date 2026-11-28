@@ -6,6 +6,7 @@ import { activityLog, agents, assets, companies, companyLogos, companyMembership
 
 import { companyRoutes } from "../routes/companies.js";
 import { companyService } from "../services/companies.js";
+import { recoverRemovedMigrationStorage } from "../services/company-migration.js";
 import { companyTransferRunService, parseMigrationResource } from "../services/company-transfer-runs.js";
 import { errorHandler } from "../middleware/index.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
@@ -977,6 +978,46 @@ describe("company migration dry run", () => {
     const retry = await companyTransferRunService.resumeOrCreateMigration(db, "crash-source", "crash-reservation");
     expect(retry.run.id).toBe(run.id);
     expect(retry.alreadyCompleted).toBe(false);
+  });
+
+  it("replays unacknowledged storage deletion after restart without touching the source", async () => {
+    const [source] = await db.insert(companies).values({ name: "Storage cleanup source", issuePrefix: "MZC" }).returning();
+    const { run } = await companyTransferRunService.resumeOrCreateMigration(db, source!.id, "storage-cleanup-restart");
+    expect(await companyTransferRunService.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Storage cleanup destination" }, { transferRunId: run.id });
+    const storage = createStorageService(createLocalDiskStorageProvider(root));
+    const put = (companyId: string, beforeWrite?: (key: string) => Promise<void>) => storage.putFile({
+      companyId, namespace: "assets/general", originalFilename: "fixture.txt",
+      contentType: "text/plain", body: Buffer.from("fixture"), beforeWrite,
+    });
+    const original = await put(source!.id);
+    const reserve = (key: string) => companyTransferRunService.reserveMigrationObject(db, run.id, destination.id, key);
+    const deleted = await put(destination.id, reserve);
+    const remaining = await put(destination.id, reserve);
+    await companyTransferRunService.releaseApplyClaim(db, run.id, "interrupted");
+    await expect(recoverRemovedMigrationStorage(db, storage, source!.id, run.id)).rejects.toThrow("not available");
+    expect((await storage.headObject(destination.id, deleted.objectKey)).exists).toBe(true);
+
+    await db.delete(companies).where(eq(companies.id, destination.id));
+    expect(await companyTransferRunService.claimMigrationRollback(db, run.id, source!.id)).toBe(true);
+    await storage.deleteObject(destination.id, deleted.objectKey);
+    // Model a process death after provider deletion but before ledger acknowledgement.
+    expect(await companyTransferRunService.recoverStrandedApplyingRuns(db)).toContain(run.id);
+    await expect(recoverRemovedMigrationStorage(db, storage, destination.id, run.id)).rejects.toThrow("not available");
+    expect((await storage.headObject(destination.id, remaining.objectKey)).exists).toBe(true);
+    const failingStorage = {
+      ...storage,
+      deleteObject: async () => { throw new Error("provider detail canary"); },
+    };
+    await expect(recoverRemovedMigrationStorage(db, failingStorage, source!.id, run.id))
+      .rejects.toThrow("Migration storage recovery failed");
+    const failed = await companyTransferRunService.getRun(db, run.id);
+    expect(failed).toMatchObject({ status: "failed", completedParts: [deleted.objectKey, remaining.objectKey] });
+    expect(failed?.error).not.toContain("provider detail canary");
+    await expect(recoverRemovedMigrationStorage(db, storage, source!.id, run.id)).resolves.toEqual({ runId: run.id, status: "rolled_back" });
+    expect((await companyTransferRunService.getRun(db, run.id))?.completedParts).toEqual([]);
+    expect((await storage.headObject(destination.id, remaining.objectKey)).exists).toBe(false);
+    expect((await storage.headObject(source!.id, original.objectKey)).exists).toBe(true);
   });
 
   it("retains the run identity after its migration-owned destination is deleted", async () => {
