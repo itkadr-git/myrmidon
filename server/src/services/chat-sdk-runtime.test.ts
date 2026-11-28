@@ -17,8 +17,8 @@ const captures = vi.hoisted(() => ({
   telegramConfigs: [] as Array<Record<string, unknown>>,
 }));
 
-vi.mock("@chat-adapter/discord", () => ({
-  createDiscordAdapter: (config: Record<string, unknown>) => {
+vi.mock("./discord-adapter-loader.js", () => ({
+  createDiscordAdapterLazy: (config: Record<string, unknown>) => {
     captures.discordConfigs.push(config);
     return {
       name: "discord",
@@ -438,6 +438,8 @@ describe("Chat SDK endpoint runtime", () => {
       expect(
         Object.keys((captures.chatConfigs[0]?.adapters ?? {}) as object),
       ).toEqual([expectedKey]);
+      const adapters = captures.chatConfigs[0]?.adapters as Record<string, { name?: string }>;
+      expect(adapters[expectedKey]?.name).toBe(expectedKey);
     },
   );
 
