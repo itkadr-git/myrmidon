@@ -122,4 +122,4 @@ amount refuses the run, with a reason naming the level, the spend and the
 limit; soft limits never refuse on admission (the pause machinery owns
 soft). Raising the limit through the screen or the API frees the very next
 admission — there is no cache and no restart:
-[changes/1-7-budget-limits-admission.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/changes/1-7-budget-limits-admission.md).
+[changes/1-7-budget-limits-admission.md](https://github.com/itkadr-git/myrmidon/blob/e3232d40472aba02bd79a79f63c4bac645cda502/docs/myrmidon/changes/1-7-budget-limits-admission.md).

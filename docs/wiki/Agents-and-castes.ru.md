@@ -101,7 +101,7 @@ HTTP(S) и непустой `bank`. Необязательные bearer-токе
 `--check-config` отклоняет пустой банк, URL не по HTTP(S) и URL со встроенными
 учётными данными. Клиент использует только HTTP(S), не путь файловой системы
 хоста и не Docker socket. Для этих маршрутов действует обычная bearer-
-аутентификация fleetd. См. [описание изменения fleetd](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/fleetd-centralized-memory-client.md).
+аутентификация fleetd. См. [описание изменения fleetd](https://github.com/itkadr-git/myrmidon/blob/e3232d40472aba02bd79a79f63c4bac645cda502/docs/myrmidon/changes/fleetd-centralized-memory-client.md).
 
 ## Инструкции с историей
 
@@ -115,7 +115,7 @@ HTTP(S) и непустой `bank`. Необязательные bearer-токе
 
 Вкладка **Конфигурация** карточки агента показывает типизированные поля
 адаптера агента вместо сырого JSON `adapterConfig`
-([интерфейс настроек агента](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/1-6-6-ope-11239-adapter-config-ui.md)):
+([интерфейс настроек агента](https://github.com/itkadr-git/myrmidon/blob/e3232d40472aba02bd79a79f63c4bac645cda502/docs/myrmidon/changes/1-6-6-ope-11239-adapter-config-ui.md)):
 
 - **Hermes gateway** — интервал опроса состояния, тайм-аут создания прогона,
   продление по событиям шлюза, сырые отладочные события, переписывание URL
@@ -157,7 +157,7 @@ HTTP(S) и непустой `bank`. Необязательные bearer-токе
 Схема каждого инструмента уходит в каждом вызове модели, поэтому
 неиспользуемые инструменты тратят токены в каждом запросе. Парк режет их
 двумя способами
-([ролевая диета инструментов](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/token-burn-k-role-tool-diet.md)):
+([ролевая диета инструментов](https://github.com/itkadr-git/myrmidon/blob/e3232d40472aba02bd79a79f63c4bac645cda502/docs/myrmidon/changes/token-burn-k-role-tool-diet.md)):
 
 - список парка `MYRMIDON_BOT_DISABLED_TOOLS` всегда содержит `clarify` (боты
   работают за API-сервером Hermes, который не подключает обработчик clarify)

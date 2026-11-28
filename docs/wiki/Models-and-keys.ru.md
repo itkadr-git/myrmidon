@@ -70,7 +70,7 @@
 события расходов по задачам, сортирует их по убыванию суммы и возвращает
 идентификаторы и названия задач, итоги токенов и число уникальных запусков.
 Лимит по умолчанию — 20, максимум — 100; большее значение возвращает HTTP
-400. См. [описание изменения эндпоинта](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/1-7-costs-by-issue.md).
+400. См. [описание изменения эндпоинта](https://github.com/itkadr-git/myrmidon/blob/e3232d40472aba02bd79a79f63c4bac645cda502/docs/myrmidon/changes/1-7-costs-by-issue.md).
 
 ## Бюджеты и расход виртуальных ключей LiteLLM
 
