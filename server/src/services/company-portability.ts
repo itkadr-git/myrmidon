@@ -86,7 +86,7 @@ import { generateReadme } from "./company-export-readme.js";
 import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
 import { companySkillService } from "./company-skills.js";
 import { companyService } from "./companies.js";
-import { createMigrationProject, provisionMigrationOwner, recordMigrationAsset } from "./company-migration.js";
+import { createMigrationIssues, createMigrationLabel, createMigrationProject, provisionMigrationOwner, recordMigrationAsset } from "./company-migration.js";
 import { companyTransferRunService } from "./company-transfer-runs.js";
 import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
@@ -5979,10 +5979,13 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               }
               continue;
             }
-            const created = await issues.createLabel(targetCompany.id, {
+            const label = {
               name,
               color: labelColorByName.get(name) ?? DEFAULT_IMPORTED_LABEL_COLOR,
-            });
+            };
+            const created = migrationRunId
+              ? await createMigrationLabel(db, migrationRunId, targetCompany.id, label)
+              : await issues.createLabel(targetCompany.id, label);
             labelIdByName.set(name, created.id);
           }
           if (keptColorNames.length > 0) {
@@ -6398,31 +6401,28 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         // statements, turning what used to be one round-trip per row into a
         // handful per table. Empty buffers are skipped so an issues-free import
         // (e.g. routines only) issues no writes at all.
-        if (issueRows.length > 0) await issues.importIssues(targetCompany.id, issueRows);
+        if (!migrationRunId && issueRows.length > 0) await issues.importIssues(targetCompany.id, issueRows);
         // Imported issues are historical work, not new inbox items. Seed a
         // per-user inbox archive for the importing board user so a large import
         // (a real 1,418-task company shipped every task to the inbox) does not
         // flood it: the inbox "mine" query hides archived issues, and genuine
         // new activity still resurfaces them. Agent/system imports (no board
         // user) have no inbox to protect, so the seeding is skipped.
-        if (actorUserId && issueRows.length > 0) {
+        if (!migrationRunId && actorUserId && issueRows.length > 0) {
           await issues.archiveImportedInbox(
             targetCompany.id,
             issueRows.map((row) => row.id),
             actorUserId,
           );
         }
-        if (commentRows.length > 0) await issues.addImportedComments(commentRows);
-        if (documentRows.length > 0) await documentsSvc.createIssueDocumentsForImport(documentRows);
-        if (workProductRows.length > 0) await workProductsSvc.createManyForImport(workProductRows);
-        if (migrationRunId) {
-          for (const { companyId, issueId, issueCommentId, ...assetData } of attachmentRows) {
-            await recordMigrationAsset(db, migrationRunId, companyId, assetData, { issueId, issueCommentId });
-          }
-        } else if (attachmentRows.length > 0) {
-          await issues.addImportedAttachments(attachmentRows);
+        if (!migrationRunId) {
+          if (commentRows.length > 0) await issues.addImportedComments(commentRows);
+          if (documentRows.length > 0) await documentsSvc.createIssueDocumentsForImport(documentRows);
+          if (workProductRows.length > 0) await workProductsSvc.createManyForImport(workProductRows);
+          if (attachmentRows.length > 0) await issues.addImportedAttachments(attachmentRows);
         }
 
+        const relationRows: Array<{ issueId: string; relatedIssueId: string }> = [];
         if (blockedByBySlug.size > 0) {
           const acceptedAdjacency = new Map<string, string[]>();
           const wouldCreateBlockingCycle = (blockedIssueId: string, blockerIssueId: string) => {
@@ -6440,7 +6440,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             }
             return false;
           };
-          const relationRows: Array<{ issueId: string; relatedIssueId: string }> = [];
           for (const [slug, blockerSlugs] of blockedByBySlug) {
             const blockedIssueId = importedIssueIdBySlug.get(slug);
             if (!blockedIssueId) continue;
@@ -6461,7 +6460,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               relationRows.push({ issueId: blockerIssueId, relatedIssueId: blockedIssueId });
             }
           }
-          if (relationRows.length > 0) {
+          if (!migrationRunId && relationRows.length > 0) {
             const relationCompanyId = targetCompany.id;
             await db
               .insert(issueRelations)
@@ -6474,6 +6473,16 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 createdByUserId: actorUserId ?? null,
               })))
               .onConflictDoNothing();
+          }
+        }
+
+        if (migrationRunId) {
+          await createMigrationIssues(db, migrationRunId, targetCompany.id, {
+            issues: issueRows, comments: commentRows, documents: documentRows, workProducts: workProductRows,
+            relations: relationRows, actorUserId,
+          });
+          for (const { companyId, issueId, issueCommentId, ...assetData } of attachmentRows) {
+            await recordMigrationAsset(db, migrationRunId, companyId, assetData, { issueId, issueCommentId });
           }
         }
 

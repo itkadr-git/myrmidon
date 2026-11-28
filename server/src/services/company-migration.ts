@@ -3,8 +3,8 @@ import { lstat, rm } from "node:fs/promises";
 import path from "node:path";
 import type { CompanyPortabilityExport } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
-import { assets, companyLogos, companyMemberships, companySecretBindings, companyTransferRuns, issueAttachments, issueComments, issues, principalPermissionGrants, projects, projectWorkspaces, userSecretDeclarations } from "@myrmidon/db";
-import { and, eq, getTableColumns, getTableName, sql } from "drizzle-orm";
+import { assets, companies, companyLogos, companyMemberships, companySecretBindings, companyTransferRuns, documentRevisions, documents, issueAttachments, issueComments, issueDocuments, issueInboxArchives, issueLabels, issueRelations, issues, issueWorkProducts, labels, principalPermissionGrants, projects, projectWorkspaces, userSecretDeclarations } from "@myrmidon/db";
+import { and, eq, getTableColumns, getTableName, inArray, sql } from "drizzle-orm";
 import { conflict, notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import type { StorageService } from "../storage/types.js";
@@ -12,11 +12,15 @@ import { resolveManagedInstructionsRoot } from "./agent-instructions.js";
 import { resolveManagedSkillsRoot } from "./company-skills.js";
 import type { companyPortabilityService } from "./company-portability.js";
 import { validateMigrationManifest } from "./company-migration-validation.js";
-import { companyTransferRunService, migrationRowFingerprint, parseMigrationResource } from "./company-transfer-runs.js";
+import { companyTransferRunService, migrationCompanyFingerprint, migrationRowFingerprint, parseMigrationResource } from "./company-transfer-runs.js";
 import { migrationRunKey } from "./company-migration-key.js";
 import { grantsForHumanRole } from "./company-member-roles.js";
 import { projectService } from "./projects.js";
 import { secretService } from "./secrets.js";
+import { documentService } from "./documents.js";
+import { issueService } from "./issues.js";
+import { workProductService } from "./work-products.js";
+import type { ImportIssueCommentRow, ImportIssueDocumentRow, ImportIssueRow, ImportIssueWorkProductRow } from "./import-write-types.js";
 
 type Portability = ReturnType<typeof companyPortabilityService>;
 
@@ -167,6 +171,101 @@ export async function createMigrationProject(
     }).where(ownedRun).returning({ id: companyTransferRuns.id });
     if (!saved) throw new Error("Migration project provenance was not recorded");
     return project;
+  });
+}
+
+export async function createMigrationLabel(
+  db: Db, runId: string, companyId: string, input: Pick<typeof labels.$inferInsert, "name" | "color">,
+) {
+  return db.transaction(async (tx) => {
+    const ownedRun = applyingDestination(runId, companyId);
+    const [claim] = await tx.select({ id: companyTransferRuns.id }).from(companyTransferRuns).where(ownedRun).for("update");
+    if (!claim) throw new Error("Migration label recording rejected");
+    const [label] = await tx.insert(labels).values({ companyId, name: input.name.trim(), color: input.color })
+      .returning({ ...getTableColumns(labels), fingerprint: migrationRowFingerprint(getTableName(labels)) });
+    if (!label) throw new Error("Migration label was not created");
+    const { fingerprint, ...row } = label;
+    const [saved] = await tx.update(companyTransferRuns).set({
+      containerRef: sql`${companyTransferRuns.containerRef} || jsonb_build_object('labelProvenance', coalesce(${companyTransferRuns.containerRef}->'labelProvenance', '{}'::jsonb) || jsonb_build_object(${row.id}::text, ${fingerprint}::text))`,
+      updatedAt: new Date(),
+    }).where(ownedRun).returning({ id: companyTransferRuns.id });
+    if (!saved) throw new Error("Migration label provenance was not recorded");
+    return row;
+  });
+}
+
+export async function createMigrationIssues(db: Db, runId: string, companyId: string, batch: {
+  issues: ImportIssueRow[];
+  comments: ImportIssueCommentRow[];
+  documents: ImportIssueDocumentRow[];
+  workProducts: ImportIssueWorkProductRow[];
+  relations: Array<{ issueId: string; relatedIssueId: string }>;
+  actorUserId?: string | null;
+}) {
+  const ids = new Set(batch.issues.map(({ id }) => id));
+  if ([...batch.comments, ...batch.documents, ...batch.workProducts].some((row) => row.companyId !== companyId || !ids.has(row.issueId)) ||
+      batch.relations.some((row) => !ids.has(row.issueId) || !ids.has(row.relatedIssueId))) {
+    throw new Error("Migration issue batch refers to an issue outside the batch");
+  }
+  if (ids.size === 0) return;
+  return db.transaction(async (tx) => {
+    const ownedRun = and(applyingDestination(runId, companyId), sql`not (${companyTransferRuns.containerRef} ? 'issueProvenance')`);
+    const [claim] = await tx.select({ initialFingerprint: sql<string | null>`${companyTransferRuns.containerRef}->>'initialCompanyFingerprint'` })
+      .from(companyTransferRuns).where(ownedRun).for("update");
+    if (!claim) throw new Error("Migration issue recording rejected");
+    const [initialCompany] = await tx.select({ fingerprint: migrationCompanyFingerprint })
+      .from(companies).where(eq(companies.id, companyId)).for("update");
+    if (!initialCompany || initialCompany.fingerprint !== claim.initialFingerprint) {
+      throw new Error("Migration issue destination changed before the batch");
+    }
+    const txDb = tx as unknown as Db;
+    const service = issueService(txDb);
+    const issueIds = [...ids];
+    await service.importIssues(companyId, batch.issues);
+    if (batch.actorUserId) await service.archiveImportedInbox(companyId, issueIds, batch.actorUserId);
+    await service.addImportedComments(batch.comments);
+    await documentService(txDb).createIssueDocumentsForImport(batch.documents);
+    await workProductService(txDb).createManyForImport(batch.workProducts);
+    if (batch.relations.length > 0) {
+      await tx.insert(issueRelations).values(batch.relations.map((row) => ({
+        ...row, companyId, type: "blocks" as const, createdByUserId: batch.actorUserId ?? null,
+      }))).onConflictDoNothing();
+    }
+
+    // New issue ids are not visible to other transactions before commit. Scope
+    // each lookup to those ids, rather than adopting unrelated destination data.
+    const [company] = await tx.select({ issueCounter: companies.issueCounter, fingerprint: migrationCompanyFingerprint })
+      .from(companies).where(eq(companies.id, companyId));
+    if (!company) throw new Error("Migration issue destination missing");
+    const documentIds = tx.select({ id: issueDocuments.documentId }).from(issueDocuments)
+      .where(and(eq(issueDocuments.companyId, companyId), inArray(issueDocuments.issueId, issueIds)));
+    const provenance = {
+      issueCounter: company.issueCounter,
+      companyFingerprint: company.fingerprint,
+      issues: await tx.select({ id: issues.id, fingerprint: migrationRowFingerprint(getTableName(issues)) })
+        .from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds))),
+      labels: await tx.select({ issueId: issueLabels.issueId, labelId: issueLabels.labelId, fingerprint: migrationRowFingerprint(getTableName(issueLabels)) })
+        .from(issueLabels).where(and(eq(issueLabels.companyId, companyId), inArray(issueLabels.issueId, issueIds))),
+      inboxArchives: await tx.select({ issueId: issueInboxArchives.issueId, userId: issueInboxArchives.userId, fingerprint: migrationRowFingerprint(getTableName(issueInboxArchives)) })
+        .from(issueInboxArchives).where(and(eq(issueInboxArchives.companyId, companyId), inArray(issueInboxArchives.issueId, issueIds))),
+      comments: await tx.select({ id: issueComments.id, fingerprint: migrationRowFingerprint(getTableName(issueComments)) })
+        .from(issueComments).where(and(eq(issueComments.companyId, companyId), inArray(issueComments.issueId, issueIds))),
+      documents: await tx.select({ id: documents.id, fingerprint: migrationRowFingerprint(getTableName(documents)) })
+        .from(documents).where(and(eq(documents.companyId, companyId), inArray(documents.id, documentIds))),
+      revisions: await tx.select({ id: documentRevisions.id, fingerprint: migrationRowFingerprint(getTableName(documentRevisions)) })
+        .from(documentRevisions).where(and(eq(documentRevisions.companyId, companyId), inArray(documentRevisions.documentId, documentIds))),
+      documentLinks: await tx.select({ issueId: issueDocuments.issueId, documentId: issueDocuments.documentId, key: issueDocuments.key, fingerprint: migrationRowFingerprint(getTableName(issueDocuments)) })
+        .from(issueDocuments).where(and(eq(issueDocuments.companyId, companyId), inArray(issueDocuments.issueId, issueIds))),
+      workProducts: await tx.select({ id: issueWorkProducts.id, fingerprint: migrationRowFingerprint(getTableName(issueWorkProducts)) })
+        .from(issueWorkProducts).where(and(eq(issueWorkProducts.companyId, companyId), inArray(issueWorkProducts.issueId, issueIds))),
+      relations: await tx.select({ id: issueRelations.id, fingerprint: migrationRowFingerprint(getTableName(issueRelations)) })
+        .from(issueRelations).where(and(eq(issueRelations.companyId, companyId), inArray(issueRelations.issueId, issueIds))),
+    };
+    const [saved] = await tx.update(companyTransferRuns).set({
+      containerRef: sql`${companyTransferRuns.containerRef} || jsonb_build_object('issueProvenance', ${JSON.stringify(provenance)}::jsonb)`,
+      updatedAt: new Date(),
+    }).where(ownedRun).returning({ id: companyTransferRuns.id });
+    if (!saved) throw new Error("Migration issue provenance was not recorded");
   });
 }
 

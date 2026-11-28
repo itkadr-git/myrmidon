@@ -2,11 +2,11 @@ import express from "express";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companyTransferRuns, createDb, issueAttachments, issueComments, issues, principalPermissionGrants, projects, projectWorkspaces } from "@myrmidon/db";
+import { activityLog, agents, assets, companies, companyLogos, companyMemberships, companyTransferRuns, createDb, issueAttachments, issueComments, issueRelations, issues, principalPermissionGrants, projects, projectWorkspaces } from "@myrmidon/db";
 
 import { companyRoutes } from "../routes/companies.js";
 import { companyService } from "../services/companies.js";
-import { createMigrationProject, provisionMigrationOwner, recordMigrationAsset, recoverRemovedMigrationStorage } from "../services/company-migration.js";
+import { createMigrationIssues, createMigrationProject, provisionMigrationOwner, recordMigrationAsset, recoverRemovedMigrationStorage } from "../services/company-migration.js";
 import { companyTransferRunService, parseMigrationResource } from "../services/company-transfer-runs.js";
 import { errorHandler } from "../middleware/index.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
@@ -1461,6 +1461,43 @@ describe("company migration dry run", () => {
     expect((await db.select().from(companies)).some((company) => company.name === "Export provenance destination")).toBe(false);
     const saved = (await db.select().from(companyTransferRuns)).find((entry) => entry.id === run!.id);
     expect(saved?.companyId).toBeNull();
+  });
+
+  it("rolls back a migration issue batch and counter when a child insert fails", async () => {
+    const ledger = companyTransferRunService;
+    const { run } = await ledger.resumeOrCreateMigration(db, "issue-batch-source", "issue-batch-provenance");
+    expect(await ledger.claimApply(db, run.id)).toBe(true);
+    const destination = await companyService(db).create({ name: "Issue batch provenance destination" }, { transferRunId: run.id });
+    const firstId = "580a104b-ccaf-4789-9dee-cc493fe7665b";
+    const secondId = "83d8d389-a7ae-4716-8c81-ffb40327e4d0";
+    const makeIssue = (id: string) => ({
+      id, ref: id, title: "Imported issue", description: null, projectId: null, projectWorkspaceId: null,
+      assigneeAgentId: null, status: "todo" as const, priority: "medium" as const, billingCode: null,
+      assigneeAdapterOverrides: null, executionWorkspaceSettings: null, labelIds: [], monitorNotes: null,
+      monitorScheduledBy: null,
+    });
+    const batch = {
+      issues: [makeIssue(firstId), makeIssue(secondId)], comments: [], documents: [], workProducts: [],
+      relations: [{ issueId: firstId, relatedIssueId: secondId }],
+    };
+    const before = await ledger.getRun(db, run.id);
+    // The issue insert succeeds before document validation aborts the batch.
+    await expect(createMigrationIssues(db, run.id, destination.id, { ...batch, documents: [{
+      companyId: destination.id, issueId: firstId, key: "", title: null, format: "markdown", body: "fixture",
+      createdByAgentId: null, createdByUserId: null, createdByRunId: null, sourceTrust: null,
+    }] })).rejects.toThrow(/document key/i);
+    expect(await db.select().from(issues).where(eq(issues.companyId, destination.id))).toEqual([]);
+    expect(await companyService(db).getById(destination.id)).toMatchObject({ issueCounter: destination.issueCounter });
+    expect(await ledger.getRun(db, run.id)).toEqual(before);
+
+    await createMigrationIssues(db, run.id, destination.id, batch);
+    expect(await db.select().from(issues).where(eq(issues.companyId, destination.id))).toHaveLength(2);
+    expect(await db.select().from(issueRelations).where(eq(issueRelations.companyId, destination.id))).toHaveLength(1);
+    expect((await ledger.getRun(db, run.id))?.containerRef).toMatchObject({ issueProvenance: {
+      issueCounter: destination.issueCounter + 2,
+      issues: expect.arrayContaining([firstId, secondId].map((id) => ({ id, fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) }))),
+      relations: [{ fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) }],
+    } });
   });
 
   it("commits a migration project and its workspace provenance together", async () => {
