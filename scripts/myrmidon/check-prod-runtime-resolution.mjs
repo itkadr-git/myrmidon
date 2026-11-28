@@ -302,6 +302,7 @@ function findSelfReferenceDir(fromDir, pkgName) {
       if (pkgJson && pkgJson.name === pkgName && pkgJson.exports !== undefined) {
         return dir;
       }
+      return null;
     }
     const parent = dirname(dir);
     if (parent === dir) return null;
