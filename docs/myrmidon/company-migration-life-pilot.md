@@ -91,6 +91,7 @@ so it is not a rollback ID or evidence that apply occurred.
    non-empty `confirm` reason. One database transaction removes journaled child
    rows and archives the destination, preserving its ID. Reserved storage cleanup
    follows and can be retried with the same confirmed rollback if interrupted.
+   Repeating a settled rollback returns `rolled_back` without another cleanup.
    Status reports the destination claim, committed creation counts, and separate
    database and storage rollback checkpoints. Managed-file cleanup removes only
    unchanged journaled files; independent files and directory-only reservations

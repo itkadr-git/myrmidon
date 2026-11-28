@@ -2271,9 +2271,23 @@ describe("company migration dry run", () => {
     expect(run).toMatchObject({ status: "failed", completedParts: [uploaded.objectKey] });
     expect(await db.select().from(assets).where(eq(assets.companyId, destination!.id))).toEqual([]);
     expect((await storage.headObject(destination!.id, uploaded.objectKey)).exists).toBe(true);
-    const rollback = await request(app)
-      .post(`/api/companies/${source!.id}/migrations/${run!.id}/rollback`)
-      .send({ confirm: "recover orphan logo" });
+    const rollbackUrl = `/api/companies/${source!.id}/migrations/${run!.id}/rollback`;
+    const rollBack = () => request(app).post(rollbackUrl).send({ confirm: "recover orphan logo" });
+    const deleteObject = storage.deleteObject.bind(storage);
+    const interruptedDelete = vi.spyOn(storage, "deleteObject").mockImplementationOnce(async (companyId, objectKey) => {
+      await deleteObject(companyId, objectKey);
+      throw new Error("fixture: deletion committed before acknowledgement");
+    });
+    try {
+      expect((await rollBack()).status).toBe(409);
+      expect(await companyTransferRunService.getRun(db, run!.id)).toMatchObject({
+        status: "failed", completedParts: [uploaded.objectKey], containerRef: { destinationArchived: true },
+      });
+      expect((await storage.headObject(destination!.id, uploaded.objectKey)).exists).toBe(false);
+    } finally {
+      interruptedDelete.mockRestore();
+    }
+    const rollback = await rollBack();
     expect(rollback.status, JSON.stringify(rollback.body)).toBe(200);
     expect(rollback.body).toMatchObject({ runId: failedRunId, status: "rolled_back" });
     expect(await companyTransferRunService.getRun(db, run!.id)).toMatchObject({
@@ -2281,6 +2295,17 @@ describe("company migration dry run", () => {
     });
     expect((await db.select().from(companies).where(eq(companies.id, destination!.id)))[0]?.status).toBe("archived");
     expect((await storage.headObject(destination!.id, uploaded.objectKey)).exists).toBe(false);
+    const settled = await companyTransferRunService.getRun(db, run!.id);
+    const deletionAfterSettlement = vi.spyOn(storage, "deleteObject");
+    try {
+      const replay = await rollBack();
+      expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+      expect(replay.body).toEqual(rollback.body);
+      expect(deletionAfterSettlement).not.toHaveBeenCalled();
+      expect(await companyTransferRunService.getRun(db, run!.id)).toEqual(settled);
+    } finally {
+      deletionAfterSettlement.mockRestore();
+    }
     expect((await storage.headObject(source!.id, original.objectKey)).exists).toBe(true);
     expect((await db.select().from(assets)).some((entry) => entry.id === asset!.id)).toBe(true);
   });

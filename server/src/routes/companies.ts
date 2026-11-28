@@ -1166,6 +1166,11 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     if (!isImportTransferRunId(runId)) throw notFound("Migration not found");
     const run = await getMigrationStatus(db, companyId, runId);
     if (!run) throw notFound("Migration not found");
+    // The previous request may have committed cleanup before its response arrived.
+    if (run.status === "rolled_back") {
+      res.json({ runId, status: "rolled_back" });
+      return;
+    }
     if (run.status === "applying") throw conflict("Cannot roll back an active migration.");
     res.json(await rollbackCompanyMigration(db, storage, companyId, runId));
   });
