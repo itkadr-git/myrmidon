@@ -140,7 +140,7 @@ describe("workProductService", () => {
     const tx = {
       update: txUpdate,
       insert: txInsert,
-      select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => [] as unknown[] }) }) })),
+      select: vi.fn(() => ({ from: () => ({ where: () => ({ for: async () => [], limit: async () => [] as unknown[] }) }) })),
     };
     const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => await callback(tx));
 
@@ -164,7 +164,7 @@ describe("workProductService", () => {
   it("uses a transaction when promoting an existing work product to primary", async () => {
     const existingRow = createWorkProductRow({ isPrimary: false });
 
-    const selectWhere = vi.fn(async () => [existingRow]);
+    const selectWhere = vi.fn(() => Object.assign(Promise.resolve([existingRow]), { for: async () => [] }));
     const selectFrom = vi.fn(() => ({ where: selectWhere }));
     const txSelect = vi.fn(() => ({ from: selectFrom }));
 
@@ -188,7 +188,7 @@ describe("workProductService", () => {
     });
 
     expect(transaction).toHaveBeenCalledTimes(1);
-    expect(txSelect).toHaveBeenCalledTimes(1);
+    expect(txSelect).toHaveBeenCalledTimes(2);
     expect(txUpdate).toHaveBeenCalledTimes(2);
     expect(result?.reviewState).toBe("ready_for_review");
   });
@@ -205,7 +205,7 @@ describe("workProductService", () => {
       const insertValues = vi.fn(() => ({ returning: insertReturning }));
       const txInsert = vi.fn(() => ({ values: insertValues }));
       const selectLimit = vi.fn(async () => [] as unknown[]);
-      const txSelect = vi.fn(() => ({ from: () => ({ where: () => ({ limit: selectLimit }) }) }));
+      const txSelect = vi.fn(() => ({ from: () => ({ where: () => ({ for: async () => [], limit: selectLimit }) }) }));
       const tx = { insert: txInsert, update: txUpdate, select: txSelect };
       const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => await callback(tx));
       return { tx, transaction, txInsert, insertValues, selectLimit };

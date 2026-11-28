@@ -5,6 +5,8 @@ import { HttpError } from "../errors.js";
 import { clearReviewWakesQuotas } from "../myrmidon/review-stage-recovery/review-wakes-quota.js";
 import { REVIEW_CI_WAIT_MONITOR_SERVICE_NAME } from "../myrmidon/review-stage-recovery/policy.js";
 
+const mockReleaseProducts = vi.hoisted(() => vi.fn(async (): Promise<Array<{ type: string; status: string }>> => []));
+
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getByIdForUpdate: vi.fn(),
@@ -223,7 +225,7 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
   projectService: () => ({}),
   routineService: () => mockRoutineService,
-  workProductService: () => ({}),
+  workProductService: () => ({ listForIssue: mockReleaseProducts }),
 }));
 
 vi.mock("../services/external-objects.js", () => ({
@@ -355,6 +357,8 @@ describe.sequential("issue comment reopen routes", () => {
   beforeEach(() => {
     clearReviewWakesQuotas(new Date());
     vi.clearAllMocks();
+    mockReleaseProducts.mockReset();
+    mockReleaseProducts.mockResolvedValue([]);
     mockIssueService.getById.mockReset();
     mockIssueService.getByIdForUpdate.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
@@ -417,7 +421,7 @@ describe.sequential("issue comment reopen routes", () => {
         onRejected?: (reason: unknown) => unknown,
       ) => Promise.resolve([]).then(onFulfilled, onRejected),
     }));
-    mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
+    mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere, innerJoin: () => ({ where: async () => [] }) }));
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDb.transaction.mockImplementation(
       async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx),
@@ -3003,6 +3007,202 @@ describe.sequential("issue comment reopen routes", () => {
         body: "Approved for ship",
       }),
     );
+  });
+
+  it("rejects approval when merged release code appears before the auto-approval transaction", async () => {
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const policy = await normalizePolicy({
+      stages: [{
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        type: "review",
+        participants: [{ type: "agent", agentId: reviewerAgentId }],
+      }],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      title: "1.7 Release",
+      status: "in_review",
+      assigneeAgentId: reviewerAgentId,
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockDb.transaction.mockImplementation(async (fn: (tx: typeof mockTx) => Promise<unknown>) => {
+      mockReleaseProducts.mockResolvedValue([{ type: "pull_request", status: "merged" }]);
+      return fn(mockTx);
+    });
+
+    const res = await request(await installActor(createApp(), {
+      type: "agent", agentId: reviewerAgentId, companyId: "company-1",
+      source: "agent_key", runId: "run-review-race",
+    }))
+      .post(`/api/issues/${issue.id}/comments`)
+      .send({ body: "## Review: APPROVED" });
+
+    expect(res.status).toBe(422);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("uses the locked policy when another review stage is added before a PATCH approval", async () => {
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const nextReviewerId = "44444444-4444-4444-8444-444444444444";
+    const review = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      type: "review",
+      participants: [{ type: "agent", agentId: reviewerAgentId }],
+    };
+    const policy = (await normalizePolicy({ stages: [review] }))!;
+    const lockedPolicy = (await normalizePolicy({ stages: [review, {
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      type: "review",
+      participants: [{ type: "agent", agentId: nextReviewerId }],
+    }] }))!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+      assigneeAgentId: reviewerAgentId,
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue({ ...issue, executionPolicy: lockedPolicy });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue, ...patch, updatedAt: new Date(),
+    }));
+
+    const res = await request(await installActor(createApp(), {
+      type: "agent", agentId: reviewerAgentId, companyId: "company-1",
+      source: "agent_key", runId: "run-patch-policy-race",
+    })).patch(`/api/issues/${issue.id}`).send({ status: "done", comment: "Approved" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issue.id,
+      expect.objectContaining({
+        status: "in_review",
+        executionState: expect.objectContaining({
+          currentStageId: lockedPolicy.stages[1].id,
+          currentParticipant: expect.objectContaining({ type: "agent", agentId: nextReviewerId }),
+        }),
+      }),
+      mockTx,
+      undefined,
+      expect.any(Array),
+    );
+  });
+
+  it("uses the locked policy when another review stage is added before auto-approval", async () => {
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const nextReviewerId = "44444444-4444-4444-8444-444444444444";
+    const review = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      type: "review",
+      participants: [{ type: "agent", agentId: reviewerAgentId }],
+    };
+    const policy = (await normalizePolicy({ stages: [review] }))!;
+    const lockedPolicy = (await normalizePolicy({ stages: [review, {
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      type: "review",
+      participants: [{ type: "agent", agentId: nextReviewerId }],
+    }] }))!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+      assigneeAgentId: reviewerAgentId,
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue({ ...issue, executionPolicy: lockedPolicy });
+    mockIssueService.addComment.mockResolvedValue({ id: "comment-locked-policy", issueId: issue.id, body: "## Review: APPROVED" });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue, ...patch, updatedAt: new Date(),
+    }));
+
+    const res = await request(await installActor(createApp(), {
+      type: "agent", agentId: reviewerAgentId, companyId: "company-1",
+      source: "agent_key", runId: "run-review-policy-race",
+    }))
+      .post(`/api/issues/${issue.id}/comments`)
+      .send({ body: "## Review: APPROVED" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issue.id,
+      expect.objectContaining({
+        status: "in_review",
+        executionState: expect.objectContaining({
+          currentStageId: lockedPolicy.stages[1].id,
+          currentParticipant: expect.objectContaining({ type: "agent", agentId: nextReviewerId }),
+        }),
+      }),
+      mockTx,
+      undefined,
+      expect.any(Array),
+    );
+  });
+
+  it("rejects an approval when the locked review participant has changed", async () => {
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const nextReviewerId = "44444444-4444-4444-8444-444444444444";
+    const policy = (await normalizePolicy({ stages: [{
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      type: "review",
+      participants: [{ type: "agent", agentId: reviewerAgentId }],
+    }] }))!;
+    const issue = {
+      ...makeIssue("todo"), status: "in_review", executionPolicy: policy,
+      executionState: {
+        status: "pending", currentStageId: policy.stages[0].id, currentStageIndex: 0,
+        currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue({
+      ...issue, executionState: { ...issue.executionState, currentParticipant: { type: "agent", agentId: nextReviewerId } },
+    });
+
+    const res = await request(await installActor(createApp(), {
+      type: "agent", agentId: reviewerAgentId, companyId: "company-1",
+      source: "agent_key", runId: "run-review-participant-race",
+    })).post(`/api/issues/${issue.id}/comments`).send({ body: "## Review: APPROVED" });
+
+    expect(res.status).toBe(409);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("auto-approves a reviewer comment with the APPROVED review marker", async () => {

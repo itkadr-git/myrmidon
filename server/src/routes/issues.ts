@@ -146,7 +146,8 @@ import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/
 import { createPullRequestMergeDetailsResolver } from "../services/github-pull-request-merge.js";
 import { resolveGitHubRepositoryToken } from "../services/github-external-object-provider.js";
 import { checkCommitMembership, normaliseReleasePrefix, resolveReleaseRefs, routePullRequestVerdict } from "../myrmidon/release-membership.js";
-import { verifyReleaseComposition, aggregateReleaseCandidates, signReleaseVerificationVerdict } from "../myrmidon/release-verification.js";
+import { isReleaseTask } from "../myrmidon/task-pr-sync/policy.js";
+import { verifyReleaseComposition, aggregateReleaseCandidates, createReleaseVerificationEvidence, hasCurrentReleaseVerificationEvidence, signReleaseVerificationVerdict } from "../myrmidon/release-verification.js";
 import { readBuildCommit } from "../build-commit.js";
 import { readProductEnv } from "@myrmidon/shared/env-alias";
 import { readBuildVersion } from "../build-version.js";
@@ -10289,6 +10290,48 @@ export function issueRoutes(
     }
   });
 
+  async function collectReleaseCandidates(companyId: string, issueId: string, releasePrefix: string, refresh: boolean) {
+    const releaseLabelRows = await db
+      .select({ id: labels.id, name: labels.name })
+      .from(labels)
+      .where(eq(labels.companyId, companyId));
+    const releaseLabelIds = releaseLabelRows
+      .filter((row) => normaliseReleasePrefix(row.name) === releasePrefix)
+      .map((row) => row.id);
+    const candidateIssueRows = releaseLabelIds.length
+      ? await db.select({ issueId: issueLabels.issueId }).from(issueLabels)
+          .where(inArray(issueLabels.labelId, releaseLabelIds))
+      : [];
+    const candidateIssueIds = [...new Set(candidateIssueRows.map((row) => row.issueId))];
+    if (!candidateIssueIds.includes(issueId)) candidateIssueIds.push(issueId);
+    const products = new Map<string, Awaited<ReturnType<typeof workProductsSvc.listForIssue>>>();
+    for (const candidateIssueId of candidateIssueIds) {
+      products.set(candidateIssueId, await workProductsSvc.listForIssue(candidateIssueId, { refreshPullRequests: refresh }));
+    }
+    return { candidateIssueIds, members: aggregateReleaseCandidates(products) };
+  }
+
+  async function releaseTransitionContext(issue: { id: string; companyId: string }) {
+    const labelRows = await db.select({ name: labels.name }).from(issueLabels)
+      .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+      .where(eq(issueLabels.issueId, issue.id));
+    const releaseLabels = labelRows.map((row) => row.name);
+    const products = await workProductsSvc.listForIssue(issue.id, { refreshPullRequests: false });
+    const releasePrefix = releaseLabels.map(normaliseReleasePrefix).find((prefix): prefix is string => prefix !== null);
+    const key = readProductEnv("RELEASE_VERIFICATION_KEY");
+    let hasCurrentReleaseEvidence = false;
+    if (releasePrefix && key) {
+      const { members } = await collectReleaseCandidates(issue.companyId, issue.id, releasePrefix, false);
+      const comments = await db.select({ body: issueComments.body, authorType: issueComments.authorType })
+        .from(issueComments).where(eq(issueComments.issueId, issue.id));
+      hasCurrentReleaseEvidence = hasCurrentReleaseVerificationEvidence(comments, {
+        companyId: issue.companyId, issueId: issue.id, releasePrefix,
+        deployedVersion: readBuildCommit(), members,
+      }, key);
+    }
+    return { labels: releaseLabels, workProducts: products, hasCurrentReleaseEvidence };
+  }
+
   // VERIFY-ON-PROD (OPE-13014): aggregate the full release candidate set from
   // the issue's pull_request work products, verify the composition against the
   // deployed version, and persist the verdict as a system comment. The release
@@ -10341,31 +10384,9 @@ export function issueRoutes(
       // label), merged or not. Review finding (PR #3093): restricting the set
       // to the single issue's work products would let a release be confirmed
       // on a partial list whenever sibling release issues were skipped.
-      const releaseLabelRows = await db
-        .select({ id: labels.id, name: labels.name })
-        .from(labels)
-        .where(eq(labels.companyId, issue.companyId));
-      const releaseLabelIds = releaseLabelRows
-        .filter((row) => normaliseReleasePrefix(row.name) === releasePrefix)
-        .map((row) => row.id);
-      const candidateIssueRows = releaseLabelIds.length
-        ? await db
-            .select({ issueId: issueLabels.issueId })
-            .from(issueLabels)
-            .where(inArray(issueLabels.labelId, releaseLabelIds))
-        : [];
-      const candidateIssueIds = [...new Set(candidateIssueRows.map((row) => row.issueId))];
-
-      // Include the current issue even if its label row was missed, so the
-      // route always verifies at least the issue it was called on.
-      if (!candidateIssueIds.includes(issue.id)) candidateIssueIds.push(issue.id);
-
-      const memberWorkProducts = new Map<string, Awaited<ReturnType<typeof workProductsSvc.listForIssue>>>();
-      for (const candidateIssueId of candidateIssueIds) {
-        const products = await workProductsSvc.listForIssue(candidateIssueId, { refreshPullRequests: refresh });
-        memberWorkProducts.set(candidateIssueId, products);
-      }
-      const members = aggregateReleaseCandidates(memberWorkProducts);
+      const { candidateIssueIds, members } = await collectReleaseCandidates(
+        issue.companyId, issue.id, releasePrefix, refresh,
+      );
 
       // Resolve the actual release refs from the repository so the deployed
       // version can be validated against them (not just the prefix defaults).
@@ -10389,6 +10410,16 @@ export function issueRoutes(
       const memberLines = result.members.map(
         (m) => `- ${m.id}: ${m.membership} (${m.releaseRefs.join(", ") || "no refs"})`,
       );
+      const verificationKey = readProductEnv("RELEASE_VERIFICATION_KEY");
+      const evidence = verificationKey ? createReleaseVerificationEvidence({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        releasePrefix,
+        deployedVersion: result.deployedVersion,
+        members,
+        verdict: result.verdict,
+        checkedAt: result.checkedAt,
+      }, verificationKey) : null;
       const body = [
         `VERIFY-ON-PROD release composition check: ${result.verdict}`,
         ``,
@@ -10401,6 +10432,7 @@ export function issueRoutes(
         `- Reason: ${result.reason}`,
         `- Checked at: ${result.checkedAt}`,
         ...(memberLines.length ? [``, ...memberLines] : []),
+        ...(evidence ? [``, `release-evidence-v1: ${JSON.stringify(evidence)}`] : []),
       ].join("\n");
 
       await svc.addComment(issue.id, body, {}, { authorType: "system" });
@@ -10410,7 +10442,6 @@ export function issueRoutes(
       // invalid signature).  No key configured → the response stays unsigned,
       // which the publisher refuses; the verification itself still runs and
       // its system comment is persisted above.
-      const verificationKey = readProductEnv("RELEASE_VERIFICATION_KEY");
       const signature = verificationKey
         ? signReleaseVerificationVerdict(
             {
@@ -11171,7 +11202,7 @@ export function issueRoutes(
             transitionIssue.executionReviewParticipantAgentIds = reviewParticipantAgentIds;
             const transition = applyIssueExecutionPolicyTransition({
               // myrmidon(OPE-9031): senior escalation chain for the round limit.
-              issue: transitionIssue,
+              issue: sourceIssueStatus === "done" ? { ...transitionIssue, ...await releaseTransitionContext(lockedIssue) } : transitionIssue,
               policy: executionPolicy,
               previousPolicy: executionPolicy,
               requestedStatus: sourceIssueStatus,
@@ -15753,13 +15784,39 @@ export function issueRoutes(
         req.body.executionPolicy !== undefined && monitorChanged,
       );
 
-      const transitionIssue: IssueRouteSnapshot & {
+      const transitionIssue: Omit<IssueRouteSnapshot, "labels"> & {
+        labels?: readonly (string | { name: string })[];
+        workProducts?: Awaited<ReturnType<typeof workProductsSvc.listForIssue>>;
+        hasCurrentReleaseEvidence?: boolean;
         assigneeAgentRole?: string | null;
         terminatedReturnAssigneeAgentId?: string | null;
         fallbackReturnAssigneeAgentId?: string | null;
         executionReviewParticipantAgentIds?: string[];
         defaultEscalationAgentIds?: string[];
       } = { ...existing };
+      const requestedReleaseLabels = updateFields.status === "done" && Array.isArray(req.body.labelIds) && req.body.labelIds.length > 0
+        ? (await db.select({ name: labels.name }).from(labels).where(and(
+            eq(labels.companyId, existing.companyId),
+            inArray(labels.id, req.body.labelIds as string[]),
+          ))).map((row) => row.name).filter((name) => normaliseReleasePrefix(name) !== null)
+        : [];
+      const includeRequestedReleaseLabels = (context: Awaited<ReturnType<typeof releaseTransitionContext>>) => {
+        const existingLabels = new Set(context.labels);
+        return {
+          ...context,
+          labels: [...context.labels, ...requestedReleaseLabels],
+          hasCurrentReleaseEvidence: context.hasCurrentReleaseEvidence &&
+            requestedReleaseLabels.every((label) => existingLabels.has(label)),
+        };
+      };
+      if (updateFields.status === "done") {
+        Object.assign(transitionIssue, includeRequestedReleaseLabels(await releaseTransitionContext(existing)));
+        // A single PATCH must not hide either the old or the requested title
+        // from release classification while completing the issue.
+        if (typeof updateFields.title === "string" && isReleaseTask(updateFields.title)) {
+          transitionIssue.title = updateFields.title;
+        }
+      }
       Object.assign(
         transitionIssue,
         await withDefaultEscalationChain(db, existing, nextExecutionPolicy),
@@ -17152,6 +17209,7 @@ export function issueRoutes(
         updateFields.status !== "in_review" &&
         (req.body.assigneeAgentId !== undefined || req.body.assigneeUserId !== undefined);
       const shouldUseTransactionalIssueUpdate =
+        req.body.status === "done" ||
         closesRecoveryIssue ||
           Boolean(commentAttachmentIds?.length) ||
           Boolean(decision) ||
@@ -17170,19 +17228,35 @@ export function issueRoutes(
           issue = await db.transaction(async (tx) => {
             const lockedExisting = await svc.getByIdForUpdate(id, tx);
             if (!lockedExisting) return null;
-            const lockedReviewParticipants = nextExecutionPolicy
-              ? summarizeExecutionParticipants(nextExecutionPolicy, "review").flatMap(
+            const lockedPreviousExecutionPolicy = safeNormalizeIssueExecutionPolicy(
+              lockedExisting.executionPolicy ?? null,
+            );
+            const lockedNextExecutionPolicy = req.body.executionPolicy !== undefined
+              ? nextExecutionPolicy
+              : lockedPreviousExecutionPolicy;
+            const lockedReviewParticipants = lockedNextExecutionPolicy
+              ? summarizeExecutionParticipants(lockedNextExecutionPolicy, "review").flatMap(
                   (participant) => participant.type === "agent" && participant.agentId ? [participant.agentId] : [],
                 )
               : [];
             const lockedTransitionIssue: typeof transitionIssue = {
               ...transitionIssue,
               ...lockedExisting,
+              title: typeof updateFields.title === "string" && isReleaseTask(updateFields.title)
+                ? updateFields.title
+                : lockedExisting.title,
+              ...(req.body.status === "done"
+                ? includeRequestedReleaseLabels(await releaseTransitionContext(lockedExisting))
+                : {
+                    labels: transitionIssue.labels,
+                    workProducts: transitionIssue.workProducts,
+                    hasCurrentReleaseEvidence: transitionIssue.hasCurrentReleaseEvidence,
+                  }),
               assigneeAgentRole: undefined,
               executionReviewParticipantAgentIds: lockedReviewParticipants,
             };
             if (
-              nextExecutionPolicy === null &&
+              lockedNextExecutionPolicy === null &&
               lockedExisting.assigneeAgentId &&
               (lockedExisting.status === "in_review" || updateFields.status === "in_review")
             ) {
@@ -17191,8 +17265,8 @@ export function issueRoutes(
             }
             const lockedTransition = applyIssueExecutionPolicyTransition({
               issue: lockedTransitionIssue,
-              policy: nextExecutionPolicy,
-              previousPolicy: previousExecutionPolicy,
+              policy: lockedNextExecutionPolicy,
+              previousPolicy: lockedPreviousExecutionPolicy,
               // myrmidon(OPE-10045): re-check a pre-merge approval as the
               // approval it is, so a stage that changed under the lock refuses it.
               // Recompute from the request, not the preliminary transition's status.
@@ -22455,9 +22529,6 @@ export function issueRoutes(
       const currentExecutionState = parseIssueExecutionState(
         currentIssue.executionState,
       );
-      const currentExecutionPolicy = safeNormalizeIssueExecutionPolicy(
-        currentIssue.executionPolicy ?? null,
-      );
       const shouldAutoApproveReviewComment =
         currentIssue.status === "in_review" &&
         currentExecutionState?.status === "pending" &&
@@ -22473,89 +22544,7 @@ export function issueRoutes(
       let comment: Awaited<ReturnType<typeof svc.addComment>>;
       let goalCommentSteered = false;
       if (shouldAutoApproveReviewComment) {
-        const transition = applyIssueExecutionPolicyTransition({
-          issue: currentIssue,
-          policy: currentExecutionPolicy,
-          requestedStatus: "done",
-          requestedAssigneePatch: {},
-          actor: {
-            agentId: actor.agentId ?? null,
-            userId: actor.actorType === "user" ? actor.actorId : null,
-          },
-          commentBody: req.body.body,
-        });
-        const decisionId = transition.decision ? randomUUID() : null;
-        if (transition.escalationMetric) {
-          getTelemetryClient()?.trackDynamic(transition.escalationMetric, {
-            issue_id: currentIssue.id,
-            policy_revision:
-              currentExecutionPolicy?.reviewEscalationPolicy?.policyRevision ?? "unknown",
-            target_type: "user",
-          });
-        }
-        if (decisionId) {
-          const nextExecutionState = transition.patch.executionState;
-          if (!nextExecutionState || typeof nextExecutionState !== "object") {
-            throw new Error(
-              "Execution policy decision patch is missing executionState",
-            );
-          }
-          transition.patch.executionState = withReviewVerdictRecord(
-            {
-              ...nextExecutionState,
-              lastDecisionId: decisionId,
-            },
-            extractReviewVerdictRecord({
-              outcome: transition.decision?.outcome,
-              body: transition.decision?.body,
-            }),
-          );
-        }
-
-        issueBeforeCommentDecision = currentIssue;
-        // myrmidon(OPE-10045): an approval comment on the last stage while the
-        // PR is still open: keep the comment and the decision, complete the
-        // stage and leave the task in review until the PR sync closes it.
-        // Without this the done gate refused the update and rolled back both.
-        const commentApprovalPendingMerge =
-          typeof transition.patch.status !== "string" &&
-          isApprovalRequestingDone({
-            decisionOutcome: transition.decision?.outcome,
-            requestedStatus: "done",
-            existingStatus: currentIssue.status,
-          })
-            ? await findApprovalPendingMergePullRequest(
-                db,
-                currentIssue.companyId,
-                currentIssue.id,
-                async (companyId, repository) => {
-                  const { createGitHubPrHeadResolver } = await import("../myrmidon/review-routing/github.js");
-                  return createGitHubPrHeadResolver({ db }).listOpenPullRequests({ companyId, repository });
-                },
-              )
-            : null;
-        const updatePatch = {
-          ...transition.patch,
-          status:
-            typeof transition.patch.status === "string"
-              ? transition.patch.status
-              : commentApprovalPendingMerge
-                ? currentIssue.status
-                : "done",
-          actorAgentId: actor.agentId ?? null,
-          actorUserId: actor.actorType === "user" ? actor.actorId : null,
-        };
-
-        if (updatePatch.status === "done") {
-          const { assertKnowledgeGateSettled } = await import("../myrmidon/knowledge-gate/guard.js");
-          await assertKnowledgeGateSettled(db, {
-            companyId: currentIssue.companyId,
-            issueId: currentIssue.id,
-            issue: { title: currentIssue.title, description: currentIssue.description },
-            comment: req.body.body,
-          });
-        }
-
+        let transition!: ReturnType<typeof applyIssueExecutionPolicyTransition>;
         const sourceTrust =
           actor.actorType === "agent"
             ? await sourceTrustForActorWrite(currentIssue, actor, true)
@@ -22578,6 +22567,97 @@ export function issueRoutes(
         const postCommitIssueActions: IssuePostCommitAction[] = [];
         try {
           txResult = await db.transaction(async (tx) => {
+            const lockedIssue = await svc.getByIdForUpdate(id, tx);
+            if (!lockedIssue) throw new AutoApprovalIssueMissingError();
+            const lockedState = parseIssueExecutionState(lockedIssue.executionState);
+            if (lockedIssue.status !== "in_review" || lockedState?.status !== "pending" ||
+                !actorMatchesExecutionParticipant(actor, lockedState.currentParticipant ?? null)) {
+              throw conflict("Review stage changed while approving; retry the comment");
+            }
+            currentIssue = lockedIssue;
+            transition = applyIssueExecutionPolicyTransition({
+              issue: { ...currentIssue, ...await releaseTransitionContext(currentIssue) },
+              policy: safeNormalizeIssueExecutionPolicy(lockedIssue.executionPolicy ?? null),
+              requestedStatus: "done",
+              requestedAssigneePatch: {},
+              actor: {
+                agentId: actor.agentId ?? null,
+                userId: actor.actorType === "user" ? actor.actorId : null,
+              },
+              commentBody: req.body.body,
+            });
+            const decisionId = transition.decision ? randomUUID() : null;
+            if (transition.escalationMetric) {
+              getTelemetryClient()?.trackDynamic(transition.escalationMetric, {
+                issue_id: currentIssue.id,
+                policy_revision:
+                  safeNormalizeIssueExecutionPolicy(lockedIssue.executionPolicy ?? null)?.reviewEscalationPolicy?.policyRevision ?? "unknown",
+                target_type: "user",
+              });
+            }
+            if (decisionId) {
+              const nextExecutionState = transition.patch.executionState;
+              if (!nextExecutionState || typeof nextExecutionState !== "object") {
+                throw new Error(
+                  "Execution policy decision patch is missing executionState",
+                );
+              }
+              transition.patch.executionState = withReviewVerdictRecord(
+                {
+                  ...nextExecutionState,
+                  lastDecisionId: decisionId,
+                },
+                extractReviewVerdictRecord({
+                  outcome: transition.decision?.outcome,
+                  body: transition.decision?.body,
+                }),
+              );
+            }
+
+            issueBeforeCommentDecision = currentIssue;
+            // myrmidon(OPE-10045): an approval comment on the last stage while the
+            // PR is still open: keep the comment and the decision, complete the
+            // stage and leave the task in review until the PR sync closes it.
+            // Without this the done gate refused the update and rolled back both.
+            const commentApprovalPendingMerge =
+              typeof transition.patch.status !== "string" &&
+              isApprovalRequestingDone({
+                decisionOutcome: transition.decision?.outcome,
+                requestedStatus: "done",
+                existingStatus: currentIssue.status,
+              })
+                ? await findApprovalPendingMergePullRequest(
+                    db,
+                    currentIssue.companyId,
+                    currentIssue.id,
+                    async (companyId, repository) => {
+                      const { createGitHubPrHeadResolver } = await import("../myrmidon/review-routing/github.js");
+                      return createGitHubPrHeadResolver({ db }).listOpenPullRequests({ companyId, repository });
+                    },
+                  )
+                : null;
+            const updatePatch = {
+              ...transition.patch,
+              status:
+                typeof transition.patch.status === "string"
+                  ? transition.patch.status
+                  : commentApprovalPendingMerge
+                    ? currentIssue.status
+                    : "done",
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+            };
+
+            if (updatePatch.status === "done") {
+              const { assertKnowledgeGateSettled } = await import("../myrmidon/knowledge-gate/guard.js");
+              await assertKnowledgeGateSettled(db, {
+                companyId: currentIssue.companyId,
+                issueId: currentIssue.id,
+                issue: { title: currentIssue.title, description: currentIssue.description },
+                comment: req.body.body,
+              });
+            }
+
             const insertedComment = await svc.addComment(
               id,
               req.body.body,
@@ -22725,7 +22805,7 @@ export function issueRoutes(
         }
         commentDecisionStageWakeup = buildExecutionStageWakeup({
           issueId: currentIssue.id,
-          previousState: currentExecutionState,
+          previousState: parseIssueExecutionState(issueBeforeCommentDecision.executionState),
           nextState: parseIssueExecutionState(currentIssue.executionState),
           interruptedRunId,
           requestedByActorType: actor.actorType,

@@ -1,13 +1,172 @@
-import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { companies, createDb, issueWorkProducts, issues } from "@myrmidon/db";
+import { eq } from "drizzle-orm";
+import { workProductService } from "../services/work-products.js";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 
 import {
   aggregateReleaseCandidates,
   buildReleaseCandidateMembers,
   composeReleaseVerdict,
+  createReleaseVerificationEvidence,
+  validateReleaseVerificationEvidence,
+  hasCurrentReleaseVerificationEvidence,
   signReleaseVerificationVerdict,
   verifyReleaseComposition,
   type ReleaseCandidateMember,
 } from "./release-verification.js";
+
+const postgresSupport = await getEmbeddedPostgresTestSupport();
+const describePostgres = postgresSupport.supported ? describe : describe.skip;
+
+describePostgres.sequential("release composition concurrency", () => {
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let db: ReturnType<typeof createDb>;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("release-composition-race-");
+    db = createDb(tempDb.connectionString);
+  }, 60_000);
+
+  afterAll(async () => { await tempDb?.cleanup(); });
+
+  it("does not replace a primary release candidate while its issue is locked for completion", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Primary race", issuePrefix: "PRC" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Release", status: "in_progress" });
+    await db.insert(issueWorkProducts).values({
+      companyId, issueId, type: "pull_request", provider: "github", title: "Original PR", status: "merged",
+      isPrimary: true, externalId: "acme/project#pull/1", metadata: { repo: "acme/project", number: 1 },
+    });
+    let release!: () => void;
+    let acquired!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const locked = new Promise<void>((resolve) => { acquired = resolve; });
+    const completion = db.transaction(async (tx) => {
+      await tx.select().from(issues).where(eq(issues.id, issueId)).for("update");
+      acquired();
+      await gate;
+    });
+    await locked;
+    const replacement = workProductService(db).createForIssue(issueId, companyId, {
+      type: "pull_request", provider: "github", title: "Replacement PR", status: "merged",
+      isPrimary: true, externalId: "acme/project#pull/2", metadata: { repo: "acme/project", number: 2 },
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const rows = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, issueId));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.externalId).toBe("acme/project#pull/1");
+      expect(rows[0]?.isPrimary).toBe(true);
+    } finally {
+      release();
+      await completion;
+      await replacement;
+    }
+    const rows = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, issueId));
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.isPrimary)?.externalId).toBe("acme/project#pull/2");
+  });
+
+  it("does not remove a release candidate while its issue is locked for completion", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Removal race", issuePrefix: "RMR" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Release", status: "in_progress" });
+    const [product] = await db.insert(issueWorkProducts).values({
+      companyId, issueId, type: "pull_request", provider: "github", title: "PR", status: "merged",
+      externalId: "acme/project#pull/1", metadata: { repo: "acme/project", number: 1 },
+    }).returning();
+    let release!: () => void;
+    let acquired!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const locked = new Promise<void>((resolve) => { acquired = resolve; });
+    const completion = db.transaction(async (tx) => {
+      await tx.select().from(issues).where(eq(issues.id, issueId)).for("update");
+      acquired();
+      await gate;
+    });
+    await locked;
+    const removal = workProductService(db).remove(product!.id);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const rows = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, issueId));
+      expect(rows).toHaveLength(1);
+    } finally {
+      release();
+      await completion;
+      await removal;
+    }
+    const rows = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, issueId));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("allows direct candidate updates while the issue row is locked", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Direct race", issuePrefix: "DRC" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Release", status: "in_progress" });
+    const [product] = await db.insert(issueWorkProducts).values({
+      companyId, issueId, type: "pull_request", provider: "github", title: "PR", status: "open",
+      externalId: "acme/project#pull/1", metadata: { repo: "acme/project", number: 1 },
+    }).returning();
+    let release!: () => void;
+    let acquired!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const locked = new Promise<void>((resolve) => { acquired = resolve; });
+    const completion = db.transaction(async (tx) => {
+      await tx.select().from(issues).where(eq(issues.id, issueId)).for("update");
+      acquired();
+      await gate;
+    });
+    await locked;
+    // Webhook and PR sync paths update the work product directly, bypassing the service.
+    try {
+      await db.update(issueWorkProducts).set({ status: "merged" })
+        .where(eq(issueWorkProducts.id, product!.id));
+      const rows = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.id, product!.id));
+      expect(rows[0]?.status).toBe("merged");
+    } finally {
+      release();
+      await completion;
+    }
+  });
+
+  it("does not change a release candidate while its issue is locked for completion", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Race", issuePrefix: "RCE" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Release", status: "in_progress" });
+    const [product] = await db.insert(issueWorkProducts).values({
+      companyId, issueId, type: "pull_request", provider: "github", title: "PR", status: "open",
+      externalId: "acme/project#pull/1", metadata: { repo: "acme/project", number: 1 },
+    }).returning();
+    let release!: () => void;
+    let acquired!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const locked = new Promise<void>((resolve) => { acquired = resolve; });
+    const completion = db.transaction(async (tx) => {
+      await tx.select().from(issues).where(eq(issues.id, issueId)).for("update");
+      acquired();
+      await gate;
+    });
+    await locked;
+    const update = workProductService(db).update(product!.id, { status: "merged" });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const rows = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, issueId));
+      expect(rows[0]?.status).toBe("open");
+    } finally {
+      release();
+      await completion;
+      await update;
+    }
+    const rows = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, issueId));
+    expect(rows[0]?.status).toBe("merged");
+  });
+});
 
 const REPO = "acme/project";
 const SHA_A = "aaa111aaa111aaa111aaa111aaa111aaa111aaa1";
@@ -651,6 +810,225 @@ describe("aggregateReleaseCandidates", () => {
     expect(result.verdict).toBe("failed");
     expect(result.failureReason).toBe("member_metadata_incomplete");
     expect(result.reason).toContain("OPE-2:PR#3");
+  });
+});
+
+describe("persisted release evidence", () => {
+  const members = [member("issue-a:PR#1", SHA_A)];
+  const scope = {
+    companyId: "company-a", issueId: "issue-a", releasePrefix: "1.6",
+    deployedVersion: SHA_B, members,
+  };
+  const record = createReleaseVerificationEvidence({
+    ...scope, verdict: "confirmed", checkedAt: "2026-11-13T12:00:00.000Z",
+  }, "secret");
+
+  it("accepts an authentic record for the current issue, build and candidate set", () => {
+    expect(validateReleaseVerificationEvidence(record, scope, "secret", NOW())).toBe(true);
+  });
+
+  it("accepts only a current signed record embedded in a system comment", () => {
+    const body = `VERIFY-ON-PROD\nrelease-evidence-v1: ${JSON.stringify(record)}`;
+    expect(hasCurrentReleaseVerificationEvidence([{ body, authorType: "system" }], scope, "secret", NOW())).toBe(true);
+    expect(hasCurrentReleaseVerificationEvidence([{ body, authorType: "user" }], scope, "secret", NOW())).toBe(false);
+    expect(hasCurrentReleaseVerificationEvidence([{ body: "release-evidence-v1: {bad", authorType: "system" }], scope, "secret", NOW())).toBe(false);
+    expect(hasCurrentReleaseVerificationEvidence([{ body, authorType: "system" }], { ...scope, deployedVersion: SHA_C }, "secret", NOW())).toBe(false);
+  });
+
+  it("does not reuse an earlier confirmation after a later failed check", () => {
+    const failed = createReleaseVerificationEvidence({
+      ...scope, verdict: "failed", checkedAt: "2026-11-13T12:00:01.000Z",
+    }, "secret");
+    const comments = [record, failed].map((evidence) => ({
+      body: `release-evidence-v1: ${JSON.stringify(evidence)}`,
+      authorType: "system",
+    }));
+    expect(hasCurrentReleaseVerificationEvidence(comments, scope, "secret", new Date("2026-11-13T12:00:02.000Z"))).toBe(false);
+  });
+
+  it("fails closed when confirmed and failed checks have the same timestamp, regardless of order", () => {
+    const failed = createReleaseVerificationEvidence({
+      ...scope, verdict: "failed", checkedAt: record.checkedAt,
+    }, "secret");
+    const comment = (evidence: typeof record) => ({
+      body: `release-evidence-v1: ${JSON.stringify(evidence)}`,
+      authorType: "system",
+    });
+    expect(hasCurrentReleaseVerificationEvidence([comment(record), comment(failed)], scope, "secret", NOW())).toBe(false);
+    expect(hasCurrentReleaseVerificationEvidence([comment(failed), comment(record)], scope, "secret", NOW())).toBe(false);
+  });
+
+  it("rejects previously confirmed evidence when a sibling release candidate changes", () => {
+    const sibling = member("issue-b:PR#2", SHA_C);
+    const before = { ...scope, members: [...members, sibling] };
+    const confirmed = createReleaseVerificationEvidence({
+      ...before, verdict: "confirmed", checkedAt: "2026-11-13T12:00:00.000Z",
+    }, "secret");
+    const comments = [{ body: `release-evidence-v1: ${JSON.stringify(confirmed)}`, authorType: "system" }];
+    const after = { ...before, members: [...members, { ...sibling, merged: false }] };
+    expect(hasCurrentReleaseVerificationEvidence(comments, before, "secret", NOW())).toBe(true);
+    expect(hasCurrentReleaseVerificationEvidence(comments, after, "secret", NOW())).toBe(false);
+  });
+
+  it("accepts the same candidate set in a different order, but rejects duplicate candidates", () => {
+    const sibling = member("issue-b:PR#2", SHA_C);
+    const original = { ...scope, members: [...members, sibling] };
+    const confirmed = createReleaseVerificationEvidence({
+      ...original, verdict: "confirmed", checkedAt: "2026-11-13T12:00:00.000Z",
+    }, "secret");
+    const comments = [{ body: `release-evidence-v1: ${JSON.stringify(confirmed)}`, authorType: "system" }];
+    expect(hasCurrentReleaseVerificationEvidence(comments, { ...original, members: [sibling, ...members] }, "secret", NOW())).toBe(true);
+    expect(hasCurrentReleaseVerificationEvidence(comments, { ...original, members: [...original.members, sibling] }, "secret", NOW())).toBe(false);
+  });
+
+  it("rejects evidence after a sibling candidate is added, removed, or replaced", () => {
+    const sibling = member("issue-b:PR#2", SHA_C);
+    const before = { ...scope, members: [...members, sibling] };
+    const confirmed = createReleaseVerificationEvidence({
+      ...before, verdict: "confirmed", checkedAt: "2026-11-13T12:00:00.000Z",
+    }, "secret");
+    const comments = [{ body: `release-evidence-v1: ${JSON.stringify(confirmed)}`, authorType: "system" }];
+    const changedSets = [
+      members,
+      [...before.members, member("issue-c:PR#3", SHA_A)],
+      [...members, member("issue-b:PR#2", SHA_B)],
+    ];
+    expect(hasCurrentReleaseVerificationEvidence(comments, before, "secret", NOW())).toBe(true);
+    for (const changedMembers of changedSets) {
+      expect(hasCurrentReleaseVerificationEvidence(comments, { ...before, members: changedMembers }, "secret", NOW())).toBe(false);
+    }
+  });
+
+  it("rejects an older confirmation when a later signed check has a different candidate set", () => {
+    const changed = createReleaseVerificationEvidence({
+      ...scope,
+      members: [...members, member("issue-b:PR#2", SHA_C)],
+      verdict: "confirmed",
+      checkedAt: "2026-11-13T12:00:01.000Z",
+    }, "secret");
+    const comments = [record, changed].map((evidence) => ({
+      body: `release-evidence-v1: ${JSON.stringify(evidence)}`,
+      authorType: "system",
+    }));
+    expect(hasCurrentReleaseVerificationEvidence(comments, scope, "secret", new Date("2026-11-13T12:00:02.000Z"))).toBe(false);
+  });
+
+  it("does not revive confirmation after a later failed check of changed release composition", () => {
+    const failed = createReleaseVerificationEvidence({
+      ...scope,
+      members: [...members, member("issue-b:PR#2", SHA_C)],
+      verdict: "failed",
+      checkedAt: "2026-11-13T12:00:01.000Z",
+    }, "secret");
+    const comment = (evidence: typeof record) => ({
+      body: `release-evidence-v1: ${JSON.stringify(evidence)}`,
+      authorType: "system",
+    });
+    const now = new Date("2026-11-13T12:00:02.000Z");
+    expect(hasCurrentReleaseVerificationEvidence([comment(record), comment(failed)], scope, "secret", now)).toBe(false);
+    expect(hasCurrentReleaseVerificationEvidence([comment(failed), comment(record)], scope, "secret", now)).toBe(false);
+  });
+
+  it("does not revive an older confirmation after a later check on another deployed build", () => {
+    const laterBuild = createReleaseVerificationEvidence({
+      ...scope, deployedVersion: SHA_C, verdict: "confirmed", checkedAt: "2026-11-13T12:00:01.000Z",
+    }, "secret");
+    const comment = (evidence: typeof record) => ({
+      body: `release-evidence-v1: ${JSON.stringify(evidence)}`,
+      authorType: "system",
+    });
+    const now = new Date("2026-11-13T12:00:02.000Z");
+    expect(hasCurrentReleaseVerificationEvidence([comment(record), comment(laterBuild)], scope, "secret", now)).toBe(false);
+    expect(hasCurrentReleaseVerificationEvidence([comment(laterBuild), comment(record)], scope, "secret", now)).toBe(false);
+  });
+
+  it("ignores later forged and foreign records instead of replacing authentic evidence", () => {
+    const forged = { ...record, verdict: "failed", checkedAt: "2026-11-13T12:00:01.000Z" };
+    const foreign = createReleaseVerificationEvidence({
+      ...scope, issueId: "issue-b", verdict: "failed", checkedAt: "2026-11-13T12:00:02.000Z",
+    }, "secret");
+    const comment = (evidence: unknown) => ({
+      body: `release-evidence-v1: ${JSON.stringify(evidence)}`,
+      authorType: "system",
+    });
+    expect(hasCurrentReleaseVerificationEvidence(
+      [comment(record), comment(forged), comment(foreign)], scope, "secret",
+      new Date("2026-11-13T12:00:03.000Z"),
+    )).toBe(true);
+  });
+
+  it("ignores a same-scope failure signed with another key at the same timestamp", () => {
+    const wrongKey = createReleaseVerificationEvidence({
+      ...scope, verdict: "failed", checkedAt: record.checkedAt,
+    }, "other-secret");
+    const comment = (evidence: typeof record) => ({
+      body: `release-evidence-v1: ${JSON.stringify(evidence)}`,
+      authorType: "system",
+    });
+    expect(hasCurrentReleaseVerificationEvidence([comment(record), comment(wrongKey)], scope, "secret", NOW())).toBe(true);
+    expect(hasCurrentReleaseVerificationEvidence([comment(wrongKey), comment(record)], scope, "secret", NOW())).toBe(true);
+  });
+
+  it("fails closed for a genuine simultaneous failure even alongside a forged failure", () => {
+    const failed = createReleaseVerificationEvidence({
+      ...scope, verdict: "failed", checkedAt: record.checkedAt,
+    }, "secret");
+    const forged = createReleaseVerificationEvidence({
+      ...scope, verdict: "failed", checkedAt: record.checkedAt,
+    }, "other-secret");
+    const comment = (evidence: typeof record) => ({
+      body: `release-evidence-v1: ${JSON.stringify(evidence)}`,
+      authorType: "system",
+    });
+    for (const evidence of [[record, forged, failed], [failed, record, forged], [forged, failed, record]]) {
+      expect(hasCurrentReleaseVerificationEvidence(evidence.map(comment), scope, "secret", NOW())).toBe(false);
+    }
+  });
+
+  it("does not let later evidence from another company or release line supersede the current record", () => {
+    const foreignCompany = createReleaseVerificationEvidence({
+      ...scope, companyId: "company-b", verdict: "failed", checkedAt: "2026-11-13T12:00:01.000Z",
+    }, "secret");
+    const foreignRelease = createReleaseVerificationEvidence({
+      ...scope, releasePrefix: "1.7", verdict: "failed", checkedAt: "2026-11-13T12:00:02.000Z",
+    }, "secret");
+    const comments = [record, foreignCompany, foreignRelease].map((evidence) => ({
+      body: `release-evidence-v1: ${JSON.stringify(evidence)}`,
+      authorType: "system",
+    }));
+    expect(hasCurrentReleaseVerificationEvidence(
+      comments, scope, "secret", new Date("2026-11-13T12:00:03.000Z"),
+    )).toBe(true);
+  });
+
+  it("does not let a simultaneous failed check for another release line invalidate confirmation", () => {
+    const otherLine = createReleaseVerificationEvidence({
+      ...scope, releasePrefix: "1.7", verdict: "failed", checkedAt: record.checkedAt,
+    }, "secret");
+    const comment = (evidence: typeof record) => ({
+      body: `release-evidence-v1: ${JSON.stringify(evidence)}`,
+      authorType: "system",
+    });
+    expect(hasCurrentReleaseVerificationEvidence([comment(record), comment(otherLine)], scope, "secret", NOW())).toBe(true);
+    expect(hasCurrentReleaseVerificationEvidence([comment(otherLine), comment(record)], scope, "secret", NOW())).toBe(true);
+  });
+
+  it("rejects expired and future signed evidence", () => {
+    expect(validateReleaseVerificationEvidence(record, scope, "secret", new Date("2026-11-14T12:00:00.001Z"))).toBe(false);
+    expect(validateReleaseVerificationEvidence(record, scope, "secret", new Date("2026-11-13T11:59:59.999Z"))).toBe(false);
+  });
+
+  it("rejects missing or forged records and records from other scopes", () => {
+    expect(validateReleaseVerificationEvidence(null, scope, "secret", NOW())).toBe(false);
+    expect(validateReleaseVerificationEvidence({ ...record, verdict: "failed" }, scope, "secret", NOW())).toBe(false);
+    expect(validateReleaseVerificationEvidence(record, { ...scope, companyId: "other" }, "secret", NOW())).toBe(false);
+    expect(validateReleaseVerificationEvidence(record, { ...scope, issueId: "other" }, "secret", NOW())).toBe(false);
+    expect(validateReleaseVerificationEvidence(record, { ...scope, releasePrefix: "1.7" }, "secret", NOW())).toBe(false);
+    expect(validateReleaseVerificationEvidence(record, { ...scope, deployedVersion: SHA_C }, "secret", NOW())).toBe(false);
+    expect(validateReleaseVerificationEvidence(record, { ...scope, members: [member("issue-b:PR#2", SHA_C)] }, "secret", NOW())).toBe(false);
+    expect(validateReleaseVerificationEvidence(record, scope, "wrong-secret", NOW())).toBe(false);
+    const failed = createReleaseVerificationEvidence({ ...scope, verdict: "failed", checkedAt: "2026-11-13T12:00:00.000Z" }, "secret");
+    expect(validateReleaseVerificationEvidence(failed, scope, "secret", NOW())).toBe(false);
   });
 });
 
