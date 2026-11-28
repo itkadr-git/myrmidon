@@ -210,13 +210,17 @@ describe("company portability", () => {
     expect(agentSvc.create).not.toHaveBeenCalled();
   });
 
-  it("rejects tracked new-company imports before preview or side effects until recovery exists", async () => {
+  it.each([
+    { reason: "automation is not paused", pauseAutomations: false, secretValues: undefined },
+    { reason: "secret values are supplied", pauseAutomations: true, secretValues: { TOKEN: "fixture-only" } },
+  ])("rejects tracked new-company imports before preview or writes when $reason", async ({ pauseAutomations, secretValues }) => {
     const portability = companyPortabilityService({} as never);
     await expect(portability.importBundle({
       source: { type: "inline", rootPath: "package", files: {} },
       target: { mode: "new_company", newCompanyName: "Destination" },
-    }, null, { mode: "board_full", transferRunId: "run" })).rejects.toThrow(
-      "Tracked imports are unavailable until recovery is implemented",
+      secretValues,
+    }, null, { mode: "board_full", transferRunId: "run", pauseAutomations })).rejects.toThrow(
+      "Tracked imports require paused automation and cannot accept secret values.",
     );
     expect(companySvc.create).not.toHaveBeenCalled();
     expect(companySvc.update).not.toHaveBeenCalled();
