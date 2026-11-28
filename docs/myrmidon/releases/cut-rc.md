@@ -33,7 +33,10 @@ The script checks, in order:
    mentions the task id in the subject (`OPE-NNNN` as a whole token). Any
    composition gap (a merged PR missing from the branch, or a `done` task
    with no delivery on the branch) is a **hard** refusal naming the task and
-   the missing delivery — it is never bypassable.
+   the missing delivery — it is never bypassable. A merged PR must have a
+   positive safe-integer board PR number (or a decimal-digit string). An
+   invalid or missing number is a composition violation; the script does not
+   query that PR, and `--override` cannot bypass the refusal.
 4. **Changelog.** `## X.Y.Z` exists and is non-empty in both
    `docs/myrmidon/CHANGELOG.md` and `CHANGELOG.ru.md`, and the unreleased
    section (`Unreleased` / `Без выпуска`) is empty — the same contract as
@@ -50,6 +53,11 @@ The script checks, in order:
 
 On any violation the script prints the full list and exits 1 without
 tagging.
+
+Composition validation checks delivery evidence; it does not authorize the
+run's GitHub launcher or decide the release composition for ADM. Launcher
+access must be confirmed separately for the release run identity. A successful
+composition check is not release approval or evidence of deployment.
 
 ## Bypass (override) — always on the board
 
@@ -170,7 +178,10 @@ node scripts/myrmidon/release/cut-rc.mjs --version 1.7.0 --rc 25
    упомянут идентификатор задачи (`OPE-NNNN` целым токеном). Любое
    расхождение по составу (влитой PR отсутствует на ветке или `done`-задача
    без всякого следа поставки) — **жёсткий** отказ с именем задачи и
-   пропуска, обхода нет и не будет.
+   пропуска, обхода нет и не будет. Для влитого PR на доске нужен
+   положительный безопасный целый номер (или строка из десятичных цифр).
+   Неверный или отсутствующий номер — нарушение состава: скрипт не запрашивает
+   этот PR, а `--override` не обходит отказ.
 4. **Журнал.** Секция `## X.Y.Z` есть и непуста в обоих
    `docs/myrmidon/CHANGELOG.md` и `CHANGELOG.ru.md`, секция «Unreleased» /
    «Без выпуска» пуста — тот же контракт, что `collect-fragments.mjs
@@ -185,6 +196,11 @@ node scripts/myrmidon/release/cut-rc.mjs --version 1.7.0 --rc 25
 
 При любом нарушении скрипт печатает полный список и завершается с кодом 1,
 не ставя тег.
+
+Проверка состава сверяет свидетельства поставки, но не авторизует GitHub
+launcher текущего прогона и не принимает за ADM решение о составе выпуска.
+Доступ launcher нужно отдельно подтвердить для идентичности релизного прогона.
+Успешная проверка состава не означает разрешение на выпуск или факт выката.
 
 ## Обход — всегда через доску
 
